@@ -287,7 +287,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
         <p className="text-sm text-muted-foreground">
           {media.length} file{media.length !== 1 ? "s" : ""}
           {media.filter(m => m.is_approved).length > 0 && (
-            <span className="ml-2 text-green-600 dark:text-green-400">
+            <span className="ml-2 text-green-700 dark:text-green-400">
               · {media.filter(m => m.is_approved).length} approved
             </span>
           )}
@@ -337,12 +337,12 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
               {/* Status badges */}
               <div className="absolute top-2 left-2 flex flex-col gap-1">
                 {item.is_primary && (
-                  <Badge className="text-xs bg-yellow-500 text-white border-0 flex items-center gap-1">
+                  <Badge className="text-xs bg-yellow-700 text-white border-0 flex items-center gap-1">
                     <StarIcon className="w-3 h-3" /> Primary
                   </Badge>
                 )}
                 {item.kernel_compliance_passed ? (
-                  <Badge className="text-xs bg-green-600 text-white border-0 flex items-center gap-1">
+                  <Badge className="text-xs bg-green-700 text-white border-0 flex items-center gap-1">
                     <ShieldCheckIcon className="w-3 h-3" /> OK
                   </Badge>
                 ) : (
@@ -357,7 +357,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                 {item.approval_required && !item.is_approved ? (
                   <Badge variant="secondary" className="text-xs">Pending</Badge>
                 ) : item.is_approved ? (
-                  <Badge className="text-xs bg-green-600 text-white border-0">Approved</Badge>
+                  <Badge className="text-xs bg-green-700 text-white border-0">Approved</Badge>
                 ) : null}
               </div>
 
@@ -473,7 +473,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                   ) : fileUploadSuccess ? (
                     <div className="flex flex-col items-center gap-1">
                       <CheckCircleIcon className="h-6 w-6 text-green-600" />
-                      <p className="text-xs font-medium text-green-600">File uploaded successfully</p>
+                      <p className="text-xs font-medium text-green-700">File uploaded successfully</p>
                       <p className="text-[10px] text-muted-foreground">Click or drop to replace</p>
                     </div>
                   ) : (

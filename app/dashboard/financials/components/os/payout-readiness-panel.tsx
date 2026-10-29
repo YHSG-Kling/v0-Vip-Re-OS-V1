@@ -59,7 +59,7 @@ export function PayoutReadinessPanel({
   const statusConfig = {
     ready: {
       icon: <CheckCircle2 className="h-4 w-4" />,
-      color: "text-green-600",
+      color: "text-green-700",
       bg: "bg-green-50 border-green-200",
       label: "Ready",
     },
@@ -71,7 +71,7 @@ export function PayoutReadinessPanel({
     },
     pending_review: {
       icon: <Clock className="h-4 w-4" />,
-      color: "text-amber-600",
+      color: "text-amber-700",
       bg: "bg-amber-50 border-amber-200",
       label: "Pending Review",
     },
@@ -116,8 +116,8 @@ export function PayoutReadinessPanel({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="p-2 rounded-lg bg-green-50 border border-green-200 text-center">
             <p className="text-xs text-green-700">Ready</p>
-            <p className="text-lg font-bold text-green-600">{summary.ready}</p>
-            <p className="text-xs text-green-600">{formatCurrency(summary.totalReady)}</p>
+            <p className="text-lg font-bold text-green-700">{summary.ready}</p>
+            <p className="text-xs text-green-700">{formatCurrency(summary.totalReady)}</p>
           </div>
           <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-center">
             <p className="text-xs text-red-700">Blocked</p>
@@ -126,7 +126,7 @@ export function PayoutReadinessPanel({
           </div>
           <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-center">
             <p className="text-xs text-amber-700">Review</p>
-            <p className="text-lg font-bold text-amber-600">{summary.pendingReview}</p>
+            <p className="text-lg font-bold text-amber-700">{summary.pendingReview}</p>
           </div>
           <div className="p-2 rounded-lg bg-blue-50 border border-blue-200 text-center">
             <p className="text-xs text-blue-700">Processing</p>

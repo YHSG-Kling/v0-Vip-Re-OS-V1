@@ -97,7 +97,7 @@ export function A2pRegistrationCard() {
           <div className="text-xs text-amber-700">Automatic filing is paused until this is corrected — it is not retried on its own. Run / resume retries once after the fix.</div>
         )}
         {!profileSaved && missing.length > 0 && (
-          <div className="text-xs text-amber-600">Business registration still needs: {missing.join(", ")}</div>
+          <div className="text-xs text-amber-700">Business registration still needs: {missing.join(", ")}</div>
         )}
         {profileSaved && ein && <div className="text-xs text-muted-foreground">Filing as EIN {ein}</div>}
         <div className="flex gap-2">

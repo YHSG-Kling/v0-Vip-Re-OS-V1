@@ -1301,7 +1301,7 @@ function StepBar({ step, labels }: { step: number; labels: readonly string[] }) 
         const active = n === step
         return (
           <div key={label} className="flex items-center gap-1">
-            <div className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${done ? "bg-green-500 text-white" : active ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+            <div className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${done ? "bg-green-700 text-white" : active ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
               {done ? <Check className="h-3 w-3" /> : n}
             </div>
             <span className={`text-xs ${active ? "font-medium" : "text-muted-foreground"} hidden sm:inline`}>{label}</span>
@@ -1904,7 +1904,7 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
                 <Badge variant="outline" className="text-xs">{f.scope}</Badge>
                 <span className="text-sm font-medium">{f.name}</span>
                 {fs?.loading && <span className="text-xs text-muted-foreground ml-auto">Pre-filling…</span>}
-                {fs?.filledFields && fs.filledFields.length > 0 && <span className="text-xs text-emerald-600 ml-auto">{fs.filledFields.length} property field(s) pre-filled</span>}
+                {fs?.filledFields && fs.filledFields.length > 0 && <span className="text-xs text-emerald-700 ml-auto">{fs.filledFields.length} property field(s) pre-filled</span>}
               </div>
               <div className="p-4 space-y-2">
                 {fs?.error && <p className="text-xs text-destructive">{fs.error}</p>}
@@ -2341,8 +2341,8 @@ function Step5ESign({ state, mode, esignProvider, esignMode, esignScope, esignIs
                     <p>
                       <span className="font-medium">{name}</span>: {p.anchorCount ?? 0} area(s) set for {(p.recipientRoles ?? []).join(", ") || "signers"}.
                       {p.safe === false && <span className="text-destructive"> ⚠ placement issue — review.</span>}
-                      {p.ambiguous && p.ambiguous.length > 0 && <span className="text-amber-600"> {p.ambiguous.filter(a => !roles[a.fieldName]).length} area(s) still need a party.</span>}
-                      {p.safe === true && (!p.ambiguous || p.ambiguous.every(a => roles[a.fieldName])) && <span className="text-emerald-600"> ✓ all areas confirmed.</span>}
+                      {p.ambiguous && p.ambiguous.length > 0 && <span className="text-amber-700"> {p.ambiguous.filter(a => !roles[a.fieldName]).length} area(s) still need a party.</span>}
+                      {p.safe === true && (!p.ambiguous || p.ambiguous.every(a => roles[a.fieldName])) && <span className="text-emerald-700"> ✓ all areas confirmed.</span>}
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
                       {(p.anchors ?? []).map(a => (
@@ -2509,7 +2509,7 @@ function PacketBanner({
           <p className="text-xs font-medium">
             Findings: {blockerCount > 0 && <span className="text-red-600">{blockerCount} blocker{blockerCount !== 1 ? "s" : ""}</span>}
             {blockerCount > 0 && (warningCount > 0 || infoCount > 0) && " · "}
-            {warningCount > 0 && <span className="text-amber-600">{warningCount} warning{warningCount !== 1 ? "s" : ""}</span>}
+            {warningCount > 0 && <span className="text-amber-700">{warningCount} warning{warningCount !== 1 ? "s" : ""}</span>}
             {warningCount > 0 && infoCount > 0 && " · "}
             {infoCount > 0 && <span className="text-blue-600">{infoCount} info</span>}
           </p>

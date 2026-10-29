@@ -751,7 +751,7 @@ function ToolCard({
             }}
           >
             {isFavorite ? (
-              <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+              <Star className="h-4 w-4 fill-amber-400 text-amber-600" />
             ) : (
               <StarOff className="h-4 w-4 text-muted-foreground" />
             )}

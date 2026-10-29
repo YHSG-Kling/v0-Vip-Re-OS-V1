@@ -390,7 +390,7 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                   <span className="text-muted-foreground">attendees</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-sm">
-                  <Flame className="h-4 w-4 text-amber-500" />
+                  <Flame className="h-4 w-4 text-amber-600" />
                   <span className="font-medium">{hotLeads.length}</span>
                   <span className="text-muted-foreground">hot leads</span>
                 </div>

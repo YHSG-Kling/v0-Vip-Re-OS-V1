@@ -200,7 +200,7 @@ export default async function AdminUsersPage() {
                 : `${seatCount} of ${seatLimit} seats used${seatOverridden ? " (custom limit)" : ""}`}
             </span>
             {incompleteCount > 0 && (
-              <span className="ml-2 text-amber-600 font-medium">
+              <span className="ml-2 text-amber-700 font-medium">
                 — {incompleteCount} incomplete account{incompleteCount !== 1 ? "s" : ""}
               </span>
             )}
@@ -280,9 +280,9 @@ export default async function AdminUsersPage() {
                       {u.user_type || "agent"}
                     </span>
                     {!missing ? (
-                      <CheckCircle2 className="w-4 h-4 text-green-500" />
+                      <CheckCircle2 className="w-4 h-4 text-green-600" />
                     ) : (
-                      <AlertTriangle className="w-4 h-4 text-amber-500" />
+                      <AlertTriangle className="w-4 h-4 text-amber-600" />
                     )}
                     {isAgentRecordMissing(u) && (
                       <CreateAgentRecordButton

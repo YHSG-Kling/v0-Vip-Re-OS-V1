@@ -100,7 +100,7 @@ export function BrandTopicsCard({ initialBrand, initialTopics }: { initialBrand:
               <Badge variant="outline" className="text-[10px]">{t.source}</Badge>
               <span className="flex-1 truncate">{t.topic}</span>
               <Badge className={'text-[10px] ' + (t.status === 'used' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700')}>{t.status}</Badge>
-              {t.status === 'new' && <button className="text-red-500" onClick={() => dismiss(t.id)}><X className="h-3.5 w-3.5" /></button>}
+              {t.status === 'new' && <button className="text-red-600" onClick={() => dismiss(t.id)}><X className="h-3.5 w-3.5" /></button>}
             </div>
           ))}
         </CardContent>

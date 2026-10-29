@@ -118,7 +118,7 @@ export function ExceptionPatternsPanel({
               {activeExceptions.length} active
             </Badge>
           ) : (
-            <Badge variant="outline" className="text-xs text-green-600">
+            <Badge variant="outline" className="text-xs text-green-700">
               All clear
             </Badge>
           )}
@@ -127,7 +127,7 @@ export function ExceptionPatternsPanel({
       <CardContent className="space-y-3">
         {activeExceptions.length === 0 ? (
           <div className="py-4 text-center text-sm text-muted-foreground">
-            <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-green-500" />
+            <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-green-600" />
             No exceptions detected
           </div>
         ) : (

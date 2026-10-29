@@ -108,7 +108,7 @@ const STATUS_COLORS = {
 
 const SEVERITY_ICON = {
   info: <CheckCircle2 className="h-4 w-4 text-blue-500 shrink-0" />,
-  warning: <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />,
+  warning: <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />,
   critical: <XCircle className="h-4 w-4 text-red-500 shrink-0" />,
 } as const
 
@@ -381,11 +381,11 @@ export function DomainCoherenceWorkspace({ initial, staffRole }: Props) {
                 <>
                   <div className="flex gap-4 mb-4">
                     <div className="flex items-center gap-2 text-sm">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <CheckCircle2 className="h-4 w-4 text-green-600" />
                       <span>{data.managers.data.verified} verified</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
-                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <AlertTriangle className="h-4 w-4 text-amber-600" />
                       <span>{data.managers.data.unverified} unverified</span>
                     </div>
                   </div>
@@ -499,7 +499,7 @@ export function DomainCoherenceWorkspace({ initial, staffRole }: Props) {
                       <TableRow key={r.domain}>
                         <TableCell className="text-sm font-medium">{r.domain}</TableCell>
                         <TableCell className="font-mono text-xs text-muted-foreground">
-                          {r.kernelOwner ?? <span className="text-red-500">— missing</span>}
+                          {r.kernelOwner ?? <span className="text-red-600">— missing</span>}
                         </TableCell>
                         <TableCell>
                           {r.hasCanonicalRoute ? (

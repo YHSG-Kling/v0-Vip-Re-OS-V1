@@ -413,13 +413,13 @@ Business Diagnosis Data:
                       <p className="text-2xl font-bold text-emerald-700">
                         {diagnosisData.sphereMining.high_potential || 0}
                       </p>
-                      <p className="text-xs text-emerald-600">High Potential</p>
+                      <p className="text-xs text-emerald-700">High Potential</p>
                     </div>
                     <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-center">
                       <p className="text-2xl font-bold text-amber-700">
                         {diagnosisData.sphereMining.cooling_relationships || 0}
                       </p>
-                      <p className="text-xs text-amber-600">Cooling</p>
+                      <p className="text-xs text-amber-700">Cooling</p>
                     </div>
                     <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-center">
                       <p className="text-2xl font-bold text-red-700">{diagnosisData.sphereMining.at_risk || 0}</p>
@@ -556,13 +556,13 @@ Business Diagnosis Data:
                       className={`p-4 rounded-lg text-center ${diagnosisData.workflowStats.paused > 0 ? "bg-amber-50 border border-amber-200" : "bg-muted"}`}
                     >
                       <p className="text-2xl font-bold text-amber-700">{diagnosisData.workflowStats.paused || 0}</p>
-                      <p className="text-xs text-amber-600">Paused</p>
+                      <p className="text-xs text-amber-700">Paused</p>
                     </div>
                     <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
                       <p className="text-2xl font-bold text-emerald-700">
                         {diagnosisData.workflowStats.success_rate || 0}%
                       </p>
-                      <p className="text-xs text-emerald-600">Success Rate</p>
+                      <p className="text-xs text-emerald-700">Success Rate</p>
                     </div>
                   </div>
 
@@ -611,7 +611,7 @@ Business Diagnosis Data:
                 <>
                   <div className="grid md:grid-cols-3 gap-4">
                     <div className="p-4 rounded-lg bg-green-50 border border-green-200 text-center">
-                      <p className="text-sm text-green-600">Pipeline Value</p>
+                      <p className="text-sm text-green-700">Pipeline Value</p>
                       <p className="text-2xl font-bold text-green-700">
                         ${(diagnosisData.valueDashboard.pipeline_value || 0).toLocaleString()}
                       </p>

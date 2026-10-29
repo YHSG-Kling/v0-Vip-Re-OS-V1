@@ -51,7 +51,7 @@ const BUCKETS: Array<{
     key: 'deadline',
     label: 'Deadlines',
     icon: Calendar,
-    tone: 'text-orange-600',
+    tone: 'text-orange-700',
     match: (i) => i.category === 'deadline',
   },
   {
@@ -65,7 +65,7 @@ const BUCKETS: Array<{
     key: 'milestone',
     label: 'Milestones',
     icon: Flag,
-    tone: 'text-green-600',
+    tone: 'text-green-700',
     match: (i) => i.category === 'milestone',
   },
 ]

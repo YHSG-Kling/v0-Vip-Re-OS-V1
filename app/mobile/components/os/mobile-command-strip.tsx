@@ -32,25 +32,25 @@ export function MobileCommandStrip({ agentId }: MobileCommandStripProps) {
       icon: Phone,
       label: "Call",
       href: "/mobile/assistant#quick-note",
-      color: "bg-green-500 hover:bg-green-600 text-white",
+      color: "bg-green-700 hover:bg-green-800 text-white",
     },
     {
       icon: MessageSquare,
       label: "Text",
       href: "/mobile/assistant#quick-note",
-      color: "bg-blue-500 hover:bg-blue-600 text-white",
+      color: "bg-blue-600 hover:bg-blue-700 text-white",
     },
     {
       icon: Mic,
       label: "Voice",
       href: "/mobile/voice",
-      color: "bg-purple-500 hover:bg-purple-600 text-white",
+      color: "bg-purple-600 hover:bg-purple-700 text-white",
     },
     {
       icon: Calendar,
       label: "Today",
       href: "/mobile/assistant",
-      color: "bg-orange-500 hover:bg-orange-600 text-white",
+      color: "bg-orange-700 hover:bg-orange-800 text-white",
     },
   ]
 

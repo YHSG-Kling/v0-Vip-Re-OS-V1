@@ -425,7 +425,7 @@ export function CampaignsTab({
             <div className="rounded-lg border bg-muted/50 px-4 py-3 text-sm space-y-1">
               <p className="font-medium">Mailing List Validation</p>
               <div className="flex gap-4 text-xs text-muted-foreground">
-                <span className="text-green-600 font-medium">{validationSummary.valid} valid</span>
+                <span className="text-green-700 font-medium">{validationSummary.valid} valid</span>
                 {validationSummary.invalid > 0 && (
                   <span className="text-destructive font-medium">{validationSummary.invalid} invalid</span>
                 )}

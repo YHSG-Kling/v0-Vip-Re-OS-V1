@@ -369,7 +369,7 @@ export function BuyerMatchPanel({
               {notifyLoading ? (
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
               ) : notifyResult ? (
-                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-500" />
+                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-600" />
               ) : (
                 <Bell className="h-4 w-4 mr-1" />
               )}
@@ -425,7 +425,7 @@ export function BuyerMatchPanel({
               {pushLoading ? (
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
               ) : pushResult ? (
-                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-500" />
+                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-600" />
               ) : (
                 <Send className="h-4 w-4 mr-1" />
               )}
@@ -731,7 +731,7 @@ export function BuyerMatchPanel({
                   <ul className="space-y-1">
                     {analysisSheetData.deep.strengths.map((s: string, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-sm">
-                        <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-500" />
+                        <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-600" />
                         <span className="[&_p]:inline"><ReactMarkdown>{s}</ReactMarkdown></span>
                       </li>
                     ))}
@@ -746,7 +746,7 @@ export function BuyerMatchPanel({
                   <ul className="space-y-1">
                     {analysisSheetData.deep.concerns.map((c: string, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-sm">
-                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
+                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600" />
                         <span className="[&_p]:inline"><ReactMarkdown>{c}</ReactMarkdown></span>
                       </li>
                     ))}

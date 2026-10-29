@@ -215,7 +215,7 @@ export default async function TasksPage() {
         <Bucket
           title="Due today"
           description="Due before the day is out"
-          icon={<Sun className="h-5 w-5 text-amber-500" />}
+          icon={<Sun className="h-5 w-5 text-amber-600" />}
           tasks={today}
           tone="today"
           showAssignee={showAssignee}
@@ -231,7 +231,7 @@ export default async function TasksPage() {
         <Bucket
           title="Done"
           description="Completed or cancelled"
-          icon={<CheckCircle2 className="h-5 w-5 text-green-500" />}
+          icon={<CheckCircle2 className="h-5 w-5 text-green-600" />}
           tasks={done}
           tone="done"
           showAssignee={showAssignee}
@@ -240,7 +240,7 @@ export default async function TasksPage() {
         {tasks.length === 0 && (
           <Card>
             <CardContent className="py-12 text-center">
-              <CheckCircle2 className="h-12 w-12 text-green-500 mx-auto mb-4" />
+              <CheckCircle2 className="h-12 w-12 text-green-600 mx-auto mb-4" />
               <h3 className="text-lg font-semibold">All Caught Up</h3>
               <p className="text-muted-foreground">No tasks on your list right now.</p>
             </CardContent>

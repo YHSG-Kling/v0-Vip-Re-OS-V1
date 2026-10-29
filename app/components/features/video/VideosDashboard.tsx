@@ -127,12 +127,12 @@ export function VideosDashboard() {
     switch (status) {
       case "completed":
       case "published":
-        return <CheckCircle className="h-4 w-4 text-green-500" />
+        return <CheckCircle className="h-4 w-4 text-green-600" />
       case "failed":
         return <AlertCircle className="h-4 w-4 text-red-500" />
       case "scripting":
       case "generating":
-        return <Loader2 className="h-4 w-4 text-amber-500 animate-spin" />
+        return <Loader2 className="h-4 w-4 text-amber-600 animate-spin" />
       case "draft":
       case "script_ready":
       case "queued":
@@ -221,7 +221,7 @@ export function VideosDashboard() {
             {weeklyViews > 0 ? (
               <>
                 <span className="text-lg font-semibold">{weeklyViews}</span>
-                <TrendingUp className="h-4 w-4 text-green-500" />
+                <TrendingUp className="h-4 w-4 text-green-600" />
               </>
             ) : (
               <span className="text-xs text-muted-foreground">No performance data yet</span>
@@ -242,7 +242,7 @@ export function VideosDashboard() {
                 >
                   <div className="h-10 w-10 rounded bg-muted flex items-center justify-center">
                     {video.status === "generating" ? (
-                      <Loader2 className="h-5 w-5 animate-spin text-amber-500" />
+                      <Loader2 className="h-5 w-5 animate-spin text-amber-600" />
                     ) : (
                       <Video className="h-5 w-5 text-muted-foreground" />
                     )}

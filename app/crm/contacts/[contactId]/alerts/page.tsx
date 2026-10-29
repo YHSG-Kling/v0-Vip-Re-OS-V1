@@ -620,7 +620,7 @@ export default function BuyerAlertsPage() {
                               </Button>
                             </div>
                             {resultMsg[r.id] && (
-                              <p className={`text-xs ${resultMsg[r.id].ok ? "text-emerald-600" : "text-destructive"}`}>
+                              <p className={`text-xs ${resultMsg[r.id].ok ? "text-emerald-700" : "text-destructive"}`}>
                                 {resultMsg[r.id].text}
                               </p>
                             )}

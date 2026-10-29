@@ -29,7 +29,7 @@ function Stars({ value }: { value: number | null }) {
       {[1, 2, 3, 4, 5].map((i) => (
         <Star
           key={i}
-          className={`h-3.5 w-3.5 ${i <= Math.round(value) ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30"}`}
+          className={`h-3.5 w-3.5 ${i <= Math.round(value) ? "fill-amber-400 text-amber-600" : "text-muted-foreground/30"}`}
         />
       ))}
       <span className="ml-1 text-xs text-muted-foreground">{value.toFixed(1)}</span>

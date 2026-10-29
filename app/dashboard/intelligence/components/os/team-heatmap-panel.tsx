@@ -108,7 +108,7 @@ export function TeamHeatmapPanel({
             {needsAttention.slice(0, 2).map((member) => (
               <div key={member.id} className="flex items-center justify-between text-sm">
                 <span>{member.name}</span>
-                <span className="text-amber-600">{member.activityScore}% activity</span>
+                <span className="text-amber-700">{member.activityScore}% activity</span>
               </div>
             ))}
           </div>

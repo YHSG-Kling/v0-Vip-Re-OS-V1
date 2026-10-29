@@ -179,9 +179,9 @@ export function QualificationRadar(props: RadarMetrics) {
   const metrics = [
     { label: "New Under AI", value: props.newLeadsUnderAI, icon: Sparkles, color: "text-indigo-600", bg: "bg-indigo-50" },
     { label: "Actively Nurturing", value: props.activelyNurturing, icon: Brain, color: "text-blue-600", bg: "bg-blue-50" },
-    { label: "Positive Responders", value: props.positiveResponders, icon: MessageSquare, color: "text-green-600", bg: "bg-green-50" },
-    { label: "Handoff Ready", value: props.qualifiedHandoffReady, icon: UserCheck, color: "text-emerald-600", bg: "bg-emerald-50" },
-    { label: "Stalled / No Response", value: props.stalled, icon: Pause, color: "text-amber-600", bg: "bg-amber-50" },
+    { label: "Positive Responders", value: props.positiveResponders, icon: MessageSquare, color: "text-green-700", bg: "bg-green-50" },
+    { label: "Handoff Ready", value: props.qualifiedHandoffReady, icon: UserCheck, color: "text-emerald-700", bg: "bg-emerald-50" },
+    { label: "Stalled / No Response", value: props.stalled, icon: Pause, color: "text-amber-700", bg: "bg-amber-50" },
     { label: "Hard Stops", value: props.blockedByHardStop, icon: ShieldAlert, color: "text-red-600", bg: "bg-red-50" },
     { label: "Waiting Retry", value: props.waitingRetry, icon: Clock, color: "text-slate-500", bg: "bg-slate-50" },
   ]
@@ -299,7 +299,7 @@ export function ConversationIntelligencePanel({
             <div className="grid sm:grid-cols-2 gap-3">
               {conv.topObjections.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-red-500 mb-1">Objections</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-red-600 mb-1">Objections</p>
                   <ul className="space-y-1">
                     {conv.topObjections.map((o, i) => (
                       <li key={i} className="text-xs bg-red-50 text-red-800 rounded px-2 py-0.5">{o}</li>
@@ -309,7 +309,7 @@ export function ConversationIntelligencePanel({
               )}
               {conv.motivationSignals.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-green-500 mb-1">Motivations</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-green-700 mb-1">Motivations</p>
                   <ul className="space-y-1">
                     {conv.motivationSignals.map((s, i) => (
                       <li key={i} className="text-xs bg-green-50 text-green-800 rounded px-2 py-0.5">{s}</li>
@@ -319,7 +319,7 @@ export function ConversationIntelligencePanel({
               )}
               {conv.urgencyClues.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-500 mb-1">Urgency Signals</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 mb-1">Urgency Signals</p>
                   <ul className="space-y-1">
                     {conv.urgencyClues.map((u, i) => (
                       <li key={i} className="text-xs bg-amber-50 text-amber-800 rounded px-2 py-0.5">{u}</li>
@@ -329,7 +329,7 @@ export function ConversationIntelligencePanel({
               )}
               {conv.financingClues.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-500 mb-1">Financing Clues</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 mb-1">Financing Clues</p>
                   <ul className="space-y-1">
                     {conv.financingClues.map((f, i) => (
                       <li key={i} className="text-xs bg-blue-50 text-blue-800 rounded px-2 py-0.5">{f}</li>
@@ -549,7 +549,7 @@ export function GhostRecoveryPanel({
         return (
           <Card key={ghost.id} className="overflow-hidden">
             <CardContent className="p-3 flex items-center gap-3 flex-wrap">
-              <Ghost className="w-5 h-5 text-slate-400 shrink-0" />
+              <Ghost className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-sm truncate">{name}</p>
                 {ghost.phone && <p className="text-xs text-muted-foreground">{ghost.phone}</p>}
@@ -687,7 +687,7 @@ export function HardStopsPanel({ hardStops }: { hardStops: HardStop[] }) {
                   Since {relativeTime(stop.blockedSince)}
                 </span>
                 {stop.canRetryAt && (
-                  <span className="text-[10px] text-amber-600">
+                  <span className="text-[10px] text-amber-700">
                     Retry: {new Date(stop.canRetryAt).toLocaleDateString()}
                   </span>
                 )}
@@ -751,7 +751,7 @@ export function RetrainingSignalsPanel({ signals }: { signals: RetrainingSignal[
   const typeLabel: Record<string, { label: string; color: string; icon: typeof Brain }> = {
     failed_objection:  { label: "Failed Objections", color: "text-red-600",    icon: AlertTriangle },
     coaching_insight:  { label: "Coaching Insights", color: "text-blue-600",   icon: Brain },
-    tone_mismatch:     { label: "Tone Mismatches",   color: "text-amber-600",  icon: Sparkles },
+    tone_mismatch:     { label: "Tone Mismatches",   color: "text-amber-700",  icon: Sparkles },
     timing_error:      { label: "Timing Errors",     color: "text-purple-600", icon: Clock },
   }
 
@@ -789,7 +789,7 @@ export function RetrainingSignalsPanel({ signals }: { signals: RetrainingSignal[
                       <p className="text-xs text-muted-foreground leading-relaxed">{signal.description}</p>
                       {signal.suggestedImprovement && (
                         <div className="mt-2 rounded bg-green-50 border border-green-200 px-2 py-1.5">
-                          <p className="text-[10px] font-semibold text-green-600 uppercase tracking-wide mb-0.5">
+                          <p className="text-[10px] font-semibold text-green-700 uppercase tracking-wide mb-0.5">
                             <CheckCircle2 className="w-3 h-3 inline mr-1" />
                             Suggested Improvement
                           </p>

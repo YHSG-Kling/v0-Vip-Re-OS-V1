@@ -526,7 +526,7 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
 
             {/* Duration validation feedback */}
             {duration > 0 && (
-              <p className={`text-xs flex items-center gap-1.5 ${durationValid ? "text-green-600" : "text-destructive"}`}>
+              <p className={`text-xs flex items-center gap-1.5 ${durationValid ? "text-green-700" : "text-destructive"}`}>
                 {durationValid
                   ? <><CheckCircle className="h-3.5 w-3.5" />{duration}s — within {selectedPlatform.label} limit</>
                   : <><XCircle className="h-3.5 w-3.5" />{duration}s exceeds {selectedPlatform.label} max of {selectedPlatform.maxSeconds}s</>

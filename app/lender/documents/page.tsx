@@ -59,7 +59,7 @@ export default async function LenderDocumentsPage() {
         <Link href="/lender/dashboard"><Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4" /></Button></Link>
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Folder className="w-6 h-6 text-yellow-600" />
+            <Folder className="w-6 h-6 text-yellow-700" />
             Loan Documents
           </h1>
           <p className="text-gray-500 text-sm">{documents.length} documents</p>
@@ -79,7 +79,7 @@ export default async function LenderDocumentsPage() {
             <Card key={doc.id}>
               <CardContent className="p-3 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <FileText className="w-4 h-4 text-gray-400" />
+                  <FileText className="w-4 h-4 text-gray-500" />
                   <div>
                     <p className="text-sm font-medium">{doc.doc_label || doc.doc_type || 'Untitled Document'}</p>
                     <p className="text-xs text-gray-500">
@@ -97,7 +97,7 @@ export default async function LenderDocumentsPage() {
                   // No storage_url on the row means there is no file to open. A
                   // disabled "View" button promised an action that does not exist;
                   // state the observed fact instead.
-                  <span className="text-xs text-gray-400">No file attached</span>
+                  <span className="text-xs text-gray-500">No file attached</span>
                 )}
               </CardContent>
             </Card>

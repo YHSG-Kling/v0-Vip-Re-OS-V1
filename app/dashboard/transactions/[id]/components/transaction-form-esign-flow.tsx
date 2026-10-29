@@ -604,7 +604,7 @@ export function TransactionFormEsignFlow({
 
   const renderSuccessStep = () => (
     <div className="space-y-4 py-4 text-center">
-      <CheckCircle2 className="h-14 w-14 text-green-500 mx-auto" />
+      <CheckCircle2 className="h-14 w-14 text-green-600 mx-auto" />
       <div>
         <p className="text-lg font-semibold">Sent for Signature</p>
         <p className="text-sm text-muted-foreground mt-1">

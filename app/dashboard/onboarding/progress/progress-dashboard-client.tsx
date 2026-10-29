@@ -321,7 +321,7 @@ export function ProgressDashboardClient({
   }
 
   const getStatusIcon = (completed: boolean, inProgress?: boolean) => {
-    if (completed) return <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+    if (completed) return <CheckCircle2 className="h-5 w-5 text-emerald-600" />
     if (inProgress) return <Circle className="h-5 w-5 text-blue-500 fill-blue-500/20" />
     return <Circle className="h-5 w-5 text-muted-foreground" />
   }

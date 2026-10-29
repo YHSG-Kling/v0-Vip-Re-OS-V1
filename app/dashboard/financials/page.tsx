@@ -147,7 +147,7 @@ export default async function FinancialsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              <AlertTriangle className="h-5 w-5 text-amber-600" />
               We couldn&rsquo;t verify your financial identity
             </CardTitle>
             <CardDescription>
@@ -209,7 +209,7 @@ export default async function FinancialsPage() {
         <Card className="border-amber-500/40">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
               Commission detail unavailable
             </CardTitle>
             <CardDescription>
@@ -226,7 +226,7 @@ export default async function FinancialsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">YTD Earnings</CardTitle>
-            <TrendingUp className="h-4 w-4 text-emerald-500" />
+            <TrendingUp className="h-4 w-4 text-emerald-600" />
           </CardHeader>
           <CardContent>
             {summary ? (
@@ -256,7 +256,7 @@ export default async function FinancialsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Pending Payouts</CardTitle>
-            <Clock className="h-4 w-4 text-amber-500" />
+            <Clock className="h-4 w-4 text-amber-600" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-amber-600">
@@ -341,7 +341,7 @@ export default async function FinancialsPage() {
                   </div>
                   <div className="flex items-center gap-3">
                     {tx.commission_splits?.[0] && (
-                      <span className="font-semibold text-emerald-600">
+                      <span className="font-semibold text-emerald-700">
                         {formatCurrency(tx.commission_splits[0].agent_amount || 0)}
                       </span>
                     )}
@@ -390,7 +390,7 @@ export default async function FinancialsPage() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-4">
                 <div className="p-3 rounded-lg bg-emerald-500/10">
-                  <CreditCard className="w-6 h-6 text-emerald-500" />
+                  <CreditCard className="w-6 h-6 text-emerald-600" />
                 </div>
                 <div>
                   <h3 className="font-semibold">Payout Settings</h3>
@@ -434,7 +434,7 @@ export default async function FinancialsPage() {
                 <CardContent className="pt-6">
                   <div className="flex items-center gap-4">
                     <div className="p-3 rounded-lg bg-amber-500/10">
-                      <TrendingUp className="w-6 h-6 text-amber-500" />
+                      <TrendingUp className="w-6 h-6 text-amber-600" />
                     </div>
                     <div>
                       <h3 className="font-semibold">Team Financials</h3>

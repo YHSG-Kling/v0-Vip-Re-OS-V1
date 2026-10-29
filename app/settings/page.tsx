@@ -29,14 +29,14 @@ type Tile = {
 // Same destinations as before — richer, scannable presentation.
 const TILES: Tile[] = [
   { href: '/settings/general', title: 'General', description: 'Brokerage name, time zone, and date format', icon: SettingsIcon, accent: 'text-slate-600 bg-slate-100' },
-  { href: '/settings/branding', title: 'Branding', description: 'Colors, fonts, logos, and your public website', icon: Palette, accent: 'text-fuchsia-600 bg-fuchsia-100' },
-  { href: '/settings/commission', title: 'Commissions', description: 'Split and revenue-share structures', icon: DollarSign, accent: 'text-emerald-600 bg-emerald-100' },
-  { href: '/settings/email-templates', title: 'Email Templates', description: 'Reusable content for outgoing email', icon: Mail, accent: 'text-blue-600 bg-blue-100' },
-  { href: '/settings/notifications', title: 'Notifications', description: 'Which events notify whom, and on what channel', icon: Bell, accent: 'text-amber-600 bg-amber-100' },
-  { href: '/settings/integrations', title: 'Integrations', description: 'Connect your CRM, IDX, social, and more', icon: Plug, accent: 'text-cyan-600 bg-cyan-100' },
+  { href: '/settings/branding', title: 'Branding', description: 'Colors, fonts, logos, and your public website', icon: Palette, accent: 'text-fuchsia-700 bg-fuchsia-100' },
+  { href: '/settings/commission', title: 'Commissions', description: 'Split and revenue-share structures', icon: DollarSign, accent: 'text-emerald-700 bg-emerald-100' },
+  { href: '/settings/email-templates', title: 'Email Templates', description: 'Reusable content for outgoing email', icon: Mail, accent: 'text-blue-700 bg-blue-100' },
+  { href: '/settings/notifications', title: 'Notifications', description: 'Which events notify whom, and on what channel', icon: Bell, accent: 'text-amber-700 bg-amber-100' },
+  { href: '/settings/integrations', title: 'Integrations', description: 'Connect your CRM, IDX, social, and more', icon: Plug, accent: 'text-cyan-700 bg-cyan-100' },
   { href: '/settings/campaign-bundles', title: 'Campaign Bundles', description: 'Compose presets into coordinated multi-channel dispatches', icon: Layers, accent: 'text-indigo-600 bg-indigo-100' },
   { href: '/settings/channel-presets', title: 'Channel Presets', description: 'Locked creative per channel — email, SMS, social, ads, portal', icon: SlidersHorizontal, accent: 'text-violet-600 bg-violet-100' },
-  { href: '/dashboard/settings/stock-library', title: 'Stock Library', description: 'Intros, outros, B-roll, and music for your videos', icon: Film, accent: 'text-rose-600 bg-rose-100' },
+  { href: '/dashboard/settings/stock-library', title: 'Stock Library', description: 'Intros, outros, B-roll, and music for your videos', icon: Film, accent: 'text-rose-700 bg-rose-100' },
   { href: '/dashboard/settings/twin-studio', title: 'AI Avatar & Voice', description: 'Your on-camera avatar and cloned voice in Twin Studio', icon: Sparkles, accent: 'text-purple-600 bg-purple-100' },
   // ── ORPHAN-ROUTE SWEEP. Both pages are built and both were unreachable. ────
   // This hub is the ONLY way into /settings/*: the sidebar carries a single
@@ -49,8 +49,8 @@ const TILES: Tile[] = [
   // revalidatePath in app/actions/direct-mail-size-prefs.ts. A cache
   // invalidation is evidence a page is INTENDED, never evidence anyone can get
   // to it — which is exactly the false pass the route sweep stopped counting.
-  { href: '/settings/direct-mail', title: 'Direct Mail', description: 'Postcard sizes, presets, and creative variants', icon: Send, accent: 'text-orange-600 bg-orange-100' },
-  { href: '/settings/services', title: 'Services & AI', description: 'External service credentials and AI agent templates', icon: Cpu, accent: 'text-teal-600 bg-teal-100' },
+  { href: '/settings/direct-mail', title: 'Direct Mail', description: 'Postcard sizes, presets, and creative variants', icon: Send, accent: 'text-orange-700 bg-orange-100' },
+  { href: '/settings/services', title: 'Services & AI', description: 'External service credentials and AI agent templates', icon: Cpu, accent: 'text-teal-700 bg-teal-100' },
 ];
 
 export default function SettingsDashboard() {
@@ -77,7 +77,7 @@ export default function SettingsDashboard() {
               <h2 className="font-semibold text-gray-900">{title}</h2>
               <p className="text-sm text-gray-600 mt-0.5 leading-snug">{description}</p>
             </div>
-            <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-300 transition-colors group-hover:text-blue-400" />
+            <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 transition-colors group-hover:text-blue-400" />
           </Link>
         ))}
       </div>

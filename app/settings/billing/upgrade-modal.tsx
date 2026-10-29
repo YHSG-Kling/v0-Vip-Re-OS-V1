@@ -223,14 +223,14 @@ export function UpgradeModal({
                     <ul className="space-y-2 text-sm">
                       {(((tier as { allowances?: PlanAllowance[] }).allowances) ?? []).map((a) => (
                         <li key={a.metric} className="flex items-center gap-2">
-                          <Check className="h-4 w-4 text-green-500" />
+                          <Check className="h-4 w-4 text-green-600" />
                           {allowanceLine(a)}
                         </li>
                       ))}
                     </ul>
 
                     {isDowngrade && (
-                      <div className="flex items-center gap-1 text-xs text-amber-600 mt-2">
+                      <div className="flex items-center gap-1 text-xs text-amber-700 mt-2">
                         <AlertTriangle className="h-3 w-3" />
                         Downgrade not available here
                       </div>

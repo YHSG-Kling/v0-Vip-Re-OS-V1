@@ -161,7 +161,7 @@ export function VideoGenerationButtons({
           disabled={isDisabled}
           className={`${buttonSize} ${
             complianceStatus === "fail"
-              ? "bg-gray-300 hover:bg-gray-300 text-gray-500 border-2 border-red-500 cursor-not-allowed"
+              ? "bg-gray-300 hover:bg-gray-300 text-gray-600 border-2 border-red-500 cursor-not-allowed"
               : "bg-blue-600 hover:bg-blue-700 text-white border-2 border-blue-700"
           }`}
         >
@@ -183,7 +183,7 @@ export function VideoGenerationButtons({
           disabled={isDisabled}
           className={`${buttonSize} ${
             complianceStatus === "fail"
-              ? "bg-gray-300 hover:bg-gray-300 text-gray-500 border-2 border-red-500 cursor-not-allowed"
+              ? "bg-gray-300 hover:bg-gray-300 text-gray-600 border-2 border-red-500 cursor-not-allowed"
               : "bg-purple-600 hover:bg-purple-700 text-white border-2 border-purple-700"
           }`}
         >

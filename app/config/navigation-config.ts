@@ -130,6 +130,13 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // the group is deleted; this href follows it.
       { id: 'transaction-pipeline', label: 'Transaction Pipeline', href: '/dashboard/transactions/pipeline', icon: 'Columns' },
       { id: 'closing-concierge', label: 'Closing Concierge', href: '/dashboard/transactions/closing-concierge', icon: 'ShieldCheck' },
+      // Wave 146 (lane 146H, owner ruling 18 — "vendor marketplace" at every level): the vendor
+      // directory serves agents explicitly (app/dashboard/vendors/page.tsx scopes an agent to the
+      // vendors they or their team invited, for charging), yet no agent nav entry reached it —
+      // scripts/ui-capability-surface-audit.ts measured `agents × vendor marketplace` as the one
+      // expected-coverage gap on the agent seat. Same href and id as the broker's entry, so a
+      // multi-role user still sees it once (getNavigationForRole dedupes by id).
+      { id: 'vendors', label: 'Vendor Directory', href: '/dashboard/vendors', icon: 'Users' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
       // Orphan-route sweep: AI contract review existed with zero inbound links.
       { id: 'contract-review', label: 'Contract Review', href: '/dashboard/documents/contract-review', icon: 'FileSearch' },
@@ -858,26 +865,24 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   },
 
   contact: {
-    // Contact users should be redirected to /portal/[contactId] - these are fallback links
+    // Contact users live in /portal/[contactId] (the app shell bypasses /portal and the portal draws
+    // its own tabs). These are the FALLBACK links a contact sees on a shared page (e.g. /notifications).
+    // Wave 146 (lane 146H, ruling 16 — "no dead controls or misleading statuses"): four entries labelled
+    // Overview / My Transaction / Documents / Messages all pointed at '/portal', which resolves the
+    // contact and lands on the portal OVERVIEW — three of the four labels promised a page they never
+    // opened. ONE honest entry until /portal forwards a tab (Outside-lane → 146C, app/portal/page.tsx).
     sidebarItems: [
-      { id: 'overview', label: 'Overview', href: '/portal', icon: 'Home' },
-      { id: 'transaction', label: 'My Transaction', href: '/portal', icon: 'FileText' },
-      { id: 'documents', label: 'Documents', href: '/portal', icon: 'Folder' },
-      { id: 'messages', label: 'Messages', href: '/portal', icon: 'Mail' },
+      { id: 'my-portal', label: 'My Portal', href: '/portal', icon: 'Home' },
     ],
     topNavItems: [
       { id: 'notifications', label: 'Notifications', icon: 'Bell' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
-      { id: 'overview', label: 'Overview', href: '/portal', icon: 'Home' },
-      { id: 'transaction', label: 'Transaction', href: '/portal', icon: 'FileText' },
-      { id: 'documents', label: 'Documents', href: '/portal', icon: 'Folder' },
-      { id: 'messages', label: 'Messages', href: '/portal', icon: 'Mail' },
+      { id: 'my-portal', label: 'My Portal', href: '/portal', icon: 'Home' },
     ],
     commandPaletteItems: [
-      { id: 'contact-agent', label: 'Contact Agent', href: '/portal' },
-      { id: 'view-docs', label: 'View Documents', href: '/portal' },
+      { id: 'my-portal', label: 'Open my portal', href: '/portal' },
     ],
   },
 

@@ -245,8 +245,8 @@ export function CoachingSessionsClient({
                     bookMessage.kind === "error"
                       ? "text-sm text-destructive"
                       : bookMessage.kind === "warn"
-                        ? "text-sm text-amber-600"
-                        : "text-sm text-emerald-600"
+                        ? "text-sm text-amber-700"
+                        : "text-sm text-emerald-700"
                   }
                 >
                   {bookMessage.text}

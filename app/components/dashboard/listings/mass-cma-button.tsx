@@ -65,7 +65,7 @@ export function MassCMAButton() {
                 </div>
                 <div className="text-center p-3 rounded-lg bg-green-50 border border-green-200">
                   <p className="text-2xl font-bold text-green-700">{result.significantOpportunities}</p>
-                  <p className="text-xs text-green-600 mt-1">Opportunities</p>
+                  <p className="text-xs text-green-700 mt-1">Opportunities</p>
                 </div>
               </div>
               {result.message && (

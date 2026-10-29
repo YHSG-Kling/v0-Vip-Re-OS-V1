@@ -141,7 +141,7 @@ export function AssignmentRulesPanel({ brokerageId }: AssignmentRulesPanelProps)
               >
                 <div className="flex items-center gap-2">
                   {rule.is_active ? (
-                    <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                    <CheckCircle2 className="h-3 w-3 text-emerald-600" />
                   ) : (
                     <AlertCircle className="h-3 w-3 text-muted-foreground" />
                   )}

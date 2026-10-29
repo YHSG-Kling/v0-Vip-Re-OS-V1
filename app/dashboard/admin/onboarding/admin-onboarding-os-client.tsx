@@ -167,7 +167,7 @@ export function AdminOnboardingOsClient({
           </Card>
           <Card className="p-4">
             <div className="flex items-center gap-3">
-              <TrendingUp className="h-5 w-5 text-green-500" />
+              <TrendingUp className="h-5 w-5 text-green-600" />
               <div>
                 <p className="text-sm text-muted-foreground">Completed</p>
                 <p className="text-2xl font-bold">{adoptionMetrics.completedAgents}</p>
@@ -287,8 +287,8 @@ export function AdminOnboardingOsClient({
                               : days <= 30
                               ? 'text-red-600 font-semibold'
                               : days <= 60
-                              ? 'text-amber-600 font-semibold'
-                              : 'text-emerald-600'
+                              ? 'text-amber-700 font-semibold'
+                              : 'text-emerald-700'
                           const badge =
                             days === null
                               ? null

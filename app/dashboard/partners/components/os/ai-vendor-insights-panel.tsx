@@ -118,9 +118,9 @@ export function AiVendorInsightsPanel({ brokerageId }: AiVendorInsightsPanelProp
   const getInsightIcon = (type: string) => {
     switch (type) {
       case "warning":
-        return <AlertTriangle className="h-4 w-4 text-yellow-500" />
+        return <AlertTriangle className="h-4 w-4 text-yellow-700" />
       case "opportunity":
-        return <TrendingUp className="h-4 w-4 text-green-500" />
+        return <TrendingUp className="h-4 w-4 text-green-600" />
       default:
         return <Lightbulb className="h-4 w-4 text-blue-500" />
     }

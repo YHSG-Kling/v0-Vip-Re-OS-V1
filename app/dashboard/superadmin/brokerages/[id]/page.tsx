@@ -236,7 +236,7 @@ export default async function SuperadminBrokerageDetailPage(
                       {/* An entry with NO stated reason is shown as exactly that
                           — never blanked into looking routine. */}
                       <td className="px-4 py-2.5 text-xs max-w-xs">
-                        {s.reason ? s.reason : <span className="text-amber-600">no reason recorded</span>}
+                        {s.reason ? s.reason : <span className="text-amber-700">no reason recorded</span>}
                       </td>
                       <td className="px-4 py-2.5 text-[10px] text-muted-foreground font-mono max-w-[14rem] truncate" title={s.user_agent ?? ""}>
                         {s.ip_address ?? "ip not recorded"}

@@ -295,7 +295,7 @@ function LifecycleMailRow({
                   onClick={() => patch({ eventType: event.eventType, mailPostcardSize: s })}
                   className={`px-3 py-1.5 text-xs font-medium rounded border ${
                     effectiveSize === s
-                      ? "bg-amber-600 text-white border-amber-600"
+                      ? "bg-amber-700 text-white border-amber-600"
                       : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
                   } disabled:opacity-50`}
                 >{s}</button>

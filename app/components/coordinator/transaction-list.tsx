@@ -184,7 +184,7 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                                     Past Due
                                   </Badge>
                                 ) : daysToClose <= 7 ? (
-                                  <Badge variant="outline" className="text-amber-600 border-amber-300 text-xs">
+                                  <Badge variant="outline" className="text-amber-700 border-amber-300 text-xs">
                                     {daysToClose}d to close
                                   </Badge>
                                 ) : (
@@ -205,8 +205,8 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                           {/* Flags/Issues */}
                           {flags.length > 0 && (
                             <div className="flex items-center gap-2 mt-1">
-                              <AlertTriangle className="h-3 w-3 text-amber-500" />
-                              <span className="text-xs text-amber-600">{flags.slice(0, 2).join(" | ")}</span>
+                              <AlertTriangle className="h-3 w-3 text-amber-600" />
+                              <span className="text-xs text-amber-700">{flags.slice(0, 2).join(" | ")}</span>
                               {flags.length > 2 && (
                                 <Badge variant="outline" className="text-xs">
                                   +{flags.length - 2} more

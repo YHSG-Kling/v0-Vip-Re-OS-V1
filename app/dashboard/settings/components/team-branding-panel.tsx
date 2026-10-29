@@ -778,7 +778,7 @@ export function TeamBrandingPanel() {
               applied at all — commissions calculate as if there were no team agreement.
             </p>
             {futureTerms && (
-              <p className="text-xs text-amber-600 dark:text-amber-500 flex items-start gap-1.5">
+              <p className="text-xs text-amber-700 dark:text-amber-500 flex items-start gap-1.5">
                 <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 This date is in the future, so the team takes nothing until {split.effectiveDate}.
               </p>

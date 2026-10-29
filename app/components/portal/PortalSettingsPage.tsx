@@ -307,7 +307,7 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
                 />
                 <p className="text-xs text-muted-foreground">JPG, PNG or GIF. Max size 2MB.</p>
                 {photoMsg && (
-                  <p className={`text-xs ${photoMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                  <p className={`text-xs ${photoMsg.ok ? "text-emerald-700" : "text-destructive"}`}>
                     {photoMsg.text}
                   </p>
                 )}

@@ -13,7 +13,7 @@ const SEVERITY_STYLE: Record<string, string> = {
 }
 const SEVERITY_BADGE: Record<string, string> = {
   critical: "bg-red-600 text-white",
-  high: "bg-amber-600 text-white",
+  high: "bg-amber-700 text-white",
   medium: "bg-slate-600 text-white",
 }
 

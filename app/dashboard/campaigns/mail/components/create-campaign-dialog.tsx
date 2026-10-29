@@ -757,7 +757,7 @@ export function CreateCampaignDialog({
                       <p className="text-xs text-muted-foreground">Est. Leads</p>
                     </div>
                     <div>
-                      <p className="text-lg font-bold text-green-600">
+                      <p className="text-lg font-bold text-green-700">
                         {roiPrediction.roi > 0 ? "+" : ""}{roiPrediction.roi.toFixed(0)}%
                       </p>
                       <p className="text-xs text-muted-foreground">AI ROI</p>
@@ -787,7 +787,7 @@ export function CreateCampaignDialog({
                       <p className="text-xs text-muted-foreground">Est. Responses</p>
                     </div>
                     <div>
-                      <p className={`text-base font-bold ${staticROI >= 0 ? "text-green-600" : "text-destructive"}`}>
+                      <p className={`text-base font-bold ${staticROI >= 0 ? "text-green-700" : "text-destructive"}`}>
                         {staticROI > 0 ? "+" : ""}{staticROI.toFixed(0)}%
                       </p>
                       <p className="text-xs text-muted-foreground">Est. ROI</p>

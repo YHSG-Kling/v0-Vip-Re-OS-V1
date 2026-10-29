@@ -396,7 +396,7 @@ export function VoiceAssistantOverlay() {
                 className="w-full flex items-center justify-between text-xs font-medium text-gray-600 hover:text-purple-600"
               >
                 <span>Recent</span>
-                <span className="text-gray-400">{recentOpen ? "Hide" : "Show"}</span>
+                <span className="text-gray-500">{recentOpen ? "Hide" : "Show"}</span>
               </button>
               {recentOpen && (
                 <ul className="mt-2 space-y-1.5">

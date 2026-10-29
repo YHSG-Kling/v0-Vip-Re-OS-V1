@@ -41,7 +41,7 @@ export function LicenseExpiryPanel({ agents }: Props) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm flex items-center gap-2">
-            <ShieldAlert className="h-4 w-4 text-amber-500" />
+            <ShieldAlert className="h-4 w-4 text-amber-600" />
             License Expiry Tracking
           </CardTitle>
           {/* SURVIVOR: the full brokerage licence board is the "License & CE" tab of
@@ -60,13 +60,13 @@ export function LicenseExpiryPanel({ agents }: Props) {
             <span className="text-red-600 font-semibold">{expiredCount} expired</span>
           )}
           {criticalCount > 0 && (
-            <span className="text-orange-600 font-semibold">{criticalCount} within 30 days</span>
+            <span className="text-orange-700 font-semibold">{criticalCount} within 30 days</span>
           )}
           {warningCount > 0 && (
-            <span className="text-amber-600">{warningCount} within 90 days</span>
+            <span className="text-amber-700">{warningCount} within 90 days</span>
           )}
           {expiredCount === 0 && criticalCount === 0 && warningCount === 0 && (
-            <span className="text-emerald-600 flex items-center gap-1">
+            <span className="text-emerald-700 flex items-center gap-1">
               <ShieldCheck className="h-3.5 w-3.5" /> All licenses on track
             </span>
           )}

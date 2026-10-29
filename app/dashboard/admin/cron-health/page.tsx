@@ -27,10 +27,10 @@ function formatRelative(iso: string | null) {
 }
 
 function StatusIcon({ status, isStale }: { status: string | null; isStale: boolean }) {
-  if (isStale && status !== "success") return <AlertTriangle className="h-4 w-4 text-amber-500" />
+  if (isStale && status !== "success") return <AlertTriangle className="h-4 w-4 text-amber-600" />
   if (status === "failure") return <XCircle className="h-4 w-4 text-red-500" />
-  if (status === "success") return <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-  return <Clock className="h-4 w-4 text-slate-400" />
+  if (status === "success") return <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+  return <Clock className="h-4 w-4 text-slate-500" />
 }
 
 function statusBadge(status: string | null, isStale: boolean) {
@@ -100,7 +100,7 @@ export default async function CronHealthPage() {
         <Card>
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
               <span className="text-xs text-muted-foreground">Healthy</span>
             </div>
             <p className="text-2xl font-bold mt-1">{okCount}</p>
@@ -118,7 +118,7 @@ export default async function CronHealthPage() {
         <Card>
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
               <span className="text-xs text-muted-foreground">Stale</span>
             </div>
             <p className="text-2xl font-bold mt-1 text-amber-600">{staleCount}</p>
@@ -127,7 +127,7 @@ export default async function CronHealthPage() {
         <Card>
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-slate-400" />
+              <Clock className="h-4 w-4 text-slate-500" />
               <span className="text-xs text-muted-foreground">Never Run</span>
             </div>
             <p className="text-2xl font-bold mt-1 text-slate-500">{neverRun}</p>

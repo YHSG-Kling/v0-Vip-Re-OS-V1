@@ -150,7 +150,7 @@ export function CompletedDocumentsPanel({ listingId, listingStatus }: CompletedD
               <span className="text-xs text-muted-foreground">{presentCount} of {requiredTotal} on file</span>
             </div>
             {missing.length === 0 ? (
-              <p className="text-sm text-emerald-600 flex items-center gap-1.5">
+              <p className="text-sm text-emerald-700 flex items-center gap-1.5">
                 <CheckCircle2 className="h-4 w-4" />
                 Every required document is on file.
               </p>

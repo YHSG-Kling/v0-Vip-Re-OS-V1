@@ -142,9 +142,9 @@ export function AIQualityDashboardClient({
   }
 
   const getApprovalColor = (rate: number) => {
-    if (rate >= 80) return "text-green-600 bg-green-50"
-    if (rate >= 60) return "text-amber-600 bg-amber-50"
-    return "text-red-600 bg-red-50"
+    if (rate >= 80) return "text-green-700 bg-green-50"
+    if (rate >= 60) return "text-amber-700 bg-amber-50"
+    return "text-red-700 bg-red-50"
   }
 
   return (
@@ -184,7 +184,7 @@ export function AIQualityDashboardClient({
                         </CardTitle>
                       </div>
                       {approvalRate < 70 && (
-                        <AlertTriangle className="h-4 w-4 text-amber-500" />
+                        <AlertTriangle className="h-4 w-4 text-amber-600" />
                       )}
                     </div>
                   </CardHeader>
@@ -203,7 +203,7 @@ export function AIQualityDashboardClient({
                         <span
                           className={cn(
                             "flex items-center text-sm",
-                            trend > 0 ? "text-green-600" : trend < 0 ? "text-red-600" : "text-muted-foreground"
+                            trend > 0 ? "text-green-700" : trend < 0 ? "text-red-600" : "text-muted-foreground"
                           )}
                         >
                           {trend > 0 ? (

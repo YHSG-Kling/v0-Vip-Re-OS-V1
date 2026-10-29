@@ -158,7 +158,7 @@ export default async function PodcastChannelsPage() {
                             run.status === "failed"
                               ? "ml-2 text-xs text-destructive"
                               : run.status === "skipped"
-                                ? "ml-2 text-xs text-amber-600"
+                                ? "ml-2 text-xs text-amber-700"
                                 : "ml-2 text-xs text-muted-foreground"
                           }
                         >

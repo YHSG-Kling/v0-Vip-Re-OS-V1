@@ -206,14 +206,14 @@ export function EsignStatusTracker({
           {/* Count breakdown */}
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
-              <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+              <CheckCircle className="h-3.5 w-3.5 text-green-600" />
               <span className="text-sm">
                 <span className="font-semibold">{signed}</span>
                 <span className="text-muted-foreground"> signed</span>
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <Clock className="h-3.5 w-3.5 text-amber-500" />
+              <Clock className="h-3.5 w-3.5 text-amber-600" />
               <span className="text-sm">
                 <span className="font-semibold">{pending}</span>
                 <span className="text-muted-foreground"> pending</span>
@@ -236,7 +236,7 @@ export function EsignStatusTracker({
               All signatures complete
             </Badge>
           ) : pending > 0 ? (
-            <Badge variant="outline" className="text-amber-600 border-amber-300">
+            <Badge variant="outline" className="text-amber-700 border-amber-300">
               <Clock className="h-3 w-3 mr-1" />
               Awaiting {pending} signature{pending !== 1 ? "s" : ""}
             </Badge>

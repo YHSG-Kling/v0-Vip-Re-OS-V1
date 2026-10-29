@@ -103,7 +103,7 @@ export default function BuyerIntakeForm({
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-amber-600 flex items-center gap-2">
+          <CardTitle className="text-amber-700 flex items-center gap-2">
             <AlertCircle className="h-4 w-4" />
             Link expired
           </CardTitle>
@@ -121,7 +121,7 @@ export default function BuyerIntakeForm({
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-emerald-600 flex items-center gap-2">
+          <CardTitle className="text-emerald-700 flex items-center gap-2">
             <Check className="h-4 w-4" />
             All set
           </CardTitle>

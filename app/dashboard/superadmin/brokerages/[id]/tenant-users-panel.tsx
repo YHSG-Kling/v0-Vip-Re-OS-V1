@@ -122,7 +122,7 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {err && <p className="text-xs text-red-600">{err}</p>}
-        {addOk && <p className="text-xs text-emerald-600">{addOk}</p>}
+        {addOk && <p className="text-xs text-emerald-700">{addOk}</p>}
         {showAdd && (
           <div className="rounded-md border bg-muted/10 p-3 space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Create a user in this tenant — they’ll get an invite email and their role records.</p>

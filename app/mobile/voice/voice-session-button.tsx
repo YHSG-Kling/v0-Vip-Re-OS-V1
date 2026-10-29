@@ -297,7 +297,7 @@ export function VoiceSessionButton({
             )}
             {result && (
               <div className="text-center">
-                <p className="text-sm text-emerald-600 font-medium">{result}</p>
+                <p className="text-sm text-emerald-700 font-medium">{result}</p>
               </div>
             )}
             {error && (

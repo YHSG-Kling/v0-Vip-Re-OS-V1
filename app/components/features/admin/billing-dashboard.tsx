@@ -165,7 +165,7 @@ export function BillingDashboard({ brokerageId }: BillingDashboardProps) {
             </div>
             <div className="flex justify-between items-center pb-2 border-b">
               <span>Estimated Overage</span>
-              <span className="font-mono font-semibold text-orange-600">
+              <span className="font-mono font-semibold text-orange-700">
                 ${(costs.estimatedOverage / 100).toFixed(2)}
               </span>
             </div>
@@ -199,7 +199,7 @@ export function BillingDashboard({ brokerageId }: BillingDashboardProps) {
                   {feature.included ? (
                     <CheckCircle2 className="w-5 h-5 text-green-600" />
                   ) : (
-                    <AlertTriangle className="w-5 h-5 text-gray-300" />
+                    <AlertTriangle className="w-5 h-5 text-gray-500" />
                   )}
                 </div>
               ))}

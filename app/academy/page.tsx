@@ -505,7 +505,7 @@ export default function AcademyPage() {
                           key={n}
                           className={
                             n <= (f.rating ?? 0)
-                              ? "h-3 w-3 fill-yellow-500 text-yellow-500"
+                              ? "h-3 w-3 fill-yellow-500 text-yellow-700"
                               : "h-3 w-3 text-muted-foreground"
                           }
                         />
@@ -591,7 +591,7 @@ export default function AcademyPage() {
                   <Star
                     className={
                       n <= feedbackRating
-                        ? "h-5 w-5 fill-yellow-500 text-yellow-500"
+                        ? "h-5 w-5 fill-yellow-500 text-yellow-700"
                         : "h-5 w-5 text-muted-foreground"
                     }
                   />
@@ -708,7 +708,7 @@ function TemplateCard({ template, onClone, onReview, onViewFeedback }: any) {
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">{template.clone_count || 0} uses</span>
           <div className="flex items-center gap-1">
-            <Star className="h-3 w-3 fill-yellow-500 text-yellow-500" />
+            <Star className="h-3 w-3 fill-yellow-500 text-yellow-700" />
             <span>{template.average_rating?.toFixed(1) || "N/A"}</span>
           </div>
         </div>

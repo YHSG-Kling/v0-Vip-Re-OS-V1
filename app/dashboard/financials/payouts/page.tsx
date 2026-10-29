@@ -177,7 +177,7 @@ export default async function PayoutsPage() {
         <Card>
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Pending</p>
-            <p className="text-2xl font-bold text-yellow-600 mt-1">{pendingPayouts.length}</p>
+            <p className="text-2xl font-bold text-yellow-700 mt-1">{pendingPayouts.length}</p>
           </CardContent>
         </Card>
         <Card>
@@ -248,7 +248,7 @@ export default async function PayoutsPage() {
                       </td>
                       <td className="py-3 px-2 text-right">{fmt(c.gross_commission ?? 0)}</td>
                       <td className="py-3 px-2 text-right font-semibold text-purple-600">{fmt(c.agent_commission ?? 0)}</td>
-                      <td className="py-3 px-2 text-right font-semibold text-green-600">{fmt(c.brokerage_commission ?? 0)}</td>
+                      <td className="py-3 px-2 text-right font-semibold text-green-700">{fmt(c.brokerage_commission ?? 0)}</td>
                       <td className="py-3 px-2 text-center">
                         <Badge variant={c.status === 'paid' ? 'default' : 'secondary'} className="text-xs">
                           {c.status === 'paid'

@@ -171,7 +171,7 @@ export function GeneralSettingsForm({
 
           <div>
             <label htmlFor="brokerage-dba" className="block text-sm font-medium text-gray-700 mb-1">
-              DBA / Trade Name <span className="text-gray-400 font-normal">(optional)</span>
+              DBA / Trade Name <span className="text-gray-500 font-normal">(optional)</span>
             </label>
             <p className="text-xs text-gray-500 mb-2">
               Only if you advertise under a different name than the legal entity above. Leave
@@ -265,7 +265,7 @@ export function GeneralSettingsForm({
                   htmlFor="brokerage-address-line2"
                   className="block text-sm font-medium text-gray-700 mb-1"
                 >
-                  Suite / Unit <span className="text-gray-400 font-normal">(optional)</span>
+                  Suite / Unit <span className="text-gray-500 font-normal">(optional)</span>
                 </label>
                 <input
                   id="brokerage-address-line2"

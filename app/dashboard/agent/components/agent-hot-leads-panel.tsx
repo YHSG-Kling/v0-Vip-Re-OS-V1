@@ -41,7 +41,7 @@ export function AgentHotLeadsPanel({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-amber-500" />
+            <Zap className="h-5 w-5 text-amber-600" />
             Hot Leads Now
           </CardTitle>
           <CardDescription>These contacts are showing real buying signals right now.</CardDescription>
@@ -60,14 +60,14 @@ export function AgentHotLeadsPanel({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-amber-500" />
+            <Zap className="h-5 w-5 text-amber-600" />
             Hot Leads Now
           </CardTitle>
           <CardDescription>These contacts are showing real buying signals right now.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="text-center py-6">
-            <CheckCircle2 className="h-10 w-10 text-green-500 mx-auto mb-2" />
+            <CheckCircle2 className="h-10 w-10 text-green-600 mx-auto mb-2" />
             <p className="text-sm text-muted-foreground">All high-intent contacts have been actioned — great work.</p>
             {/* Agents work CONTACTS — /leads is the broker/admin desk. */}
             <Link href="/crm" className="text-sm text-primary hover:underline mt-2 inline-block">
@@ -83,7 +83,7 @@ export function AgentHotLeadsPanel({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Zap className="h-5 w-5 text-amber-500" />
+          <Zap className="h-5 w-5 text-amber-600" />
           Hot Leads Now
         </CardTitle>
         <CardDescription>These contacts are showing real buying signals right now.</CardDescription>

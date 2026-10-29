@@ -541,7 +541,7 @@ export function ReportsClient({
                         <div className="text-xs text-muted-foreground">{totalReviews} reviews · {reputationData.responseRate?.toFixed(0) ?? 0}% response rate</div>
                       </div>
                       <div className="text-right text-sm font-medium flex items-center gap-1">
-                        <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
+                        <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-700" />
                         {avgRating != null ? avgRating.toFixed(1) : "N/A"}
                       </div>
                     </div>
@@ -644,7 +644,7 @@ export function ReportsClient({
                           </div>
                         </div>
                         <div className="text-right">
-                          <div className={`font-bold ${roi >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          <div className={`font-bold ${roi >= 0 ? "text-green-700" : "text-red-600"}`}>
                             {typeof roi === "number" ? roi.toFixed(1) : roi}% ROI
                           </div>
                           <div className="text-sm text-muted-foreground">
@@ -694,7 +694,7 @@ export function ReportsClient({
                             {reputationData.avgRating?.toFixed(1) ?? "N/A"}
                           </div>
                         </div>
-                        <Star className="h-8 w-8 text-yellow-500 fill-yellow-500" />
+                        <Star className="h-8 w-8 text-yellow-700 fill-yellow-500" />
                       </div>
                     </CardContent>
                   </Card>
@@ -720,7 +720,7 @@ export function ReportsClient({
                             {reputationData.responseRate?.toFixed(0) ?? 0}%
                           </div>
                         </div>
-                        <CheckCircle2 className="h-8 w-8 text-green-500" />
+                        <CheckCircle2 className="h-8 w-8 text-green-600" />
                       </div>
                     </CardContent>
                   </Card>
@@ -740,7 +740,7 @@ export function ReportsClient({
                                 <Star
                                   key={i}
                                   className={`h-4 w-4 ${
-                                    i < review.rating ? "fill-yellow-500 text-yellow-500" : "text-gray-300"
+                                    i < review.rating ? "fill-yellow-500 text-yellow-700" : "text-gray-300"
                                   }`}
                                 />
                               ))}
@@ -944,7 +944,7 @@ export function ReportsClient({
 
             {emailError && <p className="text-sm text-destructive">{emailError}</p>}
             {emailSuccess && (
-              <p className="text-sm text-green-600 flex items-center gap-2">
+              <p className="text-sm text-green-700 flex items-center gap-2">
                 <CheckCircle2 className="h-4 w-4" />
                 Report sent successfully!
               </p>

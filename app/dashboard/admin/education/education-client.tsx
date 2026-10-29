@@ -193,7 +193,7 @@ export function EducationContentClient({ brokerageId, initialModules }: Props) {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-2xl font-bold text-emerald-500">{modules.filter((m) => !m.required).length}</p>
+            <p className="text-2xl font-bold text-emerald-600">{modules.filter((m) => !m.required).length}</p>
             <p className="text-xs text-muted-foreground">Optional</p>
           </CardContent>
         </Card>
@@ -271,7 +271,7 @@ export function EducationContentClient({ brokerageId, initialModules }: Props) {
                             <p className="font-medium">{q.question}</p>
                             <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                               {(q.choices ?? []).map((c: string, j: number) => (
-                                <li key={j} className={j === q.correct ? "text-emerald-600 font-semibold" : ""}>
+                                <li key={j} className={j === q.correct ? "text-emerald-700 font-semibold" : ""}>
                                   {j === q.correct && <CheckCircle2 className="inline h-3 w-3 mr-1" />}
                                   {c}
                                 </li>

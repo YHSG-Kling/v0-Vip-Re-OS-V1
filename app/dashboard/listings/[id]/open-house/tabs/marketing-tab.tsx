@@ -559,7 +559,7 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
                   <span className="text-muted-foreground">Yes</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-sm">
-                  <Clock className="h-4 w-4 text-yellow-600" />
+                  <Clock className="h-4 w-4 text-yellow-700" />
                   <span className="font-medium">{rsvpMaybe}</span>
                   <span className="text-muted-foreground">Maybe</span>
                 </div>

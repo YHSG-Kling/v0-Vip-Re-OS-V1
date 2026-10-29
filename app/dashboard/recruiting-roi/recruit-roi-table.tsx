@@ -51,7 +51,7 @@ export function RecruitROITable({ data }: Props) {
                     </td>
                     <td className="text-right">${((row.total_recruiting_cost || 0) / 100).toLocaleString()}</td>
                     <td className="text-right font-semibold">${((row.lifetime_brokerage_net || 0) / 100).toLocaleString()}</td>
-                    <td className={`text-right font-bold ${(row.roi_pct || 0) > 100 ? 'text-green-600' : (row.roi_pct || 0) > 0 ? 'text-blue-600' : 'text-red-600'}`}>
+                    <td className={`text-right font-bold ${(row.roi_pct || 0) > 100 ? 'text-green-700' : (row.roi_pct || 0) > 0 ? 'text-blue-600' : 'text-red-600'}`}>
                       {(row.roi_pct || 0).toFixed(0)}%
                     </td>
                     <td className="text-center">

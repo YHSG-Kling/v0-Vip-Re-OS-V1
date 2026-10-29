@@ -59,8 +59,8 @@ export default async function ISAAnalyticsPage() {
       <div className="grid grid-cols-3 gap-4">
         {[
           { label: 'Total Contacted', value: totalContacted, icon: Phone, color: 'text-blue-600' },
-          { label: 'Leads Qualified', value: totalQualified, icon: CheckCircle2, color: 'text-green-600' },
-          { label: 'Conversion Rate', value: `${conversionRate}%`, icon: TrendingUp, color: 'text-orange-600' },
+          { label: 'Leads Qualified', value: totalQualified, icon: CheckCircle2, color: 'text-green-700' },
+          { label: 'Conversion Rate', value: `${conversionRate}%`, icon: TrendingUp, color: 'text-orange-700' },
         ].map((stat) => (
           <Card key={stat.label}>
             <CardContent className="p-4 text-center">

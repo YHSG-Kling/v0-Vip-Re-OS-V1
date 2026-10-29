@@ -282,7 +282,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
                 </div>
                 <div className="flex justify-between py-2 font-bold">
                   <span>Net Proceeds</span>
-                  <span className={result.net_proceeds >= 0 ? "text-green-600" : "text-red-600"}>
+                  <span className={result.net_proceeds >= 0 ? "text-green-700" : "text-red-600"}>
                     {fmt(result.net_proceeds)}
                   </span>
                 </div>
@@ -822,7 +822,7 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Equity Built</span>
-                  <span className="font-medium text-green-600">{fmt(result.buyScenario.equityBuilt)}</span>
+                  <span className="font-medium text-green-700">{fmt(result.buyScenario.equityBuilt)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Home Value</span>

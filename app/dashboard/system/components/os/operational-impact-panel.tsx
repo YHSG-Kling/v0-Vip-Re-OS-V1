@@ -127,7 +127,7 @@ export function OperationalImpactPanel({ brokerageId }: OperationalImpactPanelPr
             </div>
           </div>
         ) : !hasImpact ? (
-          <div className="flex items-center gap-2 text-green-600 rounded-lg bg-green-50 dark:bg-green-950/20 p-4">
+          <div className="flex items-center gap-2 text-green-700 rounded-lg bg-green-50 dark:bg-green-950/20 p-4">
             <CheckCircle className="h-5 w-5" />
             <div>
               <p className="font-medium">No Operational Impact</p>
@@ -213,8 +213,8 @@ export function OperationalImpactPanel({ brokerageId }: OperationalImpactPanelPr
                   <span className="text-sm truncate">{service.service_name}</span>
                   <div className="flex items-center gap-2">
                     <span className={`text-sm font-medium ${
-                      service.uptime_30d >= 99 ? 'text-green-600' :
-                      service.uptime_30d >= 95 ? 'text-yellow-600' :
+                      service.uptime_30d >= 99 ? 'text-green-700' :
+                      service.uptime_30d >= 95 ? 'text-yellow-700' :
                       'text-red-600'
                     }`}>
                       {service.uptime_30d.toFixed(1)}%

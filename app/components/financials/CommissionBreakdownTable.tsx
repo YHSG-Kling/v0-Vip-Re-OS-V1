@@ -177,7 +177,7 @@ export function CommissionBreakdownTable({ earningsHistory }: CommissionBreakdow
                         <TableCell className="text-right">
                           {formatCurrency(record.gross_commission)}
                         </TableCell>
-                        <TableCell className="text-right text-green-600 font-medium">
+                        <TableCell className="text-right text-green-700 font-medium">
                           {formatCurrency(record.agent_net)}
                         </TableCell>
                         <TableCell className="text-right">

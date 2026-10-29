@@ -54,10 +54,10 @@ export function CommunicationHealthPanel({
 }: CommunicationHealthPanelProps) {
   const getHealthColor = (health: string) => {
     switch (health) {
-      case "excellent": return "text-green-600"
-      case "good": return "text-green-500"
-      case "fair": return "text-amber-500"
-      case "poor": return "text-orange-500"
+      case "excellent": return "text-green-700"
+      case "good": return "text-green-700"
+      case "fair": return "text-amber-700"
+      case "poor": return "text-orange-700"
       case "critical": return "text-destructive"
       default: return "text-muted-foreground"
     }
@@ -168,7 +168,7 @@ export function CommunicationHealthPanel({
             <ul className="text-sm text-muted-foreground space-y-1">
               {keyInsights.slice(0, 3).map((insight, idx) => (
                 <li key={idx} className="flex items-start gap-2">
-                  <span className="text-green-600">+</span>
+                  <span className="text-green-700">+</span>
                   {insight}
                 </li>
               ))}

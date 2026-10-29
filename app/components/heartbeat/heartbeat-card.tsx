@@ -137,7 +137,7 @@ export function HeartbeatCard({
                   const Trend = m.trend === "up" ? TrendingUp : m.trend === "down" ? TrendingDown : Minus
                   const trendColor =
                     m.trend === "up"
-                      ? "text-green-600"
+                      ? "text-green-700"
                       : m.trend === "down"
                       ? "text-red-600"
                       : "text-muted-foreground"

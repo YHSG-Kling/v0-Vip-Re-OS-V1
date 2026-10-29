@@ -271,7 +271,7 @@ export function MarketingTierClient({
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-amber-600">
+                    <div className="flex items-center gap-2 text-amber-700">
                       <AlertCircle className="h-5 w-5 shrink-0" />
                       <span className="font-medium">No Matching Tier</span>
                     </div>
@@ -469,7 +469,7 @@ export function MarketingTierClient({
                                 Complete
                               </Badge>
                             ) : (
-                              <Badge variant="outline" className="text-amber-600 border-amber-300">
+                              <Badge variant="outline" className="text-amber-700 border-amber-300">
                                 <XCircle className="mr-1 h-3 w-3" />
                                 Missing
                               </Badge>

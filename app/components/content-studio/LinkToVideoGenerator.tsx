@@ -383,7 +383,7 @@ export default function LinkToVideoGenerator() {
                           <AlertTriangle
                             className={cn(
                               "h-4 w-4",
-                              flag.severity === "violation" ? "text-red-500" : "text-yellow-500",
+                              flag.severity === "violation" ? "text-red-500" : "text-yellow-700",
                             )}
                           />
                           <span className="font-medium text-sm">{flag.issue}</span>

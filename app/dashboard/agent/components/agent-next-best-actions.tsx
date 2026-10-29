@@ -64,7 +64,7 @@ export function AgentNextBestActions({
         </CardHeader>
         <CardContent>
           <div className="text-center py-8">
-            <CheckCircle2 className="h-12 w-12 text-green-500 mx-auto mb-3" />
+            <CheckCircle2 className="h-12 w-12 text-green-600 mx-auto mb-3" />
             <p className="text-foreground font-medium">Your pipeline is clear. Great work today.</p>
           </div>
         </CardContent>

@@ -116,7 +116,7 @@ export default async function ListingsAnalyticsPage() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-green-500/10">
-                  <Eye className="h-5 w-5 text-green-500" />
+                  <Eye className="h-5 w-5 text-green-600" />
                 </div>
                 <div>
                   <p className="text-2xl font-bold">{totalViews.toLocaleString()}</p>
@@ -129,7 +129,7 @@ export default async function ListingsAnalyticsPage() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-amber-500/10">
-                  <Clock className="h-5 w-5 text-amber-500" />
+                  <Clock className="h-5 w-5 text-amber-600" />
                 </div>
                 <div>
                   <p className="text-2xl font-bold">{avgDaysOnMarket}</p>

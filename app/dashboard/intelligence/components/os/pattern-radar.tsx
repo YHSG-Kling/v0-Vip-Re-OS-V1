@@ -30,7 +30,7 @@ export function PatternRadar({
   pendingPredictions,
 }: PatternRadarProps) {
   const trustLevel = trustCapitalScore >= 75 ? "High" : trustCapitalScore >= 50 ? "Building" : "Focus Needed"
-  const trustColor = trustCapitalScore >= 75 ? "text-green-600" : trustCapitalScore >= 50 ? "text-amber-600" : "text-red-600"
+  const trustColor = trustCapitalScore >= 75 ? "text-green-700" : trustCapitalScore >= 50 ? "text-amber-700" : "text-red-600"
 
   return (
     <Card>
@@ -61,7 +61,7 @@ export function PatternRadar({
             <TrendingUp className="h-4 w-4 text-green-600" />
             <span className="text-sm">Value Delivered</span>
           </div>
-          <span className="font-semibold text-green-600">
+          <span className="font-semibold text-green-700">
             ${totalValueDelivered.toLocaleString()}
           </span>
         </div>
@@ -78,7 +78,7 @@ export function PatternRadar({
 
           <div className="rounded-lg border p-3 text-center">
             <div className="flex items-center justify-center gap-1">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
               <span className="text-2xl font-bold">{highPriorityPatterns}</span>
             </div>
             <p className="text-xs text-muted-foreground">High Priority</p>

@@ -218,7 +218,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     },
     {
       icon: Mail,
-      iconColor: "text-orange-600",
+      iconColor: "text-orange-700",
       title: "Direct Mail",
       description: "Generate neighborhood direct mail in 30 seconds",
       href: "/dashboard/campaigns/mail",
@@ -277,7 +277,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     },
     {
       icon: TrendingUp,
-      iconColor: "text-green-600",
+      iconColor: "text-green-700",
       title: "Market Report",
       description: "Send a market update your homeowner will actually read",
       href: "/dashboard/market-insights",
@@ -305,7 +305,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     },
     {
       icon: Radio,
-      iconColor: "text-teal-600",
+      iconColor: "text-teal-700",
       title: "Podcast Engine",
       description: "Turn this market insight into content your sphere will share",
       href: "/dashboard/marketing/podcast",
@@ -521,7 +521,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                             </div>
                           )}
                           {!output.toLowerCase().includes('error') && (
-                            <div className="absolute bottom-3 right-3 bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium shadow-lg flex items-center gap-1.5">
+                            <div className="absolute bottom-3 right-3 bg-green-700 text-white text-xs px-3 py-1.5 rounded-md font-medium shadow-lg flex items-center gap-1.5">
                               <Check className="h-3 w-3" />
                               Ready to Use
                             </div>

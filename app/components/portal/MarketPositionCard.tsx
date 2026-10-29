@@ -124,11 +124,11 @@ export function MarketPositionCard({
             <div className="flex items-center justify-center gap-2 text-sm">
               <ComparisonIcon className={cn(
                 "h-4 w-4",
-                diffPct > 0 ? "text-green-600" : diffPct < 0 ? "text-amber-600" : "text-blue-600"
+                diffPct > 0 ? "text-green-700" : diffPct < 0 ? "text-amber-700" : "text-blue-600"
               )} />
               <span className={cn(
                 "font-medium",
-                diffPct > 0 ? "text-green-600" : diffPct < 0 ? "text-amber-600" : "text-blue-600"
+                diffPct > 0 ? "text-green-700" : diffPct < 0 ? "text-amber-700" : "text-blue-600"
               )}>
                 {diffPct > 0 ? "+" : ""}{diffPct.toFixed(1)}% vs neighborhood median
               </span>

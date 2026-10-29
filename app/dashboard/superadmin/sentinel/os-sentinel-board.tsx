@@ -103,7 +103,7 @@ export function OsSentinelBoard() {
         <CardHeader className="pb-2"><CardTitle className="text-sm">Top open incidents</CardTitle></CardHeader>
         <CardContent>
           {health.topIncidents.length === 0 ? (
-            <p className="text-sm text-emerald-600">Nothing open — the OS is healthy.</p>
+            <p className="text-sm text-emerald-700">Nothing open — the OS is healthy.</p>
           ) : (
             <ul className="space-y-1.5">
               {health.topIncidents.map((inc, i) => (

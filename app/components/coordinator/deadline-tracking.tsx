@@ -107,7 +107,7 @@ export function DeadlineTracking({ deadlines }: { deadlines: Deadline[] }) {
                 <div key={group}>
                   {/* Group Header */}
                   <div className="sticky top-0 px-4 py-2 bg-muted/80 backdrop-blur-sm border-b flex items-center gap-2">
-                    <Icon className={`h-3.5 w-3.5 ${group === "OVERDUE" ? "text-red-500" : group === "TODAY" ? "text-amber-500" : "text-muted-foreground"}`} />
+                    <Icon className={`h-3.5 w-3.5 ${group === "OVERDUE" ? "text-red-500" : group === "TODAY" ? "text-amber-600" : "text-muted-foreground"}`} />
                     <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       {label}
                     </span>
@@ -130,7 +130,7 @@ export function DeadlineTracking({ deadlines }: { deadlines: Deadline[] }) {
                             </p>
                           </div>
                           <div className="text-right flex-shrink-0">
-                            <p className={`text-xs font-medium ${group === "OVERDUE" ? "text-red-600" : group === "TODAY" ? "text-amber-600" : "text-muted-foreground"}`}>
+                            <p className={`text-xs font-medium ${group === "OVERDUE" ? "text-red-600" : group === "TODAY" ? "text-amber-700" : "text-muted-foreground"}`}>
                               {formatDate(deadline.deadline_date)}
                             </p>
                           </div>

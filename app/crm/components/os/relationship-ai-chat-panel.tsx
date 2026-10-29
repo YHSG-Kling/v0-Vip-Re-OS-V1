@@ -257,7 +257,7 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
                   <p className="text-xs font-semibold text-amber-700">
                     Message Draft — review and edit before sending
                   </p>
-                  <p className="text-[11px] text-amber-600">
+                  <p className="text-[11px] text-amber-700">
                     This draft was written for you to review. Edit it before sending.
                   </p>
                 </div>
@@ -410,7 +410,7 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
                   <p className="text-sm">Recommended: {temperature.recommendedStyle}</p>
                 )}
                 {temperature.riskSignals && temperature.riskSignals.length > 0 && (
-                  <div className="text-sm text-amber-600">
+                  <div className="text-sm text-amber-700">
                     Risks: {temperature.riskSignals.join(", ")}
                   </div>
                 )}

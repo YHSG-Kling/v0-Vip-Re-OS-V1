@@ -141,7 +141,7 @@ export function AgentLifetimeCustomersPanel({
                         </div>
                         {sendResult?.id === ann.id && (
                           <p
-                            className={`text-xs mt-1 ${sendResult.ok ? "text-emerald-600" : "text-destructive"}`}
+                            className={`text-xs mt-1 ${sendResult.ok ? "text-emerald-700" : "text-destructive"}`}
                           >
                             {sendResult.message}
                           </p>

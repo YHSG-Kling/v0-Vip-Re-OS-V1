@@ -205,7 +205,7 @@ export function ReviewRequestPanel({
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-base font-semibold flex items-center gap-2">
-          <Star className="h-5 w-5 text-amber-500" />
+          <Star className="h-5 w-5 text-amber-600" />
           Review Requests & Reputation
         </CardTitle>
       </CardHeader>
@@ -347,7 +347,7 @@ export function ReviewRequestPanel({
                   <Badge variant="outline">{review.platform}</Badge>
                   <div className="flex items-center gap-1">
                     {Array.from({ length: review.rating }).map((_, i) => (
-                      <Star key={i} className="h-3 w-3 fill-amber-400 text-amber-400" />
+                      <Star key={i} className="h-3 w-3 fill-amber-400 text-amber-600" />
                     ))}
                   </div>
                 </div>
@@ -402,7 +402,7 @@ export function ReviewRequestPanel({
                       <p className="text-xs text-destructive">{responseError}</p>
                     )}
                     {responsePublished && (
-                      <p className="text-xs text-emerald-600">{responsePublished}</p>
+                      <p className="text-xs text-emerald-700">{responsePublished}</p>
                     )}
                   </div>
                 )}

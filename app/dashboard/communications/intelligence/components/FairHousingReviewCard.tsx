@@ -39,7 +39,7 @@ interface ReviewResult {
 
 const SEVERITY_STYLES: Record<ReviewResult["severity"], string> = {
   critical: "bg-red-600 text-white",
-  high: "bg-orange-500 text-white",
+  high: "bg-orange-700 text-white",
   medium: "bg-yellow-400 text-black",
 }
 

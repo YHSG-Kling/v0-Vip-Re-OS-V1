@@ -103,7 +103,7 @@ export function TourDayPanel({ tours }: TourDayPanelProps) {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Car className="h-4 w-4 text-orange-500" />
+            <Car className="h-4 w-4 text-orange-600" />
             Today's Tours
           </CardTitle>
         </CardHeader>
@@ -121,7 +121,7 @@ export function TourDayPanel({ tours }: TourDayPanelProps) {
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Car className="h-4 w-4 text-orange-500" />
+            <Car className="h-4 w-4 text-orange-600" />
             Today's Tours
           </CardTitle>
           <Badge variant="secondary">{todaysTours.length}</Badge>

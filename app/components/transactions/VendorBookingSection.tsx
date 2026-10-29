@@ -467,7 +467,7 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                       <div className="flex items-center gap-1">
                         {[1, 2, 3, 4, 5].map((n) => (
                           <button key={n} type="button" onClick={() => setRatingValue(n)}>
-                            <Star className={`h-4 w-4 ${n <= ratingValue ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`} />
+                            <Star className={`h-4 w-4 ${n <= ratingValue ? "fill-yellow-400 text-yellow-700" : "text-muted-foreground"}`} />
                           </button>
                         ))}
                       </div>
@@ -497,7 +497,7 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                 {booking.agent_rating && (
                   <div className="flex items-center gap-0.5">
                     {[1, 2, 3, 4, 5].map((n) => (
-                      <Star key={n} className={`h-3 w-3 ${n <= booking.agent_rating! ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`} />
+                      <Star key={n} className={`h-3 w-3 ${n <= booking.agent_rating! ? "fill-yellow-400 text-yellow-700" : "text-muted-foreground"}`} />
                     ))}
                   </div>
                 )}

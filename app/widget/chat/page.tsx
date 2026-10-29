@@ -51,7 +51,7 @@ export default async function WidgetChatPage({
   }
 
   return (
-    <Suspense fallback={<div className="flex items-center justify-center h-full text-sm text-gray-400">Loading...</div>}>
+    <Suspense fallback={<div className="flex items-center justify-center h-full text-sm text-gray-500">Loading...</div>}>
       <WidgetChatClient brokerageSlug={brokerageSlug} agentId={requestedAgentId} />
     </Suspense>
   )

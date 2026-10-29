@@ -103,7 +103,7 @@ export function OfferCard({ offer, listPrice, canApprove, isPending, userId, onA
   return (
     <Card className={cn("relative", isWinner && "ring-2 ring-green-500")}>
       {isWinner && (
-        <div className="absolute -top-3 left-4 flex items-center gap-1 bg-green-500 text-white text-xs font-semibold px-2 py-0.5 rounded-full">
+        <div className="absolute -top-3 left-4 flex items-center gap-1 bg-green-700 text-white text-xs font-semibold px-2 py-0.5 rounded-full">
           <Trophy className="h-3 w-3" />
           Winning Offer
         </div>
@@ -117,7 +117,7 @@ export function OfferCard({ offer, listPrice, canApprove, isPending, userId, onA
             <p className="text-2xl font-semibold text-foreground mt-0.5">
               {fmt(offer.offer_price)}
             </p>
-            <p className={cn("text-xs font-medium mt-0.5", priceDiff >= 0 ? "text-green-600" : "text-red-500")}>
+            <p className={cn("text-xs font-medium mt-0.5", priceDiff >= 0 ? "text-green-700" : "text-red-600")}>
               {priceDiff >= 0 ? "+" : ""}{priceDiff.toFixed(1)}% vs list price
             </p>
           </div>
@@ -278,7 +278,7 @@ export function OfferCard({ offer, listPrice, canApprove, isPending, userId, onA
                   size="sm"
                   onClick={onAccept}
                   disabled={isPending}
-                  className="bg-green-600 hover:bg-green-700 text-white"
+                  className="bg-green-700 hover:bg-green-800 text-white"
                 >
                   <CheckCircle className="mr-1.5 h-3.5 w-3.5" />
                   Accept

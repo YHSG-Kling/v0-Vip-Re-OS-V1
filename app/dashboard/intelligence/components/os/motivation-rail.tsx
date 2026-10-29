@@ -138,7 +138,7 @@ export function MotivationRail({
         {recentBadges.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-sm font-medium flex items-center gap-2">
-              <Star className="h-4 w-4 text-yellow-500" />
+              <Star className="h-4 w-4 text-yellow-700" />
               Recent Achievements
             </h4>
             <div className="flex flex-wrap gap-2">
@@ -161,7 +161,7 @@ export function MotivationRail({
             {pointDrivers.slice(0, 3).map((driver, index) => (
               <div key={index} className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">{driver.action}</span>
-                <span className="font-medium text-green-600">+{driver.points}</span>
+                <span className="font-medium text-green-700">+{driver.points}</span>
               </div>
             ))}
           </div>

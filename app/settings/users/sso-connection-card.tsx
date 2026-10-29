@@ -257,7 +257,7 @@ export function SsoConnectionCard() {
                       <span className="text-muted-foreground">{e.label}</span>
                       <div className="font-mono text-gray-800 break-all flex items-center gap-1">
                         {e.value}
-                        <button onClick={() => copy(e.value)} className="text-gray-400 hover:text-gray-700 shrink-0" aria-label={`Copy ${e.label}`}>
+                        <button onClick={() => copy(e.value)} className="text-gray-500 hover:text-gray-700 shrink-0" aria-label={`Copy ${e.label}`}>
                           {copied === e.value ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
                         </button>
                       </div>

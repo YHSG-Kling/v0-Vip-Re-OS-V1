@@ -46,7 +46,7 @@ export default async function StrategyInsightsPage() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-semibold flex items-center gap-2">
-          <Trophy className="h-6 w-6 text-amber-500" /> What&apos;s Winning — Offer Strategy
+          <Trophy className="h-6 w-6 text-amber-600" /> What&apos;s Winning — Offer Strategy
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
           Last {insights.windowDays} days of offer outcomes. The Shopping Agent feeds these same

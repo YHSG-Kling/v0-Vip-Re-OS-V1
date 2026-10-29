@@ -389,13 +389,13 @@ export function ChatgptLane({ openaiAdsConnected, listings, chatgptCampaigns }: 
                     {launchPackage.imageUrl}
                   </a>
                 ) : (
-                  <span className="text-amber-600">No listing photo on file — add one before upload.</span>
+                  <span className="text-amber-700">No listing photo on file — add one before upload.</span>
                 )}
               </div>
             </div>
 
             {launchPackage.warnings.length > 0 && (
-              <ul className="space-y-1 text-xs text-amber-600">
+              <ul className="space-y-1 text-xs text-amber-700">
                 {launchPackage.warnings.map((w, i) => (
                   <li key={i} className="flex items-start gap-2">
                     <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
@@ -514,7 +514,7 @@ export function ChatgptLane({ openaiAdsConnected, listings, chatgptCampaigns }: 
                       </div>
                       {dispatchResultByCampaign[c.id] && (
                         dispatchResultByCampaign[c.id].dispatched ? (
-                          <p className="flex items-start gap-2 text-xs text-emerald-600">
+                          <p className="flex items-start gap-2 text-xs text-emerald-700">
                             <CheckCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                             Active on OpenAI Ads
                             {dispatchResultByCampaign[c.id].reviewStatus

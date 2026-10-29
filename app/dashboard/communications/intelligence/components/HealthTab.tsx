@@ -258,7 +258,7 @@ export default function HealthTab({ chartData, insights }: HealthTabProps) {
                     </td>
                     <td className="px-3 py-2 text-center">
                       {row.unanswered_questions_count > 0
-                        ? <span className="text-yellow-600 font-semibold">{row.unanswered_questions_count}</span>
+                        ? <span className="text-yellow-700 font-semibold">{row.unanswered_questions_count}</span>
                         : <span className="text-muted-foreground">0</span>}
                     </td>
                     <td className="px-3 py-2">

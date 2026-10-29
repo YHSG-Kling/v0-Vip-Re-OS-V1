@@ -219,7 +219,7 @@ export function FatigueWidget({ contactId, brokerageId, agentUserId }: Props) {
               <button
                 onClick={handleDismiss}
                 disabled={dismissing}
-                className="text-[10px] text-orange-600 hover:text-orange-800 shrink-0"
+                className="text-[10px] text-orange-700 hover:text-orange-800 shrink-0"
               >
                 {dismissing ? "..." : "Dismiss"}
               </button>

@@ -611,7 +611,7 @@ function Steps({ current, showConsent }: { current: Step; showConsent: boolean }
           <span
             className={`h-5 w-5 rounded-full flex items-center justify-center text-[10px] font-medium ${
               i < doneIdx
-                ? "bg-emerald-500 text-white"
+                ? "bg-emerald-700 text-white"
                 : i === idx
                   ? "bg-primary text-primary-foreground"
                   : "bg-muted text-muted-foreground"

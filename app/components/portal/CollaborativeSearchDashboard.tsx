@@ -366,10 +366,10 @@ export function CollaborativeSearchDashboard({
   }
 
   const voteButtons = [
-    { vote: "love" as const, icon: Heart, label: "Love", color: "text-red-500 hover:bg-red-50" },
-    { vote: "like" as const, icon: ThumbsUp, label: "Like", color: "text-green-500 hover:bg-green-50" },
+    { vote: "love" as const, icon: Heart, label: "Love", color: "text-red-600 hover:bg-red-50" },
+    { vote: "like" as const, icon: ThumbsUp, label: "Like", color: "text-green-700 hover:bg-green-50" },
     { vote: "neutral" as const, icon: Minus, label: "Neutral", color: "text-gray-500 hover:bg-gray-50" },
-    { vote: "dislike" as const, icon: ThumbsDown, label: "Dislike", color: "text-orange-500 hover:bg-orange-50" },
+    { vote: "dislike" as const, icon: ThumbsDown, label: "Dislike", color: "text-orange-700 hover:bg-orange-50" },
     { vote: "pass" as const, icon: X, label: "Pass", color: "text-red-600 hover:bg-red-50" },
   ]
 
@@ -595,7 +595,7 @@ export function CollaborativeSearchDashboard({
               <Label className="text-xs">Areas / neighborhoods (comma separated)</Label>
               <Input value={critAreas} onChange={(e) => setCritAreas(e.target.value)} placeholder="Westlake, Zilker, 78704" />
             </div>
-            {criteriaNotice && <p className="text-sm text-emerald-600">{criteriaNotice}</p>}
+            {criteriaNotice && <p className="text-sm text-emerald-700">{criteriaNotice}</p>}
             <Button size="sm" onClick={handleSaveCriteria} disabled={busy}>
               {busy ? "Saving…" : "Save criteria"}
             </Button>
@@ -749,11 +749,11 @@ export function CollaborativeSearchDashboard({
                               {consensusData.love_count}
                             </span>
                             <span className="flex items-center gap-1">
-                              <ThumbsUp className="h-4 w-4 text-green-500" />
+                              <ThumbsUp className="h-4 w-4 text-green-600" />
                               {consensusData.like_count}
                             </span>
                             <span className="flex items-center gap-1">
-                              <ThumbsDown className="h-4 w-4 text-orange-500" />
+                              <ThumbsDown className="h-4 w-4 text-orange-600" />
                               {consensusData.dislike_count}
                             </span>
                           </div>
@@ -875,7 +875,7 @@ export function CollaborativeSearchDashboard({
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Trophy className="h-5 w-5 text-amber-500" />
+                <Trophy className="h-5 w-5 text-amber-600" />
                 Family Top Picks
               </CardTitle>
               <CardDescription>Properties with the highest family approval</CardDescription>
@@ -919,7 +919,7 @@ export function CollaborativeSearchDashboard({
                           <div className="flex items-center gap-2">
                             {item.is_finalist && <Badge className="bg-amber-100 text-amber-800">Finalist</Badge>}
                             <div className="flex items-center gap-1">
-                              <Star className="h-4 w-4 text-amber-500" />
+                              <Star className="h-4 w-4 text-amber-600" />
                               <span className="font-semibold">{item.avg_rating?.toFixed(1)}</span>
                             </div>
                           </div>

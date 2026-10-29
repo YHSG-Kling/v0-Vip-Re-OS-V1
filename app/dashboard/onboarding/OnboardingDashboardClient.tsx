@@ -246,7 +246,7 @@ export function OnboardingDashboardClient({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-2xl">
-              <Trophy className="h-8 w-8 text-amber-500" />
+              <Trophy className="h-8 w-8 text-amber-600" />
               Congratulations!
             </DialogTitle>
             <DialogDescription className="text-base">
@@ -738,11 +738,11 @@ export function OnboardingDashboardClient({
                         <p className="text-[11px] text-muted-foreground leading-tight">In onboarding</p>
                       </div>
                       <div className="rounded-lg bg-muted/50 p-2">
-                        <p className="text-lg font-semibold text-green-600">{adminOverview.completedThisMonth}</p>
+                        <p className="text-lg font-semibold text-green-700">{adminOverview.completedThisMonth}</p>
                         <p className="text-[11px] text-muted-foreground leading-tight">Done this month</p>
                       </div>
                       <div className="rounded-lg bg-muted/50 p-2">
-                        <p className={`text-lg font-semibold ${adminOverview.stalledCount > 0 ? 'text-amber-600' : ''}`}>
+                        <p className={`text-lg font-semibold ${adminOverview.stalledCount > 0 ? 'text-amber-700' : ''}`}>
                           {adminOverview.stalledCount}
                         </p>
                         <p className="text-[11px] text-muted-foreground leading-tight">Stalled</p>

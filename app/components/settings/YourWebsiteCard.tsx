@@ -129,7 +129,7 @@ export function YourWebsiteCard() {
               {e.url.replace(/^https?:\/\//, "")}
               <ExternalLink className="h-3 w-3 shrink-0" />
             </a>
-            <button onClick={() => copy(e.url)} className="text-gray-400 hover:text-gray-700" aria-label={`Copy ${e.label} link`}>
+            <button onClick={() => copy(e.url)} className="text-gray-500 hover:text-gray-700" aria-label={`Copy ${e.label} link`}>
               {copied === e.url ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
             </button>
           </li>
@@ -187,7 +187,7 @@ export function YourWebsiteCard() {
                           <button
                             onClick={() => onRemove(d.id)}
                             disabled={busy !== null}
-                            className="text-gray-400 hover:text-red-600 disabled:opacity-50"
+                            className="text-gray-500 hover:text-red-600 disabled:opacity-50"
                             aria-label={`Remove ${d.domain}`}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -243,7 +243,7 @@ export function YourWebsiteCard() {
 
                         <div className="overflow-x-auto"><table className="w-full text-[11px] text-left">
                           <thead>
-                            <tr className="text-gray-400">
+                            <tr className="text-gray-500">
                               <th className="font-medium pr-2">Type</th>
                               <th className="font-medium pr-2">Name / Host</th>
                               <th className="font-medium">Value</th>
@@ -256,7 +256,7 @@ export function YourWebsiteCard() {
                                 <td className="pr-2 py-0.5 break-all">{r.name}</td>
                                 <td className="py-0.5 break-all">
                                   {r.value}{" "}
-                                  <button onClick={() => copy(r.value)} className="text-gray-400 hover:text-gray-700 align-middle" aria-label={`Copy ${r.type} value`}>
+                                  <button onClick={() => copy(r.value)} className="text-gray-500 hover:text-gray-700 align-middle" aria-label={`Copy ${r.type} value`}>
                                     {copied === r.value ? <Check className="h-3 w-3 inline text-emerald-600" /> : <Copy className="h-3 w-3 inline" />}
                                   </button>
                                 </td>

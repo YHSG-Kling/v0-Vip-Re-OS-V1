@@ -266,7 +266,7 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
             {contact.next_action && (
               <div className="mt-2 pt-2 border-t flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">
-                  <Star className="h-3 w-3 inline mr-1 text-amber-500" />
+                  <Star className="h-3 w-3 inline mr-1 text-amber-600" />
                   Next: {contact.next_action}
                 </span>
                 <Link href={`/crm/contacts/${contact.contact_id}`}>

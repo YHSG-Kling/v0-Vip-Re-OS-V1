@@ -161,7 +161,7 @@ export function AccountingCommissionPanel({
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Link2 className={`h-4 w-4 ${hasAccountingProvider ? "text-green-500" : "text-muted-foreground"}`} />
+              <Link2 className={`h-4 w-4 ${hasAccountingProvider ? "text-green-600" : "text-muted-foreground"}`} />
               <span className="text-sm">Accounting Sync</span>
             </div>
             {hasAccountingProvider ? (
@@ -176,7 +176,7 @@ export function AccountingCommissionPanel({
           </div>
 
           {hasAccountingProvider && accounting.syncErrors > 0 && (
-            <div className="flex items-center gap-2 text-xs text-amber-600 pl-6">
+            <div className="flex items-center gap-2 text-xs text-amber-700 pl-6">
               <AlertTriangle className="h-3 w-3" />
               {accounting.syncErrors} sync errors need attention
             </div>

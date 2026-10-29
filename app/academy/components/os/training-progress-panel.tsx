@@ -66,11 +66,11 @@ export function TrainingProgressPanel({
         <div className="grid grid-cols-3 gap-4 text-center">
           <div className="p-3 bg-green-50 rounded-lg">
             <div className="text-2xl font-bold text-green-700">{completedContent.length}</div>
-            <div className="text-xs text-green-600">Completed</div>
+            <div className="text-xs text-green-700">Completed</div>
           </div>
           <div className="p-3 bg-amber-50 rounded-lg">
             <div className="text-2xl font-bold text-amber-700">{visibleInProgress.length}</div>
-            <div className="text-xs text-amber-600">In Progress</div>
+            <div className="text-xs text-amber-700">In Progress</div>
           </div>
           <div className="p-3 bg-blue-50 rounded-lg">
             <div className="text-2xl font-bold text-blue-700">{available}</div>

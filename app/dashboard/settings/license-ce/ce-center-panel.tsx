@@ -151,7 +151,7 @@ export function CeCenterPanel({
               <Button size="sm" onClick={saveProvider} disabled={saving || !providerName.trim()}>
                 {saving ? "Saving…" : "Save provider"}
               </Button>
-              {saved && <span className="text-xs text-green-600">Saved. Reload to see the catalog.</span>}
+              {saved && <span className="text-xs text-green-700">Saved. Reload to see the catalog.</span>}
               {saveError && <span className="text-xs text-red-600">{saveError}</span>}
             </div>
           </div>

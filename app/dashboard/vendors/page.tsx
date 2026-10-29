@@ -577,7 +577,7 @@ export default async function VendorsPage({
                       </div>
                       {v.rating && (
                         <div className="flex items-center gap-1">
-                          <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                          <Star className="h-4 w-4 text-yellow-700 fill-yellow-500" />
                           <span className="font-medium">{Number(v.rating).toFixed(1)}</span>
                         </div>
                       )}

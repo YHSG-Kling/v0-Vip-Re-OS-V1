@@ -196,8 +196,8 @@ export function ISALeadQueuePanel() {
     ? [
         { label: "Total leads", value: stats.total, tone: "text-slate-700" },
         { label: "AI-owned, unassigned", value: stats.active_isa, tone: "text-indigo-600" },
-        { label: "Outreach paused", value: stats.paused, tone: "text-amber-600" },
-        { label: "Assigned to agents", value: stats.assigned, tone: "text-emerald-600" },
+        { label: "Outreach paused", value: stats.paused, tone: "text-amber-700" },
+        { label: "Assigned to agents", value: stats.assigned, tone: "text-emerald-700" },
         { label: "Hot", value: stats.hot, tone: "text-red-600" },
       ]
     : []

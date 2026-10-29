@@ -113,7 +113,7 @@ export function MarginBreakdownPanel({
               <DollarSign className="h-4 w-4 text-green-600" />
               <span className="font-medium text-green-800">Gross Income</span>
             </div>
-            <span className="text-lg font-bold text-green-600">
+            <span className="text-lg font-bold text-green-700">
               {formatCurrency(grossIncome)}
             </span>
           </div>

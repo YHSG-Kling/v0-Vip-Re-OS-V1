@@ -352,7 +352,7 @@ export default function ContactChannelControls({
           <p
             className={cn(
               "text-[11px] font-medium",
-              saveMsg.ok ? "text-green-600" : "text-destructive"
+              saveMsg.ok ? "text-green-700" : "text-destructive"
             )}
           >
             {saveMsg.text}

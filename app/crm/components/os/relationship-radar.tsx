@@ -24,9 +24,9 @@ export function RelationshipRadar({
   upcomingMilestones,
 }: RelationshipRadarProps) {
   const getDaysSinceColor = (days: number | null | undefined) => {
-    if (days === null || days === undefined) return "text-gray-400"
-    if (days < 7) return "text-emerald-600"
-    if (days < 30) return "text-amber-600"
+    if (days === null || days === undefined) return "text-gray-500"
+    if (days < 7) return "text-emerald-700"
+    if (days < 30) return "text-amber-700"
     return "text-red-600"
   }
 
@@ -50,9 +50,9 @@ export function RelationshipRadar({
       case "medium":
         return { text: "Moderate", className: "bg-gray-200 text-gray-700", icon: "🥈" }
       case "low":
-        return { text: "Building", className: "bg-gray-100 text-gray-500", icon: "📈" }
+        return { text: "Building", className: "bg-gray-100 text-gray-600", icon: "📈" }
       default:
-        return { text: "--", className: "bg-gray-100 text-gray-400", icon: "" }
+        return { text: "--", className: "bg-gray-100 text-gray-600", icon: "" }
     }
   }
 
@@ -113,7 +113,7 @@ export function RelationshipRadar({
 
           {/* Referral Potential */}
           <div className="text-center p-3 bg-gray-50 rounded-lg">
-            <Star className="h-5 w-5 mx-auto text-amber-500" />
+            <Star className="h-5 w-5 mx-auto text-amber-600" />
             <Badge className={`mt-2 ${refBadge.className}`}>
               {refBadge.icon} {refBadge.text}
             </Badge>

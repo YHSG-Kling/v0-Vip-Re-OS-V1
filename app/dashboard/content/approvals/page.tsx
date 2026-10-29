@@ -13,6 +13,8 @@ import {
   getApprovalStatistics,
 } from "@/app/actions/content-approval-workflow"
 import { createClient } from "@/lib/supabase/client"
+import { useAuth } from "@/lib/auth/client"
+import type { ApproverRole } from "@/lib/approval-workflow/approval-engine"
 import { ApprovalToolsPanel } from "./approval-tools-panel"
 import { FinalVersionsPanel } from "./final-versions-panel"
 
@@ -25,7 +27,36 @@ interface ApprovalStats {
   common_blocking_reasons: Array<{ reason: string; count: number }>
 }
 
+/**
+ * WHICH APPROVAL QUEUES THE SIGNED-IN PERSON STANDS IN (wave 146, lane 146H — owner ruling 9: "the tenants
+ * approve their own ads/posts … assets"; brokerage approval only where policy or law imposes it).
+ *
+ * This page asked `getMyPendingApprovals({ approver_role: "broker" })` for EVERY viewer: a team lead or a
+ * compliance officer opening Content Approvals saw the items that need the BROKER and never the items that
+ * name THEM, and an agent approving their own content saw the broker's queue. The queue now follows the
+ * roles the person HOLDS (the session's canonical roles, lib/security/types.ts — broker_owner / broker_admin
+ * already canonicalise to `broker`), mapped onto the approval engine's own four approver roles
+ * (lib/approval-workflow/approval-engine.ts ApproverRole). A role with no approver standing (isa, tc,
+ * vendor …) stands in no queue. The authority to DECIDE is still the server's; deriving the queue from the
+ * session inside the action (and from contract C5 `approverFor`) is routed as Outside-lane in lane 146H's notes.
+ */
+function approverRolesFor(roles: readonly string[]): ApproverRole[] {
+  const out = new Set<ApproverRole>()
+  for (const r of roles) {
+    if (r === "broker" || r === "admin") out.add("broker")
+    else if (r === "team_lead") out.add("team_lead")
+    else if (r === "compliance_officer") out.add("compliance_officer")
+    else if (r === "agent") out.add("agent")
+  }
+  return [...out]
+}
+
 export default function ContentApprovalsPage() {
+  const { userContext, isLoading: authLoading } = useAuth()
+  const heldRoles = (userContext?.roles ?? []) as string[]
+  const rolesKey = heldRoles.slice().sort().join(",")
+  const [queues, setQueues] = useState<ApproverRole[]>([])
+  const [pendingError, setPendingError] = useState<string | null>(null)
   const [pending, setPending] = useState<any[]>([])
   const [history, setHistory] = useState<any[]>([])
   const [stats, setStats] = useState<ApprovalStats | null>(null)
@@ -34,14 +65,26 @@ export default function ContentApprovalsPage() {
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
+    if (authLoading) return
     const load = async () => {
+      const myQueues = approverRolesFor(rolesKey ? rolesKey.split(",") : [])
+      setQueues(myQueues)
       const [pendingRes, histRes, statsRes] = await Promise.allSettled([
-        getMyPendingApprovals({ approver_role: "broker", limit: 50 }),
+        Promise.all(myQueues.map((role) => getMyPendingApprovals({ approver_role: role, limit: 50 }))),
         getApprovalHistory({ limit: 20 }),
         getApprovalStatistics({}),
       ])
-      if (pendingRes.status === "fulfilled" && pendingRes.value.success) {
-        setPending(pendingRes.value.pending ?? [])
+      // One item can name several approver roles; show it once. A refused read SAYS so — "All caught
+      // up" is reserved for a queue that was actually read and came back empty (CLAUDE.md §4).
+      if (pendingRes.status === "fulfilled") {
+        const refused = pendingRes.value.filter((r) => !r.success)
+        const seen = new Set<string>()
+        const merged: any[] = []
+        for (const r of pendingRes.value) for (const item of r.pending ?? []) if (!seen.has(item.id)) { seen.add(item.id); merged.push(item) }
+        setPending(merged)
+        setPendingError(refused.length ? (refused[0].error ?? "Pending approvals could not be read") : null)
+      } else {
+        setPendingError("Pending approvals could not be read")
       }
       if (histRes.status === "fulfilled" && (histRes.value as any).success) {
         setHistory((histRes.value as any).history ?? [])
@@ -59,7 +102,7 @@ export default function ContentApprovalsPage() {
       setLoading(false)
     }
     load()
-  }, [])
+  }, [authLoading, rolesKey])
 
   const handleDecision = (itemId: string, decision: "approved" | "rejected") => {
     startTransition(async () => {
@@ -73,7 +116,10 @@ export default function ContentApprovalsPage() {
           existingNotes = {}
         }
       }
-      const { error } = await supabase
+      // An UPDATE that matches nothing RESOLVES with no error (CLAUDE.md §3) — RLS refusing this seat, or an item
+      // another approver already decided, read as success and the item vanished from the queue undecided.
+      // Count what came back; zero rows is "not saved", said so (wave 146, lane 146H — no misleading statuses).
+      const { data: decided, error } = await supabase
         .from("activities")
         .update({
           status: decision === "approved" ? "completed" : "rejected",
@@ -81,11 +127,12 @@ export default function ContentApprovalsPage() {
           notes: { ...existingNotes, approval_status: decision },
         })
         .eq("id", itemId)
-      if (!error) {
+        .select("id")
+      if (!error && (decided?.length ?? 0) > 0) {
         setPending(prev => prev.filter(p => p.id !== itemId))
         toast.success(decision === "approved" ? "Content approved" : "Revisions requested")
       } else {
-        toast.error("Action failed")
+        toast.error(error ? `Not saved — ${error.message}` : "Not saved — this item could not be updated from your seat (already decided, or not yours to decide)")
       }
     })
   }
@@ -172,10 +219,27 @@ export default function ContentApprovalsPage() {
         </TabsList>
 
         <TabsContent value="pending" className="mt-4">
-          {pending.length === 0 ? (
+          {!loading && queues.length > 0 && (
+            <p className="mb-3 text-xs text-muted-foreground">
+              Showing the items that name you as an approver: {queues.map((q) => q.replace(/_/g, " ")).join(", ")}.
+            </p>
+          )}
+          {pendingError ? (
+            <Card>
+              <CardContent className="py-6 text-center text-sm text-destructive" role="alert">
+                {pendingError} — this is not an empty queue; refresh to try again.
+              </CardContent>
+            </Card>
+          ) : !loading && queues.length === 0 ? (
             <Card>
               <CardContent className="py-12 text-center text-muted-foreground">
-                <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-500" />
+                Your role does not approve content here. Use Routing tools to see who approves an item.
+              </CardContent>
+            </Card>
+          ) : pending.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center text-muted-foreground">
+                <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-600" />
                 All caught up — no pending approvals
               </CardContent>
             </Card>

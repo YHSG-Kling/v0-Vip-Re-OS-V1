@@ -34,7 +34,7 @@ export function ReferralCommandStrip({
             <Heart className="h-5 w-5 text-rose-600" />
           </div>
           <div className="flex items-center gap-2">
-            <Star className="h-5 w-5 text-amber-500" />
+            <Star className="h-5 w-5 text-amber-600" />
             <h2 className="text-lg font-semibold">Referral & Advocacy Engine</h2>
           </div>
         </div>

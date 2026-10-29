@@ -94,7 +94,7 @@ export function LeadSourcesClient({
       {connections.map((c) => (
         <Card key={c.key}>
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">{c.label} {c.connected && <span className="text-emerald-600 text-sm">✓ connected</span>}</CardTitle>
+            <CardTitle className="text-base">{c.label} {c.connected && <span className="text-emerald-700 text-sm">✓ connected</span>}</CardTitle>
             <CardDescription className="text-xs">{c.note}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">

@@ -68,7 +68,7 @@ interface ReviewIssue {
 
 function IssueIcon({ level }: { level: IssueLevel }) {
   if (level === "critical") return <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
-  if (level === "warning") return <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+  if (level === "warning") return <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
   return <Info className="h-4 w-4 text-blue-500 shrink-0" />
 }
 
@@ -426,7 +426,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
         {extractOpen && (
           <CardContent className="space-y-4">
             {!selectedTxId && (
-              <p className="text-xs text-amber-600">Select a transaction above before extracting contract terms.</p>
+              <p className="text-xs text-amber-700">Select a transaction above before extracting contract terms.</p>
             )}
             <div>
               <Label className="text-xs">Paste contract text below</Label>
@@ -529,7 +529,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
         {analyzeOpen && (
           <CardContent className="space-y-4">
             {!selectedTxId && (
-              <p className="text-xs text-amber-600">Select a transaction above before analyzing a contract.</p>
+              <p className="text-xs text-amber-700">Select a transaction above before analyzing a contract.</p>
             )}
             {analyzeDocs.length === 0 && selectedTxId && (
               <p className="text-xs text-muted-foreground">No documents found for this transaction.</p>
@@ -625,7 +625,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
                           : "text-blue-700 border-blue-200"
                         return (
                           <div key={i} className="flex gap-2 p-2 rounded-lg border bg-muted/30">
-                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />
+                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
                             <div className="min-w-0 flex-1 space-y-0.5">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <p className="text-xs font-medium">{r.risk}</p>
@@ -726,7 +726,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
         {compareOpen && (
           <CardContent className="space-y-4">
             {!selectedTxId && (
-              <p className="text-xs text-amber-600">Select a transaction above before comparing versions.</p>
+              <p className="text-xs text-amber-700">Select a transaction above before comparing versions.</p>
             )}
             {txDocs.length === 0 && selectedTxId && (
               <p className="text-xs text-muted-foreground">No documents found for this transaction.</p>

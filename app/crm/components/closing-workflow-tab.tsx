@@ -321,7 +321,7 @@ export function ClosingWorkflowTab({ contactId, agentId, brokerageId }: Props) {
                         </span>
                       )}
                       {item.completed && item.completed_at && (
-                        <span className="text-[10px] text-emerald-600">
+                        <span className="text-[10px] text-emerald-700">
                           ✓ {new Date(item.completed_at).toLocaleDateString()}
                         </span>
                       )}

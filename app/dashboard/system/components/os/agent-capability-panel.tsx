@@ -60,8 +60,8 @@ function bucketOf(r: AppCapabilityResolution): Bucket {
 }
 
 const BUCKET_META: Record<Bucket, { label: string; icon: typeof PlugZap; className: string }> = {
-  healing:  { label: 'Repairing', icon: Wrench,     className: 'text-blue-500' },
-  connect:  { label: 'Connect',   icon: PlugZap,    className: 'text-amber-500' },
+  healing:  { label: 'Repairing', icon: Wrench,     className: 'text-blue-600' },
+  connect:  { label: 'Connect',   icon: PlugZap,    className: 'text-amber-700' },
   platform: { label: 'Not lit',   icon: MoonStar,   className: 'text-muted-foreground' },
   held:     { label: 'Held',      icon: HelpCircle, className: 'text-muted-foreground' },
 }
@@ -133,7 +133,7 @@ export async function AgentCapabilityPanel({ brokerageId }: AgentCapabilityPanel
               {dark.length === 1 ? 'it' : 'them'} in front of a client
               {yourMove > 0 ? (
                 <>
-                  {' '}— <span className="font-medium text-amber-600">{yourMove}</span> of those
+                  {' '}— <span className="font-medium text-amber-700">{yourMove}</span> of those
                   {yourMove === 1 ? ' is' : ' are'} waiting on a connection you can make.
                 </>
               ) : (
@@ -158,7 +158,7 @@ export async function AgentCapabilityPanel({ brokerageId }: AgentCapabilityPanel
                   <p className="font-medium text-sm truncate">{capabilityLabel(r.capability)}</p>
                   <p className="text-xs text-muted-foreground">{attentionExplanation(r)}</p>
                 </div>
-                <Clock className="h-4 w-4 text-amber-500 shrink-0 ml-3" />
+                <Clock className="h-4 w-4 text-amber-600 shrink-0 ml-3" />
               </div>
             ))}
           </div>
@@ -199,7 +199,7 @@ export async function AgentCapabilityPanel({ brokerageId }: AgentCapabilityPanel
                 .filter((r) => !r.attention)
                 .map((r) => (
                   <Badge key={r.capability} variant="outline" className="text-xs font-normal">
-                    <CheckCircle className="h-3 w-3 mr-1 text-emerald-500" />
+                    <CheckCircle className="h-3 w-3 mr-1 text-emerald-600" />
                     {capabilityLabel(r.capability)}
                   </Badge>
                 ))}

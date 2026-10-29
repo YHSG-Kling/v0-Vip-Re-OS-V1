@@ -105,7 +105,7 @@ async function ErrorMetricsSection() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-orange-500" />
+              <TrendingUp className="h-4 w-4 text-orange-600" />
               Total Errors
             </CardTitle>
           </CardHeader>
@@ -131,7 +131,7 @@ async function ErrorMetricsSection() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-500" />
+              <CheckCircle className="h-4 w-4 text-green-600" />
               Top Error Type
             </CardTitle>
           </CardHeader>

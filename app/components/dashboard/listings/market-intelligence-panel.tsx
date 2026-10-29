@@ -96,7 +96,7 @@ export function MarketIntelligencePanel({ city, state, agentId }: MarketIntellig
           <div className="rounded-md border border-border p-3 space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-xs font-medium">Market Shift Prediction</p>
-              <div className={`flex items-center gap-1 text-xs font-medium ${isShiftUp ? "text-green-600" : "text-red-600"}`}>
+              <div className={`flex items-center gap-1 text-xs font-medium ${isShiftUp ? "text-green-700" : "text-red-600"}`}>
                 {isShiftUp ? (
                   <TrendingUp className="h-3.5 w-3.5" />
                 ) : (
@@ -135,7 +135,7 @@ export function MarketIntelligencePanel({ city, state, agentId }: MarketIntellig
               <div className="space-y-1.5">
                 {arbitrageData.opportunities.slice(0, 3).map((opp: any, i: number) => (
                   <div key={i} className="flex items-start gap-2 text-xs">
-                    <Zap className="h-3 w-3 text-amber-500 mt-0.5 shrink-0" />
+                    <Zap className="h-3 w-3 text-amber-600 mt-0.5 shrink-0" />
                     <span className="text-muted-foreground">{opp.description ?? opp.opportunity ?? JSON.stringify(opp)}</span>
                   </div>
                 ))}

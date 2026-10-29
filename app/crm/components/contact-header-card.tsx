@@ -142,7 +142,7 @@ export function ContactHeaderCard({
   const recencyClass =
     daysSinceContact == null            ? "text-muted-foreground" :
     daysSinceContact > 30               ? "text-red-600 font-medium" :
-    daysSinceContact > 14               ? "text-amber-600" :
+    daysSinceContact > 14               ? "text-amber-700" :
                                           "text-muted-foreground"
 
   function handleCall() {

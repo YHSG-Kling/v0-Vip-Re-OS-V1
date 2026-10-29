@@ -293,7 +293,7 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
               <ul className="space-y-1">
                 {coaching.weeklyActions?.map((action: string, i: number) => (
                   <li key={i} className="text-sm flex items-start gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                    <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
                     {action}
                   </li>
                 ))}
@@ -302,7 +302,7 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
             {coaching.byGoal?.some((g: any) => g.status === "at_risk" || g.status === "behind") && (
               <div>
                 <p className="text-sm font-medium mb-2 flex items-center gap-1">
-                  <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
                   Needs Attention
                 </p>
                 {coaching.byGoal
@@ -377,7 +377,7 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
                 <ul className="space-y-1">
                   {recommendations.quickWins.map((w: string, i: number) => (
                     <li key={i} className="text-xs text-muted-foreground flex items-center gap-2">
-                      <CheckCircle2 className="h-3 w-3 text-green-500" />
+                      <CheckCircle2 className="h-3 w-3 text-green-600" />
                       {w}
                     </li>
                   ))}

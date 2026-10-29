@@ -215,7 +215,7 @@ export function NotificationRulesForm({ rules, onRefresh }: NotificationRulesFor
                 <button
                   onClick={handleCreateRule}
                   disabled={loading}
-                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white text-sm font-medium py-2 px-4 rounded-lg"
+                  className="bg-green-700 hover:bg-green-800 disabled:bg-gray-400 text-white text-sm font-medium py-2 px-4 rounded-lg"
                 >
                   {loading ? "Creating..." : "Create Rule"}
                 </button>

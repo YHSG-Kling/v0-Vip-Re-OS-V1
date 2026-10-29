@@ -575,7 +575,7 @@ export function ReportingClient() {
               </div>
             ) : stuckTotal === 0 ? (
               <div className="py-8 text-center">
-                <CheckCircle2 className="h-8 w-8 text-emerald-500 mx-auto mb-2" />
+                <CheckCircle2 className="h-8 w-8 text-emerald-600 mx-auto mb-2" />
                 <p className="text-sm text-muted-foreground">No cross-domain stuck work.</p>
               </div>
             ) : (

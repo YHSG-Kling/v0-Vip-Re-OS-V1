@@ -137,7 +137,7 @@ export function AddMilestoneForm({ listingId }: { listingId: string }) {
         </Button>
 
         {message && (
-          <p className={message.kind === "error" ? "text-sm text-destructive" : "text-sm text-emerald-600"}>
+          <p className={message.kind === "error" ? "text-sm text-destructive" : "text-sm text-emerald-700"}>
             {message.text}
           </p>
         )}

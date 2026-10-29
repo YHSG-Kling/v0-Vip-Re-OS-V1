@@ -62,7 +62,7 @@ export function AdvocacyActionStack({
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <Zap className="h-5 w-5 text-amber-500" />
+            <Zap className="h-5 w-5 text-amber-600" />
             Quick Actions
           </CardTitle>
         </CardHeader>
@@ -88,7 +88,7 @@ export function AdvocacyActionStack({
               disabled={!onRequestReview}
               title={onRequestReview ? "Jump to review requests" : "Review requests are not on this screen"}
             >
-              <Star className="h-5 w-5 text-amber-500" />
+              <Star className="h-5 w-5 text-amber-600" />
               <span className="text-sm">Request Review</span>
             </Button>
 
@@ -110,7 +110,7 @@ export function AdvocacyActionStack({
               className="h-auto py-4 flex flex-col items-center gap-2"
               onClick={onOpenCreate}
             >
-              <PlusCircle className="h-5 w-5 text-emerald-500" />
+              <PlusCircle className="h-5 w-5 text-emerald-600" />
               <span className="text-sm">Create Referral</span>
             </Button>
 
@@ -131,7 +131,7 @@ export function AdvocacyActionStack({
                 className="w-full h-auto py-4 flex flex-col items-center gap-2"
                 onClick={onOpenReputationFull}
               >
-                <Award className="h-5 w-5 text-amber-500" />
+                <Award className="h-5 w-5 text-amber-600" />
                 <span className="text-sm">Full Reputation</span>
               </Button>
             ) : (
@@ -140,7 +140,7 @@ export function AdvocacyActionStack({
                   variant="outline"
                   className="w-full h-auto py-4 flex flex-col items-center gap-2"
                 >
-                  <Award className="h-5 w-5 text-amber-500" />
+                  <Award className="h-5 w-5 text-amber-600" />
                   <span className="text-sm">Full Reputation</span>
                 </Button>
               </Link>

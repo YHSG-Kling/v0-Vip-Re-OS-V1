@@ -1389,12 +1389,12 @@ export default function CRMPage() {
                   <div className="rounded-md border bg-background px-3 py-2">
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Portal</p>
                     {portalInviteData.readError ? (
-                      <p className="text-xs font-medium text-amber-600" title={portalInviteData.readError}>
+                      <p className="text-xs font-medium text-amber-700" title={portalInviteData.readError}>
                         Status unknown — could not read
                       </p>
                     ) : portalInviteData.status ? (
                       <p className={cn("text-xs font-medium capitalize",
-                        portalInviteData.status === "accepted" ? "text-green-600"
+                        portalInviteData.status === "accepted" ? "text-green-700"
                         : portalInviteData.status === "pending" || portalInviteData.status === "sent" ? "text-blue-600"
                         : "text-foreground")}>
                         {portalInviteData.status}
@@ -2351,8 +2351,8 @@ export default function CRMPage() {
                               <div className="flex items-center justify-between text-xs">
                                 <span className="text-muted-foreground">Sentiment</span>
                                 <span className={cn("font-medium",
-                                  conversationIntelligence.sentiment_score >= 0.6 ? "text-green-600" :
-                                  conversationIntelligence.sentiment_score >= 0.4 ? "text-amber-600" :
+                                  conversationIntelligence.sentiment_score >= 0.6 ? "text-green-700" :
+                                  conversationIntelligence.sentiment_score >= 0.4 ? "text-amber-700" :
                                   "text-red-600"
                                 )}>
                                   {conversationIntelligence.sentiment_label ?? (
@@ -2562,7 +2562,7 @@ export default function CRMPage() {
                         <Card className="border-orange-200 bg-orange-50">
                           <CardHeader className="pb-2">
                             <CardTitle className="text-sm flex items-center gap-2 text-orange-800">
-                              <AlertTriangle className="h-4 w-4 text-orange-500" />
+                              <AlertTriangle className="h-4 w-4 text-orange-600" />
                               AI-ISA Available
                             </CardTitle>
                           </CardHeader>
@@ -2585,7 +2585,7 @@ export default function CRMPage() {
                                 }}
                               />
                             </div>
-                            {currentLevel !== "off" && <p className="text-xs text-orange-600">AI follow-up is active on this contact</p>}
+                            {currentLevel !== "off" && <p className="text-xs text-orange-700">AI follow-up is active on this contact</p>}
                           </CardContent>
                         </Card>
                       )
@@ -2733,8 +2733,8 @@ export default function CRMPage() {
                           <div className="rounded-lg border bg-muted/20 p-3 space-y-1">
                             <p className="font-medium text-muted-foreground">Portal Status</p>
                             <p className={cn("font-semibold capitalize",
-                              portalInviteData?.readError ? "text-amber-600" :
-                              portalInviteData?.status === "accepted" ? "text-green-600" :
+                              portalInviteData?.readError ? "text-amber-700" :
+                              portalInviteData?.status === "accepted" ? "text-green-700" :
                               portalInviteData?.status === "pending" || portalInviteData?.status === "sent" ? "text-blue-600" :
                               "text-muted-foreground"
                             )} title={portalInviteData?.readError ?? undefined}>
@@ -2762,7 +2762,7 @@ export default function CRMPage() {
                           {portalInviteData?.accepted_at && (
                             <div className="rounded-lg border bg-muted/20 p-3 space-y-1">
                               <p className="font-medium text-muted-foreground">Accepted</p>
-                              <p className="font-semibold text-green-600">
+                              <p className="font-semibold text-green-700">
                                 {format(new Date(portalInviteData.accepted_at), "MMM d, yyyy")}
                               </p>
                             </div>
@@ -3068,7 +3068,7 @@ export default function CRMPage() {
                             {unifiedLeadProfile.ready_for_outreach != null && (
                               <div className="flex justify-between gap-2">
                                 <span className="text-muted-foreground">Ready for outreach</span>
-                                <span className={cn("text-xs font-medium", unifiedLeadProfile.ready_for_outreach ? "text-emerald-600" : "text-muted-foreground")}>
+                                <span className={cn("text-xs font-medium", unifiedLeadProfile.ready_for_outreach ? "text-emerald-700" : "text-muted-foreground")}>
                                   {unifiedLeadProfile.ready_for_outreach ? "Yes" : "No"}
                                 </span>
                               </div>
@@ -3381,7 +3381,7 @@ export default function CRMPage() {
 
       {/* Search */}
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
         <Input
           placeholder="Search by name, email, phone, or city..."
           value={search}
@@ -3389,7 +3389,7 @@ export default function CRMPage() {
           className="pl-10 pr-10"
         />
         {searchLoading && (
-          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-gray-400" />
+          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-gray-500" />
         )}
       </div>
 

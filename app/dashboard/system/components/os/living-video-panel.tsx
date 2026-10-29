@@ -86,8 +86,8 @@ export async function LivingVideoPanel({ brokerageId }: LivingVideoPanelProps) {
                   <div key={r.renderId} className="rounded-lg border border-border p-3">
                     <p className="text-sm font-medium flex items-center gap-1.5">
                       {r.isRefresh
-                        ? <RefreshCw className="h-4 w-4 shrink-0 text-sky-500" />
-                        : <CircleCheck className="h-4 w-4 shrink-0 text-emerald-500" />}
+                        ? <RefreshCw className="h-4 w-4 shrink-0 text-sky-600" />
+                        : <CircleCheck className="h-4 w-4 shrink-0 text-emerald-600" />}
                       {r.label}
                       {r.isRefresh && (
                         <Badge variant="outline" className="text-xs font-normal">

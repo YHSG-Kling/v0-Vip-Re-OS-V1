@@ -386,7 +386,7 @@ export default function SLAMonitorPage() {
                         <td className="px-4 py-3 text-muted-foreground">{agentName}</td>
                         <td className="px-4 py-3 text-muted-foreground">{formatDate(row.target_at)}</td>
                         <td className="px-4 py-3">
-                          <span className={overdue > 7 ? "text-destructive font-semibold" : "text-orange-600 dark:text-orange-400 font-medium"}>
+                          <span className={overdue > 7 ? "text-destructive font-semibold" : "text-orange-700 dark:text-orange-400 font-medium"}>
                             {overdue}d
                           </span>
                         </td>

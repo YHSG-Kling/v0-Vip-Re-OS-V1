@@ -252,7 +252,7 @@ export function ListingHealthBoardClient({ board }: Props) {
                     <ul className="space-y-1">
                       {row.flags.slice(0, 5).map((f, i) => (
                         <li key={i} className="text-xs text-foreground/80 flex items-start gap-1.5">
-                          <span className="text-amber-600 mt-0.5">•</span> {f}
+                          <span className="text-amber-700 mt-0.5">•</span> {f}
                         </li>
                       ))}
                     </ul>

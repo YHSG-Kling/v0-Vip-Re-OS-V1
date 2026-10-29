@@ -160,7 +160,7 @@ export default function ResetPasswordConfirmPage() {
               <div className="space-y-2">
                 <Label htmlFor="new-password">New password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
                   <Input
                     id="new-password"
                     type="password"
@@ -176,7 +176,7 @@ export default function ResetPasswordConfirmPage() {
               <div className="space-y-2">
                 <Label htmlFor="confirm-password">Confirm new password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
                   <Input
                     id="confirm-password"
                     type="password"
@@ -209,7 +209,7 @@ export default function ResetPasswordConfirmPage() {
 
           {done && (
             <div className="flex flex-col items-center gap-3 py-6 text-center">
-              <CheckCircle2 className="h-8 w-8 text-emerald-500" />
+              <CheckCircle2 className="h-8 w-8 text-emerald-600" />
               <p className="text-sm text-gray-700">
                 Password updated. Taking you to sign in...
               </p>

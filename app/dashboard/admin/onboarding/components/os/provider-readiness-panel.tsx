@@ -13,10 +13,10 @@ const STATE_META: Record<
   BrokerageReadinessState,
   { label: string; className: string; Icon: typeof CheckCircle2 }
 > = {
-  live_connected: { label: 'Connected', className: 'text-green-600', Icon: CheckCircle2 },
+  live_connected: { label: 'Connected', className: 'text-green-700', Icon: CheckCircle2 },
   live_platform: { label: 'Included', className: 'text-blue-600', Icon: Cloud },
-  keyless: { label: 'Included', className: 'text-emerald-600', Icon: Gift },
-  needs_connection: { label: 'Connect', className: 'text-amber-600', Icon: PlugZap },
+  keyless: { label: 'Included', className: 'text-emerald-700', Icon: Gift },
+  needs_connection: { label: 'Connect', className: 'text-amber-700', Icon: PlugZap },
   platform_dark: { label: 'Pending', className: 'text-muted-foreground', Icon: CircleDashed },
 }
 

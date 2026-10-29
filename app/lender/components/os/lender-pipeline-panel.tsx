@@ -214,12 +214,12 @@ export function LenderPipelinePanel({ lenderId }: LenderPipelinePanelProps) {
         <div className="grid grid-cols-3 gap-2">
           <div className="flex flex-col items-center rounded-lg bg-green-50 p-2 dark:bg-green-950/20">
             <CheckCircle className="h-4 w-4 text-green-600" />
-            <span className="mt-1 text-lg font-bold text-green-600">{metrics.approved}</span>
+            <span className="mt-1 text-lg font-bold text-green-700">{metrics.approved}</span>
             <span className="text-xs text-green-600/70">Approved</span>
           </div>
           <div className="flex flex-col items-center rounded-lg bg-yellow-50 p-2 dark:bg-yellow-950/20">
-            <Clock className="h-4 w-4 text-yellow-600" />
-            <span className="mt-1 text-lg font-bold text-yellow-600">{metrics.pending}</span>
+            <Clock className="h-4 w-4 text-yellow-700" />
+            <span className="mt-1 text-lg font-bold text-yellow-700">{metrics.pending}</span>
             <span className="text-xs text-yellow-600/70">Pending</span>
           </div>
           <div className="flex flex-col items-center rounded-lg bg-red-50 p-2 dark:bg-red-950/20">

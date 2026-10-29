@@ -1129,7 +1129,7 @@ export function CDAWorkflowClient({
                           </TableCell>
                           <TableCell>
                             {check.status === "pass" && (
-                              <span className="text-green-600 flex items-center gap-1">
+                              <span className="text-green-700 flex items-center gap-1">
                                 <CheckCircle2 className="h-4 w-4" /> Passed
                               </span>
                             )}
@@ -1139,12 +1139,12 @@ export function CDAWorkflowClient({
                               </span>
                             )}
                             {check.status === "pending" && (
-                              <span className="text-amber-600 flex items-center gap-1">
+                              <span className="text-amber-700 flex items-center gap-1">
                                 <Clock className="h-4 w-4" /> Pending
                               </span>
                             )}
                             {check.status === "needs_review" && (
-                              <span className="text-orange-600 flex items-center gap-1">
+                              <span className="text-orange-700 flex items-center gap-1">
                                 <AlertTriangle className="h-4 w-4" /> Needs Review
                               </span>
                             )}
@@ -1371,7 +1371,7 @@ export function CDAWorkflowClient({
                   <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
                     <CheckCircle2 className="h-8 w-8 text-green-600 mx-auto mb-2" />
                     <p className="font-medium text-green-800">CDA Approved</p>
-                    <p className="text-sm text-green-600">
+                    <p className="text-sm text-green-700">
                       Approved on {new Date(cda!.compliance_approved_at!).toLocaleDateString()}
                     </p>
                   </div>
@@ -1577,7 +1577,7 @@ export function CDAWorkflowClient({
             <div className="grid grid-cols-2 gap-4">
               <div className="p-3 bg-muted/50 rounded-lg text-center">
                 <p className="text-sm text-muted-foreground">Agent Net</p>
-                <p className="text-lg font-bold text-green-600">
+                <p className="text-lg font-bold text-green-700">
                   {formatCurrency(cda?.agent_net)}
                 </p>
               </div>

@@ -124,8 +124,8 @@ export default function WorkflowReportsClient({
           {/* Top stat cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <StatCard label="Enrollments"      value={report.totalEnrollments} icon={Activity} color="text-blue-600" />
-            <StatCard label="Active"           value={report.activeEnrollments} icon={Activity} color="text-amber-600" />
-            <StatCard label="Completed"        value={report.completedEnrollments} icon={CheckCircle2} color="text-emerald-600" />
+            <StatCard label="Active"           value={report.activeEnrollments} icon={Activity} color="text-amber-700" />
+            <StatCard label="Completed"        value={report.completedEnrollments} icon={CheckCircle2} color="text-emerald-700" />
             <StatCard label="Avg days to done" value={report.averageCompletionDays != null ? report.averageCompletionDays.toFixed(1) : "—"} icon={Activity} color="text-violet-600" />
           </div>
           {report.inheritedEnrollments > 0 && (
@@ -137,9 +137,9 @@ export default function WorkflowReportsClient({
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <StatCard label="Steps run"        value={report.totalStepsRun} icon={Activity} color="text-slate-600" />
-            <StatCard label="Successful"       value={report.successfulSteps} icon={CheckCircle2} color="text-emerald-600" />
+            <StatCard label="Successful"       value={report.successfulSteps} icon={CheckCircle2} color="text-emerald-700" />
             <StatCard label="Failed / blocked" value={report.failedSteps + report.blockedSteps} icon={XCircle} color="text-red-600" />
-            <StatCard label="Success rate"     value={`${(report.successRate * 100).toFixed(1)}%`} icon={TrendingUp} color="text-emerald-600" />
+            <StatCard label="Success rate"     value={`${(report.successRate * 100).toFixed(1)}%`} icon={TrendingUp} color="text-emerald-700" />
           </div>
 
           {/* Both of these used to read workflow_step_runs.converted_at /
@@ -196,7 +196,7 @@ export default function WorkflowReportsClient({
                             <tr key={channel} className="border-b last:border-0">
                               <td className="py-2.5 font-medium capitalize">{channel.replace(/_/g, " ")}</td>
                               <td className="text-right">{stats.runs}</td>
-                              <td className="text-right text-emerald-600">{stats.successes}</td>
+                              <td className="text-right text-emerald-700">{stats.successes}</td>
                               <td className="text-right text-red-600">{stats.failures}</td>
                               <td className="text-right">
                                 <Badge variant={successRate >= 80 ? "default" : successRate >= 50 ? "secondary" : "destructive"}>

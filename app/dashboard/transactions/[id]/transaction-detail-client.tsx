@@ -1460,7 +1460,7 @@ export function TransactionDetailClient({
       {/* AI Warnings Panel */}
       {txWarnings.length > 0 && (
         <Alert className="rounded-none border-x-0 border-t-0 border-yellow-300 bg-yellow-50">
-          <AlertTriangle className="h-4 w-4 text-yellow-600" />
+          <AlertTriangle className="h-4 w-4 text-yellow-700" />
           <AlertTitle className="text-yellow-800">Transaction Warnings</AlertTitle>
           <AlertDescription>
             <ul className="list-disc list-inside space-y-0.5 mt-1">
@@ -1572,9 +1572,9 @@ export function TransactionDetailClient({
                         className={cn(
                           "h-6 w-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
                           item.completed
-                            ? "bg-emerald-500 text-white"
+                            ? "bg-emerald-700 text-white"
                             : item.overdue
-                            ? "bg-red-500 text-white"
+                            ? "bg-red-600 text-white"
                             : "bg-muted border-2 border-border text-muted-foreground"
                         )}
                       >
@@ -1591,7 +1591,7 @@ export function TransactionDetailClient({
                             item.overdue
                               ? "text-red-600 font-semibold"
                               : item.completed
-                              ? "text-emerald-600"
+                              ? "text-emerald-700"
                               : "text-muted-foreground"
                           )}
                         >
@@ -1625,10 +1625,10 @@ export function TransactionDetailClient({
             {/* Compliance flags strip */}
             <div className="container pb-2 flex items-center gap-4 flex-wrap text-[10px]">
               <span className="text-muted-foreground font-medium uppercase tracking-wide">Compliance:</span>
-              <span className={cn("flex items-center gap-1", tridSent ? "text-emerald-600" : "text-amber-600")}>
+              <span className={cn("flex items-center gap-1", tridSent ? "text-emerald-700" : "text-amber-700")}>
                 {tridSent ? "✓" : "⚠"} TRID Disclosure
               </span>
-              <span className={cn("flex items-center gap-1", hasAllDocs ? "text-emerald-600" : "text-amber-600")}>
+              <span className={cn("flex items-center gap-1", hasAllDocs ? "text-emerald-700" : "text-amber-700")}>
                 {hasAllDocs ? "✓" : "⚠"} All Docs Uploaded
               </span>
               <Link
@@ -1663,7 +1663,7 @@ export function TransactionDetailClient({
                       <div
                         className={cn(
                           "w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium shrink-0",
-                          isCompleted && "bg-green-500 text-white",
+                          isCompleted && "bg-green-700 text-white",
                           isCurrent && !isLost && "bg-primary text-primary-foreground",
                           isCurrent && isLost && "bg-destructive text-destructive-foreground",
                           !isCompleted && !isCurrent && "bg-muted text-muted-foreground"
@@ -1833,9 +1833,9 @@ export function TransactionDetailClient({
                     <p className="text-muted-foreground">Compliance</p>
                     <p className="font-medium">
                       {transaction.compliance_passed_at ? (
-                        <span className="text-green-600">Passed</span>
+                        <span className="text-green-700">Passed</span>
                       ) : (
-                        <span className="text-amber-600">Pending</span>
+                        <span className="text-amber-700">Pending</span>
                       )}
                     </p>
                   </div>
@@ -1916,7 +1916,7 @@ export function TransactionDetailClient({
 
                     {/* No flags but has score */}
                     {(!healthScore.flags || healthScore.flags.length === 0) && (
-                      <p className="text-xs text-green-600 font-medium">No risk flags detected</p>
+                      <p className="text-xs text-green-700 font-medium">No risk flags detected</p>
                     )}
                   </div>
                 ) : (
@@ -1929,7 +1929,7 @@ export function TransactionDetailClient({
                       {typeof healthScore.score_delta === "number" && healthScore.score_delta !== 0 ? (
                         <span className={cn(
                           "inline-flex items-center gap-0.5 font-medium",
-                          healthScore.score_delta > 0 ? "text-emerald-600" : "text-red-600",
+                          healthScore.score_delta > 0 ? "text-emerald-700" : "text-red-600",
                         )}>
                           {healthScore.score_delta > 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
                           {healthScore.score_delta > 0 ? "+" : ""}{healthScore.score_delta}
@@ -2052,9 +2052,9 @@ export function TransactionDetailClient({
                       <span className="text-xs text-muted-foreground">Close Probability</span>
                       <span className={`text-sm font-bold ${
                         (dealPrediction.close_probability ?? 0) >= 70
-                          ? "text-green-600"
+                          ? "text-green-700"
                           : (dealPrediction.close_probability ?? 0) >= 40
-                          ? "text-amber-600"
+                          ? "text-amber-700"
                           : "text-red-600"
                       }`}>
                         {dealPrediction.close_probability ?? 0}%
@@ -2068,7 +2068,7 @@ export function TransactionDetailClient({
                       <div className="pt-1 space-y-1">
                         {dealPrediction.risk_factors.slice(0, 2).map((r: string, i: number) => (
                           <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                            <TrendingDown className="h-3 w-3 text-red-400 mt-0.5 shrink-0" />
+                            <TrendingDown className="h-3 w-3 text-red-500 mt-0.5 shrink-0" />
                             {r}
                           </div>
                         ))}
@@ -2253,10 +2253,10 @@ export function TransactionDetailClient({
                   <div className="text-2xl font-bold">{documents.length}</div>
                   <div className="text-xs text-muted-foreground space-x-2">
                     {documentCountsByStatus.approved && (
-                      <span className="text-green-600">{documentCountsByStatus.approved} approved</span>
+                      <span className="text-green-700">{documentCountsByStatus.approved} approved</span>
                     )}
                     {documentCountsByStatus.pending && (
-                      <span className="text-amber-600">{documentCountsByStatus.pending} pending</span>
+                      <span className="text-amber-700">{documentCountsByStatus.pending} pending</span>
                     )}
                   </div>
                 </CardContent>
@@ -2330,7 +2330,7 @@ export function TransactionDetailClient({
                     {!delays.communicated_to_client ? (
                       <Button
                         size="sm"
-                        className="mt-2 bg-amber-600 hover:bg-amber-700 text-white"
+                        className="mt-2 bg-amber-700 hover:bg-amber-800 text-white"
                         disabled={isLoggingDelay}
                         onClick={async () => {
                           setIsLoggingDelay(true)
@@ -2377,7 +2377,7 @@ export function TransactionDetailClient({
                         Already communicated outside the app — mark as told
                       </Button>
                     ) : (
-                      <p className="text-xs text-green-600 dark:text-green-400">Client has been notified</p>
+                      <p className="text-xs text-green-700 dark:text-green-400">Client has been notified</p>
                     )}
                   </div>
                 ) : (
@@ -2607,7 +2607,7 @@ export function TransactionDetailClient({
                           {/* Date — red if overdue, green if complete */}
                           <span className={cn(
                             "text-sm",
-                            m.completed_at ? "text-green-600 font-medium" : isOverdue ? "text-red-600 font-semibold" : "text-muted-foreground"
+                            m.completed_at ? "text-green-700 font-medium" : isOverdue ? "text-red-600 font-semibold" : "text-muted-foreground"
                           )}>
                             {m.completed_at
                               ? `Completed ${format(new Date(m.completed_at), "MMM d")}`
@@ -2849,7 +2849,7 @@ export function TransactionDetailClient({
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="h-6 w-6 p-0 text-green-600 hover:text-green-700"
+                            className="h-6 w-6 p-0 text-green-700 hover:text-green-700"
                             title="Mark complete"
                             onClick={() => {
                               startTransition(async () => {
@@ -3070,7 +3070,7 @@ export function TransactionDetailClient({
                       )}
                       <div>
                         <p className="text-muted-foreground">Clear to Close</p>
-                        <p className={cn("font-medium", lenderInfo.clear_to_close_date ? "text-green-600" : "text-muted-foreground")}>
+                        <p className={cn("font-medium", lenderInfo.clear_to_close_date ? "text-green-700" : "text-muted-foreground")}>
                           {lenderInfo.clear_to_close_date
                             ? new Date(lenderInfo.clear_to_close_date).toLocaleDateString()
                             : "Pending"}
@@ -3247,7 +3247,7 @@ export function TransactionDetailClient({
                                 {dep.check_number && ` · Check #${dep.check_number}`}
                               </p>
                               {dep.delivered_to_escrow_at && (
-                                <p className="text-xs text-green-600">
+                                <p className="text-xs text-green-700">
                                   Delivered {format(new Date(dep.delivered_to_escrow_at), "MMM d, yyyy h:mm a")}
                                 </p>
                               )}
@@ -3417,7 +3417,7 @@ export function TransactionDetailClient({
                   {/* Pending Quote Approvals */}
                   {pendingQuoteApprovals.filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "inspector").length > 0 && (
                     <Alert className="mb-4 border-amber-500 bg-amber-50">
-                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <AlertTriangle className="h-4 w-4 text-amber-600" />
                       <AlertTitle className="text-amber-800">Quote Approval Needed</AlertTitle>
                       <AlertDescription className="text-amber-700">
                         {pendingQuoteApprovals
@@ -3690,7 +3690,7 @@ export function TransactionDetailClient({
                   {/* Pending Insurance Quote Approvals */}
                   {pendingQuoteApprovals.filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "insurance").length > 0 && (
                     <Alert className="mb-4 border-amber-500 bg-amber-50">
-                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <AlertTriangle className="h-4 w-4 text-amber-600" />
                       <AlertTitle className="text-amber-800">Quote Approval Needed</AlertTitle>
                       <AlertDescription className="text-amber-700">
                         {pendingQuoteApprovals
@@ -3776,7 +3776,7 @@ export function TransactionDetailClient({
                                   <p className="text-xs text-muted-foreground">{v.vendor_email}</p>
                                 )}
                                 {v.cost && (
-                                  <p className="text-xs font-medium text-green-600">
+                                  <p className="text-xs font-medium text-green-700">
                                     ${v.cost.toLocaleString()}/yr
                                   </p>
                                 )}
@@ -4273,7 +4273,7 @@ export function TransactionDetailClient({
                             {contractReview.keyDates.map((kd:any,idx:number)=>(
                               <div key={idx} className="flex justify-between text-xs p-2 bg-muted/40 rounded mb-1">
                                 <span>{kd.event}</span>
-                                <span className={kd.daysRemaining<=7?'text-red-600 font-semibold':kd.daysRemaining<=14?'text-amber-600':'text-green-600'}>
+                                <span className={kd.daysRemaining<=7?'text-red-600 font-semibold':kd.daysRemaining<=14?'text-amber-700':'text-green-700'}>
                                   {kd.date}{kd.daysRemaining!==undefined?` (${kd.daysRemaining}d)`:''}
                                 </span>
                               </div>
@@ -4472,9 +4472,9 @@ export function TransactionDetailClient({
                             className={cn(
                               "h-4 w-4 mt-0.5 shrink-0",
                               a.status === "fail" && "text-red-500",
-                              a.status === "pending" && "text-amber-500",
-                              a.status === "needs_review" && "text-orange-500",
-                              a.status === "pass" && "text-green-500",
+                              a.status === "pending" && "text-amber-600",
+                              a.status === "needs_review" && "text-orange-600",
+                              a.status === "pass" && "text-green-600",
                               a.status === "waived" && "text-slate-500"
                             )}
                           />
@@ -4484,7 +4484,7 @@ export function TransactionDetailClient({
                               {a.check_type} | {a.status}{a.is_blocking ? " (Blocking)" : ""}
                             </p>
                             {a.failure_reason && (
-                              <p className="text-xs text-red-500 mt-1">{a.failure_reason}</p>
+                              <p className="text-xs text-red-600 mt-1">{a.failure_reason}</p>
                             )}
                           </div>
                         </div>
@@ -4905,7 +4905,7 @@ export function TransactionDetailClient({
                         </p>
                       )}
                       {titleIssueSummary && titleIssueSummary.canClose && titleIssueSummary.totalUnresolved > 0 && (
-                        <p className="text-[11px] text-amber-600">
+                        <p className="text-[11px] text-amber-700">
                           {titleIssueSummary.totalUnresolved} unresolved title issue
                           {titleIssueSummary.totalUnresolved === 1 ? "" : "s"} — none closing-blocking.
                         </p>
@@ -5151,7 +5151,7 @@ export function TransactionDetailClient({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              <AlertTriangle className="h-5 w-5 text-amber-600" />
               Cannot Advance Stage
             </DialogTitle>
             <DialogDescription>
@@ -5219,7 +5219,7 @@ export function TransactionDetailClient({
               <Button
                 onClick={handleForceAdvance}
                 disabled={isPending || overrideReason.trim().length < 10}
-                className="bg-amber-600 hover:bg-amber-700 text-white"
+                className="bg-amber-700 hover:bg-amber-800 text-white"
               >
                 {isPending ? "Overriding..." : "Force Advance"}
               </Button>
@@ -5261,7 +5261,7 @@ export function TransactionDetailClient({
                   Contract price on file: ${Number(transaction.purchase_price).toLocaleString()}
                 </p>
               ) : (
-                <p className="text-xs text-amber-600">
+                <p className="text-xs text-amber-700">
                   No contract price on this transaction — the gap check has nothing to compare
                   against and will not run.
                 </p>
@@ -5368,7 +5368,7 @@ export function TransactionDetailClient({
             <Button
               onClick={handleMilestoneOverride}
               disabled={isPending || milestoneOverrideReason.trim().length < 10}
-              className="bg-amber-600 hover:bg-amber-700 text-white"
+              className="bg-amber-700 hover:bg-amber-800 text-white"
             >
               {isPending ? "Overriding..." : "Override Milestone"}
             </Button>

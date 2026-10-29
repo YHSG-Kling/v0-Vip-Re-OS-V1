@@ -84,7 +84,7 @@ function PostcardPreview({ headline, body, cta, agentName, agentPhone, agentLogo
               {qrImageUrl ? (
                 <Image src={qrImageUrl} alt="QR code" width={72} height={72} unoptimized />
               ) : (
-                <div className="h-[72px] w-[72px] border-2 border-dashed border-gray-300 flex items-center justify-center text-[8px] text-gray-400 text-center">
+                <div className="h-[72px] w-[72px] border-2 border-dashed border-gray-300 flex items-center justify-center text-[8px] text-gray-500 text-center">
                   QR<br />placeholder
                 </div>
               )}
@@ -119,7 +119,7 @@ function LetterPreview({ headline, body, cta, agentName, agentPhone, agentLogoUr
               {qrImageUrl ? (
                 <Image src={qrImageUrl} alt="QR code" width={64} height={64} unoptimized />
               ) : (
-                <div className="h-[64px] w-[64px] border-2 border-dashed border-gray-300 flex items-center justify-center text-[8px] text-gray-400 text-center">
+                <div className="h-[64px] w-[64px] border-2 border-dashed border-gray-300 flex items-center justify-center text-[8px] text-gray-500 text-center">
                   QR<br />placeholder
                 </div>
               )}

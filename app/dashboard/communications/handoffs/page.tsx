@@ -188,7 +188,7 @@ export default async function HandoffCockpitPage() {
           {
             label: "Awaiting Approval",
             count: contacts.filter((c) => c.handoffState === "ai_waiting_approval").length,
-            color: "text-amber-600",
+            color: "text-amber-700",
           },
           {
             label: "Compliance Hold",

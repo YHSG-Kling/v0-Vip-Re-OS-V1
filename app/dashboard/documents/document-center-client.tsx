@@ -321,7 +321,7 @@ function StatCard({
     variant === "danger"
       ? "text-red-600"
       : variant === "warning"
-      ? "text-amber-600"
+      ? "text-amber-700"
       : "text-gray-900"
 
   return (

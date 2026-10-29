@@ -464,7 +464,7 @@ function NeighborhoodReportContent({
                   <p className="text-xs text-muted-foreground">Median Sale Price</p>
                   <p className="text-lg font-bold">{formatCurrency(marketData.median_sale_price)}</p>
                   {marketData.price_trend_pct_1yr !== null && (
-                    <p className={`text-xs font-medium ${marketData.price_trend_pct_1yr >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    <p className={`text-xs font-medium ${marketData.price_trend_pct_1yr >= 0 ? "text-green-700" : "text-red-600"}`}>
                       {marketData.price_trend_pct_1yr >= 0 ? "+" : ""}{marketData.price_trend_pct_1yr.toFixed(1)}% YoY
                     </p>
                   )}
@@ -665,7 +665,7 @@ function NeighborhoodReportContent({
                     </div>
                     <div className="flex items-center gap-4">
                       <div className="flex items-center gap-1">
-                        <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+                        <Star className="h-4 w-4 fill-yellow-400 text-yellow-700" />
                         <span className="font-semibold">{school.rating}/10</span>
                       </div>
                       <span className="text-sm text-muted-foreground">
@@ -766,7 +766,7 @@ function NeighborhoodReportContent({
             <div className="flex flex-wrap gap-4">
               {dataSources.map((source) => (
                 <div key={source.id} className="flex items-center gap-2">
-                  <CheckCircle className="h-4 w-4 text-green-500" />
+                  <CheckCircle className="h-4 w-4 text-green-600" />
                   <span className="text-sm font-medium">{source.source_name}</span>
                   {/* WHICH ENDPOINT — source_type is CHECK-constrained and cannot name the
                       provider's actual route (RentCast is stored as 'custom'), so
@@ -810,10 +810,10 @@ function ScoreCard({
     score === null
       ? "text-muted-foreground"
       : score >= 70
-        ? "text-green-600"
+        ? "text-green-700"
         : score >= 50
-          ? "text-yellow-600"
-          : "text-orange-600"
+          ? "text-yellow-700"
+          : "text-orange-700"
 
   return (
     <div className="flex flex-col items-center text-center rounded-lg border p-3 gap-1">
@@ -971,9 +971,9 @@ function AmenityGroup({
 
 function MarketTrendBadge({ trend }: { trend: string }) {
   const trendConfig: Record<string, { color: string; label: string }> = {
-    hot: { color: "bg-red-500 text-white", label: "Hot" },
-    warm: { color: "bg-orange-500 text-white", label: "Warm" },
-    cooling: { color: "bg-blue-400 text-white", label: "Cooling" },
+    hot: { color: "bg-red-600 text-white", label: "Hot" },
+    warm: { color: "bg-orange-700 text-white", label: "Warm" },
+    cooling: { color: "bg-blue-600 text-white", label: "Cooling" },
     cold: { color: "bg-blue-700 text-white", label: "Cold" },
   }
 
@@ -1106,7 +1106,7 @@ function EmptyState({
 
 function getWalkScoreLabel(score: number): { label: string; color: string } {
   if (score >= 90) return { label: "Walker's Paradise", color: "bg-green-100 text-green-700" }
-  if (score >= 70) return { label: "Very Walkable", color: "bg-green-50 text-green-600" }
+  if (score >= 70) return { label: "Very Walkable", color: "bg-green-50 text-green-700" }
   if (score >= 50) return { label: "Somewhat Walkable", color: "bg-yellow-50 text-yellow-700" }
   if (score >= 25) return { label: "Car-Dependent", color: "bg-orange-50 text-orange-700" }
   return { label: "Almost All Errands Require a Car", color: "bg-red-50 text-red-700" }
@@ -1114,15 +1114,15 @@ function getWalkScoreLabel(score: number): { label: string; color: string } {
 
 function getTransitScoreLabel(score: number): { label: string; color: string } {
   if (score >= 90) return { label: "Excellent Transit", color: "bg-green-100 text-green-700" }
-  if (score >= 70) return { label: "Great Transit", color: "bg-green-50 text-green-600" }
+  if (score >= 70) return { label: "Great Transit", color: "bg-green-50 text-green-700" }
   if (score >= 50) return { label: "Good Transit", color: "bg-yellow-50 text-yellow-700" }
   if (score >= 25) return { label: "Some Transit", color: "bg-orange-50 text-orange-700" }
   return { label: "Minimal Transit", color: "bg-red-50 text-red-700" }
 }
 
 function getCrimeIndexLabel(index: number): { label: string; color: string; bgColor: string } {
-  if (index <= 25) return { label: "Low", color: "bg-green-500 text-white", bgColor: "bg-green-100 text-green-700" }
-  if (index <= 50) return { label: "Medium", color: "bg-yellow-500 text-white", bgColor: "bg-yellow-100 text-yellow-700" }
-  if (index <= 75) return { label: "High", color: "bg-orange-500 text-white", bgColor: "bg-orange-100 text-orange-700" }
-  return { label: "Very High", color: "bg-red-500 text-white", bgColor: "bg-red-100 text-red-700" }
+  if (index <= 25) return { label: "Low", color: "bg-green-700 text-white", bgColor: "bg-green-100 text-green-700" }
+  if (index <= 50) return { label: "Medium", color: "bg-yellow-700 text-white", bgColor: "bg-yellow-100 text-yellow-700" }
+  if (index <= 75) return { label: "High", color: "bg-orange-700 text-white", bgColor: "bg-orange-100 text-orange-700" }
+  return { label: "Very High", color: "bg-red-600 text-white", bgColor: "bg-red-100 text-red-700" }
 }

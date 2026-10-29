@@ -27,24 +27,24 @@ export function ReferralLikelihoodPanel({
         return {
           text: "High Referral Potential",
           className: "bg-amber-100 text-amber-700 border-amber-300",
-          icon: <Star className="h-4 w-4 text-amber-500 fill-amber-500" />,
+          icon: <Star className="h-4 w-4 text-amber-600 fill-amber-500" />,
         }
       case "medium":
         return {
           text: "Moderate Potential",
           className: "bg-gray-200 text-gray-700 border-gray-300",
-          icon: <Star className="h-4 w-4 text-gray-400" />,
+          icon: <Star className="h-4 w-4 text-gray-500" />,
         }
       case "low":
         return {
           text: "Building Relationship",
-          className: "bg-gray-100 text-gray-500 border-gray-200",
-          icon: <Heart className="h-4 w-4 text-gray-400" />,
+          className: "bg-gray-100 text-gray-600 border-gray-200",
+          icon: <Heart className="h-4 w-4 text-gray-500" />,
         }
       default:
         return {
           text: "Not Yet Assessed",
-          className: "bg-gray-100 text-gray-400 border-gray-200",
+          className: "bg-gray-100 text-gray-600 border-gray-200",
           icon: null,
         }
     }

@@ -242,7 +242,7 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
                     </SelectContent>
                   </Select>
                   {selectedVideo && selectedVideo.format !== "16:9" && (
-                    <p className="text-xs text-amber-600">
+                    <p className="text-xs text-amber-700">
                       Aspect ratio {selectedVideo.format ? `'${selectedVideo.format}'` : "not recorded"} — TV needs
                       16:9; staging will verify and refuse a known vertical/square cut.
                     </p>

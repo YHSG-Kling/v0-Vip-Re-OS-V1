@@ -242,7 +242,7 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
       {target && (
         <Card className="border-amber-300">
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-amber-500" /> Deactivate {target.name}</CardTitle>
+            <CardTitle className="text-base flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-amber-600" /> Deactivate {target.name}</CardTitle>
             <CardDescription>Review the book and choose how to hand it off. This cannot be undone automatically.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">

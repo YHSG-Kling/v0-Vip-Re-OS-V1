@@ -517,7 +517,7 @@ export function KnowledgeBaseClient({
 
   const getEmbeddingStatus = (article: KBArticle) => {
     if (article.content_embedding) {
-      return { icon: CheckCircle, color: 'text-green-600', label: 'Embedded' }
+      return { icon: CheckCircle, color: 'text-green-700', label: 'Embedded' }
     }
     return { icon: Circle, color: 'text-muted-foreground', label: 'Not Embedded' }
   }
@@ -741,7 +741,7 @@ export function KnowledgeBaseClient({
                           )}
                           <div
                             className={`flex items-center gap-1 text-xs ${
-                              embedded ? 'text-green-600' : 'text-muted-foreground'
+                              embedded ? 'text-green-700' : 'text-muted-foreground'
                             }`}
                           >
                             {embedded ? (

@@ -53,7 +53,7 @@ export default async function ComplianceViolationsPage() {
       {violations.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
-            <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
+            <CheckCircle2 className="w-12 h-12 text-green-600 mx-auto mb-3" />
             <p className="text-lg font-medium text-green-700">No Active Violations</p>
             <p className="text-sm text-gray-500 mt-1">All communications are compliant</p>
           </CardContent>
@@ -72,7 +72,7 @@ export default async function ComplianceViolationsPage() {
                       </Badge>
                     </div>
                     <p className="text-sm text-gray-600">{v.description || 'No description available'}</p>
-                    <p className="text-xs text-gray-400 mt-1">{new Date(v.created_at).toLocaleDateString()}</p>
+                    <p className="text-xs text-gray-500 mt-1">{new Date(v.created_at).toLocaleDateString()}</p>
                   </div>
                   <div className="flex flex-col items-end gap-2">
                     <Badge variant={v.status === 'resolved' ? 'outline' : 'destructive'}>

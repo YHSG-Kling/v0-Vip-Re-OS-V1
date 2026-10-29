@@ -42,19 +42,19 @@ export function BrokerRiskRadar({ signals }: BrokerRiskRadarProps) {
     warning: {
       bg: "bg-orange-500/10",
       border: "border-orange-500/30",
-      text: "text-orange-600",
+      text: "text-orange-700",
       badge: "secondary" as const,
     },
     watch: {
       bg: "bg-yellow-500/10",
       border: "border-yellow-500/30",
-      text: "text-yellow-600",
+      text: "text-yellow-700",
       badge: "secondary" as const,
     },
     healthy: {
       bg: "bg-green-500/10",
       border: "border-green-500/30",
-      text: "text-green-600",
+      text: "text-green-700",
       badge: "outline" as const,
     },
   }

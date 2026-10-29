@@ -204,7 +204,7 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
                 )}
               </p>
               {annualSavings > 0 && isAnnual && (
-                <p className="text-xs text-green-600">Save {annualSavings}% annually</p>
+                <p className="text-xs text-green-700">Save {annualSavings}% annually</p>
               )}
             </div>
           </div>

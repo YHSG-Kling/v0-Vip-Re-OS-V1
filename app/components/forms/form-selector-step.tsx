@@ -202,7 +202,7 @@ export function FormSelectorStep({
         )}
 
         {loadError && (
-          <div className="flex items-center gap-2 text-sm text-amber-600">
+          <div className="flex items-center gap-2 text-sm text-amber-700">
             <AlertCircle className="h-4 w-4 shrink-0" />
             {loadError}
           </div>

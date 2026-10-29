@@ -115,7 +115,7 @@ export function VendorCommandStrip({ vendorId }: VendorCommandStripProps) {
     return (
       <Card className="border-green-500/20 bg-gradient-to-r from-green-500/5 to-transparent">
         <CardContent className="flex items-center gap-3 p-4">
-          <CheckCircle className="h-5 w-5 text-green-500" />
+          <CheckCircle className="h-5 w-5 text-green-600" />
           <span className="font-medium text-green-700">All caught up - no pending actions</span>
         </CardContent>
       </Card>
@@ -130,7 +130,7 @@ export function VendorCommandStrip({ vendorId }: VendorCommandStripProps) {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             {primaryAction.type === "urgent" && <AlertTriangle className="h-6 w-6 text-destructive" />}
-            {primaryAction.type === "warning" && <Clock className="h-6 w-6 text-yellow-500" />}
+            {primaryAction.type === "warning" && <Clock className="h-6 w-6 text-yellow-700" />}
             {primaryAction.type === "info" && <Briefcase className="h-6 w-6 text-primary" />}
             <div>
               <div className="flex items-center gap-2">

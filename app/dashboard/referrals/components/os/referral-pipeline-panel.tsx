@@ -196,7 +196,7 @@ export function ReferralPipelinePanel({
                           </p>
                         )}
                         {referral.value_estimate && (
-                          <p className="text-xs text-emerald-600 font-medium">
+                          <p className="text-xs text-emerald-700 font-medium">
                             ${referral.value_estimate.toLocaleString()}
                           </p>
                         )}

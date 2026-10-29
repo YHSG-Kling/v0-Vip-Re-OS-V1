@@ -507,7 +507,7 @@ export default async function BrokeragePLPage() {
               <div className="flex justify-between items-center py-3 bg-muted/50 rounded-lg px-3 mt-2">
                 <span className="font-bold">Net Profit</span>
                 <div className="text-right">
-                  <span className={`font-bold text-lg ${(latestPL?.net_profit || 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                  <span className={`font-bold text-lg ${(latestPL?.net_profit || 0) >= 0 ? "text-green-700" : "text-red-600"}`}>
                     {formatCurrency(latestPL?.net_profit)}
                   </span>
                   <p className="text-xs text-muted-foreground">
@@ -553,7 +553,7 @@ export default async function BrokeragePLPage() {
                       <td className="py-3 pr-4 text-right">
                         {formatCurrency(team.gross_commission)}
                       </td>
-                      <td className="py-3 pr-4 text-right text-green-600">
+                      <td className="py-3 pr-4 text-right text-green-700">
                         {formatCurrency(team.team_net)}
                       </td>
                       <td className="py-3 pr-4 text-right">
@@ -807,7 +807,7 @@ export default async function BrokeragePLPage() {
                         {new Date(e.expense_date).toLocaleDateString()} · <Badge variant="outline" className="text-[10px]">{e.category || "other"}</Badge> · {e.team_id ? "Team" : "Brokerage"}
                       </p>
                     </div>
-                    <p className="text-sm font-semibold text-orange-600 shrink-0 ml-3">{formatCurrency(e.amount)}</p>
+                    <p className="text-sm font-semibold text-orange-700 shrink-0 ml-3">{formatCurrency(e.amount)}</p>
                   </div>
                 ))}
               </div>
@@ -1050,7 +1050,7 @@ async function LedgerTruthSection({ brokerageId }: { brokerageId: string }) {
           <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Gross (events of record)</div><div className="text-xl font-semibold tabular-nums">{usd(b.grossCents)}</div></div>
           <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Brokerage share (net of corrections)</div><div className="text-xl font-semibold tabular-nums">{usd(b.brokerageShareCents)}</div></div>
           <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Tenant-borne costs + obligations</div><div className="text-xl font-semibold tabular-nums text-red-600">-{usd(b.tenantCostCents + graph.unattributedCosts.tenantCostCents + b.companyObligationCents)}</div><div className="text-[11px] text-muted-foreground">AI included in your subscription (never counted as your spend): {usd(b.platformCoveredCostCents + graph.unattributedCosts.platformCoveredCostCents)}</div></div>
-          <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Contribution margin</div><div className={`text-xl font-semibold tabular-nums ${graph.contributionMarginCents >= 0 ? "text-green-600" : "text-red-600"}`}>{usd(graph.contributionMarginCents)}</div><div className="text-[11px] text-muted-foreground">incl. {usd(graph.marketplace.referralPayoutsReceivedCents)} referral payouts received</div></div>
+          <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Contribution margin</div><div className={`text-xl font-semibold tabular-nums ${graph.contributionMarginCents >= 0 ? "text-green-700" : "text-red-600"}`}>{usd(graph.contributionMarginCents)}</div><div className="text-[11px] text-muted-foreground">incl. {usd(graph.marketplace.referralPayoutsReceivedCents)} referral payouts received</div></div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs text-muted-foreground">
           <div>Agent shares <span className="font-medium text-foreground tabular-nums">{usd(b.agentShareCents)}</span></div>

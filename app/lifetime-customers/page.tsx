@@ -130,7 +130,7 @@ interface Anniversary {
 function getEngagementBadge(score: number) {
   if (score >= 70) return { label: "Hot", className: "bg-green-100 text-green-700 border-green-300" }
   if (score >= 40) return { label: "Warm", className: "bg-amber-100 text-amber-700 border-amber-300" }
-  return { label: "Cold", className: "bg-slate-100 text-slate-500 border-slate-300" }
+  return { label: "Cold", className: "bg-slate-100 text-slate-600 border-slate-300" }
 }
 
 function getDaysSinceContact(lastTouchpointDate?: string): number | null {
@@ -1022,7 +1022,7 @@ export default function LifetimeCustomersPage() {
                   const daysSinceClass =
                     daysSince === null ? "text-red-600" :
                     daysSince > 60 ? "text-red-600" :
-                    daysSince > 30 ? "text-amber-600" : "text-green-600"
+                    daysSince > 30 ? "text-amber-700" : "text-green-700"
 
                   const daysSinceLabel =
                     daysSince === null ? "Never contacted" :

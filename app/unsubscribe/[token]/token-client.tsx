@@ -90,7 +90,7 @@ export function MailUnsubscribeClient({ token }: { token: string }) {
   if (stage === "invalid") {
     return (
       <PageShell>
-        <AlertTriangle className="h-12 w-12 text-amber-500 mx-auto mb-4" />
+        <AlertTriangle className="h-12 w-12 text-amber-600 mx-auto mb-4" />
         <h1 className="text-xl font-semibold text-foreground mb-2">We didn&apos;t recognise that code</h1>
         <p className="text-muted-foreground text-sm max-w-sm leading-relaxed">
           Please check the code printed on the mail piece and enter it exactly. It is 14 characters long and is not
@@ -115,7 +115,7 @@ export function MailUnsubscribeClient({ token }: { token: string }) {
   if (stage === "done") {
     return (
       <PageShell>
-        <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
+        <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-4" />
         <h1 className="text-xl font-semibold text-foreground mb-2">
           {scope === "all" ? "You have been removed from all contact" : "You have been removed from our mailing list"}
         </h1>
@@ -126,7 +126,7 @@ export function MailUnsubscribeClient({ token }: { token: string }) {
           Pieces already at the post office may still arrive.
         </p>
         {warning ? (
-          <p className="text-amber-600 dark:text-amber-500 text-xs mt-4 max-w-sm leading-relaxed">{warning}</p>
+          <p className="text-amber-700 dark:text-amber-500 text-xs mt-4 max-w-sm leading-relaxed">{warning}</p>
         ) : null}
         <p className="text-muted-foreground text-xs mt-4">
           You may still receive messages required to complete an active transaction.

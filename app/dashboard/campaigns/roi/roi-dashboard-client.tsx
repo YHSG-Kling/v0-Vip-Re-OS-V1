@@ -319,7 +319,7 @@ export function ROIDashboardClient({
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Avg ROI</CardTitle>
             {(summary?.avg_roi_percentage ?? 0) > 0 ? (
-              <ArrowUpRight className="h-4 w-4 text-green-500" />
+              <ArrowUpRight className="h-4 w-4 text-green-600" />
             ) : (
               <ArrowDownRight className="h-4 w-4 text-red-500" />
             )}
@@ -330,9 +330,9 @@ export function ROIDashboardClient({
                 "text-2xl font-bold",
                 summary?.avg_roi_percentage != null
                   ? (summary.avg_roi_percentage) > 100
-                    ? "text-green-600"
+                    ? "text-green-700"
                     : (summary.avg_roi_percentage) > 0
-                    ? "text-yellow-600"
+                    ? "text-yellow-700"
                     : "text-red-600"
                   : ""
               )}
@@ -563,9 +563,9 @@ export function ROIDashboardClient({
                               "font-medium",
                               campaign.roi_percentage !== null
                                 ? campaign.roi_percentage > 100
-                                  ? "text-green-600"
+                                  ? "text-green-700"
                                   : campaign.roi_percentage > 0
-                                  ? "text-yellow-600"
+                                  ? "text-yellow-700"
                                   : "text-red-600"
                                 : ""
                             )}
@@ -677,9 +677,9 @@ export function ROIDashboardClient({
                             "font-medium",
                             ch.roi_percentage !== null
                               ? ch.roi_percentage > 100
-                                ? "text-green-600"
+                                ? "text-green-700"
                                 : ch.roi_percentage > 0
-                                ? "text-yellow-600"
+                                ? "text-yellow-700"
                                 : "text-red-600"
                               : ""
                           )}
@@ -747,8 +747,8 @@ export function ROIDashboardClient({
                           className={cn(
                             "text-xl font-bold",
                             campaign.roi_percentage > 100
-                              ? "text-green-600"
-                              : "text-yellow-600"
+                              ? "text-green-700"
+                              : "text-yellow-700"
                           )}
                         >
                           {campaign.roi_percentage?.toFixed(1)}%

@@ -606,7 +606,7 @@ export function OfferFormWizard({
                   placeholder={"One signer per line, signing order top to bottom"}
                   className="w-full rounded-md border bg-background px-2 py-1 text-xs"
                 />
-                <button onClick={confirmSignersAndSend} className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700">
+                <button onClick={confirmSignersAndSend} className="rounded-md bg-amber-700 px-3 py-1 text-xs font-medium text-white hover:bg-amber-800">
                   Confirm signing order & send
                 </button>
               </div>

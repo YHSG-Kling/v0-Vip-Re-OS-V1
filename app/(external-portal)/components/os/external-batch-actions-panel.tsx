@@ -160,7 +160,7 @@ export function ExternalBatchActionsPanel({
       <CardContent>
         {pendingItems.length === 0 ? (
           <div className="text-center py-6 text-muted-foreground">
-            <CheckCircle2 className="h-8 w-8 mx-auto mb-2 opacity-50 text-green-500" />
+            <CheckCircle2 className="h-8 w-8 mx-auto mb-2 opacity-50 text-green-600" />
             <p className="text-sm">Nothing to process</p>
           </div>
         ) : (
@@ -202,7 +202,7 @@ export function ExternalBatchActionsPanel({
                   <span className="text-sm flex-1">{item.label}</span>
                   <div className="flex items-center gap-1">
                     {item.status === "pending" && (
-                      <AlertTriangle className="h-3 w-3 text-yellow-500" aria-label="Awaiting action" />
+                      <AlertTriangle className="h-3 w-3 text-yellow-700" aria-label="Awaiting action" />
                     )}
                     <Badge
                       variant="outline"

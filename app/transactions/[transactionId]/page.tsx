@@ -654,8 +654,8 @@ export default function AgentTransactionDetailPage() {
                       <span
                         className={cn(
                           "font-medium capitalize",
-                          dealConfidence.verdict === "on_track" ? "text-emerald-600"
-                            : dealConfidence.verdict === "watch" ? "text-amber-600"
+                          dealConfidence.verdict === "on_track" ? "text-emerald-700"
+                            : dealConfidence.verdict === "watch" ? "text-amber-700"
                             : "text-red-600",
                         )}
                       >

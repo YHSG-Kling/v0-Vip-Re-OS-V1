@@ -279,7 +279,7 @@ export default function SubmitContentForm({ userId, agentId, onSuccess }: Submit
           {/* Warnings */}
           {scanResults.warnings.length > 0 && (
             <div className="space-y-2">
-              <h4 className="text-sm font-medium text-yellow-600 flex items-center gap-2">
+              <h4 className="text-sm font-medium text-yellow-700 flex items-center gap-2">
                 <Info className="w-4 h-4" />
                 Warnings (Recommended to Address)
               </h4>
@@ -300,7 +300,7 @@ export default function SubmitContentForm({ userId, agentId, onSuccess }: Submit
           {scanResults.passed && scanResults.issues.length === 0 && scanResults.warnings.length === 0 && (
             <Alert>
               <CheckCircle className="h-4 w-4 text-green-600" />
-              <AlertDescription className="text-green-600">
+              <AlertDescription className="text-green-700">
                 No compliance issues detected! Content is ready for submission.
               </AlertDescription>
             </Alert>

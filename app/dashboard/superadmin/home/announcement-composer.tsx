@@ -32,7 +32,7 @@ export function AnnouncementComposer() {
 
   return (
     <div className="space-y-2">
-      {msg && <p className={"text-xs " + (msg.ok ? "text-emerald-600" : "text-red-600")}>{msg.text}</p>}
+      {msg && <p className={"text-xs " + (msg.ok ? "text-emerald-700" : "text-red-600")}>{msg.text}</p>}
       {!open ? (
         <Button size="sm" variant="outline" onClick={() => { setOpen(true); setMsg(null) }}>Post announcement</Button>
       ) : (

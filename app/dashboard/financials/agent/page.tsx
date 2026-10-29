@@ -80,7 +80,7 @@ export default async function AgentFinancialsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <AlertCircle className="h-5 w-5 text-amber-500" />
+              <AlertCircle className="h-5 w-5 text-amber-600" />
               Financials aren&rsquo;t available right now
             </CardTitle>
             <CardDescription>
@@ -530,7 +530,7 @@ export default async function AgentFinancialsPage() {
                         </a>
                       </div>
                     </div>
-                    <p className="font-semibold text-amber-600 ml-3 shrink-0">
+                    <p className="font-semibold text-amber-700 ml-3 shrink-0">
                       ${deal.total_commission?.toLocaleString() || 0}
                     </p>
                   </div>

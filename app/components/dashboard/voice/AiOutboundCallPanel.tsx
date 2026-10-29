@@ -189,7 +189,7 @@ export function AiOutboundCallPanel({ contacts, scripts, agentId, brokerageId }:
               )}
 
               {selectedContact && (
-                <p className="text-xs text-green-600">
+                <p className="text-xs text-green-700">
                   Selected: {selectedContact.first_name} {selectedContact.last_name} — {selectedContact.phone}
                 </p>
               )}
@@ -219,7 +219,7 @@ export function AiOutboundCallPanel({ contacts, scripts, agentId, brokerageId }:
             )}
 
             {error && (
-              <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
                 {error}
               </p>
             )}

@@ -143,9 +143,9 @@ export default async function AIAuditPage({ searchParams }: { searchParams: Prom
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Total AI Outputs', value: total, icon: Sparkles, color: 'text-purple-600' },
-          { label: 'Compliance Approved', value: approved, icon: CheckCircle2, color: 'text-green-600' },
-          { label: 'Pending Review', value: pending, icon: Eye, color: 'text-yellow-600' },
-          { label: 'Approval Rate', value: `${approvalRate}%`, icon: TrendingUp, color: approvalRate >= 80 ? 'text-green-600' : 'text-red-600' },
+          { label: 'Compliance Approved', value: approved, icon: CheckCircle2, color: 'text-green-700' },
+          { label: 'Pending Review', value: pending, icon: Eye, color: 'text-yellow-700' },
+          { label: 'Approval Rate', value: `${approvalRate}%`, icon: TrendingUp, color: approvalRate >= 80 ? 'text-green-700' : 'text-red-600' },
         ].map((stat) => (
           <Card key={stat.label}>
             <CardContent className="p-4 flex items-center gap-3">

@@ -52,7 +52,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   clear_to_close: { label: "Clear to Close", color: "bg-emerald-100 text-emerald-800" },
   funded: { label: "Funded", color: "bg-slate-100 text-slate-600" },
   denied: { label: "Denied", color: "bg-red-100 text-red-800" },
-  withdrawn: { label: "Withdrawn", color: "bg-slate-100 text-slate-500" },
+  withdrawn: { label: "Withdrawn", color: "bg-slate-100 text-slate-600" },
 }
 
 // `formatCurrency`/`formatDate` — same-body census, round 4 (2026-09-09, lane

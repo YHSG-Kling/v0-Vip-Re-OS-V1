@@ -75,7 +75,7 @@ export function DecisionRoom({ decisions: initial }: { decisions: OnboardingDeci
           return (
             <li key={d.key} className="rounded-lg border p-3">
               <div className="flex flex-wrap items-center gap-2">
-                {d.state === "done" ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : d.state === "waiting" ? <Clock className="h-4 w-4 text-slate-400" /> : <Sparkles className="h-4 w-4 text-emerald-600" />}
+                {d.state === "done" ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : d.state === "waiting" ? <Clock className="h-4 w-4 text-slate-500" /> : <Sparkles className="h-4 w-4 text-emerald-600" />}
                 <span className="text-sm font-medium">{d.title}</span>
                 <Badge className={`text-[10px] ${badge.className}`}>{badge.label}</Badge>
               </div>

@@ -256,7 +256,7 @@ export default async function BrokerageIntelligencePage() {
           )}
           {highRiskDeals.length > 0 && (
             <Link href="/dashboard/brokerage/deal-health">
-              <Badge className="cursor-pointer gap-1 px-3 py-1 text-xs bg-amber-500 hover:bg-amber-600 text-white border-0">
+              <Badge className="cursor-pointer gap-1 px-3 py-1 text-xs bg-amber-700 hover:bg-amber-800 text-white border-0">
                 <AlertTriangle className="h-3 w-3" />
                 {highRiskDeals.length} deal{highRiskDeals.length !== 1 ? "s" : ""} need attention
               </Badge>
@@ -264,7 +264,7 @@ export default async function BrokerageIntelligencePage() {
           )}
           {patternCount > 0 && (
             <Link href="/dashboard/patterns">
-              <Badge className="cursor-pointer gap-1 px-3 py-1 text-xs bg-blue-500 hover:bg-blue-600 text-white border-0">
+              <Badge className="cursor-pointer gap-1 px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white border-0">
                 <Brain className="h-3 w-3" />
                 {patternCount} pattern{patternCount !== 1 ? "s" : ""} this week
               </Badge>

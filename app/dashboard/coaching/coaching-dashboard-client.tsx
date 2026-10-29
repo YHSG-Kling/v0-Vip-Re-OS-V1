@@ -260,10 +260,10 @@ function StageCoachingCard({
         <div className="flex gap-4">
           {coaching.success_signals.length > 0 && (
             <div className="flex-1">
-              <h4 className="mb-1 text-xs font-medium text-green-600">Success Signals</h4>
+              <h4 className="mb-1 text-xs font-medium text-green-700">Success Signals</h4>
               <ul className="space-y-1">
                 {coaching.success_signals.slice(0, 2).map((signal, i) => (
-                  <li key={i} className="text-xs text-green-600">
+                  <li key={i} className="text-xs text-green-700">
                     {signal}
                   </li>
                 ))}
@@ -482,7 +482,7 @@ export function CoachingDashboardClient({
           <Card className="sticky top-6">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Trophy className="h-5 w-5 text-amber-500" />
+                <Trophy className="h-5 w-5 text-amber-600" />
                 Weekly Report
               </CardTitle>
             </CardHeader>
@@ -496,7 +496,7 @@ export function CoachingDashboardClient({
 
                   {/* Wins */}
                   <div>
-                    <h4 className="mb-2 flex items-center gap-1 text-sm font-medium text-green-600">
+                    <h4 className="mb-2 flex items-center gap-1 text-sm font-medium text-green-700">
                       <CheckCircle2 className="h-4 w-4" />
                       This Week's Wins
                     </h4>
@@ -511,7 +511,7 @@ export function CoachingDashboardClient({
 
                   {/* Gaps */}
                   <div>
-                    <h4 className="mb-2 flex items-center gap-1 text-sm font-medium text-amber-600">
+                    <h4 className="mb-2 flex items-center gap-1 text-sm font-medium text-amber-700">
                       <AlertTriangle className="h-4 w-4" />
                       Areas to Improve
                     </h4>
@@ -777,7 +777,7 @@ export function CoachingDashboardClient({
                           <p className="text-xs text-muted-foreground">Across {aiInsights.conversations?.length ?? 0} recent conversations</p>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <Flame className="h-4 w-4 text-orange-500" />
+                          <Flame className="h-4 w-4 text-orange-600" />
                           <span className="text-2xl font-bold tabular-nums">{aiInsights.averageThemFirstScore ?? "—"}</span>
                           <span className="text-xs text-muted-foreground">/100</span>
                         </div>
@@ -838,7 +838,7 @@ export function CoachingDashboardClient({
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
-                <AlertTriangle className="h-5 w-5 text-orange-500" />
+                <AlertTriangle className="h-5 w-5 text-orange-600" />
                 Interventions ({localInterventions.length})
               </CardTitle>
             </CardHeader>
@@ -895,7 +895,7 @@ export function CoachingDashboardClient({
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <Gauge className="h-5 w-5 text-sky-500" />
+                  <Gauge className="h-5 w-5 text-sky-600" />
                   Call Behaviour ({callCoachingTips.length})
                 </CardTitle>
                 <CardDescription className="text-xs">
@@ -928,7 +928,7 @@ export function CoachingDashboardClient({
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
-                <Lightbulb className="h-5 w-5 text-yellow-500" />
+                <Lightbulb className="h-5 w-5 text-yellow-700" />
                 Suggestions ({localSuggestions.length})
               </CardTitle>
             </CardHeader>

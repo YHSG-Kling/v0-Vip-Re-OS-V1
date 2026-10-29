@@ -340,7 +340,7 @@ export function AnalyticsTab({ listingId }: Props) {
           value={totals.totalAttendees}
         />
         <MetricCard
-          icon={<Flame className="h-4 w-4 text-amber-500" />}
+          icon={<Flame className="h-4 w-4 text-amber-600" />}
           label="Hot Leads"
           value={totals.hotLeads}
         />
@@ -484,7 +484,7 @@ export function AnalyticsTab({ listingId }: Props) {
                           {[1, 2, 3, 4, 5].map((n) => (
                             <Star
                               key={n}
-                              className={`h-3.5 w-3.5 ${n <= (f.rating ?? 0) ? "text-amber-400 fill-amber-400" : "text-muted-foreground/30"}`}
+                              className={`h-3.5 w-3.5 ${n <= (f.rating ?? 0) ? "text-amber-600 fill-amber-400" : "text-muted-foreground/30"}`}
                             />
                           ))}
                         </div>
@@ -571,7 +571,7 @@ export function AnalyticsTab({ listingId }: Props) {
                       <div className="text-xs text-muted-foreground">Attended</div>
                     </div>
                     <div className="text-right">
-                      <div className="font-medium text-amber-600">{ev.hotLeads}</div>
+                      <div className="font-medium text-amber-700">{ev.hotLeads}</div>
                       <div className="text-xs text-muted-foreground">Hot Leads</div>
                     </div>
                   </div>

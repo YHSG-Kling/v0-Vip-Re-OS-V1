@@ -96,7 +96,7 @@ export function QuickContactPanel({
               </Badge>
             )}
             {isPriority && (
-              <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+              <Star className="h-3 w-3 text-yellow-700 fill-yellow-500" />
             )}
           </div>
         </div>
@@ -130,7 +130,7 @@ export function QuickContactPanel({
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <User className="h-4 w-4 text-green-500" />
+          <User className="h-4 w-4 text-green-600" />
           Quick Contact
         </CardTitle>
       </CardHeader>

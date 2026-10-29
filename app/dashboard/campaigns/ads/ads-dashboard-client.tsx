@@ -248,18 +248,18 @@ type ManualSourceRuleType = Extract<
 
 const STATUS_CONFIG: Record<string, { icon: React.ReactNode; color: string; bgColor: string }> = {
   draft: { icon: <Clock className="h-3 w-3" />, color: "text-gray-600", bgColor: "bg-gray-100" },
-  pending_review: { icon: <Clock className="h-3 w-3" />, color: "text-yellow-600", bgColor: "bg-yellow-100" },
-  approved: { icon: <CheckCircle className="h-3 w-3" />, color: "text-green-600", bgColor: "bg-green-100" },
+  pending_review: { icon: <Clock className="h-3 w-3" />, color: "text-yellow-700", bgColor: "bg-yellow-100" },
+  approved: { icon: <CheckCircle className="h-3 w-3" />, color: "text-green-700", bgColor: "bg-green-100" },
   launching: { icon: <Rocket className="h-3 w-3" />, color: "text-blue-600", bgColor: "bg-blue-100" },
-  active: { icon: <Play className="h-3 w-3" />, color: "text-green-600", bgColor: "bg-green-100" },
-  paused: { icon: <Pause className="h-3 w-3" />, color: "text-yellow-600", bgColor: "bg-yellow-100" },
+  active: { icon: <Play className="h-3 w-3" />, color: "text-green-700", bgColor: "bg-green-100" },
+  paused: { icon: <Pause className="h-3 w-3" />, color: "text-yellow-700", bgColor: "bg-yellow-100" },
   completed: { icon: <CheckCircle className="h-3 w-3" />, color: "text-blue-600", bgColor: "bg-blue-100" },
   error: { icon: <AlertCircle className="h-3 w-3" />, color: "text-red-600", bgColor: "bg-red-100" },
-  synced: { icon: <CheckCircle className="h-3 w-3" />, color: "text-green-600", bgColor: "bg-green-100" },
+  synced: { icon: <CheckCircle className="h-3 w-3" />, color: "text-green-700", bgColor: "bg-green-100" },
   running: { icon: <Loader2 className="h-3 w-3 animate-spin" />, color: "text-blue-600", bgColor: "bg-blue-100" },
   // 'live' = human-confirmed launched on the provider (CTV lane; also the
   // social publisher's post-provider-success status in launch-assembler).
-  live: { icon: <Play className="h-3 w-3" />, color: "text-green-600", bgColor: "bg-green-100" },
+  live: { icon: <Play className="h-3 w-3" />, color: "text-green-700", bgColor: "bg-green-100" },
 }
 
 const PLATFORM_COLORS: Record<string, string> = {
@@ -1646,7 +1646,7 @@ export function AdsDashboardClient({
                         ) : (
                           <p
                             className={`mt-1 text-xs font-medium ${
-                              lift.liftRatio >= 1 ? "text-green-600" : "text-amber-600"
+                              lift.liftRatio >= 1 ? "text-green-700" : "text-amber-700"
                             }`}
                           >
                             {lift.liftRatio.toFixed(2)}x organic (
@@ -1759,7 +1759,7 @@ export function AdsDashboardClient({
                       step === wizardStep
                         ? "bg-primary text-primary-foreground"
                         : step < wizardStep
-                        ? "bg-green-500 text-white"
+                        ? "bg-green-700 text-white"
                         : "bg-muted text-muted-foreground"
                     }`}
                   >

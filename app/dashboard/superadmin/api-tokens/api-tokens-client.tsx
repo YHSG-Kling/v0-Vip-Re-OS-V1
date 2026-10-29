@@ -219,7 +219,7 @@ export function ApiTokensClient(
                       <td className="py-2 pr-4 text-muted-foreground text-xs">{r.brokerage_id ?? "platform-wide"}</td>
                       <td className="py-2 pr-4 text-muted-foreground text-xs">{r.last_used_at ? new Date(r.last_used_at).toLocaleDateString() : "never"}</td>
                       <td className="py-2 pr-4">
-                        <Badge className={r.is_active ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-gray-100 text-gray-500 border-gray-200"}>
+                        <Badge className={r.is_active ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-gray-100 text-gray-600 border-gray-200"}>
                           {r.is_active ? "active" : "revoked"}
                         </Badge>
                       </td>

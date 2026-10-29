@@ -16,11 +16,11 @@ import {
 
 const CHANNEL_ICON: Record<string, React.ReactNode> = {
   email:       <Mail className="h-4 w-4 text-blue-500" />,
-  sms:         <MessageSquare className="h-4 w-4 text-green-500" />,
+  sms:         <MessageSquare className="h-4 w-4 text-green-600" />,
   phone:       <Phone className="h-4 w-4 text-gray-500" />,
   voice_drop:  <Voicemail className="h-4 w-4 text-indigo-500" />,
-  in_app:      <Bell className="h-4 w-4 text-sky-500" />,
-  direct_mail: <FileText className="h-4 w-4 text-orange-500" />,
+  in_app:      <Bell className="h-4 w-4 text-sky-600" />,
+  direct_mail: <FileText className="h-4 w-4 text-orange-600" />,
 }
 
 const CHANNEL_DESCRIPTION: Record<string, string> = {

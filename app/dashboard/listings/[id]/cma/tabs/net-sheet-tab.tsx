@@ -467,7 +467,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
             </div>
 
             {!listing.seller_contact_id && (
-              <p className="text-xs text-amber-600">
+              <p className="text-xs text-amber-700">
                 Link a seller contact to this listing to enable portal sharing.
               </p>
             )}

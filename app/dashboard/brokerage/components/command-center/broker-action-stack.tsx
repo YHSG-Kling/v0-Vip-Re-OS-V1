@@ -32,19 +32,19 @@ export function BrokerActionStack({ actions }: BrokerActionStackProps) {
       badge: "destructive" as const,
       bg: "bg-red-500/10 hover:bg-red-500/15",
       border: "border-red-500/30",
-      icon: "text-red-500",
+      icon: "text-red-600",
     },
     high: {
       badge: "destructive" as const,
       bg: "bg-orange-500/10 hover:bg-orange-500/15",
       border: "border-orange-500/30",
-      icon: "text-orange-500",
+      icon: "text-orange-700",
     },
     medium: {
       badge: "secondary" as const,
       bg: "bg-yellow-500/5 hover:bg-yellow-500/10",
       border: "border-yellow-500/30",
-      icon: "text-yellow-600",
+      icon: "text-yellow-700",
     },
     low: {
       badge: "outline" as const,

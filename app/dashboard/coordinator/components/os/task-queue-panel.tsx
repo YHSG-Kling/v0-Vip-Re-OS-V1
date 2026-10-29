@@ -95,9 +95,9 @@ export function TaskQueuePanel({ brokerageId }: TaskQueuePanelProps) {
       case 'high':
         return 'text-red-600'
       case 'medium':
-        return 'text-orange-600'
+        return 'text-orange-700'
       case 'low':
-        return 'text-green-600'
+        return 'text-green-700'
       default:
         return 'text-gray-600'
     }

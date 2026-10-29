@@ -212,9 +212,9 @@ export default async function SuperadminRolloutPage() {
                       <td className="p-2 text-xs text-muted-foreground">{f.category ?? "—"}</td>
                       <td className="p-2">
                         {sunset ? (
-                          <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-500">sunset</span>
+                          <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-600">sunset</span>
                         ) : f.deprecated ? (
-                          <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-500">deprecated</span>
+                          <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-600">deprecated</span>
                         ) : !f.enabled ? (
                           <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-red-100 text-red-800">disabled</span>
                         ) : pct < 100 ? (

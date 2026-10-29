@@ -190,7 +190,7 @@ export function PolicyReportingPanel({
           <div className="space-y-3 pt-2 border-t">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Pass Rate</span>
-              <Badge className="bg-green-500 text-white">{stats.pass_rate}%</Badge>
+              <Badge className="bg-green-700 text-white">{stats.pass_rate}%</Badge>
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Fail Rate</span>
@@ -198,7 +198,7 @@ export function PolicyReportingPanel({
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Review Required</span>
-              <Badge className="bg-orange-500 text-white">{stats.review_required_rate}%</Badge>
+              <Badge className="bg-orange-700 text-white">{stats.review_required_rate}%</Badge>
             </div>
             
             {stats.top_violation_types?.length > 0 && (
@@ -259,7 +259,7 @@ export function PolicyReportingPanel({
                   <Badge
                     className={
                       event.allowed
-                        ? "bg-green-500 text-white text-[10px]"
+                        ? "bg-green-700 text-white text-[10px]"
                         : "bg-destructive text-destructive-foreground text-[10px]"
                     }
                   >

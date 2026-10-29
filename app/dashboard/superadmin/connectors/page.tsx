@@ -172,7 +172,7 @@ export default async function SuperadminConnectorsPage() {
                       <tr key={c.capability} className="border-b last:border-0">
                         <td className="py-1 pr-4 font-medium">{c.capability}</td>
                         <td className="py-1 pr-4">{c.count}</td>
-                        <td className="py-1 pr-4 text-amber-600">{c.denied || ""}</td>
+                        <td className="py-1 pr-4 text-amber-700">{c.denied || ""}</td>
                         <td className="py-1 pr-4 text-red-600">{c.errors || ""}</td>
                       </tr>
                     ))}

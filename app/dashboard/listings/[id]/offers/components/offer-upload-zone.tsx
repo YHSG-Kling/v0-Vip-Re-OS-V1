@@ -185,7 +185,7 @@ export function OfferUploadZone({ listingId, brokerageId, onUploadComplete }: Pr
             </>
           ) : (
             <>
-              <CheckCircle2 className="h-10 w-10 text-green-500" />
+              <CheckCircle2 className="h-10 w-10 text-green-600" />
               <p className="text-sm font-medium text-foreground">Offer uploaded and extracted</p>
               <Button
                 variant="outline"

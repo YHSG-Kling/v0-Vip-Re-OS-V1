@@ -395,7 +395,7 @@ export default async function AcquisitionPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
               { label: "Total Invested",      value: `$${recruitROISummary.totalInvested.toLocaleString()}`,  icon: DollarSign, color: "text-red-600" },
-              { label: "Total Generated",     value: `$${recruitROISummary.totalGenerated.toLocaleString()}`, icon: TrendingUp, color: "text-green-600" },
+              { label: "Total Generated",     value: `$${recruitROISummary.totalGenerated.toLocaleString()}`, icon: TrendingUp, color: "text-green-700" },
               { label: "Avg ROI",             value: `${recruitROISummary.avgROI.toFixed(1)}%`,               icon: BarChart3,  color: "text-blue-600" },
               { label: "Profitable Recruits", value: `${recruitROISummary.profitableRecruits}/${recruitROISummary.activeRecruits}`, icon: Users, color: "text-purple-600" },
             ].map(({ label, value, icon: Icon, color }) => (
@@ -436,7 +436,7 @@ export default async function AcquisitionPage() {
                             {`${r.agents?.users?.first_name ?? ""} ${r.agents?.users?.last_name ?? ""}`.trim() || "Unknown"}
                           </td>
                           <td className="py-2 px-2 text-right text-red-600">${(r.total_recruiting_cost ?? 0).toLocaleString()}</td>
-                          <td className="py-2 px-2 text-right text-green-600">${(r.lifetime_brokerage_net ?? 0).toLocaleString()}</td>
+                          <td className="py-2 px-2 text-right text-green-700">${(r.lifetime_brokerage_net ?? 0).toLocaleString()}</td>
                           <td className="py-2 px-2 text-right">
                             <Badge variant={(r.roi_pct ?? 0) > 0 ? "default" : "secondary"} className="text-xs">
                               {(r.roi_pct ?? 0).toFixed(1)}%

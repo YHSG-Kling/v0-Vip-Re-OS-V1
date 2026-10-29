@@ -78,7 +78,7 @@ export async function RenderCachePanel({ brokerageId }: RenderCachePanelProps) {
             <div className="space-y-1.5">
               <div className="flex items-start justify-between gap-3 text-sm">
                 <span className="flex items-center gap-1.5 min-w-0">
-                  <Recycle className="h-4 w-4 shrink-0 text-emerald-500" />
+                  <Recycle className="h-4 w-4 shrink-0 text-emerald-600" />
                   <span className="font-medium">Served from an earlier render</span>
                   <span className="text-xs text-muted-foreground truncate">
                     — same content, no re-render
@@ -88,7 +88,7 @@ export async function RenderCachePanel({ brokerageId }: RenderCachePanelProps) {
               </div>
               <div className="flex items-start justify-between gap-3 text-sm">
                 <span className="flex items-center gap-1.5 min-w-0">
-                  <Mic className="h-4 w-4 shrink-0 text-sky-500" />
+                  <Mic className="h-4 w-4 shrink-0 text-sky-600" />
                   <span className="font-medium">Narration reused</span>
                   <span className="text-xs text-muted-foreground truncate">
                     — the same words in the same voice, not re-synthesized
@@ -128,7 +128,7 @@ export async function RenderCachePanel({ brokerageId }: RenderCachePanelProps) {
                 className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
               >
                 <p className="text-sm font-medium flex items-center gap-1.5">
-                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
                   {leak.compositionId}
                   <span className="font-normal text-muted-foreground">
                     — {leak.renders} {leak.renders === 1 ? 'render' : 'renders'}

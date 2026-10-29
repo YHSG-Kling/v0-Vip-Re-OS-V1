@@ -200,8 +200,8 @@ export default function ListingSharePage() {
     instagram: { icon: Instagram, label: "Instagram", color: "text-pink-600" },
     linkedin: { icon: Linkedin, label: "LinkedIn", color: "text-blue-700" },
     twitter: { icon: Twitter, label: "X / Twitter", color: "text-slate-800" },
-    nextdoor: { icon: Home, label: "Nextdoor", color: "text-green-600" },
-    imessage: { icon: MessageSquare, label: "iMessage", color: "text-blue-500" },
+    nextdoor: { icon: Home, label: "Nextdoor", color: "text-green-700" },
+    imessage: { icon: MessageSquare, label: "iMessage", color: "text-blue-600" },
   }
 
   function handlePushToSeller() {
@@ -246,7 +246,7 @@ export default function ListingSharePage() {
           <div className="flex gap-2">
             <Input value={publicUrl} readOnly className="text-xs font-mono" />
             <Button variant="outline" size="icon" aria-label={copied ? "Link copied" : "Copy link"} onClick={copyLink}>
-              {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+              {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
             </Button>
             <Button variant="outline" size="icon" asChild>
               <a href={publicUrl} target="_blank" rel="noopener noreferrer" aria-label="Open the public listing page">

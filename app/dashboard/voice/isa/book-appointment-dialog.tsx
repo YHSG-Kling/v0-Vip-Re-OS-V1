@@ -142,7 +142,7 @@ export function BookAppointmentDialog({
 
         {done ? (
           <div className="flex flex-col items-center justify-center py-6 text-center">
-            <CheckCircle2 className="h-10 w-10 text-green-500 mb-2" />
+            <CheckCircle2 className="h-10 w-10 text-green-600 mb-2" />
             <p className="text-sm font-medium">{labelForType(type)} booked</p>
             {zoomNote && (
               <p className="text-xs text-muted-foreground mt-2 break-all">{zoomNote}</p>
@@ -218,7 +218,7 @@ export function BookAppointmentDialog({
             </div>
 
             {error && (
-              <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
                 {error}
               </p>
             )}

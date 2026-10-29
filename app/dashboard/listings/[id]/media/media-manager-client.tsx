@@ -414,7 +414,7 @@ export function MediaManagerClient({
                   <div key={photoId} className="text-xs rounded border bg-background p-2">
                     <p className="font-medium capitalize">{score.room_type?.replace(/_/g, " ") ?? "Unknown"}</p>
                     <p className="text-muted-foreground">Quality: {score.quality_score ?? "—"}/100</p>
-                    {score.is_hero_worthy && <p className="text-amber-600 font-medium">★ Hero Shot</p>}
+                    {score.is_hero_worthy && <p className="text-amber-700 font-medium">★ Hero Shot</p>}
                     {Array.isArray(score.suggestions) && score.suggestions.length > 0 && (
                       <p className="text-muted-foreground mt-1">{score.suggestions.join(" · ")}</p>
                     )}

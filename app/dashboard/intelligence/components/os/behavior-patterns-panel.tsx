@@ -110,7 +110,7 @@ export function BehaviorPatternsPanel({
       <CardContent className="space-y-3">
         {activePatterns.length === 0 ? (
           <div className="py-4 text-center text-sm text-muted-foreground">
-            <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-green-500" />
+            <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-green-600" />
             No active patterns detected
           </div>
         ) : (

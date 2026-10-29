@@ -164,7 +164,7 @@ export function VendorW9Card({ vendorId, w9: initialW9 }: { vendorId: string; w9
               <input type="file" accept="application/pdf,image/png,image/jpeg"
                      onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="block text-sm" />
             </label>
-            {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">{error}</p>}
+            {error && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">{error}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSubmit} disabled={isPending}>
                 {isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Uploading…</> : "Save W-9"}

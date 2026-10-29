@@ -95,7 +95,7 @@ export function VoiceSettingsCard() {
                 {saving && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
                 Save Settings
               </Button>
-              {savedNote && <span className="text-xs text-emerald-600">{savedNote}</span>}
+              {savedNote && <span className="text-xs text-emerald-700">{savedNote}</span>}
             </div>
             {error && <p className="text-xs text-red-600">{error}</p>}
           </>

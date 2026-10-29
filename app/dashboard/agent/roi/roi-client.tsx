@@ -227,7 +227,7 @@ export function AgentRoiClient({ snapshot }: Props) {
                     <p className="text-xs text-muted-foreground">{relative(w.happenedAt)}</p>
                   </div>
                   {w.valueCents != null && w.valueCents > 0 && (
-                    <Badge className="bg-emerald-600 text-white">{dollars(w.valueCents)}</Badge>
+                    <Badge className="bg-emerald-700 text-white">{dollars(w.valueCents)}</Badge>
                   )}
                 </CardContent>
               </Card>

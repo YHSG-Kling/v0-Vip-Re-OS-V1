@@ -682,7 +682,7 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
                                 size="sm"
                                 onClick={handleForceSend}
                                 disabled={composerSending || overrideReason.trim().length < 10}
-                                className="h-7 text-xs bg-amber-600 hover:bg-amber-700 text-white"
+                                className="h-7 text-xs bg-amber-700 hover:bg-amber-800 text-white"
                               >
                                 {composerSending ? (
                                   <Loader2 className="h-3 w-3 mr-1 animate-spin" />

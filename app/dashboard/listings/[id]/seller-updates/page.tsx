@@ -366,7 +366,7 @@ export default async function SellerUpdatesPage({ params }: PageProps) {
                     {message.read_at ? (
                       <Badge
                         variant="outline"
-                        className="text-green-600 border-green-200 bg-green-50"
+                        className="text-green-700 border-green-200 bg-green-50"
                       >
                         <CheckCircle className="h-3 w-3 mr-1" />
                         Read {new Date(message.read_at).toLocaleDateString()}

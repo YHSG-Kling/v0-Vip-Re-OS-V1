@@ -207,10 +207,10 @@ export function CoordinationDashboardClient({
   // registry owns WHICH colour an agent is; this screen owns how a colour is
   // painted.
   const AGENT_ICON_COLOR: Record<string, string> = {
-    blue: "text-blue-500",
-    green: "text-green-500",
-    purple: "text-purple-500",
-    orange: "text-orange-500",
+    blue: "text-blue-600",
+    green: "text-green-700",
+    purple: "text-purple-600",
+    orange: "text-orange-700",
   }
 
   const getAgentIcon = (agentType: AgentType) => {
@@ -380,7 +380,7 @@ export function CoordinationDashboardClient({
                               {getAgentDisplayName(session.agent_type)}
                             </span>
                             {session.human_override && (
-                              <Badge variant="outline" className="text-orange-600 border-orange-300">
+                              <Badge variant="outline" className="text-orange-700 border-orange-300">
                                 Override
                               </Badge>
                             )}
@@ -425,7 +425,7 @@ export function CoordinationDashboardClient({
                               size="sm"
                               onClick={() => handleEndSession(session.id, 'completed')}
                             >
-                              <CheckCircle className="h-4 w-4 text-green-500" />
+                              <CheckCircle className="h-4 w-4 text-green-600" />
                             </Button>
                             <Button
                               variant="ghost"
@@ -480,7 +480,7 @@ export function CoordinationDashboardClient({
                       <TableRow key={escalation.id}>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <AlertTriangle className="h-4 w-4 text-orange-500" />
+                            <AlertTriangle className="h-4 w-4 text-orange-600" />
                             <span className="font-medium capitalize">
                               {escalation.agent_type}
                             </span>
@@ -562,10 +562,10 @@ export function CoordinationDashboardClient({
                           </div>
                         </TableCell>
                         <TableCell className="text-right">{metrics.totalSessions}</TableCell>
-                        <TableCell className="text-right text-green-600">
+                        <TableCell className="text-right text-green-700">
                           {metrics.completed}
                         </TableCell>
-                        <TableCell className="text-right text-orange-600">
+                        <TableCell className="text-right text-orange-700">
                           {metrics.escalated}
                         </TableCell>
                         <TableCell className="text-right text-muted-foreground">

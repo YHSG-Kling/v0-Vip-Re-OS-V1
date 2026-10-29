@@ -185,7 +185,7 @@ export function ComplianceBridgePanel({
           {state.compliancePassed ? (
             <ShieldCheck className="h-4 w-4 text-green-600 flex-shrink-0" />
           ) : (
-            <ShieldAlert className="h-4 w-4 text-amber-500 flex-shrink-0" />
+            <ShieldAlert className="h-4 w-4 text-amber-600 flex-shrink-0" />
           )}
           <span className={state.compliancePassed ? "text-green-700" : "text-amber-700"}>
             {state.compliancePassed

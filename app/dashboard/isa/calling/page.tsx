@@ -110,7 +110,7 @@ export default async function ISACallingPage() {
           </div>
         </div>
         <Link href="/dashboard/voice/isa">
-          <Button className="bg-green-600 hover:bg-green-700 text-white">
+          <Button className="bg-green-700 hover:bg-green-800 text-white">
             <Mic className="w-4 h-4 mr-2" />
             Open Voice ISA
           </Button>
@@ -172,7 +172,7 @@ export default async function ISACallingPage() {
               <span className="text-sm font-medium text-amber-800">High Priority</span>
             </div>
             <p className="text-2xl font-bold text-amber-700 mt-1">{highCount}</p>
-            <p className="text-xs text-amber-600">Score 65–79</p>
+            <p className="text-xs text-amber-700">Score 65–79</p>
           </CardContent>
         </Card>
         <Card>
@@ -239,7 +239,7 @@ export default async function ISACallingPage() {
                         <Link href={`/dashboard/voice/isa?contactId=${contact.id}`}>
                           <Button
                             size="sm"
-                            className="bg-green-600 hover:bg-green-700 text-white text-xs"
+                            className="bg-green-700 hover:bg-green-800 text-white text-xs"
                           >
                             <PhoneCall className="w-3 h-3 mr-1" />
                             AI Call

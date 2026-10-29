@@ -23,7 +23,7 @@ interface ConvertForm { tier: (typeof CONVERT_TIERS)[number]; mode: 'trial' | 'p
 const STATUSES: readonly string[] = PROSPECT_STATUSES
 const STATUS_BADGE: Record<string, string> = {
   new: 'bg-slate-100 text-slate-700', contacted: 'bg-blue-100 text-blue-800', demo_scheduled: 'bg-amber-100 text-amber-800',
-  trial: 'bg-violet-100 text-violet-800', converted: 'bg-emerald-100 text-emerald-800', lost: 'bg-slate-100 text-slate-400',
+  trial: 'bg-violet-100 text-violet-800', converted: 'bg-emerald-100 text-emerald-800', lost: 'bg-slate-100 text-slate-600',
 }
 
 interface Prospect {

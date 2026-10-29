@@ -202,7 +202,7 @@ export function DocumentUploadDialog({
             {success ? (
               <div className="flex flex-col items-center">
                 <CheckCircle2 className="h-12 w-12 text-green-600 mb-3" />
-                <p className="text-green-600 font-medium">Document uploaded successfully!</p>
+                <p className="text-green-700 font-medium">Document uploaded successfully!</p>
                 <p className="text-sm text-muted-foreground mt-1">AI is now analyzing your document...</p>
               </div>
             ) : uploading ? (

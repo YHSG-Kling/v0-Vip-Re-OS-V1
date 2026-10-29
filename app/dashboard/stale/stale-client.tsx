@@ -116,7 +116,7 @@ function StatCard({ icon: Icon, label, count, tone }: { icon: any; label: string
     indigo: "border-indigo-200 bg-indigo-50/30",
   }
   const iconClasses: Record<string, string> = {
-    amber: "text-amber-600", red: "text-red-600", indigo: "text-indigo-600",
+    amber: "text-amber-700", red: "text-red-600", indigo: "text-indigo-600",
   }
   return (
     <Card className={toneClasses[tone]}>

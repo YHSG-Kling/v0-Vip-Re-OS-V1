@@ -119,7 +119,7 @@ export function SuggestedVendors({ transactionId, stage, propertyAddress }: Sugg
         {[1, 2, 3, 4, 5].map((star) => (
           <Star
             key={star}
-            className={`h-3 w-3 ${star <= rating ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+            className={`h-3 w-3 ${star <= rating ? "fill-yellow-400 text-yellow-700" : "text-gray-500"}`}
           />
         ))}
         <span className="ml-1 text-xs text-muted-foreground">{rating.toFixed(1)}</span>

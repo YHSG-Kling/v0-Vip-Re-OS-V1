@@ -135,7 +135,7 @@ export default function PendingApprovalsList({ initialApprovals, reviewerId, onR
                     </div>
                   )}
                   {approval.auto_scan_results.warnings?.length > 0 && (
-                    <div className="text-sm text-yellow-600">
+                    <div className="text-sm text-yellow-700">
                       {approval.auto_scan_results.warnings.length} warning(s)
                     </div>
                   )}

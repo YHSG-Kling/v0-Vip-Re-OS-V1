@@ -291,7 +291,7 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
           </p>
           {sellerNeeds ? (
             <div className="flex items-start gap-2">
-              <Heart className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-rose-400" />
+              <Heart className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-rose-500" />
               <p className="text-sm text-foreground leading-snug">{sellerNeeds}</p>
             </div>
           ) : (

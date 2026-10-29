@@ -132,7 +132,7 @@ export function Agent360Panels({ data, targetUserId }: { data: Agent360; targetU
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
-            <Trophy className="h-4 w-4 text-amber-500" />
+            <Trophy className="h-4 w-4 text-amber-600" />
             Gamification
             <Badge variant="outline" className="ml-auto text-xs">
               {data.gamification.tier} · {data.gamification.points.toLocaleString()} pts
@@ -146,7 +146,7 @@ export function Agent360Panels({ data, targetUserId }: { data: Agent360; targetU
                 <span key={i} className="inline-flex items-center gap-1 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-full px-2 py-1">
                   {b.icon && <span>{b.icon}</span>}
                   {b.name}
-                  {b.tier && <span className="text-amber-600">· {b.tier}</span>}
+                  {b.tier && <span className="text-amber-700">· {b.tier}</span>}
                 </span>
               ))}
             </div>

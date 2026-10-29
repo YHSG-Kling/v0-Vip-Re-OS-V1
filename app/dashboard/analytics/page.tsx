@@ -198,7 +198,7 @@ export default async function AnalyticsPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded-lg bg-green-500/10">
-                    <Home className="h-5 w-5 text-green-500" />
+                    <Home className="h-5 w-5 text-green-600" />
                   </div>
                   <div>
                     <p className="text-2xl font-bold text-foreground">{activeListings}</p>
@@ -230,7 +230,7 @@ export default async function AnalyticsPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded-lg bg-emerald-500/10">
-                    <DollarSign className="h-5 w-5 text-emerald-500" />
+                    <DollarSign className="h-5 w-5 text-emerald-600" />
                   </div>
                   <div>
                     <p className="text-2xl font-bold text-foreground">
@@ -240,7 +240,7 @@ export default async function AnalyticsPage() {
                   </div>
                 </div>
                 {volumeChange !== 0 && (
-                  <div className={`flex items-center gap-1 text-xs ${volumeChange > 0 ? "text-green-500" : "text-red-500"}`}>
+                  <div className={`flex items-center gap-1 text-xs ${volumeChange > 0 ? "text-green-700" : "text-red-600"}`}>
                     {volumeChange > 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
                     {Math.abs(volumeChange).toFixed(0)}%
                   </div>
@@ -304,7 +304,7 @@ export default async function AnalyticsPage() {
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-lg bg-green-500/10">
                   <span className="text-sm text-foreground">Active</span>
-                  <span className="text-lg font-bold text-green-600">{activeListings}</span>
+                  <span className="text-lg font-bold text-green-700">{activeListings}</span>
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-lg bg-blue-500/10">
                   <span className="text-sm text-foreground">Pending</span>

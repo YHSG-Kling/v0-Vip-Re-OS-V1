@@ -324,7 +324,7 @@ export function HazardInsuranceSection({
                         )}
                         {v.rating != null && (
                           <span className="inline-flex items-center gap-1 text-xs">
-                            <Star className="h-3 w-3 fill-yellow-400 text-yellow-500" />
+                            <Star className="h-3 w-3 fill-yellow-400 text-yellow-700" />
                             {Number(v.rating).toFixed(1)}
                           </span>
                         )}

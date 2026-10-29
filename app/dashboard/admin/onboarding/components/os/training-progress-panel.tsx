@@ -44,7 +44,7 @@ export function TrainingProgressPanel({ trainingProgress, brokerageId }: Trainin
             <p className="text-xs text-muted-foreground">Completed</p>
           </div>
           <div className="text-center p-3 bg-yellow-50 rounded-lg">
-            <p className="text-2xl font-bold text-yellow-600">{inProgress}</p>
+            <p className="text-2xl font-bold text-yellow-700">{inProgress}</p>
             <p className="text-xs text-muted-foreground">In Progress</p>
           </div>
           <div className="text-center p-3 bg-gray-50 rounded-lg">

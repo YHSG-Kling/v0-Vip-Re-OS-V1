@@ -769,7 +769,7 @@ function SequenceCard({
           <h3 className="font-semibold text-foreground text-sm truncate flex items-center gap-1.5">
             {sequence.name}
             {sequence.is_ab_test && (
-              <FlaskConical className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+              <FlaskConical className="h-3.5 w-3.5 text-amber-600 shrink-0" />
             )}
           </h3>
           <div className="flex flex-wrap gap-1 mt-0.5">

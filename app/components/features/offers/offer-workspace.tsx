@@ -222,7 +222,7 @@ export function OfferWorkspace({
               <button
                 onClick={handleAccept}
                 disabled={isPending}
-                className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+                className="rounded-md bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-800 disabled:opacity-50 transition-colors"
               >
                 Accept
               </button>

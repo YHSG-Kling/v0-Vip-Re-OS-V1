@@ -365,7 +365,7 @@ export default async function AIUsagePage() {
         <Card>
           <CardContent className="pt-4">
             <div className="flex items-center gap-2 mb-1">
-              <Zap className="h-4 w-4 text-amber-500" />
+              <Zap className="h-4 w-4 text-amber-600" />
               <p className="text-xs text-muted-foreground">Tokens (MTD)</p>
             </div>
             <p className="text-3xl font-bold">{formatTokens(usage.totalTokens)}</p>

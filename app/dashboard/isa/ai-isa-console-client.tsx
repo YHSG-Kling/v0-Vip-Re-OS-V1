@@ -126,9 +126,9 @@ function ChannelChip({ label, available, blocked }: { label: string; available: 
   return (
     <span className={cn(
       'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold border',
-      blocked  ? 'bg-red-50 text-red-600 border-red-200 line-through' :
+      blocked  ? 'bg-red-50 text-red-700 border-red-200 line-through' :
       available ? 'bg-green-50 text-green-700 border-green-200' :
-                  'bg-gray-50 text-gray-400 border-gray-200'
+                  'bg-gray-50 text-gray-500 border-gray-200'
     )}>
       {label}
     </span>
@@ -549,13 +549,13 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         {[
           { label: 'AI Managed',       value: records.length,                        color: 'text-indigo-600' },
-          { label: 'Handoff Ready',    value: blockerStats.handoffReady,             color: 'text-yellow-600' },
+          { label: 'Handoff Ready',    value: blockerStats.handoffReady,             color: 'text-yellow-700' },
           { label: 'Agent Takeover',   value: blockerStats.agentTakeover,            color: 'text-red-600' },
           { label: 'Comp. Holds',      value: blockerStats.complianceHolds,          color: 'text-gray-500' },
-          { label: 'No Email',         value: blockerStats.missingEmail,             color: 'text-orange-600' },
-          { label: 'No Mailing Addr',  value: blockerStats.missingVerifiedMail,      color: 'text-orange-600' },
-          { label: 'Unassigned Qual.', value: blockerStats.unassignedQualified,      color: 'text-red-500' },
-          { label: 'Pending Drafts',   value: pendingDrafts.length,                  color: 'text-amber-600' },
+          { label: 'No Email',         value: blockerStats.missingEmail,             color: 'text-orange-700' },
+          { label: 'No Mailing Addr',  value: blockerStats.missingVerifiedMail,      color: 'text-orange-700' },
+          { label: 'Unassigned Qual.', value: blockerStats.unassignedQualified,      color: 'text-red-600' },
+          { label: 'Pending Drafts',   value: pendingDrafts.length,                  color: 'text-amber-700' },
         ].map(stat => (
           <Card key={stat.label} className="shadow-none">
             <CardContent className="p-3 text-center">
@@ -636,7 +636,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
             {tabQueue.length === 0 ? (
               /* Empty state — Section 9 */
               <div className="text-center py-16">
-                <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
+                <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-3" />
                 <p className="font-semibold">AI-ISA is running smoothly</p>
                 <p className="text-sm text-muted-foreground">
                   No escalations, handoffs, or compliance issues need attention right now.
@@ -877,7 +877,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
 
                         {/* Escalate — sends urgent notification to broker/admin */}
                         {item.aiisa_state !== 'handoff_complete' && (
-                          <Button size="sm" variant="ghost" className="w-full justify-start text-orange-600 hover:text-orange-700" onClick={() => handleEscalate(item)}>
+                          <Button size="sm" variant="ghost" className="w-full justify-start text-orange-700 hover:text-orange-700" onClick={() => handleEscalate(item)}>
                             <AlertTriangle className="h-3.5 w-3.5 mr-1.5" />
                             Escalate
                           </Button>

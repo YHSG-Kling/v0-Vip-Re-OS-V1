@@ -117,7 +117,7 @@ export function ValuationResultCard({
               <span
                 className={`text-lg font-semibold ${
                   marketTrend === "appreciating"
-                    ? "text-green-600"
+                    ? "text-green-700"
                     : marketTrend === "depreciating"
                       ? "text-red-600"
                       : "text-muted-foreground"

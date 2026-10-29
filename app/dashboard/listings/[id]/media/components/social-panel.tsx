@@ -248,7 +248,7 @@ export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, 
         <p className="text-sm text-muted-foreground">
           {posts.length} post{posts.length !== 1 ? "s" : ""}
           {pendingCount > 0 && (
-            <span className="ml-2 text-yellow-600 dark:text-yellow-400">
+            <span className="ml-2 text-yellow-700 dark:text-yellow-400">
               · {pendingCount} pending approval
             </span>
           )}
@@ -283,7 +283,7 @@ export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, 
                       {post.approval_status ?? "pending"}
                     </span>
                     {post.brand_compliance_passed === true && (
-                      <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                      <span className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400">
                         <ShieldCheckIcon className="w-3 h-3" /> Compliance OK
                       </span>
                     )}

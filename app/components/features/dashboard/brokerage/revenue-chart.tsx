@@ -38,7 +38,7 @@ export function BrokerageRevenueChart({
           </div>
           <div className="text-right">
             <p className="text-2xl font-bold">{formatCurrency(totalRevenue)}</p>
-            <div className="flex items-center gap-1 text-sm text-emerald-600">
+            <div className="flex items-center gap-1 text-sm text-emerald-700">
               <TrendingUp className="w-4 h-4" />
               <span>{growthPercent > 0 ? "+" : ""}{growthPercent.toFixed(1)}% YoY</span>
             </div>

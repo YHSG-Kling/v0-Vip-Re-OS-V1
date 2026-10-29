@@ -231,7 +231,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              <Target className="h-4 w-4 text-amber-500" />
+              <Target className="h-4 w-4 text-amber-600" />
               Opportunity Zones
             </CardTitle>
             <CardDescription>High demand, low inventory</CardDescription>
@@ -363,7 +363,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
                         <div
                           className={`flex items-center justify-end gap-1 ${
                             agent.change_pct > 0
-                              ? "text-green-600"
+                              ? "text-green-700"
                               : "text-red-600"
                           }`}
                         >

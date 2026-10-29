@@ -498,7 +498,7 @@ export function DevelopersClient(props: Props) {
                     </p>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
-                    <span className={`text-xs font-medium ${t.isActive ? "text-green-700" : "text-gray-400"}`}>
+                    <span className={`text-xs font-medium ${t.isActive ? "text-green-700" : "text-gray-500"}`}>
                       {t.isActive ? "active" : "revoked"}
                     </span>
                     {t.isActive && (

@@ -171,7 +171,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
                   <button
                     onClick={() => handleDismiss(alert.id)}
                     disabled={isPending}
-                    className="shrink-0 self-start text-xs text-orange-600 hover:text-orange-900 font-medium"
+                    className="shrink-0 self-start text-xs text-orange-700 hover:text-orange-900 font-medium"
                   >
                     Dismiss
                   </button>

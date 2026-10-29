@@ -220,19 +220,19 @@ export default function CreditPipelinePage() {
             icon={DollarSign}
             label="Total Pipeline Value"
             value={`$${stats?.total_value?.toLocaleString() || 0}`}
-            color="text-green-500"
+            color="text-green-700"
           />
           <StatsCard
             icon={TrendingUp}
             label="Active Accounts"
             value={stats?.total_accounts || 0}
-            color="text-blue-500"
+            color="text-blue-600"
           />
           <StatsCard
             icon={Clock}
             label="Avg Time to Close"
             value={`${stats?.avg_time_to_close || 0} days`}
-            color="text-orange-500"
+            color="text-orange-700"
           />
           <Card>
             <CardContent className="pt-6">

@@ -131,7 +131,7 @@ export function ConversionForecastPanel({ contactId }: { contactId: string }) {
                       <span
                         className={
                           f.impact === "positive"
-                            ? "text-emerald-600"
+                            ? "text-emerald-700"
                             : f.impact === "negative"
                             ? "text-destructive"
                             : "text-muted-foreground"

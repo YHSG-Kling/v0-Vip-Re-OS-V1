@@ -141,7 +141,7 @@ export function UsageSection({ overview, error, maxAgents, hasTier }: UsageSecti
                   </div>
                 )}
                 {item.measured && item.percent >= 80 && (
-                  <p className={`text-xs ${item.percent >= 95 ? "text-red-600" : "text-amber-600"}`}>
+                  <p className={`text-xs ${item.percent >= 95 ? "text-red-600" : "text-amber-700"}`}>
                     {item.percent >= 95
                       ? "Included allowance reached for this period."
                       : "Approaching your included allowance."}

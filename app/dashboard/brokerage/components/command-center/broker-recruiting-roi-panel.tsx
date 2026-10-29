@@ -38,7 +38,7 @@ export function BrokerRecruitingROIPanel({ summary, costBreakdown }: BrokerRecru
 
   const roiStatus = summary.avgROI > 100 ? "positive" : summary.avgROI > 0 ? "break_even" : "negative"
   const roiBadgeVariant = roiStatus === "positive" ? "outline" : roiStatus === "break_even" ? "secondary" : "destructive"
-  const roiColor = roiStatus === "positive" ? "text-green-600" : roiStatus === "break_even" ? "text-yellow-600" : "text-red-600"
+  const roiColor = roiStatus === "positive" ? "text-green-700" : roiStatus === "break_even" ? "text-yellow-700" : "text-red-600"
 
   // Top cost categories
   const sortedCosts = Object.entries(costBreakdown)

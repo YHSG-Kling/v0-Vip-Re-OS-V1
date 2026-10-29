@@ -441,7 +441,7 @@ export default function VideoAnalyticsPage() {
                                 index === 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" :
                                 index === 1 ? "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300" :
                                 index === 2 ? "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-400" :
-                                "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                                "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
                               )}>
                                 {index + 1}
                               </div>

@@ -160,7 +160,7 @@ export function ShowingsManager({ contactId }: ShowingsManagerProps) {
                             {[1, 2, 3, 4, 5].map((star) => (
                               <Star
                                 key={star}
-                                className={`h-4 w-4 ${star <= showing.feedback_rating ? "text-amber-500 fill-amber-500" : "text-gray-300"}`}
+                                className={`h-4 w-4 ${star <= showing.feedback_rating ? "text-amber-600 fill-amber-500" : "text-gray-500"}`}
                               />
                             ))}
                           </div>
@@ -178,7 +178,7 @@ export function ShowingsManager({ contactId }: ShowingsManagerProps) {
                           </Badge>
                         </div>
                       ) : (
-                        <p className="text-sm text-amber-600">Feedback needed</p>
+                        <p className="text-sm text-amber-700">Feedback needed</p>
                       )}
                     </div>
                   </div>
@@ -207,7 +207,7 @@ export function ShowingsManager({ contactId }: ShowingsManagerProps) {
                                   className="p-1"
                                 >
                                   <Star
-                                    className={`h-8 w-8 ${star <= feedbackData.rating ? "text-amber-500 fill-amber-500" : "text-gray-300"}`}
+                                    className={`h-8 w-8 ${star <= feedbackData.rating ? "text-amber-600 fill-amber-500" : "text-gray-500"}`}
                                   />
                                 </button>
                               ))}

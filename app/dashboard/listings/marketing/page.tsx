@@ -119,7 +119,7 @@ export default async function ListingsMarketingPage() {
               <CardContent className="pt-6">
                 <div className="flex items-center gap-4">
                   <div className="p-3 rounded-lg bg-green-500/10">
-                    <Share2 className="w-6 h-6 text-green-500" />
+                    <Share2 className="w-6 h-6 text-green-600" />
                   </div>
                   <div>
                     <h3 className="font-semibold">Repurpose Content</h3>
@@ -135,7 +135,7 @@ export default async function ListingsMarketingPage() {
               <CardContent className="pt-6">
                 <div className="flex items-center gap-4">
                   <div className="p-3 rounded-lg bg-amber-500/10">
-                    <FileText className="w-6 h-6 text-amber-500" />
+                    <FileText className="w-6 h-6 text-amber-600" />
                   </div>
                   <div>
                     <h3 className="font-semibold">Direct Mail</h3>

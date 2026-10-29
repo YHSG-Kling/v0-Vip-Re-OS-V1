@@ -122,7 +122,7 @@ export function AgentIdentityCard({
             </div>
 
             {licenseHalfFilled && (
-              <p className="text-xs text-amber-600 flex items-center gap-1.5">
+              <p className="text-xs text-amber-700 flex items-center gap-1.5">
                 <AlertCircle className="h-3.5 w-3.5" />
                 A license number and its state belong together — disclosure lines need both.
               </p>

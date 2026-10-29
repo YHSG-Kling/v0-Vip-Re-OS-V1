@@ -154,7 +154,7 @@ export function VoiceCallHistoryTable({ calls }: VoiceCallHistoryTableProps) {
                         </td>
                         <td className="px-3 py-2.5 text-center">
                           {call.compliance_passed === true ? (
-                            <ShieldCheck className="h-4 w-4 text-green-500 mx-auto" />
+                            <ShieldCheck className="h-4 w-4 text-green-600 mx-auto" />
                           ) : call.compliance_passed === false ? (
                             <ShieldX className="h-4 w-4 text-red-500 mx-auto" />
                           ) : (

@@ -69,7 +69,7 @@ export function GoLiveCard() {
             {probeBusy ? "Queuing…" : "Queue render proof"}
           </Button>
           {r && (
-            <span className={r.requiredReady === r.requiredTotal ? "text-green-600 font-medium" : "text-amber-600 font-medium"}>
+            <span className={r.requiredReady === r.requiredTotal ? "text-green-700 font-medium" : "text-amber-700 font-medium"}>
               {r.requiredReady}/{r.requiredTotal} required domains ready
               {r.requiredReady === r.requiredTotal ? " — GO" : " — not yet"}
             </span>
@@ -128,7 +128,7 @@ export function LaunchChecklistCard({ checklist }: { checklist: LaunchChecklist 
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <div className="flex flex-wrap items-center gap-3">
-          <span className={allBlockingSet ? "text-green-600 font-medium" : "text-red-600 font-medium"}>
+          <span className={allBlockingSet ? "text-green-700 font-medium" : "text-red-600 font-medium"}>
             {checklist.blockingConfigured}/{checklist.blockingTotal} launch-blocking configured
             {allBlockingSet ? " — launch-clean" : " — gaps below"}
           </span>
@@ -227,7 +227,7 @@ function StripeWebhookEventsDrift({ endpoint }: { endpoint: StripeWebhookEndpoin
           {read.plan.wildcard ? " (wildcard — every event delivered)" : ""}
           {read.plan.missing.length > 0 && <> · missing: {read.plan.missing.join(", ")}</>}
           {read.plan.extra.length > 0 && <> · registered but unhandled: {read.plan.extra.join(", ")}</>}
-          {read.applied && <> · <span className="text-green-600">registered — now {read.after.length} events</span></>}
+          {read.applied && <> · <span className="text-green-700">registered — now {read.after.length} events</span></>}
           {read.otherEndpointUrls.length > 0 && <> · other endpoints on the account: {read.otherEndpointUrls.join(", ")}</>}
         </div>
       )}

@@ -191,8 +191,8 @@ export default async function VendorDashboardPage() {
           <div className="grid grid-cols-2 gap-4">
             {[
               { label: 'Active Jobs', value: active.length, icon: Briefcase, color: 'text-blue-600' },
-              { label: 'Pending', value: pending.length, icon: Clock, color: 'text-yellow-600' },
-              { label: 'Completed', value: completed.length, icon: CheckCircle2, color: 'text-green-600' },
+              { label: 'Pending', value: pending.length, icon: Clock, color: 'text-yellow-700' },
+              { label: 'Completed', value: completed.length, icon: CheckCircle2, color: 'text-green-700' },
               { label: 'Total Jobs', value: bookings.length, icon: Star, color: 'text-purple-600' },
             ].map((stat) => (
               <Card key={stat.label}>

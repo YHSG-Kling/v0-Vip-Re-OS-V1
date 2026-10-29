@@ -64,7 +64,7 @@ interface GroupedItems {
 
 const priorityConfig = {
   high: { icon: "🔥", label: "High Priority", color: "text-destructive" },
-  medium: { icon: "🟡", label: "Medium Priority", color: "text-yellow-600 dark:text-yellow-500" },
+  medium: { icon: "🟡", label: "Medium Priority", color: "text-yellow-700 dark:text-yellow-500" },
   standard: { icon: "⚪", label: "Standard", color: "text-muted-foreground" },
 }
 

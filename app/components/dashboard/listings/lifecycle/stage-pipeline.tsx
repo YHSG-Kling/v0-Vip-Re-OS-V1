@@ -268,12 +268,12 @@ export function StagePipeline({
 
                 {/* Milestone badge */}
                 {isMilestone && (
-                  <Star className="w-3 h-3 text-amber-500 flex-shrink-0 fill-amber-400" />
+                  <Star className="w-3 h-3 text-amber-600 flex-shrink-0 fill-amber-400" />
                 )}
 
                 {/* Arrow for valid next */}
                 {isValidNext && (
-                  <ChevronRight className="w-3 h-3 flex-shrink-0 text-amber-500" />
+                  <ChevronRight className="w-3 h-3 flex-shrink-0 text-amber-600" />
                 )}
 
                 {isPending && isValidNext && (

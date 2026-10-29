@@ -439,7 +439,7 @@ export function OperationsClient({ role, firstName }: Props) {
                 {stuckTotal === 0 && !loading && (
                   <Card className="border-border">
                     <CardContent className="py-10 text-center">
-                      <CheckCircle2 className="h-10 w-10 text-emerald-500 mx-auto mb-3" />
+                      <CheckCircle2 className="h-10 w-10 text-emerald-600 mx-auto mb-3" />
                       <p className="text-sm font-medium text-foreground">No stuck work detected</p>
                       <p className="text-xs text-muted-foreground mt-1">
                         All pipelines are moving normally.
@@ -476,8 +476,8 @@ function StatTile({
   const colors: Record<string, string> = {
     blue: "text-blue-600 bg-blue-50",
     indigo: "text-indigo-600 bg-indigo-50",
-    amber: "text-amber-600 bg-amber-50",
-    red: "text-red-600 bg-red-50",
+    amber: "text-amber-700 bg-amber-50",
+    red: "text-red-700 bg-red-50",
   }
   return (
     <Link href={href}>

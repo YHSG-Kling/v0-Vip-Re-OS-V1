@@ -600,7 +600,7 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
                                 AI Schedule
                               </Button>
                               {scheduleResults[stop.id] && (
-                                <span className="text-xs text-emerald-600 flex items-center gap-1">
+                                <span className="text-xs text-emerald-700 flex items-center gap-1">
                                   <CheckCircle className="h-3 w-3" />
                                   Scheduled
                                 </span>

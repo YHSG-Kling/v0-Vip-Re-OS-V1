@@ -154,7 +154,7 @@ export function TaxSetasidePanel({ ytdGCI, setAsidePercent, onUpdatePercent }: T
                   <span className="flex items-center gap-2">
                     <span className="font-medium">{fmt(q.amount)}</span>
                     {q.paid ? (
-                      <span className="text-[11px] text-emerald-600 flex items-center gap-1"><Check className="h-3 w-3" /> paid</span>
+                      <span className="text-[11px] text-emerald-700 flex items-center gap-1"><Check className="h-3 w-3" /> paid</span>
                     ) : (
                       <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={pending} onClick={() => markQuarterPaid(q.quarter, q.amount)}>Mark paid</Button>
                     )}

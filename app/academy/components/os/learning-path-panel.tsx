@@ -153,7 +153,7 @@ export function LearningPathPanel({
                 {learningPath.map((step, index) => (
                   <div key={index} className="relative pl-10">
                     {/* Step number circle */}
-                    <div className="absolute left-0 w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center text-sm font-medium">
+                    <div className="absolute left-0 w-8 h-8 rounded-full bg-emerald-700 text-white flex items-center justify-center text-sm font-medium">
                       {index + 1}
                     </div>
 

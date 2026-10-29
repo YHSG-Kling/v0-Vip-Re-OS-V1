@@ -204,7 +204,7 @@ export default async function AdminTasksPage() {
         {(!tasks || tasks.length === 0) && (
           <Card>
             <CardContent className="py-12 text-center">
-              <CheckCircle2 className="h-12 w-12 text-green-500 mx-auto mb-4" />
+              <CheckCircle2 className="h-12 w-12 text-green-600 mx-auto mb-4" />
               <h3 className="text-lg font-semibold">All Caught Up</h3>
               <p className="text-muted-foreground">No pending admin tasks at this time.</p>
             </CardContent>

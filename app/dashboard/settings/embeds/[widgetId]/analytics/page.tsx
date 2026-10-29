@@ -130,7 +130,7 @@ export default async function EmbedAnalyticsPage({ params, searchParams }: PageP
                   </span>
                   <div className="flex gap-3 shrink-0 text-xs">
                     <span>{p.sessions} sessions</span>
-                    <span className="text-emerald-600">{p.leads} leads</span>
+                    <span className="text-emerald-700">{p.leads} leads</span>
                   </div>
                 </div>
               ))}
@@ -164,7 +164,7 @@ export default async function EmbedAnalyticsPage({ params, searchParams }: PageP
                   </span>
                   <div className="flex gap-3 shrink-0 text-xs">
                     <span>{r.sessions} sessions</span>
-                    <span className="text-emerald-600">{r.leads} leads</span>
+                    <span className="text-emerald-700">{r.leads} leads</span>
                   </div>
                 </div>
               ))}

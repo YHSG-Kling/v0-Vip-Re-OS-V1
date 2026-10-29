@@ -324,7 +324,7 @@ export function PatternsDashboardClient({
                 {aiInsightLoading ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
-                  <Zap className="h-4 w-4 mr-2 text-amber-500" />
+                  <Zap className="h-4 w-4 mr-2 text-amber-600" />
                 )}
                 AI Insight
               </Button>
@@ -383,11 +383,11 @@ export function PatternsDashboardClient({
           {/* AI Insight strip — shown when loaded */}
           {aiInsight && (
             <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-              <Zap className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+              <Zap className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
               <p className="text-sm text-amber-900 leading-relaxed">{aiInsight}</p>
               <button
                 onClick={() => setAiInsight(null)}
-                className="ml-auto shrink-0 text-amber-400 hover:text-amber-600"
+                className="ml-auto shrink-0 text-amber-700 hover:text-amber-600"
               >
                 <XCircle className="h-4 w-4" />
               </button>
@@ -704,7 +704,7 @@ export function PatternsDashboardClient({
                   </Button>
                 </div>
                 {taskMsg && (
-                  <p className={`text-xs ${taskMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                  <p className={`text-xs ${taskMsg.ok ? "text-emerald-700" : "text-destructive"}`}>
                     {taskMsg.text}
                   </p>
                 )}

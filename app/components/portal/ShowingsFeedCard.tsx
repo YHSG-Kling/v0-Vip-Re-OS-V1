@@ -221,7 +221,7 @@ function FeedbackItem({ feedback }: { feedback: ShowingFeedback }) {
           {avgRating && (
             <>
               <span className="text-muted-foreground/50">|</span>
-              <Star className="h-3.5 w-3.5 text-amber-500" />
+              <Star className="h-3.5 w-3.5 text-amber-600" />
               <span>{avgRating}/5</span>
             </>
           )}

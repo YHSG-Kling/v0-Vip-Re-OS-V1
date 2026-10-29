@@ -36,7 +36,7 @@ const VERDICT_META: Record<ReconciliationVerdict, {
   label: string; icon: typeof ShieldCheck; className: string; blurb: string
 }> = {
   confirmed: {
-    label: 'Proven', icon: ShieldCheck, className: 'text-emerald-500',
+    label: 'Proven', icon: ShieldCheck, className: 'text-emerald-700',
     blurb: 'the provider confirmed it landed',
   },
   contradicted: {
@@ -44,7 +44,7 @@ const VERDICT_META: Record<ReconciliationVerdict, {
     blurb: 'we recorded it as done and the provider says otherwise',
   },
   pending: {
-    label: 'Awaiting proof', icon: Clock, className: 'text-amber-500',
+    label: 'Awaiting proof', icon: Clock, className: 'text-amber-700',
     blurb: 'handed to the provider, not yet confirmed — this is not success',
   },
   unverifiable: {

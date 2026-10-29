@@ -165,7 +165,7 @@ export function BuyerFinancialUploadCard({ contactId }: Props) {
       <CardContent className="space-y-4">
         {/* Status row */}
         <div className="flex flex-wrap gap-2">
-          {isVerified && <Badge className="bg-green-600 text-white"><CheckCircle2 className="h-3 w-3 mr-1" /> Verified</Badge>}
+          {isVerified && <Badge className="bg-green-700 text-white"><CheckCircle2 className="h-3 w-3 mr-1" /> Verified</Badge>}
           {preApprovalDoc && (
             <Badge variant="outline">
               <FileText className="h-3 w-3 mr-1" /> Pre-approval on file

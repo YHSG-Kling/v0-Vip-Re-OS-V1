@@ -77,7 +77,7 @@ export function MissingDisclosuresPanel({ missingDisclosures }: MissingDisclosur
           <div key={type} className="space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <AlertCircle className={`h-4 w-4 ${disclosures.some(d => d.is_blocking) ? "text-destructive" : "text-orange-500"}`} />
+                <AlertCircle className={`h-4 w-4 ${disclosures.some(d => d.is_blocking) ? "text-destructive" : "text-orange-600"}`} />
                 <span className="text-sm font-medium">{disclosures[0].check_label}</span>
               </div>
               <Badge variant="outline">{disclosures.length}</Badge>

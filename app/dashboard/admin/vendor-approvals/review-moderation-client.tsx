@@ -95,7 +95,7 @@ export function ReviewModerationClient({ initialQueue }: { initialQueue: QueuedR
                     {[1, 2, 3, 4, 5].map((star) => (
                       <Star
                         key={star}
-                        className={`h-3.5 w-3.5 ${star <= (review.rating ?? 0) ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+                        className={`h-3.5 w-3.5 ${star <= (review.rating ?? 0) ? "fill-yellow-400 text-yellow-700" : "text-gray-500"}`}
                       />
                     ))}
                     <span className="ml-1.5 text-xs text-muted-foreground">

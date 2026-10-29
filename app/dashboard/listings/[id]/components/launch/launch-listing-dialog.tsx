@@ -195,7 +195,7 @@ export function LaunchListingDialog({
               </ul>
             </div>
           ) : gateBlockers !== null ? (
-            <p className="text-[11px] text-emerald-600 flex items-center gap-1.5">
+            <p className="text-[11px] text-emerald-700 flex items-center gap-1.5">
               <CheckCircle2 className="h-3 w-3" />
               Launch gate checked — no blockers.
             </p>
@@ -287,7 +287,7 @@ export function LaunchListingDialog({
           </div>
 
           {result && (
-            <p className={`text-xs ${result.ok ? "text-emerald-600" : "text-destructive"}`}>
+            <p className={`text-xs ${result.ok ? "text-emerald-700" : "text-destructive"}`}>
               {result.message}
             </p>
           )}

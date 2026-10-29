@@ -82,7 +82,7 @@ export function SellerOfferCard({
                 {buyerName} for {formatPrice(accepted.offer_amount)}
               </p>
               {listPrice && accepted.offer_amount && (
-                <p className="text-sm text-green-600">
+                <p className="text-sm text-green-700">
                   {accepted.offer_amount >= listPrice ? (
                     <span className="flex items-center gap-1">
                       <TrendingUp className="h-3.5 w-3.5" />

@@ -88,7 +88,7 @@ const INTEREST_STYLES: Record<string, string> = {
   hot: "bg-green-100 text-green-700 border-green-200",
   warm: "bg-yellow-100 text-yellow-700 border-yellow-200",
   cold: "bg-slate-100 text-slate-600 border-slate-200",
-  no_interest: "bg-slate-100 text-slate-500 border-slate-200",
+  no_interest: "bg-slate-100 text-slate-600 border-slate-200",
 }
 
 /** The kernel commands take the 1-5 numeric scale and map it back to the text
@@ -122,7 +122,7 @@ function StarRating({ rating }: { rating: number | null }) {
       {Array.from({ length: 5 }).map((_, i) => (
         <Star
           key={i}
-          className={`h-3.5 w-3.5 ${i < rating ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground/30"}`}
+          className={`h-3.5 w-3.5 ${i < rating ? "text-yellow-700 fill-yellow-400" : "text-muted-foreground/30"}`}
         />
       ))}
       <span className="text-xs text-muted-foreground ml-1">{rating}/5</span>
@@ -537,7 +537,7 @@ function AttendeesTab({ eventId }: { eventId: string }) {
               {a.ai_lead_score != null && (
                 <div className="text-right shrink-0">
                   <div className="text-[10px] text-muted-foreground">AI Score</div>
-                  <div className={`text-sm font-semibold ${a.ai_lead_score >= 70 ? "text-green-600" : a.ai_lead_score >= 40 ? "text-yellow-600" : "text-red-500"}`}>
+                  <div className={`text-sm font-semibold ${a.ai_lead_score >= 70 ? "text-green-700" : a.ai_lead_score >= 40 ? "text-yellow-700" : "text-red-600"}`}>
                     {a.ai_lead_score}
                   </div>
                 </div>
@@ -611,13 +611,13 @@ function FeedbackTab({ eventId }: { eventId: string }) {
           </div>
           {f.liked_most && (
             <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
-              <ThumbsUp className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-500" />
+              <ThumbsUp className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-600" />
               <span>{f.liked_most}</span>
             </div>
           )}
           {f.concerns && (
             <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
-              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-yellow-500" />
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-yellow-700" />
               <span>{f.concerns}</span>
             </div>
           )}

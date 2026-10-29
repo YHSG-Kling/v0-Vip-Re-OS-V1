@@ -91,9 +91,9 @@ export function SystemCommandStrip({ brokerageId }: SystemCommandStripProps) {
 
   const severityColors = {
     critical: 'bg-destructive text-destructive-foreground',
-    high: 'bg-orange-500 text-white',
+    high: 'bg-orange-700 text-white',
     medium: 'bg-yellow-500 text-yellow-900',
-    low: 'bg-green-500 text-white',
+    low: 'bg-green-700 text-white',
     unknown: 'bg-muted text-foreground border border-border',
   }
 
@@ -152,7 +152,7 @@ export function SystemCommandStrip({ brokerageId }: SystemCommandStripProps) {
               <p className="text-xs text-green-700 dark:text-green-400">Healthy</p>
             </div>
             <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/20 p-3 text-center">
-              <p className="text-2xl font-bold text-yellow-600">{degradedServices.length}</p>
+              <p className="text-2xl font-bold text-yellow-700">{degradedServices.length}</p>
               <p className="text-xs text-yellow-700 dark:text-yellow-400">Degraded</p>
             </div>
             <div className="rounded-lg bg-red-50 dark:bg-red-950/20 p-3 text-center">

@@ -178,7 +178,7 @@ export function PremiumPlacementPanel({
                       <p className="font-medium">{entry.name || "Vendor"}</p>
                       {entry.preferred && (
                         <Badge variant="secondary" className="gap-1">
-                          <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                          <Star className="h-3 w-3 text-yellow-700 fill-yellow-500" />
                           Featured
                         </Badge>
                       )}

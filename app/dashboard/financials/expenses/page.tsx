@@ -132,7 +132,7 @@ export default async function ExpensesPage() {
         <Card>
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">MTD</p>
-            <p className="text-2xl font-bold text-yellow-600 mt-1">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(mtdExpenses)}</p>
+            <p className="text-2xl font-bold text-yellow-700 mt-1">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(mtdExpenses)}</p>
           </CardContent>
         </Card>
         <Card>
@@ -189,7 +189,7 @@ export default async function ExpensesPage() {
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium">{cat}</span>
                       <div className="text-right">
-                        <p className="text-sm font-semibold text-orange-600">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(data.total)}</p>
+                        <p className="text-sm font-semibold text-orange-700">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(data.total)}</p>
                         <p className="text-xs text-muted-foreground">{data.count} transaction{data.count !== 1 ? 's' : ''}</p>
                       </div>
                     </div>
@@ -248,7 +248,7 @@ export default async function ExpensesPage() {
                       <td className="py-3 px-2">
                         <Badge variant="outline" className="text-xs">{e.category}</Badge>
                       </td>
-                      <td className="py-3 px-2 text-right font-semibold text-orange-600">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(e.amount || 0)}</td>
+                      <td className="py-3 px-2 text-right font-semibold text-orange-700">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(e.amount || 0)}</td>
                       <td className="py-3 px-2 text-center">
                         {e.receipt_url ? (
                           <a href={e.receipt_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-xs">View</a>

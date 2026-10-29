@@ -1184,7 +1184,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                         </div>
                       )}
                       {decisionEval && !decisionEval.success && (
-                        <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2">
+                        <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
                           {decisionEval.error ?? "Readiness evaluation failed"}
                         </p>
                       )}
@@ -1315,7 +1315,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                 </div>
               )}
               {counterAdvisorError && (
-                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2 mt-2">
+                <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2 mt-2">
                   {counterAdvisorError}
                 </p>
               )}
@@ -1518,7 +1518,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     <CardHeader className="pb-2">
                       <div className="flex items-center justify-between">
                         <CardTitle className="text-sm flex items-center gap-1.5">
-                          <Wrench className="h-4 w-4 text-amber-500" />
+                          <Wrench className="h-4 w-4 text-amber-600" />
                           Repairs Negotiation Advisor
                         </CardTitle>
                         <Button

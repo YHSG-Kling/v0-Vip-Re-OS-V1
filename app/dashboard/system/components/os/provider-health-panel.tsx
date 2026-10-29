@@ -39,10 +39,10 @@ const STATE_META: Record<BrokerageReadinessState, {
   icon: typeof CheckCircle
   className: string
 }> = {
-  live_connected:   { label: 'Connected', icon: CheckCircle, className: 'text-emerald-500' },
-  live_platform:    { label: 'Included',  icon: CheckCircle, className: 'text-blue-500' },
-  keyless:          { label: 'Included',  icon: Gift,        className: 'text-blue-500' },
-  needs_connection: { label: 'Connect',   icon: PlugZap,     className: 'text-amber-500' },
+  live_connected:   { label: 'Connected', icon: CheckCircle, className: 'text-emerald-700' },
+  live_platform:    { label: 'Included',  icon: CheckCircle, className: 'text-blue-600' },
+  keyless:          { label: 'Included',  icon: Gift,        className: 'text-blue-600' },
+  needs_connection: { label: 'Connect',   icon: PlugZap,     className: 'text-amber-700' },
   platform_dark:    { label: 'Not lit',   icon: MoonStar,    className: 'text-muted-foreground' },
 }
 
@@ -97,7 +97,7 @@ export async function ProviderHealthPanel({ brokerageId }: ProviderHealthPanelPr
             <>
               {yourMove > 0 && (
                 <p className="text-muted-foreground">
-                  <span className="font-medium text-amber-600">{yourMove}</span>{' '}
+                  <span className="font-medium text-amber-700">{yourMove}</span>{' '}
                   {yourMove === 1 ? 'lane is' : 'lanes are'} waiting on you — connect the account in
                   Settings and {yourMove === 1 ? 'it' : 'they'} switch on.
                 </p>

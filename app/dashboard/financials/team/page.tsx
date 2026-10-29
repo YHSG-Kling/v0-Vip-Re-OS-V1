@@ -464,7 +464,7 @@ export default async function TeamFinancialsPage() {
           </div>
           <Progress value={Math.min(goalPct, 100)} className={goalColor} />
           <div className="flex items-center justify-between">
-            <span className={`text-sm font-medium ${goalPct < 50 ? "text-red-600" : goalPct < 80 ? "text-amber-600" : "text-green-600"}`}>
+            <span className={`text-sm font-medium ${goalPct < 50 ? "text-red-600" : goalPct < 80 ? "text-amber-700" : "text-green-700"}`}>
               {goalPct.toFixed(1)}% of goal
             </span>
             {goalPct < 50 && (
@@ -506,7 +506,7 @@ export default async function TeamFinancialsPage() {
                       <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
                         idx === 0 ? "bg-yellow-400 text-yellow-900" :
                         idx === 1 ? "bg-gray-300 text-gray-700" :
-                        idx === 2 ? "bg-amber-600 text-white" :
+                        idx === 2 ? "bg-amber-700 text-white" :
                         "bg-muted text-muted-foreground"
                       }`}>
                         {entry.rank_position}

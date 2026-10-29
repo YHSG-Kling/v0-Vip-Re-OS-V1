@@ -95,11 +95,11 @@ export function TemplatePreview({
 
       <div className="space-y-3 px-4 py-3">
         <div className="flex items-start gap-2">
-          <Mail className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
+          <Mail className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />
           <div className="min-w-0">
             <p className="text-xs text-gray-500">Subject</p>
             <p className="break-words font-medium text-gray-900">
-              {render(subject, samples) || <span className="text-gray-400">(no subject)</span>}
+              {render(subject, samples) || <span className="text-gray-500">(no subject)</span>}
             </p>
           </div>
         </div>

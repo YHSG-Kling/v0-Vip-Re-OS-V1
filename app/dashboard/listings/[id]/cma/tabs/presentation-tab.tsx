@@ -172,7 +172,7 @@ export function PresentationTab({ listing }: Props) {
             </Button>
 
             {(missingContact || missingAgent) && (
-              <p className="text-xs text-amber-600">
+              <p className="text-xs text-amber-700">
                 Link a seller contact and an agent to this listing to generate a
                 presentation.
               </p>

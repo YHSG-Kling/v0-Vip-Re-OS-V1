@@ -35,7 +35,7 @@ export function FlaggedFilesPanel({ flaggedFiles }: FlaggedFilesPanelProps) {
       return <Badge variant="destructive">Critical</Badge>
     }
     if (file.is_blocking && file.status === "needs_review") {
-      return <Badge className="bg-orange-500 text-white">Needs Review</Badge>
+      return <Badge className="bg-orange-700 text-white">Needs Review</Badge>
     }
     if (file.status === "pending") {
       return <Badge variant="secondary">Pending</Badge>
@@ -85,7 +85,7 @@ export function FlaggedFilesPanel({ flaggedFiles }: FlaggedFilesPanelProps) {
           >
             <div className="flex items-start gap-3 min-w-0">
               <div className={`rounded-full p-2 ${file.is_blocking && file.status === "fail" ? "bg-destructive/10" : "bg-orange-500/10"}`}>
-                <AlertTriangle className={`h-4 w-4 ${file.is_blocking && file.status === "fail" ? "text-destructive" : "text-orange-500"}`} />
+                <AlertTriangle className={`h-4 w-4 ${file.is_blocking && file.status === "fail" ? "text-destructive" : "text-orange-600"}`} />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">

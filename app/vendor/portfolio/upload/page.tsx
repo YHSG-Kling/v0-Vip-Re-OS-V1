@@ -1,65 +1,63 @@
-'use client'
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { Image, ArrowLeft, Upload } from 'lucide-react'
-import Link from 'next/link'
+import { ArrowLeft, Upload, Info } from 'lucide-react'
 
-export default function VendorPortfolioUploadPage() {
-  const router = useRouter()
-  const [loading, setLoading] = useState(false)
-  const [form, setForm] = useState({ title: '', description: '', project_type: '' })
+export const dynamic = 'force-dynamic'
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setTimeout(() => { router.push('/vendor/portfolio') }, 1000)
-  }
+/**
+ * /vendor/portfolio/upload — an HONEST "not available yet" state (wave 146, lane 146H; owner ruling 16:
+ * "no dead controls or misleading statuses"; the wave-141 lane rule: a surface that cannot be wired is
+ * hidden behind an honest "not available yet" state, never a dead click).
+ *
+ * WHAT WAS HERE: a client form titled "Upload Portfolio Work" whose submit handler was
+ * `setLoading(true); setTimeout(() => router.push('/vendor/portfolio'), 1000)` — the button read
+ * "Uploading…", the files and the description were discarded, and the vendor was returned to a
+ * portfolio that could never show them. MEASURED: no portfolio table exists in the live schema
+ * (scripts/live-tables.ts has vendor_marketplace_profiles, vendor_reviews, vendor_jobs … and no
+ * portfolio / gallery store) and no action under app/actions writes one, so there was nothing to wire
+ * the form TO. The capability is MISSING (storage + a vendor-scoped writer + a reader on the vendor
+ * directory) and is routed in lane 146H's notes ("## Outside-lane"); this page no longer pretends.
+ */
+export default async function VendorPortfolioUploadPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
 
   return (
     <div className="p-6 max-w-2xl space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/vendor/portfolio"><Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4" /></Button></Link>
+        <Button variant="ghost" size="sm" asChild>
+          <Link href="/vendor/portfolio" aria-label="Back to portfolio"><ArrowLeft className="w-4 h-4" /></Link>
+        </Button>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Upload className="w-6 h-6 text-purple-600" />
+          <Upload className="w-6 h-6 text-purple-700" />
           Upload Portfolio Work
         </h1>
       </div>
       <Card>
-        <CardContent className="p-6">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <Label>Project Title</Label>
-              <Input value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="e.g. 4BR Home Inspection - Maple Ave" required />
+        <CardContent className="p-6 space-y-4">
+          <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4" role="status">
+            <Info className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-amber-900">Portfolio uploads are not available yet</p>
+              <p className="text-sm text-amber-900">
+                Nothing you upload can be stored or shown to agents yet, so this page does not take files.
+                What agents see today is your profile — your company name, category, website and notes — and
+                your reviews.
+              </p>
             </div>
-            <div>
-              <Label>Project Type</Label>
-              <Input value={form.project_type} onChange={e => setForm({...form, project_type: e.target.value})} placeholder="e.g. Home Inspection, Photography, Staging" />
-            </div>
-            <div>
-              <Label>Description</Label>
-              <Textarea value={form.description} onChange={e => setForm({...form, description: e.target.value})} placeholder="Describe this project..." rows={3} />
-            </div>
-            <div>
-              <Label>Upload Photos / Files</Label>
-              <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-                <Image className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-                <p className="text-sm text-muted-foreground">Click to upload or drag and drop</p>
-                <p className="text-xs text-muted-foreground mt-1">PNG, JPG, PDF up to 50MB</p>
-                <Input type="file" multiple accept="image/*,.pdf" className="mt-3" />
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Button type="submit" className="bg-purple-600 hover:bg-purple-700 text-white" disabled={loading}>
-                {loading ? 'Uploading...' : 'Upload to Portfolio'}
-              </Button>
-              <Link href="/vendor/portfolio"><Button variant="outline" type="button">Cancel</Button></Link>
-            </div>
-          </form>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild>
+              <Link href="/vendor/settings">Update my profile</Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href="/vendor/reviews">See my reviews</Link>
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

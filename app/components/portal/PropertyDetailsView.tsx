@@ -224,7 +224,7 @@ export function PropertyDetailsView({
             onClick={handleSaveProperty}
             aria-label={isSaved ? "Remove from saved" : "Save property"}
             disabled={isPending}
-            className={`bg-transparent ${isSaved ? "text-red-500" : ""}`}
+            className={`bg-transparent ${isSaved ? "text-red-600" : ""}`}
           >
             <Heart className={`w-5 h-5 ${isSaved ? "fill-red-500" : ""}`} />
           </Button>
@@ -402,7 +402,7 @@ export function PropertyDetailsView({
                 <div className="space-y-2">
                   {property.matchReasons.map((reason, idx) => (
                     <div key={idx} className="flex items-center gap-2">
-                      <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
+                      <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
                       <span className="text-sm">{reason}</span>
                     </div>
                   ))}
@@ -478,7 +478,7 @@ export function PropertyDetailsView({
                 <>
                   <div className="flex justify-between py-2 font-bold text-lg">
                     <span>Principal &amp; Interest</span>
-                    <span className="text-green-600">${calculateMonthlyPayment()!.toLocaleString()}/mo</span>
+                    <span className="text-green-700">${calculateMonthlyPayment()!.toLocaleString()}/mo</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Estimate only — assumes 20% down, 6.5% rate, 30-year fixed. Taxes,
@@ -559,7 +559,7 @@ export function PropertyDetailsView({
               </Button>
             </div>
             {contactAgentMsg && (
-              <p className={`text-xs mt-2 ${contactAgentMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+              <p className={`text-xs mt-2 ${contactAgentMsg.ok ? "text-emerald-700" : "text-destructive"}`}>
                 {contactAgentMsg.text}
               </p>
             )}

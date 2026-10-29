@@ -939,7 +939,7 @@ export function VendorDirectoryClient({
         {[1, 2, 3, 4, 5].map((star) => (
           <Star
             key={star}
-            className={`h-4 w-4 ${star <= rating ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+            className={`h-4 w-4 ${star <= rating ? "fill-yellow-400 text-yellow-700" : "text-gray-300"}`}
           />
         ))}
         <span className="ml-1 text-sm font-medium">{rating.toFixed(1)}</span>
@@ -1405,7 +1405,7 @@ export function VendorDirectoryClient({
                         )}
                         {booking.agent_rating && (
                           <div className="flex items-center gap-1">
-                            <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+                            <Star className="h-4 w-4 fill-yellow-400 text-yellow-700" />
                             <span className="text-sm font-medium">{booking.agent_rating}</span>
                           </div>
                         )}
@@ -1691,7 +1691,7 @@ export function VendorDirectoryClient({
                   >
                     <Star
                       className={`h-8 w-8 transition-colors ${
-                        star <= ratingValue ? "fill-yellow-400 text-yellow-400" : "text-gray-300 hover:text-yellow-300"
+                        star <= ratingValue ? "fill-yellow-400 text-yellow-700" : "text-gray-300 hover:text-yellow-300"
                       }`}
                     />
                   </button>
@@ -1808,7 +1808,7 @@ export function VendorDirectoryClient({
                           <Star
                             key={star}
                             className={`h-4 w-4 ${
-                              star <= review.rating ? "fill-yellow-400 text-yellow-400" : "text-gray-300"
+                              star <= review.rating ? "fill-yellow-400 text-yellow-700" : "text-gray-300"
                             }`}
                           />
                         ))}
@@ -1875,7 +1875,7 @@ export function VendorDirectoryClient({
               {[1, 2, 3, 4, 5].map((star) => (
                 <button key={star} type="button" onClick={() => setNewReviewRating(star)}>
                   <Star
-                    className={`h-5 w-5 ${star <= newReviewRating ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+                    className={`h-5 w-5 ${star <= newReviewRating ? "fill-yellow-400 text-yellow-700" : "text-gray-300"}`}
                   />
                 </button>
               ))}

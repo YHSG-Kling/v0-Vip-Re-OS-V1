@@ -136,7 +136,7 @@ export function VideoRecommendationsCard({ userId }: { userId: string | undefine
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
-          <Lightbulb className="h-4 w-4 text-amber-500" />
+          <Lightbulb className="h-4 w-4 text-amber-600" />
           What to film next
         </CardTitle>
         <Button variant="ghost" size="sm" onClick={() => void load()} disabled={loading}>

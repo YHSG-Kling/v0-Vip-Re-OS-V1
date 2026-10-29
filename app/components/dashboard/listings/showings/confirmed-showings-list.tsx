@@ -264,7 +264,7 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
                     {sendingConfirmId === s.id ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : confirmSent.has(s.id) ? (
-                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
                     ) : (
                       <Send className="h-3.5 w-3.5" />
                     )}
@@ -284,7 +284,7 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
                     {collectingFeedbackId === s.id ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : feedbackRequested.has(s.id) ? (
-                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
                     ) : (
                       <MessageSquarePlus className="h-3.5 w-3.5" />
                     )}

@@ -204,7 +204,7 @@ export function MatchingBuyersPanel({ listingId, buyerOptions = [] }: {
                       <p className="text-xs text-muted-foreground mt-1">{m.match_factors.slice(0, 3).join(" · ")}</p>
                     )}
                     {m.caution_notes && m.caution_notes.length > 0 && (
-                      <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                      <p className="text-xs text-amber-700 mt-1 flex items-center gap-1">
                         <AlertTriangle className="h-3 w-3" />{m.caution_notes[0]}
                       </p>
                     )}
@@ -249,7 +249,7 @@ export function MatchingBuyersPanel({ listingId, buyerOptions = [] }: {
                     <p className="text-xs text-muted-foreground mt-1">{single.match_factors.join(" · ")}</p>
                   )}
                   {single.caution_notes && single.caution_notes.length > 0 && (
-                    <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                    <p className="text-xs text-amber-700 mt-1 flex items-center gap-1">
                       <AlertTriangle className="h-3 w-3" />{single.caution_notes.join(" · ")}
                     </p>
                   )}

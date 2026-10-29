@@ -83,7 +83,7 @@ export function TenantEntitlementsPanel({ brokerageId }: { brokerageId: string }
             {/* AI quota */}
             <div className="rounded-md border bg-muted/10 p-3">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-medium flex items-center gap-1.5"><Zap className="h-3.5 w-3.5 text-amber-500" />AI tokens</p>
+                <p className="text-xs font-medium flex items-center gap-1.5"><Zap className="h-3.5 w-3.5 text-amber-600" />AI tokens</p>
                 <span className="text-xs text-muted-foreground">
                   {data.quota.limit < 0 ? 'unlimited' : `${data.quota.used.toLocaleString()} / ${data.quota.limit.toLocaleString()} (${Math.round(data.quota.percent)}%)`}
                   <Badge variant="outline" className="ml-2 text-[10px]">{data.quota.status}</Badge>

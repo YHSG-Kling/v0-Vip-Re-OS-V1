@@ -45,7 +45,7 @@ export default async function TitleClosingPage() {
                   <div>
                     <p className="font-medium">{t.property_address}</p>
                     <p className="text-sm text-gray-500">{t.client_name}</p>
-                    <p className="text-xs text-gray-400">{closeDate.toLocaleDateString()}</p>
+                    <p className="text-xs text-gray-500">{closeDate.toLocaleDateString()}</p>
                   </div>
                   <div className="text-right">
                     <Badge className={daysUntil < 0 ? 'bg-gray-100 text-gray-600' : daysUntil <= 3 ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}>

@@ -107,7 +107,7 @@ export function AgentDealIntelligence({ transactions, loading }: AgentDealIntell
                   {tx.contact ? `${tx.contact.first_name} ${tx.contact.last_name}` : '—'}
                 </p>
                 {closeInfo && (
-                  <p className={`text-xs ${closeInfo.isUrgent ? 'text-amber-600 font-medium' : 'text-muted-foreground'}`}>
+                  <p className={`text-xs ${closeInfo.isUrgent ? 'text-amber-700 font-medium' : 'text-muted-foreground'}`}>
                     {closeInfo.isUrgent ? 'Closes ' : ''}{closeInfo.formatted}
                   </p>
                 )}

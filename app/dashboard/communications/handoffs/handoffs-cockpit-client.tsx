@@ -341,7 +341,7 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
           <TabsTrigger value="ai_waiting_approval" className="gap-1.5">
             <span>AI Waiting Approval</span>
             {counts.ai_waiting_approval > 0 && (
-              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-white">
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-700 text-[10px] font-bold text-white">
                 {counts.ai_waiting_approval}
               </span>
             )}
@@ -358,7 +358,7 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
       {/* Cards or empty state */}
       {filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
+          <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-3" />
           <p className="font-semibold text-foreground">All conversations flowing smoothly</p>
           <p className="text-sm text-muted-foreground mt-1">
             No human intervention needed right now

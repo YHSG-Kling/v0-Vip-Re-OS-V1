@@ -134,8 +134,8 @@ export default async function WorkflowReportsWidget({ brokerageId }: Props) {
                     <span className="flex items-center gap-2 shrink-0 ml-3">
                       <Badge variant="outline" className="text-[10px]">{seq.enrollments} enrolled</Badge>
                       <span className={`text-xs tabular-nums ${
-                        completionPct >= 70 ? "text-emerald-600"
-                        : completionPct >= 40 ? "text-amber-600"
+                        completionPct >= 70 ? "text-emerald-700"
+                        : completionPct >= 40 ? "text-amber-700"
                         : "text-muted-foreground"
                       }`}>
                         {completionPct}%

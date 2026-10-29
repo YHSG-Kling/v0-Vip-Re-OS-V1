@@ -160,7 +160,7 @@ export function OnboardingOperationsPanel({ brokerageId, stats }: OnboardingOper
 
           {records.length === 0 ? (
             <div className="text-center py-6 text-muted-foreground">
-              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-600" />
               <p className="text-sm">No active onboarding</p>
             </div>
           ) : (

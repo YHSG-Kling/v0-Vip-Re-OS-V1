@@ -192,7 +192,7 @@ export function CommunicationHealthPanel({
                       {formatDistanceToNow(new Date(conv.last_message_at), { addSuffix: true })}
                     </span>
                     {conv.unread_count > 0 && (
-                      <Badge className="bg-red-500 text-white text-xs px-1.5 py-0">
+                      <Badge className="bg-red-600 text-white text-xs px-1.5 py-0">
                         {conv.unread_count}
                       </Badge>
                     )}

@@ -69,7 +69,7 @@ export function AdvocacyRadar({
                   strokeWidth="8"
                   fill="none"
                   strokeDasharray={`${(score / 100) * 251.2} 251.2`}
-                  className="text-rose-500"
+                  className="text-rose-600"
                 />
               </svg>
               <div className="absolute inset-0 flex items-center justify-center">
@@ -146,7 +146,7 @@ export function AdvocacyRadar({
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Trophy className="h-4 w-4 text-amber-500" />
+            <Trophy className="h-4 w-4 text-amber-600" />
             Referral Leaderboard
           </CardTitle>
         </CardHeader>

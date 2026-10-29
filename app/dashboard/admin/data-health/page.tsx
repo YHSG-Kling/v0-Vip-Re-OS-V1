@@ -235,7 +235,7 @@ export default function DataHealthPage() {
           <Card>
             <CardContent className="pt-4">
               <div className="flex items-center gap-2 mb-1">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
                 <p className="text-xs text-muted-foreground">Risky</p>
               </div>
               <p className="text-2xl font-bold text-amber-600">{stats.risky}</p>
@@ -305,7 +305,7 @@ export default function DataHealthPage() {
         <CardContent>
           {logs.length === 0 ? (
             <div className="py-8 text-center">
-              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-500" />
+              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-600" />
               <p className="text-sm text-muted-foreground">No issues found. Run a scan to check data quality.</p>
             </div>
           ) : (

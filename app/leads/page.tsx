@@ -972,7 +972,7 @@ export default function LeadsPage() {
                       </p>
                     )}
                     {importMsg && (
-                      <p className={`text-xs ${importMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                      <p className={`text-xs ${importMsg.ok ? "text-emerald-700" : "text-destructive"}`}>
                         {importMsg.text}
                       </p>
                     )}
@@ -1042,7 +1042,7 @@ export default function LeadsPage() {
           return (
             <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="shrink-0 h-4 w-4 text-amber-600">
+                <span className="shrink-0 h-4 w-4 text-amber-700">
                   <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
                     <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
                   </svg>
@@ -1243,7 +1243,7 @@ export default function LeadsPage() {
         {(hotLeads.length > 0 || hotLeadsLoading) && (
           <div className="mb-6">
             <div className="flex items-center gap-2 mb-3">
-              <Zap className="h-5 w-5 text-amber-500" />
+              <Zap className="h-5 w-5 text-amber-600" />
               <h2 className="text-base font-semibold">Hot Leads Now</h2>
               {!hotLeadsLoading && (
                 <Badge variant="secondary" className="text-xs">{hotLeads.length} active signals</Badge>
@@ -1277,7 +1277,7 @@ export default function LeadsPage() {
         {(conversionCandidates.length > 0 || candidatesLoading) && (
           <div>
             <div className="flex items-center gap-2 mb-3">
-              <TrendingUp className="h-5 w-5 text-emerald-500" />
+              <TrendingUp className="h-5 w-5 text-emerald-600" />
               <h2 className="text-base font-semibold">Most Likely to Convert</h2>
               <span className="text-xs text-muted-foreground">AI-ranked by conversion probability</span>
             </div>
@@ -1343,7 +1343,7 @@ export default function LeadsPage() {
             <Card className="p-4">
               <p className="text-xs text-muted-foreground">Total Profiles</p>
               <p className="text-2xl font-bold">{intelligenceStats.totalLeads}</p>
-              <p className="text-xs text-emerald-600">{intelligenceStats.hotLeads} hot</p>
+              <p className="text-xs text-emerald-700">{intelligenceStats.hotLeads} hot</p>
             </Card>
             <Card className="p-4">
               <p className="text-xs text-muted-foreground">Ready for Outreach</p>
@@ -1353,7 +1353,7 @@ export default function LeadsPage() {
             <Card className="p-4">
               <p className="text-xs text-muted-foreground">Motivated Sellers</p>
               <p className="text-2xl font-bold">{intelligenceStats.motivatedSellers}</p>
-              <p className="text-xs text-amber-600">Active signals</p>
+              <p className="text-xs text-amber-700">Active signals</p>
             </Card>
             <Card className="p-4">
               <p className="text-xs text-muted-foreground">Conversion Rate</p>
@@ -1375,7 +1375,7 @@ export default function LeadsPage() {
               className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors rounded-lg"
             >
               <span className="flex items-center gap-2">
-                <Home className="h-4 w-4 text-amber-500" />
+                <Home className="h-4 w-4 text-amber-600" />
                 {motivatedSellers.length} Motivated Seller{motivatedSellers.length !== 1 ? "s" : ""} detected
               </span>
               {sellersExpanded ? (
@@ -1439,7 +1439,7 @@ export default function LeadsPage() {
                 <Card className="p-4">
                   <p className="text-xs text-muted-foreground">Total Profiles</p>
                   <p className="text-2xl font-bold">{intelligenceStats.totalLeads}</p>
-                  <p className="text-xs text-emerald-600">{intelligenceStats.hotLeads} hot</p>
+                  <p className="text-xs text-emerald-700">{intelligenceStats.hotLeads} hot</p>
                 </Card>
                 <Card className="p-4">
                   <p className="text-xs text-muted-foreground">Ready for Outreach</p>
@@ -1449,7 +1449,7 @@ export default function LeadsPage() {
                 <Card className="p-4">
                   <p className="text-xs text-muted-foreground">Motivated Sellers</p>
                   <p className="text-2xl font-bold">{intelligenceStats.motivatedSellers}</p>
-                  <p className="text-xs text-amber-600">Active signals</p>
+                  <p className="text-xs text-amber-700">Active signals</p>
                 </Card>
                 <Card className="p-4">
                   <p className="text-xs text-muted-foreground">Pipeline Rate</p>
@@ -1481,7 +1481,7 @@ export default function LeadsPage() {
                 >
                   {batchReengagementLoading
                     ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    : <Zap className="h-3.5 w-3.5 text-amber-500" />}
+                    : <Zap className="h-3.5 w-3.5 text-amber-600" />}
                   Run Reengagement
                 </Button>
                 {batchReengagementResult?.success && batchReengagementResult.reengagementPlan && (
@@ -1539,7 +1539,7 @@ export default function LeadsPage() {
                 >
                   {sellerProbeLoading
                     ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    : <Home className="h-3.5 w-3.5 text-amber-500" />}
+                    : <Home className="h-3.5 w-3.5 text-amber-600" />}
                   Probe 25 Leads
                 </Button>
               </div>
@@ -1648,7 +1648,7 @@ export default function LeadsPage() {
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4 text-emerald-500" />
+                  <TrendingUp className="h-4 w-4 text-emerald-600" />
                   <h2 className="text-base font-semibold">Top Profiles Ready for Outreach</h2>
                   <span className="text-xs text-muted-foreground">min. 70% confidence · AI-qualified</span>
                 </div>
@@ -1688,7 +1688,7 @@ export default function LeadsPage() {
                       >
                         <div className="flex items-center justify-between">
                           <p className="font-medium text-sm truncate">{name}</p>
-                          <span className="text-xs font-bold text-emerald-600 shrink-0">
+                          <span className="text-xs font-bold text-emerald-700 shrink-0">
                             {confidence}%
                           </span>
                         </div>
@@ -1847,7 +1847,7 @@ export default function LeadsPage() {
             {motivatedSellers.length > 0 && (
               <div className="rounded-lg border bg-card">
                 <div className="flex items-center gap-2 px-4 py-3">
-                  <Home className="h-4 w-4 text-amber-500" />
+                  <Home className="h-4 w-4 text-amber-600" />
                   <h2 className="text-sm font-semibold">
                     {motivatedSellers.length} Motivated Seller{motivatedSellers.length !== 1 ? "s" : ""} — Active Signals
                   </h2>
@@ -1921,7 +1921,7 @@ export default function LeadsPage() {
             >
               <span className="text-xs text-amber-700 font-medium">Unassigned</span>
               <span className="text-2xl font-bold text-amber-900">{pipelineStats.unassigned}</span>
-              <span className="text-xs text-amber-600">Assign now</span>
+              <span className="text-xs text-amber-700">Assign now</span>
             </button>
             {/* Assigned */}
             <div className="flex flex-col items-start gap-1 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
@@ -1957,7 +1957,7 @@ export default function LeadsPage() {
             >
               <span className="text-xs text-orange-700 font-medium">Ghost Recovery</span>
               <span className="text-2xl font-bold text-orange-900">{pipelineStats.ghost_recovery}</span>
-              <span className="text-xs text-orange-600">Review leads</span>
+              <span className="text-xs text-orange-700">Review leads</span>
             </button>
           </div>
         )}
@@ -2312,7 +2312,7 @@ export default function LeadsPage() {
             <AlertDialogAction
               disabled={!!convertingId}
               onClick={() => convertConfirmLead && handleConvertToContact(convertConfirmLead)}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              className="bg-emerald-700 hover:bg-emerald-800 text-white"
             >
               {convertingId ? (
                 <><Loader2 className="h-4 w-4 animate-spin mr-2" />Converting...</>

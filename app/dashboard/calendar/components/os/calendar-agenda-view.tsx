@@ -125,7 +125,7 @@ export function CalendarAgendaView({ events, weekStart, onSelectEvent }: Calenda
                                     e.stopPropagation()
                                     router.push(`/dashboard/meetings/${event.id}`)
                                   }}
-                                  className="flex items-center gap-1 text-sky-600 hover:underline cursor-pointer"
+                                  className="flex items-center gap-1 text-sky-700 hover:underline cursor-pointer"
                                 >
                                   <Video className="h-3 w-3" />
                                   Zoom meeting room

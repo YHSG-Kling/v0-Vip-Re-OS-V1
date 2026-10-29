@@ -80,7 +80,7 @@ export function LeadReadinessPanel({ leadId }: { leadId: string }) {
                 <p className="text-xs text-muted-foreground">{evaluation.staleDays} day(s) since last activity</p>
               )}
               {evaluation.warnings?.length > 0 && (
-                <div className="text-xs text-amber-600 space-y-0.5">
+                <div className="text-xs text-amber-700 space-y-0.5">
                   {evaluation.warnings.map((w, i) => (
                     <p key={i} className="flex items-center gap-1"><AlertTriangle className="h-3 w-3" />{w}</p>
                   ))}

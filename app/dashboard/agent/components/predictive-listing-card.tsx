@@ -58,10 +58,10 @@ interface Props {
 }
 
 function scoreColor(score: number): string {
-  if (score >= 85) return "bg-red-500 text-white"
-  if (score >= 75) return "bg-orange-500 text-white"
-  if (score >= 65) return "bg-amber-500 text-white"
-  return "bg-slate-400 text-white"
+  if (score >= 85) return "bg-red-600 text-white"
+  if (score >= 75) return "bg-orange-700 text-white"
+  if (score >= 65) return "bg-amber-700 text-white"
+  return "bg-slate-500 text-white"
 }
 
 function formatRelative(when: string | null | undefined): string {
@@ -144,7 +144,7 @@ export function PredictiveListingCard(props: Props) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-amber-500" />
+            <Sparkles className="h-4 w-4 text-amber-600" />
             Most Likely to List
           </CardTitle>
           {queue.length > 0 && (

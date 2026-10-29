@@ -110,6 +110,8 @@ interface SocialDashboardClientProps {
   publishLogs: any[]
   openCreate?: boolean
   requiresBrokerApproval?: boolean
+  /** Who approves this person's post — the C5 answer, worded by app/dashboard/social/approver-line.ts. */
+  approverLine?: string | null
 }
 
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -124,6 +126,7 @@ export function SocialDashboardClient({
   publishLogs,
   openCreate = false,
   requiresBrokerApproval = false,
+  approverLine = null,
 }: SocialDashboardClientProps) {
   const router = useRouter()
   const [posts, setPosts] = useState(initialPosts)
@@ -506,10 +509,10 @@ export function SocialDashboardClient({
       <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
         {[
           { label: "Drafts",          count: counts.draft,            color: "" },
-          { label: "Pending Approval", count: counts.pending_approval, color: "text-amber-600" },
+          { label: "Pending Approval", count: counts.pending_approval, color: "text-amber-700" },
           { label: "Scheduled",       count: counts.scheduled,        color: "text-blue-600" },
-          { label: "Publishing",      count: counts.publishing,       color: "text-yellow-600" },
-          { label: "Published",       count: counts.published,        color: "text-green-600" },
+          { label: "Publishing",      count: counts.publishing,       color: "text-yellow-700" },
+          { label: "Published",       count: counts.published,        color: "text-green-700" },
           { label: "Failed",          count: counts.failed,           color: "text-red-600" },
         ].map(s => (
           <Card key={s.label}>
@@ -574,6 +577,8 @@ export function SocialDashboardClient({
             connectedPlatforms={accounts.map(a => a.platform)}
             accounts={accounts}
             onPostScheduled={() => router.refresh()}
+            requiresBrokerApproval={requiresBrokerApproval}
+            approverLine={approverLine}
           />
         </TabsContent>
 
@@ -843,7 +848,7 @@ export function SocialDashboardClient({
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className="text-green-600 hover:text-green-700 h-8 w-8 p-0"
+                                className="text-green-700 hover:text-green-700 h-8 w-8 p-0"
                                 onClick={() => handleApprove(post.id)}
                                 disabled={isLoading}
                                 title="Approve"
@@ -1078,6 +1083,7 @@ export function SocialDashboardClient({
         accounts={accounts}
         initialPost={editingPost ?? undefined}
         requiresBrokerApproval={requiresBrokerApproval}
+        approverLine={approverLine}
         onSaved={(post) => {
           handlePostSaved(post)
           // approval_status, not status — 'pending_approval' is not a value the

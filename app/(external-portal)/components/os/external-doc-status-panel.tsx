@@ -174,15 +174,15 @@ export function ExternalDocStatusPanel({
   const getStatusIcon = (status: DocumentStatus["status"]) => {
     switch (status) {
       case "approved":
-        return <CheckCircle2 className="h-4 w-4 text-green-500" />
+        return <CheckCircle2 className="h-4 w-4 text-green-600" />
       case "uploaded":
         return <Clock className="h-4 w-4 text-blue-500" />
       case "rejected":
         return <AlertCircle className="h-4 w-4 text-red-500" />
       case "expired":
-        return <AlertCircle className="h-4 w-4 text-orange-500" />
+        return <AlertCircle className="h-4 w-4 text-orange-600" />
       default:
-        return <FileText className="h-4 w-4 text-gray-400" />
+        return <FileText className="h-4 w-4 text-gray-500" />
     }
   }
 
@@ -259,7 +259,7 @@ export function ExternalDocStatusPanel({
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">
                           {doc.name}
-                          {doc.required && <span className="text-red-500 ml-1">*</span>}
+                          {doc.required && <span className="text-red-600 ml-1">*</span>}
                         </p>
                         <p className="text-xs text-muted-foreground">{doc.type}</p>
                       </div>

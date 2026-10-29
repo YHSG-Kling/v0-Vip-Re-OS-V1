@@ -122,8 +122,8 @@ export default async function LenderDashboardPage() {
           <div className="grid grid-cols-2 gap-4">
             {[
               { label: 'Total in Pipeline', value: transactions?.length || 0, icon: TrendingUp, color: 'text-blue-600' },
-              { label: 'Active Loans', value: active.length, icon: DollarSign, color: 'text-green-600' },
-              { label: 'Closing Soon', value: closing.length, icon: Clock, color: 'text-orange-600' },
+              { label: 'Active Loans', value: active.length, icon: DollarSign, color: 'text-green-700' },
+              { label: 'Closing Soon', value: closing.length, icon: Clock, color: 'text-orange-700' },
               { label: 'Pending Approvals', value: 0, icon: FileCheck, color: 'text-purple-600' },
             ].map((stat) => (
               <Card key={stat.label}>

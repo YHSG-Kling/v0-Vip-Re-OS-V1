@@ -142,7 +142,7 @@ export default function IntelligenceClient({
           >
             {tab.label}
             {tab.id === "compliance" && pendingFlagCount > 0 && (
-              <span className="ml-1.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold">
+              <span className="ml-1.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold">
                 {pendingFlagCount}
               </span>
             )}

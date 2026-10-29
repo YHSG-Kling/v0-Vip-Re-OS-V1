@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import type { Metadata } from "next"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
@@ -31,7 +31,6 @@ async function publicAddressDisplay(listing: { id?: string | null; brokerage_id?
   }
   if (listing.status !== "coming_soon") return street
   const { resolveComingSoonCreativeAddress, guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
-  const { createServiceClient } = await import("@/lib/supabase/service")
   if (!listing.id || !listing.brokerage_id) {
     // No row identity to check the rule against → withhold (fail closed).
     const loc = [listing.city, (listing.state ?? "").toUpperCase()].filter(Boolean).join(", ") || "this area"
@@ -49,18 +48,21 @@ async function publicAddressDisplay(listing: { id?: string | null; brokerage_id?
   }
 }
 
+/** The statuses a public visitor may see (the listing row is the gate on this anonymous page). */
+const PUBLIC_LISTING_STATUSES = ["active", "pending", "coming_soon", "sold"]
+
 // ─── Metadata ────────────────────────────────────────────────────────────────
 
 export async function generateMetadata({ params }: ListingPageProps): Promise<Metadata> {
   const { listingId } = await params
-  const service = await createClient()
+  const service = createServiceClient()
 
   const { data: listing } = await service
     .from("listings")
     .select("id, brokerage_id, status, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
     .eq("id", listingId)
-    .in("status", ["active", "pending", "coming_soon", "sold"])
-    .single()
+    .in("status", PUBLIC_LISTING_STATUSES)
+    .maybeSingle()
 
   if (!listing) {
     return { title: "Listing Not Found" }
@@ -91,18 +93,32 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
 
 export default async function PublicListingPage({ params }: ListingPageProps) {
   const { listingId } = await params
-  const service = await createClient()
+  // THE PUBLIC READ (wave 146, lane 146H — ruling 18 "validate each on its real surface"). This page is
+  // the ANONYMOUS visitor's listing page: the QR "View the listing" / "Book a time" targets
+  // (lib/marketing/qr-contract.ts listing_detail → /listings/<id>) and the public agent profile's listing
+  // cards (app/p/[agentSlug]/page.tsx) land here, and it carries the public showing-request form. It read
+  // through the SESSION client while its own comment said "service client": live RLS on `listings`
+  // admits only agents / brokers / TC / compliance / team leads / platform admin of the row's brokerage
+  // (pg_policies, read 2026-10-29) and `listing_media` only `authenticated` same-brokerage — so an
+  // anonymous visitor got notFound() and a signed-in visitor from another brokerage did too.
+  // The service client is safe HERE because the row itself is the gate: the id plus a PUBLIC status; every
+  // child read is pinned to that row's own id / brokerage. (`deleted_at` is deliberately NOT filtered: the
+  // listing-archive ruling holds this by-id page as a retention surface — scripts/listing-archive-
+  // simulator.ts section 3's negative control. Whether an ARCHIVED listing should still be PUBLIC is an
+  // owner question, recorded in lane 146H's notes, not decided here.) The proxy still protects /listings/** — the second half of
+  // the fix is Outside-lane (app/constants/auth.ts, lane 146H notes).
+  const service = createServiceClient()
 
-  // Fetch listing (no auth required — service client reads publicly relevant data)
   const { data: listing, error: listingError } = await service
     .from("listings")
     .select(
       "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks, property_type, year_built, mls_number, status, agent_id, brokerage_id, created_at"
     )
     .eq("id", listingId)
-    .in("status", ["active", "pending", "coming_soon", "sold"])
-    .single()
+    .in("status", PUBLIC_LISTING_STATUSES)
+    .maybeSingle()
 
+  if (listingError) console.error("[listings/public] listing read refused:", listingError.message)
   if (listingError || !listing) {
     notFound()
   }
@@ -112,21 +128,26 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
     service
       .from("listing_media")
       .select("id, file_url, thumbnail_url, media_type, sort_order, is_approved, approval_required")
-      .eq("listing_id", listingId)
+      .eq("listing_id", listing.id)
+      .eq("brokerage_id", listing.brokerage_id)
       .order("sort_order", { ascending: true }),
 
     (async () => {
       if (!listing.agent_id) return null
+      // listings.agent_id is an AGENTS id (m348); agents.id and users.id are DISJOINT (CLAUDE.md §3). This
+      // matched `agents.user_id = listing.agent_id`, which never matches, so the listing agent's card never
+      // rendered for anyone. Cross via agents.user_id, never by reusing one id as the other.
       const { data: agentRow } = await service
         .from("agents")
         .select("user_id, profile_image_url")
-        .eq("user_id", listing.agent_id)
+        .eq("id", listing.agent_id)
+        .eq("brokerage_id", listing.brokerage_id)
         .maybeSingle()
-      if (!agentRow) return null
+      if (!agentRow?.user_id) return agentRow ? { agentRow, userRow: null } : null
       const { data: userRow } = await service
         .from("users")
         .select("first_name, last_name, email, phone")
-        .eq("id", agentRow.user_id ?? listing.agent_id)
+        .eq("id", agentRow.user_id)
         .maybeSingle()
       return { agentRow, userRow }
     })(),

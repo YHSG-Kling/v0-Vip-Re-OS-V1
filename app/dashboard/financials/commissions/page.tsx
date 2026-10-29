@@ -184,7 +184,7 @@ export default async function CommissionsPage() {
         <Card>
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Pending Payment</p>
-            <p className="text-2xl font-bold text-yellow-600 mt-1">{pendingCount}</p>
+            <p className="text-2xl font-bold text-yellow-700 mt-1">{pendingCount}</p>
           </CardContent>
         </Card>
         <Card>
@@ -233,7 +233,7 @@ export default async function CommissionsPage() {
                       <td className="py-3 px-2 text-muted-foreground">{new Date(c.created_at).toLocaleDateString()}</td>
                       <td className="py-3 px-2">Transaction #{c.transaction_id?.slice(0, 8)}</td>
                       <td className="py-3 px-2 text-right font-medium">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(c.gross_commission || 0)}</td>
-                      <td className="py-3 px-2 text-right font-semibold text-green-600">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(c.agent_commission || 0)}</td>
+                      <td className="py-3 px-2 text-right font-semibold text-green-700">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(c.agent_commission || 0)}</td>
                       <td className="py-3 px-2 text-center">
                         <Badge
                           variant={c.status === 'paid' ? 'default' : c.status === 'pending' ? 'secondary' : 'outline'}

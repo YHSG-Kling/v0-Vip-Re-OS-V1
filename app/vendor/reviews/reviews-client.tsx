@@ -65,7 +65,7 @@ export function VendorReviewsClient({ initialReviews }: { initialReviews: Review
                 {[1, 2, 3, 4, 5].map((star) => (
                   <Star
                     key={star}
-                    className={`h-4 w-4 ${star <= (review.rating ?? 0) ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+                    className={`h-4 w-4 ${star <= (review.rating ?? 0) ? "fill-yellow-400 text-yellow-700" : "text-gray-500"}`}
                   />
                 ))}
               </div>

@@ -540,7 +540,7 @@ export default async function AIISAOperationsConsolePage() {
             </Button>
           </Link>
           <Link href="/dashboard/isa/calling">
-            <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white">
+            <Button size="sm" className="bg-green-700 hover:bg-green-800 text-white">
               <PhoneCall className="w-4 h-4 mr-2" />
               Start Calling
             </Button>
@@ -735,7 +735,7 @@ export default async function AIISAOperationsConsolePage() {
                   label: 'Completed',
                   value: voiceCalls.filter((c: any) => c.status === 'completed').length,
                   icon: CheckCircle2,
-                  color: 'text-green-600',
+                  color: 'text-green-700',
                 },
                 {
                   label: 'Avg Duration',
@@ -751,7 +751,7 @@ export default async function AIISAOperationsConsolePage() {
                     (c.call_analyses?.[0]?.urgency_score ?? 0) >= 70
                   ).length,
                   icon: Zap,
-                  color: 'text-amber-600',
+                  color: 'text-amber-700',
                 },
               ].map((stat) => (
                 <Card key={stat.label}>
@@ -840,14 +840,14 @@ export default async function AIISAOperationsConsolePage() {
                               )}
                             </div>
                             <div className="rounded-lg bg-amber-50 border border-amber-200 p-2.5">
-                              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-500 mb-1">Urgency Score</p>
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 mb-1">Urgency Score</p>
                               <div className="flex items-center gap-2">
                                 <Progress value={urgency} className="h-1.5 flex-1" />
                                 <span className="text-xs font-bold text-amber-800">{urgency}%</span>
                               </div>
                             </div>
                             <div className="rounded-lg bg-green-50 border border-green-200 p-2.5">
-                              <p className="text-[10px] font-semibold uppercase tracking-wide text-green-500 mb-0.5">Suggested Action</p>
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-green-700 mb-0.5">Suggested Action</p>
                               <p className="text-sm font-medium text-green-900 capitalize">
                                 {(analysis.suggested_next_action ?? 'continue_nurturing').replace(/_/g, ' ')}
                               </p>
@@ -868,7 +868,7 @@ export default async function AIISAOperationsConsolePage() {
                           <div className="grid md:grid-cols-2 gap-3">
                             {analysis.objections?.length > 0 && (
                               <div>
-                                <p className="text-[10px] font-semibold uppercase tracking-wide text-red-500 mb-1">Objections</p>
+                                <p className="text-[10px] font-semibold uppercase tracking-wide text-red-600 mb-1">Objections</p>
                                 <ul className="space-y-1">
                                   {analysis.objections.slice(0, 3).map((o: string, i: number) => (
                                     <li key={i} className="text-xs text-red-800 bg-red-50 rounded px-2 py-1">{o}</li>
@@ -878,7 +878,7 @@ export default async function AIISAOperationsConsolePage() {
                             )}
                             {analysis.next_steps?.length > 0 && (
                               <div>
-                                <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-500 mb-1">Next Steps</p>
+                                <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 mb-1">Next Steps</p>
                                 <ul className="space-y-1">
                                   {analysis.next_steps.slice(0, 3).map((s: string, i: number) => (
                                     <li key={i} className="text-xs text-blue-800 bg-blue-50 rounded px-2 py-1">{s}</li>
@@ -979,8 +979,8 @@ export default async function AIISAOperationsConsolePage() {
             {[
               { label: 'Active Campaigns', value: activeCampaigns.length, icon: Megaphone, color: 'text-blue-600' },
               { label: 'Total Contacted', value: totalContacted, icon: Phone, color: 'text-purple-600' },
-              { label: 'Qualified Leads', value: qualified, icon: CheckCircle2, color: 'text-green-600' },
-              { label: 'Conversion Rate', value: totalContacted > 0 ? `${Math.round((qualified / totalContacted) * 100)}%` : '0%', icon: TrendingUp, color: 'text-orange-600' },
+              { label: 'Qualified Leads', value: qualified, icon: CheckCircle2, color: 'text-green-700' },
+              { label: 'Conversion Rate', value: totalContacted > 0 ? `${Math.round((qualified / totalContacted) * 100)}%` : '0%', icon: TrendingUp, color: 'text-orange-700' },
             ].map((stat) => (
               <Card key={stat.label}>
                 <CardContent className="p-4 flex items-center gap-3">

@@ -135,7 +135,7 @@ export function AgentActionDispositionQueue({ rows, compact, title }: Props) {
       <CardHeader className={cn("pb-3", compact && "pb-2")}>
         <CardTitle className={cn("flex items-center justify-between gap-2", compact ? "text-sm" : "text-base")}>
           <span className="flex items-center gap-2">
-            <AlertCircle className={cn("text-amber-500", compact ? "h-3.5 w-3.5" : "h-4 w-4")} />
+            <AlertCircle className={cn("text-amber-600", compact ? "h-3.5 w-3.5" : "h-4 w-4")} />
             {title ?? "Open action items"}
           </span>
           <span className="text-[10px] uppercase font-medium text-muted-foreground">

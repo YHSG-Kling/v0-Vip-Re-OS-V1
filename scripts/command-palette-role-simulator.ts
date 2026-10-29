@@ -163,13 +163,18 @@ check("M1b POSITIVE CONTROL: the UNFILTERED roster fails M1's probe — an every
 check("M2 externals are not merely empty (each still gets its own portal's quick actions), so M1 measures the filter",
   EXTERNAL.every((r) => visiblePaletteItems([r]).length > 0))
 
-check("B1 role-owned boards stay role-owned: lender pipeline → lender only; TC dashboard → tc only; vendor marketplace → broker only",
+// Wave 146 (lane 146H) RE-ASSERTED, not weakened: the vendor clause pinned the WAYPOINT "broker only" — true while
+// only the broker's nav linked /dashboard/vendors. Owner ruling 18 (2026-10-29, "vendor marketplace … at all
+// levels") and the page itself (app/dashboard/vendors/page.tsx scopes an AGENT to the vendors they or their team
+// invited) put the directory on the agent seat too. The rule is unchanged and still exact: the brokerage that
+// authors the marketplace and the agent who books from it see it; no external persona, no other seat does.
+check("B1 role-owned boards stay role-owned: lender pipeline → lender only; TC dashboard → tc only; vendor marketplace → the broker who authors it and the agent who books from it, no one else",
   (() => {
     const sees = (r: string, path: string) =>
       visiblePaletteItems([r]).some((i) => pathnameOf(i.href) === path)
     return ALL_ROLES.every((r) => sees(r, "/lender/pipeline") === (r === "lender"))
       && ALL_ROLES.every((r) => sees(r, "/dashboard/coordinator") === (r === "tc"))
-      && ALL_ROLES.every((r) => sees(r, "/dashboard/vendors") === (r === "broker"))
+      && ALL_ROLES.every((r) => sees(r, "/dashboard/vendors") === (r === "broker" || r === "agent"))
   })())
 check("B1a POSITIVE CONTROL: the UNFILTERED roster carries all three boards, so B1's probes can each go RED",
   anyUnder(PALETTE_ITEMS, "/lender/pipeline")

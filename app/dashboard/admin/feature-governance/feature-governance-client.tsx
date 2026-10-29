@@ -343,7 +343,7 @@ export function FeatureGovernanceClient({
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-medium">{flag.display_name}</span>
                         {flag.superadmin_only && (
-                          <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-600">
+                          <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-700">
                             superadmin only
                           </Badge>
                         )}

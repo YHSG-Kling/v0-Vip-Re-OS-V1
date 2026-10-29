@@ -262,7 +262,7 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
             </p>
             <a
               href="/settings/connections"
-              className="inline-block mt-3 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium py-2 px-4 rounded"
+              className="inline-block mt-3 bg-amber-700 hover:bg-amber-800 text-white text-sm font-medium py-2 px-4 rounded"
             >
               Connect a calendar account
             </a>

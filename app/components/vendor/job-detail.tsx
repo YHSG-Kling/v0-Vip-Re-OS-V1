@@ -311,7 +311,7 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
             </Button>
           )}
           {saveStatus && (
-            <p className="text-sm text-green-600">{saveStatus}</p>
+            <p className="text-sm text-green-700">{saveStatus}</p>
           )}
         </CardContent>
       </Card>
@@ -472,7 +472,7 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
               {uploading ? "Uploading…" : "Choose Files"}
             </Button>
             {!transactionId && (
-              <p className="text-xs text-amber-600 mt-3">
+              <p className="text-xs text-amber-700 mt-3">
                 This job is not linked to a transaction yet, so documents cannot be filed against it.
               </p>
             )}

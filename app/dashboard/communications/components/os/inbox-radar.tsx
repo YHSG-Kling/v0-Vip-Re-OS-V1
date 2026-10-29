@@ -64,7 +64,7 @@ export function InboxRadar({
 }: InboxRadarProps) {
   const getUrgencyColor = (hours: number) => {
     if (hours > 24) return "text-destructive"
-    if (hours > 4) return "text-amber-600"
+    if (hours > 4) return "text-amber-700"
     return "text-muted-foreground"
   }
 

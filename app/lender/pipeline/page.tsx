@@ -142,7 +142,7 @@ export default async function LenderPipelinePage() {
                   <div>
                     <p className="font-medium">{t.property_address || 'Address TBD'}</p>
                     <p className="text-sm text-gray-500">{t.client_name} · {t.transaction_type}</p>
-                    {t.close_date && <p className="text-xs text-gray-400">Close: {new Date(t.close_date).toLocaleDateString()}</p>}
+                    {t.close_date && <p className="text-xs text-gray-500">Close: {new Date(t.close_date).toLocaleDateString()}</p>}
                   </div>
                   <div className="text-right">
                     {t.contract_price && (

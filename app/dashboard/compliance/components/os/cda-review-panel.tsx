@@ -213,7 +213,7 @@ export function CdaReviewPanel() {
             CDA Approval Queue
           </CardTitle>
           <div className="flex items-center gap-2">
-            {submitted.length > 0 && <Badge className="bg-orange-500 text-white">{submitted.length} Pending</Badge>}
+            {submitted.length > 0 && <Badge className="bg-orange-700 text-white">{submitted.length} Pending</Badge>}
             {changesRequested.length > 0 && <Badge variant="outline">{changesRequested.length} Awaiting Agent</Badge>}
             {awaitingSendToTitle.length > 0 && (
               <Badge className="bg-blue-600 text-white">{awaitingSendToTitle.length} To Deliver</Badge>

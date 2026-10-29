@@ -45,10 +45,10 @@ export default async function VendorPortfolioPage() {
             </h1>
           </div>
         </div>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" asChild>
+        <Button size="sm" variant="outline" asChild>
           <Link href="/vendor/portfolio/upload">
             <Plus className="w-4 h-4 mr-2" />
-            Add Work
+            Add Work (not available yet)
           </Link>
         </Button>
       </div>
@@ -59,7 +59,10 @@ export default async function VendorPortfolioPage() {
             {vendor.notes && <p className="text-sm text-gray-600 mb-3">{vendor.notes}</p>}
             {vendor.website && <a href={vendor.website} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline">{vendor.website}</a>}
             {vendor.rating > 0 && <p className="text-sm mt-2">Rating: {vendor.rating}/5</p>}
-            <p className="text-sm text-gray-400 mt-4 text-center py-4">No portfolio items yet. Add your completed work to attract more clients.</p>
+            {/* Wave 146 (lane 146H, ruling 16): this line used to read "No portfolio items yet. Add your
+                completed work…" — an empty state the page could not know (there is no portfolio store to
+                read) inviting an upload that discarded its files. It now says what is true. */}
+            <p className="text-sm text-gray-600 mt-4 text-center py-4">Portfolio uploads are not available yet — agents see the profile above and your reviews.</p>
           </CardContent>
         </Card>
       ) : (

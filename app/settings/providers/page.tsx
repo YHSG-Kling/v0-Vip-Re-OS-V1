@@ -157,7 +157,7 @@ export default function ProviderSettingsPage() {
                 <p className="text-sm text-gray-500 mt-0.5">Agents use their own face and cloned voice. Cost-effective and personal.</p>
                 {/* Sanitized capability status only (owner, wave 141): a tenant never reads the platform's
                     env-var names or provider configuration here — that detail lives on the superadmin console. */}
-                <p className="text-xs text-gray-400 mt-1">Included with your subscription — nothing to configure here.</p>
+                <p className="text-xs text-gray-500 mt-1">Included with your subscription — nothing to configure here.</p>
               </div>
             </div>
           </div>
@@ -350,7 +350,7 @@ function ChannelCard({
             ))}
           </select>
           {platformDefault && platformDefault !== channelState.provider_key && (
-            <span className="text-[11px] text-gray-400">Platform default: {platformDefault}</span>
+            <span className="text-[11px] text-gray-500">Platform default: {platformDefault}</span>
           )}
         </div>
 
@@ -390,7 +390,7 @@ function ChannelCard({
           {pending ? 'Saving…' : 'Save'}
         </button>
         {saved && (
-          <span className="text-sm text-green-600 font-medium">Saved</span>
+          <span className="text-sm text-green-700 font-medium">Saved</span>
         )}
       </div>
     </div>

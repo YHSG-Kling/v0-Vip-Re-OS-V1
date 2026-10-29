@@ -125,7 +125,7 @@ export function PlanCatalogManager({ initialTiers }: { initialTiers: Tier[] }) {
             <CardHeader className="pb-2 flex-row items-start justify-between">
               <div>
                 <CardTitle className="text-base flex items-center gap-2">
-                  {t.display_name} {t.is_featured && <Star className="h-4 w-4 text-amber-500 fill-amber-500" />}
+                  {t.display_name} {t.is_featured && <Star className="h-4 w-4 text-amber-600 fill-amber-500" />}
                   {!t.is_active && <Badge variant="outline" className="text-[10px]">inactive</Badge>}
                 </CardTitle>
                 <p className="text-xs text-muted-foreground">{t.tier_name}</p>

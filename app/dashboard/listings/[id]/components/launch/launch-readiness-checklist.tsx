@@ -494,7 +494,7 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
                   className={cn(
                     "h-4 w-4 shrink-0",
                     row.status === "complete" && "text-green-600 fill-green-100",
-                    row.status === "in_progress" && "text-amber-500",
+                    row.status === "in_progress" && "text-amber-600",
                     row.status === "pending" && "text-muted-foreground/40"
                   )}
                 />

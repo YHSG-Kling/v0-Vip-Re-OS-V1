@@ -193,7 +193,7 @@ export function OpenHousePostEventPanel({ event, attendees, listingId }: OpenHou
             {totalAttended} attended
           </span>
           <span className="flex items-center gap-1">
-            <Star className="h-3.5 w-3.5 text-amber-500" />
+            <Star className="h-3.5 w-3.5 text-amber-600" />
             {hotProspects.length} hot prospects
           </span>
           <span className="flex items-center gap-1">
@@ -281,7 +281,7 @@ export function OpenHousePostEventPanel({ event, attendees, listingId }: OpenHou
                     {/* Lead score — computed by the event-end scoring pass */}
                     {typeof attendee.ai_lead_score === "number" && (
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Star className="h-3 w-3 text-amber-400 fill-amber-400" />
+                        <Star className="h-3 w-3 text-amber-600 fill-amber-400" />
                         <span>Lead score {attendee.ai_lead_score}/100</span>
                       </div>
                     )}

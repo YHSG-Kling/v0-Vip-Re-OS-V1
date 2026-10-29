@@ -28,7 +28,7 @@ export function EarningsKPIRow({
       value: formatCurrency(mtdAgentNet),
       icon: DollarSign,
       description: "This month",
-      color: "text-green-600",
+      color: "text-green-700",
       bgColor: "bg-green-50",
     },
     {
@@ -52,7 +52,7 @@ export function EarningsKPIRow({
       value: ytdTransactionCount.toString(),
       icon: FileText,
       description: "Closed deals",
-      color: "text-orange-600",
+      color: "text-orange-700",
       bgColor: "bg-orange-50",
     },
   ]

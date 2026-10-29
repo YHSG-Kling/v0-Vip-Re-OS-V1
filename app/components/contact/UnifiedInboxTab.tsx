@@ -101,7 +101,7 @@ function channelIcon(channel: Channel, size = 13) {
     case "linkedin":
       return <Linkedin size={size} className={cn(cls, "text-sky-700")} />
     case "twitter":
-      return <Twitter size={size} className={cn(cls, "text-sky-500")} />
+      return <Twitter size={size} className={cn(cls, "text-sky-600")} />
     case "social":
       return <MessageSquare size={size} className={cn(cls, "text-indigo-500")} />
     default:

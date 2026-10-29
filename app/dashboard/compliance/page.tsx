@@ -379,7 +379,7 @@ export default async function ComplianceDashboardPage() {
                 complianceRiskScore.riskLevel === "low"
                   ? "h-4 w-4 text-green-600"
                   : complianceRiskScore.riskLevel === "medium"
-                  ? "h-4 w-4 text-yellow-600"
+                  ? "h-4 w-4 text-yellow-700"
                   : "h-4 w-4 text-red-600"
               } />
               Compliance Risk Score
@@ -885,11 +885,11 @@ export default async function ComplianceDashboardPage() {
                       </div>
                       <div className="text-center p-4 rounded-lg bg-green-50 border border-green-200">
                         <p className="text-2xl font-bold text-green-700">{tridPassed.length}</p>
-                        <p className="text-xs text-green-600 mt-1">Passed</p>
+                        <p className="text-xs text-green-700 mt-1">Passed</p>
                       </div>
                       <div className="text-center p-4 rounded-lg bg-yellow-50 border border-yellow-200">
                         <p className="text-2xl font-bold text-yellow-700">{tridPending.length}</p>
-                        <p className="text-xs text-yellow-600 mt-1">Pending</p>
+                        <p className="text-xs text-yellow-700 mt-1">Pending</p>
                       </div>
                     </div>
 
@@ -955,11 +955,11 @@ export default async function ComplianceDashboardPage() {
                 <div className="grid grid-cols-3 gap-4">
                   <div className="text-center p-4 rounded-lg bg-green-50 border border-green-200">
                     <p className="text-2xl font-bold text-green-700">{certStatus.active}</p>
-                    <p className="text-xs text-green-600 mt-1">Active</p>
+                    <p className="text-xs text-green-700 mt-1">Active</p>
                   </div>
                   <div className="text-center p-4 rounded-lg bg-yellow-50 border border-yellow-200">
                     <p className="text-2xl font-bold text-yellow-700">{certStatus.expiring}</p>
-                    <p className="text-xs text-yellow-600 mt-1">Expiring Soon</p>
+                    <p className="text-xs text-yellow-700 mt-1">Expiring Soon</p>
                   </div>
                   <div className="text-center p-4 rounded-lg bg-red-50 border border-red-200">
                     <p className="text-2xl font-bold text-red-700">{certStatus.expired}</p>
@@ -971,7 +971,7 @@ export default async function ComplianceDashboardPage() {
               )}
               {certStatus && certStatus.expiring > 0 && (
                 <Alert className="mt-4 border-yellow-300 bg-yellow-50">
-                  <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                  <AlertTriangle className="h-4 w-4 text-yellow-700" />
                   <AlertDescription className="text-yellow-800">
                     {certStatus.expiring} certification{certStatus.expiring !== 1 ? "s" : ""} expiring within 30 days. Renew to maintain compliance.
                   </AlertDescription>

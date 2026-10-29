@@ -140,7 +140,7 @@ export function ExternalBillingEarningsPanel({
           </div>
           <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-100">
             <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-yellow-600" />
+              <Clock className="h-4 w-4 text-yellow-700" />
               <span className="text-xs text-yellow-700">Pending</span>
             </div>
             <p className="text-lg font-bold text-yellow-700 mt-1">{formatCurrency(totals.pending)}</p>

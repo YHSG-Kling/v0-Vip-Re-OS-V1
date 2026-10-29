@@ -20,7 +20,7 @@ export default async function WeeklyInsightsPage() {
     <div className="p-6 space-y-6 max-w-4xl mx-auto">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Sparkles className="h-6 w-6 text-amber-500" />
+          <Sparkles className="h-6 w-6 text-amber-600" />
           What got smarter this week
         </h1>
         <p className="text-sm text-muted-foreground mt-1">

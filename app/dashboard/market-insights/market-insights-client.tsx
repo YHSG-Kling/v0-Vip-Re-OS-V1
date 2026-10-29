@@ -650,7 +650,7 @@ export function MarketInsightsDashboardClient({
               <DollarSign className="h-5 w-5 text-muted-foreground" />
               {marketData?.price_trend_pct_30d !== undefined && (
                 <span
-                  className={`text-xs ${marketData.price_trend_pct_30d > 0 ? "text-green-600" : marketData.price_trend_pct_30d < 0 ? "text-red-600" : "text-muted-foreground"}`}
+                  className={`text-xs ${marketData.price_trend_pct_30d > 0 ? "text-green-700" : marketData.price_trend_pct_30d < 0 ? "text-red-600" : "text-muted-foreground"}`}
                 >
                   {marketData.price_trend_pct_30d > 0 ? "+" : ""}
                   {marketData.price_trend_pct_30d?.toFixed(1)}%
@@ -746,7 +746,7 @@ export function MarketInsightsDashboardClient({
           <CardHeader className="flex flex-row items-start justify-between">
             <div>
               <CardTitle className="flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-amber-500" />
+                <Sparkles className="h-5 w-5 text-amber-600" />
                 AI Market Insight
               </CardTitle>
               {insight && (
@@ -816,7 +816,7 @@ export function MarketInsightsDashboardClient({
 
                 {insight.competition_alert && (
                   <div className="flex items-start gap-2 rounded-lg border border-orange-200 bg-orange-50 p-4">
-                    <AlertTriangle className="h-5 w-5 text-orange-500 flex-shrink-0" />
+                    <AlertTriangle className="h-5 w-5 text-orange-600 flex-shrink-0" />
                     <div>
                       <h4 className="font-medium text-orange-800">
                         Competition Alert
@@ -972,7 +972,7 @@ export function MarketInsightsDashboardClient({
         <CardHeader className="flex flex-row items-center justify-between pb-3">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
               Market Shift Prediction
             </CardTitle>
             <CardDescription>AI-powered 90-day market forecast</CardDescription>

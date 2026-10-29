@@ -28,6 +28,12 @@ interface SocialAiComposerProps {
   /** Full account objects so we can look up the account ID for the selected platform */
   accounts?: Array<{ id: string; platform: string; account_name: string }>
   onPostScheduled?: () => void
+  /** The brokerage's "posts need broker approval" setting — the SAME flag the Create Post dialog passes. This
+   *  composer scheduled posts WITHOUT it, so a post written here skipped the approval queue the dialog's posts
+   *  entered (wave 146, lane 146H; owner ruling 9). */
+  requiresBrokerApproval?: boolean
+  /** Who approves this person's post — the C5 answer (lib/kernel/approval-authority.ts approverFor), worded. */
+  approverLine?: string | null
 }
 
 const CONTENT_TYPES = [
@@ -55,6 +61,8 @@ export function SocialAiComposer({
   connectedPlatforms,
   accounts = [],
   onPostScheduled,
+  requiresBrokerApproval = false,
+  approverLine = null,
 }: SocialAiComposerProps) {
   const [contentType, setContentType] = useState("")
   const [tone, setTone] = useState("professional")
@@ -130,16 +138,19 @@ export function SocialAiComposer({
         return
       }
 
+      // No agentId / userId from here (wave 146, lane 146H). `agentId` in this component is the session USER id
+      // (generateSocialPostContent and the points award read it as one); scheduleSocialPost verifies a supplied
+      // agentId as an AGENTS id (agents.id and users.id are disjoint — CLAUDE.md §3), so every post scheduled
+      // here was refused "Forbidden". Omitted, the action uses the session's own agents row.
       const scheduled = await scheduleSocialPost({
-        agentId,
         brokerageId,
-        userId: agentId,
         platform,
         postType: contentType || "custom",
         content: contentWithHashtags,
         hashtags,
         scheduledFor: scheduledTime || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         socialAccountId: account.id,
+        requiresBrokerApproval,
       })
       // THE SERVER'S VERDICT, not an optimistic one: scheduleSocialPost RESOLVES
       // with success:false on a compliance block or a refused insert.

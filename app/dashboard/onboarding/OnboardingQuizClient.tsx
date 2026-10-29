@@ -132,7 +132,7 @@ export function OnboardingQuizClient({ stepId, onPassAndComplete }: Props) {
           <button
             type="button"
             onClick={onPassAndComplete}
-            className="mt-3 bg-green-600 hover:bg-green-700 text-white text-sm font-medium py-2 px-4 rounded-lg"
+            className="mt-3 bg-green-700 hover:bg-green-800 text-white text-sm font-medium py-2 px-4 rounded-lg"
           >
             Mark Step Complete
           </button>

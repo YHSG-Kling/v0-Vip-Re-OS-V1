@@ -535,7 +535,7 @@ export default function SequenceBuilderClient({
               <div className="flex flex-col items-center gap-0">
                 <div className="w-full rounded-lg border-2 border-green-500 bg-green-50 dark:bg-green-950/30 px-3 py-2 text-center">
                   <p className="text-xs font-semibold text-green-700 dark:text-green-400">START</p>
-                  <p className="text-[11px] text-green-600 dark:text-green-500 mt-0.5">
+                  <p className="text-[11px] text-green-700 dark:text-green-500 mt-0.5">
                     {TRIGGER_EVENTS.find(t => t.value === sequence.trigger_event)?.label ?? "Manual Enroll"}
                   </p>
                 </div>
@@ -559,7 +559,7 @@ export default function SequenceBuilderClient({
                         <div className="flex flex-col items-center">
                           <div className="w-px h-2 bg-border" />
                           {step.condition_field && (
-                            <div className="flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400">
+                            <div className="flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400">
                               <GitBranch className="h-3 w-3" />
                               <span>Branch</span>
                             </div>
@@ -719,7 +719,7 @@ export default function SequenceBuilderClient({
           {sequence.is_ab_test && (
             <section>
               <h2 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-1.5">
-                <FlaskConical className="h-4 w-4 text-amber-500" /> A/B Test Results
+                <FlaskConical className="h-4 w-4 text-amber-600" /> A/B Test Results
               </h2>
               <div className="grid grid-cols-2 gap-4">
                 {[
@@ -1018,7 +1018,7 @@ function StepFlowNode({
             <span>{step.open_count} opened</span>
             <span>{step.reply_count} replied</span>
             {showABVariant && step.ab_variant && (
-              <span className="text-amber-500 font-medium">Variant {step.ab_variant}</span>
+              <span className="text-amber-700 font-medium">Variant {step.ab_variant}</span>
             )}
           </div>
         </div>

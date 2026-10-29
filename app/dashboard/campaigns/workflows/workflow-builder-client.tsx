@@ -284,9 +284,9 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
             <h1 className="text-lg font-semibold leading-tight">Workflow Builder</h1>
             <p className="text-xs text-muted-foreground">
               {isActive ? (
-                <span className="text-emerald-600 font-medium">Active</span>
+                <span className="text-emerald-700 font-medium">Active</span>
               ) : (
-                <span className="text-amber-600">Draft</span>
+                <span className="text-amber-700">Draft</span>
               )}{" "}
               · {steps.length} step{steps.length !== 1 ? "s" : ""}
             </p>

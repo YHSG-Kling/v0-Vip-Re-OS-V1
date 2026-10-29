@@ -459,7 +459,7 @@ export function ListingPacketPanel({ listingId, agentId, brokerageId, listing }:
                 <ul className="space-y-1">
                   {qcResult.issues.map((issue, i) => (
                     <li key={i} className="flex items-start gap-1.5 text-xs text-foreground">
-                      <AlertCircle className="h-3 w-3 text-amber-500 mt-0.5 shrink-0" />
+                      <AlertCircle className="h-3 w-3 text-amber-600 mt-0.5 shrink-0" />
                       {issue}
                     </li>
                   ))}

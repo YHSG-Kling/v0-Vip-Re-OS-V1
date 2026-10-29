@@ -98,7 +98,7 @@ export default async function FinancialReportsPage() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-green-500/10">
-                  <DollarSign className="h-5 w-5 text-green-500" />
+                  <DollarSign className="h-5 w-5 text-green-600" />
                 </div>
                 <div>
                   <p className="text-2xl font-bold">
@@ -141,7 +141,7 @@ export default async function FinancialReportsPage() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-orange-500/10">
-                  <Calendar className="h-5 w-5 text-orange-500" />
+                  <Calendar className="h-5 w-5 text-orange-600" />
                 </div>
                 <div>
                   <p className="text-2xl font-bold">
@@ -191,7 +191,7 @@ export default async function FinancialReportsPage() {
                         <td className="py-2 pr-4 text-right">
                           {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(report.total_expenses ?? 0)}
                         </td>
-                        <td className={`py-2 pr-4 text-right font-medium ${(report.net_profit ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                        <td className={`py-2 pr-4 text-right font-medium ${(report.net_profit ?? 0) >= 0 ? "text-green-700" : "text-red-600"}`}>
                           {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(report.net_profit ?? 0)}
                         </td>
                         <td className="py-2 text-muted-foreground">

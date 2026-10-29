@@ -343,7 +343,7 @@ export function IsaCallingClient(props: Props) {
                         {num.twilio_number_sid ? (
                           <>Twilio SID: <span className="font-mono">{num.twilio_number_sid}</span></>
                         ) : (
-                          <span className="text-amber-600">
+                          <span className="text-amber-700">
                             No Twilio SID — webhooks not registered, so this number cannot receive calls or texts.
                           </span>
                         )}
@@ -414,8 +414,8 @@ export function IsaCallingClient(props: Props) {
                         const riskColor = cap.riskLevel === "high"
                           ? "text-red-600 dark:text-red-400"
                           : cap.riskLevel === "medium"
-                          ? "text-amber-600 dark:text-amber-400"
-                          : "text-green-600 dark:text-green-400"
+                          ? "text-amber-700 dark:text-amber-400"
+                          : "text-green-700 dark:text-green-400"
                         return (
                           <div
                             key={cap.key}

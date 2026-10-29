@@ -167,11 +167,11 @@ export function FormsImportPanel({ brokerageId }: FormsImportPanelProps) {
                       <span className="text-xs truncate max-w-[120px]">{imp.file_name}</span>
                     </div>
                     <div className="flex items-center gap-1 text-xs" title="created / skipped / failed">
-                      <span className="text-emerald-600">{imp.created_count}</span>
+                      <span className="text-emerald-700">{imp.created_count}</span>
                       {skipped > 0 && (
                         <>
                           <span className="text-muted-foreground">/</span>
-                          <span className="text-amber-600">{skipped} skipped</span>
+                          <span className="text-amber-700">{skipped} skipped</span>
                         </>
                       )}
                       {imp.failed_count > 0 && (

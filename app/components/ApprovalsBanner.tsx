@@ -75,7 +75,7 @@ export function ApprovalsBanner() {
         </div>
       </div>
       <Link href="/approvals">
-        <Button size="lg" className="bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-md">
+        <Button size="lg" className="bg-amber-700 hover:bg-amber-800 text-white font-semibold shadow-md">
           Review them
           <ArrowRight className="ml-2 h-5 w-5" />
         </Button>

@@ -21,7 +21,7 @@ const CHANNEL_ICON: Record<string, React.ReactNode> = {
   video:        <Video className="h-4 w-4 text-purple-500" />,
   direct_mail:  <FileText className="h-4 w-4 text-green-600" />,
   phone:        <Phone className="h-4 w-4 text-gray-500" />,
-  sms:          <MessageSquare className="h-4 w-4 text-teal-500" />,
+  sms:          <MessageSquare className="h-4 w-4 text-teal-600" />,
 }
 
 interface Props {

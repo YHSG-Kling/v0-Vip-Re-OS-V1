@@ -51,8 +51,8 @@ const RISK_TYPE_COLORS: Record<string, string> = {
 
 function riskScoreBadge(score: number) {
   if (score >= 8) return "bg-red-600 text-white"
-  if (score >= 5) return "bg-orange-400 text-white"
-  return "bg-blue-500 text-white"
+  if (score >= 5) return "bg-orange-700 text-white"
+  return "bg-blue-600 text-white"
 }
 
 function riskScoreLabel(score: number) {
@@ -144,7 +144,7 @@ function FlagRow({ flag, reviewerId, onUpdated }: { flag: AuditFlag; reviewerId:
             {isPending ? "Saving…" : "Save"}
           </button>
         )}
-        {saved && <span className="text-xs text-green-600 font-medium">Saved</span>}
+        {saved && <span className="text-xs text-green-700 font-medium">Saved</span>}
       </div>
 
       {showNotes && !saved && (
@@ -275,14 +275,14 @@ export default function ComplianceTab({ flags, reviewerId, reviewContacts }: Com
               <button
                 onClick={() => handleBulkAction("reviewed")}
                 disabled={bulkPending}
-                className="text-xs px-3 py-1 bg-green-600 text-white rounded hover:opacity-90 disabled:opacity-40"
+                className="text-xs px-3 py-1 bg-green-700 text-white rounded hover:opacity-90 disabled:opacity-40"
               >
                 Mark Reviewed
               </button>
               <button
                 onClick={() => handleBulkAction("escalated")}
                 disabled={bulkPending}
-                className="text-xs px-3 py-1 bg-orange-600 text-white rounded hover:opacity-90 disabled:opacity-40"
+                className="text-xs px-3 py-1 bg-orange-700 text-white rounded hover:opacity-90 disabled:opacity-40"
               >
                 Escalate to Broker
               </button>

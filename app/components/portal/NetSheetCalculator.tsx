@@ -306,7 +306,7 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
               />
             </div>
             {prorations !== 0 && (
-              <span className={`${prorations > 0 ? "text-green-600" : "text-red-600"} text-right block text-sm`}>
+              <span className={`${prorations > 0 ? "text-green-700" : "text-red-600"} text-right block text-sm`}>
                 {prorations > 0 ? "+" : ""}
                 {formatCurrency(prorations)}
               </span>
@@ -325,7 +325,7 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
             </div>
             <div className="text-right">
               <p className="text-xs text-muted-foreground">After all costs</p>
-              <p className="text-sm text-green-600">{((netProceeds / price) * 100).toFixed(1)}% of sale price</p>
+              <p className="text-sm text-green-700">{((netProceeds / price) * 100).toFixed(1)}% of sale price</p>
             </div>
           </div>
         </div>

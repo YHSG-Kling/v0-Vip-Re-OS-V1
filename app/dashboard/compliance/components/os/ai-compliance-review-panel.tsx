@@ -298,9 +298,9 @@ export function AIComplianceReviewPanel() {
 
   const severityColors = {
     critical: "bg-destructive text-destructive-foreground",
-    high: "bg-orange-500 text-white",
+    high: "bg-orange-700 text-white",
     medium: "bg-yellow-500 text-yellow-950",
-    low: "bg-blue-500 text-white",
+    low: "bg-blue-600 text-white",
   }
 
   return (
@@ -486,10 +486,10 @@ export function AIComplianceReviewPanel() {
                   <Badge
                     className={
                       row.status === "pass"
-                        ? "bg-green-500 text-white text-[10px]"
+                        ? "bg-green-700 text-white text-[10px]"
                         : row.status === "fail"
                         ? "bg-destructive text-destructive-foreground text-[10px]"
-                        : "bg-orange-500 text-white text-[10px]"
+                        : "bg-orange-700 text-white text-[10px]"
                     }
                   >
                     {row.score}
@@ -515,7 +515,7 @@ export function AIComplianceReviewPanel() {
                   {verdict.status === "pass" ? "Content Approved" : verdict.status === "fail" ? "Issues Found" : "Review Required"}
                 </span>
               </div>
-              <Badge className={verdict.status === "pass" ? "bg-green-500 text-white" : "bg-destructive text-destructive-foreground"}>
+              <Badge className={verdict.status === "pass" ? "bg-green-700 text-white" : "bg-destructive text-destructive-foreground"}>
                 Score: {verdict.overall_score}/100
               </Badge>
             </div>

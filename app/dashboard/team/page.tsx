@@ -525,7 +525,7 @@ export default async function TeamDashboard() {
               label: "Active Contacts",
               value: activeContactsCount,
               icon: Users,
-              color: "text-blue-500",
+              color: "text-blue-600",
               bg: "bg-blue-500/10",
               href: "/crm",
             },
@@ -533,7 +533,7 @@ export default async function TeamDashboard() {
               label: "Active Transactions",
               value: activeTransactions.length,
               icon: BarChart3,
-              color: "text-emerald-500",
+              color: "text-emerald-700",
               bg: "bg-emerald-500/10",
               href: "/dashboard/transactions",
             },
@@ -549,7 +549,7 @@ export default async function TeamDashboard() {
               label: "Stale Contacts",
               value: staleContacts.length,
               icon: Clock,
-              color: "text-amber-500",
+              color: "text-amber-700",
               bg: "bg-amber-500/10",
               href: "/crm",
             },
@@ -557,7 +557,7 @@ export default async function TeamDashboard() {
               label: "Handoff Required",
               value: handoffs.length,
               icon: AlertTriangle,
-              color: "text-red-500",
+              color: "text-red-600",
               bg: "bg-red-500/10",
               href: "/dashboard/communications/handoffs",
             },
@@ -565,7 +565,7 @@ export default async function TeamDashboard() {
               label: "Overdue Tasks",
               value: overdueTasks.length,
               icon: CheckCircle2,
-              color: "text-orange-500",
+              color: "text-orange-700",
               bg: "bg-orange-500/10",
               href: "/dashboard/admin/tasks",
             },
@@ -681,7 +681,7 @@ export default async function TeamDashboard() {
                           </AvatarFallback>
                         </Avatar>
                         <span className="flex-1 text-sm font-medium truncate">{entry.name}</span>
-                        <span className="text-sm font-semibold text-emerald-600">
+                        <span className="text-sm font-semibold text-emerald-700">
                           ${entry.gci.toLocaleString()}
                         </span>
                       </div>
@@ -852,7 +852,7 @@ export default async function TeamDashboard() {
             <Card className={staleContacts.length > 5 ? "border-amber-200" : ""}>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <Clock className={`h-4 w-4 ${staleContacts.length > 5 ? "text-amber-500" : "text-muted-foreground"}`} />
+                  <Clock className={`h-4 w-4 ${staleContacts.length > 5 ? "text-amber-600" : "text-muted-foreground"}`} />
                   Stale Contacts
                   {staleContacts.length > 0 && (
                     <Badge variant="outline" className="text-xs border-amber-200 text-amber-700 bg-amber-50">
@@ -904,7 +904,7 @@ export default async function TeamDashboard() {
             <Card className={overdueTasks.length > 0 ? "border-orange-200" : ""}>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <CheckCircle2 className={`h-4 w-4 ${overdueTasks.length > 0 ? "text-orange-500" : "text-muted-foreground"}`} />
+                  <CheckCircle2 className={`h-4 w-4 ${overdueTasks.length > 0 ? "text-orange-600" : "text-muted-foreground"}`} />
                   Overdue Tasks
                   {overdueTasks.length > 0 && (
                     <Badge variant="outline" className="text-xs border-orange-200 text-orange-700 bg-orange-50">

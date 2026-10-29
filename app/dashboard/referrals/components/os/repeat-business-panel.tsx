@@ -191,7 +191,7 @@ export function RepeatBusinessPanel({
               <div className="flex flex-col items-center p-2 rounded-lg border bg-emerald-50">
                 <Users className="h-4 w-4 text-emerald-600 mb-1" />
                 <span className="text-lg font-bold text-emerald-700">{sphereSegments.champions}</span>
-                <span className="text-xs text-emerald-600">Champions</span>
+                <span className="text-xs text-emerald-700">Champions</span>
               </div>
               <div className="flex flex-col items-center p-2 rounded-lg border bg-blue-50">
                 <Flame className="h-4 w-4 text-blue-600 mb-1" />
@@ -201,7 +201,7 @@ export function RepeatBusinessPanel({
               <div className="flex flex-col items-center p-2 rounded-lg border bg-amber-50">
                 <Snowflake className="h-4 w-4 text-amber-600 mb-1" />
                 <span className="text-lg font-bold text-amber-700">{sphereSegments.cooling}</span>
-                <span className="text-xs text-amber-600">Cooling</span>
+                <span className="text-xs text-amber-700">Cooling</span>
               </div>
               <div className="flex flex-col items-center p-2 rounded-lg border bg-red-50">
                 <AlertTriangle className="h-4 w-4 text-red-600 mb-1" />
@@ -268,7 +268,7 @@ export function RepeatBusinessPanel({
                 </Button>
               </div>
               {sendState && (
-                <p className={`text-xs ${sendState.ok ? "text-emerald-600" : "text-destructive"}`}>
+                <p className={`text-xs ${sendState.ok ? "text-emerald-700" : "text-destructive"}`}>
                   {sendState.message}
                 </p>
               )}

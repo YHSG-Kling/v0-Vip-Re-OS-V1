@@ -75,7 +75,7 @@ export function OverageCalculator({ brokerageId, projectionDays = 30 }: OverageC
               <div className="flex justify-between items-center mb-2">
                 <p className="font-medium capitalize">{metricName}</p>
                 {data.overage > 0 && (
-                  <span className="text-sm font-semibold text-orange-600">
+                  <span className="text-sm font-semibold text-orange-700">
                     ${(data.overage / 100).toFixed(2)} overage
                   </span>
                 )}
@@ -96,7 +96,7 @@ export function OverageCalculator({ brokerageId, projectionDays = 30 }: OverageC
                 <div
                   className={`px-2 py-1 rounded ${data.overage > 0 ? "bg-orange-50" : "bg-green-50"}`}
                 >
-                  <p className={data.overage > 0 ? "text-orange-600" : "text-green-600"}>
+                  <p className={data.overage > 0 ? "text-orange-700" : "text-green-700"}>
                     Status
                   </p>
                   <p className="font-mono font-semibold">

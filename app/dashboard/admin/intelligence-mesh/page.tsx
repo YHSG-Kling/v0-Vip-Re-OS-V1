@@ -173,7 +173,7 @@ export default async function IntelligenceMeshPage() {
                         adoption.observed_lift_pct == null
                           ? "text-muted-foreground"
                           : Number(adoption.observed_lift_pct) >= 0
-                            ? "text-emerald-600"
+                            ? "text-emerald-700"
                             : "text-red-600"
                       }`}>
                         {adoption.observed_lift_pct != null

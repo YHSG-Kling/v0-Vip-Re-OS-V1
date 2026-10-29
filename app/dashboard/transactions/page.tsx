@@ -150,7 +150,7 @@ export default async function TransactionsPage() {
                   <p className="text-sm text-muted-foreground">Active Deals</p>
                   <p className="text-2xl font-bold text-foreground">{activeDeals.length}</p>
                 </div>
-                <FileText className="h-8 w-8 text-green-500 opacity-50" />
+                <FileText className="h-8 w-8 text-green-600 opacity-50" />
               </div>
             </CardContent>
           </Card>
@@ -176,7 +176,7 @@ export default async function TransactionsPage() {
                   <p className="text-sm text-muted-foreground">Closing in 30 Days</p>
                   <p className="text-2xl font-bold text-foreground">{upcomingClosings.length}</p>
                 </div>
-                <Clock className="h-8 w-8 text-amber-500 opacity-50" />
+                <Clock className="h-8 w-8 text-amber-600 opacity-50" />
               </div>
             </CardContent>
           </Card>
@@ -337,7 +337,7 @@ export default async function TransactionsPage() {
                                         {healthScore}
                                       </div>
                                       {isAtRisk && (
-                                        <AlertTriangle className={`h-3 w-3 ${(normalizedRisk === "critical" || normalizedRisk === "high") ? "text-red-500" : "text-amber-500"}`} />
+                                        <AlertTriangle className={`h-3 w-3 ${(normalizedRisk === "critical" || normalizedRisk === "high") ? "text-red-500" : "text-amber-600"}`} />
                                       )}
                                     </div>
                                   </TooltipTrigger>

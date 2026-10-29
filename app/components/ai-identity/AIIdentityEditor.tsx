@@ -1063,7 +1063,7 @@ export function AIIdentityEditor({
       <div className="flex items-center justify-between rounded-lg border bg-card px-5 py-3 sticky bottom-4 shadow-lg">
         <div className="text-sm text-muted-foreground">
           {saveStatus === "saved" && (
-            <span className="flex items-center gap-1.5 text-green-600">
+            <span className="flex items-center gap-1.5 text-green-700">
               <CheckCircle className="h-4 w-4" />
               Saved — changes will apply to new AI interactions immediately.
             </span>

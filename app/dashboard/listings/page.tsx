@@ -161,7 +161,7 @@ export default async function ListingsPage() {
                   <p className="text-sm text-muted-foreground">Active Listings</p>
                   <p className="text-2xl font-bold text-foreground">{activeListings.length}</p>
                 </div>
-                <Home className="h-8 w-8 text-green-500 opacity-50" />
+                <Home className="h-8 w-8 text-green-600 opacity-50" />
               </div>
             </CardContent>
           </Card>
@@ -173,7 +173,7 @@ export default async function ListingsPage() {
                   <p className="text-sm text-muted-foreground">Pending/Contract</p>
                   <p className="text-2xl font-bold text-foreground">{pendingListings.length}</p>
                 </div>
-                <Clock className="h-8 w-8 text-amber-500 opacity-50" />
+                <Clock className="h-8 w-8 text-amber-600 opacity-50" />
               </div>
             </CardContent>
           </Card>

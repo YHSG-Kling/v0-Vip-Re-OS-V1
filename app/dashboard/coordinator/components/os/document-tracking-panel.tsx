@@ -59,7 +59,7 @@ export function DocumentTrackingPanel({ brokerageId }: DocumentTrackingPanelProp
   const getStatusIcon = (signed: boolean, status: string) => {
     if (status === 'missing') return <AlertCircle className="h-4 w-4 text-destructive" />
     if (signed) return <CheckCircle2 className="h-4 w-4 text-green-600" />
-    return <FileText className="h-4 w-4 text-gray-400" />
+    return <FileText className="h-4 w-4 text-gray-500" />
   }
 
   const signedCount = documents.filter(d => d.signed).length

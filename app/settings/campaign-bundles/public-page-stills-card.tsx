@@ -78,7 +78,7 @@ export function PublicPageStillsCard() {
       <div className="flex flex-wrap items-center gap-2">
         <input className="min-w-[20rem] rounded border bg-background px-2 py-1 text-sm" placeholder="https://…" value={pageUrl} onChange={(e) => setPageUrl(e.target.value)} disabled={pending} />
         <input className="min-w-[12rem] rounded border bg-background px-2 py-1 text-sm" placeholder="Label (optional)" value={label} onChange={(e) => setLabel(e.target.value)} disabled={pending} />
-        <button type="button" className="px-3 py-1.5 bg-sky-600 text-white text-xs font-medium rounded hover:bg-sky-700 disabled:opacity-50" onClick={capture} disabled={pending || !/^https?:\/\//i.test(pageUrl.trim())}>
+        <button type="button" className="px-3 py-1.5 bg-sky-700 text-white text-xs font-medium rounded hover:bg-sky-800 disabled:opacity-50" onClick={capture} disabled={pending || !/^https?:\/\//i.test(pageUrl.trim())}>
           {pending ? "Working…" : "Capture page"}
         </button>
       </div>

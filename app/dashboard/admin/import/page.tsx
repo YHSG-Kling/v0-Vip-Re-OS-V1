@@ -365,7 +365,7 @@ export default function ImportPage() {
           <h2 className="text-lg font-semibold text-foreground mb-4">Import Complete</h2>
           <div className="grid grid-cols-3 gap-4 mb-6">
             {[
-              { label: 'Created', value: result.created, color: 'text-green-600 dark:text-green-400' },
+              { label: 'Created', value: result.created, color: 'text-green-700 dark:text-green-400' },
               { label: 'Merged', value: result.merged, color: 'text-blue-600 dark:text-blue-400' },
               { label: 'Failed', value: result.failed, color: 'text-destructive' },
             ].map((s) => (
@@ -424,7 +424,7 @@ export default function ImportPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right text-muted-foreground">{imp.total_rows}</td>
-                    <td className="px-4 py-3 text-right text-green-600 dark:text-green-400 font-medium">{imp.created_count}</td>
+                    <td className="px-4 py-3 text-right text-green-700 dark:text-green-400 font-medium">{imp.created_count}</td>
                     <td className="px-4 py-3 text-right text-blue-600 dark:text-blue-400 font-medium">{imp.merged_count}</td>
                     <td className="px-4 py-3 text-right text-destructive font-medium">{imp.failed_count}</td>
                     <td className="px-4 py-3 text-right text-foreground">

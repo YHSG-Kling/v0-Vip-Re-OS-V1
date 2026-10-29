@@ -207,7 +207,7 @@ export function JobsClient({ bookings: initial, quoteRequests: initialQuotes = [
                   {b.notes || b.transactions?.property_address || "No additional details"}
                 </p>
                 {b.scheduled_date && (
-                  <p className="text-xs text-gray-400">
+                  <p className="text-xs text-gray-500">
                     {new Date(b.scheduled_date).toLocaleDateString()}
                   </p>
                 )}
@@ -220,7 +220,7 @@ export function JobsClient({ bookings: initial, quoteRequests: initialQuotes = [
                   <>
                     <Button
                       size="sm"
-                      className="bg-green-600 hover:bg-green-700 text-white text-xs"
+                      className="bg-green-700 hover:bg-green-800 text-white text-xs"
                       onClick={() => handleAccept(b)}
                       disabled={actionPending && actingOn === b.id}
                     >

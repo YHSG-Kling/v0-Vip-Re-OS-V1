@@ -235,7 +235,7 @@ export function CouponsManager({ initialCoupons, brokerages, stripeConfigured, i
                     {c.code}
                     {!c.active && <Badge variant="outline" className="text-[10px]">inactive</Badge>}
                     {expired && <Badge variant="outline" className="text-[10px] text-red-600 border-red-300">expired</Badge>}
-                    {exhausted && <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300">limit reached</Badge>}
+                    {exhausted && <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">limit reached</Badge>}
                   </CardTitle>
                   <p className="text-xs text-muted-foreground mt-0.5">{c.summary}{c.applies_to_tier ? ` · ${c.applies_to_tier} tier only` : ' · any tier'}</p>
                 </div>

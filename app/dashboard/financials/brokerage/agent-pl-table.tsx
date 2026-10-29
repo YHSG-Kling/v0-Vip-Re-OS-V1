@@ -98,7 +98,7 @@ export function AgentPLTable({ rows, monthYear }: Props) {
                 <th className="text-right px-4 py-2 font-medium text-muted-foreground">Marketing</th>
                 <th className="text-right px-4 py-2 font-medium text-muted-foreground">Net Margin</th>
                 <th className="text-right px-4 py-2 font-medium text-muted-foreground">
-                  <TrendingUp className="inline h-3 w-3 text-emerald-500 mr-1" />
+                  <TrendingUp className="inline h-3 w-3 text-emerald-600 mr-1" />
                   AI ROI
                 </th>
                 <th className="text-right px-4 py-2 font-medium text-muted-foreground">Txns</th>
@@ -112,7 +112,7 @@ export function AgentPLTable({ rows, monthYear }: Props) {
                     <td className="px-4 py-2.5 font-medium">
                       {r.agent_name}
                       {r.gci_gross === 0 && (
-                        <Badge variant="outline" className="ml-2 text-xs text-slate-400">no closed txns</Badge>
+                        <Badge variant="outline" className="ml-2 text-xs text-slate-500">no closed txns</Badge>
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-right">{fmt(r.gci_gross)}</td>

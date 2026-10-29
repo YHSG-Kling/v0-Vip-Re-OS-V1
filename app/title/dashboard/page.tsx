@@ -179,9 +179,9 @@ export default async function TitleDashboardPage() {
           <div className="grid grid-cols-2 gap-4">
             {[
               { label: 'Total Orders', value: transactions?.length || 0, icon: Package, color: 'text-blue-600' },
-              { label: 'Closing This Week', value: upcoming.length, icon: Calendar, color: 'text-orange-600' },
-              { label: 'Pending', value: pendingOrders, icon: Clock, color: 'text-yellow-600' },
-              { label: 'Completed', value: (transactions || []).filter((t: any) => t.status === 'closed').length, icon: CheckCircle2, color: 'text-green-600' },
+              { label: 'Closing This Week', value: upcoming.length, icon: Calendar, color: 'text-orange-700' },
+              { label: 'Pending', value: pendingOrders, icon: Clock, color: 'text-yellow-700' },
+              { label: 'Completed', value: (transactions || []).filter((t: any) => t.status === 'closed').length, icon: CheckCircle2, color: 'text-green-700' },
             ].map((stat) => (
               <Card key={stat.label}>
                 <CardContent className="p-4 flex items-center gap-3">
@@ -211,7 +211,7 @@ export default async function TitleDashboardPage() {
                     <p className="text-xs text-gray-500">{t.client_name}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-xs font-semibold text-orange-600">{new Date(t.close_date).toLocaleDateString()}</p>
+                    <p className="text-xs font-semibold text-orange-700">{new Date(t.close_date).toLocaleDateString()}</p>
                     <Badge variant="outline" className="text-xs">{t.status}</Badge>
                   </div>
                 </div>

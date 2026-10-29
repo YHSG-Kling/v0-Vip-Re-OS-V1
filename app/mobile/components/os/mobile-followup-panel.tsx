@@ -124,13 +124,13 @@ export function MobileFollowupPanel({ tasks }: MobileFollowupPanelProps) {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Clock className="h-4 w-4 text-orange-500" />
+            <Clock className="h-4 w-4 text-orange-600" />
             Follow-ups Due
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex flex-col items-center justify-center py-4 text-center">
-            <CheckCircle className="h-8 w-8 text-green-500 mb-2" />
+            <CheckCircle className="h-8 w-8 text-green-600 mb-2" />
             <p className="text-sm text-muted-foreground">
               All caught up! No pending follow-ups.
             </p>
@@ -145,7 +145,7 @@ export function MobileFollowupPanel({ tasks }: MobileFollowupPanelProps) {
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Clock className="h-4 w-4 text-orange-500" />
+            <Clock className="h-4 w-4 text-orange-600" />
             Follow-ups Due
           </CardTitle>
           <Badge variant="secondary">{pendingTasks.length}</Badge>

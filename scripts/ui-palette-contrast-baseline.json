@@ -1,0 +1,12 @@
+{
+  "_": "Shrink-only ratchets for scripts/ui-palette-contrast-guard.ts (wave 146, lane 146H). darkSection.* = sub-AA coloured text / white-on-fill in modules that also paint a dark section (a parent fill the class string cannot see, so --fix does not touch them); paleOnFilledModule.TEXT = a pale (50–300) text shade in a module that paints a saturated fill (presumed to sit on it; held); otherLane.<dir>.* = the same findings in a directory another wave-146 lane owns (fix there with --fix --only <dir>). Each may only fall; regenerate deliberately with --write-baseline and say why.",
+  "counts": {
+    "darkSection.TEXT": 225,
+    "darkSection.FILL": 27,
+    "paleOnFilledModule.TEXT": 9,
+    "otherLane.app/portal.TEXT": 56,
+    "otherLane.app/portal.FILL": 11,
+    "otherLane.app/dashboard/marketing.TEXT": 62,
+    "otherLane.app/dashboard/marketing.FILL": 0
+  }
+}

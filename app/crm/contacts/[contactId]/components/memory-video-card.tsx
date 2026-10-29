@@ -305,7 +305,7 @@ export function MemoryVideoCard({
           Make the film from what was saved
         </Button>
 
-        {message ? <p className="text-sm text-emerald-600">{message}</p> : null}
+        {message ? <p className="text-sm text-emerald-700">{message}</p> : null}
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
       </CardContent>
     </Card>

@@ -151,7 +151,7 @@ export default async function ReferralPipelinePage() {
                     {referral.commission_amount != null && (
                       <div>
                         <p className="text-muted-foreground">Commission</p>
-                        <p className="font-medium text-green-600">
+                        <p className="font-medium text-green-700">
                           ${Number(referral.commission_amount).toLocaleString()}
                         </p>
                       </div>

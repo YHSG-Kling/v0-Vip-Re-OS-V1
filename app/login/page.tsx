@@ -260,7 +260,7 @@ function LoginContent() {
               <div className="space-y-2">
                 <Label htmlFor="email-password">Email</Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
                   <Input
                     id="email-password"
                     type="email"
@@ -276,7 +276,7 @@ function LoginContent() {
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
                   <Input
                     id="password"
                     type="password"
@@ -349,7 +349,7 @@ function LoginContent() {
               <div className="space-y-2">
                 <Label htmlFor="email-magic">Email</Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
                   <Input
                     id="email-magic"
                     type="email"
@@ -368,7 +368,7 @@ function LoginContent() {
               )}
               {message && (
                 <div className="p-3 bg-green-50 border border-green-200 rounded-md">
-                  <p className="text-sm text-green-600">{message}</p>
+                  <p className="text-sm text-green-700">{message}</p>
                 </div>
               )}
               <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={isLoading}>

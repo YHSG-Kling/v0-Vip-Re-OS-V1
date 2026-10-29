@@ -90,8 +90,8 @@ export function IsaAutoRespondSettings({
             </p>
             {settings.isa_auto_respond_new_leads && (
               <div className="flex items-center gap-1.5 mt-1">
-                <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />
-                <p className="text-xs text-amber-600">
+                <AlertTriangle className="h-3 w-3 text-amber-600 shrink-0" />
+                <p className="text-xs text-amber-700">
                   Only enable if your team is not monitoring leads 24/7
                 </p>
               </div>

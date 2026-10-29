@@ -63,7 +63,7 @@ function StarRating({ value, onChange }: { value: number; onChange: (v: number) 
           <Star
             className={`h-8 w-8 transition-colors ${
               i <= (hovered || value)
-                ? "fill-amber-400 text-amber-400"
+                ? "fill-amber-400 text-amber-600"
                 : "text-muted-foreground/30"
             }`}
           />
@@ -149,7 +149,7 @@ export default function FeedbackForm({
         <div className="max-w-sm text-center">
           <div className="mb-4 flex justify-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
-              <Star className="h-8 w-8 fill-amber-400 text-amber-400" />
+              <Star className="h-8 w-8 fill-amber-400 text-amber-600" />
             </div>
           </div>
           <h1 className="mb-2 text-xl font-semibold text-foreground">Thank You!</h1>

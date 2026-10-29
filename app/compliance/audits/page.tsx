@@ -151,7 +151,7 @@ export default async function ComplianceAuditsPage() {
                         ))}
                       </div>
                     )}
-                    <p className="text-xs text-gray-400">{new Date(event.created_at).toLocaleString()}</p>
+                    <p className="text-xs text-gray-500">{new Date(event.created_at).toLocaleString()}</p>
                   </div>
                   {(event.compliance_relevant || after.compliance_relevant) && (
                     <Badge className="bg-purple-100 text-purple-700 border-purple-200 text-xs">Compliance</Badge>

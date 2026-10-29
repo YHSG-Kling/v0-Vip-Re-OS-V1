@@ -67,7 +67,7 @@ export function CalendarOptimizationPanel({ agentId, date, events }: CalendarOpt
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-amber-500" />
+          <Sparkles className="h-4 w-4 text-amber-600" />
           Schedule Optimization
         </CardTitle>
       </CardHeader>
@@ -109,7 +109,7 @@ export function CalendarOptimizationPanel({ agentId, date, events }: CalendarOpt
                   Total travel: {result.travelOptimization.totalTravelTime} min
                 </p>
                 {result.travelOptimization.savedTime > 0 && (
-                  <p className="text-xs text-green-600 dark:text-green-400">
+                  <p className="text-xs text-green-700 dark:text-green-400">
                     Saved {result.travelOptimization.savedTime} min with optimized route
                   </p>
                 )}
@@ -137,7 +137,7 @@ export function CalendarOptimizationPanel({ agentId, date, events }: CalendarOpt
                 <p className="text-xs font-medium text-foreground">Recommendations</p>
                 {result.recommendations.slice(0, 2).map((rec, i) => (
                   <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                    <CheckCircle2 className="h-3 w-3 text-green-500 mt-0.5 flex-shrink-0" />
+                    <CheckCircle2 className="h-3 w-3 text-green-600 mt-0.5 flex-shrink-0" />
                     <span>{rec.suggestion}</span>
                   </div>
                 ))}

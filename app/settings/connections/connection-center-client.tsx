@@ -242,7 +242,7 @@ function CrmSyncNowCard() {
         </Button>
       </div>
       {msg && (
-        <p className={`text-xs ${msg.ok ? "text-green-600" : "text-red-600"}`}>{msg.text}</p>
+        <p className={`text-xs ${msg.ok ? "text-green-700" : "text-red-600"}`}>{msg.text}</p>
       )}
     </div>
   )

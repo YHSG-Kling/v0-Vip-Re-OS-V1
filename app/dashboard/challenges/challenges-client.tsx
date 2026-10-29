@@ -129,7 +129,7 @@ export function ChallengesClient({ challenges, isAdmin, currentAgentId }: { chal
               <CardHeader>
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <CardTitle className="text-lg flex items-center gap-2"><Trophy className="h-5 w-5 text-yellow-500" />{c.title}</CardTitle>
+                    <CardTitle className="text-lg flex items-center gap-2"><Trophy className="h-5 w-5 text-yellow-700" />{c.title}</CardTitle>
                     <p className="text-xs text-muted-foreground mt-1">Ranked by {c.metricLabel} · {c.participantCount} enrolled</p>
                   </div>
                   <Badge variant={STATUS_VARIANT[c.status] ?? "secondary"}>{c.status}</Badge>
@@ -152,7 +152,7 @@ export function ChallengesClient({ challenges, isAdmin, currentAgentId }: { chal
                   <div className="space-y-1">
                     {c.standings.slice(0, 5).map((s) => (
                       <div key={s.agentId} className="flex items-center gap-3 text-sm">
-                        <span className={"w-6 text-center font-bold " + (s.isWinner ? "text-yellow-500" : "text-muted-foreground")}>#{s.rank}</span>
+                        <span className={"w-6 text-center font-bold " + (s.isWinner ? "text-yellow-700" : "text-muted-foreground")}>#{s.rank}</span>
                         <span className={"flex-1 truncate " + (s.agentId === currentAgentId ? "font-semibold text-blue-700" : "")}>{s.agentName}{s.agentId === currentAgentId && " (you)"}</span>
                         {/* challenge_participants.prize_awarded — a crowned winner whose
                             points never landed is the one thing this board must not hide. */}

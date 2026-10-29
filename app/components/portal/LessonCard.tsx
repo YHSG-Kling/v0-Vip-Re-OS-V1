@@ -86,7 +86,7 @@ export function LessonCard({ lesson, onClick }: LessonCardProps) {
             )}
           </div>
           {lesson.isCompleted && (
-            <div className="flex items-center text-green-600" aria-label="Completed">
+            <div className="flex items-center text-green-700" aria-label="Completed">
               <Check className="w-5 h-5" />
             </div>
           )}

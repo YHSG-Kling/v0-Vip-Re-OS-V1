@@ -50,7 +50,7 @@ export function UnsubscribeClient() {
   if (stage === 'invalid') {
     return (
       <PageShell>
-        <AlertTriangle className="h-12 w-12 text-amber-500 mx-auto mb-4" />
+        <AlertTriangle className="h-12 w-12 text-amber-600 mx-auto mb-4" />
         <h1 className="text-xl font-semibold text-foreground mb-2">Invalid link</h1>
         <p className="text-muted-foreground text-sm">
           This unsubscribe link is invalid or has expired. Please use the link from your most recent email.
@@ -62,7 +62,7 @@ export function UnsubscribeClient() {
   if (stage === 'done') {
     return (
       <PageShell>
-        <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
+        <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-4" />
         <h1 className="text-xl font-semibold text-foreground mb-2">You have been unsubscribed</h1>
         <p className="text-muted-foreground text-sm">
           You will no longer receive {channelLabel} from us. This may take up to 10 business days to take effect across all systems.

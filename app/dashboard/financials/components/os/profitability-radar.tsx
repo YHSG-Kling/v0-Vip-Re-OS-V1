@@ -160,7 +160,7 @@ export function ProfitabilityRadar({
               {formatPercent(metrics.expenseRatio)}
             </span>
           </div>
-          <p className="text-xs text-amber-600 mt-1">
+          <p className="text-xs text-amber-700 mt-1">
             {metrics.expenseRatio <= 30
               ? "Excellent cost control"
               : metrics.expenseRatio <= 50
@@ -180,11 +180,11 @@ export function ProfitabilityRadar({
               <span
                 className={`text-sm font-bold ${
                   metrics.targetProgress >= 100
-                    ? "text-green-600"
+                    ? "text-green-700"
                     : metrics.targetProgress >= 75
                       ? "text-blue-600"
                       : metrics.targetProgress >= 50
-                        ? "text-amber-600"
+                        ? "text-amber-700"
                         : "text-red-600"
                 }`}
               >

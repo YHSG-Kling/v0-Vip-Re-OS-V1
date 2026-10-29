@@ -86,7 +86,7 @@ export default async function TitleDocumentsPage() {
             <Card key={doc.id}>
               <CardContent className="p-3 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <FileText className="w-4 h-4 text-gray-400" />
+                  <FileText className="w-4 h-4 text-gray-500" />
                   <div>
                     <p className="text-sm font-medium">{doc.doc_label || doc.doc_type || 'Untitled'}</p>
                     <p className="text-xs text-gray-500">
@@ -103,7 +103,7 @@ export default async function TitleDocumentsPage() {
                 ) : (
                   // No storage_url means there is no file to open. A disabled "View"
                   // button promised an action that does not exist.
-                  <span className="text-xs text-gray-400">No file attached</span>
+                  <span className="text-xs text-gray-500">No file attached</span>
                 )}
               </CardContent>
             </Card>

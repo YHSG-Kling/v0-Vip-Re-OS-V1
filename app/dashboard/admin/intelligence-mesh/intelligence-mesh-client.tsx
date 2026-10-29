@@ -38,9 +38,9 @@ const PATTERN_LABEL: Record<string, string> = {
 }
 
 const SEVERITY_BG: Record<string, string> = {
-  critical: "bg-red-500 text-white",
-  high:     "bg-orange-500 text-white",
-  medium:   "bg-amber-500 text-white",
+  critical: "bg-red-600 text-white",
+  high:     "bg-orange-700 text-white",
+  medium:   "bg-amber-700 text-white",
   low:      "bg-gray-300 text-gray-800",
 }
 

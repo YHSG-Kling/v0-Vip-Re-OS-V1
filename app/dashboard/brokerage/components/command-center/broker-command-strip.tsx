@@ -50,8 +50,8 @@ export function BrokerCommandStrip({ priority, summary }: BrokerCommandStripProp
 
   const urgencyIcon = {
     critical: <AlertTriangle className="h-5 w-5 text-red-500" />,
-    high: <AlertTriangle className="h-5 w-5 text-orange-500" />,
-    medium: <Activity className="h-5 w-5 text-yellow-600" />,
+    high: <AlertTriangle className="h-5 w-5 text-orange-600" />,
+    medium: <Activity className="h-5 w-5 text-yellow-700" />,
     low: <Activity className="h-5 w-5 text-blue-500" />,
   }
 
@@ -65,7 +65,7 @@ export function BrokerCommandStrip({ priority, summary }: BrokerCommandStripProp
               <div className="flex items-center gap-2">
                 <Activity className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm text-muted-foreground">Brokerage Status:</span>
-                <Badge variant="outline" className="text-green-600 border-green-600/30">
+                <Badge variant="outline" className="text-green-700 border-green-600/30">
                   Healthy
                 </Badge>
               </div>
@@ -79,7 +79,7 @@ export function BrokerCommandStrip({ priority, summary }: BrokerCommandStripProp
                 )}
                 {summary.fatigueAlerts > 0 && (
                   <span className="flex items-center gap-1.5">
-                    <Heart className="h-3.5 w-3.5 text-orange-500" />
+                    <Heart className="h-3.5 w-3.5 text-orange-600" />
                     {summary.fatigueAlerts} fatigue alert{summary.fatigueAlerts !== 1 ? "s" : ""}
                   </span>
                 )}

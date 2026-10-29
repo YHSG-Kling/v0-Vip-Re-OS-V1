@@ -343,7 +343,7 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center gap-2 text-amber-600">
+          <div className="flex items-center gap-2 text-amber-700">
             <AlertCircle className="h-5 w-5 shrink-0" />
             <p className="text-sm">
               No transaction exists for this listing yet. A marketing package activates against the

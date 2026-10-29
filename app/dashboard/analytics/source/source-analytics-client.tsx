@@ -90,9 +90,9 @@ interface Props {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 const FAMILY_LABELS: Record<SourceFamily, { label: string; color: string; bg: string; icon: typeof Globe }> = {
-  raw:            { label: "Raw / Acquisition", color: "text-orange-600",  bg: "bg-orange-500/10", icon: Database },
+  raw:            { label: "Raw / Acquisition", color: "text-orange-700",  bg: "bg-orange-500/10", icon: Database },
   lead:           { label: "Lead",               color: "text-blue-600",   bg: "bg-blue-500/10",   icon: Zap },
-  contact_direct: { label: "Direct Contact",     color: "text-emerald-600",bg: "bg-emerald-500/10",icon: Globe },
+  contact_direct: { label: "Direct Contact",     color: "text-emerald-700",bg: "bg-emerald-500/10",icon: Globe },
 }
 
 function FamilyBadge({ family }: { family: SourceFamily }) {
@@ -179,13 +179,13 @@ function SourceRow({
       </TableCell>
       <TableCell className="text-sm">
         {source.source_family === "raw" && (
-          <span className="text-orange-600">{source.raw_record_count.toLocaleString()} raw</span>
+          <span className="text-orange-700">{source.raw_record_count.toLocaleString()} raw</span>
         )}
         {source.source_family === "lead" && (
           <span className="text-blue-600">{source.lead_count.toLocaleString()} leads</span>
         )}
         {source.source_family === "contact_direct" && (
-          <span className="text-emerald-600">{source.contact_count.toLocaleString()} contacts</span>
+          <span className="text-emerald-700">{source.contact_count.toLocaleString()} contacts</span>
         )}
       </TableCell>
       <TableCell className="text-sm text-muted-foreground">
@@ -198,7 +198,7 @@ function SourceRow({
         {source.closed_count.toLocaleString()}
       </TableCell>
       <TableCell>
-        <span className={`text-sm font-medium ${source.close_rate >= 10 ? "text-emerald-600" : source.close_rate >= 3 ? "text-amber-600" : "text-muted-foreground"}`}>
+        <span className={`text-sm font-medium ${source.close_rate >= 10 ? "text-emerald-700" : source.close_rate >= 3 ? "text-amber-700" : "text-muted-foreground"}`}>
           {source.close_rate}%
         </span>
         {/* Wording-vs-quality verdict. A weak source with a fixable opener must NOT
@@ -225,7 +225,7 @@ function SourceRow({
         )}
       </TableCell>
       <TableCell>
-        <span className={`text-sm font-medium ${source.roi_multiple >= 5 ? "text-emerald-600" : source.roi_multiple >= 2 ? "text-amber-600" : "text-red-500"}`}>
+        <span className={`text-sm font-medium ${source.roi_multiple >= 5 ? "text-emerald-700" : source.roi_multiple >= 2 ? "text-amber-700" : "text-red-600"}`}>
           {source.roi_multiple > 0 ? `${source.roi_multiple}x` : "—"}
         </span>
       </TableCell>
@@ -556,10 +556,10 @@ export function SourceAnalyticsClient({
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         <MetricCard label="Total Sources" value={summary.total_sources.toString()} icon={Target} color="text-primary" />
         <MetricCard label="Total Contacts" value={summary.total_contacts.toLocaleString()} icon={Users} color="text-blue-600" />
-        <MetricCard label="Total Leads" value={summary.total_leads.toLocaleString()} icon={Zap} color="text-amber-600" />
-        <MetricCard label="Raw Records" value={summary.total_raw_records.toLocaleString()} icon={Database} color="text-orange-600" />
-        <MetricCard label="Transactions" value={summary.total_transactions.toLocaleString()} icon={TrendingUp} color="text-emerald-600" />
-        <MetricCard label="Revenue" value={`$${(summary.total_revenue / 1000).toFixed(0)}k`} icon={DollarSign} color="text-emerald-600" />
+        <MetricCard label="Total Leads" value={summary.total_leads.toLocaleString()} icon={Zap} color="text-amber-700" />
+        <MetricCard label="Raw Records" value={summary.total_raw_records.toLocaleString()} icon={Database} color="text-orange-700" />
+        <MetricCard label="Transactions" value={summary.total_transactions.toLocaleString()} icon={TrendingUp} color="text-emerald-700" />
+        <MetricCard label="Revenue" value={`$${(summary.total_revenue / 1000).toFixed(0)}k`} icon={DollarSign} color="text-emerald-700" />
       </div>
 
       {/* Controls */}
@@ -668,7 +668,7 @@ export function SourceAnalyticsClient({
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Award className="h-4 w-4 text-emerald-500" />
+              <Award className="h-4 w-4 text-emerald-600" />
               Top ROI Sources
             </CardTitle>
           </CardHeader>
@@ -681,7 +681,7 @@ export function SourceAnalyticsClient({
                   <span className="text-xs text-muted-foreground w-4">{i + 1}.</span>
                   <span className="text-xs capitalize">{s.source.replace(/_/g, " ")}</span>
                 </div>
-                <Badge variant="outline" className="text-xs text-emerald-600 border-emerald-500">{s.roi_multiple}x</Badge>
+                <Badge variant="outline" className="text-xs text-emerald-700 border-emerald-500">{s.roi_multiple}x</Badge>
               </div>
             ))}
           </CardContent>
@@ -727,7 +727,7 @@ export function SourceAnalyticsClient({
                   <span className="text-xs text-muted-foreground w-4">{i + 1}.</span>
                   <span className="text-xs capitalize">{s.source.replace(/_/g, " ")}</span>
                 </div>
-                <Badge variant="outline" className="text-xs text-red-500 border-red-400">{s.roi_multiple}x</Badge>
+                <Badge variant="outline" className="text-xs text-red-600 border-red-400">{s.roi_multiple}x</Badge>
               </div>
             ))}
           </CardContent>
@@ -737,7 +737,7 @@ export function SourceAnalyticsClient({
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Globe className="h-4 w-4 text-emerald-500" />
+              <Globe className="h-4 w-4 text-emerald-600" />
               Best Direct Sources
             </CardTitle>
           </CardHeader>
@@ -750,7 +750,7 @@ export function SourceAnalyticsClient({
                   <span className="text-xs text-muted-foreground w-4">{i + 1}.</span>
                   <span className="text-xs capitalize">{s.source.replace(/_/g, " ")}</span>
                 </div>
-                <span className="text-xs font-medium text-emerald-600">{s.close_rate}% close</span>
+                <span className="text-xs font-medium text-emerald-700">{s.close_rate}% close</span>
               </div>
             ))}
           </CardContent>

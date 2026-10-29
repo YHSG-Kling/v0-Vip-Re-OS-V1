@@ -55,7 +55,7 @@ export default async function ISAScriptsPage() {
           <CardContent className="text-center py-12">
             <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
             <p className="text-gray-500">No call scripts in your library yet.</p>
-            <p className="text-sm text-gray-400 mt-1">
+            <p className="text-sm text-gray-500 mt-1">
               Your AI ISA composes its call framing per lead automatically — nothing to configure here.
               For your own phrasings, drill real scripts in Coaching → Practice.
             </p>

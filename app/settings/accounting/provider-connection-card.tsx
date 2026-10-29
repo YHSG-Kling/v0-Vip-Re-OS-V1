@@ -71,10 +71,10 @@ interface ProviderConnectionCardProps {
 }
 
 const PROVIDER_LABELS: Record<string, { name: string; color: string; bg: string }> = {
-  quickbooks: { name: "QuickBooks", color: "text-green-600", bg: "bg-green-50" },
+  quickbooks: { name: "QuickBooks", color: "text-green-700", bg: "bg-green-50" },
   xero: { name: "Xero", color: "text-blue-600", bg: "bg-blue-50" },
   stripe: { name: "Stripe", color: "text-purple-600", bg: "bg-purple-50" },
-  zoom: { name: "Zoom", color: "text-sky-600", bg: "bg-sky-50" },
+  zoom: { name: "Zoom", color: "text-sky-700", bg: "bg-sky-50" },
 }
 
 export function ProviderConnectionCard({

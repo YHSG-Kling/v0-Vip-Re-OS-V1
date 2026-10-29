@@ -87,7 +87,7 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {err && <p className="text-xs text-red-600">{err}</p>}
-        {msg && <p className="text-xs text-emerald-600">{msg}</p>}
+        {msg && <p className="text-xs text-emerald-700">{msg}</p>}
 
         <div className="flex flex-wrap items-center gap-2">
           <input className="flex-1 min-w-[10rem] rounded border px-2 py-1 text-sm" placeholder="Snapshot name (captures THIS tenant)" value={name} onChange={(e) => setName(e.target.value)} />

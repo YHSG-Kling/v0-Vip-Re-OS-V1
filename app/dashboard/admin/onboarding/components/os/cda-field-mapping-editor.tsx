@@ -212,7 +212,7 @@ export function CdaFieldMappingEditor({
                     {r.pdf_field ?? r.label}
                   </div>
                   {typeof r.confidence === "number" && (
-                    <span className={`text-[10px] ${r.confidence >= 0.7 ? "text-emerald-600" : r.confidence >= 0.5 ? "text-amber-600" : "text-muted-foreground"}`}>
+                    <span className={`text-[10px] ${r.confidence >= 0.7 ? "text-emerald-700" : r.confidence >= 0.5 ? "text-amber-700" : "text-muted-foreground"}`}>
                       {Math.round(r.confidence * 100)}% match
                     </span>
                   )}

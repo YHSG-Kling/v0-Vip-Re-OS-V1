@@ -107,11 +107,11 @@ export function VoiceCoveragePanel() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <span className="font-medium text-emerald-600 dark:text-emerald-400">
+          <span className="font-medium text-emerald-700 dark:text-emerald-400">
             {stats.speakable} speakable
           </span>
           <span className="text-muted-foreground">·</span>
-          <span className="font-medium text-amber-600 dark:text-amber-400">
+          <span className="font-medium text-amber-700 dark:text-amber-400">
             {stats.notYet} not yet
           </span>
           <span className="text-muted-foreground">of {stats.total} commands</span>

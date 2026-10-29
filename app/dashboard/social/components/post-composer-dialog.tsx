@@ -111,6 +111,8 @@ interface PostComposerDialogProps {
     social_account_id: string
   }
   requiresBrokerApproval?: boolean
+  /** Who approves this person's post — the C5 answer (lib/kernel/approval-authority.ts approverFor), worded. */
+  approverLine?: string | null
   onSaved?: (post: any) => void
 }
 
@@ -199,6 +201,7 @@ export function PostComposerDialog({
   accounts,
   initialPost,
   requiresBrokerApproval = false,
+  approverLine = null,
   onSaved,
 }: PostComposerDialogProps) {
   const isEdit = !!initialPost
@@ -362,10 +365,12 @@ export function PostComposerDialog({
             : undefined,
         })
       } else {
+        // No agentId (wave 146, lane 146H): the prop is the session USER id, and scheduleSocialPost verifies a
+        // supplied agentId as an AGENTS id — every new post from this dialog was refused "Forbidden". Omitted,
+        // the action uses the session's own agents row (CLAUDE.md §3: agents.id and users.id are disjoint).
         result = await scheduleSocialPost({
           brokerageId,
           userId,
-          agentId,
           platform,
           postType,
           content,
@@ -413,6 +418,12 @@ export function PostComposerDialog({
             <Shield className="h-4 w-4 flex-shrink-0" />
             Broker approval is required for all posts at this brokerage. Your post will be submitted for review.
           </div>
+        )}
+        {approverLine && (
+          <p className="text-xs text-muted-foreground" data-testid="post-approver-line">
+            <Shield className="inline h-3.5 w-3.5 mr-1 align-[-2px]" aria-hidden="true" />
+            {approverLine}
+          </p>
         )}
 
         <Tabs value={tab} onValueChange={(v) => setTab(v as any)}>

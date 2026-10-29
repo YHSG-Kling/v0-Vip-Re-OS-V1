@@ -349,7 +349,7 @@ export function ReportsClient({
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="font-semibold text-green-600">+{fmt(c.agent_commission ?? 0)}</p>
+                    <p className="font-semibold text-green-700">+{fmt(c.agent_commission ?? 0)}</p>
                     <p className="text-xs text-muted-foreground capitalize">{c.status ?? "—"}</p>
                   </div>
                 </div>

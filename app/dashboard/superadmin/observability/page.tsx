@@ -94,7 +94,7 @@ export default async function ObservabilityPage(
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-600">Sync Failures (7d)</p>
-          <p className="text-3xl font-bold text-yellow-600">{dashboard?.calendarSyncFailures || 0}</p>
+          <p className="text-3xl font-bold text-yellow-700">{dashboard?.calendarSyncFailures || 0}</p>
         </div>
       </div>
 

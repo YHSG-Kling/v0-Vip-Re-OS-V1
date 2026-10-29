@@ -271,7 +271,7 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
                     >
                       <div className="flex items-center gap-2">
                         {call.appointment_set ? (
-                          <CheckCircle2 className="h-4 w-4 text-green-500" />
+                          <CheckCircle2 className="h-4 w-4 text-green-600" />
                         ) : (
                           <XCircle className="h-4 w-4 text-muted-foreground" />
                         )}

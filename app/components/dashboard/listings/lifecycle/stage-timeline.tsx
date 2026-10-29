@@ -374,7 +374,7 @@ function EditableDateCard({
               <>
                 <button
                   onClick={onSave}
-                  className="text-green-600 hover:text-green-700 shrink-0"
+                  className="text-green-700 hover:text-green-700 shrink-0"
                   title="Save"
                 >
                   <Check className="w-3.5 h-3.5" />

@@ -163,7 +163,7 @@ export default async function ListingsAIPricingPage() {
                           {/* Trend icon */}
                           <div className="flex items-center">
                             {pred.trend_direction === "up" ? (
-                              <TrendingUp className="h-5 w-5 text-green-500" />
+                              <TrendingUp className="h-5 w-5 text-green-600" />
                             ) : pred.trend_direction === "down" ? (
                               <TrendingDown className="h-5 w-5 text-red-500" />
                             ) : (
@@ -181,7 +181,7 @@ export default async function ListingsAIPricingPage() {
                               const pct = ((diff / currentPrice) * 100).toFixed(1)
                               const positive = diff >= 0
                               return (
-                                <p className={`text-xs ${positive ? "text-green-600" : "text-red-500"}`}>
+                                <p className={`text-xs ${positive ? "text-green-700" : "text-red-600"}`}>
                                   {positive ? "+" : ""}
                                   {pct}% ({positive ? "+" : ""}${Math.abs(diff).toLocaleString()})
                                 </p>
@@ -221,7 +221,7 @@ export default async function ListingsAIPricingPage() {
                           <p className="text-xs text-muted-foreground mb-1">Trend</p>
                           <div className="flex items-center gap-1.5">
                             {pred.trend_direction === "up" ? (
-                              <TrendingUp className="h-3.5 w-3.5 text-green-500" />
+                              <TrendingUp className="h-3.5 w-3.5 text-green-600" />
                             ) : pred.trend_direction === "down" ? (
                               <TrendingDown className="h-3.5 w-3.5 text-red-500" />
                             ) : (

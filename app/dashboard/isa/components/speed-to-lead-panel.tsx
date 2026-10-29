@@ -48,7 +48,7 @@ export function IsaProofNumbersStrip({ proof, refused, compact = false }: { proo
     <div className="space-y-2">
       <div className={`grid gap-3 ${compact ? "grid-cols-3" : "grid-cols-1 md:grid-cols-3"}`}>
         <div className="rounded-lg bg-white border p-3">
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-600 mb-1">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1">
             <Reply className="w-3 h-3" /> Response rate
           </div>
           <p className="text-2xl font-bold leading-none">{pct(proof.responseRate)}</p>
@@ -66,7 +66,7 @@ export function IsaProofNumbersStrip({ proof, refused, compact = false }: { proo
           )}
         </div>
         <div className="rounded-lg bg-white border p-3">
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-600 mb-1">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 mb-1">
             <PhoneCall className="w-3 h-3" /> Connect rate
           </div>
           <p className="text-2xl font-bold leading-none">{pct(proof.connectRate)}</p>
@@ -103,8 +103,8 @@ export function SpeedToLeadPanel({ metrics }: { metrics: SpeedToLeadMetrics }) {
   const slaPct = recent.pctWithinSla === null ? null : Math.round(recent.pctWithinSla * 100)
   const slaColor =
     slaPct === null ? "text-muted-foreground"
-    : slaPct >= 90 ? "text-green-600"
-    : slaPct >= 70 ? "text-amber-600"
+    : slaPct >= 90 ? "text-green-700"
+    : slaPct >= 70 ? "text-amber-700"
     : "text-red-600"
 
   const channelChips = Object.entries(recent.channelBreakdown)
@@ -127,7 +127,7 @@ export function SpeedToLeadPanel({ metrics }: { metrics: SpeedToLeadMetrics }) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {/* Awaiting first touch */}
           <div className="rounded-lg bg-white border p-3">
-            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-500 mb-1">
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 mb-1">
               <Inbox className="w-3 h-3" /> Awaiting First Touch
             </div>
             <p className="text-2xl font-bold leading-none">{awaiting}</p>
@@ -139,7 +139,7 @@ export function SpeedToLeadPanel({ metrics }: { metrics: SpeedToLeadMetrics }) {
 
           {/* Median time to first touch */}
           <div className="rounded-lg bg-white border p-3">
-            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-500 mb-1">
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-600 mb-1">
               <Clock className="w-3 h-3" /> Median First Touch
             </div>
             <p className="text-2xl font-bold leading-none">{humanizeSeconds(recent.medianSeconds)}</p>
@@ -148,7 +148,7 @@ export function SpeedToLeadPanel({ metrics }: { metrics: SpeedToLeadMetrics }) {
 
           {/* % within 5-min SLA */}
           <div className="rounded-lg bg-white border p-3">
-            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-green-500 mb-1">
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-green-700 mb-1">
               <Zap className="w-3 h-3" /> Within 5 Min
             </div>
             <p className={`text-2xl font-bold leading-none ${slaColor}`}>

@@ -301,7 +301,7 @@ export default function ProviderIntelligencePage() {
                         <td className={tdClass}>{fmt$(p.costPerLead)}</td>
                         <td className={tdClass}>{fmt$(p.costPerQualifiedLead)}</td>
                         <td className={tdClass}>
-                          <span className={p.estRoi >= 0 ? 'text-green-600' : 'text-red-500'}>
+                          <span className={p.estRoi >= 0 ? 'text-green-700' : 'text-red-600'}>
                             {fmtPct(p.estRoi)} <span className="text-foreground/40 text-xs">Est.</span>
                           </span>
                         </td>

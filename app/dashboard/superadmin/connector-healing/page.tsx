@@ -91,7 +91,7 @@ export default async function ConnectorHealingPage() {
       {/* ── PENDING QUEUE ─────────────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-amber-500" /> Pending review
+          <AlertTriangle className="h-4 w-4 text-amber-600" /> Pending review
         </h2>
         {(!pending || pending.length === 0) ? (
           <Card><CardContent className="p-6 text-sm text-muted-foreground">No pending proposals — every connector is currently in a healthy state, or no failure has been detected recently.</CardContent></Card>

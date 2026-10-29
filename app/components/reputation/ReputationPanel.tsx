@@ -716,7 +716,7 @@ export function ReputationPanel({
               {/* The queue row is the delivery truth for email notes —
                   the note is stamped 'sent' when it is merely queued. */}
               {n.delivery_status && n.delivery_status !== "sent" && (
-                <span className="text-[10px] text-amber-600">email {n.delivery_status}</span>
+                <span className="text-[10px] text-amber-700">email {n.delivery_status}</span>
               )}
             </div>
           </div>
@@ -778,10 +778,10 @@ export function ReputationPanel({
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: "Total Reviews",  value: totalReviews,           icon: Star,         bg: "bg-yellow-50", color: "text-yellow-500" },
-          { label: "Avg Rating",     value: avgRating,              icon: ThumbsUp,     bg: "bg-green-50",  color: "text-green-500"  },
-          { label: "Review Ready",   value: reviewReadyClients.length, icon: MessageSquare, bg: "bg-blue-50", color: "text-blue-500" },
-          { label: "Lifetime Customers",   value: clients.length,         icon: Heart,        bg: "bg-rose-50",   color: "text-rose-500"   },
+          { label: "Total Reviews",  value: totalReviews,           icon: Star,         bg: "bg-yellow-50", color: "text-yellow-700" },
+          { label: "Avg Rating",     value: avgRating,              icon: ThumbsUp,     bg: "bg-green-50",  color: "text-green-700"  },
+          { label: "Review Ready",   value: reviewReadyClients.length, icon: MessageSquare, bg: "bg-blue-50", color: "text-blue-600" },
+          { label: "Lifetime Customers",   value: clients.length,         icon: Heart,        bg: "bg-rose-50",   color: "text-rose-600"   },
         ].map(({ label, value, icon: Icon, bg, color }) => (
           <Card key={label}>
             <CardContent className="p-4 flex items-center justify-between">
@@ -801,7 +801,7 @@ export function ReputationPanel({
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
-            <ThumbsUp className="w-4 h-4 text-emerald-500" /> Reputation Performance
+            <ThumbsUp className="w-4 h-4 text-emerald-600" /> Reputation Performance
           </CardTitle>
           <CardDescription>Response rate and direction of travel across every platform</CardDescription>
         </CardHeader>
@@ -864,7 +864,7 @@ export function ReputationPanel({
           <Card>
             <CardHeader>
               <CardTitle className="text-sm flex items-center gap-2">
-                <Star className="w-4 h-4 text-yellow-500" /> Review Requests
+                <Star className="w-4 h-4 text-yellow-700" /> Review Requests
               </CardTitle>
               <CardDescription>Request reviews from closings 7–30 days ago at the optimal time</CardDescription>
             </CardHeader>
@@ -968,7 +968,7 @@ export function ReputationPanel({
           <Card>
             <CardHeader className="space-y-3">
               <CardTitle className="text-sm flex items-center gap-2">
-                <ThumbsUp className="w-4 h-4 text-green-500" /> Recent Reviews
+                <ThumbsUp className="w-4 h-4 text-green-600" /> Recent Reviews
               </CardTitle>
               {/* J8 Gap 8.2 — platform + date filters */}
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -1028,7 +1028,7 @@ export function ReputationPanel({
                         <p className="font-medium text-sm">{r.reviewer_name || "Anonymous"}</p>
                         <div className="flex">
                           {Array.from({ length: r.rating || 5 }).map((_, i) => (
-                            <Star key={i} className="w-3.5 h-3.5 fill-yellow-400 text-yellow-400" />
+                            <Star key={i} className="w-3.5 h-3.5 fill-yellow-400 text-yellow-700" />
                           ))}
                         </div>
                       </div>
