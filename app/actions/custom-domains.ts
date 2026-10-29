@@ -181,7 +181,7 @@ type RoutingCall = { value: VercelDomainResult | null; ok: boolean; outcome: str
  * leaves the row where it is.
  */
 async function ledgeredRoutingCall(
-  ctx: { brokerageId: string; userId: string; action: "custom_domain.attach" | "custom_domain.verify" | "custom_domain.detach"; rowId: string; idempotencyKey: string; detail: Record<string, unknown> },
+  ctx: { brokerageId: string; userId: string; action: "tenant.custom_domain.attach" | "tenant.custom_domain.verify" | "tenant.custom_domain.detach"; rowId: string; idempotencyKey: string; detail: Record<string, unknown> },
   run: () => Promise<RoutingCall>,
 ): Promise<VercelDomainResult | null> {
   const res = await withActionLedger<RoutingCall>(
@@ -436,7 +436,7 @@ export async function addCustomDomainAction(rawDomain: string): Promise<
   let attach: VercelDomainResult | null = null
   if (routing) {
     attach = await ledgeredRoutingCall(
-      { brokerageId: gate.brokerageId, userId: gate.userId, action: "custom_domain.attach", rowId, idempotencyKey: `custom_domain.attach:${rowId}:${nowIso}`, detail: { domain, dns_checked: probe.checked, dns_matches: probe.matches } },
+      { brokerageId: gate.brokerageId, userId: gate.userId, action: "tenant.custom_domain.attach", rowId, idempotencyKey: `custom_domain.attach:${rowId}:${nowIso}`, detail: { domain, dns_checked: probe.checked, dns_matches: probe.matches } },
       async () => {
         const r = await addDomainToProject(domain)
         return { value: r, ok: r.configured && r.ok, outcome: !r.configured ? "routing_unavailable" : r.ok ? (r.verified ? "attached_verified" : "attached") : (r.errorCode ?? "refused"), error: r.configured && !r.ok ? r.error : null }
@@ -525,7 +525,7 @@ export async function checkCustomDomainStatusAction(id: string): Promise<
   let result: VercelDomainResult | null = null
   if (routing) {
     result = await ledgeredRoutingCall(
-      { brokerageId: gate.brokerageId, userId: gate.userId, action: "custom_domain.verify", rowId: id, idempotencyKey: `custom_domain.verify:${id}:${nowIso}`, detail: { domain, from_status: current, dns_checked: probe.checked, dns_matches: probe.matches } },
+      { brokerageId: gate.brokerageId, userId: gate.userId, action: "tenant.custom_domain.verify", rowId: id, idempotencyKey: `custom_domain.verify:${id}:${nowIso}`, detail: { domain, from_status: current, dns_checked: probe.checked, dns_matches: probe.matches } },
       async () => {
         let r = await getDomainStatus(domain)
         // Drift heal: registered here but missing on the project (e.g. detached in the
@@ -600,7 +600,7 @@ export async function removeCustomDomainAction(id: string): Promise<
   const detach = await withActionLedger<{ configured: boolean; ok: boolean; error: string | null }>(
     {
       brokerageId: gate.brokerageId,
-      action: "custom_domain.detach",
+      action: "tenant.custom_domain.detach",
       actor: { type: "user", userId: gate.userId },
       subject: { type: "tenant_custom_domain", id },
       reasonCode: "HUMAN_REQUESTED",

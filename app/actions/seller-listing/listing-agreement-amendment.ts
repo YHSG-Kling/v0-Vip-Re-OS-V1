@@ -81,7 +81,7 @@ export async function recordListingAgreementAmendmentAction(params: ListingAgree
   const rec: Rec = await withActionLedger<Rec>(
     {
       brokerageId: caller.brokerageId,
-      action: "listing.agreement.amendment.record",
+      action: "listing.agreement_amendment.record",
       actor: { type: "user", userId: caller.userId },
       subject: { type: "listing", id: params.listingId },
       reasonCode: "HUMAN_REQUESTED",

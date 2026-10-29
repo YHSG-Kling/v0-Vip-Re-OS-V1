@@ -220,7 +220,7 @@ export async function activateStrategy(input: ActivateStrategyInput, client?: Cl
   mission = moved.mission
 
   // LAW 5 + the 107F hook: the activation is a ledger row naming the strategy.
-  await (deps.ledger ?? defaultLedger)({ brokerageId: input.brokerageId, action: "strategy.activate", actor, subject: { type: input.subject.type, id: input.subject.id }, reasonCode: MISSION_LIFECYCLE_REASON,
+  await (deps.ledger ?? defaultLedger)({ brokerageId: input.brokerageId, action: "strategy.mission.activate", actor, subject: { type: input.subject.type, id: input.subject.id }, reasonCode: MISSION_LIFECYCLE_REASON,
     reason: `${ref} → mission ${mission.id} (${mission.state})`,
     detail: { strategy: { key: def.key, version: def.version, tier: def.tier, ref }, mission_id: mission.id, activation_id: input.candidate.activationId, needs_approval: needsApproval, required_authority: required } }, svc)
 

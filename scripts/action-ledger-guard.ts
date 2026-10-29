@@ -200,7 +200,10 @@ async function main() {
     const named = fakeLedger()
     let namedSends = 0
     await withActionLedger(ctx({ action: "sendEmail", cycle: null }), async () => { namedSends++; return { success: true, providerKey: "s" } as DispatchLike }, hooks(null), { client: named.client })
-    check("POSITIVE CONTROL: a non domain.entity.action name is refused by the ledger (no row) and the send still goes", named.rows.length === 0 && namedSends === 1)
+    // Re-asserted (wave 146, owner: "fix ledger action names the ledger silently refuses"): the old control pinned the
+    // degrade — "no row and the send still goes" — which is exactly the silent-refusal the owner ruled against. The rule
+    // now: a malformed name is REFUSED, the action does NOT run, and the caller gets its replay value.
+    check("POSITIVE CONTROL: a non domain.entity.action name is REFUSED by the ledger — no row, the send does NOT go, the replay value comes back", named.rows.length === 0 && namedSends === 0)
   }
 
   console.log("\n[4 · causation threads parent → child]")
@@ -1000,6 +1003,56 @@ async function main() {
     check("WIRED: the flight recorder's ledger reads select policy_ref through the one literal column list (every read)", /const ACTION_COLS =\s*"[^"]*\bpolicy_ref\b[^"]*"/.test(stripComments(read("app/actions/flight-recorder.ts"))) && frLedgerReads >= 2 && frColsReads === frLedgerReads)
     check("WIRED: the AI audit page shows 'permitted by <ref>'", /l\.policyRef/.test(stripComments(read("app/dashboard/admin/ai-audit/page.tsx"))))
     check("POSITIVE CONTROL: the dispatch wiring finder rejects a context without policyKey", !/policyKey:/.test(`return { brokerageId: params.brokerageId, action, channel, actor, subject }`))
+  }
+
+  console.log("\n[14 · every action name handed to the ledger is domain.entity.action — statically, before it ships]")
+  {
+    // WHY (wave 146): six call sites handed the ledger a two-segment name (`strategy.activate`,
+    // `business_card.confirm`, `custom_domain.attach`, …). The ledger logged one line and let the
+    // action run unledgered — no evidence, no once-per-cycle protection — and nothing else noticed.
+    // Now the ledger REFUSES such a claim (the action does not run), and this section finds the
+    // name in the source first. It reads the argument window of every ledger door, validates each
+    // literal (and the static text of a template) against the ledger's own pattern.
+    const ledgerSrc = stripComments(read("lib/kernel/action-ledger.ts"))
+    const patSrc = ledgerSrc.match(/const ACTION_NAME_PATTERN = \/(.*)\/\n/)?.[1]
+    check("the ledger's name pattern is three lowercase snake segments (read from source, not restated)",
+      patSrc === "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$")
+    const NAME = new RegExp(patSrc ?? "^$")
+    check("the ledger REFUSES a malformed name (returns refused; withActionLedger then replays without acting) — never 'unledgered'",
+      /ACTION_NAME_PATTERN\.test\(ctx\.action\)\)\s*\{[\s\S]{0,600}?kind:\s*"refused"/.test(ledgerSrc) && !/invalid action name/.test(ledgerSrc))
+    const DOORS = /\b(?:withActionLedger|ledgeredRoutingCall|defaultLedger)\s*(?:<[^>]*>)?\s*\(|deps\.ledger \?\? defaultLedger\)\(/g
+    const nameOk = (raw: string, template: boolean): boolean =>
+      NAME.test(template ? raw.replace(/\$\{[^}]*\}/g, "x") : raw)
+    const walk = (dir: string, out: string[] = []): string[] => {
+      for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+        const rel = join(dir, e.name)
+        if (e.isDirectory()) { if (!/^(node_modules|\.next)$/.test(e.name)) walk(rel, out) }
+        else if (/\.(ts|tsx)$/.test(e.name)) out.push(rel)
+      }
+      return out
+    }
+    const bad: string[] = []; let seen = 0
+    for (const rel of [...walk("lib"), ...walk("app")]) {
+      const src = stripComments(read(rel))
+      if (!DOORS.test(src)) continue
+      DOORS.lastIndex = 0
+      for (const m of src.matchAll(DOORS)) {
+        const window = src.slice(m.index!, m.index! + 1500)
+        // The VALUE after `action:` only — a literal, a template, or a typed union of literals — never the
+        // actor type / idempotency key that share the line (the first draft read those and accused "system").
+        const value = window.match(/\baction:\s*((?:"[^"]+"|`[^`]+`)(?:\s*\|\s*"[^"]+")*)/)?.[1] ?? ""
+        for (const lit of value.matchAll(/"([^"]+)"|`([^`]+)`/g)) {
+          const raw = lit[1] ?? lit[2]; seen++
+          if (!nameOk(raw, lit[2] !== undefined)) bad.push(`${rel}: "${raw}"`)
+        }
+      }
+    }
+    console.log(`  · ${seen} action name(s) read at ledger doors under lib/ + app/`)
+    check(`every action name at a ledger door is domain.entity.action (${bad.length ? bad.join("; ") : "0 malformed"})`, bad.length === 0)
+    check("POSITIVE CONTROL: the finder rejects a two-segment literal and a template with one static dot, and accepts three segments and a three-segment template",
+      !nameOk("strategy.activate", false) && !nameOk("compliance.${x}", true) && nameOk("strategy.mission.activate", false) && nameOk("compliance.${ledger.subject}.attest", true))
+    check("POSITIVE CONTROL: the door finder sees withActionLedger, ledgeredRoutingCall and the strategy engine's injected ledger",
+      [...`await withActionLedger<T>({ action: "a.b" })\nledgeredRoutingCall({ action: "a.b.c" })\nawait (deps.ledger ?? defaultLedger)({ action: "x.y" })`.matchAll(DOORS)].length === 3)
   }
 
   console.log("\n[blind spots]")

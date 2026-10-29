@@ -243,7 +243,7 @@ async function main() {
     const m = (c.tables.missions ?? [])[0]
     const ev = (m?.evidence ?? []).find((e: Row) => e.kind === STRATEGY_EVIDENCE_KIND)
     check("C5 the mission's evidence snapshots the strategy (ref, owner, managers, capabilities, digest)", !!ev && ev.ref === "seller_equity@v1" && ev.owner === "listing_concierge" && ev.digest === strategyDigest(se))
-    check("C6 the activation is a ledger row naming the strategy (detail.strategy {key, version, tier} — the 107F attribution key)", s.ledger.some((l) => l.action === "strategy.activate" && l.detail.strategy.key === "seller_equity" && l.detail.strategy.version === 1 && l.detail.strategy.tier === "platform"))
+    check("C6 the activation is a ledger row naming the strategy (detail.strategy {key, version, tier} — the 107F attribution key)", s.ledger.some((l) => l.action === "strategy.mission.activate" && l.detail.strategy.key === "seller_equity" && l.detail.strategy.version === 1 && l.detail.strategy.tier === "platform"))
     const again = await activateStrategy({ brokerageId: T1, candidate: sel.ranked[0], subject: { type: "contact", id: "c-1" } }, c as any, s.deps)
     check("C7 idempotent per (subject, strategy): a second activation returns the running mission, no new mission / delegations", again.ok && again.duplicate && (c.tables.missions ?? []).length === 1 && (c.tables.manager_delegations ?? []).length === 5)
     const own = resolveOwnership(m as MissionRow)

@@ -405,11 +405,15 @@ async function insertLedgerRow(
 /** Open the row (status 'proposed') BEFORE acting. Never throws. */
 async function claimAction(ctx: ActionContext, opts?: { client?: LedgerClient }): Promise<ClaimResult> {
   const key = resolveIdempotencyKey(ctx)
-  // A malformed action name is a programmer error the m687 CHECK would refuse (23514) — say so
-  // here and record nothing, rather than let the refusal look like an outage.
+  // A malformed action name is a programmer error the m687 CHECK would refuse (23514). It used to
+  // degrade to "unledgered" — the action RAN with no evidence row and no once-per-cycle protection,
+  // and only a console line said so (wave 146: `strategy.activate`, `life_change.respond` and four
+  // more ran that way for weeks). A gate that cannot run must refuse (CLAUDE.md §4): the claim is
+  // REFUSED, `withActionLedger` returns the caller's replay value without acting, and
+  // scripts/action-ledger-guard.ts §14 catches the name before it ships.
   if (!ACTION_NAME_PATTERN.test(ctx.action)) {
-    console.error(`[action-ledger] '${ctx.action}' is not domain.entity.action — not ledgered`)
-    return { kind: "unledgered", reason: "invalid action name" }
+    console.error(`[action-ledger] '${ctx.action}' is not domain.entity.action — REFUSED (the action did not run)`)
+    return { kind: "refused", error: `Action name '${ctx.action}' is not domain.entity.action` }
   }
   try {
     const svc = opts?.client ?? createServiceClient()

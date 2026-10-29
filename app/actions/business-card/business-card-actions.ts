@@ -707,7 +707,7 @@ async function crosswalkBusinessIdentity(args: {
     return await withActionLedger<IdentityCrosswalkEvidence | null>(
       {
         brokerageId,
-        action: "business_card.identity_crosswalk",
+        action: "business_card.scan.identity_crosswalk",
         actor: { type: "user", userId: args.actorUserId, agentId: args.agentId },
         subject: { type: "business_card_scan", id: scanId },
         reasonCode: "HUMAN_REQUESTED",
@@ -838,7 +838,7 @@ export async function confirmBusinessCardScan(params: {
   return withActionLedger<ConfirmBusinessCardResult>(
     {
       brokerageId,
-      action: "business_card.confirm",
+      action: "business_card.scan.confirm",
       actor: { type: "user", userId: auth.userId, agentId },
       subject: { type: "business_card_scan", id: row.id },
       reasonCode: "HUMAN_REQUESTED",
