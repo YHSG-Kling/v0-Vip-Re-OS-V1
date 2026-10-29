@@ -135,6 +135,17 @@ function stripComments(t: string): string {
   return canonicalStripComments(t)
 }
 
+/** PURE — does this (comment-stripped) source filter public.users on the legacy `role` column? The window after
+ *  `.from("users")` ends at the NEXT `.from(`: a `role` filter on the FOLLOWING query belongs to that chain, not to
+ *  users (user_role_assignments.role is a real, disciplined column). Wave 146: lib/kernel/approval-authority.ts reads
+ *  the roster seats and then the role grants in consecutive statements and was accused of the users defect. */
+function filtersUsersOnLegacyRole(src: string): boolean {
+  for (const m of src.matchAll(/\.from\(\s*["']users["']\s*\)((?:(?!\.from\()[\s\S]){0,400})/g)) {
+    if (/\.(?:eq|in|neq)\(\s*["']role["']\s*,/.test(m[1])) return true
+  }
+  return false
+}
+
 const offenders: string[] = []
 const legacyRoleColumn: string[] = []
 {
@@ -168,9 +179,7 @@ const legacyRoleColumn: string[] = []
     // .from("users"). A file-wide test would flag any file that happens to query
     // users elsewhere while filtering `role` on a different table entirely
     // (user_role_assignments.role is a real, disciplined column).
-    for (const m of src.matchAll(/\.from\(\s*["']users["']\s*\)([\s\S]{0,400})/g)) {
-      if (/\.(?:eq|in|neq)\(\s*["']role["']\s*,/.test(m[1])) legacyRoleColumn.push(rel)
-    }
+    if (filtersUsersOnLegacyRole(src)) legacyRoleColumn.push(rel)
   }
   console.log(`  · ${files.length} files scanned`)
   check(`no user_type filter literal outside the live vocabulary (${offenders.length})`,
@@ -223,6 +232,10 @@ console.log("\n[the sites this guard was written for]")
 }
 
 console.log("\n[the legacy users.role column]")
+check("PC the finder still sees a users query filtered on the legacy role column",
+  filtersUsersOnLegacyRole(`const { data } = await svc.from("users").select("id").eq("role", "Admin")`))
+check("PC ...and does NOT charge users with the role filter of the NEXT query (user_role_assignments.role)",
+  !filtersUsersOnLegacyRole(`const { data: seats, error } = await svc.from("users").select("id").in("user_type", roles)\nif (error) return\nconst { data: grants } = await svc.from("user_role_assignments").select("user_id").in("role", roles)`))
 check(`no file filters public.users on the legacy role column (${new Set(legacyRoleColumn).size})`,
   new Set(legacyRoleColumn).size === 0,
   [...new Set(legacyRoleColumn)].slice(0, 6).join("\n      "))

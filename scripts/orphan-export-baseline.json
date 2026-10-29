@@ -1926,9 +1926,7 @@
     "app/crm/components/os/next-best-action-panel.tsx": 1,
     "app/crm/components/os/property-alerts-panel.tsx": 1,
     "app/crm/components/os/qualification-summary-card.tsx": 1,
-    "app/crm/components/os/referral-likelihood-panel.tsx": 1,
     "app/crm/components/os/relationship-ai-chat-panel.tsx": 1,
-    "app/crm/components/os/relationship-radar.tsx": 1,
     "app/crm/components/os/smart-note-composer.tsx": 1,
     "app/crm/components/os/timeline-context-panel.tsx": 1,
     "app/crm/components/os/value-delivered-panel.tsx": 1,
@@ -11253,14 +11251,8 @@
     "app/crm/components/os/qualification-summary-card.tsx": [
       "QualificationSummaryCard"
     ],
-    "app/crm/components/os/referral-likelihood-panel.tsx": [
-      "ReferralLikelihoodPanel"
-    ],
     "app/crm/components/os/relationship-ai-chat-panel.tsx": [
       "RelationshipAiChatPanel"
-    ],
-    "app/crm/components/os/relationship-radar.tsx": [
-      "RelationshipRadar"
     ],
     "app/crm/components/os/smart-note-composer.tsx": [
       "SmartNoteComposer"

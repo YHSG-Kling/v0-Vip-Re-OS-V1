@@ -110,7 +110,7 @@ console.log("\n━━━ B · the action, stripped source ━━━")
   // The marker lands on the BODY brace — the helper's first `{` is its `args: {` parameter type, which
   // branchBody would otherwise return (the 2026-10-19 run: two false accusations from a 200-char slice).
   const helper = branchBody(src, "}): Promise<IdentityCrosswalkEvidence | null> {")
-  ok(helper.length > 200 && /runVersiumBusinessIdentityLeg\(\{/.test(helper) && /outputs: \["consumer_email"\]/.test(helper) && /withActionLedger</.test(helper) && /action: "business_card\.identity_crosswalk"/.test(helper), "the crosswalk goes through the business_identity capability leg (budget-gated, booked), asks consumer_email ONLY, under withActionLedger")
+  ok(helper.length > 200 && /runVersiumBusinessIdentityLeg\(\{/.test(helper) && /outputs: \["consumer_email"\]/.test(helper) && /withActionLedger</.test(helper) && /action: "business_card\.scan\.identity_crosswalk"/.test(helper), "the crosswalk goes through the business_identity capability leg (budget-gated, booked), asks consumer_email ONLY, under withActionLedger")
   ok(!/\.from\("(vendors|recruits|contacts)"\)\.(update|insert)/.test(helper) && /\.from\("contacts"\)\.select\("id"\)\.eq\("brokerage_id", brokerageId\)\.eq\("email"/.test(helper), "the crosswalk WRITES NOTHING onto the vendor / recruit / contact — it matches by email under the tenant and leaves evidence on the scan")
   // the return shape
   const targetProjection = /\btarget:\s*"(contact|vendor|recruit)"/

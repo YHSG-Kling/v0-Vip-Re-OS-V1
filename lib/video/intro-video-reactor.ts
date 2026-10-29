@@ -547,10 +547,14 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   // index expression reads as readerless.
   // A skip/failure is written on THE ledger row: a retry (retryAssignmentIntroVideo) re-uses the row it re-claimed — an insert
   // there would hit the per-trigger unique index — and a first attempt inserts it as before.
-  const recordSkip = (status: "suppressed" | "failed", errorMessage: string, flowReason: string) =>
-    sentinelWrite(svc, input.existingIntroVideoId
-      ? svc.from("agent_intro_videos").update({ status, error_message: errorMessage }).eq("id", input.existingIntroVideoId).eq("brokerage_id", input.brokerageId)
-      : svc.from("agent_intro_videos").insert({
+  // Two DECLARED writes rather than one ternary inside a single sentinelWrite(...): the swallowed-refusal census reads
+  // the declaration from the 160 characters before each `.from(`, and the insert branch sat past that window behind
+  // the update branch — a declared write the finder could not see.
+  const recordSkip = (status: "suppressed" | "failed", errorMessage: string, flowReason: string) => {
+    const ctx = { table: "agent_intro_videos", flow: "intro_video_skip_ledger", reason: flowReason }
+    return input.existingIntroVideoId
+      ? sentinelWrite(svc, svc.from("agent_intro_videos").update({ status, error_message: errorMessage }).eq("id", input.existingIntroVideoId).eq("brokerage_id", input.brokerageId), ctx)
+      : sentinelWrite(svc, svc.from("agent_intro_videos").insert({
           brokerage_id: input.brokerageId,
           contact_id:   input.contactId,
           agent_id:     agentRecordId,
@@ -559,7 +563,8 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
           status,
           delivery_channel: delivery,
           error_message: errorMessage,
-        }), { table: "agent_intro_videos", flow: "intro_video_skip_ledger", reason: flowReason })
+        }), ctx)
+  }
 
   // OWNER RULING 6 (2026-10-29): "Welcome video is automatically sent in the portal regardless of the contact's preferences."
   // The PORTAL welcome video (contact_agent_assigned, delivery 'portal') is an in-app part of the contact's portal journey, not a

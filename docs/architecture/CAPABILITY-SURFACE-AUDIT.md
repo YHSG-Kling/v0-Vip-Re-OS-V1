@@ -6,14 +6,14 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 811 role-surfaces — BUILT 723 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 2. Public pages: 37; contact-portal pages: 30. Expected-coverage gaps: 0.
+**Totals:** 812 role-surfaces — BUILT 724 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 2. Public pages: 37; contact-portal pages: 30. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 
 | domain | platform staff | platform prospects · public | tenant admins | teams · team leads | agents | ISA | transaction coordinators | compliance officers | buyers · sellers · lifetime contacts | vendors · partners |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **website · landing pages · lead magnets** | B1 | B17 | B9 | B5 | B10 | · | B5 | B5 | · | · |
-| **lead acquisition** | B5 | B7 P1 | B12 | B3 | B6 | B9 | B1 | B1 | · | · |
+| **lead acquisition** | B5 | B7 P1 | B12 | B4 | B6 | B9 | B1 | B1 | · | · |
 | **dedup · enrichment · behavioural intent** | B3 | · | B6 P1 | B2 | B4 | · | · | · | · | · |
 | **listings** | B1 | B1 | B2 P1 S1 | B3 P1 S1 | B8 P1 S1 | S1 | · | · | · | · |
 | **properties** | · | B1 | B2 | B2 | B2 | · | · | · | B3 | · |
@@ -455,7 +455,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | website · landing pages · lead magnets | ↳ from Settings `/settings/branding` | `app/settings/branding/page.tsx` | app/actions/custom-domains.ts (getCustomDomainsPanel, addCustomDomainAction, checkCustomDomainStatusAction, …) · app/actions/settings/business-registration.ts (getBusinessRegistrationAction, saveBusinessRegistrationAction, BusinessRegistrationView) | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### teams · team leads (120)
+### teams · team leads (121)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -497,6 +497,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | financials · billing | ↳ from Campaign ROI `/settings/billing` | `app/settings/billing/page.tsx` | app/actions/billing.ts (getSubscriptionTiers, getCurrentSubscription, getInvoiceHistory, …) · app/actions/usage-overview.ts (loadUsageOverview) | BUILT |
 | forms | ↳ from CRM `/portal/x/documents` | `app/portal/[contactId]/documents/page.tsx` | app/actions/documents.ts (analyzeDocument, askDocumentQuestion, getEducationalOverlay) · lib/kernel/portal.ts | BUILT |
 | lead acquisition | QR Codes `/dashboard/agent/qr-codes` | `app/dashboard/agent/qr-codes/page.tsx` | app/actions/qr-management.ts (loadQrCodesForCaller, setQrCodeActive) · fetch /api/admin/qr-codes | BUILT |
+| lead acquisition | ↳ from CRM `/dashboard/isa` | `app/dashboard/isa/page.tsx` | app/actions/leads.ts (resumeAIISA, getISAQueueLeads, getLeadStats, …) · app/actions/ai-isa.ts (listISACampaigns, getQualificationOutcomes, getGhostRecoveryQueue, …) | BUILT |
 | lead acquisition | ↳ from Team Dashboard `/leads` | `app/leads/page.tsx` | app/actions/lead-intelligence.ts (getIntelligenceDashboardStats, getMotivatedSellers, getUnifiedLeadProfiles, …) · app/actions/lead-management.ts (getLeadsAdmin, enrichLead, rejectLead, …) | BUILT |
 | lead acquisition | ↳ from Team Dashboard `/leads/x` | `app/leads/[leadId]/page.tsx` | lib/auth/lead-visibility.ts · lib/lead-pipeline/lead-intelligence-signals.ts | BUILT |
 | listings | ↳ from Team Dashboard `/dashboard/listing-appointments/x` | `app/dashboard/listing-appointments/[runId]/page.tsx` | app/actions/listing-appointment-copilot.ts (getListingAppointmentPrepDetail, markListingApptPrepReady, ListingApptPrepDetail) · fetch /api/workflow/listing-presentation | BUILT |
