@@ -45,6 +45,7 @@ import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { resolveUserByInboundIdentifier } from "@/lib/inbound-mail/resolve-user-provider"
 import { fetchGmailMessagesSinceHistory, fetchOutlookMessage } from "@/lib/inbound-mail/oauth-fetchers"
 import { requireTenantedUnambiguousTenant } from "@/lib/kernel/unambiguous-tenant"
+import { processInboundCommunication, recordInboundCommunication } from "@/lib/communications/inbound-record"
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text()
@@ -161,6 +162,8 @@ export async function POST(request: NextRequest) {
     // For transactional: from the matched credential OR via contact lookup.
     let brokerageId = resolvedCredential?.brokerage_id ?? null
     let contactId: string | null = null
+    // True only when the CONTACT is the sender (a FROM match). A TO match is our own mail to them — never their reply.
+    let contactIsSender = false
 
     if (email.fromEmail) {
       if (brokerageId) {
@@ -171,7 +174,7 @@ export async function POST(request: NextRequest) {
           .eq("brokerage_id", brokerageId)
           .eq("email", email.fromEmail)
           .maybeSingle()
-        if (c) contactId = c.id as string
+        if (c) { contactId = c.id as string; contactIsSender = true }
       } else {
         // No credential-derived tenant, so the sender's email is all we have to go on.
         // An email address is not unique across tenants: the same person can be a
@@ -206,6 +209,7 @@ export async function POST(request: NextRequest) {
         if (senderMatch.ok) {
           contactId = senderMatch.rows[0].id
           brokerageId = senderMatch.brokerageId
+          contactIsSender = true
         } else if (senderMatch.reason === "ambiguous_tenant") {
           console.warn(
             `[inbound-mail] sender ${email.fromEmail} is a contact at ${senderMatch.tenantCount} brokerages — ` +
@@ -222,6 +226,43 @@ export async function POST(request: NextRequest) {
         .eq("email", email.toEmail)
         .maybeSingle()
       if (c) contactId = c.id as string
+    }
+
+    // WAVE 146 (lane 146B, owner ruling 7): THE PLATFORM's own prospect wrote back. Platform outreach goes out from the
+    // platform sender (lib/platform/prospect-followup.ts → sendEmail), so a reply reaches a mailbox NO tenant credential
+    // owns. When no tenant was resolved (neither a mailbox binding nor an unambiguous tenant contact) and the sender is
+    // exactly one platform prospect, the reply is recorded on the PLATFORM funnel (contract C1's platform path —
+    // platform_prospects.details.inbound / last_inbound_at, no tenant data) and the prospect sweep's arbiter hands them to
+    // platform staff instead of nudging. Before this, details.last_inbound_at had a reader and no writer.
+    // A From the receiving provider FAILED to authenticate (DMARC / DKIM / SPF — lib/inbound-mail/message-meta.ts) is never
+    // recorded as the person's words (a forged "reply" could stop a ladder or an opt-out); "unknown" is recorded with it said.
+    if (!resolvedCredential && !brokerageId && email.fromEmail && email.senderAuth !== "fail" && ((email.bodyText ?? "").trim() || email.subject)) {
+      try {
+        const { normalizeProspectEmail } = await import("@/lib/platform/prospect-capture")
+        const from = normalizeProspectEmail(email.fromEmail)
+        if (from) {
+          const { data: prospects, error: prospectErr } = await supabase.from("platform_prospects").select("id").eq("email", from).limit(2)
+          if (prospectErr) console.error(`[inbound-mail] platform prospect lookup refused: ${prospectErr.message}`)
+          else if ((prospects ?? []).length === 1) {
+            // RECORD ONLY (contract C1's platform path): the platform funnel's reaction is its own sweep (the arbiter reads
+            // details.last_inbound_at) — no tenant chain, no tenant opt-out, no tenant arbiter.
+            const r = await recordInboundCommunication({
+              platform: true,
+              channel: "email",
+              provider,
+              providerRef: email.messageId ?? null,
+              party: { kind: "platform_prospect", id: (prospects as Array<{ id: string }>)[0].id },
+              subject: email.subject || null,
+              body: (email.bodyText ?? "").trim() || email.subject,
+              surface: provider,
+              threadRef: { from_email: email.fromEmail, to_email: email.toEmail, in_reply_to: email.inReplyTo ?? null, sender_auth: email.senderAuth ?? "unknown" },
+            })
+            if (!r.recorded && !r.duplicate) console.error(`[inbound-mail] platform prospect reply NOT recorded: ${r.error ?? "unknown"}`)
+          }
+        }
+      } catch (e) {
+        console.error("[inbound-mail] platform prospect reply record failed:", e instanceof Error ? e.message : String(e))
+      }
     }
 
     // EMAIL → OFFER lookout (runs BEFORE the known-contact requirement, since an outside agent
@@ -439,6 +480,31 @@ export async function POST(request: NextRequest) {
     if (!contactId || !brokerageId) {
       results.push({ email_from: email.fromEmail, uploads: 0 })
       continue
+    }
+
+    // WAVE 146 (lane 146B, owner ruling 3): a KNOWN CONTACT's emailed reply now lands in the ONE history. Before this the
+    // route filed only the attachments — the words themselves reached no thread, no inbox, no arbiter. Contract C1
+    // (lib/communications/inbound-record.ts): messages on the contact's ONE thread, keyed on the provider's Message-ID (a
+    // redelivery is a duplicate), then opt-out → the response-driven sequence stop → intent → the arbiter's responder.
+    if (contactIsSender && email.senderAuth === "fail") {
+      console.warn(`[inbound-mail] sender authentication FAILED for ${email.fromEmail} — not recorded as the contact's reply (attachments still filed)`)
+    } else if (contactIsSender && ((email.bodyText ?? "").trim() || email.subject)) {
+      try {
+        const r = await processInboundCommunication({
+          brokerageId,
+          channel: "email",
+          provider,
+          providerRef: email.messageId ?? null,
+          party: { kind: "contact", id: contactId },
+          subject: email.subject || null,
+          body: (email.bodyText ?? "").trim() || email.subject,
+          surface: provider,
+          threadRef: { from_email: email.fromEmail, to_email: email.toEmail, in_reply_to: email.inReplyTo ?? null, sender_auth: email.senderAuth ?? "unknown" },
+        })
+        if (!r.record.recorded && !r.record.duplicate) console.error(`[inbound-mail] contact reply NOT recorded: ${r.record.error ?? "unknown"}`)
+      } catch (e) {
+        console.error("[inbound-mail] contact reply record failed (attachments still filed):", e instanceof Error ? e.message : String(e))
+      }
     }
 
     // Pre-link to the contact's most-recent open offer when no ref:offer in subject

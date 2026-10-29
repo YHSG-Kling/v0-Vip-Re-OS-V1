@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ingestMessageService } from "@/lib/communication-spine/ingest-message-service"
+import { processInboundCommunication } from "@/lib/communications/inbound-record"
 import { metaSubscriptionHandshake, verifyMetaSignature } from "@/lib/meta/verify-signature"
 
 /**
@@ -81,6 +81,8 @@ export async function POST(req: NextRequest) {
           senderWaId,
           businessNumberId,
           messageText,
+          // The wamid — WhatsApp's own message id, the idempotency key of the inbound record (contract C1).
+          messageRef: typeof msg?.id === "string" ? msg.id : null,
           timestamp: timestamp ? new Date(timestamp) : new Date(),
         })
       }
@@ -97,6 +99,7 @@ async function handleInboundWhatsapp(params: {
   /** value.metadata.phone_number_id — the receiving business number. */
   businessNumberId?: string
   messageText: string
+  messageRef: string | null
   timestamp: Date
 }) {
   const svc = createServiceClient()
@@ -239,15 +242,20 @@ async function handleInboundWhatsapp(params: {
 
   if (!contactId) return
 
-  await ingestMessageService({
-    contactId,
-    rawMessage: {
-      channel: "social_dm_whatsapp",
-      from: params.senderWaId,
-      to: "business",
-      body: params.messageText,
-      timestamp: params.timestamp,
-      metadata: { whatsapp_id: params.senderWaId },
-    },
+  // ONE canonical record (contract C1) on the contact's ONE thread, keyed on the wamid, then opt-out / sequence stop /
+  // intent / the arbiter (whose WhatsApp reply leaves through the tenant's own Business number, within the 24-hour customer
+  // window the person just opened). Survivor + the spine's carried behaviour: see app/api/webhooks/linkedin/route.ts.
+  // The tenant is the receiving number's; a staged (unresolved) contact is refused by the record, as the spine refused it.
+  if (!brokerageId) return
+  await processInboundCommunication({
+    brokerageId,
+    channel: "whatsapp",
+    provider: "whatsapp",
+    providerRef: params.messageRef,
+    party: { kind: "contact", id: contactId },
+    body: params.messageText,
+    surface: "whatsapp",
+    receivedAt: params.timestamp,
+    threadRef: { sender_id: params.senderWaId, author_id: params.senderWaId, account_id: params.businessNumberId ?? null },
   })
 }

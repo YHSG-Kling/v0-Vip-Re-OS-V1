@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ingestMessageService } from "@/lib/communication-spine/ingest-message-service"
+import { processInboundCommunication } from "@/lib/communications/inbound-record"
+import { normalizeLinkedInNotifications, ingestInboundSocialEvents } from "@/lib/social/inbound-social"
 import { safeHexEqual } from "@/lib/meta/verify-signature"
 import crypto from "crypto"
 
@@ -120,6 +121,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
   }
 
+  // WAVE 146 (lane 146B, owner ruling 2): what LinkedIn actually pushes a Community Management app —
+  // ORGANIZATION_SOCIAL_ACTION_NOTIFICATIONS (COMMENT / SHARE_MENTION on the tenant's Company Page;
+  // learn.microsoft.com/linkedin/marketing/community-management/organizations/organization-social-action-notifications,
+  // read 2026-10-29). Normalized + recorded + arbitrated by lib/social/inbound-social.ts (contract C1 dedupes on
+  // notificationId — LinkedIn redelivers every 5 minutes for 8 hours).
+  const orgEvents = normalizeLinkedInNotifications(payload)
+  if (orgEvents.length > 0) {
+    try {
+      await ingestInboundSocialEvents(createServiceClient(), orgEvents)
+    } catch (e) {
+      console.error("[linkedin] organization notification ingestion failed (ack stands):", e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // DMs: LinkedIn's Messages API is restricted to approved partners (learn.microsoft.com/linkedin/shared/integrations/
+  // communications/messages) — this branch only ever fires for such an app.
   const events: any[] = payload?.value ?? []
 
   for (const event of events) {
@@ -130,6 +147,8 @@ export async function POST(req: NextRequest) {
     const messageText: string | undefined =
       event?.message?.body?.text ?? event?.messageBody?.text ?? event?.message?.body
     const timestamp: number | undefined = event?.createdAt
+    // LinkedIn's own message id — the idempotency key of the inbound record (contract C1).
+    const messageRef: string | null = typeof event?.message?.id === "string" ? event.message.id : typeof event?.id === "string" ? event.id : null
     // Receiving side of the DM — the connected page/org this event was delivered to.
     // Used to resolve which brokerage owns the conversation.
     const recipientId: string | undefined = (
@@ -142,6 +161,7 @@ export async function POST(req: NextRequest) {
       senderId,
       recipientId,
       messageText,
+      messageRef,
       timestamp: timestamp ? new Date(timestamp) : new Date(),
     })
   }
@@ -155,9 +175,10 @@ async function handleLinkedInDm(params: {
   senderId: string
   recipientId?: string
   messageText: string
+  messageRef: string | null
   timestamp: Date
 }) {
-  const { senderId, recipientId, messageText, timestamp } = params
+  const { senderId, recipientId, messageText, messageRef, timestamp } = params
   const svc = createServiceClient()
 
   // tenant anchor (scope burn-down): resolve which brokerage owns the receiving
@@ -201,9 +222,12 @@ async function handleLinkedInDm(params: {
   const contacts = new Set(candidates.map((c) => c.brokerage_id)).size === 1 ? candidates : []
 
   let contactId: string
+  // The record's tenant: the receiving account's, else the ONE distinct tenant the identity match proved (the rule above).
+  let recordTenant: string | null = brokerageId
 
   if (contacts.length > 0) {
     contactId = contacts[0].id
+    recordTenant = brokerageId ?? contacts[0].brokerage_id ?? null
   } else {
     // tenant anchor (scope burn-down): stamp the resolved brokerage; when the
     // receiving account can't be mapped the row stays in staging (null tenant)
@@ -225,15 +249,23 @@ async function handleLinkedInDm(params: {
     contactId = newContact.id
   }
 
-  await ingestMessageService({
-    contactId,
-    rawMessage: {
-      channel: "social_dm_linkedin",
-      from: senderId,
-      to: "page",
-      body: messageText,
-      timestamp,
-      metadata: { linkedin_person_id: senderId },
-    },
+  // ONE canonical record (contract C1): messages on the contact's ONE thread, keyed on LinkedIn's message id, then
+  // opt-out / sequence stop / intent / the arbiter. The SURVIVOR for a social DM is lib/communications/inbound-record.ts:
+  // the communication spine (lib/communication-spine/ingest-message-service.ts) wrote client_portal_messages — the PORTAL
+  // table — with no conversation link and a body+timestamp dedup; its unique behaviour (the STOP / do-not-contact phrase
+  // suppression, the response-driven sequence stop) is carried by processInboundCommunication (opt-out → stop). An
+  // unresolved tenant (a staged null-brokerage contact) is refused by the record, exactly as the spine's thread creation
+  // refused it (no brokerage → no conversation).
+  if (!recordTenant) return
+  await processInboundCommunication({
+    brokerageId: recordTenant,
+    channel: "social_dm",
+    provider: "linkedin",
+    providerRef: messageRef,
+    party: { kind: "contact", id: contactId },
+    body: messageText,
+    surface: "linkedin",
+    receivedAt: timestamp,
+    threadRef: { sender_id: senderId, author_id: senderId, account_id: recipientId ?? null },
   })
 }

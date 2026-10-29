@@ -375,8 +375,8 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `FACEBOOK_APP_ID` | OPTIONAL | server config | platform | Facebook app id for the social connect (lib/social/oauth-config.ts:37); META_APP_ID is the same app on the Meta side. | 1 @ lib/social/token-refresh.ts:67 | .env.example |
 | `FACEBOOK_APP_SECRET` | OPTIONAL | server secret | platform | Facebook app secret (OAuth + X-Hub-Signature-256 verification). | 2 @ lib/meta/verify-signature.ts:96 | .env.example |
 | `LINKEDIN_CLIENT_ID` | OPTIONAL | server config | platform | LinkedIn OAuth client id. | 1 @ lib/social/token-refresh.ts:92 | .env.example |
-| `LINKEDIN_CLIENT_SECRET` | OPTIONAL | server secret | platform | LinkedIn OAuth client secret (also the LinkedIn webhook signature key). | 2 @ app/api/webhooks/linkedin/route.ts:61 | .env.example |
-| `LINKEDIN_WEBHOOK_VERIFY_TOKEN` | OPTIONAL | server secret | platform | LinkedIn webhook verify token. | 1 @ app/api/webhooks/linkedin/route.ts:60 | .env.example |
+| `LINKEDIN_CLIENT_SECRET` | OPTIONAL | server secret | platform | LinkedIn OAuth client secret (also the LinkedIn webhook signature key). | 2 @ app/api/webhooks/linkedin/route.ts:62 | .env.example |
+| `LINKEDIN_WEBHOOK_VERIFY_TOKEN` | OPTIONAL | server secret | platform | LinkedIn webhook verify token. | 1 @ app/api/webhooks/linkedin/route.ts:61 | .env.example |
 | `META_APP_ID` | OPTIONAL | server config | platform | Meta app id (webhooks / token refresh). | 2 @ app/api/cron/audience-sync-runner/route.ts:81 | .env.example |
 | `META_APP_SECRET` | OPTIONAL | server secret | platform | Meta app secret (X-Hub-Signature-256 for the Meta webhook doors). | 3 @ app/api/cron/audience-sync-runner/route.ts:82 | .env.example |
 | `META_VERIFY_TOKEN` | OPTIONAL | server secret | platform | Meta webhook GET-handshake verify token (legacy spelling, still accepted). | 1 @ lib/meta/verify-signature.ts:84 | .env.example |
@@ -387,7 +387,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `TIKTOK_CLIENT_SECRET` | OPTIONAL | server secret | platform | TikTok client secret. | declared @ lib/social/oauth-config.ts:69 | .env.example |
 | `TWITTER_CLIENT_ID` | OPTIONAL | server config | platform | X/Twitter OAuth client id (lib/social/oauth-config.ts:59). | declared @ lib/kernel/provider-adapters.ts:227 | .env.example |
 | `TWITTER_CLIENT_SECRET` | OPTIONAL | server secret | platform | X/Twitter OAuth client secret. | declared @ lib/social/oauth-config.ts:60 | .env.example |
-| `TWITTER_CONSUMER_SECRET` | OPTIONAL | server secret | platform | X/Twitter consumer secret for the webhook CRC signature. | 1 @ app/api/webhooks/twitter/route.ts:18 | .env.example |
+| `TWITTER_CONSUMER_SECRET` | OPTIONAL | server secret | platform | X/Twitter consumer secret for the webhook CRC signature. | 1 @ app/api/webhooks/twitter/route.ts:19 | .env.example |
 | `WHATSAPP_VERIFY_TOKEN` | OPTIONAL | server secret | platform | WhatsApp webhook verify token. | 1 @ lib/meta/verify-signature.ts:85 | .env.example |
 
 ### CRM, e-sign, forms and showing providers (GoHighLevel, DocuSign, Dotloop, SkySlope, Authentisign, ShowingTime, CE)

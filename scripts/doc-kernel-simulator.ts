@@ -860,7 +860,11 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("scan_contact_writeback:"))
     check("UNIFIED INBOX COMPLETENESS (owner rule) — Meta DMs land messages rows (the ONE timeline table, linked threads surface on the contact), the SendGrid event webhook is secret-gated (unset=404) with exact-id-then-recipient correlation and read-never-downgrades, spam complaints suppress with the EXACT vocabulary reason, sends return providerMessageId, and the chips render read/delivered",
       src("app/api/webhooks/meta-dm/route.ts").includes('type: "social_dm"')
-      && src("app/api/webhooks/meta-dm/route.ts").includes('from("messages")')
+      // RE-ASSERTED (wave 146, lane 146B): this pinned the WAYPOINT `from("messages")` inside the meta-dm route. The rule is
+      // "Meta DMs land messages rows (the ONE timeline table)" — since wave 146 the route lands them through the ONE inbound
+      // record (contract C1, lib/communications/inbound-record.ts), which writes messages once per Meta message id.
+      && src("app/api/webhooks/meta-dm/route.ts").includes("processInboundCommunication(")
+      && src("lib/communications/inbound-record.ts").includes('from("messages").insert(')
       && src("app/api/webhooks/sendgrid-events/route.ts").includes("SENDGRID_WEBHOOK_SECRET")
       && src("app/api/webhooks/sendgrid-events/route.ts").includes("sg_message_id")
       && src("app/api/webhooks/sendgrid-events/route.ts").includes('reason: "spam_complaint"')

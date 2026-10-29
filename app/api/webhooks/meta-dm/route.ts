@@ -69,11 +69,31 @@
  *
  * Replies flow OUT through the tenant's connected account tooling — this
  * route only ingests.
+ *
+ * ── WAVE 146 (lane 146B, owner rulings 2 + 3) ───────────────────────────────
+ * · ONE RECORD, ONCE: every DM now lands through lib/communications/inbound-
+ *   record.ts processInboundCommunication (contract C1) — keyed on Meta's own
+ *   message id (message.mid), so Meta's at-least-once retries no longer write a
+ *   second copy (before this, every retry was a new row), and the inbound is
+ *   'unread' (it used to land 'delivered', which the inbox reads as already read).
+ * · NO DM LOST TO THE ONE-THREAD RULE: conversations is UNIQUE (contact_id,
+ *   agent_id) live, so a contact who already had a thread with the account's
+ *   agent made the social_dm insert fail and the DM vanish. Now the DM rides that
+ *   contact's ONE thread (the record resolves it; the page / sender ids travel on
+ *   the message metadata so a reply can find its way back).
+ * · THE ARBITER HEARS IT: the record → intent → the arbiter's inbound responder
+ *   (lib/ai-isa/followup-arbiter.ts respondToInboundCommunication).
+ * · COMMENTS AND MENTIONS: the same Meta app delivers Page `feed` comments,
+ *   Page `mention`s and Instagram `comments` / `mentions` (incl. ad comments) to
+ *   this callback as `changes` — lib/social/inbound-social.ts normalizes and
+ *   ingests them (the app must subscribe those fields; Meta App Dashboard).
  */
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { metaSubscriptionHandshake, verifyMetaSignature } from "@/lib/meta/verify-signature"
+import { processInboundCommunication } from "@/lib/communications/inbound-record"
+import { normalizeMetaChanges, ingestInboundSocialEvents } from "@/lib/social/inbound-social"
 
 export const dynamic = "force-dynamic"
 
@@ -96,6 +116,8 @@ interface DmEvent {
   text: string
   platform: "facebook" | "instagram"
   timestamp: number | null
+  /** Meta's own message id — the idempotency key of the inbound record (contract C1). */
+  mid: string | null
 }
 
 /** Tolerant extraction across Messenger + IG webhook shapes. */
@@ -111,7 +133,8 @@ function extractDmEvents(body: any): DmEvent[] {
       // Skip echoes of our own outbound + non-text payloads (attachments v2).
       if (!pageId || !senderId || !text || m?.message?.is_echo) continue
       if (senderId === pageId) continue
-      out.push({ pageId, senderId, text: String(text).slice(0, 4000), platform, timestamp: m?.timestamp ?? null })
+      const mid = typeof m?.message?.mid === "string" && m.message.mid ? String(m.message.mid) : null
+      out.push({ pageId, senderId, text: String(text).slice(0, 4000), platform, timestamp: m?.timestamp ?? null, mid })
     }
   }
   return out
@@ -178,9 +201,21 @@ export async function POST(req: NextRequest) {
 
   // Verified. Meta retries aggressively on non-200 — from here, always ack.
   let events: DmEvent[] = []
+  let parsed: unknown = null
   try {
-    events = extractDmEvents(JSON.parse(rawBody))
+    parsed = JSON.parse(rawBody)
+    events = extractDmEvents(parsed)
   } catch { /* malformed body — ack and move on */ }
+
+  // COMMENTS / MENTIONS (wave 146) — the `changes` half of the same verified delivery.
+  const socialEvents = parsed ? normalizeMetaChanges(parsed) : []
+  if (socialEvents.length > 0) {
+    try {
+      await ingestInboundSocialEvents(createServiceClient(), socialEvents)
+    } catch (e) {
+      console.error("[meta-dm] comment / mention ingestion failed (ack stands):", e instanceof Error ? e.message : String(e))
+    }
+  }
 
   if (events.length > 0) {
     const svc = createServiceClient()
@@ -226,10 +261,9 @@ export async function POST(req: NextRequest) {
         if (existing) {
           conversationId = (existing as any).id
           conversationContactId = ((existing as any).contact_id as string | null) ?? resolvedContactId
+          // Thread context only — the counters move ONCE, inside the record (a retry moves nothing).
           await sentinelWrite(svc, svc.from("conversations").update({
             last_message_at: nowIso,
-            message_count: (Number((existing as any).message_count) || 0) + 1,
-            unread_count: (Number((existing as any).unread_count) || 0) + 1,
             // A thread captured before identity resolution existed gets its
             // contact bound on the next inbound DM.
             ...(!(existing as any).contact_id && resolvedContactId
@@ -240,7 +274,7 @@ export async function POST(req: NextRequest) {
               last_message: ev.text,
             },
             updated_at: nowIso,
-          }).eq("id", (existing as any).id), { table: "conversations", flow: "meta_dm_thread_counters", reason: "thread counters; the inbound DM is persisted below" })
+          }).eq("id", (existing as any).id), { table: "conversations", flow: "meta_dm_thread_context", reason: "thread context; the inbound DM is recorded below (contract C1)" })
         } else {
           const { data: createdConv, error: convInsErr } = await svc.from("conversations").insert({
             brokerage_id: brokerageId,
@@ -249,37 +283,44 @@ export async function POST(req: NextRequest) {
             type: "social_dm",
             status: "active",
             last_message_at: nowIso,
-            message_count: 1,
-            unread_count: 1,
+            message_count: 0,
+            unread_count: 0,
             context_data: {
               page_id: ev.pageId, sender_id: ev.senderId, platform: ev.platform,
               account_name: (account as any)?.account_name ?? null,
               last_message: ev.text,
             },
           }).select("id").single()
-          if (convInsErr) console.error(`[meta-dm] inbound DM thread NOT created (the DM will not reach the inbox): ${convInsErr.message}`)
-          conversationId = ((createdConv as any)?.id as string | null) ?? null
+          if (convInsErr && (convInsErr as { code?: string }).code === "23505" && resolvedContactId) {
+            // THE ONE-THREAD RULE (conversations UNIQUE (contact_id, agent_id)): this contact already has a thread with this
+            // agent. The DM rides it — the record resolves it — instead of being lost.
+            conversationId = null
+          } else if (convInsErr) {
+            console.error(`[meta-dm] inbound DM thread NOT created (the DM will not reach the inbox): ${convInsErr.message}`)
+          } else {
+            conversationId = ((createdConv as any)?.id as string | null) ?? null
+          }
           conversationContactId = resolvedContactId
         }
 
-        // THE TIMELINE ROW (owner rule: the unified inbox carries social DMs) —
-        // every DM lands in messages, the ONE timeline table; once the thread
-        // is linked to a contact, the DM appears on that contact's inbox.
-        if (conversationId) {
-          const { error: dmMsgErr } = await svc.from("messages").insert({
-            conversation_id: conversationId,
-            contact_id: conversationContactId,
-            brokerage_id: brokerageId,
-            agent_id: threadAgentId,
-            type: "social_dm",
-            direction: "inbound",
-            sender_type: "contact",
+        // THE TIMELINE ROW — ONE canonical record (contract C1, lib/communications/inbound-record.ts): messages on the
+        // thread, keyed on Meta's message id (a retry is a duplicate, never a second row), 'unread' for the inbox, the
+        // page / sender ids on the metadata for the reply, then the arbiter's inbound responder.
+        if (conversationId || conversationContactId) {
+          const r = await processInboundCommunication({
+            brokerageId,
+            channel: "social_dm",
+            provider: "meta",
+            providerRef: ev.mid,
+            party: conversationContactId ? { kind: "contact", id: conversationContactId } : null,
+            conversationId,
+            agentId: threadAgentId,
             body: ev.text ?? "",
-            status: "delivered",
-            created_at: nowIso,
-            updated_at: nowIso,
+            surface: ev.platform,
+            receivedAt: ev.timestamp ? new Date(ev.timestamp) : nowIso,
+            threadRef: { page_id: ev.pageId, sender_id: ev.senderId, account_id: ev.pageId, author_id: ev.senderId },
           })
-          if (dmMsgErr) console.error(`[meta-dm] inbound DM NOT persisted to the inbox: ${dmMsgErr.message}`)
+          if (!r.record.recorded && !r.record.duplicate) console.error(`[meta-dm] inbound DM NOT recorded: ${r.record.error ?? "unknown"}`)
         }
       } catch { /* per-event best-effort — the ack stands */ }
     }

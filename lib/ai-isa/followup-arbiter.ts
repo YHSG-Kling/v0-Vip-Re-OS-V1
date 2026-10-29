@@ -648,6 +648,8 @@ export const ARBITER_SYSTEM = [
   "Your choice is one of five stances: ACT NOW (a useful touch on the best permitted channel), WAIT (a bounded hold), EDUCATE (a lesson), NOTIFY HUMAN (a task for the agent), or CHANGE CHANNEL (a touch on a different permitted channel than the last one).",
   "A channel is HOW a message travels (email, text, call, voice drop, mail, the portal, a task for a person); a video is a FORMAT that rides email, text or the portal — never name it as a channel. Consider every channel in `channels` with its reasons; choose only one marked available.",
   "When moment.key is speed_to_lead the person is NEW and must be answered now: a fast first response is a high-priority requirement, so waiting is not offered — choose the best permitted way to answer (the first touch on the channel that fits their stage, consent, preference, urgency and any existing activity, or a person when the situation needs one). The one welcome on becoming a contact is a fixed send outside this judgment.",
+  "When moment.key is promised_deliverable we promised this person something (a guide, report, video or book) and it has not reached them: deliver it now on the permitted channel that fits them, or hand it to a person — never wait.",
+  "When moment.key starts with inbound_ the person just wrote to us: answer usefully (reply), or hand it to a person when it needs judgment (a complaint, distress, a legal or fair-housing question, a negotiation). A public comment is read by everyone — the reply stays general and invites a private conversation.",
   "Reply with JSON only: {optionId, channel|null, format|null, waitHours|null, rationale (1-3 sentences, plain words), evidence (the fact keys you used), confidence 0..1}.",
 ].join(" ")
 
@@ -724,7 +726,7 @@ async function defaultDecide(a: { brokerageId: string; system: string; prompt: s
  * Decide the next follow-up for ONE person. Never throws, never returns an option off the menu.
  * `planned` is the planner's own verdict (the thing that happens if the model does not answer).
  */
-async function arbitrateFollowUp(
+export async function arbitrateFollowUp(
   a: { brokerageId: string; facts: ArbiterFacts; menu: ArbiterMenu; planned: ArbiterOption; policy: FollowupPolicy; budget?: ArbiterBudget; priority?: ArbiterPriority | null },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbiterDecision> {
@@ -758,14 +760,17 @@ async function arbitrateFollowUp(
   // every slower experience are not offered, so the requirement cannot be deferred. When there is a real choice (two ways to
   // answer, or two permitted channels for the touch) the model makes it from the full evidence; otherwise — and on any outage /
   // refusal / spent budget / arbiter switched off — the first touch goes on the planner's channel (never a wait).
-  if (a.priority === "speed_to_lead") {
+  // WAVE 146 (lane 146B, owner ruling 10): a PROMISED lead-magnet deliverable that has not been delivered is the same kind of
+  // requirement — deliver now, on a permitted channel or through a person; never a wait (contract C4's undelivered moment).
+  if (a.priority === "speed_to_lead" || a.priority === "promised_deliverable") {
+    const label = a.priority === "speed_to_lead" ? "Speed-to-lead: the first response goes now" : "A promised deliverable is owed: it goes now"
     const answerNow = a.menu.menu.filter((o) => SPEED_TO_LEAD_KINDS.has(o.kind) && (o.kind !== "communication" || o.channels.length > 0))
     const touch = answerNow.find((o) => o.kind === "communication")
     const first = touch ?? answerNow[0]
     const ids = answerNow.map((o) => o.id)
     const fallback = (why: string): ArbiterDecision => first
-      ? base({ optionId: first.id, kind: first.kind, channel: first.channels[0] ?? null, menu: ids, rationale: `Speed-to-lead: the first response goes now — ${why}.`, fallbackReason: `speed_to_lead — ${why}` })
-      : base({ menu: ids, fallbackReason: `speed_to_lead — ${why}` })
+      ? base({ optionId: first.id, kind: first.kind, channel: first.channels[0] ?? null, menu: ids, rationale: `${label} — ${why}.`, fallbackReason: `${a.priority} — ${why}` })
+      : base({ menu: ids, fallbackReason: `${a.priority} — ${why}` })
     if (!first) return fallback("no permitted channel carries a first touch and no person can take it; the planner's verdict stands")
     const hasChoice = answerNow.length > 1 || (touch?.channels.length ?? 0) > 1
     if (!hasChoice) return fallback("only one way to answer is permitted")
@@ -832,7 +837,7 @@ async function arbitrateExperiencePlan(
 }
 
 /** The ledger detail every arbitrated decision carries (LAW 5: who/what, why, which evidence, which policy). */
-function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; blindSpots?: readonly string[] } = {}): Record<string, unknown> {
+export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; blindSpots?: readonly string[] } = {}): Record<string, unknown> {
   return {
     source: d.source, option: d.optionId, channel: d.channel, format: d.format ?? null, stance: d.stance ?? null, wait_hours: d.waitHours, rationale: d.rationale, evidence: d.evidence, confidence: d.confidence, fallback_reason: d.fallbackReason, menu: d.menu, policy_ref: policyRef,
     // Wave 144: every channel CONSIDERED, with the check that decided it (LAW 5 — which policy permitted, and which refused).
@@ -846,7 +851,7 @@ function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, e
  *  chooses how (channel, or a person), never whether or when. Replaces wave 144's `FixedSendException` (ruling 12's "fixed send, the
  *  arbiter is not consulted"), which the owner reversed. (The one welcome when a lead becomes a contact never reaches the arbiter:
  *  lib/contact-promotion/conversion-welcome.ts sends it.) */
-export type ArbiterPriority = "speed_to_lead"
+export type ArbiterPriority = "speed_to_lead" | "promised_deliverable"
 
 // ── the re-engagement cadence integration (ghost leads) ──────────────────────────────────────
 
@@ -1364,7 +1369,10 @@ export async function respondToLifeChangeSignal(
     let out: LifeChangeResponse = { action: "replayed", subjectClass, kind, reason: "this signal was already answered today for this person — not acted on twice" }
     await ledger<LifeChangeResponse>(
       {
-        brokerageId: input.brokerageId, action: "life_change.respond", actor: { type: "manager", managerKey: subjectClass === "lifetime" ? "sphere_of_influence" : "ai_isa" },
+        // WAVE 146 (lane 146B): was "life_change.respond" — two segments, which lib/kernel/action-ledger.ts ACTION_NAME_PATTERN
+        // (domain.entity.action) REFUSES: the claim came back "unledgered", nothing was recorded, and the promised once-per-day
+        // replay never happened (a retried signal engaged the contact again). The proof injected its own ledger and could not see it.
+        brokerageId: input.brokerageId, action: "life_change.signal.respond", actor: { type: "manager", managerKey: subjectClass === "lifetime" ? "sphere_of_influence" : "ai_isa" },
         subject: { type: subject.type, id: subject.id }, reasonCode: lifeChangeReasonCode(kind),
         reasonDetail: `${input.signalType} (${kind}) detected by ${input.source}`.slice(0, 500), cycle: `life_change:${input.signalType}:${day}`,
         systemSource: "life_change_signal", policyKey: "followup_policy",
@@ -1467,4 +1475,257 @@ export async function arbitrateAndRecordExperience(
     if (!w.recorded && w.error) console.warn(`[followup-arbiter] wait not ledgered for contact ${a.contactId}: ${w.error}`)
   }
   return { plan, decision, recorded }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// WAVE 146 (lane 146B) — THE ARBITER'S INBOUND SIDE
+//
+// OWNER RULINGS (2026-10-29): 2 — "Arbiter needs to consider and send social responses back and also should do 1:1 ad follow
+// up with audiences"; 3 — every inbound lands in ONE history and feeds the arbiter; 7 — "platforms prospect funnel should be
+// arbitrated"; 10 — "the arbiter needs to make sure that any deliverables that were promised from the lead magnet are delivered".
+// Same split as the rest of this file (LAW 4): deterministic locks first (opt-out, do-not-contact, risk → a person), then the
+// model chooses among a CLOSED menu, then a governed executor acts within authority, and every decision is ledgered (LAW 5).
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// The INBOUND RESPONDER (respondToInboundCommunication — locks, the closed reply / person / 1:1-ad menu, explicit-autonomy
+// sends, proposals, ONE ledger row per inbound) lives in lib/communications/inbound-responder.ts: it decides through THIS
+// file's arbitrateFollowUp and ledgers through arbitrationLedgerDetail, and keeps its executors (social composer / sender,
+// reply coach, content-safety screen, autonomy gate, Customer 360, the ad re-engagement door) out of every page that
+// reaches this module (test:proxy-graph-budget).
+
+// ── ruling 10: the PROMISED deliverable that has not been delivered (contract C4) ──────────────────────────────────────
+
+export type PromisedDeliverableAction = "delivered" | "delivery_failed" | "human_task" | "nothing_owed" | "refused" | "replayed"
+
+export interface PromisedDeliverableInput {
+  brokerageId: string
+  party: { kind: "lead" | "contact"; id: string }
+  /** One promise (the signal's subject), else every undelivered promise for the person. */
+  promiseId?: string | null
+  /** The channels the CALLER can deliver on for this person (else: the deliverer's own — the governed email, and the portal card when the contact has a sign-in). */
+  permitted?: readonly ArbiterChannel[] | null
+  now?: Date
+}
+
+export interface PromisedDeliverableResponse {
+  action: PromisedDeliverableAction
+  reason: string
+  promiseIds: string[]
+  channel: ArbiterChannel | null
+  decision: ArbiterDecision | null
+}
+
+/** Contract C4 (lane 146F, lib/lead-magnets/promised-deliverables.ts), PASSED BY THE CALLER — see respondToPromisedDeliverable. */
+export interface PromiseContract {
+  /** undeliveredPromisesFor — ALWAYS asked about ONE contact. */
+  undelivered: (p: { brokerageId: string; contactId: string; promiseId: string | null; now: Date }) => Promise<Array<{ id: string; status?: string | null; fulfilment?: string | null }>>
+  /** deliverPromised — the deliverer; ONLY it may mark a promise delivered (never this arbiter). */
+  deliver: (p: { brokerageId: string; promiseId: string }) => Promise<{ delivered: boolean; status?: string | null; reason?: string | null }>
+}
+
+export interface PromisedDeliverableDeps {
+  /** Contract C4, passed by the caller (required — absent is a refusal, never a guess). */
+  undelivered?: PromiseContract["undelivered"]
+  deliver?: PromiseContract["deliver"]
+  decide?: ArbiterDecide
+  policy?: FollowupPolicy
+  routeToAgent?: typeof routeToAgent
+  /** A contact with no agent: the brokerage's admins are told (lib/notifications/brokerage-admins.ts). */
+  notifyAdmins?: (p: { brokerageId: string; contactId: string; title: string; body: string }) => Promise<number>
+  ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
+}
+
+/** The channels contract C4's deliverer really sends on (lib/lead-magnets/promised-deliverables.ts deliverPromised: the
+ *  governed dispatchEmail, and the secure portal card when the person has a portal sign-in). It takes no channel argument —
+ *  the arbiter decides deliver-now vs a person, and the channel it names is recorded, never forced onto the deliverer. */
+function promiseDeliveryChannels(hasLogin: boolean): ArbiterChannel[] {
+  return hasLogin ? ["email", "in_app"] : ["email"]
+}
+
+/**
+ * THE HIGH-PRIORITY MOMENT (ruling 10, signal `lead_magnet_promise_undelivered`): something promised on a form has not reached
+ * the person. Priority "promised_deliverable" — deliver NOW (contract C4's deliverer) or hand it to a person; WAIT is never
+ * offered. Delivery is C4's deliverPromised (it confirms the asset exists and is approved and is the ONLY writer of
+ * "delivered"); a delivery that does not come back `delivered` is handed to a person in the same step. This decides and leaves
+ * evidence: one ledger row per (promise set, UTC day) — a retried signal replays, never delivers twice. Never throws.
+ *
+ * C4 records a promise only for a CONTACT (lib/kernel/lead-magnets.ts captureFormSubmission records it `if (contactId)`;
+ * lead_magnet_promises.contact_id → contacts.id), so a converted lead is answered as its contact (contract C2) and an
+ * unconverted lead has nothing owed. The C4 read is ALWAYS narrowed to one contact — never the tenant-wide list.
+ *
+ * C4 IS PASSED IN, NEVER IMPORTED HERE: this file is reached by every dashboard page (app/crm/page.tsx → workflows →
+ * enrollment-engine → lead-action-plan → here), and C4's deliverer pulls the whole lead-magnet capture + delivery stack
+ * (lib/kernel/lead-magnets.ts, the delivery runner, the booklet content …) — measured: app/crm/page.tsx 1297 → 1307 first-party
+ * modules, over test:proxy-graph-budget's 1300. The callers that already run beside C4 pass it: the inbound chain
+ * (lib/communications/inbound-record.ts — a person who writes in is answered on what they are owed first) and C4's own retry
+ * sweep / the signal tick (lane notes, Outside-lane).
+ */
+export async function respondToPromisedDeliverable(svc: { from: (t: string) => any }, input: PromisedDeliverableInput, deps: PromisedDeliverableDeps = {}): Promise<PromisedDeliverableResponse> {
+  const now = input.now ?? new Date()
+  const refused = (reason: string): PromisedDeliverableResponse => ({ action: "refused", reason, promiseIds: [], channel: null, decision: null })
+  try {
+    if (!input.brokerageId || !input.party?.id) return refused("no tenant / no person")
+    // ── who, tenant-pinned; a converted lead is answered as its contact (contract C2) ──
+    let contactId: string | null = input.party.kind === "contact" ? input.party.id : null
+    if (input.party.kind === "lead") {
+      const { data, error } = await svc.from("leads").select("id, contact_id").eq("id", input.party.id).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (error) return refused(`lead read refused: ${error.message}`)
+      if (!data) return refused("lead not in this brokerage")
+      const p = canonicalPartyFor(data as { id?: string | null; contact_id?: string | null })
+      if (p.type === "unresolved") return refused(p.reason)
+      if (p.type !== "contact") return { action: "nothing_owed", reason: "C4 records a promise only for a contact — an unconverted lead has none", promiseIds: [], channel: null, decision: null }
+      contactId = p.id
+    }
+    if (!contactId) return refused("no contact")
+    const { data: contact, error: contactErr } = await svc.from("contacts").select("id, agent_id, has_login").eq("id", contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+    if (contactErr) return refused(`contact read refused: ${contactErr.message}`)
+    if (!contact) return refused("contact not in this brokerage")
+    const contactAgentId = (contact as { agent_id?: string | null }).agent_id ?? null
+    const hasLogin = !!(contact as { has_login?: boolean | null }).has_login
+
+    // ── what is owed (contract C4 — one contact's promises, never the tenant's list) ──
+    const undelivered = deps.undelivered
+    const deliver = deps.deliver
+    if (!undelivered || !deliver) return refused("contract C4 (undeliveredPromisesFor / deliverPromised) was not passed by the caller — nothing is read, nothing is marked delivered")
+    const owed = (await undelivered({ brokerageId: input.brokerageId, contactId, promiseId: input.promiseId ?? null, now }))
+      .filter((r) => !input.promiseId || r.id === input.promiseId)
+    if (owed.length === 0) return { action: "nothing_owed", reason: "no undelivered promise for this person", promiseIds: [], channel: null, decision: null }
+    const promiseIds = owed.map((r) => r.id)
+
+    // ── the permitted ways to deliver: what the C4 deliverer really sends on, narrowed by the caller when it says so ──
+    const deliverable = promiseDeliveryChannels(hasLogin)
+    const permitted: ArbiterChannel[] = input.permitted && input.permitted.length > 0 ? deliverable.filter((c) => input.permitted!.includes(c)) : deliverable
+    const deliverOpt: ArbiterOption = { id: "deliver", kind: "communication", channels: permitted, why: ["the person asked for this on a form and has not received it", `permitted delivery: ${permitted.join(" / ") || "none"}`] }
+    const humanOpt: ArbiterOption = { id: "notify_human", kind: "agent_intervention", channels: ["human_task"], why: ["a person delivers it or explains the delay"] }
+    const facts: ArbiterFacts = {
+      subject: "contact",
+      relationship: { type: "contact", persona: null, hasAssignedAgent: !!contactAgentId },
+      intent: null,
+      history: { hoursSinceAnyTouch: null, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: null, portalEducationViews: null },
+      journey: { transactionStage: null, nextMilestone: null, openLessons: null, nextLesson: null },
+      preferences: [],
+      fatigueRisk: null,
+      localHour: null,
+      moment: { key: "promised_deliverable", intent: `${owed.length} promised deliverable(s) have not reached this person — deliver now or hand it to a person.`, daysSinceOpen: 0 },
+      blindSpots: owed.some((r) => r.fulfilment === "human") ? ["a promise a PERSON fulfils (an agent-prepared home value) is answered by that person — the system never fakes it"] : [],
+      urgency: "high",
+    }
+    const policy = deps.policy ?? (await (await import("./followup-policy")).loadFollowupPolicy(svc, input.brokerageId)).policy
+    const menu: ArbiterMenu = { menu: permitted.length > 0 ? [deliverOpt, humanOpt] : [humanOpt], locked: null }
+    const decision = await arbitrateFollowUp({ brokerageId: input.brokerageId, facts, menu, planned: permitted.length > 0 ? deliverOpt : humanOpt, policy, priority: "promised_deliverable" }, { decide: deps.decide })
+    const channel = decision.optionId === "deliver" ? (decision.channel && permitted.includes(decision.channel) ? decision.channel : permitted[0] ?? null) : null
+
+    // A person is told (the contact's agent; no agent → the brokerage's admins). Deduped per contact per day by routeToAgent.
+    const tellPerson = async (why: string): Promise<boolean> => {
+      if (contactAgentId) return (deps.routeToAgent ?? routeToAgent)(svc, { brokerageId: input.brokerageId, contactId: contactId!, agentId: contactAgentId, now, title: "Deliver what we promised", description: why })
+      const notify = deps.notifyAdmins ?? (async (p) => (await import("@/lib/notifications/brokerage-admins")).notifyBrokerageAdmins(svc as never, p.brokerageId, { type: "promise_undelivered", title: p.title, body: p.body, entityType: "contact", entityId: p.contactId, priority: "high" }))
+      return (await notify({ brokerageId: input.brokerageId, contactId: contactId!, title: "A promised deliverable has not reached a contact", body: why })) > 0
+    }
+
+    const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
+    let out: PromisedDeliverableResponse = { action: "replayed", reason: "this promise moment was already answered today — not acted on twice", promiseIds, channel, decision }
+    await ledger<PromisedDeliverableResponse>(
+      {
+        brokerageId: input.brokerageId, action: "lead_magnet.promise.deliver", actor: { type: "manager", managerKey: "ai_isa" },
+        subject: { type: "contact", id: contactId }, reasonCode: "LEAD_FIRST_RESPONSE", reasonDetail: decision.rationale.slice(0, 500),
+        cycle: `promise:${[...promiseIds].sort().join(",").slice(0, 200)}:${now.toISOString().slice(0, 10)}`, channel: channel ?? "human_task",
+        riskClass: "COMMUNICATION", systemSource: "promised_deliverable", policyKey: "followup_policy",
+        detail: { promise_ids: promiseIds, permitted, requested_party: input.party, arbitration: arbitrationLedgerDetail(decision, null) },
+      },
+      async () => {
+        if (channel) {
+          const results = await Promise.all(promiseIds.map((promiseId) => deliver({ brokerageId: input.brokerageId, promiseId })))
+          const failed = results.filter((r) => !r.delivered)
+          if (failed.length === 0) return (out = { action: "delivered", reason: `delivered (the C4 deliverer confirmed; arbiter's channel ${channel})`, promiseIds, channel, decision })
+          const why = `${failed.length} of ${results.length} promised deliverable(s) NOT delivered: ${failed.map((f) => `${f.status ?? "error"} — ${f.reason ?? "no reason"}`).join("; ").slice(0, 300)}`
+          const told = await tellPerson(why)
+          return (out = { action: "delivery_failed", reason: `${why} — ${told ? "a person was told" : "NOBODY could be told"}; the deliverer keeps them undelivered for its retry`, promiseIds, channel, decision })
+        }
+        const why = `Promised deliverable not received: ${decision.rationale}`
+        const told = await tellPerson(why)
+        return (out = { action: told ? "human_task" : "refused", reason: told ? why : `${why} — nobody could be told`, promiseIds, channel: null, decision })
+      },
+      {
+        settle: (r) => ({ status: r.action === "delivered" ? "executed" : r.action === "refused" || r.action === "delivery_failed" ? "failed" : "skipped", outcome: r.action, error: r.action === "refused" || r.action === "delivery_failed" ? r.reason : null }),
+        replay: () => out,
+      },
+      { client: svc as never },
+    )
+    return out
+  } catch (e) {
+    return refused(`threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+// ── ruling 7: the PLATFORM's own B2B prospect funnel is arbitrated ──────────────────────────────────────────────────────
+
+export interface ProspectFollowupArbitrationInput {
+  /** The deterministic ladder rung that released this prospect (lib/platform/prospect-followup.ts — the envelope stays code). */
+  rung: "intro" | "nudge"
+  facts: {
+    roleInterest: string | null
+    source: string | null
+    hoursSinceCreated: number | null
+    hoursSinceLastFollowup: number | null
+    followupCount: number
+    /** The prospect wrote back after our last touch (details.last_inbound_at — lib/communications/inbound-record.ts). */
+    repliedSinceLastTouch: boolean
+    /** Days this rung was already held by the arbiter (superadmin_audit_log platform_prospect.followup_wait). */
+    daysDeferred: number
+  }
+  policy?: FollowupPolicy
+  budget?: ArbiterBudget
+}
+
+export interface ProspectFollowupArbitration {
+  action: "send_now" | "wait" | "notify_staff"
+  waitHours: number | null
+  decision: ArbiterDecision | null
+  skippedReason: string | null
+}
+
+/** The platform's model call: NO tenant (brokerageId null — booked as platform spend), the same routed feature. */
+async function platformDecide(a: { system: string; prompt: string }): Promise<ArbiterRaw> {
+  const [{ generateObjectRouted }, { z }] = await Promise.all([import("@/lib/ai/models"), import("zod")])
+  const schema = z.object({ optionId: z.string(), channel: z.string().nullable(), format: z.string().nullable(), waitHours: z.number().nullable(), rationale: z.string(), evidence: z.array(z.string()), confidence: z.number() })
+  const { object } = await generateObjectRouted({ feature: "followup_arbitration", brokerageId: null, manager: "data_steward", system: a.system, prompt: a.prompt, schema, temperature: 0.2, maxTokens: 500 })
+  return object
+}
+
+/**
+ * The platform prospect ladder's say (ruling 7). The ENVELOPE stays deterministic in the sweep (status new / contacted, age,
+ * one nudge, the platform suppression list, an open human handoff or a requested callback). Inside it: a prospect who WROTE
+ * BACK is a person's job (locked — never the automated ladder); otherwise the model chooses send now / a bounded wait / hand to
+ * platform staff, from platform facts only — no tenant data, no cross-tenant memory (the prospect is not anyone's contact).
+ * An outage keeps the ladder's send. Never throws.
+ */
+export async function arbitrateProspectFollowup(a: ProspectFollowupArbitrationInput, deps: { decide?: ArbiterDecide } = {}): Promise<ProspectFollowupArbitration> {
+  try {
+    if (a.facts.repliedSinceLastTouch) {
+      return { action: "notify_staff", waitHours: null, decision: null, skippedReason: "the prospect wrote back — a person answers, never the automated ladder" }
+    }
+    const policy = a.policy ?? (await import("./followup-policy")).DEFAULT_FOLLOWUP_POLICY
+    const send: ArbiterOption = { id: "send_now", kind: "communication", channels: ["email"], why: [`the ladder releases the ${a.rung} (touch ${a.facts.followupCount + 1})`] }
+    const wait: ArbiterOption = { id: "wait", kind: "wait", channels: [], why: ["hold this touch for a bounded time if now is the wrong moment"] }
+    const human: ArbiterOption = { id: "notify_staff", kind: "agent_intervention", channels: ["human_task"], why: ["a platform sales person should take this prospect"] }
+    const overdue = a.facts.daysDeferred >= policy.arbiter.maxDeferDays
+    const menu: ArbiterMenu = { menu: overdue ? [send, human] : [send, wait, human], locked: null }
+    const facts: ArbiterFacts = {
+      subject: "lead",
+      relationship: { type: "platform_prospect", persona: a.facts.roleInterest, hasAssignedAgent: false },
+      intent: null,
+      history: { hoursSinceAnyTouch: a.facts.hoursSinceLastFollowup, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: a.facts.followupCount > 0 ? "email" : null, portalEducationViews: null },
+      journey: { transactionStage: null, nextMilestone: null, openLessons: null, nextLesson: null },
+      preferences: [],
+      fatigueRisk: null,
+      localHour: null,
+      moment: { key: `platform_prospect_${a.rung}`, intent: `A brokerage / agent who raised their hand for the platform (${a.facts.source ?? "unknown source"}, ${a.facts.hoursSinceCreated ?? "?"}h ago): the ${a.rung === "intro" ? "first introduction" : "one follow-up nudge"} is due. Respectful, never pushy; one nudge then silence.`, daysSinceOpen: a.facts.daysDeferred },
+      blindSpots: ["platform scope: no tenant data is read for a platform prospect"],
+    }
+    const decision = await arbitrateFollowUp({ brokerageId: "platform", facts, menu, planned: send, policy, budget: a.budget }, { decide: deps.decide ?? ((x) => platformDecide(x)) })
+    const action = decision.optionId === "wait" ? "wait" : decision.optionId === "notify_staff" ? "notify_staff" : "send_now"
+    return { action, waitHours: action === "wait" ? decision.waitHours : null, decision, skippedReason: null }
+  } catch (e) {
+    return { action: "send_now", waitHours: null, decision: null, skippedReason: `arbiter unavailable (${e instanceof Error ? e.message : String(e)}) — the ladder's send stands` }
+  }
 }

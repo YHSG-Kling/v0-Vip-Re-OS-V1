@@ -301,6 +301,34 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── Step 5b-email (wave 146, lane 146B — owner ruling 3): a CONTACT's EMAIL reply lands in the ONE history ──
+  // Step 5b lands a contact's TEXT; a contact's email through this shared door reached no thread and no inbox (Step 8b
+  // handles only a LEAD's email). Contract C1 (lib/communications/inbound-record.ts): messages on the contact's ONE thread,
+  // keyed on the provider's message id (a redelivery is a duplicate), then the sequence stop → intent → the arbiter's
+  // responder. A high-confidence opt-out is Step 7b's below (the same survivor), so it is not handed to the chain twice.
+  if (inbound.providerType !== "twilio" && entityType === "contact" && entityId && inbound.fromEmail && (inbound.text ?? inbound.subject ?? "").trim()) {
+    const optOutFirst = detectOptOutIntent(inbound.text ?? inbound.subject ?? "")
+    if (!(optOutFirst.isOptOut && optOutFirst.confidence === "high")) {
+      try {
+        const { processInboundCommunication } = await import("@/lib/communications/inbound-record")
+        const r = await processInboundCommunication({
+          brokerageId: inbound.brokerageId,
+          channel: "email",
+          provider: inbound.providerType,
+          providerRef: inbound.messageId ?? null,
+          party: { kind: "contact", id: entityId },
+          subject: inbound.subject ?? null,
+          body: (inbound.text ?? inbound.subject ?? "").trim(),
+          surface: inbound.providerType,
+          threadRef: { from_email: inbound.fromEmail, to_email: inbound.toEmail ?? null },
+        })
+        if (!r.record.recorded && !r.record.duplicate) console.error(`[InboundRouter] contact email NOT recorded: ${r.record.error ?? "unknown"}`)
+      } catch (err) {
+        console.error("[InboundRouter] contact email record failed (non-blocking):", err)
+      }
+    }
+  }
+
   // ── Step 5c: CREDIT THE SEQUENCE STEP THAT EARNED THIS REPLY ───────────────
   // `sequence_step_executions.replied_at` is the numerator of every per-channel
   // reply rate this OS computes — lib/campaign-sequences/channel-order-runner.ts

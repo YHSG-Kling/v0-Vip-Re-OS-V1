@@ -15,6 +15,10 @@
  *   G · ads          AD_PLATFORMS map onto real rows; `verified` never outruns the code (credential storable LIVE, writer = reader, a connector egress)
  *   H · TV           ONE TV provider; the gateway takes { topicId, assetId } and refuses an unapproved topic at stage AND at launch (contract C5)
  *   I · retired      no retired vendor in the matrix; the decommission set is still consumed
+ *   J · receive      (wave 146, lane 146B — contract C7, owner ruling 3) every channel and provider declares how it LISTENS
+ *                    (webhook / poll / none); every claimed ingress route exists and exports the handler; a documented
+ *                    receiver the code does not run is a stated gap, never a claim; the social / email doors land on the
+ *                    ONE inbound record (contract C1) — the spine's portal-table write and meta-dm's raw insert are gone
  *
  * Every absence assertion carries a POSITIVE CONTROL (CLAUDE.md §2). Blind spots are printed at the end.
  */
@@ -277,13 +281,78 @@ async function main() {
     check("POSITIVE CONTROL: the decommission set is non-empty (the check above could fail)", DECOMMISSIONED_PROVIDERS.size > 0)
   }
 
+  // ═════════════════════════════════════════════════════════════════════════════════════════════
+  section("J · receive truth — every channel and provider says how it LISTENS (contract C7, owner ruling 3)")
+  {
+    const VIA = new Set(["webhook", "poll", "none"])
+    const routeFile = (route: string) => `app${route}/route.ts`
+    /** A claimed ingress is real only if the route file exists AND (stripped) exports the handler its transport needs. */
+    const ingressReal = (route: string | undefined, via: string): boolean => {
+      if (!route) return false
+      const src = code(routeFile(route))
+      if (!src) return false
+      return via === "poll" ? /export\s+(async\s+)?function\s+GET\b|export\s+const\s+GET\b/.test(src) : /export\s+(async\s+)?function\s+POST\b|export\s+const\s+POST\b/.test(src)
+    }
+    check("POSITIVE CONTROL: the ingress finder refuses a route that does not exist and accepts one that does", !ingressReal("/api/webhooks/no-such-provider", "webhook") && ingressReal("/api/webhooks/meta-dm", "webhook"))
+    for (const c of CHANNELS) {
+      const r = CHANNEL_PROVIDER_TRUTH[c].receive
+      check(`${c}: receive declares supported / via / events / record`, !!r && VIA.has(r.via) && typeof r.supported === "boolean" && Array.isArray(r.events) && r.record.trim().length > 3)
+      check(`${c}: supported ⇔ via is not 'none' (a declaration never contradicts itself)`, r.supported === (r.via !== "none"))
+      if (r.supported) {
+        check(`${c}: the ${r.via} ingress ${r.route} exists and exports its handler (stripped source)`, ingressReal(r.route, r.via), r.route)
+        for (const extra of r.alsoRoutes ?? []) check(`${c}: also-route ${extra} exists`, !!code(routeFile(extra)), extra)
+        check(`${c}: a listening channel names the events it takes`, r.events.length > 0)
+      } else {
+        check(`${c}: a channel that does not listen says WHY (a gap) and claims no events`, r.events.length === 0 && r.gaps.length > 0)
+      }
+    }
+    // Per provider (PROVIDER_RECEIVE_TRUTH): code truth beside the vendor's documented capability.
+    const { PROVIDER_RECEIVE_TRUTH } = await import("../lib/providers/channel-provider-matrix")
+    for (const [p, t] of Object.entries(PROVIDER_RECEIVE_TRUTH)) {
+      check(`provider ${p}: a known channel, a valid transport on both sides, a primary source cited`, (CHANNELS as readonly string[]).includes(t.channel) && VIA.has(t.receive.via) && VIA.has(t.documented.via) && t.documented.source.trim().length > 10)
+      check(`provider ${p}: receive.supported ⇔ via is not 'none'`, t.receive.supported === (t.receive.via !== "none"))
+      if (t.receive.supported) check(`provider ${p}: its ingress ${t.receive.route} exists and exports its handler`, ingressReal(t.receive.route, t.receive.via), t.receive.route)
+      if (t.documented.via !== "none" && !t.receive.supported) check(`provider ${p}: documented (${t.documented.via}) but not received — the gap is STATED, never claimed`, !!t.gap && t.gap.length > 10)
+    }
+    // Every provider a non-ads channel SENDS through declares its receive side (ads platforms: lane 146E publishes theirs).
+    for (const c of CHANNELS.filter((x) => x !== "ads")) {
+      for (const p of CHANNEL_PROVIDER_TRUTH[c].providers) check(`${c}/${p}: the sending provider declares its receive side`, p in PROVIDER_RECEIVE_TRUTH)
+    }
+    check("voice drop is declared NOT listening (no c_dispo_url is sent, no route receives it) — the truth source stays null",
+      !CHANNEL_PROVIDER_TRUTH.voice_drop.receive.supported && /source:\s*null/.test(code("lib/outcomes/reconciliation.ts").slice(code("lib/outcomes/reconciliation.ts").indexOf("voice_drop: {"))) && !/c_dispo_url/.test(code("lib/voicedrop/orchestrate-voicedrop-send.ts")))
+    check("telnyx / bandwidth are declared NOT listening — the inbound router normalizes Twilio only (stripped source)",
+      !PROVIDER_RECEIVE_TRUTH.telnyx.receive.supported && !PROVIDER_RECEIVE_TRUTH.bandwidth.receive.supported && !/telnyx|bandwidth/i.test(code("lib/providers/inbound-router.ts")))
+    check("POSITIVE CONTROL: the router text DOES name the provider it normalizes (the absence above is not a blind read)", /twilio/i.test(code("lib/providers/inbound-router.ts")))
+
+    // THE DOORS land on the ONE inbound record (contract C1) — read from stripped source.
+    const doors: Array<[string, RegExp]> = [
+      ["app/api/webhooks/meta-dm/route.ts", /processInboundCommunication\(/],
+      ["app/api/webhooks/meta-dm/route.ts", /ingestInboundSocialEvents\(/],
+      ["app/api/webhooks/whatsapp/route.ts", /processInboundCommunication\(/],
+      ["app/api/webhooks/linkedin/route.ts", /processInboundCommunication\(/],
+      ["app/api/webhooks/linkedin/route.ts", /ingestInboundSocialEvents\(/],
+      ["app/api/webhooks/twitter/route.ts", /processInboundCommunication\(/],
+      ["app/api/webhooks/twitter/route.ts", /ingestInboundSocialEvents\(/],
+      ["app/api/webhooks/inbound-mail/route.ts", /processInboundCommunication\(/],
+      ["app/api/providers/inbound/route.ts", /processInboundCommunication\(/],
+    ]
+    for (const [f, re] of doors) check(`${f} calls ${re.source.replace(/\\\(/, "")} (stripped source)`, re.test(code(f)))
+    for (const f of ["app/api/webhooks/whatsapp/route.ts", "app/api/webhooks/linkedin/route.ts", "app/api/webhooks/twitter/route.ts"]) {
+      check(`${f} no longer writes a social DM to the PORTAL table through the spine (ingestMessageService)`, !/ingestMessageService/.test(code(f)))
+    }
+    check("meta-dm no longer inserts its own inbound messages row (the record writes it, once, keyed on message.mid)", !/from\("messages"\)\s*\.insert/.test(code("app/api/webhooks/meta-dm/route.ts")) && /mid/.test(code("app/api/webhooks/meta-dm/route.ts")))
+    check("POSITIVE CONTROL: the insert finder sees the record's own messages insert", /from\("messages"\)\.insert/.test(code("lib/communications/inbound-record.ts").replace(/\s+/g, "")))
+  }
+
   console.log(`\n${"═".repeat(72)}`)
   console.log(`BLIND SPOTS (published beside the number):
   · readiness is driven with an EMPTY tenant + in-memory rows; a live tenant's rows are not read here (they are 0 live today).
   · "configured?" for platform keys is the env presence at runtime — this sandbox holds none; the live deployment's env was not read (Vercel env listing refused, 403).
   · a tenant-stored sendgrid credential still reads live_connected on the readiness scan though no sender reads it (lane notes, Still open).
   · AD_PLATFORMS.verified covers code + contract; no live launch has happened on any platform (no tenant ad credential exists).
-  · the egress finder reads connector: "<name>" literals; a provider reached through an SDK without the gateway would be invisible to section C (test:egress-coverage owns that census).`)
+  · the egress finder reads connector: "<name>" literals; a provider reached through an SDK without the gateway would be invisible to section C (test:egress-coverage owns that census).
+  · J proves an ingress route EXISTS and exports its handler; that the provider's console points at it (and that its entitlement — X Account Activity, LinkedIn Community Management, Meta app review — is granted) is WAITING_EXTERNAL and not provable from code.
+  · J's documented-capability column cites the vendor's primary source as read on 2026-10-29; a vendor that changes its webhooks later is not re-read here. The ads rows are lane 146E's to publish (exempt from the per-provider receive requirement).`)
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail) { console.log("\nFAILURES:"); for (const f of failures) console.log(`  · ${f}`); console.log(" ❌ CHANNEL_PROVIDER_MATRIX_FAIL"); process.exit(1) }
   console.log(" ✅ CHANNEL_PROVIDER_MATRIX_PASS — every channel's provider is the one the code sends through, and the TV gateway refuses an unapproved topic")

@@ -131,7 +131,9 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         const made: Row[] = []
         for (const r of inserted ?? []) {
           // The modelled UNIQUE (opts.unique): a duplicate key is refused 23505, the batch lands nothing further.
-          const dup = (opts.unique?.[table] ?? []).find((key) => key.every((c) => r[c] !== undefined && r[c] !== null) && rows.some((x) => key.every((c) => x[c] === r[c])))
+          // Wave 146 (lane 146B): a key column may be a JSON text path (`metadata->>provider_ref`) — the partial unique
+          // indexes m488 / m876 key on one; `val` reads a plain column exactly as before.
+          const dup = (opts.unique?.[table] ?? []).find((key) => key.every((c) => val(r, c) !== undefined && val(r, c) !== null) && rows.some((x) => key.every((c) => val(x, c) === val(r, c))))
           if (dup) {
             writes.push({ table, op: "insert", payload: r, matched: 0 })
             return { data: null, error: { message: `duplicate key value violates unique constraint "${table}_${dup.join("_")}_key"`, code: "23505" } }
