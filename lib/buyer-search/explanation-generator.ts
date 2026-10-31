@@ -12,6 +12,9 @@
 import type { ParsedBuyerIntent } from './intent-parser'
 import type { PersonaProfile } from './persona-inference'
 import type { ListingProfile } from '@/lib/property-matching'
+import type { BuyerCriteria, CriteriaField, CriteriaProvenanceSource } from './buyer-criteria'
+import { provenanceOf } from './buyer-criteria'
+import type { LifestyleAsk } from './conversation-criteria'
 
 export interface BuyerFacingExplanation {
   headline: string // Short, compelling match reason
@@ -65,8 +68,11 @@ export function generateMatchExplanation(
 
   // Bedroom bullet
   if (intent.minBeds && listing.bedrooms && listing.bedrooms >= intent.minBeds) {
+    // Wave 147C: was "for your growing family" when intent.lifestyle === 'family' — familial
+    // characterization authored by US (the parser never sets that lifestyle any more, and the
+    // sanitizer would rewrite it anyway). The bullet now states the fact and the ask.
     if (persona.persona === 'first_time_buyer' || persona.persona === 'move_up_buyer') {
-      bullets.push(`${listing.bedrooms} bedrooms for your ${intent.lifestyle === 'family' ? 'growing family' : 'needs'}`)
+      bullets.push(`${listing.bedrooms} bedrooms — at least the ${intent.minBeds} you asked for`)
     } else if (persona.persona === 'investor') {
       bullets.push(`${listing.bedrooms} beds – strong rental appeal`)
     } else {
@@ -110,9 +116,11 @@ export function generateMatchExplanation(
     }
   }
 
-  // Urgency-based bullet
+  // Urgency-based bullet. Wave 147C: was 'Available now – move-in ready' — "move-in ready" is a
+  // CONDITION claim no listing field carries (an invented listing fact, C10 rule 7). The status is
+  // the fact we hold, so the status is what we say.
   if (intent.urgency === 'high' && listing.status === 'active') {
-    bullets.push('Available now – move-in ready')
+    bullets.push('Listed as active right now')
   }
 
   // Limit to 5 bullets max
@@ -169,7 +177,7 @@ function generateStrongMatchHeadline(
     case 'relocation':
       return `Perfect fit for your move to ${location}`
     case 'downsizer':
-      return `Ideal low-maintenance home in ${location}`
+      return `Strong downsizing match in ${location}`
     case 'luxury_buyer':
       return `Premium property in ${location}`
     case 'move_up_buyer':
@@ -201,7 +209,7 @@ function generateGoodMatchHeadline(
     case 'relocation':
       return `Well-located ${beds}${type} for your move`
     case 'downsizer':
-      return `Comfortable ${beds}${type} with easy upkeep`
+      return `${beds}${type} worth a look for downsizing`
     case 'luxury_buyer':
       return `Quality ${beds}${type} in desirable location`
     case 'move_up_buyer':
@@ -241,7 +249,7 @@ function generateViableMatchHeadline(
     case 'bargain_hunter':
       return `${type} in ${location} worth a closer look at the price`
     case 'downsizer':
-      return `Low-maintenance ${type} in ${location} worth considering`
+      return `${type} in ${location} worth considering for downsizing`
     case 'first_time_buyer':
       return `${type} in ${location} worth touring as you compare`
     default:
@@ -273,41 +281,49 @@ function generateNarrative(
     intro = `This property `
   }
 
-  // Connection - Link to their needs
+  // Connection - Link to their needs.
+  //
+  // WAVE 147C — NO INVENTED LISTING FACTS (contract C10, rule 7). The closings that stood here
+  // asserted things no listing field carries: "move-in ready", "a neighborhood that's perfect for
+  // building your future", "the area shows consistent demand", "convenient to major employment
+  // centers and offers immediate availability", "every detail reflects uncompromising standards",
+  // "strong resale value", "your family's evolving needs" (a familial characterization we author).
+  // Each persona keeps its TONE; every sentence is now either a fact we hold (type, place) or a
+  // next step the buyer can take to find out for themselves.
   switch (persona.persona) {
     case 'first_time_buyer':
-      connection = `this ${type} ${location} offers everything you need to confidently start homeownership. `
-      closing = `It's move-in ready and positioned in a neighborhood that's perfect for building your future.`
+      connection = `this ${type} ${location} is worth a look as a first home. `
+      closing = `A tour is the best way to see how it feels in person.`
       break
 
     case 'investor':
-      connection = `this ${type} ${location} presents a solid investment opportunity. `
-      closing = `The fundamentals are strong, and the area shows consistent demand.`
+      connection = `this ${type} ${location} may be worth underwriting. `
+      closing = `Your agent can pull rents and recent sales nearby so you can run the numbers.`
       break
 
     case 'relocation':
-      connection = `this ${type} ${location} will help you settle in quickly. `
-      closing = `It's convenient to major employment centers and offers immediate availability.`
+      connection = `this ${type} ${location} is on your list for the move. `
+      closing = `A virtual tour is a good first look from a distance.`
       break
 
     case 'downsizer':
-      connection = `this ${type} ${location} provides the comfort and convenience you're seeking. `
-      closing = `Enjoy easy maintenance and access to community amenities.`
+      connection = `this ${type} ${location} is one to consider. `
+      closing = `Ask your agent about upkeep, HOA rules and any shared amenities.`
       break
 
     case 'luxury_buyer':
-      connection = `this ${type} ${location} delivers the quality and exclusivity you expect. `
-      closing = `Every detail reflects uncompromising standards.`
+      connection = `this ${type} ${location} is on your shortlist. `
+      closing = `A private showing is the best way to judge the finishes.`
       break
 
     case 'move_up_buyer':
-      connection = `this ${type} ${location} offers the space and upgrades you've been looking for. `
-      closing = `It's positioned to meet your family's evolving needs while maintaining strong resale value.`
+      connection = `this ${type} ${location} could give you more room. `
+      closing = `See whether the space works for how you live.`
       break
 
     case 'bargain_hunter':
-      connection = `this ${type} ${location} is priced competitively. `
-      closing = `There's potential here, and the numbers work in your favor.`
+      connection = `this ${type} ${location} is worth checking on price. `
+      closing = `Your agent can pull recent sales to test the asking price.`
       break
 
     default:
@@ -469,4 +485,287 @@ function formatPropertyType(type: string | null): string {
   }
 
   return typeMap[type] || type
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// EXPLAINABLE MATCH — { matches, misses, unknowns } (wave 147, lane 147C, contract C10)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The persona copy above says WHY a buyer might like a home. This says HOW the home lines
+// up with what the buyer actually asked for, item by item, and it is deterministic: the
+// matcher compares the listing's own data to the buyer's criteria and nothing else.
+//
+//   match   — the listing's data satisfies the ask ("Listed at $575k").
+//   miss    — the listing's data contradicts the ask ("3 bedrooms — you asked for 4").
+//   unknown — the listing data cannot answer the ask. ALWAYS said, never guessed:
+//             absence of a mention is not absence of the feature, and no feed measures
+//             natural light, a commute, or how quiet a street is.
+//
+// Lifestyle asks are answered ONLY where accurate source data exists. Today that is the
+// listing's own structured columns (has_pool, has_septic, hoa_dues, lot_size) and the
+// listing agent's public remarks — which are a REPORT, attributed as such ("the listing
+// description mentions …"), never restated as verified fact.
+
+export type FitSource = 'listing' | 'listing_remarks' | 'none'
+
+export interface FitItem {
+  /** The criteria field (or `lifestyle:<kind>`) this item answers. */
+  field: CriteriaField | `lifestyle:${string}`
+  /** The buyer's ask in plain words ("Under $600k", "Natural light"). */
+  ask: string
+  /** What the data says, or why it cannot say. */
+  detail: string
+  source: FitSource
+  /** said | inferred | default — said asks lead every bucket. */
+  provenance: CriteriaProvenanceSource | null
+}
+
+export interface CriteriaFit {
+  matches: FitItem[]
+  misses: FitItem[]
+  unknowns: FitItem[]
+}
+
+/** The listing facts the fit reads — platform rows carry more of them than an external feed row. */
+export interface ListingFitFacts {
+  price: number | null
+  bedrooms: number | null
+  bathrooms: number | null
+  square_feet?: number | null
+  property_type: string | null
+  city: string | null
+  zip?: string | null
+  status?: string | null
+  has_pool?: boolean | null
+  has_septic?: boolean | null
+  hoa_dues?: number | null
+  lot_size?: number | null
+  year_built?: number | null
+  public_remarks?: string | null
+  features?: string[] | null
+}
+
+function money(n: number): string {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}M`
+  if (n >= 10_000) return `$${Math.round(n / 1000)}k`
+  return `$${n.toLocaleString('en-US')}`
+}
+
+/** The phrase in the remarks that supports an ask, quoted back — or null. */
+function remarksMention(remarks: string | null | undefined, pattern: RegExp): string | null {
+  if (!remarks) return null
+  const m = pattern.exec(remarks)
+  return m ? m[0].trim() : null
+}
+
+const LIGHT_IN_REMARKS = /\b(natural light|sun[- ]?(?:filled|drenched|lit)|light[- ]filled|bright and airy|skylights?|south[- ]facing|walls? of windows|floor[- ]to[- ]ceiling windows)\b/i
+const OPEN_PLAN_IN_REMARKS = /\bopen (?:floor ?plan|concept|layout)\b/i
+const SINGLE_LEVEL_IN_REMARKS = /\b(single[- ]stor(?:y|ey)|one[- ]stor(?:y|ey)|single[- ]level|one[- ]level|ranch)\b/i
+const PRIMARY_MAIN_IN_REMARKS = /\b(?:primary|master)(?: bedroom| suite)?\s+(?:on|down)\s+(?:the\s+)?(?:main|first|ground)\b/i
+const SPLIT_IN_REMARKS = /\bsplit (?:floor ?plan|bedrooms?)\b/i
+const ACCESS_IN_REMARKS = /\b(wheelchair[- ]accessible|step[- ]free|zero[- ]step|no[- ]step entry|ada[- ]compliant|wide doorways|elevator)\b/i
+const QUIET_IN_REMARKS = /\b(cul[- ]de[- ]sac|quiet street|low[- ]traffic)\b/i
+
+type Bucketed = { bucket: keyof CriteriaFit; item: FitItem }
+
+function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProvenanceSource | null): Bucketed {
+  const field = `lifestyle:${ask.kind}` as const
+  const askText = ask.label.charAt(0).toUpperCase() + ask.label.slice(1)
+  const reported = (phrase: string): Bucketed => ({ bucket: 'matches', item: { field, ask: askText, detail: `The listing description mentions "${phrase}" (the listing agent's words, not an inspection)`, source: 'listing_remarks', provenance: prov } })
+  const unknown = (detail: string): Bucketed => ({ bucket: 'unknowns', item: { field, ask: askText, detail, source: 'none', provenance: prov } })
+
+  switch (ask.kind) {
+    case 'natural_light': {
+      if (ask.direction === 'less') return unknown("How much light the rooms get isn't in the listing data — photos and a visit will tell you")
+      const hit = remarksMention(l.public_remarks, LIGHT_IN_REMARKS)
+      return hit ? reported(hit) : unknown("Natural light isn't something the listing data measures — photos and a visit at the time of day you care about will tell you")
+    }
+    case 'layout': {
+      const pattern = ask.label === 'open floor plan' ? OPEN_PLAN_IN_REMARKS
+        : ask.label === 'single level' ? SINGLE_LEVEL_IN_REMARKS
+        : ask.label.startsWith('primary') ? PRIMARY_MAIN_IN_REMARKS
+        : SPLIT_IN_REMARKS
+      const hit = remarksMention(l.public_remarks, pattern)
+      return hit ? reported(hit) : unknown(`The listing data doesn't say whether it has a ${ask.label} — the floor plan or a tour will answer it`)
+    }
+    case 'accessibility': {
+      const hit = remarksMention(l.public_remarks, ACCESS_IN_REMARKS)
+      return hit ? reported(hit) : unknown("Accessibility features aren't confirmed in the listing data — your agent can ask the listing agent for specifics")
+    }
+    case 'commute':
+      return unknown(ask.target
+        ? `Drive time to ${ask.target} isn't calculated here yet — check a map from the address at the hour you'd travel, or ask your agent`
+        : "Commute time isn't calculated here yet — tell me where the commute is to, and check a map from the address")
+    case 'nearby_amenity':
+      return unknown(ask.target
+        ? `Whether ${ask.target} ${/s$/.test(ask.target) ? 'are' : 'is'} close by isn't in the listing data — a map from the address will show you`
+        : "Walkability isn't in the listing data — a map from the address will show you what's nearby")
+    case 'outdoor_space':
+      return unknown(l.lot_size != null
+        ? `The lot size is listed as ${l.lot_size} (units as the listing reports them); whether the yard suits you is best judged in person`
+        : "Yard size isn't in the listing data — photos and a visit will show you")
+    case 'quiet_setting': {
+      const hit = remarksMention(l.public_remarks, QUIET_IN_REMARKS)
+      return hit ? reported(hit) : unknown("How busy the street is isn't in the listing data — drive by at rush hour before you decide")
+    }
+  }
+}
+
+/** Feature asks with a structured column; anything else is answered from remarks or left unknown. */
+function featureFit(feature: string, l: ListingFitFacts, prov: CriteriaProvenanceSource | null): Bucketed {
+  const f = feature.toLowerCase()
+  const ask = `Has ${f}`
+  const item = (detail: string, source: FitSource): FitItem => ({ field: 'mustHaveFeatures', ask, detail, source, provenance: prov })
+  if (/\bpool\b/.test(f) && typeof l.has_pool === 'boolean') {
+    return l.has_pool ? { bucket: 'matches', item: item('The listing data shows a pool', 'listing') } : { bucket: 'misses', item: item('The listing data shows no pool', 'listing') }
+  }
+  if (l.features?.some((x) => x.toLowerCase().includes(f))) return { bucket: 'matches', item: item(`Listed feature: ${f}`, 'listing') }
+  const esc = f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const hit = remarksMention(l.public_remarks, new RegExp(`\\b${esc}s?\\b`, 'i'))
+  if (hit) return { bucket: 'matches', item: item(`The listing description mentions "${hit}"`, 'listing_remarks') }
+  return { bucket: 'unknowns', item: item('Not in the listing data — not mentioned is not the same as missing, so ask before you rule it out', 'none') }
+}
+
+function dealBreakerFit(db: string, l: ListingFitFacts, prov: CriteriaProvenanceSource | null): Bucketed {
+  const ask = `No ${db}`
+  const item = (detail: string, source: FitSource): FitItem => ({ field: 'dealBreakers', ask, detail, source, provenance: prov })
+  const type = (l.property_type ?? '').toLowerCase()
+  switch (db) {
+    case 'hoa':
+      if (l.hoa_dues == null) return { bucket: 'unknowns', item: item('HOA dues are not in the listing data — confirm before you tour', 'none') }
+      return l.hoa_dues > 0 ? { bucket: 'misses', item: item(`HOA dues listed at ${money(l.hoa_dues)}`, 'listing') } : { bucket: 'matches', item: item('The listing reports no HOA dues', 'listing') }
+    case 'pool':
+      if (typeof l.has_pool !== 'boolean') return { bucket: 'unknowns', item: item('The listing data does not say whether there is a pool', 'none') }
+      return l.has_pool ? { bucket: 'misses', item: item('The listing data shows a pool', 'listing') } : { bucket: 'matches', item: item('The listing data shows no pool', 'listing') }
+    case 'septic':
+      if (typeof l.has_septic !== 'boolean') return { bucket: 'unknowns', item: item('Sewer vs septic is not in the listing data', 'none') }
+      return l.has_septic ? { bucket: 'misses', item: item('The listing data shows a septic system', 'listing') } : { bucket: 'matches', item: item('The listing data shows no septic system', 'listing') }
+    case 'condo':
+    case 'townhouse':
+      if (!type) return { bucket: 'unknowns', item: item('The property type is not in the listing data', 'none') }
+      return type.includes(db) ? { bucket: 'misses', item: item(`It is a ${db}`, 'listing') } : { bucket: 'matches', item: item(`It is a ${formatPropertyType(type)}`, 'listing') }
+    default:
+      return { bucket: 'unknowns', item: item(`Whether it has ${db === 'busy road' ? 'a busy road out front' : `a ${db}`} isn't in the listing data`, 'none') }
+  }
+}
+
+/**
+ * PURE. How one listing lines up with the buyer's criteria — every ask lands in exactly one
+ * bucket, and an ask the data cannot answer is an UNKNOWN with a plain sentence saying so.
+ * Said asks are listed before inferred ones in each bucket.
+ */
+export function explainCriteriaFit(listing: ListingFitFacts, criteria: BuyerCriteria): CriteriaFit {
+  const fit: CriteriaFit = { matches: [], misses: [], unknowns: [] }
+  const add = (b: Bucketed) => fit[b.bucket].push(b.item)
+  const p = (f: CriteriaField) => provenanceOf(criteria, f)
+  const it = (bucket: keyof CriteriaFit, field: CriteriaField, ask: string, detail: string, source: FitSource) =>
+    add({ bucket, item: { field, ask, detail, source, provenance: p(field) } })
+
+  if (criteria.maxPrice != null) {
+    const ask = `Under ${money(criteria.maxPrice)}`
+    if (listing.price == null) it('unknowns', 'maxPrice', ask, "The price isn't listed", 'none')
+    else if (listing.price <= criteria.maxPrice) it('matches', 'maxPrice', ask, `Listed at ${money(listing.price)}`, 'listing')
+    else it('misses', 'maxPrice', ask, `Listed at ${money(listing.price)} — ${money(listing.price - criteria.maxPrice)} over your top number`, 'listing')
+  }
+  if (criteria.minPrice != null && listing.price != null && listing.price < criteria.minPrice) {
+    it('misses', 'minPrice', `Over ${money(criteria.minPrice)}`, `Listed at ${money(listing.price)} — below the range you gave`, 'listing')
+  }
+  if (criteria.minBeds != null) {
+    const ask = `${criteria.minBeds}+ bedrooms`
+    if (listing.bedrooms == null) it('unknowns', 'minBeds', ask, "The bedroom count isn't listed", 'none')
+    else if (listing.bedrooms >= criteria.minBeds) it('matches', 'minBeds', ask, `${listing.bedrooms} bedrooms`, 'listing')
+    else it('misses', 'minBeds', ask, `${listing.bedrooms} bedrooms — you asked for ${criteria.minBeds}`, 'listing')
+  }
+  if (criteria.minBaths != null) {
+    const ask = `${criteria.minBaths}+ bathrooms`
+    if (listing.bathrooms == null) it('unknowns', 'minBaths', ask, "The bathroom count isn't listed", 'none')
+    else if (listing.bathrooms >= criteria.minBaths) it('matches', 'minBaths', ask, `${listing.bathrooms} bathrooms`, 'listing')
+    else it('misses', 'minBaths', ask, `${listing.bathrooms} bathrooms — you asked for ${criteria.minBaths}`, 'listing')
+  }
+  if (criteria.cities.length > 0 || criteria.zipCodes.length > 0) {
+    const ask = `In ${[...criteria.cities, ...criteria.zipCodes].join(' / ')}`
+    const field: CriteriaField = criteria.cities.length > 0 ? 'cities' : 'zipCodes'
+    const cityHit = !!listing.city && criteria.cities.some((c) => c.toLowerCase() === listing.city!.toLowerCase())
+    const zipHit = !!listing.zip && criteria.zipCodes.includes(listing.zip)
+    if (cityHit || zipHit) it('matches', field, ask, `In ${cityHit ? listing.city : listing.zip}`, 'listing')
+    else if (!listing.city && !listing.zip) it('unknowns', field, ask, "The location isn't in the listing data", 'none')
+    else it('misses', field, ask, `In ${listing.city ?? listing.zip}`, 'listing')
+  }
+  if (criteria.propertyTypes.length > 0) {
+    const ask = criteria.propertyTypes.map((t) => formatPropertyType(t)).join(' or ')
+    if (!listing.property_type) it('unknowns', 'propertyTypes', ask, "The property type isn't listed", 'none')
+    else if (criteria.propertyTypes.includes(listing.property_type)) it('matches', 'propertyTypes', ask, `A ${formatPropertyType(listing.property_type)}`, 'listing')
+    else it('misses', 'propertyTypes', ask, `A ${formatPropertyType(listing.property_type)}`, 'listing')
+  }
+  for (const f of criteria.mustHaveFeatures) add(featureFit(f, listing, p('mustHaveFeatures')))
+  for (const db of criteria.dealBreakers) add(dealBreakerFit(db, listing, p('dealBreakers')))
+  for (const ask of criteria.lifestyle ?? []) add(lifestyleFit(ask, listing, p('lifestyle')))
+
+  const rank = (i: FitItem) => (i.provenance === 'said' ? 0 : i.provenance === 'inferred' ? 1 : 2)
+  for (const k of ['matches', 'misses', 'unknowns'] as const) fit[k].sort((a, b) => rank(a) - rank(b))
+  return fit
+}
+
+// ─── Validators for any explanation DRAFT (the model-written narration's gate) ──
+
+/** PURE. Every number in a draft must appear in the facts it was given (no invented figures). */
+export function numbersAreGrounded(text: string, facts: string): boolean {
+  const norm = (s: string) => s.replace(/[$,]/g, '')
+  const factText = norm(facts)
+  for (const m of norm(text).matchAll(/\d+(?:\.\d+)?/g)) {
+    if (!factText.includes(m[0])) return false
+  }
+  return true
+}
+
+/** Words that would restate an UNKNOWN ask as if the listing had answered it. */
+const UNKNOWN_KIND_WORDS: Record<string, RegExp> = {
+  'lifestyle:natural_light': /\b(light|bright|sunny|sun)\b/i,
+  'lifestyle:commute': /\b(commute|drive time|minutes? (?:to|from))\b/i,
+  'lifestyle:nearby_amenity': /\b(walk(?:able|ing)?|nearby|close to|near)\b/i,
+  'lifestyle:quiet_setting': /\b(quiet|peaceful|traffic)\b/i,
+  'lifestyle:outdoor_space': /\b(yard|lawn|garden)\b/i,
+  'lifestyle:accessibility': /\b(accessible|step[- ]free|wheelchair)\b/i,
+  'lifestyle:layout': /\b(open (?:floor ?plan|concept)|single[- ]level|one[- ]story)\b/i,
+}
+
+/** PURE. Does a draft speak to an ask the fit marked UNKNOWN? Returns that ask, or null. */
+export function restatesUnknown(text: string, fit: CriteriaFit): string | null {
+  for (const u of fit.unknowns) {
+    const re = UNKNOWN_KIND_WORDS[u.field as string]
+    if (re && re.test(text)) return u.ask
+  }
+  return null
+}
+
+/**
+ * PURE. The explanation in the voice of a knowledgeable neighbour — built only from the fit,
+ * so it can say nothing the data does not. The unknowns sentence is ALWAYS present when there
+ * are unknowns: the buyer is told what the listing cannot tell them.
+ */
+export function composeNeighbourlyExplanation(
+  fit: CriteriaFit,
+  listingLabel: string,
+): { headline: string; narrative: string; unknownsSentence: string | null } {
+  const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
+  const said = fit.matches.filter((m) => m.provenance === 'said')
+  const lead = (said.length ? said : fit.matches).slice(0, 3)
+  const headline = fit.misses.length === 0 && fit.matches.length > 0
+    ? `${listingLabel} lines up with what you asked for`
+    : fit.matches.length > 0 ? `${listingLabel} fits part of your list` : `${listingLabel} only partly fits`
+  const parts: string[] = []
+  if (lead.length > 0) {
+    parts.push(`Here's how ${listingLabel} lines up with what you told me: ${lead.map((m) => `${lower(m.ask)} — ${lower(m.detail)}`).join('; ')}.`)
+  } else {
+    parts.push(`${listingLabel} came up, but the listing data doesn't confirm any of your asks yet.`)
+  }
+  if (fit.misses.length > 0) {
+    const extra = fit.misses.length - 1
+    parts.push(`One thing to know: ${lower(fit.misses[0].detail)}${extra > 0 ? `, and ${extra} more ${extra === 1 ? "ask doesn't" : "asks don't"} line up` : ''}.`)
+  }
+  parts.push(fit.matches.length > 0 ? 'If it looks right, I can ask your agent to set up a tour.' : 'Your agent can tell you more before you decide whether it is worth a visit.')
+  const unknownsSentence = fit.unknowns.length > 0
+    ? `What I can't tell you from the listing: ${fit.unknowns.map((u) => lower(u.ask)).join(', ')}. Worth checking in person or asking your agent.`
+    : null
+  return { headline, narrative: parts.join(' '), unknownsSentence }
 }

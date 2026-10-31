@@ -47,9 +47,17 @@ import {
   criteriaGaps,
   mergeModelCriteria,
   unsearchableAsks,
+  extractLifestyleAsks,
+  detectStatedDealBreakers,
+  detectPriorityShift,
+  clarifyingQuestions,
+  LIFESTYLE_KINDS,
   type ConversationCriteria,
   type CriteriaGap,
   type ModelCriteria,
+  type LifestyleAsk,
+  type LifestyleKind,
+  type ClarifyingQuestion,
 } from "./conversation-criteria"
 
 export interface ParsedBuyerCriteria {
@@ -66,6 +74,15 @@ export interface ParsedBuyerCriteria {
   /** Plain sentences for the conversation: asks no feed can filter on (school
    *  quality), or why the model assist did not run. */
   notes: string[]
+  /** Wave 147C (C10): the buyer's lifestyle asks (natural light, commute, layout, …),
+   *  each with their literal words. Answered later only from source data. */
+  lifestyle: LifestyleAsk[]
+  /** Wave 147C: what they said they do NOT want ("no HOA", "not a condo"). */
+  dealBreakers: string[]
+  /** Wave 147C: a stated reprioritisation ("light matters more than the yard now"). */
+  priority: { up: LifestyleKind | null; down: LifestyleKind | null }
+  /** Wave 147C: "what you didn't say" — the next questions, in search-impact order. */
+  clarifications: ClarifyingQuestion[]
 }
 
 export interface ParseBuyerCriteriaContext {
@@ -89,14 +106,50 @@ const MODEL_SCHEMA = z.object({
   zipCodes: z.array(z.string()).nullable().describe("Five-digit ZIP codes the buyer wrote"),
   features: z.array(z.string()).nullable().describe("Physical home features the buyer asked for, in their words (yard, pool, garage, office)"),
   listingType: z.enum(["sale", "rent"]).nullable().describe("'rent' only if the buyer said they want to rent/lease"),
+  // Wave 147C (C10): the buyer's own lifestyle asks. `phrase` must be copied verbatim from the
+  // message — the merge below drops any phrase the buyer's words do not contain.
+  lifestyle: z.array(z.object({
+    kind: z.enum(LIFESTYLE_KINDS),
+    phrase: z.string().describe("The buyer's exact words for this ask, copied verbatim"),
+    direction: z.enum(["more", "less", "must", "avoid"]),
+    target: z.string().nullable().describe("A named place or amenity the buyer gave (e.g. 'Medical Center', 'parks'), else null"),
+  })).nullable(),
 })
 
+/**
+ * THE PARSING PROMPT (wave 147C — preamble rule: prompt quality is a deliverable). Structured as
+ * role → business context → what it may rely on → what it must not do → the decision it owns →
+ * units → output contract → escalation. Its output is RE-CHECKED in code (mergeModelCriteria /
+ * mergeModelLifestyle): a value the buyer's words do not contain is dropped whatever the model said.
+ */
 const SYSTEM = [
-  "You extract a home buyer's search criteria from their own message.",
-  "Return ONLY what the buyer literally stated. Never guess a budget, a bedroom count or a place they did not say.",
-  "Fair housing: never output anything about schools' quality, safety, age, children, family, religion, race, national origin, disability or who lives in an area. Those are not fields and must not be inferred.",
-  "A price a buyer says without a unit about a home ('under 450') is in thousands of dollars. A rent is per month and is not scaled.",
-].join(" ")
+  "ROLE: You are the criteria-intake specialist on a real-estate brokerage's buyer team. You turn what a home buyer or renter says into their saved search criteria, the way a careful buyer's agent takes notes at a first consultation.",
+  "BUSINESS CONTEXT: The person is talking to their brokerage's home-search assistant in the client portal, by email, by text or on a voice call. Your output becomes their saved criteria. They will see every field you fill, labelled 'you said', and can edit it. A wrong field sends them the wrong homes and costs their trust; a missing field is fine, because the assistant will ask.",
+  "WHAT YOU MAY RELY ON: only the buyer's message between the triple quotes. Nothing else exists for this task — no prior conversation, no assumptions about their market, their household or their finances.",
+  "WHAT YOU MUST NOT DO: never guess a budget, a bedroom count, a city or a property type they did not state. Never output or infer anything about household composition, children, age, religion, race, national origin, sex, disability (other than an accessibility need they state for their own home), familial status, or school quality, and never characterize a neighborhood's people, safety or 'feel' — those are not fields. Never capture a place of worship or a school as an amenity.",
+  "THE DECISION YOU OWN: mapping stated facts to fields. You do not decide which homes they see, and you do not answer them.",
+  "UNITS: a home price said without a unit ('under 450') means thousands of dollars ($450,000); '1.2 million' is $1,200,000. A rent is per month and is never scaled. '3 or 4 bedrooms' means minBeds 3. 'At least 2 baths' means minBaths 2.",
+  "LIFESTYLE: capture the buyer's own lifestyle asks — natural light, a commute to a named place (with any time limit), layout (open floor plan, single level, primary bedroom on the main level, split bedrooms), an accessibility need they state, nearby neutral amenities (parks, trails, grocery, coffee, restaurants, transit, downtown, the beach), more or less outdoor space, a quiet street — each with the exact words they used.",
+  "OUTPUT CONTRACT: JSON matching the schema exactly. null or an empty list for anything not stated. Every city, feature and lifestyle phrase is copied verbatim from the message.",
+  "ESCALATION: if the message asks for something you must not capture (for example a neighborhood described by who lives there), leave it out silently — the application tells the buyer what it can and cannot search on. Do not refuse, explain or lecture inside the JSON.",
+].join("\n")
+
+/** PURE. The model's lifestyle asks, kept only when the buyer's words contain the phrase. */
+function mergeModelLifestyle(rules: LifestyleAsk[], model: unknown, text: string): LifestyleAsk[] {
+  if (!Array.isArray(model)) return rules
+  const out = [...rules]
+  for (const raw of model as Array<Record<string, unknown>>) {
+    const phrase = typeof raw?.phrase === "string" ? raw.phrase.trim() : ""
+    const kind = raw?.kind as LifestyleKind
+    if (!phrase || !(LIFESTYLE_KINDS as readonly string[]).includes(kind)) continue
+    if (!text.toLowerCase().includes(phrase.toLowerCase())) continue // not the buyer's words → dropped
+    if (out.some((a) => a.kind === kind)) continue // the rules already captured this kind
+    const direction = (["more", "less", "must", "avoid"] as const).includes(raw.direction as never) ? raw.direction as LifestyleAsk["direction"] : "must"
+    const target = typeof raw.target === "string" && raw.target.trim() && text.toLowerCase().includes(raw.target.trim().toLowerCase()) ? raw.target.trim() : null
+    out.push({ kind, label: target && kind === "commute" ? `commute to ${target}` : phrase.toLowerCase(), direction, target, maxMinutes: null, evidence: phrase })
+  }
+  return out
+}
 
 export async function parseBuyerCriteria(text: string, ctx: ParseBuyerCriteriaContext): Promise<ParsedBuyerCriteria> {
   const body = (text ?? "").trim().slice(0, 1200)
@@ -104,7 +157,11 @@ export async function parseBuyerCriteria(text: string, ctx: ParseBuyerCriteriaCo
   const notes = unsearchableAsks(body)
   let criteria = rules.criteria
   let via: ParsedBuyerCriteria["via"] = "rules"
+  let lifestyle = extractLifestyleAsks(body)
+  const stated = detectStatedDealBreakers(body)
 
+  // The model is asked only when a concrete gap is open (the cost rule above); lifestyle asks
+  // the rules missed ride along on that same call — they never trigger one on their own.
   const open = criteriaGaps(criteria)
   if (open.length > 0 && body.length >= 5) {
     if (ctx.allowModelAssist === false) {
@@ -120,13 +177,15 @@ export async function parseBuyerCriteria(text: string, ctx: ParseBuyerCriteriaCo
           userId: ctx.userId ?? null,
           system: SYSTEM,
           prompt: `Buyer's message:\n"""${body}"""`,
-          maxTokens: 300,
+          maxTokens: 450, // wave 147C: the lifestyle array rides the same call
           temperature: 0,
           schema: MODEL_SCHEMA,
         })
         const merged = mergeModelCriteria(criteria, object as ModelCriteria, body)
-        if (JSON.stringify(merged) !== JSON.stringify(criteria)) via = "rules+model"
+        const mergedLifestyle = mergeModelLifestyle(lifestyle, (object as { lifestyle?: unknown }).lifestyle, body)
+        if (JSON.stringify(merged) !== JSON.stringify(criteria) || mergedLifestyle.length !== lifestyle.length) via = "rules+model"
         criteria = merged
+        lifestyle = mergedLifestyle
       } catch (err) {
         notes.push(`Model assist unavailable (${err instanceof Error ? err.message : "error"}) — rules-only criteria.`)
       }
@@ -142,5 +201,9 @@ export async function parseBuyerCriteria(text: string, ctx: ParseBuyerCriteriaCo
     via,
     gaps: criteriaGaps(criteria),
     notes,
+    lifestyle,
+    dealBreakers: stated.dealBreakers,
+    priority: detectPriorityShift(body),
+    clarifications: clarifyingQuestions(criteria, lifestyle, { text: body }),
   }
 }

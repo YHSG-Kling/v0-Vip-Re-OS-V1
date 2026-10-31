@@ -28,6 +28,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contact-access"
+import type { CriteriaFit } from "@/lib/buyer-search/explanation-generator"
+import type { CriteriaChip } from "@/lib/buyer-search/conversational-search"
 
 export interface PortalSearchResult {
   address: string | null
@@ -38,13 +40,18 @@ export interface PortalSearchResult {
   headline: string | null
   source: string
   listingId: string | null
+  /** Wave 147C (C10): matches / misses / UNKNOWNS against the buyer's criteria — never a guess. */
+  fit: CriteriaFit | null
+  /** Wave 147C: the neighbourly explanation composed only from `fit`. */
+  explanation: string | null
 }
 
-/** The action's public answer, unchanged — named only so the body is one
- *  unambiguous block. A type alias is not an export, and a "use server" file
- *  constrains only what it EXPORTS (async functions). */
+/** The action's public answer — named only so the body is one unambiguous
+ *  block. A type alias is not an export, and a "use server" file constrains
+ *  only what it EXPORTS (async functions). Wave 147C adds the stored criteria
+ *  the search ran on (as provenance-labelled chips). */
 type PortalSearchOutcome =
-  | { ok: true; results: PortalSearchResult[] }
+  | { ok: true; results: PortalSearchResult[]; criteria: CriteriaChip[] }
   | { ok: false; error: string }
 
 // TOMBSTONE: local PortalAccessRefusal type + accessRefusal merged onto
@@ -93,11 +100,21 @@ export async function portalNaturalSearchAction(input: {
   }
   if (!contact) return { ok: false, error: accessRefusal("Contact not found") }
 
+  // WAVE 147C (C10) — THE ONE STORE. The buyer's criteria, whichever channel said them (this
+  // portal, a reply email, a text, a call, the AI conversation), are read from the single store
+  // under the tenant the gate resolved, so the search fills what this query left unsaid and every
+  // result is explained against what the buyer actually asked for. A refused read degrades to
+  // the query alone (loadBuyerCriteria logs it and answers null — "unknown", not "nothing asked").
+  // The tenant bound comes from the contact row, which was itself read under the gate's tenant —
+  // the same source the activity row below takes its stamps from.
+  const { loadBuyerCriteria } = await import("@/lib/buyer-search/buyer-criteria")
+  const storedCriteria = await loadBuyerCriteria(svc, input.contactId, { brokerageId: (contact as { brokerage_id: string | null }).brokerage_id })
+
   const { searchPropertiesCore } = await import("@/lib/buyer-search")
   const r: any = await searchPropertiesCore({
     contactId: input.contactId,
     naturalLanguageQuery: query,
-    options: { limit: 8, logSignals: true },
+    options: { limit: 8, logSignals: true, criteria: storedCriteria },
   }).catch(() => null)
   if (!r?.success) return { ok: false, error: "That search didn't run — try rephrasing (beds, price, area)." }
 
@@ -126,6 +143,9 @@ export async function portalNaturalSearchAction(input: {
     headline: m.headline ?? null,
     source: String(m.source ?? "platform"),
     listingId: m.listing_id ?? null,
+    fit: m.fit ?? null,
+    explanation: m.explanation_voice ?? null,
   }))
-  return { ok: true, results }
+  const { criteriaChips } = await import("@/lib/buyer-search/conversational-search")
+  return { ok: true, results, criteria: storedCriteria ? criteriaChips(storedCriteria) : [] }
 }

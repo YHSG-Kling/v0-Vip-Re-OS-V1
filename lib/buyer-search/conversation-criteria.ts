@@ -130,8 +130,16 @@ export function detectSupplementalCity(sentence: string): string | null {
   const m = sentence.match(/\b(?:in|near|around)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/)
   if (!m) return null
   const candidate = m[1].trim()
-  const words = candidate.split(/\s+/)
-  if (words.some((w) => NOT_A_CITY.has(w.toLowerCase()))) return null
+  // Wave 147C: the place name ENDS at the first stopword instead of the whole candidate being
+  // rejected — "in Frisco TX" used to lose Frisco because the trailing state code was in the
+  // stoplist, so the commonest way a buyer names a city ("City ST") carried no location at all.
+  // A candidate that STARTS with a stopword ("in Texas", "in The …") is still not a city.
+  const words: string[] = []
+  for (const w of candidate.split(/\s+/)) {
+    if (NOT_A_CITY.has(w.toLowerCase())) break
+    words.push(w)
+  }
+  if (words.length === 0) return null
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
 }
 
@@ -185,6 +193,15 @@ export function detectStatedAgeRestrictedCommunity(sentence: string): boolean {
 
 // ─── Extraction + merge ──────────────────────────────────────────────────────
 
+/** PURE. Did the buyer say they do NOT want this feature ("no pool", "without a garage", "less yard")? */
+function isNegatedFeature(sentence: string, feature: string): boolean {
+  const f = feature.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const negation = new RegExp(`\\b(?:no|not an?|without(?: an?| the)?|don'?t want(?: an?| the)?|avoid(?: an?| the)?|never an?)\\s+(?:\\w+\\s+)?${f}\\b`, "i")
+  if (negation.test(sentence)) return true
+  // size words negate only the yard ("a small office" still wants an office)
+  return /yard/i.test(feature) && new RegExp(`\\b(?:less|smaller|small|tiny|low[- ]maintenance)\\s+(?:back)?${f}\\b`, "i").test(sentence)
+}
+
 function unionInto(target: string[] | undefined, add: string[]): string[] {
   const out = [...(target ?? [])]
   for (const v of add) if (!out.includes(v)) out.push(v)
@@ -211,7 +228,12 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     if (parsed.minBeds != null)  { criteria.minBeds  = parsed.minBeds;  contributed = true }
     if (parsed.minBaths != null) { criteria.minBaths = parsed.minBaths; contributed = true }
     if (parsed.propertyTypes?.length) { criteria.propertyTypes = unionInto(criteria.propertyTypes, parsed.propertyTypes); contributed = true }
-    if (parsed.features?.length)      { criteria.features      = unionInto(criteria.features, parsed.features);           contributed = true }
+    // A NEGATED feature is not a must-have (wave 147C): "no pool" and "less yard" used to land as
+    // must_have_features ["pool"] / ["yard"] — the opposite of what the buyer said — on the alert
+    // proposal and the saved criteria alike. They are dropped here; the deal-breaker / lifestyle
+    // extractors (detectStatedDealBreakers, extractLifestyleAsks) carry the buyer's real meaning.
+    const features = (parsed.features ?? []).filter((f) => !isNegatedFeature(sentence, f))
+    if (features.length)              { criteria.features      = unionInto(criteria.features, features);                  contributed = true }
     if (parsed.zipCodes?.length)      { criteria.zipCodes      = unionInto(criteria.zipCodes, parsed.zipCodes);           contributed = true }
     if (parsed.states?.length)        { criteria.state = parsed.states[0]; contributed = true }
     if (parsed.listingType === "rent") { criteria.listingType = "rent" }
@@ -383,6 +405,211 @@ export function unsearchableAsks(text: string): string[] {
     notes.push("School quality is not a listing filter — the agent can share the attendance-zone boundaries for any home, and the buyer can check the district's own ratings.")
   }
   return notes
+}
+
+// ─── Lifestyle asks + deal-breakers (wave 147, lane 147C — contract C10) ─────
+//
+// A buyer talks about how they want to LIVE, not only about beds and price:
+// "lots of natural light", "an easy commute to the Medical Center", "open floor
+// plan", "less yard". These are captured as the buyer's OWN asks, each with the
+// literal phrase as evidence, exactly like the criteria above. They are NOT
+// listing filters: no feed carries "natural light", so the matcher answers each
+// ask only where accurate source data exists and otherwise says UNKNOWN
+// (lib/buyer-search/explanation-generator.ts explainCriteriaFit) — an ask is
+// never silently dropped and never answered with an invented fact.
+//
+// NO-STEERING LINE (same as the header): only what the buyer said about THEIR
+// home and THEIR routine is captured. Schools-by-quality, places of worship and
+// anything about who lives in an area are not lifestyle kinds — a kind that
+// does not exist cannot be filled. An accessibility need is captured only when
+// the buyer states it; it is never inferred from anything.
+
+export const LIFESTYLE_KINDS = [
+  "natural_light", "commute", "layout", "accessibility", "nearby_amenity", "outdoor_space", "quiet_setting",
+] as const
+export type LifestyleKind = (typeof LIFESTYLE_KINDS)[number]
+
+/** more = "more light"; less = "less yard"; must = a stated requirement; avoid = "not on a busy road". */
+export type LifestyleDirection = "more" | "less" | "must" | "avoid"
+
+export interface LifestyleAsk {
+  kind: LifestyleKind
+  /** The canonical ask, in plain words ("open floor plan", "commute to Medical Center"). */
+  label: string
+  direction: LifestyleDirection
+  /** A named destination / amenity when the buyer gave one ("Medical Center", "parks"). */
+  target: string | null
+  /** A stated time limit for a commute ("under 30 minutes" → 30), else null. */
+  maxMinutes: number | null
+  /** The buyer's literal words — the proof the ask was STATED. */
+  evidence: string
+}
+
+/** Neutral amenities a buyer may name. Schools and places of worship are deliberately absent. */
+const AMENITY_WORDS = "parks?|trails?|greenbelt|grocery(?: stores?)?|coffee(?: shops?)?|restaurants?|shops|shopping|downtown|transit|the train|train station|light rail|the beach|beach|the lake|lake|gym|hospital"
+
+function clip(sentence: string): string {
+  return sentence.length > 160 ? `${sentence.slice(0, 157)}…` : sentence
+}
+
+/**
+ * PURE. The buyer's lifestyle asks, one per (kind, label), from their own
+ * sentences (labeled transcripts contribute only the buyer's lines — the same
+ * buyerUtterances split the criteria use). "more light, less yard" yields two
+ * asks: natural_light/more and outdoor_space/less.
+ */
+export function extractLifestyleAsks(text: string): LifestyleAsk[] {
+  const out: LifestyleAsk[] = []
+  const push = (a: LifestyleAsk) => {
+    const at = out.findIndex((x) => x.kind === a.kind && x.label === a.label)
+    if (at >= 0) out[at] = a // a later sentence refines the earlier one
+    else out.push(a)
+  }
+  for (const sentence of buyerUtterances(text ?? "")) {
+    for (const part of sentence.split(/,\s*|\s+but\s+|\s+and\s+(?=(?:more|less|a |an |lots|no |not )\b)/i)) {
+      const s = part.trim()
+      if (!s) continue
+      const ev = clip(sentence)
+
+      if (/\b(less light|darker|not too (?:bright|sunny))\b/i.test(s)) {
+        push({ kind: "natural_light", label: "natural light", direction: "less", target: null, maxMinutes: null, evidence: ev })
+      } else if (/\b(natural light|lots of light|more light|light[- ]filled|bright(?:er)?\b|sunny|sun[- ]?(?:filled|drenched|lit)|skylights?|south[- ]facing)/i.test(s)) {
+        push({ kind: "natural_light", label: "natural light", direction: "more", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      const commute = /\b(?:commute|drive|get)\s+(?:to|into)\s+([A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*){0,3})/.exec(s)
+        ?? /\b(?:close to|near|minutes from)\s+(?:my\s+)?(work|the office|my office|[A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*){0,3}\s+(?:Medical Center|Campus|Hospital|Airport|Base))/.exec(s)
+      const commuteWord = /\b(commute|commuting)\b/i.test(s)
+      if (commute || commuteWord) {
+        const minutes = /\b(?:under|less than|within|no more than|max(?:imum)?)\s+(\d{1,3})\s*(?:min|minutes)\b/i.exec(s)
+        const target = commute ? commute[1].trim() : null
+        push({
+          kind: "commute",
+          label: target ? `commute to ${target}` : "commute",
+          direction: "must",
+          target,
+          maxMinutes: minutes ? Number(minutes[1]) : null,
+          evidence: ev,
+        })
+      }
+
+      if (/\bopen (?:floor ?plan|concept|layout)\b/i.test(s)) push({ kind: "layout", label: "open floor plan", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      if (/\b(single[- ]stor(?:y|ey)|one[- ]stor(?:y|ey)|single[- ]level|one[- ]level|ranch[- ]style|no stairs)\b/i.test(s)) push({ kind: "layout", label: "single level", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      if (/\b(?:primary|master)(?: bedroom| suite)?\s+(?:on|down)\s+(?:the\s+)?(?:main|first|ground)(?: floor| level)?\b/i.test(s)) push({ kind: "layout", label: "primary bedroom on the main level", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      if (/\bsplit (?:floor ?plan|bedrooms?)\b/i.test(s)) push({ kind: "layout", label: "split bedroom plan", direction: "must", target: null, maxMinutes: null, evidence: ev })
+
+      if (/\b(wheelchair|step[- ]free|zero[- ]step|no steps|accessible|ada\b|grab bars|wide doorways|elevator)/i.test(s)) {
+        push({ kind: "accessibility", label: "step-free / accessible", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      const amenity = new RegExp(`\\b(?:walk(?:ing distance)?\\s+to|walkable\\s+to|near(?:by)?|close to|minutes from)\\s+(?:a\\s+|the\\s+)?(${AMENITY_WORDS})\\b`, "i").exec(s)
+      if (amenity) {
+        const target = amenity[1].toLowerCase().replace(/^the\s+/, "")
+        push({ kind: "nearby_amenity", label: `near ${target}`, direction: "must", target, maxMinutes: null, evidence: ev })
+      } else if (/\bwalkable\b/i.test(s)) {
+        push({ kind: "nearby_amenity", label: "walkable", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      if (/\b(less yard|smaller yard|small yard|low[- ]maintenance yard|no yard|less (?:lawn|grass)|tiny yard)\b/i.test(s)) {
+        push({ kind: "outdoor_space", label: "outdoor space", direction: "less", target: null, maxMinutes: null, evidence: ev })
+      } else if (/\b(more yard|bigger yard|big yard|large yard|lots of yard|room for a garden|big lot|large lot|acreage)\b/i.test(s)) {
+        push({ kind: "outdoor_space", label: "outdoor space", direction: "more", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      if (/\b(quiet street|cul[- ]de[- ]sac|not on a busy (?:road|street)|away from traffic|low traffic)\b/i.test(s)) {
+        push({ kind: "quiet_setting", label: "quiet street", direction: /\bnot on\b|\baway from\b/i.test(s) ? "avoid" : "must", target: null, maxMinutes: null, evidence: ev })
+      }
+    }
+  }
+  return out
+}
+
+/** Canonical deal-breaker labels a buyer can state ("no HOA", "not a condo"). */
+const DEAL_BREAKER_MAP: Array<[RegExp, string]> = [
+  [/\bhoas?\b/i, "hoa"],
+  [/\bcondos?\b/i, "condo"],
+  [/\btown ?(?:house|home)s?\b/i, "townhouse"],
+  [/\bpools?\b/i, "pool"],
+  [/\bseptic\b/i, "septic"],
+  [/\bstairs\b/i, "stairs"],
+  [/\bbusy (?:road|street)\b/i, "busy road"],
+  [/\bflood ?zone\b/i, "flood zone"],
+  [/\bfixer(?:[- ]upper)?s?\b/i, "fixer-upper"],
+]
+
+/**
+ * PURE. Things the buyer said they do NOT want, from their own words only:
+ * "no HOA", "not a condo", "don't want a pool", "avoid a busy road".
+ */
+export function detectStatedDealBreakers(text: string): { dealBreakers: string[]; evidence: string[] } {
+  const dealBreakers: string[] = []
+  const evidence: string[] = []
+  for (const sentence of buyerUtterances(text ?? "")) {
+    const re = /\b(?:no|not an?|not on an?|without(?: an?)?|don'?t want(?: an?)?|avoid(?: an?)?|never an?)\s+((?:[a-z-]+\s){0,2}[a-z-]+)/gi
+    let m: RegExpExecArray | null
+    let hit = false
+    while ((m = re.exec(sentence))) {
+      for (const [pattern, label] of DEAL_BREAKER_MAP) {
+        if (pattern.test(m[1]) && !dealBreakers.includes(label)) { dealBreakers.push(label); hit = true }
+      }
+    }
+    if (hit) evidence.push(clip(sentence))
+  }
+  return { dealBreakers, evidence }
+}
+
+/** Is a priority word on this ask ("light matters more than the yard now")? */
+export function detectPriorityShift(text: string): { up: LifestyleKind | null; down: LifestyleKind | null } {
+  const t = text ?? ""
+  const m = /\b(light|commute|layout|yard|outdoor space|quiet|walkab\w*)\b[^.]{0,30}\b(?:matters?|is)\s+more\b[^.]{0,20}\bthan\b[^.]{0,10}\b(light|commute|layout|yard|outdoor space|quiet|walkab\w*)\b/i.exec(t)
+  if (!m) return { up: null, down: null }
+  const kindOf = (w: string): LifestyleKind =>
+    /light/i.test(w) ? "natural_light" : /commute/i.test(w) ? "commute" : /layout/i.test(w) ? "layout"
+      : /yard|outdoor/i.test(w) ? "outdoor_space" : /quiet/i.test(w) ? "quiet_setting" : "nearby_amenity"
+  return { up: kindOf(m[1]), down: kindOf(m[2]) }
+}
+
+// ─── "What you didn't say" — clarifying questions (wave 147C) ───────────────
+//
+// The assistant asks about the gaps that change WHICH homes come back, in the
+// order a search needs them, one at a time on voice and at most two in text.
+// Every question is drawn from this fixed list — there is no free-text question
+// generator, so a question about household, children, age, religion, school
+// quality or who lives in an area cannot be asked (scripts/conversational-
+// buyer-guard.ts scans every question this function can return).
+
+export interface ClarifyingQuestion {
+  /** Which gap it closes. */
+  about: CriteriaGap | "commute_target" | "must_or_nice" | "listing_type"
+  question: string
+}
+
+export function clarifyingQuestions(
+  criteria: ConversationCriteria,
+  lifestyle: LifestyleAsk[] = [],
+  opts: { channel?: "voice" | "text"; max?: number; /** the buyer's words, so a stated "must" is not asked again */ text?: string } = {},
+): ClarifyingQuestion[] {
+  const max = opts.max ?? (opts.channel === "voice" ? 1 : 2)
+  const qs: ClarifyingQuestion[] = []
+  const gaps = criteriaGaps(criteria)
+  if (gaps.includes("location")) qs.push({ about: "location", question: "Which areas or ZIP codes should I look in?" })
+  if (gaps.includes("price")) {
+    qs.push({
+      about: "price",
+      question: criteria.listingType === "rent"
+        ? "What monthly rent feels comfortable — is there a number you don't want to go past?"
+        : "What price range feels comfortable — is there a top number you don't want to go past?",
+    })
+  }
+  if (gaps.includes("beds")) qs.push({ about: "beds", question: "How many bedrooms do you need at a minimum?" })
+  const commute = lifestyle.find((l) => l.kind === "commute" && !l.target)
+  if (commute) qs.push({ about: "commute_target", question: "Where is the commute to, and what's the longest drive that still works for you?" })
+  const firstFeature = criteria.features?.[0]
+  const esc = (firstFeature ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const statedMust = !!firstFeature && !!opts.text
+    && new RegExp(`\\b(must|need|needs|required|have to have|non-negotiable)\\b[^.]{0,40}\\b${esc}`, "i").test(opts.text)
+  if (firstFeature && !statedMust) qs.push({ about: "must_or_nice", question: `Is the ${firstFeature} a must-have, or a nice-to-have?` })
+  return qs.slice(0, Math.max(0, max))
 }
 
 // ─── Alert-row mapping ───────────────────────────────────────────────────────

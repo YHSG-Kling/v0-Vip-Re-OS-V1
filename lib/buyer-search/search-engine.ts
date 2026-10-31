@@ -14,11 +14,26 @@ import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
 import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } from './intent-parser'
 import { inferBuyerPersona } from './persona-inference'
-import { generateMatchExplanation } from './explanation-generator'
+import { generateMatchExplanation, explainCriteriaFit, composeNeighbourlyExplanation, type CriteriaFit, type ListingFitFacts } from './explanation-generator'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
-import { scanExplanation } from './fair-housing'
+import { scanExplanation, scanFairHousing } from './fair-housing'
 import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching'
 import type { ParsedBuyerIntent } from './intent-parser'
+import type { BuyerCriteria } from './buyer-criteria'
+import { intentWithStoredCriteria, fitCriteriaFor } from './conversational-search'
+
+/**
+ * WHAT A BUYER CAN SHOP (wave 147C). A buyer search returns homes a buyer can act on: ACTIVE
+ * listings. This is the buyer-shopping rule, NOT the public-visibility rule — lane 147F owns the
+ * shared predicate `publiclyVisibleListingStatuses` (contract C12: archived is internal-only and
+ * never reaches a public/portal search). Until F's module lands this list is the whole filter;
+ * once it does, the integrator intersects the two (lane-147C notes, Outside-lane) so a status F
+ * hides can never be shown here even if this list grows (e.g. to coming_soon).
+ */
+export const BUYER_SHOPPABLE_LISTING_STATUSES = ['active'] as const
+
+// The store→search glue (intentWithStoredCriteria, fitCriteriaFor) lives with the rest of the C10
+// conversation in ./conversational-search.ts and is imported above.
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +62,13 @@ export interface BuyerSearchResult {
   external_id?: string
   /** Display photo URL for external listings (may expire — re-fetch on access) */
   photo_url?: string
+  /**
+   * Wave 147C (C10): how this home lines up with the buyer's criteria — matches, misses and
+   * UNKNOWNS (asks the listing data cannot answer, said as unknown, never guessed).
+   */
+  fit?: CriteriaFit
+  /** Wave 147C: the neighbourly explanation built ONLY from `fit` (+ the code-authored unknowns line). */
+  explanation_voice?: string
 }
 
 export interface BuyerSearchParams {
@@ -57,6 +79,12 @@ export interface BuyerSearchParams {
     minScore?: number
     logSignals?: boolean
     includeDebugInfo?: boolean
+    /**
+     * Wave 147C: the buyer's STORED criteria (buyer-criteria.ts loadBuyerCriteria — the one store,
+     * read by the caller under its verified tenant). Fills what the query did not say and is what
+     * each result's fit is explained against.
+     */
+    criteria?: BuyerCriteria | null
   }
 }
 
@@ -70,7 +98,7 @@ export interface BuyerSearchParams {
  */
 export async function searchPropertiesCore(params: BuyerSearchParams) {
   const { contactId, naturalLanguageQuery, options = {} } = params
-  const { limit = 20, minScore = 40, logSignals = true, includeDebugInfo = false } = options
+  const { limit = 20, minScore = 40, logSignals = true, includeDebugInfo = false, criteria: storedCriteria = null } = options
 
   if (!isValidUUID(contactId)) return { success: false, error: 'Invalid contact ID' }
   if (!naturalLanguageQuery || naturalLanguageQuery.trim().length < 5) {
@@ -117,13 +145,22 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       .limit(1)
       .maybeSingle()
 
+    // ONE VOCABULARY FOR "WHAT THEY ASKED FOR LAST TIME" (wave 147C, CLAUDE.md §6). This read used
+    // to hand mergeIntentWithContext `ai_inference.search.recent_intent`, which search-logger.ts
+    // WRITES as { price_range: { max }, min_beds, cities } — while the merge READS { maxPrice,
+    // preferredCities, minBeds }. No key matched, so a buyer's previous search never filled a gap
+    // in the next one. The stored criteria (the one store) now come first; the notes fallback is
+    // mapped onto the reader's keys instead of being passed through under the writer's.
     let existingPreferences: any = null
     if (contact.notes) {
       try {
         const n = JSON.parse(contact.notes)
-        existingPreferences = n.ai_inference?.buyer_preferences || n.ai_inference?.search?.recent_intent
+        const recent = n.ai_inference?.search?.recent_intent
+        existingPreferences = n.ai_inference?.buyer_preferences
+          || (recent ? { maxPrice: recent.price_range?.max, preferredCities: recent.cities, minBeds: recent.min_beds } : null)
       } catch { /* non-JSON notes */ }
     }
+    Object.assign(parsedIntent, intentWithStoredCriteria(parsedIntent, storedCriteria))
 
     const enrichedIntent = mergeIntentWithContext(parsedIntent, {
       inferred_intent: insight?.inferred_intent,
@@ -142,8 +179,10 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     const filters = intentToFilters(enrichedIntent)
     let q = supabase
       .from('listings')
-      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
-      .eq('status', 'active')
+      // has_pool / has_septic / hoa_dues / lot_size / year_built / public_remarks (wave 147C) are what
+      // the explainable fit answers lifestyle asks and deal-breakers from — columns the live table has.
+      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks')
+      .in('status', [...BUYER_SHOPPABLE_LISTING_STATUSES])
       .is('deleted_at', null)  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)
 
     if (filters.priceRange?.max) q = q.lte('list_price', filters.priceRange.max)
@@ -201,6 +240,9 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         // Recency (owner, wave 91: "we should only pull more recent data").
         listedWithinDays: BUYER_LISTING_RECENCY_DAYS,
         contactId,
+        // A RENTER'S budget is monthly (wave 147C): without this the router searched the for-sale
+        // market with a $2,500 ceiling and a renter's conversational search could never match.
+        listingType: enrichedIntent.listingType === 'rent' ? 'rental' : 'sale',
       })
       if (ext.source !== 'none' && ext.listings.length > 0) {
         externalSource = ext.source
@@ -288,6 +330,9 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     // metadata.fair_housing_sanitized.
     const fairHousingLabels = new Set<string>()
     let fairHousingRewrites = 0
+    // The criteria every result is EXPLAINED against (wave 147C): the stored criteria with their
+    // provenance, plus this query's own words as said. Built once per search.
+    const fitCriteria = fitCriteriaFor(enrichedIntent, storedCriteria)
 
     const results: BuyerSearchResult[] = viableListings.map(({ listing, matchScore, confidence }) => {
       const scanned = scanExplanation(generateMatchExplanation(listing, enrichedIntent, persona, matchScore))
@@ -297,6 +342,16 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       }
       const exp = scanned.clean
       const isExternal = (listing as any).__external === true
+      // EXPLAINABLE MATCH (C10): deterministic, from the listing's own data only; the neighbourly
+      // voice is composed from the fit and steering-checked like every other line WE author.
+      const fit: CriteriaFit = explainCriteriaFit(listing as unknown as ListingFitFacts, fitCriteria)
+      const label = (isExternal ? (listing as any).__address : (listing as any).address) || listing.city || 'This home'
+      const voice = composeNeighbourlyExplanation(fit, label)
+      const voiceScan = scanFairHousing([voice.narrative, voice.unknownsSentence].filter(Boolean).join(' '))
+      if (voiceScan.flagged.length > 0) {
+        fairHousingRewrites++
+        for (const l of voiceScan.flagged) fairHousingLabels.add(l)
+      }
       return {
         listing_id: listing.id,
         address: isExternal ? ((listing as any).__address ?? null) : ((listing as any).address ?? null),
@@ -317,6 +372,8 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         source: isExternal ? ((listing as any).__source as 'rentcast' | 'idx') : 'platform',
         external_id: isExternal ? (listing as any).__external_id : undefined,
         photo_url: isExternal ? (listing as any).__photo_url : undefined,
+        fit,
+        explanation_voice: voiceScan.clean,
       }
     })
 
