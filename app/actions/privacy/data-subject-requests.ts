@@ -129,7 +129,7 @@ export async function submitDataSubjectRequestAction(
 // ── ADMIN: LIST QUEUE ────────────────────────────────────────────────────────
 
 async function requireFulfillmentRole(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
+  | { ok: true; userId: string; brokerageId: string; userType: string }
   | { ok: false; error: string }
 > {
   const supabase = await createClient()
@@ -142,7 +142,7 @@ async function requireFulfillmentRole(): Promise<
     .maybeSingle()
   if (!data?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   if (!ALLOWED_FULFILLMENT_ROLES.has(data.user_type ?? "")) return { ok: false, error: "Forbidden" }
-  return { ok: true, userId: user.id, brokerageId: data.brokerage_id }
+  return { ok: true, userId: user.id, brokerageId: data.brokerage_id, userType: data.user_type ?? "" }
 }
 
 export interface DSARQueueRow {
@@ -440,6 +440,29 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
   noteFailure("offers", offers.error)
   noteFailure("showings", showings.error)
   noteFailure("contact_consent_events", consents.error)
+
+  // THE SUBJECT'S PROTECTED / SENSITIVE ATTRIBUTES (wave 147, lane 147A — owner ruling 2 + the right to know). The segregated
+  // research store (m864) holds vendor-modeled protected fields about this person; a right-to-know export that omitted them
+  // would tell the subject "this is everything" while it is not. Read through THE purpose-gated reader (purpose
+  // data_subject_request, the fulfilling staff member's session identity) — ledgered, never a raw table read. A refused or
+  // unreadable read ABORTS the export like every other source (an incomplete legal bundle is the dangerous shape).
+  const protectedAttributes: Array<Record<string, unknown>> = []
+  if (subjectContactIds.length > 0) {
+    const { readProtectedAttributes } = await import("@/lib/enrichment/protected-research-store")
+    for (const contactId of subjectContactIds) {
+      const read = await readProtectedAttributes(svc, {
+        brokerageId: req.brokerage_id, contactId, purpose: "data_subject_request",
+        actor: { userId: auth.userId, userType: auth.userType },
+      })
+      if (!read.ok) { failedSources.push(`protected attributes (${contactId}): ${read.reason}`); continue }
+      for (const a of read.attributes) {
+        protectedAttributes.push({
+          contact_id: contactId, field: a.field, value: a.value, protected_class: a.protectedClass, basis: a.basis,
+          source: a.provenance?.source ?? null, retrieved_at: a.freshness.retrievedAt, data_rights: a.dataRights, access_class: a.accessClass,
+        })
+      }
+    }
+  }
   if (failedSources.length > 0) {
     return {
       ok: false,
@@ -494,6 +517,9 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     offers:              offers.data ?? [],
     showings:            showings.data ?? [],
     consent_history:     consents.data ?? [],
+    // Wave 147 (147A): every protected / sensitive attribute held about the subject, each with its source, date, basis and the
+    // rights it is held under — vendor-MODELED values are labelled as such, never presented as facts about the person.
+    protected_attributes: protectedAttributes,
     ccpa_categories_disclosed: [
       "identifiers (email, phone, name)",
       "commercial information (transactions, offers)",

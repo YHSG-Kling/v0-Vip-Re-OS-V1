@@ -109,8 +109,20 @@ export async function ingestPortalLead(
   ].filter(Boolean)
 
   try {
-    const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
-    const r = await captureContact({
+    // C8 (wave 147, lane 147A — owner ruling 1): a portal inquiry is a consented, identifiable submission (made on the portal's
+    // form, forwarded to the tenant) → the canonical CONTACT through the ONE contract. The consent wording is the PORTAL's and is
+    // not in the forwarded email, so it is recorded as what it is: the inquiry itself (text below), version 'portal_inquiry',
+    // purposes property_inquiry + requested_information — never a broader grant than the inquiry. The tenant is the mailbox's.
+    const { captureConsentedContact } = await import("@/lib/contact-pipeline/contact-capture")
+    const inquiryText = `Consumer submitted contact info to ${lead.portal} requesting information${lead.propertyAddress ? ` about ${lead.propertyAddress}` : ""}.`
+    const intake = await captureConsentedContact({
+      consents: [{
+        family: lead.phone ? "phone" : "email", given: true, text: inquiryText, textVersion: `portal_inquiry:${lead.portal}`,
+        purposes: ["property_inquiry", "requested_information"],
+        // The inquiry names no channel; the portal routed the methods the consumer gave it to the agent ASKING to be contacted.
+        channels: [...(lead.phone ? (["voice", "sms"] as const) : []), ...(lead.email ? (["email"] as const) : [])],
+      }],
+      intake: { channel: "portal_inquiry", evidence: { portal: lead.portal, property_address: lead.propertyAddress, intake: "inbound-mail" } },
       brokerageId,
       agentUserId: receivingAgentUserId ?? null, // converted to agents.id internally
       source: "portal_lead",
@@ -121,12 +133,10 @@ export async function ingestPortalLead(
       notes: noteBits.join(" · "),
       contact_type: "buyer",
       lead_temperature: "hot", // an active property inquiry IS hot — the portal's whole product
-      tcpa_consent: true,
-      tcpa_consent_date: new Date().toISOString(),
-      tcpa_consent_source: `portal_inquiry:${lead.portal}`,
-      tcpa_consent_text: `Consumer submitted contact info to ${lead.portal} requesting information${lead.propertyAddress ? ` about ${lead.propertyAddress}` : ""}.`,
       rawPayload: { portal: lead.portal, property_address: lead.propertyAddress, message: lead.message, intake: "inbound-mail" },
     })
+    if (!intake.ok || !intake.contactId) return { ok: false, error: intake.reason ?? "capture failed" }
+    const r = { contactId: intake.contactId, action: intake.replay ? "merged" : (intake.action ?? "merged") }
 
     // The agent's heads-up — speed-to-lead engages, but the human should KNOW now.
     if (receivingAgentUserId) {

@@ -103,7 +103,10 @@ console.log("\n── SOURCE: tenant connections hub ──")
   check("portal lead = a CONTACT for the RECEIVING AGENT via the gated captureContact (owner's rule — never a raw lead)",
     intake.includes("captureContact") && intake.includes("receivingAgentUserId") && !intake.includes("raw_scraped_leads"))
   check("TCPA provenance recorded, never silent (portal + property in consent source/text)",
-    intake.includes("portal_inquiry:") && intake.includes("tcpa_consent_text"))
+    // Wave 147 (147A, C8) — rule re-asserted: the inquiry wording (portal + property) is the consent grant's `text` on the
+    // consented-intake contract, which stamps it as tcpa_consent_text AND hashes it onto the consent record (version portal_inquiry:<portal>).
+    intake.includes("portal_inquiry:") && (intake.includes("tcpa_consent_text")
+      || (intake.includes("captureConsentedContact") && /text: inquiryText/.test(intake) && /const inquiryText = `Consumer submitted contact info to \$\{lead\.portal\}[\s\S]{0,120}\$\{lead\.propertyAddress\}/.test(intake))))
   check("the receiving agent gets a high-priority heads-up", intake.includes("portal_lead_received"))
   const webhook = src("app/api/webhooks/inbound-mail/route.ts")
   check("hooked into inbound-mail BEFORE the known-contact gate + assigns the MAILBOX OWNER as the agent",

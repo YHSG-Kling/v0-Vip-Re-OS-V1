@@ -1035,6 +1035,8 @@ export async function captureFormSubmission(
   // Try to match or create a contact from submission data
   const data = input.submissionData as Record<string, string>
   let contactId: string | undefined
+  // Wave 147 (C8): whether THIS capture created the contact or found it (the consented-intake record names it).
+  let captureAction: "created" | "merged" = "merged"
 
   // Hoisted so the autonomous enroller below can resolve the persona whether the
   // contact already existed or was created by this capture.
@@ -1162,6 +1164,7 @@ export async function captureFormSubmission(
 
       if (newContact) {
         contactId = newContact.id
+        captureAction = "created"
         // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). A lead-magnet
         // download creates the contact row here and emits no CONTACT_CREATED, so
         // the event-reactor lane never saw it. Voided — the form submission must
@@ -1216,21 +1219,37 @@ export async function captureFormSubmission(
     firstName: data.first_name ?? null, lastName: data.last_name ?? null, email: data.email ?? null, phone: data.phone ?? null,
   })
 
-  // CONSENT ARTIFACT (wave 141): the audit row the compliance surfaces read — the same table and
-  // vocabulary the ad-lead intake (consent_source 'ad_lead_form') and persistContactConsent write.
-  // Best-effort by contract (the contact is already stamped above); a refusal is logged by the sentinel.
-  if (input.tcpaConsentGiven === true && contactId) {
-    await sentinelWrite(supabase, supabase.from("contact_consent_events").insert({
-      contact_id:     contactId,
-      brokerage_id:   input.brokerageId,
-      agent_id:       form.agent_id ?? null,
-      consent_type:   "marketing",
-      consent_text:   consentText,
-      consent_source: "lead_magnet",
-      consented:      true,
-      ip_address:     input.ipAddress ?? null,
-      user_agent:     input.userAgent ?? null,
-    }), { table: "contact_consent_events", flow: "contact_consent_events_write", reason: "consent audit trail (the contact is already stamped with the consent)" })
+  // CONSENT RECORD — CONTRACT C8 (wave 147, lane 147A; owner ruling 1). TOMBSTONE: this used to be its own
+  // contact_consent_events insert (consent_type 'marketing' — a THIRD spelling beside the consent writer's 'tcpa' / 'email',
+  // CLAUDE.md §6). It is now the ONE consented-intake record half — lib/contact-pipeline/contact-capture.ts
+  // completeConsentedIntake — through THE one consent writer (persistContactConsent, consent_type by channel, the m889 scope:
+  // wording hash + version, purposes, channels, evidence, idempotent per submission), then any same-person open lead in this
+  // tenant closed onto the contact, the contact_consented_intake event, and the AI ISA desk told. consent_source stays
+  // 'lead_magnet'. The contact upsert ABOVE is still this kernel's own (the DUPLICATED half — lane-147A notes, Still open).
+  if (contactId) {
+    try {
+      const { completeConsentedIntake } = await import("@/lib/contact-pipeline/contact-capture")
+      const magnetPurposes: Array<"home_valuation" | "market_updates" | "listing_alerts" | "event_followup"> =
+        "property_address" in input.submissionData ? ["home_valuation"] : []
+      const c8 = await completeConsentedIntake(supabase, {
+        brokerageId: input.brokerageId, contactId, action: captureAction, personId, agentId: form.agent_id ?? null,
+        email: data.email ?? null, phone: data.phone ?? null, source: "lead_magnet",
+        consents: [{
+          family: data.phone ? "phone" : "email", given: input.tcpaConsentGiven === true, text: consentText,
+          textVersion: `lead_magnet:${input.formId}`, purposes: ["requested_information", ...magnetPurposes],
+        }],
+        intake: {
+          capturedAt: submittedAt, channel: "lead_magnet",
+          evidence: { form_id: input.formId, submission_ref: submission.id, source: input.source ?? null, ip: input.ipAddress ?? null, user_agent: input.userAgent ?? null },
+          formOwner: { table: "lead_capture_forms", id: input.formId },
+        },
+        idempotencyKey: `lm:${submission.id}`,
+        stampPartyColumns: false,
+      })
+      for (const w of c8.warnings) console.warn(`[lead-magnets] consented intake: ${w}`)
+    } catch (err) {
+      console.error("[lead-magnets] consented-intake record half threw (the capture stands):", err instanceof Error ? err.message : String(err))
+    }
   }
 
   // ATTRIBUTION TOUCHPOINT (wave 141): the conversion lands on the EXISTING attribution spine —

@@ -364,7 +364,10 @@ const mounted = [...cct.matchAll(/out\.([a-z_]+) = build/g)].map((m) => m[1])
 check(`the customer bundle mounts every one of the owner's five follow-ups (${OWNER_FOLLOW_UP_OFFERS.join(", ")}) + record_qualification + lookup_property_facts`,
   OWNER_FOLLOW_UP_OFFERS.every((t) => mounted.includes(t)) && mounted.includes("record_qualification") && mounted.includes("lookup_property_facts"), mounted.join(","))
 check("the widget creates the PERSON through the one capture survivor (captureContact in capture-lead; contacts in intake) — the ISA never invents a second writer",
-  /captureContact\(/.test(stripped("app/api/widget/capture-lead/route.ts")) && /\.from\('contacts'\)/.test(stripped("app/api/widget/intake/route.ts")))
+  // Wave 147 (147A, C8): the door calls the consented-intake entry, which IS the capture survivor's contract (it routes through
+  // captureContact) — rule re-asserted, the one writer unchanged.
+  (/captureContact\(/.test(stripped("app/api/widget/capture-lead/route.ts")) || (/captureConsentedContact\(/.test(stripped("app/api/widget/capture-lead/route.ts")) && /await captureContact\(\{/.test(stripped("lib/contact-pipeline/contact-capture.ts"))))
+  && /\.from\('contacts'\)/.test(stripped("app/api/widget/intake/route.ts")))
 // A routed call is `xRouted(` or the injectable-dep spelling the voice engine uses:
 // `deps.generateTextRouted ?? (await import("@/lib/ai/models")).generateTextRouted`.
 const ROUTED = /\b(?:streamText|generateText|generateObject)Routed\b/

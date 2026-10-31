@@ -506,10 +506,20 @@ async function main() {
   const trackRoute = src("app/api/track/visitor/route.ts")
   check("POST /api/track/visitor passes email + tcpa_consent from the body as `consented: tcpa_consent === true` (a literal true, never a truthy string) and answers stored/not without the matched contact", /consented: tcpa_consent === true/.test(trackRoute) && /email_captured: ec\.stored/.test(trackRoute) && !/contact/.test(trackRoute.slice(trackRoute.indexOf("const ec ="))))
   const captureRoute = src("app/api/widget/capture-lead/route.ts")
-  check("POST /api/widget/capture-lead hands the EMAIL artifact persistContactConsent just wrote (emailConsentWrite.consentEventId) + the visitor id to the SAME door (trackBehavior email_capture.consent_event_id)", /const consentWrite = await persistContactConsent\(/.test(captureRoute) && /email_capture: \{ email, consent_event_id: emailConsentWrite\.consentEventId \}/.test(captureRoute) && /emailConsentWrite\?\.consentEventId && email && typeof visitor_id === 'string'/.test(captureRoute))
+  // WAVE 147 (lane 147A, contract C8) — RULE RE-ASSERTED, not weakened: the door's two persistContactConsent calls became two
+  // consent GRANTS on the ONE consented-intake contract (captureConsentedContact → completeConsentedIntake → persistContactConsent,
+  // one row per given grant, channel = the grant's family). The rule is unchanged: the EMAIL artifact the one consent writer just
+  // wrote — and nothing else — reaches trackBehavior email_capture.consent_event_id, gated on its existence and a visitor id.
+  const c8Writer = src("lib/contact-pipeline/contact-capture.ts")
+  check("POST /api/widget/capture-lead hands the EMAIL artifact the one consent writer just wrote (C8 consentEventIds.email) + the visitor id to the SAME door (trackBehavior email_capture.consent_event_id)",
+    /await captureConsentedContact\(/.test(captureRoute) && /const emailConsentEventId = intake\.consentEventIds\.email/.test(captureRoute)
+    && /email_capture: \{ email, consent_event_id: emailConsentEventId \}/.test(captureRoute) && /emailConsentEventId && email && typeof visitor_id === 'string'/.test(captureRoute)
+    && /await persistContactConsent\(\{[\s\S]{0,400}channel: g\.family,[\s\S]{0,1600}out\.consentEventIds\[g\.family\] = w\.consentEventId/.test(c8Writer))
   // WAVE 104 (lane 104E; owner answer 1): the SEPARATE email-consent box.
   check("capture-lead FAILS CLOSED: an email without email_consent === true is refused (422) before any write; the phone/TCPA rule is unchanged", /const emailConsentGiven = email_consent === true/.test(captureRoute) && /if \(email && !emailConsentGiven\) \{\s*return NextResponse\.json\(\{ error: 'email_consent required when an email is provided' \}, \{ status: 422 \}\)/.test(captureRoute) && /const consentGiven = tcpa_consent !== false/.test(captureRoute))
-  check("the email box writes its OWN artifact through the one consent writer (channel 'email') and the TCPA artifact no longer stands in for it", /channel: 'email',/.test(captureRoute) && (captureRoute.match(/await persistContactConsent\(/g) ?? []).length === 2 && !/consent_event_id: consentWrite\.consentEventId/.test(captureRoute))
+  check("the email box writes its OWN artifact through the one consent writer (an 'email' grant beside the 'phone' grant) and the TCPA artifact no longer stands in for it",
+    /\{ family: 'phone', given: consentGiven,/.test(captureRoute) && /\{ family: 'email', given: !!email && emailConsentGiven,/.test(captureRoute)
+    && !/consent_event_id: intake\.consentEventIds\.phone/.test(captureRoute) && !/consentEventIds\.phone[\s\S]{0,80}email_capture/.test(captureRoute))
   const consentWriter = src("lib/kernel/compliance/require-contact-consent.ts")
   check("persistContactConsent channel 'email' records consent_type 'email' and leaves the leads/contacts tcpa_* columns alone (phone consent the visitor never gave)", /CONSENT_TYPE_FOR_CHANNEL = \{ phone: 'tcpa', email: 'email' \}/.test(consentWriter) && /params\.leadId && channel === 'phone'/.test(consentWriter) && /params\.contactId && channel === 'phone'/.test(consentWriter) && /consent_type:\s*CONSENT_TYPE_FOR_CHANNEL\[channel\]/.test(consentWriter))
   const widgetClient = src("app/widget/[brokerageSlug]/widget-chat-client.tsx")

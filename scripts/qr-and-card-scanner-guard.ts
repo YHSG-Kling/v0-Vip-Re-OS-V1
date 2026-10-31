@@ -214,7 +214,10 @@ async function main() {
     const submit = stripped(SUBMIT_ROUTE)
     check("the qr_codes lookup predicates BOTH id and slug (a mismatched pair is not found)", /from\('qr_codes'\)[\s\S]{0,400}\.eq\('id', qrCodeId\)[\s\S]{0,40}\.eq\('slug', slug\)/.test(submit))
     check("tenant from the row: captureContact gets qr.brokerage_id, never a body value; rate-limited; source qr_scan",
-      /captureContact\(\{[\s\S]{0,80}brokerageId: qr\.brokerage_id/.test(submit) && !/body\.brokerageId|brokerageId: body/.test(submit) && /checkPublicRateLimit\(/.test(submit) && /source: 'qr_scan'/.test(submit))
+      // Wave 147 (147A, C8) — rule re-asserted on the consented-intake entry, which routes through captureContact itself
+      // and re-reads the QR row's tenant (formOwner qr_codes).
+      /(?:captureContact|captureConsentedContact)\(\{[\s\S]{0,80}brokerageId: qr\.brokerage_id/.test(submit) && !/body\.brokerageId|brokerageId: body/.test(submit) && /checkPublicRateLimit\(/.test(submit) && /source: 'qr_scan'/.test(submit)
+      && (!/captureConsentedContact\(/.test(submit) || (/formOwner: \{ table: 'qr_codes', id: qr\.id \}/.test(submit) && /await captureContact\(\{/.test(stripped("lib/contact-pipeline/contact-capture.ts")))))
     check("CONTROL: a specimen that captures under body.brokerageId is caught", /body\.brokerageId|brokerageId: body/.test(stripComments(`await captureContact({ brokerageId: body.brokerageId })`)))
     check("the touchpoint and the contact-captured event carry the code (attribution → outcome)", /recordCampaignTouchpointSafe\(/.test(submit) && /KernelEvent\.CONTACT_CAPTURED/.test(submit))
   }

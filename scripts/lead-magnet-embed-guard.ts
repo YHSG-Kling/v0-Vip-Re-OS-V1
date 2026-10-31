@@ -69,13 +69,17 @@ console.log("\n── §retired · /api/widget/capture retired onto its survivor
   const { existsSync } = await import("node:fs")
   check("the twin route file is gone", !existsSync(join(root, "app/api/widget/capture/route.ts")))
   const survivor = code("app/api/widget/capture-lead/route.ts")
-  check("the in-repo survivor still captures through the one writer (captureContact)", /captureContact\(\{/.test(survivor))
+  // Wave 147 (147A, C8) — rule re-asserted: the survivor captures through the consented-intake entry, which routes through the
+  // one writer (captureContact) and writes the consent rows through the one consent writer (persistContactConsent).
+  const c8 = code("lib/contact-pipeline/contact-capture.ts")
+  const viaC8 = /captureConsentedContact\(\{/.test(survivor) && /await captureContact\(\{/.test(c8) && /await persistContactConsent\(\{/.test(c8)
+  check("the in-repo survivor still captures through the one writer (captureContact, directly or through the C8 entry)", /captureContact\(\{/.test(survivor) || viaC8)
   // The capability merged from the twin: chat_sessions.agent_id is agents-class (FK agents(id)).
   const ownerRule = (src: string) => /ownerAgentId:\s*session\.agent_id/.test(src) && !/agentUserId:\s*session\.agent_id/.test(src)
   check("the survivor passes the session's agents id as ownerAgentId, never as a users id", ownerRule(survivor))
   check("CONTROL: the pre-86C survivor shape (agents id as agentUserId) is recognised",
     !ownerRule(`await captureContact({ brokerageId: session.brokerage_id, agentUserId: session.agent_id ?? null })`))
-  check("the survivor keeps the twin's consent row and lifecycle event", /persistContactConsent\(/.test(survivor) && /KernelEvent\.CONTACT_CAPTURED/.test(survivor))
+  check("the survivor keeps the twin's consent row and lifecycle event", (/persistContactConsent\(/.test(survivor) || (viaC8 && /consents: \[/.test(survivor))) && /KernelEvent\.CONTACT_CAPTURED/.test(survivor))
   check("the off-site capability is this proof's embed survivor (the route it posts to exists)", existsSync(join(root, "app/api/lead-magnets/submissions/route.ts")))
   const census = code("scripts/opposite-missing-census.ts")
   check("the census no longer carries the retired door as a qualified/unresolved entry", !/\["\/api\/widget\/capture",/.test(census))

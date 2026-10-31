@@ -16,10 +16,13 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { captureContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
+import { captureConsentedContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { KernelEvent } from '@/lib/kernel/events'
-import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-consent'
+
+// The widget capture label, verbatim (C8 wording hash). A change to the label is a new version here.
+const WIDGET_CONSENT_TEXT = 'I agree to receive emails about my real estate needs. Adding a phone number means you also agree to calls or texts.'
+const WIDGET_CONSENT_VERSION = 'chat_widget:v1'
 
 export async function POST(req: NextRequest) {
   try {
@@ -102,13 +105,15 @@ export async function POST(req: NextRequest) {
     const consentGiven = tcpa_consent !== false // default true when not explicitly false
     const consentNow = new Date().toISOString()
 
-    const { contactId, action } = await captureContact({
+    // ── C8 (wave 147, lane 147A — owner ruling 1): the consented submission → CONTACT + consent record + arbiter ─────
+    // The two boxes are two consent grants on ONE contract (the merged /api/widget/capture artifacts, wave 104E): the email box,
+    // and the phone rule ("adding a phone number means you also agree to calls or texts" — the label's own words). The wording is
+    // the label the visitor saw (app/widget/[brokerageSlug]/widget-chat-client.tsx, widget-capture-consent), hashed on the record.
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+    const userAgent = req.headers.get('user-agent') ?? null
+    const intake = await captureConsentedContact({
       brokerageId: session.brokerage_id,
-      // chat_sessions.agent_id is an AGENTS id (FK agents(id), live). It was passed as the
-      // deprecated `agentUserId` (users.id), which captureContact crosses via agents.user_id —
-      // an agents id matched no row there, so every widget capture lost its agent and fell to
-      // the brokerage primary. MERGED from the retired twin /api/widget/capture (lane 86C),
-      // which alone passed it as `ownerAgentId`, the agents-class contract (CLAUDE.md §3).
+      // chat_sessions.agent_id is an AGENTS id (FK agents(id), live) — the agents-class contract (CLAUDE.md §3).
       ownerAgentId: session.agent_id ?? null,
       source: 'website_widget',
       first_name: first_name ?? null,
@@ -116,53 +121,27 @@ export async function POST(req: NextRequest) {
       email: email ?? null,
       phone: consentGiven ? (phone ?? null) : null,
       preferred_channel: consentGiven ? 'phone' : 'email',
-      tcpa_consent: consentGiven,
-      tcpa_consent_date: consentGiven ? consentNow : null,
       rawPayload: { session_token, intent_type, notes },
       // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
       language: resolveCapturedLanguage(null, req.headers.get('accept-language')),
+      consents: [
+        { family: 'phone', given: consentGiven, text: WIDGET_CONSENT_TEXT, textVersion: WIDGET_CONSENT_VERSION },
+        { family: 'email', given: !!email && emailConsentGiven, text: WIDGET_CONSENT_TEXT, textVersion: WIDGET_CONSENT_VERSION },
+      ],
+      intake: {
+        channel: 'chat_widget', sourceUrl: '/api/widget/capture-lead',
+        evidence: { chat_session_id: session.id, ip, user_agent: userAgent, intent_type: intent_type ?? null },
+        formOwner: { table: 'chat_sessions', id: session.id },
+      },
     })
-
-    // ── Persist consent audit record (merged from /api/widget/capture) ────
-    // The TCPA disclosure the widget shows is only worth what the ledger can
-    // prove later; the wired door recorded the consented phone but never the
-    // consent EVENT. Best-effort: the contact is already written above and a
-    // refused audit row must not turn a captured lead into a visitor-facing 500.
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
-    const userAgent = req.headers.get('user-agent') ?? null
-    if (consentGiven) {
-      const consentWrite = await persistContactConsent({
-        brokerageId: session.brokerage_id,
-        agentId: session.agent_id ?? null,
-        contactId,
-        consentText: 'Widget chat consent — TCPA disclosure accepted in chat widget',
-        consentSource: '/api/widget/capture-lead',
-        consented: true,
-        ipAddress: ip,
-        userAgent,
-      }).catch(() => null)
-      if (!consentWrite?.consentEventId) console.warn('[Widget/capture-lead] TCPA consent artifact not recorded (contact already captured)')
+    if (!intake.ok || !intake.contactId) {
+      return NextResponse.json({ error: intake.reason ?? 'Capture failed' }, { status: intake.refused === 'not_identifiable' ? 400 : 500 })
     }
-
-    // ── THE EMAIL CONSENT ARTIFACT (wave 104, lane 104E; owner answer 1) ──────────────────────
-    // The separate box → its OWN consent_type 'email' row through the ONE consent writer
-    // (channel 'email': the tcpa_* columns are untouched — the visitor consented to email, not calls).
-    // An email-only submission therefore writes an artifact where it wrote none under the phone rule.
-    let emailConsentWrite: Awaited<ReturnType<typeof persistContactConsent>> | null = null
-    if (email && emailConsentGiven) {
-      emailConsentWrite = await persistContactConsent({
-        brokerageId: session.brokerage_id,
-        agentId: session.agent_id ?? null,
-        contactId,
-        channel: 'email',
-        consentText: 'Widget chat consent — email contact consent box ticked in chat widget',
-        consentSource: '/api/widget/capture-lead',
-        consented: true,
-        ipAddress: ip,
-        userAgent,
-      }).catch(() => null)
-      if (!emailConsentWrite?.consentEventId) console.warn('[Widget/capture-lead] email consent artifact not recorded (contact already captured; visitor email NOT stamped)')
-    }
+    const contactId = intake.contactId
+    const action = intake.replay ? 'merged' : (intake.action ?? 'merged')
+    if (consentGiven && !intake.consentEventIds.phone) console.warn('[Widget/capture-lead] TCPA consent artifact not recorded (contact already captured)')
+    const emailConsentEventId = intake.consentEventIds.email
+    if (email && emailConsentGiven && !emailConsentEventId) console.warn('[Widget/capture-lead] email consent artifact not recorded (contact already captured; visitor email NOT stamped)')
 
     // ── CONSENTED EMAIL CAPTURE on the visitor's behavioral signal (wave 103, lane 103D; m706) ──
     // The SAME door as the tracking pixel: trackBehavior (the behavioral_signals writer) takes the
@@ -171,7 +150,7 @@ export async function POST(req: NextRequest) {
     // captured above. Keyed on the EMAIL artifact only (104E): the TCPA artifact is phone consent and
     // no longer stands in for it. No artifact (refused ledger write) or no visitor id → nothing is
     // stored; the capture itself is already done and is never gated on this.
-    if (emailConsentWrite?.consentEventId && email && typeof visitor_id === 'string' && visitor_id.trim()) {
+    if (emailConsentEventId && email && typeof visitor_id === 'string' && visitor_id.trim()) {
       try {
         const { trackBehavior } = await import('@/app/actions/lead-intelligence')
         const tracked = await trackBehavior({
@@ -182,7 +161,7 @@ export async function POST(req: NextRequest) {
           ip_address: ip ?? undefined,
           user_agent: userAgent ?? undefined,
           brokerage_id: session.brokerage_id,
-          email_capture: { email, consent_event_id: emailConsentWrite.consentEventId },
+          email_capture: { email, consent_event_id: emailConsentEventId },
         })
         const ec = (tracked as { emailCapture?: { stored: boolean; reason?: string } }).emailCapture
         if (!tracked.success || (ec && !ec.stored)) console.warn(`[Widget/capture-lead] visitor email not stamped on the signal: ${(tracked as { error?: string }).error ?? ec?.reason ?? 'unknown'}`)

@@ -5,7 +5,12 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
-import { captureContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
+import { captureConsentedContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
+
+// The wording the QR landing shows beside its box (app/qr/[slug]/QRLandingClient.tsx, the tcpa_checked label) — hashed onto the
+// consent record (C8). Kept verbatim; a change to the label is a new version here.
+const QR_CONSENT_TEXT = 'By submitting this form, I consent to receive calls, texts, and emails from this agent and their brokerage regarding real estate services. I understand I may opt out at any time. Message and data rates may apply.'
+const QR_CONSENT_VERSION = 'qr_landing:v1'
 import { KernelEvent } from '@/lib/kernel/events'
 
 export const dynamic = 'force-dynamic'
@@ -104,7 +109,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const ownerAgentId: string | null = qr.agent_id ?? null
 
     const now = new Date().toISOString()
-    const { contactId, action } = await captureContact({
+    // ── C8 (wave 147, lane 147A — owner ruling 1): the consented submission → the canonical CONTACT, its consent record, the
+    //    arbiter told. The tenant is the QR row's (re-verified by the contract against qr_codes); never the body's.
+    const intake = await captureConsentedContact({
       brokerageId: qr.brokerage_id,
       ownerAgentId,
       source: 'qr_scan',
@@ -114,12 +121,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Only store phone when TCPA consent given; omit to prevent calling
       phone: consentGiven ? (phone || null) : null,
       preferred_channel: consentGiven ? 'phone' : 'email',
-      tcpa_consent: consentGiven,
-      tcpa_consent_date: consentGiven ? now : null,
       rawPayload: { slug, qrCodeId, first_name, last_name, email, phone },
       // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
       language: resolveCapturedLanguage(null, req.headers.get('accept-language')),
+      consents: [{ family: 'phone', given: consentGiven, text: QR_CONSENT_TEXT, textVersion: QR_CONSENT_VERSION, purposes: ['requested_information'] }],
+      intake: {
+        capturedAt: now, channel: 'qr', sourceUrl: `/qr/${slug}`,
+        evidence: { qr_code_id: qr.id, slug, ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, user_agent: req.headers.get('user-agent') ?? null },
+        formOwner: { table: 'qr_codes', id: qr.id },
+      },
     })
+    if (!intake.ok || !intake.contactId) {
+      const status = intake.refused === 'not_identifiable' ? 400 : intake.refused === 'cross_tenant_form' || intake.refused === 'form_not_found' ? 404 : 500
+      return NextResponse.json({ success: false, error: intake.reason ?? 'Capture failed' }, { status })
+    }
+    const contactId = intake.contactId
+    const action = intake.replay ? 'merged' : (intake.action ?? 'merged')
 
     // ── Step 4: Increment lead_count only on new contact creation ─────────────
     if (action === 'created') {

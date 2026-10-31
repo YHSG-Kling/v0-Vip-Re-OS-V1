@@ -139,6 +139,11 @@ export enum KernelEvent {
   // ── Contact Acquisition (Track B — Contact-first) ────────────────────────
   CONTACT_CAPTURED               = 'contact_captured',
   CONTACT_DEDUP_MERGED           = 'contact_dedup_merged',
+  // Audit row (auditOnly) written by lib/contact-pipeline/contact-capture.ts completeConsentedIntake (wave 147, lane 147A —
+  // owner ruling 1, contract C8): a consented, identifiable submission landed on the canonical CONTACT with its consent record
+  // (metadata: consent event ids, purposes, channels, the intake channel, leads closed, the idempotency key). The reactor has no
+  // rule: the AI ISA desk is told on the bus (contact_consented_intake) and the welcome rides captureContact.
+  CONTACT_CONSENTED_INTAKE       = 'contact_consented_intake',
   CONTACT_ENRICHMENT_QUEUED      = 'contact_enrichment_queued',
   CONTACT_ENRICHMENT_COMPLETED   = 'contact_enrichment_completed',
   CONTACT_ENRICHMENT_FAILED      = 'contact_enrichment_failed',

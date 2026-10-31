@@ -11,7 +11,6 @@
  * Idempotent on (brokerage_id, email|phone). Not server-only — never import from
  * a client component.
  */
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { decryptSecretFields } from "@/lib/security/secret-crypto"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
@@ -36,6 +35,9 @@ export interface AdLeadInput {
   consentText?: string | null
   ip?:         string | null
   userAgent?:  string | null
+  /** Wave 147 (C8): the provider's own submission id (Meta leadgen_id) — a webhook retry carries it verbatim, so the consent
+   *  record is written once per submission. */
+  submissionRef?: string | null
 }
 
 export interface AdLeadResult { ok: boolean; contactId?: string; created?: boolean; reason?: string }
@@ -85,7 +87,8 @@ export async function ingestConsentedAdLead(
     // The CREATE branch below already refuses on `error`; this branch dropped it,
     // so a refused consent stamp returned ok:true with a contactId and the caller
     // proceeded as though TCPA consent were on file. Same refusal, same answer.
-    const { error: consentError } = await supabase.from("contacts").update(consentCols).eq("id", existingId)
+    // Tenant-anchored (wave 147): the contact was found WITHIN this brokerage, so the write is pinned to it too.
+    const { error: consentError } = await supabase.from("contacts").update(consentCols).eq("id", existingId).eq("brokerage_id", input.brokerageId)
     if (consentError) return { ok: false, reason: consentError.message }
     contactId = existingId
   } else {
@@ -106,26 +109,14 @@ export async function ingestConsentedAdLead(
     created = true
   }
 
-  // Consent audit trail (best-effort — the contact is already stamped).
-  await sentinelWrite(supabase, supabase.from("contact_consent_events").insert({
-    contact_id:     contactId,
-    brokerage_id:   input.brokerageId,
-    agent_id:       input.agentId ?? null,
-    consent_type:   "marketing",
-    consent_text:   consentText,
-    consent_source: "ad_lead_form",
-    consented:      true,
-    ip_address:     input.ip ?? null,
-    user_agent:     input.userAgent ?? null,
-  }), { table: "contact_consent_events", flow: "contact_consent_events_write", reason: "consent audit trail (the contact is already stamped with the consent)" })
-
   // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). Only for a NEW
   // contact — the `existingId` branch above is a consent upgrade on someone
   // already in the book, not an arrival. This path emits no kernel contact
-  // event, so nothing else queued it. Voided: a paid-ad lead must land even if
+  // event, so nothing else queued it. Best-effort: a paid-ad lead must land even if
   // enrichment cannot be queued. Suppression lives in queueContactEnrichment.
+  // AWAITED since wave 147 (was voided) so the consented-intake record below can READ the queue as its evidence.
   if (created) {
-    void import("@/lib/enrichment/contact-enrichment-core")
+    await import("@/lib/enrichment/contact-enrichment-core")
       .then((m) =>
         m.queueContactEnrichment({
           contactId,
@@ -135,6 +126,34 @@ export async function ingestConsentedAdLead(
         }),
       )
       .catch(() => {})
+  }
+
+  // CONSENT RECORD — CONTRACT C8 (wave 147, lane 147A; owner ruling 1). TOMBSTONE: this used to be its own
+  // contact_consent_events insert (consent_type 'marketing' — a third spelling beside the consent writer's 'tcpa' / 'email',
+  // CLAUDE.md §6). It is now THE consented-intake record half (lib/contact-pipeline/contact-capture.ts completeConsentedIntake):
+  // the consent writer with the m889 scope (idempotent per Meta leadgen id when given), any same-person open lead in this tenant
+  // closed onto the contact, the contact_consented_intake event, and the AI ISA desk told. consent_source stays 'ad_lead_form'.
+  // The upsert above is still this module's own (the DUPLICATED half — lane-147A notes, Still open).
+  try {
+    const { completeConsentedIntake } = await import("@/lib/contact-pipeline/contact-capture")
+    const c8 = await completeConsentedIntake(supabase, {
+      brokerageId: input.brokerageId, contactId, action: created ? "created" : "merged", agentId: input.agentId ?? null,
+      email: input.email ?? null, phone: input.phone ?? null, source: "ad_lead_form",
+      consents: [{
+        family: input.phone ? "phone" : "email", given: true, text: consentText,
+        textVersion: input.consentText ? `ad_form:${input.platform ?? "paid_ad"}` : "ad_form:platform_disclosure_not_captured",
+        purposes: ["requested_information"],
+      }],
+      intake: {
+        channel: "ad_form",
+        evidence: { platform: input.platform ?? null, form_id: input.formId ?? null, submission_ref: input.submissionRef ?? null, ip: input.ip ?? null, user_agent: input.userAgent ?? null },
+      },
+      idempotencyKey: input.submissionRef ? `ad:${input.platform ?? "paid_ad"}:${input.submissionRef}` : null,
+      stampPartyColumns: false,
+    })
+    for (const w of c8.warnings) console.warn(`[ad-lead-intake] consented intake: ${w}`)
+  } catch (err) {
+    console.error("[ad-lead-intake] consented-intake record half threw (the contact stands):", err instanceof Error ? err.message : String(err))
   }
 
   return { ok: true, contactId, created }
@@ -201,6 +220,7 @@ export async function ingestMetaLeadByRef(
     phone:       pickMetaField(fields, "phone_number", "phone"),
     platform:    "facebook",
     formId:      input.formId ?? null,
+    submissionRef: input.leadgenId ?? null,
   }, svc)
   if (!res.ok) return { ok: false, stage: "rejected", brokerageId: c.brokerage_id }
   return { ok: true, stage: "ingested", brokerageId: c.brokerage_id, contactId: res.contactId }

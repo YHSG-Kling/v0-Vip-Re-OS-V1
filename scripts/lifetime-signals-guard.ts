@@ -285,6 +285,17 @@ async function main() {
 
     // the firewall — only the store and its one caller may name it (stripped source + real string literals)
     const allowed = new Set(["lib/enrichment/protected-research-store.ts", "lib/enrichment/online-presence-store.ts"])
+    // Wave 147 (lane 147A, owner ruling 2): the subject's RIGHT-TO-KNOW export is the one PURPOSE-GATED reader outside the store.
+    // It may import the store ONLY to call readProtectedAttributes (purpose data_subject_request — ledgered both ways) and may
+    // NEVER name the table: the reader is its only path. Every other lib/ or app/ module stays behind the firewall.
+    const gatedReaders = new Set(["app/actions/privacy/data-subject-requests.ts"])
+    for (const g of gatedReaders) {
+      const gText = readFileSync(join(process.cwd(), g), "utf8")
+      const lits = stringLiterals(gText)
+      ok(!lits.some((l) => l.text === "protected_research_attributes") && /readProtectedAttributes\(/.test(stripComments(gText)) && /purpose:\s*"data_subject_request"/.test(stripComments(gText)),
+        `${g} reaches the research store ONLY through the purpose-gated reader (readProtectedAttributes, purpose data_subject_request) and never names the table`)
+      allowed.add(g)
+    }
     const hits: string[] = []
     const namesIt = (text: string) => stringLiterals(text).some((l) => l.text === "protected_research_attributes" || /protected-research-store$/.test(l.text))
     for (const f of runtimeFiles(process.cwd())) {

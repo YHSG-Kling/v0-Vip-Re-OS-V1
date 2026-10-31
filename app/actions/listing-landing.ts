@@ -7,7 +7,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
-import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { captureConsentedContact } from "@/lib/contact-pipeline/contact-capture"
 import { tenantScope, applyTenantScope } from "@/lib/kernel/tenant-scope"
 
 // ============================================================================
@@ -766,7 +766,17 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
   // multi-touch sequence enrollment. A represented buyer is captured with NO owner.
   let contactId: string
   try {
-    const { contactId: capturedId } = await captureContact({
+    // C8 (wave 147, lane 147A — owner ruling 1): the consented showing request → CONTACT + consent record + arbiter told. The
+    // tenant is the LISTING row's (re-read by the contract against listings). The wording is the one this door has always
+    // stamped as tcpa_consent_text — now hashed and scoped on the consent record.
+    const LISTING_LANDING_CONSENT_TEXT = "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
+    const intake = await captureConsentedContact({
+      consents: [{ family: "phone", given: consentGiven, text: LISTING_LANDING_CONSENT_TEXT, textVersion: "listing_landing:v1", purposes: ["property_inquiry"] }],
+      intake: {
+        capturedAt: consentNow, channel: "landing_page", sourceUrl: `/listings/${input.listingId}`,
+        evidence: { listing_id: input.listingId, representation: repStatus },
+        formOwner: { table: "listings", id: input.listingId },
+      },
       brokerageId:         listing.brokerage_id,
       ownerAgentId:        isRepresented ? null : (listing.agent_id ?? null),
       skipAutoAssign:      isRepresented,
@@ -777,15 +787,10 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
       phone:               consentGiven && input.phone?.trim() ? input.phone.trim() : null,
       preferred_channel:   consentGiven && input.phone?.trim() ? "phone" : "email",
       contact_type:        "buyer",
-      tcpa_consent:        consentGiven,
-      tcpa_consent_date:   consentGiven ? consentNow : null,
-      tcpa_consent_source: consentGiven ? "listing_landing_page" : null,
-      tcpa_consent_text:   consentGiven
-        ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
-        : null,
       enrichmentProfile,
     })
-    contactId = capturedId
+    if (!intake.ok || !intake.contactId) return { success: false, error: intake.reason ?? "Failed to create contact" }
+    contactId = intake.contactId
   } catch {
     return { success: false, error: "Failed to create contact" }
   }

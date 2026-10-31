@@ -46,6 +46,10 @@ import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-s
 import { voiceReachable, resolveContactChannel } from "@/lib/ai-isa/contact-channel-policy"
 import { LEAD_ALLOWED_CHANNELS } from "@/lib/ai-isa/lead-channel-policy"
 import { isLifetimeRelationshipType } from "@/lib/contact-types"
+import {
+  CONSENT_CHANNELS, CONSENT_PURPOSES, answerConsentQuestion, consentScopeFor,
+  type ConsentAnswerBasis, type ConsentChannel, type ConsentPurpose,
+} from "@/lib/kernel/compliance/require-contact-consent"
 
 type Svc = { from: (t: string) => any }
 const DAY_MS = 86_400_000
@@ -210,6 +214,16 @@ export interface Customer360 {
     voiceReachable: boolean
     optOuts: string[]
     latestEvent: { type: string | null; consented: boolean | null; at: string | null; source: string | null } | null
+    /**
+     * Wave 147 (lane 147A, contract C8 — "may I text this person about equity?" from the record alone): per channel × purpose,
+     * what the CONSENT RECORD says (lib/kernel/compliance/require-contact-consent.ts answerConsentQuestion over consentScopeFor).
+     * Contacts only (a lead is email / mail only by policy). ADVISORY: the dispatch gate still decides what may be sent; this is
+     * what the arbiter reasons over. `unreadable` when the record could not be read — never "no consent".
+     */
+    scope?: {
+      readable: boolean
+      answers: Record<ConsentChannel, Record<ConsentPurpose, { allowed: boolean; basis: ConsentAnswerBasis; consentEventId: string | null }>>
+    } | null
   } | null
   engagement: Record<"portal" | "search" | "website" | "tours" | "forms", C360EngagementFamily> | null
   communications: { spineSummary: string | null; lastTouch: string | null; sentiment: string | null; interactionCount: number | null; lastActivityAt: string | null; lastOutboundAt: string | null } | null
@@ -440,7 +454,22 @@ export async function customer360For(
         const e = ((ev ?? []) as Array<Record<string, any>>)[0]
         if (e) latestEvent = { type: e.consent_type ?? null, consented: typeof e.consented === "boolean" ? e.consented : null, at: e.created_at ?? null, source: e.consent_source ?? null }
       }
-      consent = { allowedChannels: allowed, resolvedChannel: resolved, voiceReachable: voice, optOuts, latestEvent }
+      // Wave 147 (147A): the consent SCOPE — what each recorded consent grants, per channel and purpose (contacts only).
+      let scope: NonNullable<Customer360["consent"]>["scope"] = null
+      if (partyRead.type === "contact") {
+        const read = await consentScopeFor(svc, { brokerageId, contactId: partyRead.id })
+        if (read.error) { unread.add("consent"); warnings.push(`consent scope unread: ${read.error}`) }
+        const answers = {} as Record<ConsentChannel, Record<ConsentPurpose, { allowed: boolean; basis: ConsentAnswerBasis; consentEventId: string | null }>>
+        for (const ch of CONSENT_CHANNELS) {
+          answers[ch] = {} as Record<ConsentPurpose, { allowed: boolean; basis: ConsentAnswerBasis; consentEventId: string | null }>
+          for (const pu of CONSENT_PURPOSES) {
+            const a = answerConsentQuestion(read, { channel: ch, purpose: pu })
+            answers[ch][pu] = { allowed: a.allowed, basis: a.basis, consentEventId: a.consentEventId }
+          }
+        }
+        scope = { readable: !read.error && read.scopeReadable, answers }
+      }
+      consent = { allowedChannels: allowed, resolvedChannel: resolved, voiceReachable: voice, optOuts, latestEvent, scope }
     }
 
     // ── engagement (first-party actions — real-time writes) ──
