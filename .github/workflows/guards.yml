@@ -38,7 +38,14 @@ jobs:
     # "Run egress integrity guards" — not a red proof (the same chain is green
     # locally, GUARD_EXIT=0, at 26c2c9e4). 40 leaves headroom for the chain to
     # keep growing without turning a slow runner into a false red.
-    timeout-minutes: 40
+    # 60, not 40 — MEASURED, not guessed (wave 147 close, 2026-10-31, runs 41220735331 + 41220729288 at
+    # d196e7c5): both egress-guards jobs were CANCELLED by the 40-minute timeout at 40:00 while still
+    # inside `npm run guard` (the runner terminated `npm run test:video-script-compliance-negative`
+    # mid-flight). The chain grew from 850 to 862 proofs this wave; wave 146's two runs at 4d527cc3
+    # finished at 38 and 40 minutes, so 40 was already the edge. A cancelled guards job reads as
+    # "nobody checked", which §4 of CLAUDE.md says must never render as "checked and fine". If a run
+    # approaches 60, split the chain into two jobs rather than raising this again.
+    timeout-minutes: 60
     env:
       # tsc + the simulators need more than Node's default ~4GB heap on this large
       # codebase. 8192 was enough until the program outgrew it: `tsc --noEmit

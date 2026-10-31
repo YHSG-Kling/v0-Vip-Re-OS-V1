@@ -519,6 +519,32 @@ jobs:
       # above have been READ in a CI log and found short.
       # TO BE CONFIRMED BY CI on the commit carrying this: append the GC reading
       # and the "server compiler finished" line here.
+      #
+      # ── 2026-10-31, run 41220735364 attempts 1–3 (commit d196e7c5, wave 147 close): 14336 RAN OUT,
+      # THREE TIMES, UNCHANGED. Last GC lines, used (committed) MB:
+      #   attempt 1 (574 s): Mark-Compact (reduce) 12149.1 (12946.3) -> 12142.9 (12928.3)
+      #   attempt 2 (635 s): Mark-Compact (reduce) 12110.3 (12950.1) -> 12096.7 (12905.9)
+      #   attempt 3 (876 s): Mark-Compact (reduce) 12165.6 (12900.6) -> 12162.9 (12882.9)
+      #   each: "Ineffective mark-compacts near heap limit", "Next.js build worker exited with
+      #   code: null and signal: SIGABRT", node 22.23.4. Committed = 12.90–12.95 GB = 90.0–90.3% of
+      #   the 14336 compile cap — the ~90% abort threshold this bracket has measured since 2026-08,
+      #   and the "effective abort ceiling ~12.9 GB" the 14336 entry above predicted to the number.
+      #   Three readings within 56 MB of each other at ONE commit: deterministic, not GC timing.
+      #   Wave 146's close (4d527cc3) was green under this cap; wave 147 added no dependency
+      #   (package.json deps unchanged) — the growth is first-party server code (16 commits, the
+      #   movement-intent, market-report, completion-tracking and buyer-search modules), so the
+      #   demand is now ~12.9 GB committed against the same cap.
+      #   ATTRIBUTION: inferred, not read — the job log's final 700 lines are webpack
+      #   PackFileCacheStrategy warnings, so the DEBUG "starting/finished server compiler" markers
+      #   the compile step emits sit above the tail the API returns; no "Compiled" line precedes
+      #   the abort, which is the same reading as every entry above. BLIND SPOT unchanged.
+      #   What this file already rules for exactly this reading: "If THIS aborts at one commit,
+      #   STOP re-tuning the number: the next lever is (d) below or the larger runner." So the cap
+      #   is NOT raised here. The larger runner is the owner's: set repo variables BUILD_RUNNER
+      #   (an 8-core / 32 GB label) and BUILD_HEAP_MB (16384) — the "Both" ruling of 2026-10-03 —
+      #   and this workflow picks them up with no code change. Lever (d), the two-half compile
+      #   matrix, stays proposed with the numbers above it; it is the engineering fallback if the
+      #   owner declines the runner.
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '14336' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
