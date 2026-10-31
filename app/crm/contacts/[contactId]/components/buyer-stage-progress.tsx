@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Badge }   from "@/components/ui/badge"
 import { Button }  from "@/components/ui/button"
 import { cn }      from "@/lib/utils"
 import { ChevronRight, Loader2 } from "lucide-react"
@@ -109,7 +108,7 @@ export function BuyerStageProgress({ currentStage, blockers, contactId, agentId,
 
               {/* Milestone star */}
               {stage.milestone && (
-                <svg viewBox="0 0 16 16" className="w-3 h-3 flex-shrink-0 text-amber-500" fill="currentColor">
+                <svg viewBox="0 0 16 16" className="w-3 h-3 flex-shrink-0 text-amber-600" fill="currentColor">
                   <path d="M8 1l1.8 3.6 4 .6-2.9 2.8.7 4L8 10l-3.6 1.9.7-4L2.2 5.2l4-.6z"/>
                 </svg>
               )}

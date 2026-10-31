@@ -20,6 +20,7 @@ import {
   type SignalDelta,
 } from "@/lib/lead-intelligence/signal-extensions"
 import { computeEquityRatio, parseLengthOfResidence } from "@/lib/avm/provider-chain"
+import { lifeEventTypeOf, type LifeEventType } from "@/lib/enrichment/life-event-vocabulary"
 
 export interface ContactForScoring {
   id: string
@@ -192,7 +193,7 @@ export function runNeighborSoldGenerator(input: {
 
 // ─── Generator 3: Life Event Fan-out ───────────────────────────────────────
 
-const LIFE_EVENT_CONFIDENCE: Record<string, { confidence: number; sensitive: boolean; label: string }> = {
+const LIFE_EVENT_CONFIDENCE: Partial<Record<LifeEventType, { confidence: number; sensitive: boolean; label: string }>> = {
   divorce_filing: { confidence: 0.85, sensitive: true, label: "Divorce filing detected" },
   foreclosure_filing: { confidence: 0.95, sensitive: true, label: "Pre-foreclosure filing detected" },
   job_change_to_non_local: { confidence: 0.7, sensitive: false, label: "Recent job change to a non-local employer" },
@@ -222,17 +223,20 @@ export function runLifeEventGenerator(input: {
     const eventDate = evt.date ? new Date(evt.date).getTime() : null
     if (eventDate != null && eventDate < cutoff) continue
 
-    const cfg = LIFE_EVENT_CONFIDENCE[evt.event]
-    if (!cfg) continue
+    // §6 (wave 147, lane 147Z): read through THE one vocabulary — the writers had drifted onto `divorce` / `death_in_family`
+    // and the life-change check stores `{ type }` rather than `{ event }`, so neither ever scored here.
+    const type = lifeEventTypeOf(evt as { type?: unknown; event?: unknown })
+    const cfg = type ? LIFE_EVENT_CONFIDENCE[type] : undefined
+    if (!type || !cfg) continue
 
     out.push(
       buildPredictiveSellerSignal({
         contactId: contact.id,
-        signalKey: `life:${evt.event}`,
+        signalKey: `life:${type}`,
         signalLabel: cfg.label,
         confidence: cfg.confidence,
-        evidenceId: `life:${evt.event}:${evt.date ?? "undated"}`,
-        evidence: { event: evt.event, source: evt.source, sensitive: cfg.sensitive, date: evt.date },
+        evidenceId: `life:${type}:${evt.date ?? "undated"}`,
+        evidence: { event: type, source: evt.source, sensitive: cfg.sensitive, date: evt.date },
       })
     )
   }

@@ -5,16 +5,51 @@ import {
   getCrossManagerReferrals, getStandingReviews, getTeamworkMetrics,
 } from "@/app/actions/admin/manager-evals"
 import { composeTeamArgumentMap } from "@/lib/managers/team-argument-map"
-import { ManagerTrustClient } from "./manager-trust-client"
+import { reaperCoverage } from "@/lib/intelligence/reaper-net"
+import { ManagerTrustClient, type OwnedProofSeat } from "./manager-trust-client"
+import { AUTHORITY_LEVEL_LABELS } from "@/lib/ai-isa/persona-tool-policy"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
+import { TenantConstitutionPanel } from "./tenant-constitution-panel"
+import { ImprovementProposalsPanel } from "./improvement-proposals-panel"
+import { WorkforceThresholdsEditor } from "./workforce-thresholds-editor"
+import { AutonomyEnvelopesEditor } from "./autonomy-envelopes-editor"
+import { StrategyLibraryPanel } from "./strategy-library-panel"
+import { SelfOptimizationPanel } from "./self-optimization-panel"
+
+/**
+ * OWNED PROOFS — every maintenance/burn domain in the registry, grouped by the manager
+ * that resolveMaintenanceManager holds ACCOUNTABLE for it, with the proof (npm script)
+ * that keeps it green. Pure registry data, computed server-side so the surface can never
+ * drift from the law. resolveMaintenanceManager had no product reader before this — the
+ * ownership simulator was the only caller — so maintenance ownership was enforced in a
+ * test and shown nowhere a broker could see it.
+ */
+function composeOwnedProofs(): OwnedProofSeat[] {
+  const byManager = new Map<ManagerKey, OwnedProofSeat>()
+  for (const key of Object.keys(MANAGERS) as ManagerKey[]) {
+    byManager.set(key, { key, label: MANAGERS[key].label, accent: MANAGERS[key].accent, domains: [], proofs: [] })
+  }
+  for (const domain of Object.keys(MAINTENANCE_DOMAINS)) {
+    const mgr = resolveMaintenanceManager(domain)
+    const seat = byManager.get(mgr.key)
+    if (!seat) continue
+    const proof = MAINTENANCE_DOMAINS[domain].proof
+    seat.domains.push({ domain, proof })
+    if (!seat.proofs.includes(proof)) seat.proofs.push(proof)
+  }
+  return Array.from(byManager.values())
+    .map((s) => ({ ...s, proofs: s.proofs.sort(), domains: s.domains.sort((a, b) => a.domain.localeCompare(b.domain)) }))
+    .sort((a, b) => b.domains.length - a.domains.length)
+}
 
 export const dynamic = "force-dynamic"
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
-export default async function ManagerTrustPage() {
+export default async function ManagerTrustPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ADMIN_ROLES.has(ctx.userType)) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return <RoleGateNotice surface="Manager trust" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   const res = await getManagerTrustScorecard()
   if (!res.ok) {
@@ -50,17 +85,50 @@ export default async function ManagerTrustPage() {
   // registry (collaborations + emitters + loaders), computed server-side and handed to
   // the client as plain data so the surface can never drift from the law.
   const teamMap = composeTeamArgumentMap()
+  const ownedProofs = composeOwnedProofs()
+  // REAPER COVERAGE — the honest "how much of the team is reaped" map
+  // (lib/intelligence/reaper-net.ts:reaperCoverage): which managers have a dedicated
+  // reaper in the net, which are covered by a predictor → handler chain instead, and
+  // which are covered by NOTHING. Pure registry data (no I/O), same idiom as the
+  // argument map above; it had no product reader before this — only test:reaper-net —
+  // so the coverage gaps were enforced in a proof and shown nowhere a broker could see.
+  const reaper = reaperCoverage()
+  // OPERATING CONSTITUTION (wave 101, lane 101A, m696): every tenant policy key, read-only, with
+  // its version / last changer and a History link (?policy=<key>) — no new page.
+  const policyParam = (await searchParams)?.policy
+  const historyKey = typeof policyParam === "string" && policyParam ? policyParam : null
   return (
+    <>
     <ManagerTrustClient
       managers={res.managers}
       team={res.team}
       teamMap={teamMap}
+      ownedProofs={ownedProofs}
+      reaperCoverage={reaper}
       learned={learned}
       referrals={referrals}
       standingReviews={standingReviews}
       teamwork={teamwork}
       accuracyGates={accuracyGates}
       accuracyHolds={accuracyHolds}
+      authorityLadder={AUTHORITY_LEVEL_LABELS}
     />
+    <TenantConstitutionPanel historyKey={historyKey} />
+    {/* WORKFORCE THRESHOLDS (wave 107G): the dedicated editor for policy key workforce_thresholds — submits a
+        `policy` proposal (or applies it now through the same promotion) into the panel below. */}
+    <WorkforceThresholdsEditor />
+    {/* AUTONOMY ENVELOPES (wave 137): the tenant-admin envelope screen for policy key autonomy_budgets — caps and
+        consumption, edits as a `policy` proposal on the one versioned path (money envelopes: commerce admins). */}
+    <AutonomyEnvelopesEditor />
+    {/* CONTROLLED LEARNING (wave 104, lane 104C, m709): what the OS proposes to change about itself, with
+        the evidence, the deterministic evaluation and the human approve / reject / promote / roll back. */}
+    <ImprovementProposalsPanel />
+    {/* SELF-OPTIMIZING MANAGER TEAMS (wave 108G): which optimization classes the weekly team cycle may promote
+        without a human (policy key self_optimization, set through a human policy proposal). */}
+    <SelfOptimizationPanel />
+    {/* STRATEGY LIBRARY (wave 107, lane 107E, m725): the platform's versioned strategies — activate a version,
+        see the benchmark and the recorded local adaptation. */}
+    <StrategyLibraryPanel />
+    </>
   )
 }

@@ -52,6 +52,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/app/components/ui/dropdown-menu"
+import { formatDateShort } from "@/lib/format/dates"
 import {
   generatePodcastAudio,
   publishPodcastEpisode,
@@ -218,13 +219,8 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
     return `${mins}:${secs.toString().padStart(2, "0")}`
   }
 
-  function formatDate(dateStr: string): string {
-    return new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })
-  }
+  // `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to lib/format/dates.ts `formatDateShort` (imported above).
 
   function getStatusBadge(status: Episode["status"]) {
     const variants: Record<
@@ -315,7 +311,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
       {episodes.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="p-4 bg-gray-100 rounded-full mb-4">
-            <Radio className="h-8 w-8 text-gray-400" />
+            <Radio className="h-8 w-8 text-gray-500" />
           </div>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No episodes yet</h3>
           <p className="text-sm text-gray-500 max-w-sm">
@@ -351,7 +347,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
                   </div>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" className="shrink-0">
+                      <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Episode actions">
                         <MoreVertical className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -389,7 +385,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
                   </div>
                   <div className="flex items-center gap-1">
                     <Calendar className="h-4 w-4" />
-                    <span>{formatDate(episode.created_at)}</span>
+                    <span>{formatDateShort(episode.created_at)}</span>
                   </div>
                 </div>
 
@@ -512,7 +508,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
           </SheetHeader>
           {detailsLoading && (
             <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
             </div>
           )}
           {!detailsLoading && detailsEpisode && (

@@ -40,7 +40,7 @@ export function AgentOperatingRadar({ stats, loading }: AgentOperatingRadarProps
     {
       icon: DollarSign,
       color: 'border-l-green-500',
-      iconColor: 'text-green-600',
+      iconColor: 'text-green-700',
       href: '/dashboard/financials/agent',
       value: `$${formatK(stats.pendingGCI)}`,
       label: 'Pending Commission',
@@ -58,7 +58,7 @@ export function AgentOperatingRadar({ stats, loading }: AgentOperatingRadarProps
     {
       icon: Zap,
       color: 'border-l-amber-500',
-      iconColor: 'text-amber-600',
+      iconColor: 'text-amber-700',
       href: '/leads',
       value: stats.leadsToday,
       label: 'New Leads Today',
@@ -68,7 +68,7 @@ export function AgentOperatingRadar({ stats, loading }: AgentOperatingRadarProps
     {
       icon: Calendar,
       color: 'border-l-teal-500',
-      iconColor: 'text-teal-600',
+      iconColor: 'text-teal-700',
       href: '/dashboard/listings',
       value: stats.upcomingShowings,
       label: 'Upcoming Showings',
@@ -77,7 +77,7 @@ export function AgentOperatingRadar({ stats, loading }: AgentOperatingRadarProps
     {
       icon: TrendingUp,
       color: 'border-l-emerald-500',
-      iconColor: 'text-emerald-600',
+      iconColor: 'text-emerald-700',
       href: '/dashboard/financials/agent',
       value: `$${formatK(stats.ytdGCI)}`,
       label: 'YTD Gross',

@@ -94,7 +94,7 @@ export async function runListingBrochures(svc: any): Promise<{ brochures: number
   const out = { brochures: 0, brochureErrors: 0 }
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: listings } = await svc.from("listings")
-    .select("id, brokerage_id, agent_id, address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, public_remarks, photos, primary_photo_url, lifecycle_stage")
+    .select("id, brokerage_id, agent_id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, public_remarks, photos, primary_photo_url, lifecycle_stage")
     .in("lifecycle_stage", ["COMING_SOON_ACTIVE", "MLS_ACTIVE", "OPEN_HOUSE_MARKETING", "OPEN_HOUSE_EVENT"])
     .is("deleted_at", null).gte("created_at", since).limit(100)
 
@@ -116,15 +116,21 @@ export async function runListingBrochures(svc: any): Promise<{ brochures: number
       const { resolvePdfBrand, produceClientDocument } = await import("./client-document-producer")
       const brand = await resolvePdfBrand(svc, { brokerageId: l.brokerage_id, agentUserId })
 
+      // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 8): a COMING_SOON_ACTIVE brochure prints only the
+      // line the address rule allows (title, subtitle, narrative, remarks, highlights — every AI or remarks-derived line
+      // is scrubbed in redact mode). The row's own brokerage pins both reads; fail closed inside the rule.
+      const csMod = String(l.lifecycle_stage ?? "").toUpperCase() === "COMING_SOON_ACTIVE" ? await import("@/lib/marketing/listing-public-address") : null
+      const comingSoon = csMod ? await csMod.resolveComingSoonCreativeAddress({ policyClient: svc, termsClient: svc, listing: l }) : null
+      const scrub = (t: string): string => (csMod && comingSoon ? csMod.guardComingSoonCreativeText(t, l, comingSoon, "redact").text : t)
       const listing: BrochureListing = {
         id: l.id, brokerage_id: l.brokerage_id,
-        address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
+        address: comingSoon ? comingSoon.addressLine : (l.address ?? ""), cityState: comingSoon ? comingSoon.publicLocation : [l.city, l.state].filter(Boolean).join(", "),
         price: l.list_price ? `$${Number(l.list_price).toLocaleString("en-US")}` : "",
         beds: String(l.bedrooms ?? ""), baths: String(l.bathrooms ?? ""),
         sqft: l.sqft ? Number(l.sqft).toLocaleString("en-US") : "",
         propertyType: l.property_type ?? "",
-        remarks: String(l.public_remarks ?? ""),
-        highlights: String(l.public_remarks ?? "").split(/[.\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 12 && s.length < 70).slice(0, 6),
+        remarks: scrub(String(l.public_remarks ?? "")),
+        highlights: String(l.public_remarks ?? "").split(/[.\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 12 && s.length < 70).slice(0, 6).map(scrub),
         photoUrls,
       }
 
@@ -141,7 +147,7 @@ export async function runListingBrochures(svc: any): Promise<{ brochures: number
           },
           { body: narrative }, { generator: realCopyGenerator },
         )
-        narrative = draft.body || narrative
+        narrative = scrub(draft.body || narrative)
       } catch { /* remarks stand */ }
 
       const photos = (await Promise.all(photoUrls.slice(0, 9).map(fetchPhotoAsJpeg))).filter(Boolean) as ClientPdfPhoto[]
@@ -156,12 +162,13 @@ export async function runListingBrochures(svc: any): Promise<{ brochures: number
       })
       if (!produced.ok || !produced.pdfUrl) { out.brochureErrors += 1; continue }
 
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: l.brokerage_id, type: "listing_brochure_ready",
         title: `Brochure ready — ${listing.address}`,
         body: `The multi-page listing brochure (photo spreads, narrative, facts) is print-ready: ${produced.pdfUrl} [brochure:${l.id}]`,
         priority: "medium", channel: "in_app", is_read: false,
       }).then(undefined, () => {})
+      if (notifyError) console.warn("[listing-brochure.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       out.brochures += 1
     } catch { out.brochureErrors += 1 }
   }

@@ -135,7 +135,7 @@ export function NetSheetView({
             <p className={cn(
               "text-xl font-bold",
               priceVsListPct === null ? "text-muted-foreground" :
-              priceVsListPct >= 0 ? "text-green-600" : "text-red-600"
+              priceVsListPct >= 0 ? "text-green-700" : "text-red-600"
             )}>
               {priceVsListPct === null ? "—" : (
                 `${priceVsListPct >= 0 ? "+" : ""}${priceVsListPct.toFixed(1)}%`
@@ -148,7 +148,7 @@ export function NetSheetView({
           <p className="text-xs text-green-700 uppercase tracking-wide font-medium">Est. Net Proceeds</p>
           <p className="text-xl font-bold text-green-800">{fmt(displayNet)}</p>
           {sellerNetEstimate !== null && (
-            <p className="text-xs text-green-600">From AI analysis</p>
+            <p className="text-xs text-green-700">From AI analysis</p>
           )}
         </div>
       </div>

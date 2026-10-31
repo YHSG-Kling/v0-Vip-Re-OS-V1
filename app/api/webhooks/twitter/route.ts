@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import crypto from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ingestMessageService } from "@/lib/communication-spine/ingest-message-service"
+import { processInboundCommunication } from "@/lib/communications/inbound-record"
+import { normalizeXTweetEvents, ingestInboundSocialEvents } from "@/lib/social/inbound-social"
 
 /**
  * Twitter/X webhook — Account Activity API.
@@ -38,17 +39,28 @@ export async function GET(req: NextRequest) {
 
 // --- POST: Inbound DM events ---
 export async function POST(req: NextRequest) {
-  // Verify signature (Twitter sends x-twitter-webhooks-signature)
+  // Verify signature (Twitter sends x-twitter-webhooks-signature).
+  //
+  // THIS CHECK USED TO FAIL OPEN: `if (CONSUMER_SECRET && signature)` meant an
+  // unset env var OR a simply-omitted header skipped verification entirely and
+  // the body was ingested as a real DM — the exact fail-open shape
+  // lib/cron-auth.ts's docblock was written to prevent, and it is reachable by
+  // anyone who knows the URL (this handler writes into the tenant inbox — since
+  // wave 146 through lib/communications/inbound-record.ts). Now: no secret configured = 503 "not configured",
+  // matching the CRC handler above (line 27); missing or wrong signature = 403.
   const rawBody = await req.text()
   const signature = req.headers.get("x-twitter-webhooks-signature")
 
-  if (CONSUMER_SECRET && signature) {
-    const expected =
-      "sha256=" +
-      crypto.createHmac("sha256", CONSUMER_SECRET).update(rawBody).digest("base64")
-    if (signature !== expected) {
-      return NextResponse.json({ error: "Invalid signature" }, { status: 403 })
-    }
+  if (!CONSUMER_SECRET) {
+    return NextResponse.json({ error: "Twitter not configured" }, { status: 503 })
+  }
+  const expected =
+    "sha256=" +
+    crypto.createHmac("sha256", CONSUMER_SECRET).update(rawBody).digest("base64")
+  const sigBuf = Buffer.from(signature ?? "")
+  const expBuf = Buffer.from(expected)
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 403 })
   }
 
   let payload: any
@@ -56,6 +68,18 @@ export async function POST(req: NextRequest) {
     payload = JSON.parse(rawBody)
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
+  }
+
+  // WAVE 146 (lane 146B, owner ruling 2): a REPLY to the subscribed account or an @mention of it arrives as
+  // tweet_create_events on the same Account Activity delivery (docs.x.com/x-api/account-activity/introduction, read
+  // 2026-10-29) — normalized, recorded (contract C1, dedup on the tweet id) and arbitrated by lib/social/inbound-social.ts.
+  const tweetEvents = normalizeXTweetEvents(payload)
+  if (tweetEvents.length > 0) {
+    try {
+      await ingestInboundSocialEvents(createServiceClient(), tweetEvents)
+    } catch (e) {
+      console.error("[twitter] mention / reply ingestion failed (ack stands):", e instanceof Error ? e.message : String(e))
+    }
   }
 
   const dmEvents: any[] = payload?.direct_message_events ?? []
@@ -76,6 +100,8 @@ export async function POST(req: NextRequest) {
       senderId,
       recipientId,
       messageText,
+      // X's own event id — the idempotency key of the inbound record (X may deliver an event more than once).
+      eventRef: typeof event?.id === "string" ? event.id : null,
       timestamp: timestamp ? new Date(timestamp) : new Date(),
     })
   }
@@ -90,6 +116,7 @@ async function handleInboundDm(params: {
   /** payload.for_user_id — the connected account this event was delivered for. */
   recipientId?: string
   messageText: string
+  eventRef: string | null
   timestamp: Date
 }) {
   const svc = createServiceClient()
@@ -116,14 +143,31 @@ async function handleInboundDm(params: {
     .from("contacts")
     .select("id, brokerage_id")
     .contains("metadata", { twitter_user_id: params.senderId })
-    .limit(1)
+  // AMBIGUITY IS NOT A MATCH (tenant fail-closed, CLAUDE.md §4). The tenant
+  // predicate below is CONDITIONAL — applied only when the receiving account could
+  // be mapped to a brokerage — so on the unresolved path the query ran with NO
+  // tenant boundary at all, on the SERVICE client, and `.limit(1)` handed back
+  // whichever brokerage's row happened to sort first. The same person can be a
+  // contact at two brokerages (app/api/webhooks/inbound-mail/route.ts documents
+  // exactly that), and this identity feeds a message INSERT — so the wrong first
+  // row files a client's inbound message into another tenant's CRM. limit(2) +
+  // "one distinct tenant or nothing" is the rule already in force in
+  // app/api/webhooks/sendgrid-events/route.ts; unresolved falls through to the
+  // staging insert with a null tenant, this handler's documented behaviour for an
+  // unmappable account.
+    .limit(2)
   if (brokerageId) contactQuery = contactQuery.eq("brokerage_id", brokerageId)
-  const { data: contacts } = await contactQuery
+  const { data: contactRows } = await contactQuery
+  const candidates = (contactRows ?? []) as Array<{ id: string; brokerage_id: string | null }>
+  const contacts = new Set(candidates.map((c) => c.brokerage_id)).size === 1 ? candidates : []
 
   let contactId: string
+  // The record's tenant: the receiving account's, else the ONE distinct tenant the identity match proved (the rule above).
+  let recordTenant: string | null = brokerageId
 
-  if (contacts && contacts.length > 0) {
+  if (contacts.length > 0) {
     contactId = contacts[0].id
+    recordTenant = brokerageId ?? contacts[0].brokerage_id ?? null
   } else {
     // tenant anchor (scope burn-down): stamp the resolved brokerage; unresolved
     // events stay in staging (null tenant) for an admin to assign.
@@ -143,15 +187,18 @@ async function handleInboundDm(params: {
     contactId = newContact.id
   }
 
-  await ingestMessageService({
-    contactId,
-    rawMessage: {
-      channel: "social_dm_twitter",
-      from: params.senderId,
-      to: "page",
-      body: params.messageText,
-      timestamp: params.timestamp,
-      metadata: { twitter_user_id: params.senderId },
-    },
+  // ONE canonical record (contract C1) on the contact's ONE thread, keyed on X's event id, then opt-out / sequence stop /
+  // intent / the arbiter. Survivor + the spine's carried behaviour: see the same block in app/api/webhooks/linkedin/route.ts.
+  if (!recordTenant) return
+  await processInboundCommunication({
+    brokerageId: recordTenant,
+    channel: "social_dm",
+    provider: "twitter",
+    providerRef: params.eventRef,
+    party: { kind: "contact", id: contactId },
+    body: params.messageText,
+    surface: "twitter",
+    receivedAt: params.timestamp,
+    threadRef: { sender_id: params.senderId, author_id: params.senderId, account_id: params.recipientId ?? null },
   })
 }

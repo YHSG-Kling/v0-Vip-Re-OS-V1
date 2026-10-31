@@ -6,11 +6,12 @@
  * Wave 28 — server actions for the Settings UI that writes
  * lifecycle_promo_policy rows. Three operations:
  *
- *   1. getMyLifecyclePromoPolicy() — returns the current row for each of
- *      the 7 event types at the caller's appropriate scope (agent for
- *      solo-tier users, team for team leads, brokerage for admins). When
- *      no row exists, returns the platform default so the UI can render
- *      a "currently using platform default" indicator.
+ *   1. getLifecyclePromoPolicyForScope({ scopeType, scopeId }) — returns the
+ *      current row for each of the 7 event types at the tier the caller is
+ *      allowed to edit (agent for solo-tier users, team for team leads,
+ *      brokerage for admins), echoing the resolved scope back. When no row
+ *      exists it returns the platform default so the UI can render a
+ *      "currently using platform default" indicator.
  *
  *   2. upsertLifecyclePromoPolicy(eventType, autoSpawn, cooldownHours?) —
  *      writes one row at the caller's scope. The scope is resolved
@@ -82,75 +83,23 @@ const EVENT_METADATA: Record<LifecycleEventType, { label: string; description: s
   just_sold:           { label: "Just Sold",           description: "Auto-fires when the listing closes. Social-proof moment; sale price never disclosed unless explicitly approved." },
 }
 
-export interface GetMyPolicyResult {
-  success: boolean
-  error?: string
-  scope?: "agent" | "team" | "brokerage"
-  /** agents.id when scope='agent'; teams.id for team; brokerages.id for brokerage. */
-  scopeId?: string
-  events?: LifecycleEventDisplay[]
-}
-
-export async function getMyLifecyclePromoPolicy(): Promise<GetMyPolicyResult> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
-    return { success: false, error: "Unauthorized" }
-  }
-
-  const svc = createServiceClient()
-  // Resolve the caller's agents.id (the AGENT-scope override key).
-  const { data: agentRow } = await svc
-    .from("agents")
-    .select("id")
-    .eq("user_id", ctx.userId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-  const agentRecordId = (agentRow?.id as string | undefined) ?? null
-  if (!agentRecordId) {
-    return { success: false, error: "Agent record not found for this user" }
-  }
-
-  // Pull all 7 event rows for this agent in ONE query.
-  const { data: overrideRows } = await svc
-    .from("lifecycle_promo_policy")
-    .select("event_type, auto_spawn, cooldown_hours, mail_enabled, mail_postcard_size, mail_target_audience, mail_max_recipients")
-    .eq("scope_type", "agent")
-    .eq("scope_id", agentRecordId)
-  type Row = {
-    event_type: LifecycleEventType
-    auto_spawn: boolean
-    cooldown_hours: number | null
-    mail_enabled: boolean | null
-    mail_postcard_size: "4x6" | "6x9" | null
-    mail_target_audience: "farm" | "sphere" | "farm+sphere" | null
-    mail_max_recipients: number | null
-  }
-  const rowMap = new Map<LifecycleEventType, Row>()
-  for (const r of (overrideRows ?? []) as Row[]) rowMap.set(r.event_type, r)
-
-  const events: LifecycleEventDisplay[] = ALL_EVENT_TYPES.map((et) => {
-    const row = rowMap.get(et) ?? null
-    const override = row ? { autoSpawn: row.auto_spawn, cooldownHours: row.cooldown_hours } : null
-    const platform = PLATFORM_DEFAULTS[et]
-    const effective = override ?? platform
-    return {
-      eventType:           et,
-      label:               EVENT_METADATA[et].label,
-      description:         EVENT_METADATA[et].description,
-      effectiveAutoSpawn:  effective.autoSpawn,
-      effectiveCooldownHr: effective.cooldownHours,
-      hasAgentOverride:    !!override,
-      agentOverride:       override,
-      platformDefault:     platform,
-      mailEnabled:         row?.mail_enabled ?? false,
-      mailPostcardSize:    row?.mail_postcard_size ?? null,
-      mailTargetAudience:  row?.mail_target_audience ?? null,
-      mailMaxRecipients:   row?.mail_max_recipients ?? null,
-    }
-  })
-
-  return { success: true, scope: "agent", scopeId: agentRecordId, events }
-}
+// ─── getMyLifecyclePromoPolicy — MERGED-THEN-DELETED (orphan burn-down lane C) ─
+//
+// SURVIVOR: getLifecyclePromoPolicyForScope at app/actions/lifecycle-promo-policy.ts:294
+// — the same seven-row read over the same columns, folded through the same
+// PLATFORM_DEFAULTS, but for ANY tier the caller may edit rather than only
+// 'agent'. It is what the Settings page calls (app/settings/lifecycle-promos/page.tsx:30).
+//
+// MERGED FIRST, then deleted. The one thing this had that the survivor lacked was
+// the RESOLVED SCOPE in the result — `scope` + `scopeId` — which a caller needs to
+// say "you are editing YOUR settings" versus a team's. Those two fields now live on
+// the survivor's return (`scopeType` / `scopeId`), so nothing is lost.
+//
+// It also resolved agents.id with its own `agents` lookup instead of
+// resolvePolicyScopeAccess().agentScopeId. Same value by construction (policy-scope
+// documents agentScopeId as "agents.id of the caller"), and going through
+// resolvePolicyScopeAccess is what makes the permission check and the id come from
+// ONE resolver rather than two that can drift.
 
 /**
  * Wave 32 — scoped upsert. Caller specifies the tier they want to write
@@ -346,7 +295,15 @@ export async function upsertLifecycleMailFields(input: {
 export async function getLifecyclePromoPolicyForScope(args: {
   scopeType: "agent" | "team" | "brokerage"
   scopeId?:  string
-}): Promise<{ success: boolean; error?: string; events?: LifecycleEventDisplay[] }> {
+}): Promise<{
+  success: boolean
+  error?: string
+  /** The tier these rows were read at — echoed back so a surface can label it. */
+  scopeType?: "agent" | "team" | "brokerage"
+  /** agents.id for 'agent', teams.id for 'team', brokerages.id for 'brokerage'. */
+  scopeId?:   string
+  events?: LifecycleEventDisplay[]
+}> {
   const { resolvePolicyScopeAccess } = await import("@/lib/identity/policy-scope")
   const access = await resolvePolicyScopeAccess()
   let resolvedScopeId: string | null = null
@@ -402,5 +359,5 @@ export async function getLifecyclePromoPolicyForScope(args: {
       mailMaxRecipients:   row?.mail_max_recipients ?? null,
     }
   })
-  return { success: true, events }
+  return { success: true, scopeType: args.scopeType, scopeId: resolvedScopeId, events }
 }

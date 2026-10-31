@@ -11,14 +11,37 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { isValidUUID } from '@/lib/validations'
+import { publiclyVisibleListingStatuses } from '@/lib/listings/listing-status-sync'
 import { handleError } from '@/lib/errors'
 import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } from './intent-parser'
 import { inferBuyerPersona } from './persona-inference'
-import { generateMatchExplanation } from './explanation-generator'
+import { generateMatchExplanation, explainCriteriaFit, composeNeighbourlyExplanation, type CriteriaFit, type ListingFitFacts } from './explanation-generator'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
-import { sanitizeExplanation } from './fair-housing'
+import { scanExplanation, scanFairHousing } from './fair-housing'
 import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching'
 import type { ParsedBuyerIntent } from './intent-parser'
+import type { BuyerCriteria } from './buyer-criteria'
+import { intentWithStoredCriteria, fitCriteriaFor } from './conversational-search'
+
+/**
+ * WHAT A BUYER CAN SHOP (wave 147C). A buyer search returns homes a buyer can act on: ACTIVE
+ * listings. This is the buyer-shopping rule, NOT the public-visibility rule — lane 147F owns the
+ * shared predicate `publiclyVisibleListingStatuses` (contract C12: archived is internal-only and
+ * never reaches a public/portal search). WIRED (wave 147, lane 147Z — lane 147C Outside-lane 1):
+ * every buyer read filters on buyerShoppableListingStatuses() below — this list INTERSECTED with
+ * F's ONE public predicate — so a status F hides can never be shown here even if this list grows
+ * (e.g. to coming_soon). Archived rides deleted_at, filtered beside it at every read.
+ */
+export const BUYER_SHOPPABLE_LISTING_STATUSES = ['active'] as const
+
+/** The statuses a buyer read may return: the shoppable list ∩ lane 147F's public predicate (contract C12). PURE. */
+export function buyerShoppableListingStatuses(): string[] {
+  const pub = new Set<string>(publiclyVisibleListingStatuses())
+  return BUYER_SHOPPABLE_LISTING_STATUSES.filter((s) => pub.has(s))
+}
+
+// The store→search glue (intentWithStoredCriteria, fitCriteriaFor) lives with the rest of the C10
+// conversation in ./conversational-search.ts and is imported above.
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +70,13 @@ export interface BuyerSearchResult {
   external_id?: string
   /** Display photo URL for external listings (may expire — re-fetch on access) */
   photo_url?: string
+  /**
+   * Wave 147C (C10): how this home lines up with the buyer's criteria — matches, misses and
+   * UNKNOWNS (asks the listing data cannot answer, said as unknown, never guessed).
+   */
+  fit?: CriteriaFit
+  /** Wave 147C: the neighbourly explanation built ONLY from `fit` (+ the code-authored unknowns line). */
+  explanation_voice?: string
 }
 
 export interface BuyerSearchParams {
@@ -57,6 +87,12 @@ export interface BuyerSearchParams {
     minScore?: number
     logSignals?: boolean
     includeDebugInfo?: boolean
+    /**
+     * Wave 147C: the buyer's STORED criteria (buyer-criteria.ts loadBuyerCriteria — the one store,
+     * read by the caller under its verified tenant). Fills what the query did not say and is what
+     * each result's fit is explained against.
+     */
+    criteria?: BuyerCriteria | null
   }
 }
 
@@ -70,7 +106,7 @@ export interface BuyerSearchParams {
  */
 export async function searchPropertiesCore(params: BuyerSearchParams) {
   const { contactId, naturalLanguageQuery, options = {} } = params
-  const { limit = 20, minScore = 40, logSignals = true, includeDebugInfo = false } = options
+  const { limit = 20, minScore = 40, logSignals = true, includeDebugInfo = false, criteria: storedCriteria = null } = options
 
   if (!isValidUUID(contactId)) return { success: false, error: 'Invalid contact ID' }
   if (!naturalLanguageQuery || naturalLanguageQuery.trim().length < 5) {
@@ -92,6 +128,23 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
 
     if (!contact) return { success: false, error: 'Contact not found' }
 
+    // 2b. THE ONE NL criteria parser (lane 91C) fills what the word lists
+    // missed — a city off the metro list ("in Frisco"), a ZIP — with the Haiku
+    // lane only for a gap, booked to the CONTACT's tenant (read above under
+    // the id; never a caller-supplied brokerage). Rules-first values already
+    // on parsedIntent stand; the parser only fills empty fields.
+    const { parseBuyerCriteria } = await import('./parse-buyer-criteria')
+    const one = await parseBuyerCriteria(naturalLanguageQuery, { brokerageId: contact.brokerage_id ?? null })
+    if (!parsedIntent.cities?.length && one.criteria.cities?.length) parsedIntent.cities = one.criteria.cities
+    if (!parsedIntent.zipCodes?.length && one.criteria.zipCodes?.length) parsedIntent.zipCodes = one.criteria.zipCodes
+    if (!parsedIntent.states?.length && one.criteria.state) parsedIntent.states = [one.criteria.state]
+    if (parsedIntent.maxPrice == null && parsedIntent.minPrice == null) {
+      if (one.criteria.minPrice != null) parsedIntent.minPrice = one.criteria.minPrice
+      if (one.criteria.maxPrice != null) parsedIntent.maxPrice = one.criteria.maxPrice
+    }
+    if (parsedIntent.minBeds == null && one.criteria.minBeds != null) parsedIntent.minBeds = one.criteria.minBeds
+    if (parsedIntent.minBaths == null && one.criteria.minBaths != null) parsedIntent.minBaths = one.criteria.minBaths
+
     const { data: insight } = await supabase
       .from('conversation_insights')
       .select('inferred_intent:context_summary, urgency_level:escalation_urgency, overall_sentiment, health_score, updated_at')
@@ -100,13 +153,22 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       .limit(1)
       .maybeSingle()
 
+    // ONE VOCABULARY FOR "WHAT THEY ASKED FOR LAST TIME" (wave 147C, CLAUDE.md §6). This read used
+    // to hand mergeIntentWithContext `ai_inference.search.recent_intent`, which search-logger.ts
+    // WRITES as { price_range: { max }, min_beds, cities } — while the merge READS { maxPrice,
+    // preferredCities, minBeds }. No key matched, so a buyer's previous search never filled a gap
+    // in the next one. The stored criteria (the one store) now come first; the notes fallback is
+    // mapped onto the reader's keys instead of being passed through under the writer's.
     let existingPreferences: any = null
     if (contact.notes) {
       try {
         const n = JSON.parse(contact.notes)
-        existingPreferences = n.ai_inference?.buyer_preferences || n.ai_inference?.search?.recent_intent
+        const recent = n.ai_inference?.search?.recent_intent
+        existingPreferences = n.ai_inference?.buyer_preferences
+          || (recent ? { maxPrice: recent.price_range?.max, preferredCities: recent.cities, minBeds: recent.min_beds } : null)
       } catch { /* non-JSON notes */ }
     }
+    Object.assign(parsedIntent, intentWithStoredCriteria(parsedIntent, storedCriteria))
 
     const enrichedIntent = mergeIntentWithContext(parsedIntent, {
       inferred_intent: insight?.inferred_intent,
@@ -125,8 +187,10 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     const filters = intentToFilters(enrichedIntent)
     let q = supabase
       .from('listings')
-      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
-      .eq('status', 'active')
+      // has_pool / has_septic / hoa_dues / lot_size / year_built / public_remarks (wave 147C) are what
+      // the explainable fit answers lifestyle asks and deal-breakers from — columns the live table has.
+      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks')
+      .in('status', buyerShoppableListingStatuses())
       .is('deleted_at', null)  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)
 
     if (filters.priceRange?.max) q = q.lte('list_price', filters.priceRange.max)
@@ -150,11 +214,30 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     const externalListings: any[] = []
     let externalSource: 'rentcast' | 'idx' | 'none' = 'none'
     try {
+      // THE AREA RULE (lane 91C). RentCast searches one city+state or one ZIP;
+      // a city with no state used to go out bare, and a query with no place at
+      // all went out as an area-less sweep — a paid request whose rows had
+      // nothing to do with where the buyer is looking. The state now falls
+      // back to the tenant's own (the same rule alert-engine.ts
+      // resolveAlertSearchState applies), and with NO area the paid call is
+      // not made: our own board above still answers.
+      const zip = enrichedIntent.zipCodes?.[0]
+      let state = filters.states?.[0]
+      if (!state && filters.cities?.length && !zip && contact.brokerage_id) {
+        const { data: tenant, error: tenantError } = await supabase.from('brokerages').select('state').eq('id', contact.brokerage_id).maybeSingle()
+        if (tenantError) console.error('[buyer-search] brokerage state read refused:', tenantError.message)
+        state = (tenant as { state?: string | null } | null)?.state ?? undefined
+      }
+      const hasArea = !!zip || (!!filters.cities?.length && !!state)
       const { searchExternalListings } = await import('@/lib/property/external-listings-search')
-      const ext = await searchExternalListings({
+      const { BUYER_LISTING_RECENCY_DAYS } = await import('@/lib/property-alerts/alert-cadence')
+      const ext = !hasArea
+        ? { source: 'none' as const, listings: [] as Awaited<ReturnType<typeof searchExternalListings>>['listings'] }
+        : await searchExternalListings({
         brokerageId: contact.brokerage_id ?? '',
-        city: filters.cities?.[0],
-        state: filters.states?.[0],
+        city: zip ? undefined : filters.cities?.[0],
+        state: zip ? undefined : state,
+        zipCode: zip,
         bedroomsMin: filters.bedrooms?.min,
         bedroomsMax: filters.bedrooms?.max,
         bathroomsMin: filters.bathrooms?.min,
@@ -162,6 +245,12 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         priceMax: filters.priceRange?.max,
         propertyType: filters.propertyTypes?.[0],
         limit: 50,
+        // Recency (owner, wave 91: "we should only pull more recent data").
+        listedWithinDays: BUYER_LISTING_RECENCY_DAYS,
+        contactId,
+        // A RENTER'S budget is monthly (wave 147C): without this the router searched the for-sale
+        // market with a $2,500 ceiling and a renter's conversational search could never match.
+        listingType: enrichedIntent.listingType === 'rent' ? 'rental' : 'sale',
       })
       if (ext.source !== 'none' && ext.listings.length > 0) {
         externalSource = ext.source
@@ -231,10 +320,46 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       .slice(0, limit)
 
     // 6. Generate buyer-friendly explanations
+    //
+    // FAIR-HOUSING SCOPE (owner ruling, wave 15). Nothing above this line is
+    // compliance-scanned: the buyer's own query, the filters built from it, the
+    // provider call and the scoring all run untouched — a buyer may search
+    // however they like. The ONE thing sanitized is the marketing prose WE
+    // author about a match, which is copy we publish and therefore ours to be
+    // liable for. scripts/compliance-scope-simulator.ts pins that boundary in
+    // both directions.
+    //
+    // And the rewrite is a REPORTED FACT, not a silent edit. sanitizeExplanation
+    // returned a `flagged[]` and this function used to drop it, which made "the
+    // sanitizer fired on 12 of 20 explanations" and "the sanitizer is unwired"
+    // produce byte-identical output — the exact measurement defect
+    // lib/lead-governance/protected-class-signals.ts calls out for a narrowed
+    // query. Labels are aggregated, logged, and returned in
+    // metadata.fair_housing_sanitized.
+    const fairHousingLabels = new Set<string>()
+    let fairHousingRewrites = 0
+    // The criteria every result is EXPLAINED against (wave 147C): the stored criteria with their
+    // provenance, plus this query's own words as said. Built once per search.
+    const fitCriteria = fitCriteriaFor(enrichedIntent, storedCriteria)
+
     const results: BuyerSearchResult[] = viableListings.map(({ listing, matchScore, confidence }) => {
-      // Fair-Housing: neutralize any protected-class steering in the buyer-facing copy we author.
-      const exp = sanitizeExplanation(generateMatchExplanation(listing, enrichedIntent, persona, matchScore))
+      const scanned = scanExplanation(generateMatchExplanation(listing, enrichedIntent, persona, matchScore))
+      if (scanned.flagged.length > 0) {
+        fairHousingRewrites++
+        for (const label of scanned.flagged) fairHousingLabels.add(label)
+      }
+      const exp = scanned.clean
       const isExternal = (listing as any).__external === true
+      // EXPLAINABLE MATCH (C10): deterministic, from the listing's own data only; the neighbourly
+      // voice is composed from the fit and steering-checked like every other line WE author.
+      const fit: CriteriaFit = explainCriteriaFit(listing as unknown as ListingFitFacts, fitCriteria)
+      const label = (isExternal ? (listing as any).__address : (listing as any).address) || listing.city || 'This home'
+      const voice = composeNeighbourlyExplanation(fit, label)
+      const voiceScan = scanFairHousing([voice.narrative, voice.unknownsSentence].filter(Boolean).join(' '))
+      if (voiceScan.flagged.length > 0) {
+        fairHousingRewrites++
+        for (const l of voiceScan.flagged) fairHousingLabels.add(l)
+      }
       return {
         listing_id: listing.id,
         address: isExternal ? ((listing as any).__address ?? null) : ((listing as any).address ?? null),
@@ -255,8 +380,19 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         source: isExternal ? ((listing as any).__source as 'rentcast' | 'idx') : 'platform',
         external_id: isExternal ? (listing as any).__external_id : undefined,
         photo_url: isExternal ? (listing as any).__photo_url : undefined,
+        fit,
+        explanation_voice: voiceScan.clean,
       }
     })
+
+    if (fairHousingRewrites > 0) {
+      console.warn('[buyer-search] fair-housing sanitizer rewrote generated match copy', {
+        contact_id: contactId,
+        explanations_rewritten: fairHousingRewrites,
+        explanations_total: results.length,
+        labels: Array.from(fairHousingLabels),
+      })
+    }
 
     // 7. Log signals — only for platform listings (external listings have
     // synthetic IDs that aren't UUIDs and don't FK back to listings table)
@@ -280,6 +416,17 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         total_listings_evaluated: listings.length,
         results_returned: results.length,
         search_confidence: enrichedIntent.confidence,
+        /**
+         * What the fair-housing sanitizer rewrote in OUR generated copy — never
+         * anything about the buyer's query, filters or scores. Reported so a
+         * rewrite is visible rather than inferred; `explanations_rewritten: 0`
+         * is a real "nothing fired", not "nobody looked".
+         */
+        fair_housing_sanitized: {
+          explanations_rewritten: fairHousingRewrites,
+          explanations_total: results.length,
+          labels: Array.from(fairHousingLabels),
+        },
         ...(includeDebugInfo && {
           debug: {
             persona_detected: persona.persona,
@@ -346,7 +493,18 @@ export async function explainPropertyMatchCore(params: {
       inferred_intent: insight?.inferred_intent,
       health_score: insight?.health_score,
     })
-    const explanation = sanitizeExplanation(generateMatchExplanation(listing as ListingProfile, minimalIntent, persona, matchScore.score))
+    // Same boundary and same honesty rule as searchPropertiesCore above: only the
+    // explanation copy WE author is sanitized, and what the sanitizer rewrote is
+    // returned rather than swallowed.
+    const scanned = scanExplanation(generateMatchExplanation(listing as ListingProfile, minimalIntent, persona, matchScore.score))
+    const explanation = scanned.clean
+    if (scanned.flagged.length > 0) {
+      console.warn('[buyer-search] fair-housing sanitizer rewrote generated match copy', {
+        contact_id: contactId,
+        listing_id: listingId,
+        labels: scanned.flagged,
+      })
+    }
 
     return {
       success: true,
@@ -356,6 +514,8 @@ export async function explainPropertyMatchCore(params: {
         narrative: explanation.narrative,
         callToAction: explanation.callToAction,
       },
+      /** Labels the fair-housing sanitizer rewrote in the copy above; [] = nothing fired. */
+      fair_housing_sanitized: scanned.flagged,
       listing: { id: listing.id, price: listing.price, bedrooms: listing.bedrooms, city: listing.city, state: listing.state },
       match_quality: matchScore.match_confidence,
     }

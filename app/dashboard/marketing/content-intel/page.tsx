@@ -10,7 +10,7 @@
  */
 import { listContentSources, type ContentSourceRow } from "@/app/actions/content-intel/sources"
 import { ContentSourceForm } from "./content-source-form"
-import { ToggleButton } from "./toggle-button"
+import { ToggleButton, DeleteSourceButton } from "./toggle-button"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -39,6 +39,10 @@ export default async function ContentIntelPage() {
           sources cover real estate broadly; add your own to bring in
           neighborhood-specific Instagram hashtags, competitor handles, or local RSS
           feeds — the topic bank tags them as LOCAL and the picker boosts them +15.
+        </p>
+        <p className="mt-2 text-sm">
+          <a className="text-blue-600 underline" href="/dashboard/marketing/content-intel/topics">Open the topic bank</a>{" "}
+          — every intelligence topic with its source, evidence and approval state.
         </p>
       </div>
 
@@ -97,7 +101,7 @@ function SourceTable({
         <tbody>
           {list.map((s) => (
             <tr key={s.id} className="border-t">
-              <td className="px-3 py-2">{s.label ?? <span className="text-gray-400">—</span>}</td>
+              <td className="px-3 py-2">{s.label ?? <span className="text-gray-500">—</span>}</td>
               <td className="px-3 py-2">
                 <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">
                   {s.source_type === "youtube_search" ? "exa_query" : s.source_type}
@@ -121,8 +125,9 @@ function SourceTable({
                 </span>
               </td>
               {editable && (
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2 text-right whitespace-nowrap">
                   <ToggleButton id={s.id} isActive={s.is_active} />
+                  <DeleteSourceButton id={s.id} label={s.label} />
                 </td>
               )}
             </tr>

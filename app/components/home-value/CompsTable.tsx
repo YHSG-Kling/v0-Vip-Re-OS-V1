@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/table"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { MapPin, Calendar, Home } from "lucide-react"
+import { formatDateShort } from "@/lib/format/dates"
 
 interface Comp {
   address: string
@@ -19,7 +20,15 @@ interface Comp {
   sqft: number
   price_per_sqft: number
   sale_date: string
-  distance_miles: number
+  /**
+   * Null when the comp source could not attribute a distance. The comp finder
+   * searches WITHIN a radius but returns no per-comp distance, so this column
+   * shows "—" rather than a number nobody measured. Older rows written before
+   * the CMA repoint may still carry a value.
+   */
+  distance_miles: number | null
+  /** Source the sale was grounded in, when the finder returned one. */
+  citation?: string | null
 }
 
 interface CompsTableProps {
@@ -34,14 +43,8 @@ export function CompsTable({ comps }: CompsTableProps) {
       maximumFractionDigits: 0,
     }).format(value)
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr)
-    return date.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })
-  }
+  // `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to lib/format/dates.ts `formatDateShort` (imported above).
 
   if (!comps || comps.length === 0) {
     return (
@@ -94,7 +97,21 @@ export function CompsTable({ comps }: CompsTableProps) {
                   <TableCell className="font-medium">
                     <div className="flex items-center gap-2">
                       <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <span className="truncate max-w-[200px]">{comp.address}</span>
+                      {/* Linked to its source when the comp finder returned one,
+                          so the seller can check the sale rather than take it
+                          on faith. */}
+                      {comp.citation ? (
+                        <a
+                          href={comp.citation}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="truncate max-w-[200px] underline underline-offset-2 hover:text-primary"
+                        >
+                          {comp.address}
+                        </a>
+                      ) : (
+                        <span className="truncate max-w-[200px]">{comp.address}</span>
+                      )}
                     </div>
                   </TableCell>
                   <TableCell className="text-right font-semibold">
@@ -111,11 +128,11 @@ export function CompsTable({ comps }: CompsTableProps) {
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-1">
                       <Calendar className="h-3 w-3 text-muted-foreground" />
-                      {formatDate(comp.sale_date)}
+                      {formatDateShort(comp.sale_date)}
                     </div>
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground">
-                    {comp.distance_miles.toFixed(1)} mi
+                    {comp.distance_miles != null ? `${comp.distance_miles.toFixed(1)} mi` : "—"}
                   </TableCell>
                 </TableRow>
               ))}

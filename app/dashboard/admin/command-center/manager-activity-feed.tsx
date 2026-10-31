@@ -1,0 +1,105 @@
+"use client"
+
+/**
+ * The "What the managers did" ledger — the completed-work counterpart to the
+ * "Managers talking" feed. Where that feed shows the negotiation (who told whom
+ * what) and the queue shows what's WAITING on a human, this shows what each AI
+ * manager actually DID: executed campaign actions, released client messages,
+ * swept-up stuck work, signals acted on — one chronological, manager-attributed
+ * timeline. Every row is a real record composed by loadManagerActivity; nothing
+ * here is decorative.
+ *
+ * Manager identity colors come from the canonical MANAGERS registry so the visual
+ * vocabulary can't drift from the governed roster.
+ */
+
+import { useMemo, useState } from "react"
+import { Card } from "@/components/ui/card"
+import type { ManagerActivityEntry } from "@/lib/kernel/manager-activity"
+import { ManagerChip, relTime } from "@/app/components/shared/ManagerChip"
+
+const STATUS_STYLE: Record<ManagerActivityEntry["status"], { chip: string; label: string }> = {
+  executed:  { chip: "bg-emerald-100 text-emerald-800", label: "executed" },
+  sent:      { chip: "bg-sky-100 text-sky-800",         label: "sent" },
+  done:      { chip: "bg-slate-100 text-slate-700",     label: "done" },
+  skipped:   { chip: "bg-zinc-100 text-zinc-600",       label: "skipped" },
+  escalated: { chip: "bg-amber-100 text-amber-900",     label: "escalated" },
+  failed:    { chip: "bg-red-100 text-red-800",         label: "failed" },
+}
+
+const SOURCE_LABEL: Record<ManagerActivityEntry["source"], string> = {
+  signal: "Coordination",
+  marketing: "Campaign",
+  asset: "Media",
+  ads: "Paid ads",
+  client_message: "Client message",
+  reaper: "Self-heal",
+}
+
+// `accentFor`/`domainFor`/`initials`/`relTime`/`ManagerChip` — same-body
+// census, round 4 (2026-09-09, lane FC): DELETED, byte-identical to
+// app/components/shared/ManagerChip.tsx (imported above).
+
+export function ManagerActivityFeed({ activity }: { activity: ManagerActivityEntry[] }) {
+  const [showAll, setShowAll] = useState(false)
+  const managerCount = useMemo(
+    () => new Set(activity.map((a) => a.managerKey)).size,
+    [activity],
+  )
+  if (!activity || activity.length === 0) return null
+  const rows = showAll ? activity : activity.slice(0, 12)
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold">What the managers did</h2>
+        <span className="text-xs text-muted-foreground">
+          {activity.length} recent action{activity.length === 1 ? "" : "s"}
+          {managerCount > 1 ? ` · ${managerCount} managers` : ""}
+        </span>
+      </div>
+
+      <ol className="space-y-2">
+        {rows.map((a) => {
+          const s = STATUS_STYLE[a.status] ?? STATUS_STYLE.done
+          return (
+            <li key={a.id}>
+              <Card className="px-4 py-2.5">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <ManagerChip mkey={a.managerKey} label={a.managerLabel} />
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {SOURCE_LABEL[a.source]}
+                    </span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${s.chip}`}>{s.label}</span>
+                    {a.approvedByUserId && (
+                      <span
+                        className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700"
+                        title="A human approved this action before it ran"
+                      >
+                        human-approved
+                      </span>
+                    )}
+                    <span className="ml-auto text-[11px] text-muted-foreground">{relTime(a.whenISO)}</span>
+                  </div>
+                  <p className="text-sm text-foreground">{a.action}</p>
+                  {a.detail && <p className="text-xs text-muted-foreground">{a.detail}</p>}
+                </div>
+              </Card>
+            </li>
+          )
+        })}
+      </ol>
+
+      {activity.length > 12 && (
+        <button
+          type="button"
+          onClick={() => setShowAll((v) => !v)}
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          {showAll ? "Show less" : `Show all ${activity.length}`}
+        </button>
+      )}
+    </section>
+  )
+}

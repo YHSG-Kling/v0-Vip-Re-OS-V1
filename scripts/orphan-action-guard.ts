@@ -15,28 +15,31 @@
  * wired. The barrel (app/actions/index.ts) and any *known entry-point* actions are
  * exempt explicitly.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, normalize, relative } from "node:path"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const BASELINE_PATH = join(root, "scripts", "orphan-action-baseline.json")
 
-function walk(dir: string, out: string[]) {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(n)) out.push(relative(root, p).replace(/\\/g, "/"))
-  }
-}
-
-const all: string[] = []
-walk(join(root, "app"), all)
-walk(join(root, "lib"), all)
-walk(join(root, "scripts"), all)
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// This guard decides whether a server action has ANY importer, so a file it cannot
+// open is an ACCUSATION, not a gap: an action whose only caller is the root-level
+// edge middleware read as orphaned. `walk()` enumerated DIRECTORIES and a root
+// FILE is not a directory. `rootRuntimeFiles()` supplies `proxy.ts` and `types.ts`.
+// `scripts/` stays in the corpus deliberately — a guard or simulator importing an
+// action is a real caller for this question, and NON_RUNTIME_ROOTS excludes it
+// from `runtimeFiles()`, so it is walked explicitly rather than inherited.
+const all = [
+  ...walkTs(join(root, "app")),
+  ...walkTs(join(root, "lib")),
+  ...walkTs(join(root, "scripts")),
+  ...rootRuntimeFiles(root),
+].map((p) => relative(root, p).replace(/\\/g, "/"))
 const set = new Set(all)
 
 /** Resolve an import specifier to a repo-relative file (mirrors tsconfig paths + relative + index). */
@@ -70,9 +73,11 @@ for (const f of all) {
 // Entry-point actions reachable via Next.js convention rather than an import (none today;
 // add here with a justification if a genuine convention-only action ever exists).
 const EXEMPT = new Set<string>([
-  "app/actions/index.ts", // the barrel itself, imported as @/app/actions
+  // "app/actions/index.ts" left this list when the barrel was DELETED (wave 14,
+  // 2026-08-28): zero importers, every re-export reachable by direct path.
   // Demo-mode scaffolding — intentionally unwired; REMOVE AT GO-LIVE (owner decision).
-  "app/actions/demo-login.ts",
+  // (demo-login.ts was deleted: it was a second, uncalled implementation of the
+  // gated demoSignIn in app/actions/demo-auth.ts, and two auth paths drift.)
   "app/actions/demo-contacts.ts",
 ])
 

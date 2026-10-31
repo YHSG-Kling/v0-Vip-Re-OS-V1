@@ -2,10 +2,7 @@
 
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -49,7 +46,7 @@ const DEFAULT_CHECKLIST_ITEMS = [
 const STATUS_CONFIG = {
   pending: { icon: Clock, color: "text-muted-foreground", bg: "bg-slate-100" },
   in_progress: { icon: Clock, color: "text-blue-600", bg: "bg-blue-100" },
-  completed: { icon: CheckCircle2, color: "text-green-600", bg: "bg-green-100" },
+  completed: { icon: CheckCircle2, color: "text-green-700", bg: "bg-green-100" },
 }
 
 export function ClosingChecklist({
@@ -72,12 +69,18 @@ export function ClosingChecklist({
     setError(null)
 
     try {
-      await updateClosingPrepItem({
+      // Reports failure BY RETURN, so the catch never fires. A checklist item
+      // would appear to move and then be right back where it was on refresh.
+      const r = await updateClosingPrepItem({
         transactionId,
         titleUserId,
         itemKey,
         status: newStatus,
       })
+      if (!r?.success) {
+        setError((r as any)?.error ?? "That checklist item was not updated.")
+        return
+      }
       router.refresh()
     } catch (err: any) {
       setError(err.message || "Failed to update item")

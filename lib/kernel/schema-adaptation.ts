@@ -259,6 +259,60 @@ export const CRM_CONTACT_EGRESS_CONTRACT: ConnectorContract = {
   ],
 }
 
+/**
+ * INBOUND contact arriving from an EXTERNAL CRM (Follow Up Boss / Lofty / GoHighLevel pull, or a
+ * CSV export of one) — THE ONE REGISTRY of the canonical contact fields an import may land and of
+ * the identity any imported row MUST carry before the kernel's workflows and triggers may see it
+ * (owner, wave 141: "explicit field mapping against the canonical schema (required canonical
+ * fields for workflows/triggers named in one registry)"; lane 141D).
+ *
+ * Why these fields: `first_name`/`last_name`/`email`/`phone` are what every contact-side trigger
+ * and reactor reads off a `contacts` row (CONTACT_CREATED → notification-engine subjectDisplayName,
+ * the concierge spawn, sequence enrollment by reachable channel, resolveCanonicalPerson's dedupe
+ * keys — normalized email + phone digits); `address`/`city`/`state`/`zip` are the physical-address
+ * canon the Data Steward owns; `source` is preserved as the old CRM's own label (source_subtype),
+ * `notes` carries every vendor-specific field (stage, type, vendor source) as TEXT — a vendor
+ * enum is never trusted onto a canonical enum column; `tags` is the only segmentation that maps
+ * 1:1. NOTHING here is a consent field: TCPA consent is earned on our rail, never imported.
+ *
+ * `paths` are the canonical key plus the CSV-export spellings the pure parser
+ * (lib/platform/tenant-import-parser.ts CONTACT_HEADER_ALIASES) resolves — the parser is the
+ * mapper, this contract is the schema it maps ONTO; scripts/crm-boundaries-guard.ts holds the
+ * two in agreement (every alias target is a contract key, every contract key has an alias).
+ *
+ * Mirrors CRM_CONTACT_EGRESS_CONTRACT above in shape so the two directions of one capability
+ * live side by side. Enforced by parseContactFields (the identity any-of group below), which
+ * rejects the row with its line number rather than landing an unreachable, nameless record.
+ */
+export const CRM_CONTACT_INGRESS_CONTRACT: ConnectorContract = {
+  connector: "crm_ingress",
+  entity: "contact",
+  fields: [
+    { key: "first_name", type: "string", required: false, paths: ["first_name", "First Name"], defaultValue: null },
+    { key: "last_name", type: "string", required: false, paths: ["last_name", "Last Name"], defaultValue: null },
+    { key: "full_name", type: "string", required: false, paths: ["full_name", "Name"], defaultValue: null },
+    { key: "email", type: "string", required: false, paths: ["email", "Email"], defaultValue: null },
+    { key: "phone", type: "string", required: false, paths: ["phone", "Phone"], defaultValue: null },
+    { key: "address", type: "string", required: false, paths: ["address", "Address"], defaultValue: null },
+    { key: "city", type: "string", required: false, paths: ["city", "City"], defaultValue: null },
+    { key: "state", type: "string", required: false, paths: ["state", "State"], defaultValue: null },
+    { key: "zip", type: "string", required: false, paths: ["zip", "Zip"], defaultValue: null },
+    { key: "source", type: "string", required: false, paths: ["source", "Source"], defaultValue: null },
+    { key: "notes", type: "string", required: false, paths: ["notes", "Notes"], defaultValue: null },
+    { key: "tags", type: "string", required: false, paths: ["tags", "Tags"], defaultValue: null },
+  ],
+}
+
+/**
+ * The identity an imported contact MUST carry (at least one of these, non-empty) before it may
+ * become a `contacts` row at all: a row with no name, no email and no usable phone is nothing the
+ * workflows can address, notify, dedupe or enroll. `full_name` counts because the parser splits
+ * it into first/last. Same any-of shape validateEgress takes for the outbound direction.
+ */
+export const CRM_CONTACT_INGRESS_IDENTITY_ANY_OF: ReadonlyArray<ReadonlyArray<string>> = [
+  ["first_name", "last_name", "full_name", "email", "phone"],
+]
+
 export interface EgressVerdict { ok: boolean; missing: string[] }
 
 /**

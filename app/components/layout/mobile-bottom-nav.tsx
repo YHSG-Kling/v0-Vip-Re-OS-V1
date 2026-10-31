@@ -1,6 +1,5 @@
 'use client'
 
-import React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
@@ -19,6 +18,10 @@ export function MobileBottomNav({ items }: MobileBottomNavProps) {
     const IconComponent = (Icons as any)[iconName]
     return IconComponent ? <IconComponent className="w-5 h-5" /> : null
   }
+
+  // Lane 90D (test:rendered-empty-states): no items rendered an 80px white bar
+  // over the page content with nothing in it.
+  if (items.length === 0) return null
 
   return (
     // pb-[env(safe-area-inset-bottom)] — keep tap targets above the iOS home

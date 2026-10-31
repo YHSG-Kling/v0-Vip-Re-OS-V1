@@ -1,10 +1,15 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
-import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { captureConsentedContact } from "@/lib/contact-pipeline/contact-capture"
+import { tenantScope, applyTenantScope } from "@/lib/kernel/tenant-scope"
+import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 
 // ============================================================================
 // Types
@@ -26,6 +31,15 @@ interface ListingDetails {
   listing_date: string | null
   go_live_date: string | null
   mls_number: string | null
+  /**
+   * THE LISTING'S TENANT. Read from `listings.brokerage_id` and now SURFACED,
+   * because the public page needs it to scope "similar listings" to this
+   * brokerage (owner ruling 3, 2026-08-24 — "public landing pages should not
+   * show cross brokerage comps"). It was already being read here and dropped on
+   * the floor, which is why the page had nothing to pass and the scope silently
+   * never applied. NULLABLE, matching the column.
+   */
+  brokerage_id: string | null
   agent: {
     id: string
     first_name: string
@@ -35,10 +49,13 @@ interface ListingDetails {
     profile_photo_url: string | null
   } | null
   brokerage_name: string | null
+  // View-model shape for the public page. `photo_url` is the DTO field name the
+  // hero/gallery components read; it is sourced from listing_media.file_url
+  // (media_type='photo') since the m368/m369 consolidation.
   photos: Array<{
     id: string
     photo_url: string
-    order_index: number
+    sort_order: number
   }>
   media: Array<{
     id: string
@@ -111,10 +128,10 @@ export async function getLandingPageBySlug(slug: string): Promise<GeneratedLandi
 export async function incrementLandingPageViews(pageId: string, currentViewCount: number) {
   try {
     const supabase = createServiceClient()
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("listing_landing_pages")
       .update({ view_count: currentViewCount + 1, updated_at: new Date().toISOString() })
-      .eq("id", pageId)
+      .eq("id", pageId), { table: "listing_landing_pages", flow: "listing_landing_pages_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } catch (err) {
     // Fail silently - analytics should not block page load
     console.error("[v0] incrementLandingPageViews error:", err)
@@ -123,6 +140,14 @@ export async function incrementLandingPageViews(pageId: string, currentViewCount
 
 export async function getListingBySlug(slug: string): Promise<ListingDetails | null> {
   const supabase = await createClient()
+
+  // WAVE 147 (lane 147Z — lane 147F "Still open", security): the public slug USED TO be interpolated into a PostgREST filter
+  // string — .or(`mls_number.eq.${slug},id.eq.${slug}`) — so a slug carrying `,` / `.` / `(` could append its own filter
+  // clauses (filter injection, bounded only by the status + archive predicates). The slug is now an OPERAND, never filter
+  // syntax: a UUID-shaped slug is matched on id, anything else on mls_number, each through a parameterised .eq().
+  const key = String(slug ?? "").trim()
+  if (!key || key.length > 128) return null
+  const byId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key)
 
   // Fetch listing with agent info
   const { data: listing, error } = await supabase
@@ -145,8 +170,11 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
       agent_id,
       brokerage_id
     `)
+    // C12 (wave 147, lane 147F — ruling 8): the public landing narrows the shared public set to `active` and never shows
+    // an ARCHIVED listing (the archive filter was missing).
     .eq("status", "active")
-    .or(`mls_number.eq.${slug},id.eq.${slug}`)
+    .is("deleted_at", null)
+    .eq(byId ? "id" : "mls_number", key)
     .single()
 
   if (error || !listing) {
@@ -194,18 +222,28 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
     brokerage_name = brokerageData?.name || null
   }
 
-  // Fetch photos
-  const { data: photos } = await supabase
-    .from("listing_photos")
-    .select("id, photo_url, order_index")
+  // Fetch photos — listing_media rows of media_type='photo' (m368/m369
+  // consolidation). The pin matters: without it the gallery would render
+  // documents, floorplans and video files as photographs.
+  const { data: photos, error: photosError } = await supabase
+    .from("listing_media")
+    .select("id, photo_url:file_url, sort_order")
     .eq("listing_id", listing.id)
-    .order("order_index", { ascending: true })
+    .eq("media_type", "photo")
+    .order("sort_order", { ascending: true })
+  // A refused read resolves as an empty gallery — a public listing page that
+  // silently shows no photos is worse than one that logs why.
+  if (photosError) console.error("[listing-landing] photo read failed:", photosError.message)
 
-  // Fetch media (videos)
-  const { data: media } = await supabase
+  // Fetch NON-photo media (video, virtual tour, floorplan, ...) — the photo
+  // rows above are the same table, so excluding them here keeps the landing
+  // page from listing every photo twice.
+  const { data: media, error: mediaError } = await supabase
     .from("listing_media")
     .select("id, media_type, media_url:file_url")
     .eq("listing_id", listing.id)
+    .neq("media_type", "photo")
+  if (mediaError) console.error("[listing-landing] media read failed:", mediaError.message)
 
   return {
     id: listing.id,
@@ -223,6 +261,7 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
     listing_date: listing.listing_date,
     go_live_date: listing.go_live_date,
     mls_number: listing.mls_number,
+    brokerage_id: (listing.brokerage_id as string | null) ?? null,
     agent,
     brokerage_name,
     photos: photos || [],
@@ -290,7 +329,7 @@ Return this exact JSON structure:
     const parsed = result.data
 
     // Cache the AI result so subsequent loads are instant
-    await supabase.from("neighborhood_reports").upsert(
+    await bestEffort(supabase.from("neighborhood_reports").upsert(
       {
         listing_id: listingId,
         neighborhood_name: parsed.neighborhood_name,
@@ -307,7 +346,7 @@ Return this exact JSON structure:
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       },
       { onConflict: "listing_id" }
-    )
+    ), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return {
       neighborhood_name: parsed.neighborhood_name,
@@ -324,10 +363,48 @@ Return this exact JSON structure:
   }
 }
 
-export async function getSimilarListings(listingId: string, zip: string, brokerageId?: string) {
+/**
+ * "More homes like this" on the PUBLIC listing landing page.
+ *
+ * ── OWNER RULING (2026-08-24), verbatim ─────────────────────────────────────
+ *   "public landing pages should not show cross brokerage comps. not sure how
+ *    that got figured in?"
+ *
+ * The answer to the question is: NOBODY CHOSE IT. The signature was
+ *
+ *     getSimilarListings(listingId: string, zip: string, brokerageId?: string)
+ *
+ * with the predicate applied as `if (brokerageId) query = query.eq(…)`, and its
+ * ONE caller — app/listing/[slug]/page.tsx:184 — never passed the third
+ * argument. So the filter never once fired, and every public landing page listed
+ * similar homes from every brokerage in that ZIP. An optional parameter that no
+ * caller passes is indistinguishable from no tenancy at all; the tenant boundary
+ * existed only in the signature.
+ *
+ * ── WHY THE PARAMETER IS NOW REQUIRED, NOT DEFAULTED ────────────────────────
+ * A default would have re-created the same failure with a friendlier face: the
+ * scope would still be something a caller could decline to think about. Required
+ * means the compiler asks the question at every call site, and
+ * lib/kernel/tenant-scope.ts:tenantScope REFUSES a blank at runtime — which
+ * matters because this file is `"use server"`, so this export is a PUBLIC HTTP
+ * ENDPOINT (CLAUDE.md §4) and an empty string is a thing a stranger can send.
+ *
+ * The caller was already holding the answer: getListingBySlug reads
+ * `listings.brokerage_id` and simply did not surface it. It does now
+ * (ListingDetails.brokerage_id), and the page passes it.
+ *
+ * `listings.brokerage_id` IS nullable (verified live 2026-08-24; 0 of 3 rows are
+ * null today). A listing with no brokerage cannot ask "show me MY brokerage's
+ * other listings", so the page renders no similar-listings section at all rather
+ * than falling back to everyone's — the fail-CLOSED direction.
+ */
+export async function getSimilarListings(listingId: string, zip: string, brokerageId: string) {
   const supabase = await createClient()
 
-  let query = supabase
+  // Refuses a blank/whitespace id. A missing tenant is NOT "every tenant".
+  const scope = tenantScope(brokerageId, "getSimilarListings (public landing page)")
+
+  const query = supabase
     .from("listings")
     .select(`
       id,
@@ -341,15 +418,12 @@ export async function getSimilarListings(listingId: string, zip: string, brokera
       mls_number
     `)
     .eq("status", "active")
+    .is("deleted_at", null) // C12 (wave 147F): an archived listing is never a public "similar home"
     .eq("zip", zip)
     .neq("id", listingId)
     .limit(3)
 
-  if (brokerageId) {
-    query = query.eq("brokerage_id", brokerageId)
-  }
-
-  const { data, error } = await query
+  const { data, error } = await applyTenantScope(query, scope)
 
   if (error) {
     return []
@@ -359,16 +433,17 @@ export async function getSimilarListings(listingId: string, zip: string, brokera
   const listingsWithPhotos = await Promise.all(
     (data || []).map(async (listing) => {
       const { data: photo } = await supabase
-        .from("listing_photos")
-        .select("photo_url")
+        .from("listing_media")
+        .select("file_url")
         .eq("listing_id", listing.id)
-        .order("order_index", { ascending: true })
+        .eq("media_type", "photo")
+        .order("sort_order", { ascending: true })
         .limit(1)
-        .single()
+        .maybeSingle()
 
       return {
         ...listing,
-        photo_url: photo?.photo_url || null,
+        photo_url: photo?.file_url || null,
         slug: listing.mls_number || listing.id,
       }
     })
@@ -407,7 +482,7 @@ export async function logLandingSession(params: {
     // Insert session row — the utm params already carry the attribution source
     // (SellerSharePostsRail appends utm_source=seller-share), now stamped with the
     // owning brokerage so the report can read seller-driven reach per tenant.
-    await supabase.from("smart_landing_sessions").insert({
+    await bestEffort(supabase.from("smart_landing_sessions").insert({
       listing_id: params.listingId,
       brokerage_id: listingRow?.brokerage_id ?? null,
       session_token: params.sessionToken,
@@ -419,7 +494,30 @@ export async function logLandingSession(params: {
       time_on_page_seconds: 0,
       cta_clicked: false,
       showing_requested: false,
-    })
+    }), "landing analytics session")
+
+    // unique_visitors is DERIVED, not incremented. It used to be written as the
+    // literal 1 on the day's first view and never touched again, so it read 1
+    // forever no matter how many people visited — a permanently wrong number that
+    // looked like a real one. Incrementing it alongside total_views would have
+    // been wrong the other way: that is a view count, not a visitor count.
+    // The session ledger written just above is the honest source — distinct
+    // session_token for this listing on this date. Volume is one row per landing
+    // view per listing per day, so the distinct-count is done here rather than in
+    // SQL; supabase-js cannot express COUNT(DISTINCT ...) through PostgREST.
+    const { data: todaySessions, error: sessionCountError } = await supabase
+      .from("smart_landing_sessions")
+      .select("session_token")
+      .eq("listing_id", params.listingId)
+      .gte("created_at", `${today}T00:00:00.000Z`)
+      .lt("created_at", `${today}T23:59:59.999Z`)
+
+    // §3: a refused count must not silently become a smaller visitor number.
+    // Leave the column alone rather than writing a figure we could not derive.
+    const uniqueVisitors =
+      sessionCountError || !todaySessions
+        ? null
+        : new Set(todaySessions.map((s) => s.session_token).filter(Boolean)).size
 
     // Upsert analytics for today
     const { data: existing } = await supabase
@@ -427,27 +525,181 @@ export async function logLandingSession(params: {
       .select("id, total_views")
       .eq("listing_id", params.listingId)
       .eq("date", today)
-      .single()
+      .maybeSingle()
 
     if (existing) {
-      await supabase
+      await bestEffort(supabase
         .from("listing_page_analytics")
-        .update({ total_views: existing.total_views + 1 })
-        .eq("id", existing.id)
+        .update({
+          total_views: existing.total_views + 1,
+          ...(uniqueVisitors !== null ? { unique_visitors: uniqueVisitors } : {}),
+        })
+        .eq("id", existing.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     } else {
-      await supabase.from("listing_page_analytics").insert({
+      await bestEffort(supabase.from("listing_page_analytics").insert({
         listing_id: params.listingId,
+        // The tenant column exists on this table and was being left null, exactly
+        // as smart_landing_sessions.brokerage_id was until the comment above fixed
+        // it. The brokerage is already resolved for the session row — stamping it
+        // here costs nothing and makes the day's traffic row tenant-attributable.
+        brokerage_id: listingRow?.brokerage_id ?? null,
         date: today,
         total_views: 1,
-        unique_visitors: 1,
+        unique_visitors: uniqueVisitors ?? 1,
         cta_clicks: 0,
         showing_requests: 0,
         lead_captures: 0,
-      })
+      }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
   } catch (err) {
     // Fail silently - analytics should not block page load
     console.error("[v0] logLandingSession error:", err)
+  }
+}
+
+/**
+ * The landing page's traffic ledger, read back per source — the READER half of
+ * `smart_landing_sessions`.
+ *
+ * logLandingSession writes every visit with its attribution (utm_source /
+ * utm_medium / utm_campaign / qr_source), and trackCtaClick / submitShowingRequest
+ * flip cta_clicked / showing_requested on the SAME row — a real in-row
+ * visit→conversion linkage. Until this action only utm_source='seller-share'
+ * was ever read (the monthly intelligence report), so the QR codes an agent
+ * prints and the campaigns they tag were attributed into rows nobody could
+ * see. This is the agent-facing answer to "which of my share channels is
+ * actually driving visits and showings for this listing".
+ *
+ * TENANCY: caller's brokerage from the SESSION, checked against the listing's
+ * own brokerage before the service client reads the (publicly-written)
+ * session rows.
+ */
+export async function getLandingSourceBreakdown(listingId: string): Promise<
+  | {
+      success: true
+      totals: {
+        sessions: number
+        ctaClicks: number
+        showingRequests: number
+        avgTimeOnPageSeconds: number | null
+        pagesViewed: number
+        /**
+         * listing_page_analytics.unique_visitors, summed over the days that have a
+         * row. THE UNIT MATTERS AND IS NOT "visitors": the writer derives it as
+         * DISTINCT session_token WITHIN ONE DAY (logLandingSession, see the
+         * derivation note there), so somebody who comes back tomorrow is counted on
+         * both days. Summing is the only thing the stored column supports — a true
+         * period-distinct count would need the session ledger, which is what
+         * `sessions` above already reports. Labelled at the render site accordingly.
+         */
+        uniqueVisitorsSummed: number
+        /** How many days carry a stored figure — the denominator for the number above. */
+        uniqueVisitorDays: number
+        /** True when the analytics read itself was refused: the two fields above are
+         *  then UNKNOWN, not zero, and the tile must not print them as a count. */
+        uniqueVisitorsUnavailable: boolean
+      }
+      bySource: Array<{
+        source: string
+        medium: string | null
+        campaign: string | null
+        sessions: number
+        ctaClicks: number
+        showingRequests: number
+      }>
+    }
+  | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  const { data: profile, error: profileError } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (profileError) return { success: false, error: profileError.message }
+  if (!profile?.brokerage_id) return { success: false, error: "No brokerage on this account" }
+
+  const { data: listing, error: listingError } = await supabase
+    .from("listings").select("id, brokerage_id").eq("id", listingId).maybeSingle()
+  if (listingError) return { success: false, error: listingError.message }
+  if (!listing || listing.brokerage_id !== profile.brokerage_id) {
+    return { success: false, error: "Listing not found" }
+  }
+
+  // Gate above, service client below: session rows are written by anonymous
+  // public visitors, and the listing_id pin plus the ownership check keep this
+  // read inside the caller's own listing.
+  const svc = createServiceClient()
+  const { data: sessions, error: sessionsError } = await svc
+    .from("smart_landing_sessions")
+    .select("listing_id, utm_source, utm_medium, utm_campaign, qr_source, pages_viewed, time_on_page_seconds, cta_clicked, showing_requested")
+    .eq("listing_id", listingId)
+    .limit(5000)
+  // supabase-js RESOLVES a refused read — report it, never render "no visits".
+  if (sessionsError) {
+    console.error("[getLandingSourceBreakdown] session read failed:", sessionsError.message)
+    return { success: false, error: sessionsError.message }
+  }
+
+  // THE READER FOR listing_page_analytics.unique_visitors. The column was derived
+  // and written every visit (logLandingSession above) and selected by nothing —
+  // the three other reads of this table each pull only the counter they are about
+  // to increment. Same gate, same service client, same listing pin.
+  const { data: dailyRows, error: dailyError } = await svc
+    .from("listing_page_analytics")
+    .select("date, unique_visitors")
+    .eq("listing_id", listingId)
+    .order("date", { ascending: false })
+    .limit(365)
+  if (dailyError) {
+    // Not fatal to the whole breakdown — the session ledger above stands on its
+    // own. But it is reported as UNAVAILABLE rather than folded into a zero,
+    // because "nobody could read it" must never render as "nobody visited".
+    console.error("[getLandingSourceBreakdown] daily analytics read refused:", dailyError.message)
+  }
+  const daily = (dailyRows ?? []) as unknown as Array<{ date: string | null; unique_visitors: number | null }>
+  const uniqueVisitorDaily = daily.filter((d) => typeof d.unique_visitors === "number")
+  const uniqueVisitorsSummed = uniqueVisitorDaily.reduce((n, d) => n + (d.unique_visitors as number), 0)
+
+  const rows = sessions ?? []
+  const bySourceMap = new Map<string, { source: string; medium: string | null; campaign: string | null; sessions: number; ctaClicks: number; showingRequests: number }>()
+  let ctaClicks = 0
+  let showingRequests = 0
+  let pagesViewed = 0
+  let timeSum = 0
+  let timeCount = 0
+  for (const s of rows) {
+    // QR scans carry qr_source; tagged links carry utm_*; everything else is direct.
+    const source = s.qr_source ? `QR: ${s.qr_source}` : (s.utm_source || "direct")
+    const key = `${source}|${s.utm_medium ?? ""}|${s.utm_campaign ?? ""}`
+    const entry = bySourceMap.get(key) ?? {
+      source, medium: s.utm_medium ?? null, campaign: s.utm_campaign ?? null,
+      sessions: 0, ctaClicks: 0, showingRequests: 0,
+    }
+    entry.sessions++
+    if (s.cta_clicked) { entry.ctaClicks++; ctaClicks++ }
+    if (s.showing_requested) { entry.showingRequests++; showingRequests++ }
+    pagesViewed += s.pages_viewed ?? 0
+    if (typeof s.time_on_page_seconds === "number" && s.time_on_page_seconds > 0) {
+      timeSum += s.time_on_page_seconds
+      timeCount++
+    }
+    bySourceMap.set(key, entry)
+  }
+
+  return {
+    success: true,
+    totals: {
+      sessions: rows.length,
+      ctaClicks,
+      showingRequests,
+      avgTimeOnPageSeconds: timeCount > 0 ? Math.round(timeSum / timeCount) : null,
+      pagesViewed,
+      uniqueVisitorsSummed,
+      uniqueVisitorDays: uniqueVisitorDaily.length,
+      uniqueVisitorsUnavailable: !!dailyError,
+    },
+    bySource: [...bySourceMap.values()].sort((a, b) => b.sessions - a.sessions),
   }
 }
 
@@ -471,10 +723,10 @@ export async function trackCtaClick(listingId: string, sessionToken: string) {
       .single()
 
     if (existing) {
-      await supabase
+      await bestEffort(supabase
         .from("listing_page_analytics")
         .update({ cta_clicks: existing.cta_clicks + 1 })
-        .eq("id", existing.id)
+        .eq("id", existing.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
   } catch (err) {
     console.error("[v0] trackCtaClick error:", err)
@@ -490,10 +742,14 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
 
   // 1. Resolve the listing (brokerage + agent) once — needed for capture routing,
   //    the lifecycle event, and the confirmation message.
+  // C12 (wave 147, lane 147F — ruling 8): a PUBLIC showing request reaches only a publicly visible listing — an archived
+  // or off-market listing answers "not found" here exactly as its page does.
   const { data: listing } = await supabase
     .from("listings")
     .select("brokerage_id, agent_id")
     .eq("id", input.listingId)
+    .in("status", publiclyVisibleListingStatuses())
+    .is("deleted_at", null)
     .single()
 
   if (!listing?.brokerage_id) {
@@ -527,7 +783,17 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
   // multi-touch sequence enrollment. A represented buyer is captured with NO owner.
   let contactId: string
   try {
-    const { contactId: capturedId } = await captureContact({
+    // C8 (wave 147, lane 147A — owner ruling 1): the consented showing request → CONTACT + consent record + arbiter told. The
+    // tenant is the LISTING row's (re-read by the contract against listings). The wording is the one this door has always
+    // stamped as tcpa_consent_text — now hashed and scoped on the consent record.
+    const LISTING_LANDING_CONSENT_TEXT = "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
+    const intake = await captureConsentedContact({
+      consents: [{ family: "phone", given: consentGiven, text: LISTING_LANDING_CONSENT_TEXT, textVersion: "listing_landing:v1", purposes: ["property_inquiry"] }],
+      intake: {
+        capturedAt: consentNow, channel: "landing_page", sourceUrl: `/listings/${input.listingId}`,
+        evidence: { listing_id: input.listingId, representation: repStatus },
+        formOwner: { table: "listings", id: input.listingId },
+      },
       brokerageId:         listing.brokerage_id,
       ownerAgentId:        isRepresented ? null : (listing.agent_id ?? null),
       skipAutoAssign:      isRepresented,
@@ -538,15 +804,10 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
       phone:               consentGiven && input.phone?.trim() ? input.phone.trim() : null,
       preferred_channel:   consentGiven && input.phone?.trim() ? "phone" : "email",
       contact_type:        "buyer",
-      tcpa_consent:        consentGiven,
-      tcpa_consent_date:   consentGiven ? consentNow : null,
-      tcpa_consent_source: consentGiven ? "listing_landing_page" : null,
-      tcpa_consent_text:   consentGiven
-        ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
-        : null,
       enrichmentProfile,
     })
-    contactId = capturedId
+    if (!intake.ok || !intake.contactId) return { success: false, error: intake.reason ?? "Failed to create contact" }
+    contactId = intake.contactId
   } catch {
     return { success: false, error: "Failed to create contact" }
   }
@@ -572,10 +833,10 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
 
   // 3. Update session if token provided
   if (input.sessionToken) {
-    await supabase
+    await bestEffort(supabase
       .from("smart_landing_sessions")
       .update({ showing_requested: true })
-      .eq("session_token", input.sessionToken)
+      .eq("session_token", input.sessionToken), "landing analytics flag; the showing request itself is recorded above")
   }
 
   // 4. Update analytics
@@ -588,22 +849,25 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
     .single()
 
   if (analytics) {
-    await supabase
+    await bestEffort(supabase
       .from("listing_page_analytics")
       .update({
         showing_requests: analytics.showing_requests + 1,
         lead_captures: analytics.lead_captures + 1,
       })
-      .eq("id", analytics.id)
+      .eq("id", analytics.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   }
 
-  // 5. Record lifecycle event with kernel event (listing resolved at step 1)
+  // 5. Record lifecycle event with kernel event (listing resolved at step 1) —
+  //    audit row + reactor (staff bell / sequences keyed on showing_requested).
   if (listing?.brokerage_id) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: listing.brokerage_id,
-      entity_type: "showing_request",
-      entity_id: showingRequest.id,
-      event_type: KernelEvent.SHOWING_REQUESTED,
+    await emitKernelEvent({
+      brokerageId: listing.brokerage_id,
+      entityType: "showing_request",
+      entityId: showingRequest.id,
+      event: KernelEvent.SHOWING_REQUESTED,
+      listingId: input.listingId,
+      contactId: contactId ?? undefined,
       metadata: {
         listing_id: input.listingId,
         contact_id: contactId,

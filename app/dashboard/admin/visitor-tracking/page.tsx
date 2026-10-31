@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type VisitorRow = {
   id: string
@@ -51,14 +52,30 @@ export default function VisitorTrackingPage() {
         .eq('id', user.id)
         .single()
 
-      if (!prof || !['admin', 'broker', 'superadmin'].includes(prof.user_type)) {
+      if (!prof || !isAdminOrBroker({ user_type: prof.user_type })) {
         setError('Forbidden')
         setLoading(false)
         return
       }
 
-      // agent_id uses the auth user's id — the pixel snippet scopes tracking to this brokerage+agent
-      setProfile({ brokerage_id: prof.brokerage_id ?? '', agent_id: user.id, user_type: prof.user_type })
+      // IDENTITY CLASS (m366). This embedded the AUTH USER id in the pixel
+      // snippet, and the snippet's endpoint upserts website_visitors.agent_id,
+      // which FKs AGENTS. So every pixel hit was foreign-key rejected: the
+      // admin pasted the tracking script onto their site, visitors browsed, and
+      // nothing was ever recorded. The page then rendered an empty visitor list
+      // that looked like "no traffic yet" rather than a broken pipe.
+      const { data: pixelAgentRow } = await supabase
+        .from('agents')
+        .select('id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      const pixelAgentId = (pixelAgentRow as { id?: string } | null)?.id ?? ''
+      if (!pixelAgentId) {
+        setError('This account has no agent profile yet, so the tracking snippet cannot be scoped to an agent. Finish account setup first.')
+        setLoading(false)
+        return
+      }
+      setProfile({ brokerage_id: prof.brokerage_id ?? '', agent_id: pixelAgentId, user_type: prof.user_type })
 
       const { data: rows, error: fetchErr } = await supabase
         .from('website_visitors')
@@ -79,14 +96,97 @@ export default function VisitorTrackingPage() {
     }
   }
 
-  const snippet = profile
+  // The pixel must be ABSOLUTE. This snippet is pasted into someone else's website, so a
+  // relative '/api/track/pixel' resolved against THEIR origin — the request went to
+  // https://their-site.com/api/track/pixel, 404'd there, and nothing was ever recorded.
+  // The snippet looked right, copied cleanly, and could not work. NEXT_PUBLIC_APP_URL is
+  // the canonical origin used elsewhere in the codebase for exactly this.
+  const trackingOrigin = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+
+  // ── THE IDENTIFY HALF, BUILT ────────────────────────────────────────────────
+  //
+  // The three `identified_at` readings on this page — the Identified tile, the
+  // per-row badge, the Identified-at column — were structurally zero for every
+  // brokerage, because `app/api/track/identify/route.ts` is the ONLY writer of
+  // that column and NOTHING in the tree called it. The pixel half shipped; the
+  // identify half never got its caller. §1 case 2 — no duplicate identifier
+  // exists anywhere, so the missing half is BUILT rather than the endpoint
+  // deleted. See the header of app/api/track/identify/route.ts.
+  //
+  // The call is a BEACON, deliberately, and both fallbacks stay "simple"
+  // requests: `sendBeacon` with a text/plain Blob, then `fetch` with mode
+  // 'no-cors' and a bare string body. Neither triggers a CORS preflight, so
+  // this works from the installer's own domain with no OPTIONS handler and no
+  // `Access-Control-Allow-Origin: *` on an unauthenticated endpoint. A beacon
+  // also survives the navigation a form submit causes, which a plain fetch does
+  // not.
+  //
+  // WHAT LEAVES THE INSTALLER'S PAGE: an email and/or phone the visitor just
+  // typed into that site's own form, and the session id. Nothing else, and only
+  // once per session (`_vipid`). The endpoint creates nothing — it can only
+  // link the session to a lead or contact this brokerage ALREADY holds.
+  //
+  // ── THE DWELL HALF, BUILT (2026-09-01) ──────────────────────────────────────
+  //
+  // `website_visitors.time_on_page_seconds` had a reader — the principal digest's
+  // site-traffic insight (lib/kernel/site-traffic-insights.ts), which fails
+  // closed on the absent value — and NO writer. This is the unbuilt half that
+  // comment names: a `pagehide` timer posting seconds back to
+  // `/api/track/dwell`, via the SAME two-step beacon shape as `send()` above
+  // (sendBeacon with a text/plain Blob, then no-cors keepalive fetch). Both
+  // steps stay CORS "simple requests" — a fetch with Content-Type:
+  // application/json would force an OPTIONS preflight this endpoint does not
+  // answer and the loop would die silently; the warning lives at the identify
+  // route's header. `pagehide` and not `beforeunload`: beforeunload does not
+  // fire on bfcache navigations or on mobile Safari tab kills, which is most of
+  // the traffic a brokerage site sees. The reader turns on with no change the
+  // moment rows carry a measured value.
+  //
+  // Note the doubled backslashes: this is a TS template literal, so `\\D` here
+  // is the single `\D` the pasted script needs. A bare `\D` would collapse to a
+  // literal "D" and the phone test would silently match nothing.
+  const snippet = profile && trackingOrigin
     ? `<script>
-(function(b,a){
+(function(b,a,o){
   var s=localStorage.getItem('_vip')||Math.random().toString(36).slice(2);
   localStorage.setItem('_vip',s);
-  new Image().src='/api/track/pixel?b='+b+'&a='+a+'&s='+s
-    +'&p='+encodeURIComponent(location.href);
-})('${profile.brokerage_id}','${profile.agent_id}');
+  new Image().src=o+'/api/track/pixel?b='+b+'&a='+a+'&s='+s
+    +'&p='+encodeURIComponent(location.href)
+    +'&'+location.search.replace(/^\\?/,'');
+  function send(e,p){
+    if(!e&&!p)return;
+    if(localStorage.getItem('_vipid')===s)return;
+    localStorage.setItem('_vipid',s);
+    var d=JSON.stringify({sessionId:s,email:e,phone:p});
+    try{
+      if(navigator.sendBeacon&&navigator.sendBeacon(o+'/api/track/identify',new Blob([d],{type:'text/plain'})))return;
+    }catch(x){}
+    try{fetch(o+'/api/track/identify',{method:'POST',mode:'no-cors',keepalive:true,body:d});}catch(x){}
+  }
+  document.addEventListener('submit',function(ev){
+    var f=ev.target;
+    if(!f||!f.querySelectorAll)return;
+    var n=f.querySelectorAll('input,textarea'),e=null,p=null;
+    for(var i=0;i<n.length;i++){
+      var v=(n[i].value||'').trim();
+      if(!v)continue;
+      var k=((n[i].type||'')+' '+(n[i].name||'')+' '+(n[i].id||'')).toLowerCase();
+      if(!e&&(k.indexOf('email')>-1||v.indexOf('@')>0))e=v;
+      else if(!p&&(k.indexOf('phone')>-1||k.indexOf('tel')>-1)&&v.replace(/\\D/g,'').length>9)p=v;
+    }
+    send(e,p);
+  },true);
+  var t0=Date.now();
+  addEventListener('pagehide',function(){
+    var sec=Math.round((Date.now()-t0)/1000);
+    if(sec<1||sec>7200)return;
+    var w=JSON.stringify({sessionId:s,pageUrl:location.href,seconds:sec});
+    try{
+      if(navigator.sendBeacon&&navigator.sendBeacon(o+'/api/track/dwell',new Blob([w],{type:'text/plain'})))return;
+    }catch(x){}
+    try{fetch(o+'/api/track/dwell',{method:'POST',mode:'no-cors',keepalive:true,body:w});}catch(x){}
+  });
+})('${profile.brokerage_id}','${profile.agent_id}','${trackingOrigin}');
 </script>`
     : ''
 
@@ -98,6 +198,12 @@ export default function VisitorTrackingPage() {
   }
 
   const total       = visitors.length
+  // Most recent activity across the loaded sessions — answers "is the snippet live?".
+  const lastSeen = visitors.reduce<string | null>((acc, v) => {
+    const t = v.last_seen_at ?? v.first_seen_at
+    if (!t) return acc
+    return !acc || new Date(t) > new Date(acc) ? t : acc
+  }, null)
   const identified  = visitors.filter(v => v.identified_at).length
   const anonymous   = total - identified
 
@@ -130,6 +236,16 @@ export default function VisitorTrackingPage() {
           Anonymous pixel tracking. No contact is created on pixel fire — identification
           only occurs when a visitor is matched to an existing lead or contact.
         </p>
+        {/* The Identified tile was previously unreachable: nothing in the product
+            ever called the one endpoint that stamps identified_at, so this number
+            could only ever be 0. The snippet now carries that call — this line
+            says what makes it move, so a zero reads as "nobody matched yet"
+            rather than as a working feature. */}
+        <p className="text-sm text-muted-foreground mt-1">
+          A session becomes <span className="font-medium text-foreground">Identified</span> when
+          someone submits a form on your site using an email or phone number this brokerage
+          already has on file. Only that email or phone is sent back, once per session.
+        </p>
       </div>
 
       {/* Stats */}
@@ -157,13 +273,64 @@ export default function VisitorTrackingPage() {
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
-        <pre className="text-xs bg-muted p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
-          {snippet}
-        </pre>
-        <p className="text-xs text-muted-foreground">
-          Paste this snippet into the {'<head>'} of your website. The BROKERAGE_ID is pre-filled.
-          Replace AGENT_ID if you want attribution to a specific agent.
-        </p>
+        {snippet ? (
+          <pre className="text-xs bg-muted p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
+            {snippet}
+          </pre>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {profile
+              ? "This snippet needs the app's public URL (NEXT_PUBLIC_APP_URL) to be configured before it can be installed — without it the pixel would point at your own website and record nothing."
+              : "Loading your brokerage details…"}
+          </p>
+        )}
+
+        {/* Real directions. The previous copy told the installer to "replace AGENT_ID",
+            but both IDs are already filled in — it described a different snippet than the
+            one on screen, which is the walkthrough's "snippet code but no directions". */}
+        {snippet && (
+          <div className="text-xs text-muted-foreground space-y-2 pt-1">
+            <p className="font-medium text-foreground">How to install</p>
+            <ol className="list-decimal ml-4 space-y-1">
+              <li>Copy the snippet above — your brokerage and agent IDs are already filled in, nothing to edit.</li>
+              <li>
+                Paste it into your website&apos;s {'<head>'}, on every page you want tracked. On
+                WordPress that is Appearance → Theme File Editor → header.php, or any
+                header-scripts plugin; on Squarespace, Settings → Advanced → Code Injection → Header;
+                on Wix, Settings → Custom Code → Add Code to Head.
+              </li>
+              <li>Publish the site, then open one of those pages in a normal browser tab.</li>
+              <li>Come back here and press Refresh — a new session should appear within a few seconds.</li>
+            </ol>
+            <p>
+              Nothing appearing? The three usual causes are the snippet landing in the body
+              instead of the {'<head>'}, the page being cached and serving the old markup, or an
+              ad-blocker on the browser you tested with.
+            </p>
+            <p>
+              The same snippet also handles identification: when a visitor submits any form on
+              your site, it sends just the email or phone from that form so the session can be
+              matched to a lead or contact you already have. It never creates anyone new, and it
+              sends nothing else from the form.
+            </p>
+          </div>
+        )}
+
+        {/* Is it actually working? The page already loads the sessions, so it can answer
+            the question the installer really has instead of leaving them guessing. */}
+        <div className="border-t pt-2 mt-1">
+          {total > 0 ? (
+            <p className="text-xs text-emerald-700">
+              Receiving traffic — {total} {total === 1 ? "session" : "sessions"} recorded
+              {lastSeen ? `, most recently ${fmt(lastSeen)}` : ""}.
+            </p>
+          ) : (
+            <p className="text-xs text-amber-700">
+              No sessions recorded yet. Until the snippet is installed and a page is visited,
+              this stays empty — that is expected, not an error.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Visitor table */}

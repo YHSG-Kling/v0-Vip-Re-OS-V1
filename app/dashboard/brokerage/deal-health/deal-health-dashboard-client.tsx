@@ -84,9 +84,9 @@ interface Props {
 
 const RISK_CONFIG: Record<RiskLevel, { label: string; color: string; bgColor: string; icon: React.ElementType }> = {
   critical: { label: "Critical", color: "text-red-600", bgColor: "bg-red-50 border-red-200", icon: AlertTriangle },
-  at_risk:  { label: "At Risk",  color: "text-amber-600", bgColor: "bg-amber-50 border-amber-200", icon: AlertCircle },
-  watch:    { label: "Watch",    color: "text-yellow-600", bgColor: "bg-yellow-50 border-yellow-200", icon: Eye },
-  healthy:  { label: "Healthy",  color: "text-green-600", bgColor: "bg-green-50 border-green-200", icon: CheckCircle },
+  at_risk:  { label: "At Risk",  color: "text-amber-700", bgColor: "bg-amber-50 border-amber-200", icon: AlertCircle },
+  watch:    { label: "Watch",    color: "text-yellow-700", bgColor: "bg-yellow-50 border-yellow-200", icon: Eye },
+  healthy:  { label: "Healthy",  color: "text-green-700", bgColor: "bg-green-50 border-green-200", icon: CheckCircle },
 }
 
 const STAGE_OPTIONS = [
@@ -158,7 +158,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                       <span className={cn(
                         "font-medium mr-1",
                         i.severity === "critical" ? "text-red-700" : 
-                        i.severity === "high" ? "text-amber-700" : "text-amber-600"
+                        i.severity === "high" ? "text-amber-700" : "text-amber-700"
                       )}>
                         [{i.severity ?? "info"}]
                       </span>
@@ -166,7 +166,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                       {i.transaction_id && (
                         <Link
                           href={`/dashboard/transactions/${i.transaction_id}`}
-                          className="ml-2 text-amber-600 hover:underline"
+                          className="ml-2 text-amber-700 hover:underline"
                         >
                           View Deal
                         </Link>
@@ -176,7 +176,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                 </ul>
               </div>
             </div>
-            <button onClick={() => setShowInterventions(false)} className="text-amber-600 hover:text-amber-800">
+            <button onClick={() => setShowInterventions(false)} className="text-amber-700 hover:text-amber-800">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -184,7 +184,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
       )}
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {(["critical", "at_risk", "watch", "healthy"] as RiskLevel[]).map(level => {
           const config = RISK_CONFIG[level]
           const Icon = config.icon
@@ -245,7 +245,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
       </div>
 
       {/* Deals Table */}
-      <div className="border rounded-lg overflow-hidden">
+      <div className="border rounded-lg overflow-x-auto">
         <table className="w-full">
           <thead className="bg-muted/50">
             <tr>
@@ -322,7 +322,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                       {score.score_delta !== null && score.score_delta !== 0 && (
                         <span className={cn(
                           "text-xs",
-                          score.score_delta > 0 ? "text-green-600" : "text-red-600"
+                          score.score_delta > 0 ? "text-green-700" : "text-red-600"
                         )}>
                           {score.score_delta > 0 ? "+" : ""}{score.score_delta}
                         </span>

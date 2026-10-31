@@ -3,11 +3,12 @@
  * eSignature provider.
  *
  * IMPORTANT: The eSign provider is per-AGENT/BROKERAGE — not hardcoded.
- * resolveTransactionFormsProvider() reads platform_credentials and returns
- * whichever provider the user/brokerage has connected (dotloop, docusign,
- * skyslope, formsimplicity, brokermint, authentisign). The same lookup
- * powers the FormWizard's "Send for signature" button — this adapter mirrors
- * that flow so workflow-driven sends behave identically to manual ones.
+ * Lane 88B2: WHICH provider is the tenant's e-sign SELECTION (provider_overrides `esign`),
+ * independent of the transaction-management connection. Lane 89A: the default is DocuSign
+ * (lib/integrations/providers/catalog.ts DEFAULT_ESIGN_PROVIDER) and the CREDENTIAL of the
+ * selected/default API provider comes from the ONE resolver
+ * (lib/integrations/resolve-esign-provider.ts: agent → team → brokerage → platform connection,
+ * then the platform's own DocuSign account for the default) — a different TM vendor never stands in.
  *
  * Pre-condition: the document must already have status='draft_ready' or
  * 'review' (i.e. the agent has approved the packet in the FormWizard).
@@ -25,13 +26,27 @@
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /**
  * Record the packet of record (signature_requests) for a successful send —
  * this is the row the client portal's Sign button gates on (owner rule: the
  * button only appears when an ACTIVE packet exists, and routes to the invite
- * via signing_url when the provider returned one; l54-s01). Best-effort:
- * a packet-record failure never fails the send itself.
+ * via signing_url when the provider returned one; l54-s01).
+ *
+ * WHY IT STAYS NON-FATAL, AND WHY IT IS NO LONGER SILENCED:
+ * every caller below reaches this only AFTER the provider has already accepted
+ * the envelope. Throwing or returning an error at this point would mark a step
+ * that really did send as failed, and the workflow retry would cut a SECOND
+ * envelope against the same document. So the send result stands — but the loss
+ * is now OBSERVABLE two ways instead of discarded by `.then(() => {}, () => {})`:
+ *   1. sentinelWrite ledgers the failure to self_heal_events (data_flow /
+ *      best_effort_write) where the repair digest and Exception Center rank it;
+ *   2. the boolean returned here rides out on the step's own output as
+ *      `packet_recorded`, so the workflow ledger records that the send happened
+ *      without a portal-visible packet rather than implying one exists.
+ * Note supabase-js RESOLVES a rejected write, so the old silencer swallowed the
+ * common case (FK/CHECK rejection), not just network faults.
  */
 async function recordSignaturePacket(supabase: StepContext["supabase"], p: {
   brokerageId: string
@@ -40,24 +55,28 @@ async function recordSignaturePacket(supabase: StepContext["supabase"], p: {
   transactionId: string | null
   signingUrl: string | null
   envelopeId?: string | null
-}): Promise<void> {
+}): Promise<boolean> {
   // LIVE-SCHEMA CONTRACT: signature_requests.document_id FKs to
   // client_documents — this adapter sends AI-drafted `documents` rows, so
   // the id only goes on the packet when it actually exists there; otherwise
   // the packet anchors on (contact, transaction) and the portal's
   // single-active-packet fallback resolves it.
   const { data: cd } = await supabase.from("client_documents").select("id").eq("id", p.documentId).maybeSingle()
-  await supabase.from("signature_requests").insert({
-    brokerage_id: p.brokerageId,
-    document_id: cd ? p.documentId : null,
-    contact_id: p.contactId,
-    transaction_id: p.transactionId,
-    request_status: "pending",
-    sent_at: new Date().toISOString(),
-    expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
-    signing_url: p.signingUrl,
-    provider_envelope_id: p.envelopeId ?? null,
-  }).then(() => {}, () => {})
+  return sentinelWrite(
+    supabase,
+    supabase.from("signature_requests").insert({
+      brokerage_id: p.brokerageId,
+      document_id: cd ? p.documentId : null,
+      contact_id: p.contactId,
+      transaction_id: p.transactionId,
+      request_status: "pending",
+      sent_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+      signing_url: p.signingUrl,
+      provider_envelope_id: p.envelopeId ?? null,
+    }),
+    { table: "signature_requests", flow: "workflow_send_for_esign", brokerageId: p.brokerageId },
+  )
 }
 
 export const sendForEsignAdapter: ChannelAdapter = {
@@ -67,35 +86,87 @@ export const sendForEsignAdapter: ChannelAdapter = {
     const { step, brokerageId, contact, agentUserId, supabase, previousOutputs } = ctx
 
     // ── Resolve the agent's configured eSign provider ────────────────────
-    // Step-level override beats brokerage default; brokerage default beats nothing.
+    // Step-level override beats the tenant's e-sign SELECTION; the selection's default is Google.
+    //
+    // LANE 88B2 (owner, wave 88: "google esign is default not dotloop."). This step used to take
+    // its e-sign provider from resolveTransactionFormsProvider — the most recent TRANSACTION-
+    // MANAGEMENT credential (dotloop / skyslope / brokermint / …). So the TM choice DROVE e-sign:
+    // a tenant that connected Dotloop for its loops auto-sent every signature through Dotloop, and
+    // one on Brokermint (no e-sign at all) was told to "send manually from Brokermint". E-sign is
+    // now its OWN choice: WHICH provider comes from the provider_overrides `esign` cascade
+    // (resolveTenantProvider → lib/kernel/providers.ts; user → team → brokerage → superadmin →
+    // SYSTEM_DEFAULTS.esign = Google eSignature). The TM connection is consulted ONLY for the
+    // CREDENTIAL of an API provider the tenant actually SELECTED for e-sign. TM stays the tenant's
+    // choice for loops and forms; it no longer picks the signer.
     let provider: string = (step as any).esign_provider ?? ""
-    let providerCredentials: { access_token: string | null; account_id: string | null } | null = null
+    // Lane 89A: the SELECTED (or default) API provider arrives already instantiated with ITS
+    // credential — the tenant's own connection, or the platform's DocuSign account for the default.
+    let resolvedEsignProvider: import("@/lib/integrations/providers/transaction-provider.interface").ITransactionProvider | null = null
+    let selectionRefusal: string | null = null
 
     if (!provider) {
       try {
-        const { resolveTransactionFormsProvider } = await import("@/lib/kernel/forms")
-        const result = await resolveTransactionFormsProvider({ brokerage_id: brokerageId })
-        if (result.success && result.data?.is_configured) {
-          provider            = result.data.provider_name
-          providerCredentials = {
-            access_token: result.data.access_token,
-            account_id:   result.data.account_id,
+        const { resolveTenantProvider } = await import("@/lib/kernel/tenant-config-reads")
+        const { getCatalogEntry, DEFAULT_ESIGN_PROVIDER } = await import("@/lib/integrations/providers/catalog")
+        // Sessionless door (workflow run): the tenant is the run's verified brokerageId.
+        const selection = await resolveTenantProvider({
+          providerType: "esign",
+          actorContext: { userId: agentUserId ?? "", brokerageId },
+        })
+        const selected = selection.providerKey
+        const entry = getCatalogEntry(selected)
+        if (entry?.portalSend) {
+          // Google eSignature (a selection, no longer the default) — portal-send: the manual-send
+          // rail below hands the agent their Drive with the steps. No credential exists or is needed.
+          provider = entry.name
+        } else if (entry && entry.capabilities.esign) {
+          // The selected API provider — or the DocuSign DEFAULT (lane 89A) — with ITS credential,
+          // through the ONE resolver (selection → default; agent → team → brokerage → platform
+          // credential; the platform's own DocuSign account as the default's last rung). A
+          // different vendor's connection never stands in; a refusal is returned by name.
+          const { resolveESignProviderForActor } = await import("@/lib/integrations/resolve-esign-provider")
+          try {
+            const resolved = await resolveESignProviderForActor({ brokerageId, userId: agentUserId ?? null })
+            provider              = resolved.providerName
+            resolvedEsignProvider = resolved.provider
+          } catch (err) {
+            // Selected but not connected (or the credential read was refused): fail closed and say
+            // which — never fall back to whatever TM is connected.
+            selectionRefusal = err instanceof Error ? err.message : `E-sign is set to ${entry.label}, but no active ${entry.label} connection was found.`
           }
+        } else {
+          selectionRefusal = `The e-sign selection '${selected}' is not an e-sign provider. Choose one in Settings → Integrations (the default is ${getCatalogEntry(DEFAULT_ESIGN_PROVIDER)?.label ?? DEFAULT_ESIGN_PROVIDER}).`
         }
       } catch { /* fall through */ }
+    }
+
+    if (selectionRefusal) {
+      if (agentUserId) {
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
+          user_id: agentUserId,
+          brokerage_id: brokerageId,
+          type: "esign_provider_not_configured",
+          title: "Connect your selected eSign provider",
+          body: selectionRefusal,
+          priority: "high",
+        }), { table: "notifications", flow: "esign_provider_not_configured_notify", brokerageId, reason: "the step already reports status:error; this is only the agent heads-up" })
+      }
+      return { status: "error", providerKey: "esign", error: selectionRefusal }
     }
 
     if (!provider || provider === "not_configured") {
       // Notify the agent that they need to connect an eSign provider
       if (agentUserId) {
-        void Promise.resolve(supabase.from("notifications").insert({
+        // Blind-spot burn-down (lane 75D, notification fan-out census) — sentinelWrite,
+        // the SAME wrapper this file already uses for signature_requests above (§6).
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id: agentUserId,
           brokerage_id: brokerageId,
           type: "esign_provider_not_configured",
           title: "Connect an eSign provider",
-          body: "A workflow tried to send a document for signature but no eSign provider is connected. Configure Dotloop, DocuSign, or another supported provider in Settings → Integrations.",
+          body: "A workflow tried to send a document for signature but the eSign provider could not be resolved. E-sign defaults to DocuSign (embedded in the platform); connect your own DocuSign, Dotloop, SkySlope or Authentisign — or select Google eSignature — in Settings → Integrations.",
           priority: "high",
-        })).catch(() => {})
+        }), { table: "notifications", flow: "esign_provider_not_configured_notify", brokerageId, reason: "the step already reports status:error; this is only the agent heads-up" })
       }
       return {
         status: "error",
@@ -150,7 +221,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
     // require human review/finalization in the FormWizard before signing.
     if (document.status === "needs_agent_input") {
       if (agentUserId) {
-        void Promise.resolve(supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id: agentUserId,
           brokerage_id: brokerageId,
           type: "esign_blocked_packet_pending",
@@ -159,7 +230,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
           priority: "high",
           entity_type: "document",
           entity_id: documentId,
-        })).catch(() => {})
+        }), { table: "notifications", flow: "esign_blocked_packet_pending_notify", brokerageId, reason: "the step already reports the block; this is only the agent heads-up" })
       }
       return {
         status: "skipped",
@@ -183,10 +254,11 @@ export const sendForEsignAdapter: ChannelAdapter = {
               transactionId: (document as any).transaction_id,
               recipientType: recipient,
             })
-            await supabase.from("documents")
+            const { error: esignReviewErr } = await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
-            await recordSignaturePacket(supabase, {
+            if (esignReviewErr) console.error(`[send-for-esign] loop created but the document was NOT moved to review: ${esignReviewErr.message}`)
+            const packetRecorded = await recordSignaturePacket(supabase, {
               brokerageId, documentId,
               contactId: contact?.id ?? null,
               transactionId: (document as any).transaction_id ?? null,
@@ -202,6 +274,9 @@ export const sendForEsignAdapter: ChannelAdapter = {
                 loop_id: result?.loopId,
                 signing_url: result?.signingUrl ?? null,
                 status: "sent_for_signature",
+                // false ⇒ the envelope went out but no portal-visible packet exists
+                // (loss is on the sentinel ledger). Never implied to be true.
+                packet_recorded: packetRecorded,
               },
             }
           }
@@ -217,10 +292,11 @@ export const sendForEsignAdapter: ChannelAdapter = {
               agentUserId,
               documentId,
             })
-            await supabase.from("documents")
+            const { error: esignReviewErr } = await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
-            await recordSignaturePacket(supabase, {
+            if (esignReviewErr) console.error(`[send-for-esign] loop created but the document was NOT moved to review: ${esignReviewErr.message}`)
+            const packetRecorded = await recordSignaturePacket(supabase, {
               brokerageId, documentId,
               contactId: contact?.id ?? null,
               transactionId: (document as any).transaction_id ?? null,
@@ -236,6 +312,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
                 loop_id: result?.loopId,
                 signing_url: result?.signingUrl ?? null,
                 status: "sent_for_signature",
+                packet_recorded: packetRecorded,
               },
             }
           }
@@ -255,16 +332,13 @@ export const sendForEsignAdapter: ChannelAdapter = {
     // the same registry the FormWizard's submitForSignature uses. Brokermint
     // is the one provider with NO native e-sign (its class honestly returns
     // ESIGN_UNSUPPORTED) — it goes straight to the manual-send path below.
-    let esignProv: import("@/lib/integrations/providers/transaction-provider.interface").ITransactionProvider | null = null
-    if (provider !== "brokermint") {
+    let esignProv: import("@/lib/integrations/providers/transaction-provider.interface").ITransactionProvider | null = resolvedEsignProvider
+    if (!esignProv && provider !== "brokermint") {
       try {
+        // A step-level `esign_provider` override names a vendor without a resolved credential —
+        // the class instantiates from env where it can (Dotloop) and refuses otherwise.
         const { getTransactionProviderByName } = await import("@/lib/integrations/providers/provider-resolver")
-        esignProv = getTransactionProviderByName(
-          provider,
-          providerCredentials?.access_token && providerCredentials?.account_id
-            ? { apiKey: providerCredentials.access_token, profileId: providerCredentials.account_id }
-            : undefined
-        )
+        esignProv = getTransactionProviderByName(provider)
       } catch {
         // Unknown / not-yet-implemented provider name — fall to the manual path.
         esignProv = null
@@ -290,7 +364,6 @@ export const sendForEsignAdapter: ChannelAdapter = {
         const txResult = await esignProv.createTransaction({
           propertyAddress,
           transactionType: document.document_type === "listing_agreement" ? "listing" : "purchase",
-          agentId: agentUserId ?? "",
           contactId: contact?.id,
           listingId: (document as any).listing_id ?? undefined,
           transactionId: (document as any).transaction_id ?? undefined,
@@ -333,7 +406,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
           }
         }
 
-        await supabase.from("documents")
+        const { error: esignReviewErr } = await supabase.from("documents")
           .update({
             status: "review",
             metadata: {
@@ -343,9 +416,11 @@ export const sendForEsignAdapter: ChannelAdapter = {
             },
           })
           .eq("id", documentId)
+        if (esignReviewErr) console.error(`[send-for-esign] envelope sent but the document was NOT moved to review: ${esignReviewErr.message}`)
 
+        let packetRecorded = false
         if (signers.length > 0) {
-          await recordSignaturePacket(supabase, {
+          packetRecorded = await recordSignaturePacket(supabase, {
             brokerageId, documentId,
             contactId: contact?.id ?? null,
             transactionId: (document as any).transaction_id ?? null,
@@ -364,6 +439,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
             signing_url: null,
             status: "sent_for_signature",
             signers_count: signers.length,
+            packet_recorded: packetRecorded,
           },
         }
       } catch (err: unknown) {
@@ -372,29 +448,61 @@ export const sendForEsignAdapter: ChannelAdapter = {
       }
     }
 
-    // ── Manual-send path — Brokermint (no native e-sign) / unresolvable ──
+    // ── Manual-send path — Google eSignature (the DEFAULT, portal-send) / Brokermint (no native
+    // e-sign) / unresolvable ──
     // Explicit degraded path: task the agent to send from their provider's
     // UI, and report the step honestly as SKIPPED (nothing was sent) so the
     // workflow ledger never claims a signature request that didn't happen.
+    // Lane 88B: the provider's own window (catalog PROVIDER_PORTAL_URLS) is named in the bell, so
+    // the Google default lands the agent in their Drive with the steps, not on a bare vendor name.
+    const { getCatalogEntry, providerPortalMode } = await import("@/lib/integrations/providers/catalog")
+    const manualEntry = getCatalogEntry(provider)
+    const manualPortal = providerPortalMode(provider)
+    const providerLabel = manualEntry?.label ?? provider
+    // Lane 88C — the Google default's missing half: when the agent's Google connection holds
+    // the drive.file grant, the staged PDF is PLACED in their Drive (lib/esign/google-esign-handoff.ts,
+    // sessionless-safe: the agent's own token via the service client) and the bell links that
+    // file, so "open the filled document" needs no re-upload. Best-effort — any refusal keeps
+    // 88B's manual steps below, and the step still reports SKIPPED (nothing was sent).
+    let driveFileUrl: string | null = null
+    if (manualEntry?.portalSend && agentUserId && document.storage_url && /\.pdf(\?|#|$)/i.test(document.storage_url)) {
+      try {
+        const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+        const got = await callConnector<Buffer>({ connector: "asset-download", url: document.storage_url, method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000 })
+        if (got.ok && got.data) {
+          const { handOffToGoogleEsign } = await import("@/lib/esign/google-esign-handoff")
+          const placed = await handOffToGoogleEsign({ agentUserId, documents: [{ name: `${document.document_type}`, bytes: new Uint8Array(got.data) }] })
+          if (placed.ok) driveFileUrl = placed.files[0]?.openUrl ?? null
+          else console.warn(`[send-for-esign] Drive placement skipped (${placed.error}) — the agent gets the manual steps`)
+        }
+      } catch (err) {
+        console.warn("[send-for-esign] Drive placement failed (non-fatal):", err instanceof Error ? err.message : err)
+      }
+    }
     if (agentUserId) {
-      void Promise.resolve(supabase.from("notifications").insert({
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: agentUserId,
         brokerage_id: brokerageId,
         type: "esign_provider_manual_send",
-        title: `Send for signature via ${provider}`,
-        body: `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${provider} and send manually — ${provider === "brokermint" ? "Brokermint has no native e-signature API" : `auto-send is not available for ${provider}`}.`,
+        title: `Send for signature via ${providerLabel}`,
+        body: manualEntry?.portalSend && driveFileUrl
+          ? `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"} and placed it in your Google Drive: ${driveFileUrl} — open it, then Menu → eSignature → Request signature.`
+          : manualEntry?.portalSend
+          ? `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${manualPortal?.url ?? providerLabel}, open the filled document, then Tools → eSignature → Request signature (${providerLabel} is your default e-sign — it sends from your own Google account).`
+          : `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${providerLabel}${manualPortal ? ` (${manualPortal.url})` : ""} and send manually — ${provider === "brokermint" ? "Brokermint has no native e-signature API" : `auto-send is not available for ${providerLabel}`}.`,
         priority: "high",
         entity_type: "document",
         entity_id: documentId,
-      })).catch(() => {})
+      }), { table: "notifications", flow: "esign_provider_manual_send_notify", brokerageId, reason: "the step already reports status:skipped; this is only the agent heads-up" })
     }
 
-    await supabase.from("documents")
+    const { error: manualEsignErr } = await supabase.from("documents")
       .update({
         status: "review",
         metadata: { ...(document.metadata as any), esign_provider: provider, esign_pending_manual: true },
       })
       .eq("id", documentId)
+    if (manualEsignErr) console.error(`[send-for-esign] manual-send flag NOT recorded on the document: ${manualEsignErr.message}`)
 
     return {
       status: "skipped",

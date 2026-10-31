@@ -11,28 +11,27 @@
  *   • sphere-weekly       Sun 22:00 UTC (sphere opportunities ready)
  *   • campaign-orchestrator-weekly Mon 07:00 UTC (1:1 contact plan ready)
  *
- * The marketing_agent reads BOTH of the above as inputs (no overlap; this
- * agent owns the 1:many brand lane only). Spawn is idempotent via the
- * spawn-helper's unique-active session guard.
+ * This job reads BOTH of the above as inputs (no overlap; it owns the 1:many
+ * brand lane only). Spawn is idempotent via the spawn-helper's unique-active
+ * session guard. m618: the MANAGER accountable for this lane is now
+ * campaign_orchestrator (retired ManagerKey "marketing_agent" — owner: "we
+ * don't have a marketing agent manager"); the spawned session still runs
+ * under managed_agents.agent_kind='marketing_agent' as a distinct
+ * EXECUTION-identity from campaign-orchestrator-weekly's own session — see
+ * lib/agents/marketing-agent.ts's header comment for why that stays split.
  *
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
   const { data: brokerages, error } = await svc.from("brokerages").select("id, name")

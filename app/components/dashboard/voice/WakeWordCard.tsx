@@ -172,19 +172,19 @@ export function WakeWordCard({ wakeName, onCommand }: WakeWordCardProps) {
       label: `Say "Hey ${wakeName}" or tap the mic`,
     },
     LISTENING: {
-      micColor: "text-blue-500",
+      micColor: "text-blue-600",
       borderColor: "border-blue-500",
       pulse: true,
       label: "Listening...",
     },
     PROCESSING: {
-      micColor: "text-amber-500",
+      micColor: "text-amber-700",
       borderColor: "border-amber-400",
       pulse: false,
       label: "Processing...",
     },
     RESPONDING: {
-      micColor: "text-green-500",
+      micColor: "text-green-700",
       borderColor: "border-green-500",
       pulse: true,
       label: "Responding...",
@@ -210,7 +210,7 @@ export function WakeWordCard({ wakeName, onCommand }: WakeWordCardProps) {
           <div className="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
-              Voice recognition requires Chrome or Edge browser. VAPI calls work in all browsers.
+              Wake-word listening requires Chrome or Edge. Placing AI calls works in every browser.
             </span>
           </div>
         )}
@@ -232,7 +232,7 @@ export function WakeWordCard({ wakeName, onCommand }: WakeWordCardProps) {
             )}
           >
             {state === "PROCESSING" ? (
-              <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
+              <Loader2 className="h-8 w-8 animate-spin text-amber-600" />
             ) : state === "RESPONDING" ? (
               <Volume2 className={cn("h-8 w-8", cfg.micColor)} />
             ) : (

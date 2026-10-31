@@ -7,6 +7,7 @@
  * window is open. Both set and clear land on the lifecycle ledger.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isTenancyPrincipal } from "@/lib/kernel/tenancy-principal"
@@ -15,11 +16,12 @@ async function principalGate() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data: me } = await supabase.from("users").select("brokerage_id, role").eq("id", user.id).maybeSingle()
+  // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+  const { data: me } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   const brokerageId = (me as any)?.brokerage_id as string | null
   if (!brokerageId) return null
   const svc = createServiceClient()
-  const principal = await isTenancyPrincipal(svc, { userId: user.id, brokerageId, role: String((me as any)?.role ?? "") })
+  const principal = await isTenancyPrincipal(svc, { userId: user.id, brokerageId, role: String((me as any)?.user_type ?? "") })
   return principal ? { svc, brokerageId, userId: user.id } : null
 }
 
@@ -50,14 +52,15 @@ export async function setCoverageAction(input: {
   }).eq("id", input.awayAgentId)
   if (error) return { ok: false, error: error.message }
 
-  await gate.svc.from("lifecycle_events").insert({
-    brokerage_id: gate.brokerageId,
-    entity_type: "agent",
-    entity_id: input.awayAgentId,
-    event_type: setting ? "coverage_started" : "coverage_cleared",
-    actor_user_id: gate.userId,
+  await sentinelWrite(gate.svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: gate.brokerageId,
+    entityType: "agent",
+    entityId: input.awayAgentId,
+    event: setting ? "coverage_started" : "coverage_cleared",
+    actorUserId: gate.userId,
     metadata: { covering_agent_id: input.coveringAgentId, until: input.until ?? null },
-  }).then(() => {}, () => {})
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { ok: true }
 }

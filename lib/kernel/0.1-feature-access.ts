@@ -7,6 +7,10 @@
 import { createClient } from "@/lib/supabase/server"
 import type { UserTier, FeatureAccessCheck } from "./types"
 import { resolveEntitlement, rolloutBucket } from "@/lib/entitlements/resolve"
+// THE tenant's billed tier, with the refusal still visible — see the header of
+// readPlanTier. This kernel does not re-spell that read (CLAUDE.md §6).
+import { readPlanTier } from "@/lib/billing/plan-tier"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -27,22 +31,54 @@ const USER_TYPE_TO_TIER: Record<string, UserTier> = {
 }
 
 /**
- * Maps a user_type string (from users.user_type) to a billing UserTier.
- * If brokerageId + teamId are provided, team takes priority over brokerage.
+ * LAST-RESORT INFERENCE — NOT the billed tier. Read this before using it.
+ *
+ * ── WHAT IT USED TO CLAIM, AND WHY THAT WAS THE WRONG QUESTION ──────────────
+ *
+ * This function answered "what tier is this CALLER shaped like?" from
+ * users.user_type plus team/brokerage membership, and `canAccessFeature` then
+ * used the answer to pick which per-tier column of `feature_flags` to read. But
+ * the tier columns describe THE SUBSCRIPTION THE TENANT IS BILLED FOR
+ * (`brokerages.plan_tier`), not the shape of whoever happens to be calling. The
+ * two disagree constantly:
+ *
+ *   • Every tenant is a `brokerages` row — a solo subscription is a brokerage of
+ *     one. So "has a brokerage but no team ⇒ brokerage tier" promoted EVERY solo
+ *     tenant's owner to the brokerage columns, and the `if (mapped ===
+ *     "solo_agent") return "brokerage"` line promoted them a second time,
+ *     explicitly overriding the one signal that said otherwise.
+ *   • Conversely a member of a real BROKERAGE who sits on a team was read out of
+ *     the `team_*` columns — tighter per-tier LIMITS than the brokerage their
+ *     employer pays for.
+ *
+ * It erred OPEN on access, so nothing was locked out, but the limits it selected
+ * were the wrong plan's, and the whole matrix was being asked about the wrong
+ * subject.
+ *
+ * ── WHAT IT IS NOW ──────────────────────────────────────────────────────────
+ *
+ * The truth is `lib/billing/plan-tier.ts` `readPlanTier` — the subscription, not
+ * the caller — and `canAccessFeature` below reads it. This stays only for the
+ * callers that have a user_type and nothing else to go on (all three feed
+ * `whisperTierCapability`, which is tier-blind by ruling), and it now falls to
+ * the FLOOR rather than to brokerage when it cannot tell, matching
+ * `lib/billing/plan-tier.ts` FALLBACK_TIER and `seatLimitForTier` — a tenant
+ * whose plan cannot be inferred is never handed a bigger plan than it bought.
+ *
+ * Membership no longer overrules user_type either: belonging to a team is a
+ * fact about an ORG CHART, not about a subscription. A team inside a brokerage
+ * tenant is on the brokerage plan.
  */
 export function mapUserTypeToTier(
   userType: string,
   brokerageId?: string,
   teamId?: string
 ): UserTier {
-  // If they have a team, they're on the team tier regardless of user_type
-  if (teamId && brokerageId) return "team"
-  // If they have a brokerage but no team, brokerage tier
-  if (brokerageId && !teamId) {
-    const mapped = USER_TYPE_TO_TIER[userType]
-    if (mapped === "solo_agent") return "brokerage"
-    return mapped ?? "brokerage"
-  }
+  // Membership is retained in the signature (three callers pass it) but is no
+  // longer consulted: `brokerages.plan_tier` is the only thing that knows which
+  // plan a tenant bought, and canAccessFeature asks it directly.
+  void brokerageId
+  void teamId
   return USER_TYPE_TO_TIER[userType] ?? "solo_agent"
 }
 
@@ -61,6 +97,10 @@ const TIER_LIMIT_COLUMN: Record<UserTier, keyof FeatureFlagRow> = {
   brokerage: "brokerage_limit",
   multi_location: "multi_location_limit",
 }
+
+/** The client canAccessFeature / incrementFeatureUsage read through: the cookie client's
+ *  type, which a service client satisfies. */
+type FeatureAccessClient = Awaited<ReturnType<typeof createClient>>
 
 // Internal shape from feature_flags table
 interface FeatureFlagRow {
@@ -99,9 +139,24 @@ interface FeatureFlagRow {
 export async function canAccessFeature(
   userId: string,
   featureKey: string,
-  userTier?: UserTier
+  userTier?: UserTier,
+  /**
+   * A caller-supplied client for a VERIFIED service-side actor that has no cookie
+   * session: the ElevenLabs voice webhook (secret-verified, its actor read off the
+   * agent_assistant_sessions row, never the body) calling the kernel direct-mail
+   * creator (lib/kernel/marketing.ts createDirectMailCampaign). Without it this gate
+   * built the COOKIE client, which in a webhook is anon: feature_flags is readable by
+   * `authenticated` only (live policy feature_flags_read_authenticated), so the flag
+   * read came back null and every webhook call was refused. The caller vouches for
+   * userId. RLS no longer narrows the reads, so the one read RLS used to scope,
+   * feature_access_overrides, is pinned to the user's tenant below
+   * (FEATURE_OVERRIDE_TENANT_PIN).
+   */
+  client?: FeatureAccessClient,
 ): Promise<FeatureAccessCheck> {
-  const supabase = await createClient()
+  const supabase = client ?? await createClient()
+  // The tenant the override read is pinned to. `undefined` = not yet known.
+  let overrideTenant: string | null | undefined = undefined
 
   // ── 1. Load feature flag ───────────────────────────────────────────────────
   const { data: flagRaw, error: flagError } = await supabase
@@ -129,34 +184,48 @@ export async function canAccessFeature(
       // by the TENANT, passing a brokerages.id here. Tier is a tenant property, so
       // resolve it from brokerages.plan_tier instead of hard-failing "User not
       // found" (which silently killed those features for every tier).
-      const { data: brkAsId } = await supabase
-        .from("brokerages").select("plan_tier").eq("id", userId).maybeSingle()
-      const bt = (brkAsId as { plan_tier?: string } | null)?.plan_tier
-      if (bt === "solo_agent" || bt === "team" || bt === "brokerage" || bt === "multi_location") {
-        resolvedTier = bt
-      } else if (brkAsId) {
-        resolvedTier = "brokerage" // legacy/unbackfilled tenant — pre-matrix behavior
-      } else {
-        return { allowed: false, reason: "User not found" }
-      }
+      //
+      // FAILS CLOSED (CLAUDE.md §4). This branch used to answer a legacy /
+      // unbackfilled tenant with `"brokerage"` — the WIDEST tier — so "we could
+      // not read this tenant's plan" rendered as "checked, and they're on the
+      // top-but-one plan". readPlanTier separates the two: a row that answers
+      // with a NULL or legacy tier is floored honestly, a read that DID NOT
+      // ANSWER refuses.
+      const read = await readPlanTier(supabase, userId)
+      if (!read.ok) return { allowed: false, reason: read.reason }
+      resolvedTier = read.tier
       isSuperadmin = false
+      overrideTenant = userId
     } else {
-    resolvedTier = mapUserTypeToTier(user.user_type, user.brokerage_id, user.team_id)
-    isSuperadmin = user.user_type === "superadmin" || (user as any).platform_role === "superadmin"
-    // BILLED-TIER TRUTH: the tenant's brokerages.plan_tier is what the customer
-    // pays for — it wins over user_type inference. Without this, a solo_agent
-    // tenant's owner (user_type='admin') was gated by the *brokerage* columns and
-    // a brokerage tenant's team members were gated by the *team* columns (wrong
-    // access + wrong per-tier limits). Inference remains the legacy fallback for
-    // unbackfilled/unknown plan_tier values.
-    if (!isSuperadmin && user.brokerage_id) {
-      const { data: brk } = await supabase
-        .from("brokerages").select("plan_tier").eq("id", user.brokerage_id).maybeSingle()
-      const planTier = (brk as { plan_tier?: string } | null)?.plan_tier
-      if (planTier === "solo_agent" || planTier === "team" || planTier === "brokerage" || planTier === "multi_location") {
-        resolvedTier = planTier
+    overrideTenant = (user as { brokerage_id?: string | null }).brokerage_id ?? null
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    isSuperadmin = isPlatformSuperadminIdentity(user.user_type, (user as any).platform_role)
+    // ── BILLED-TIER TRUTH ────────────────────────────────────────────────────
+    // The tier columns of `feature_flags` describe THE SUBSCRIPTION. So the tier
+    // is read from `brokerages.plan_tier` — what the customer is billed for —
+    // and NOT inferred from the caller's user_type or team membership. See the
+    // header of mapUserTypeToTier for what that inference got wrong; it survives
+    // only for a principal who belongs to no tenant at all.
+    //
+    // AND IT FAILS CLOSED. `readPlanTier` returns ok:false only when the
+    // database did not answer (refused query, or no such tenant row); on that
+    // outcome the gate REFUSES rather than proceeding on a guess — "nobody
+    // checked" must never render as "checked and fine" (CLAUDE.md §4).
+    // Superadmins are exempt, as they are from every gate below.
+    if (user.brokerage_id) {
+      const read = await readPlanTier(supabase, user.brokerage_id)
+      if (!read.ok) {
+        if (!isSuperadmin) return { allowed: false, reason: read.reason }
+        resolvedTier = "multi_location"
+      } else {
+        resolvedTier = read.tier
       }
+    } else {
+      // No tenant to bill: the caller is all there is to go on. Inference, which
+      // now falls to the FLOOR rather than to brokerage.
+      resolvedTier = mapUserTypeToTier(user.user_type)
     }
+    if (isSuperadmin) resolvedTier = "multi_location"
     }
   }
 
@@ -181,7 +250,30 @@ export async function canAccessFeature(
       .or(`user_id.eq.${userId},team_id.not.is.null,brokerage_id.not.is.null`)
       .order("created_at", { ascending: false })
     if (overrideError) throw new Error(`[FeatureAccess] Failed to load overrides: ${overrideError.message}`)
-    const o = overrides?.find((x) => x.user_id === userId) ?? overrides?.[0] ?? null
+    // MOST-SPECIFIC-FIRST, AND NEVER SOMEBODY ELSE'S ROW. A user-scoped override
+    // carries a brokerage_id too (that is what makes it visible to the tenant's
+    // governance screen — see grantFeatureTrial / feature-governance-client), so
+    // it also satisfies the `brokerage_id.not.is.null` arm of the .or() above.
+    // The old fallback was `overrides?.[0]`, the most RECENT row of any scope —
+    // which meant one teammate's personal trial or personal disable became the
+    // answer for every other user in the brokerage. The tenant-wide fallback is
+    // only ever a row that names no user.
+    // FEATURE_OVERRIDE_TENANT_PIN. Under the cookie client RLS already limits this read to
+    // `brokerage_id IS NULL OR = current_user_brokerage_id()`. A caller-supplied (service)
+    // client sees every tenant's rows, so the same predicate is applied here explicitly.
+    // Under RLS it drops nothing, because the rows it would drop are the ones RLS already
+    // hid. With a supplied client and an unknown tenant, the tenant is read first, and a
+    // refused read REFUSES (§4).
+    if (client && overrideTenant === undefined) {
+      const { data: tenantRow, error: tenantError } = await supabase
+        .from("users").select("brokerage_id").eq("id", userId).maybeSingle()
+      if (tenantError) return { allowed: false, reason: `Could not read the user's tenant for the feature override check: ${tenantError.message}` }
+      overrideTenant = (tenantRow as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    }
+    const inTenant = (x: { brokerage_id: string | null }) =>
+      overrideTenant === undefined || x.brokerage_id === null || x.brokerage_id === overrideTenant
+    const scoped = (overrides ?? []).filter(inTenant)
+    const o = scoped.find((x) => x.user_id === userId) ?? scoped.find((x) => x.user_id === null) ?? null
     if (o) override = { type: o.override_type, trialEndsAt: o.trial_ends_at, disabledReason: o.disabled_reason }
   }
 
@@ -234,9 +326,12 @@ export async function canAccessFeature(
  */
 export async function incrementFeatureUsage(
   userId: string,
-  featureKey: string
+  featureKey: string,
+  /** Same contract as canAccessFeature's `client`: a verified service-side actor with no
+   *  cookie session (the voice webhook). Omitted → the cookie client, as before. */
+  client?: FeatureAccessClient,
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
+  const supabase = client ?? await createClient()
 
   const now = new Date()
   const periodStart = new Date(now.getFullYear(), now.getMonth(), 1)
@@ -315,16 +410,39 @@ export async function grantFeatureTrial(
   const trialEndsAt = new Date()
   trialEndsAt.setDate(trialEndsAt.getDate() + trialDaysFromNow)
 
-  // Remove any existing disabled override so the trial takes effect
-  await supabase
+  // THE GRANTEE IS THE TENANT. A user-scoped override still belongs to the
+  // brokerage that user belongs to, and the feature-governance screen lists
+  // overrides with a flat `.eq("brokerage_id", brokerageId)`
+  // (app/dashboard/admin/feature-governance/page.tsx) — user_id rows included.
+  // The UI's own grant path already writes BOTH columns for this exact
+  // operation (feature-governance-client.tsx), so a trial granted through this
+  // kernel function landed as a row no admin screen could list and no admin
+  // could revoke. Resolved from users.brokerage_id, the same lookup
+  // incrementFeatureUsage above already performs — never from a caller-supplied
+  // value, and never from createdByUserId, who may be a superadmin in no tenant.
+  const { data: granteeRow, error: granteeError } = await supabase
+    .from("users")
+    .select("brokerage_id, team_id")
+    .eq("id", userId)
+    .maybeSingle()
+  if (granteeError) {
+    return { success: false, error: `Could not resolve the grantee's brokerage: ${granteeError.message}` }
+  }
+
+  // Remove any existing disabled override so the trial takes effect. A refused
+  // delete leaves the 'disable' in force over the new trial — the grant would
+  // report success while access stayed off.
+  const { error: clearDisableErr } = await supabase
     .from("feature_access_overrides")
     .delete()
     .eq("feature_key", featureKey)
     .eq("user_id", userId)
     .eq("override_type", "disable")
+  if (clearDisableErr) return { success: false, error: `Could not clear the existing disable override: ${clearDisableErr.message}` }
 
   const { error } = await supabase.from("feature_access_overrides").insert({
     user_id: userId,
+    brokerage_id: granteeRow?.brokerage_id ?? null,
     feature_key: featureKey,
     override_type: "grant_trial",
     trial_ends_at: trialEndsAt.toISOString(),
@@ -370,10 +488,27 @@ export async function disableFeatureFor(
 
   await deleteQuery
 
+  // Same tenant rule as grantFeatureTrial: a user-scoped disable still belongs to
+  // that user's brokerage, and the governance screen lists by brokerage_id alone.
+  // Only resolve when the caller named a user and no explicit brokerage — a
+  // team- or brokerage-scoped call already carries its own anchor.
+  let resolvedBrokerageId = brokerageId ?? null
+  if (!resolvedBrokerageId && userId) {
+    const { data: targetRow, error: targetError } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", userId)
+      .maybeSingle()
+    if (targetError) {
+      return { success: false, error: `Could not resolve the target user's brokerage: ${targetError.message}` }
+    }
+    resolvedBrokerageId = targetRow?.brokerage_id ?? null
+  }
+
   const { error } = await supabase.from("feature_access_overrides").insert({
     feature_key: featureKey,
     user_id: userId ?? null,
-    brokerage_id: brokerageId ?? null,
+    brokerage_id: resolvedBrokerageId,
     team_id: teamId ?? null,
     override_type: "disable",
     disabled_reason: disabledReason ?? null,

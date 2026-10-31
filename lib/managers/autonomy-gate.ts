@@ -21,6 +21,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import { isAutonomyPosture, type AutonomyPosture } from "@/lib/managers/eval-scoring"
+import {
+  AUTHORITY_LEVEL_LABELS, DEFAULT_AUTHORITY_LEVEL, MIN_AUTHORITY_FOR_RISK, isAuthorityLevel, type AuthorityLevel,
+} from "@/lib/ai-isa/persona-tool-policy"
 
 /** The approval-queue dispatcher stamps this systemSource — a human already approved it. */
 export const HUMAN_APPROVED_SYSTEM_SOURCE = "agent_client_message"
@@ -67,6 +70,11 @@ export interface AutonomyDecisionInput {
    *  halts (they are checked first — accuracy never overrides a halt) and can only downgrade
    *  allow → held; it never grants autonomy. */
   accuracyGate?: { held: boolean; reason: string | null }
+  /** AUTHORITY LADDER (wave 98, lane 98C) — the tenant's rung for this agent kind
+   *  (resolveAgentAuthorityLevel). An autonomous outbound send is a COMMUNICATION and needs
+   *  ≥ MIN_AUTHORITY_FOR_RISK.COMMUNICATION (3). Sits BELOW both halts, can only hold, never grants.
+   *  Absent = not consulted (today's behaviour). */
+  authorityLevel?: AuthorityLevel | null
 }
 
 export interface AutonomyDecision {
@@ -109,6 +117,18 @@ export function autonomyDecision(input: AutonomyDecisionInput): AutonomyDecision
     }
   }
 
+  // AUTHORITY LADDER — below the halts, above the posture: a rung under COMMUNICATION holds every
+  // autonomous outbound send for this agent kind (the tool mount refuses the same class).
+  const commMin = MIN_AUTHORITY_FOR_RISK.COMMUNICATION ?? 3
+  if (typeof input.authorityLevel === "number" && input.authorityLevel < commMin) {
+    return {
+      allow: false,
+      held: true,
+      posture: "approval_required",
+      reason: `${input.managerKey} is at authority level ${input.authorityLevel} (${AUTHORITY_LEVEL_LABELS[input.authorityLevel]}) — an autonomous outbound message needs level ${commMin}; route to the approval queue`,
+    }
+  }
+
   if (input.effective === "approval_required") {
     return {
       allow: false,
@@ -140,7 +160,7 @@ export function autonomyDecision(input: AutonomyDecisionInput): AutonomyDecision
 // Short TTL cache keeps the send-time gate O(1) on a hot path; policy changes propagate
 // within the window. effective = broker override ?? persisted eval-derived recommendation.
 type Svc = ReturnType<typeof createServiceClient>
-const cache = new Map<string, { posture: AutonomyPosture | null; expiresAt: number }>()
+const cache = new Map<string, { posture: AutonomyPosture | null; authority: AuthorityLevel; expiresAt: number }>()
 const TTL_MS = 60_000
 
 // ── PER-TENANT AUTONOMY HALT — the staff lever between the god switch and broker posture ──
@@ -224,14 +244,30 @@ export async function resolveManagerAutonomy(
     if (tenantHalt.halted) return "approval_required"
   } catch { /* fail open */ }
 
+  const { posture } = await readManagerPolicy(brokerageId, managerKey, client)
+  return posture
+}
+
+/**
+ * ONE read of the tenant's policy row for an agent kind (managed_agents.config), shared by the
+ * posture and the authority ladder so the send-time gate stays one query per TTL window.
+ * Fails OPEN to "no signal" (posture null, authority DEFAULT) on an infra error — the documented
+ * autonomy stance above (consent/FH gates already ran) — but the refusal is READ and logged (§3).
+ */
+async function readManagerPolicy(
+  brokerageId: string,
+  managerKey: ManagerKey,
+  client?: Svc,
+): Promise<{ posture: AutonomyPosture | null; authority: AuthorityLevel }> {
   const cacheKey = `${brokerageId}:${managerKey}`
   const hit = cache.get(cacheKey)
-  if (hit && hit.expiresAt > Date.now()) return hit.posture
+  if (hit && hit.expiresAt > Date.now()) return { posture: hit.posture, authority: hit.authority }
 
   let posture: AutonomyPosture | null = null
+  let authority: AuthorityLevel = DEFAULT_AUTHORITY_LEVEL
   try {
     const svc = client ?? createServiceClient()
-    const { data } = await svc
+    const { data, error } = await svc
       .from("managed_agents")
       .select("config")
       .eq("brokerage_id", brokerageId)
@@ -240,15 +276,32 @@ export async function resolveManagerAutonomy(
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle()
+    if (error) console.warn(`[autonomy-gate] managed_agents policy read refused (${managerKey}): ${error.message} — no posture, default authority`)
     const cfg = (data?.config ?? {}) as Record<string, unknown>
     const override = isAutonomyPosture(cfg.autonomy_tier) ? cfg.autonomy_tier : null
     const recommended = isAutonomyPosture(cfg.autonomy_recommended) ? cfg.autonomy_recommended : null
     posture = override ?? recommended ?? null // override wins; absence ⇒ null ⇒ allow
+    authority = isAuthorityLevel(cfg.authority_level) ? cfg.authority_level : DEFAULT_AUTHORITY_LEVEL
   } catch {
     posture = null // fail OPEN for autonomy (never block a send on an infra hiccup; consent/FH gates already ran)
   }
-  cache.set(cacheKey, { posture, expiresAt: Date.now() + TTL_MS })
-  return posture
+  cache.set(cacheKey, { posture, authority, expiresAt: Date.now() + TTL_MS })
+  return { posture, authority }
+}
+
+/**
+ * AUTHORITY LADDER (wave 98, lane 98C) — the tenant's rung (0-6) for one agent kind, from
+ * managed_agents.config.authority_level (written by app/actions/admin/manager-evals.ts::
+ * setManagerAuthorityLevel). No tenant, no row, or no value ⇒ DEFAULT_AUTHORITY_LEVEL (6 = today's
+ * behaviour). Read by the persona tool mounts (selectToolsForPersona) and by dispatch's autonomyGate.
+ */
+export async function resolveAgentAuthorityLevel(
+  brokerageId: string | null | undefined,
+  managerKey: ManagerKey,
+  client?: Svc,
+): Promise<AuthorityLevel> {
+  if (!brokerageId) return DEFAULT_AUTHORITY_LEVEL
+  return (await readManagerPolicy(brokerageId, managerKey, client)).authority
 }
 
 /** Test seam / post-write invalidation — clear the in-process posture + tenant-halt caches. */

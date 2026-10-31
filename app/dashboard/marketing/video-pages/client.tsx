@@ -62,6 +62,8 @@ export function VideoPagesClient({ renders: initial }: { renders: PublishableRen
       </p>
       <p className="text-sm text-gray-500 mb-5">
         {publishedCount} published · {renders.length} render{renders.length === 1 ? "" : "s"} available
+        {/* Wave 146 (146F, ruling 4): automatic non-listing videos are staged and approved before any public page. */}
+        {" · "}<a href="/dashboard/marketing/video-staging" className="underline text-gray-700">Video staging</a>
       </p>
 
       {error && (

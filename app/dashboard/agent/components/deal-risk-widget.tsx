@@ -10,7 +10,6 @@ import Link from "next/link"
 import { ShieldAlert, AlertTriangle, AlertCircle, ArrowRight, Clock } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import type { AgentDealRisk } from "@/app/actions/deal-risk-agent"
 
 interface Props {
@@ -20,22 +19,22 @@ interface Props {
 const RISK_STYLES = {
   critical: {
     label: "Critical",
-    badge: "bg-red-500 text-white",
+    badge: "bg-red-600 text-white",
     icon: <AlertCircle className="h-4 w-4 text-red-600" />,
   },
   at_risk: {
     label: "At Risk",
-    badge: "bg-orange-500 text-white",
+    badge: "bg-orange-700 text-white",
     icon: <AlertTriangle className="h-4 w-4 text-orange-600" />,
   },
   watch: {
     label: "Watch",
-    badge: "bg-amber-500 text-white",
+    badge: "bg-amber-700 text-white",
     icon: <ShieldAlert className="h-4 w-4 text-amber-600" />,
   },
   healthy: {
     label: "Healthy",
-    badge: "bg-green-500 text-white",
+    badge: "bg-green-700 text-white",
     icon: <ShieldAlert className="h-4 w-4 text-green-600" />,
   },
 } as const
@@ -48,7 +47,7 @@ export function DealRiskWidget({ atRisk }: Props) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
-            <ShieldAlert className="h-4 w-4 text-orange-500" />
+            <ShieldAlert className="h-4 w-4 text-orange-600" />
             Transactions at Risk
           </CardTitle>
           <Badge variant="outline" className="text-[10px]">

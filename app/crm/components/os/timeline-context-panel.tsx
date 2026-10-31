@@ -127,7 +127,7 @@ export function TimelineContextPanel({
             <div key={tx.id} className="relative">
               <div className="absolute -left-[25px] w-4 h-4 bg-white border-2 border-emerald-500 rounded-full" />
               <div className="flex items-center gap-2">
-                <Home className="h-4 w-4 text-emerald-500" />
+                <Home className="h-4 w-4 text-emerald-600" />
                 <span className="text-sm font-medium truncate">{tx.address}</span>
               </div>
               <div className="flex gap-2 mt-1">

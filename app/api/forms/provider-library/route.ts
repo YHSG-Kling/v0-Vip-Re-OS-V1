@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
       configured: false,
       provider:   null,
       forms:      [],
-      message:    err?.message ?? "No transaction provider configured.",
+      message:    err?.message ?? "No legal-forms provider configured.",
     })
   }
 

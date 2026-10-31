@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 /**
  * POST /api/offers/[offerId]/upload-document
@@ -25,18 +28,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
   const supabase = createServiceClient()
 
   // Verify offer belongs to actor's brokerage + the agent owns it (or is broker)
-  const { data: offer } = await supabase
+  // Both reads destructure `error` (CLAUDE.md §3): a REFUSED read resolved, and
+  // read as "offer not found" / "not authorized" — a database fault rendered as a
+  // permissions answer. Fail closed with the real reason (lane 93D2).
+  const { data: offer, error: offerErr } = await supabase
     .from("offers")
     .select("id, brokerage_id, contact_id, agent_id")
     .eq("id", offerId)
     .maybeSingle()
+  if (offerErr) return NextResponse.json({ error: `Could not read the offer: ${offerErr.message}` }, { status: 500 })
   if (!offer) return NextResponse.json({ error: "Offer not found" }, { status: 404 })
 
-  const { data: actor } = await supabase
+  const { data: actor, error: actorErr } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
+  if (actorErr) return NextResponse.json({ error: `Could not resolve your profile: ${actorErr.message}` }, { status: 500 })
   if (!actor || actor.brokerage_id !== offer.brokerage_id) {
     return NextResponse.json({ error: "Not authorized for this offer" }, { status: 403 })
   }
@@ -45,6 +53,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
   const file = formData.get("file") as File | null
   const docTypeHint = (formData.get("docType") as string | null) ?? "uploaded_document"
   if (!file) return NextResponse.json({ error: "file is required" }, { status: 400 })
+
+  // THE SIZE GATE, which this route had none of at all — it read the whole body
+  // into a Buffer and handed it to Storage. Unbounded is not "no limit": the
+  // bytes come through a Vercel Function, capped at 4.5 MB ahead of this
+  // handler, so an oversized upload failed at the edge with no message anyone
+  // here chose and no record of what happened. Refuse it here, with a reason.
+  const gate = checkUpload({
+    bucket: "documents",
+    transport: "route_handler",
+    bytes: file.size,
+    contentType: file.type || "application/octet-stream",
+  })
+  if (!gate.ok) return NextResponse.json({ error: gate.reason }, { status: 413 })
 
   // Stream the file into Supabase Storage
   const buf = Buffer.from(await file.arrayBuffer())
@@ -57,8 +78,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
   if (upErr || !upRes) {
     return NextResponse.json({ error: `Storage upload failed: ${upErr?.message}` }, { status: 500 })
   }
-  const { data: pub } = supabase.storage.from("documents").getPublicUrl(upRes.path)
-  const storageUrl = pub.publicUrl
+  // A signed contract, a counter, a pre-approval letter — transaction paperwork.
+  // getPublicUrl handed back a permanent, unauthenticated, never-expiring link
+  // and this route PERSISTS it (uploadDocument writes it to the row), so the
+  // link outlived the request. One issuer, fail closed: if it cannot be signed
+  // the upload is undone and the request is refused, never downgraded to public.
+  const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath: upRes.path })
+  if (!issued.ok) {
+    await removeOrRecordOrphan(supabase as never, {
+      bucket: "documents", objectPath: upRes.path,
+      reason: "offer_document_sign_failed", detail: issued.reason,
+      brokerageId: offer.brokerage_id,
+    })
+    return NextResponse.json({ error: issued.reason }, { status: 502 })
+  }
+  const storageUrl = issued.url
 
   // Route through the universal uploader (scanner fires async)
   const { uploadDocument } = await import("@/lib/documents/upload-document")
@@ -79,9 +113,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
     return NextResponse.json({ error: r.error ?? "uploadDocument failed" }, { status: 500 })
   }
 
-  return NextResponse.json({
-    success:     true,
-    document_id: r.documentId,
-    storage_url: storageUrl,
-  })
+  // Returns only what a caller reads (route-response census). `success` is carried by the HTTP
+  // status (callers check res.ok); the stored file is reached through document_id (the document
+  // row carries its storage path), so `storage_url` had no reader.
+  return NextResponse.json({ document_id: r.documentId })
 }

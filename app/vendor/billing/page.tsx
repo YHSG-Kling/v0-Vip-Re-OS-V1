@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { CreditCard } from "lucide-react"
 import { normalizeTier } from "@/lib/kernel/vendor-subscription"
+import { getVendorTierPricesAction } from "@/app/actions/vendor-billing"
 import { VendorBillingClient } from "./billing-client"
 
 export const dynamic = "force-dynamic"
@@ -23,6 +24,11 @@ export default async function VendorBillingPage() {
 
   if (!profile) redirect("/vendor/dashboard")
 
+  // The ADMINISTERED prices (wave 140J): the catalog carries none, so the card
+  // shows "not yet published" and the Choose button stays closed until a price
+  // exists — never a figure invented in code.
+  const prices = await getVendorTierPricesAction()
+
   return (
     <div className="space-y-6">
       <div>
@@ -37,6 +43,7 @@ export default async function VendorBillingPage() {
       <VendorBillingClient
         currentTier={normalizeTier((profile as { subscription_tier?: string }).subscription_tier)}
         status={(profile as { subscription_status?: string }).subscription_status ?? "active"}
+        prices={prices}
       />
     </div>
   )

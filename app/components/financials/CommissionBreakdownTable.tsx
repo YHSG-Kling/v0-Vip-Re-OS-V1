@@ -19,6 +19,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { ChevronDown, ChevronRight, FileText } from "lucide-react"
+import { formatDateShort } from "@/lib/format/dates"
 
 interface Distribution {
   id: string
@@ -58,13 +59,8 @@ export function CommissionBreakdownTable({ earningsHistory }: CommissionBreakdow
     }).format(amount)
   }
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })
-  }
+  // `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to lib/format/dates.ts `formatDateShort` (imported above).
 
   // Filter data based on selected filter
   const filteredData = earningsHistory.filter((record) => {
@@ -177,11 +173,11 @@ export function CommissionBreakdownTable({ earningsHistory }: CommissionBreakdow
                         <TableCell className="font-medium">
                           {record.property_address || "Transaction"}
                         </TableCell>
-                        <TableCell>{formatDate(record.paid_date)}</TableCell>
+                        <TableCell>{formatDateShort(record.paid_date)}</TableCell>
                         <TableCell className="text-right">
                           {formatCurrency(record.gross_commission)}
                         </TableCell>
-                        <TableCell className="text-right text-green-600 font-medium">
+                        <TableCell className="text-right text-green-700 font-medium">
                           {formatCurrency(record.agent_net)}
                         </TableCell>
                         <TableCell className="text-right">

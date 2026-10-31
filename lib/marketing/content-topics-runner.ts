@@ -16,13 +16,24 @@ import { topicSearchQuery, extractContentTopics, type ContentTopic } from "./con
  */
 export async function fetchContentTopics(
   magnetType: string, area?: string | null,
-  opts: { limit?: number; searcher?: (q: string) => Promise<{ answer: string | null; hits: Array<{ title: string | null; snippet: string | null }> }> } = {},
+  opts: {
+    limit?: number
+    searcher?: (q: string) => Promise<{ answer: string | null; hits: Array<{ title: string | null; snippet: string | null }> }>
+    /** Wave 139 (139C): the tenant the (platform-covered) research spend is attributed to; absent →
+     *  booked as PLATFORM spend (m750). Was unbooked. */
+    brokerageId?: string | null
+  } = {},
 ): Promise<ContentTopic[]> {
   const query = topicSearchQuery(magnetType, area)
   try {
     const res = opts.searcher
       ? await opts.searcher(query)
-      : await webSearch({ query, mode: "research", maxResults: 8, deep: true })
+      : await webSearch({
+          query, mode: "research", maxResults: 8, deep: true,
+          spend: opts.brokerageId
+            ? { brokerageId: opts.brokerageId, systemSource: "content_topics" }
+            : { brokerageId: null, platformPaid: true, systemSource: "content_topics" },
+        })
     const texts: string[] = []
     if (res.answer) texts.push(res.answer)
     for (const h of res.hits ?? []) { if (h.title) texts.push(h.title); if (h.snippet) texts.push(h.snippet) }

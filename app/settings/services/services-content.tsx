@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -220,12 +221,38 @@ export default function ServicesSettingsContent({
 // COMPONENT: Service Card
 // ============================================================================
 
-function ServiceCard({ id, name, type, status, description, config_keys }: any) {
+/**
+ * A platform service's readiness — READ-ONLY, on purpose.
+ *
+ * This card used to render an <Input type="password"> per config key and a
+ * "Save Configuration" button underneath. The inputs had no value and no
+ * onChange, so nothing was even held in state, and the button had no handler:
+ * an admin could type real API keys, press Save, and every keystroke was
+ * discarded. Credentials, silently thrown away, on a screen that looked
+ * exactly like every working form in the product.
+ *
+ * IT WAS NOT WIRED UP, because collecting them here would have been wrong.
+ * Every service in this registry is keyed by an env_key (DID_API_KEY,
+ * BATCHDATA_API_KEY, …) — a PLATFORM-held secret. The platform owns the
+ * account and pays the bill; there is no per-brokerage store for these and
+ * there should not be one. Adding a third credential location beside
+ * platform_credentials and agent_api_credentials is precisely the drift this
+ * sweep exists to remove.
+ *
+ * So the card now shows what getServicesRegistry already computes — whether
+ * the service is configured, when it was last checked, and the last error —
+ * and for the services a brokerage genuinely CAN connect itself, it points at
+ * the Connection Center, which is the one surface that does that.
+ */
+const TENANT_CONNECTABLE = new Set(["gohighlevel", "idx_broker", "dotloop"])
+
+function ServiceCard({ id, name, type, status, description, last_checked_at, last_error }: any) {
   const [isExpanded, setIsExpanded] = useState(false)
+  const connected = status === "connected"
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-primary/10">
@@ -237,39 +264,47 @@ function ServiceCard({ id, name, type, status, description, config_keys }: any) 
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant={status === "connected" ? "default" : "secondary"}>
-              {status === "connected" ? "Connected" : "Not Configured"}
+            <Badge variant={connected ? "default" : "secondary"}>
+              {connected ? "Connected" : "Not Configured"}
             </Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsExpanded(!isExpanded)}
-            >
-              {isExpanded ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
+            <Button variant="outline" size="sm" onClick={() => setIsExpanded(!isExpanded)}>
+              {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
           </div>
         </div>
       </CardHeader>
       {isExpanded && (
         <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">{description}</p>
-          <div className="space-y-3">
-            {config_keys.map((key: string) => (
-              <div key={key} className="grid grid-cols-3 gap-2 items-center">
-                <Label className="capitalize">{key.replace(/_/g, " ")}</Label>
-                <Input
-                  type="password"
-                  placeholder={`Enter ${key.replace(/_/g, " ")}`}
-                  className="col-span-2"
-                />
+          <p className="text-sm text-muted-foreground mb-3">{description}</p>
+
+          <dl className="text-xs space-y-1 mb-3">
+            <div className="flex gap-2">
+              <dt className="text-muted-foreground w-28">Last checked</dt>
+              <dd>{last_checked_at ? new Date(last_checked_at).toLocaleString() : "never"}</dd>
+            </div>
+            {last_error && (
+              <div className="flex gap-2">
+                <dt className="text-muted-foreground w-28">Last error</dt>
+                <dd className="text-red-600">{last_error}</dd>
               </div>
-            ))}
-            <Button className="w-full">Save Configuration</Button>
-          </div>
+            )}
+          </dl>
+
+          {TENANT_CONNECTABLE.has(id) ? (
+            <p className="text-xs text-muted-foreground">
+              Your brokerage connects this one itself.{" "}
+              <a href="/settings/connections" className="underline underline-offset-2">
+                Open the Connection Center
+              </a>{" "}
+              to link or re-link the account.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              This service runs on the platform&apos;s account — there is no key for you to
+              enter. If it shows Not Configured, contact support rather than re-entering
+              credentials.
+            </p>
+          )}
         </CardContent>
       )}
     </Card>
@@ -296,7 +331,7 @@ function CreateAgentSheet() {
   const handleSubmit = () => {
     startTransition(async () => {
       try {
-        await createAIAgentTemplate({
+        const res = await createAIAgentTemplate({
           agent_name: form.agent_name,
           agent_type: form.agent_type,
           system_prompt: form.system_prompt,
@@ -307,6 +342,12 @@ function CreateAgentSheet() {
             .map((s) => s.trim())
             .filter(Boolean),
         })
+        // Reports failure BY RETURN, so the catch below (which only ever logged
+        // to console anyway) never fired. The dialog closed on a refusal.
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "The agent template was not created.")
+          return
+        }
         setOpen(false)
         setForm({
           agent_name: "",
@@ -460,7 +501,11 @@ function AIAgentCard({ agent }: { agent: any }) {
   const handleToggle = (checked: boolean) => {
     startTransition(async () => {
       try {
-        await toggleAIAgentTemplate(agent.id, checked)
+        const r = await toggleAIAgentTemplate(agent.id, checked)
+        if (!r?.success) {
+          toast.error((r as any)?.error ?? "The agent was not toggled.")
+          return
+        }
         router.refresh()
       } catch (err) {
         console.error("[v0] Error toggling agent:", err)
@@ -563,7 +608,7 @@ function CreatePlaybookSheet() {
   const handleSubmit = () => {
     startTransition(async () => {
       try {
-        await createPlaybook({
+        const res = await createPlaybook({
           playbook_name: form.playbook_name,
           trigger_type: form.trigger_type,
           steps: form.steps_raw
@@ -576,6 +621,12 @@ function CreatePlaybookSheet() {
             .map((s) => s.trim())
             .filter(Boolean),
         })
+        // Reports failure BY RETURN, so the catch below (which only ever logged
+        // to console anyway) never fired. The dialog closed on a refusal.
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "The playbook was not created.")
+          return
+        }
         setOpen(false)
         setForm({
           playbook_name: "",
@@ -696,7 +747,16 @@ function PlaybookCard({ playbook }: { playbook: any }) {
   const handleToggle = (checked: boolean) => {
     startTransition(async () => {
       try {
-        await togglePlaybook(playbook.id, checked)
+        // togglePlaybook reports failure BY RETURN, not by throwing, so the
+        // try/catch below never sees a refused toggle. Discarding the result
+        // meant router.refresh() ran anyway and the switch looked like it had
+        // worked — the action told the truth and the screen did not pass it on.
+        // Same shape as ToggleAIAgentTemplate above.
+        const r = await togglePlaybook(playbook.id, checked)
+        if (!r?.success) {
+          toast.error((r as any)?.error ?? "The playbook was not toggled.")
+          return
+        }
         router.refresh()
       } catch (err) {
         console.error("[v0] Error toggling playbook:", err)

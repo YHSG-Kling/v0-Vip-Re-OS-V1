@@ -14,6 +14,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import { createClient } from "@supabase/supabase-js"
 import { awaitingFirstResponse } from "../lib/support/support-thread"
 
@@ -36,11 +37,21 @@ function sourceLayer() {
   check("reply posts a message + stamps first_response + open→in_progress", /support_ticket_messages"\)[\s\S]*?insert/.test(th) && /first_response_at = new Date/.test(th) && /status = "in_progress"/.test(th))
   check("staff reply notifies the TENANT; tenant reply notifies platform staff", /type:\s*"support_reply"/.test(th) && /notifyPlatformStaff/.test(th))
   const con = src("app/actions/superadmin/support-console.ts")
-  check("console actions are staff-gated (superadmin+support)", /requireStaff/.test(con) && /"superadmin",\s*"support"/.test(con))
+  // THE RULE, NOT THE SPELLING (CLAUDE.md §2 / §4): the console gates through the ONE capability
+  // gate its pages use (requirePlatformCapability("support") — platform_role is the roster column),
+  // never a local `["superadmin", "support"]` set matched against user_type (lane 140O re-anchor).
+  check("console actions are staff-gated through requirePlatformCapability(\"support\")", /requireStaff/.test(con) && /requirePlatformCapability\(\s*"support"\s*\)/.test(con))
+  check("  control: no live two-role staff set remains (stripped source)", !/new Set\(\[\s*"superadmin",\s*"support"\s*\]\)/.test(stripComments(con)))
   check("the queue carries brokerage name + first-response flag + counts", /brokerageName/.test(con) && /awaitingFirstResponse/.test(con))
   check("reply / assign / status actions exist", /export async function replyToTicketAction/.test(con) && /export async function assignTicketAction/.test(con) && /export async function setTicketStatusAction/.test(con))
   const sup = src("app/actions/support.ts")
-  check("createSupportTicket now alerts platform staff (nobody was notified before)", /notifyPlatformStaff[\s\S]*?support_ticket_new/.test(sup))
+  // RE-ASSERTED ON THE RULE (wave 147, lane 147H): the alert moved into ONE notifier both intake doors share
+  // (lib/support/ticket-triage.ts notifyTicketAnsweringSide — the inbound-email/SMS door reuses it). The rule is that
+  // createSupportTicket reaches a platform-staff alert of type support_ticket_new, inline or through that notifier.
+  const triageSrc = stripComments(src("lib/support/ticket-triage.ts"))
+  const notifierAlertsStaff = /export async function notifyTicketAnsweringSide[\s\S]*?support_ticket_new[\s\S]*?notifyPlatformStaff\(/.test(triageSrc)
+  check("createSupportTicket now alerts platform staff (nobody was notified before)", /notifyPlatformStaff[\s\S]*?support_ticket_new/.test(sup) || (/notifyTicketAnsweringSide\(/.test(stripComments(sup)) && notifierAlertsStaff))
+  check("  control: the notifier finder rejects a notifier that never reaches notifyPlatformStaff", !/export async function notifyTicketAnsweringSide[\s\S]*?support_ticket_new[\s\S]*?notifyPlatformStaff\(/.test(`export async function notifyTicketAnsweringSide() { const t = "support_ticket_new"; return 0 }`))
   check("tenant can reply + read the thread (two-way)", /export async function replyToMyTicket/.test(sup) && /export async function getMyTicketThread/.test(sup))
   check("the god console: queue + ticket detail + reply composer", /listAllTicketsAction/.test(src("app/dashboard/superadmin/support/page.tsx")) && /SupportReplyBox/.test(src("app/dashboard/superadmin/support/[id]/page.tsx")))
   check("the platform console links to Support", /\/dashboard\/superadmin\/support/.test(src("app/dashboard/superadmin/platform/page.tsx")))
@@ -63,7 +74,7 @@ async function liveLayer() {
   const cleanup: Array<{ table: string; id: string }> = []
   const { postTicketReply } = await import("../lib/support/support-thread")
   try {
-    const { data: ticket } = await svc.from("support_tickets").insert({ brokerage_id: brokerageId, agent_id: (ag as any)?.id ?? null, subject: "SIM ticket", description: "help", status: "open", priority: "medium" }).select("id").single()
+    const { data: ticket } = await svc.from("support_tickets").insert({ brokerage_id: brokerageId, agent_id: (ag as any)?.id ?? null, lane: "tenant_to_platform", subject: "SIM ticket", description: "help", status: "open", priority: "medium" }).select("id").single()
     if (!ticket) { console.log("  ⊘ could not seed ticket — skipping"); return }
     const ticketId = (ticket as any).id
     cleanup.push({ table: "support_tickets", id: ticketId })

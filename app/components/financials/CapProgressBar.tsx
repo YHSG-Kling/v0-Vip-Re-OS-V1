@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Target, Award, AlertCircle } from "lucide-react"
+import { usd } from "@/lib/format/money"
 
 interface CapProgressBarProps {
   capAmount: number | null
@@ -27,20 +28,16 @@ export function CapProgressBar({
   anniversaryStart,
   anniversaryEnd,
 }: CapProgressBarProps) {
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  }
+  // `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+  // (imported above).
+  const formatCurrency = usd
 
   // Determine cap status — agent_cap_tracking.is_capped is authoritative
   const getCapStatus = () => {
     if (!capAmount) return { label: "No Cap", variant: "secondary" as const, color: "text-muted-foreground" }
-    if (isCapped || capProgressPct >= 100) return { label: "Cap Hit!", variant: "default" as const, color: "text-green-600" }
-    if (capProgressPct >= 80) return { label: "Near Cap", variant: "outline" as const, color: "text-amber-600" }
+    if (isCapped || capProgressPct >= 100) return { label: "Cap Hit!", variant: "default" as const, color: "text-green-700" }
+    if (capProgressPct >= 80) return { label: "Near Cap", variant: "outline" as const, color: "text-amber-700" }
     return { label: "Below Cap", variant: "secondary" as const, color: "text-muted-foreground" }
   }
 
@@ -87,8 +84,8 @@ export function CapProgressBar({
           </div>
           <Badge 
             variant={capStatus.variant}
-            className={capStatus.color === "text-green-600" ? "bg-green-100 text-green-800" : 
-                       capStatus.color === "text-amber-600" ? "bg-amber-100 text-amber-800" : ""}
+            className={capStatus.color === "text-green-700" ? "bg-green-100 text-green-800" : 
+                       capStatus.color === "text-amber-700" ? "bg-amber-100 text-amber-800" : ""}
           >
             {capStatus.label}
           </Badge>
@@ -125,8 +122,8 @@ export function CapProgressBar({
           </div>
           <div className="text-center">
             <div className="flex items-center justify-center gap-1">
-              <Award className="h-4 w-4 text-amber-500" />
-              <p className="text-lg font-semibold text-amber-600">
+              <Award className="h-4 w-4 text-amber-600" />
+              <p className="text-lg font-semibold text-amber-700">
                 {formatCurrency(bonusCredits)}
               </p>
             </div>

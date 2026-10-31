@@ -1,5 +1,6 @@
 import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
+import { clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import { redirect, notFound } from "next/navigation"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { markMessagesRead } from "@/app/actions/portal-messages"
@@ -107,12 +108,18 @@ export default async function PortalMessagesPage({ params }: PageProps) {
 
   // Get active transaction context if exists
   let transactionContext: { id: string; address: string; stage: string } | null = null
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select("id, property_address, stage")
-    .or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
-    .in("status", ["active", "pending", "under_contract"])
-    .limit(1)
+  // Through the kernel's gate-then-service deal client (lib/kernel/portal.ts
+  // portalDealClient) — the client's own session sees none of its deals.
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transactions, error: txError } = await scopeToDealTenant(
+    dealDb
+      .from("transactions")
+      .select("id, property_address, stage")
+      .or(clientTransactionFilter(contactId))
+      .in("status", ["active", "under_contract"]),
+    dealTenant,
+  ).limit(1)
+  if (txError) console.error("[portal/messages] deal read refused:", txError.message)
 
   if (transactions?.[0]) {
     transactionContext = {

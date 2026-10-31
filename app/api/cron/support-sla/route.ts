@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { runSupportSlaSweep } from "@/lib/support/support-sla"
+import { runSupportSlaSweep, runSupportLoopSweep } from "@/lib/support/support-sla"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -13,7 +13,12 @@ export const dynamic = "force-dynamic"
 
 /**
  * Support SLA Cron — hourly breach detection over open tickets. Escalates each
- * (ticket, breach kind) to platform staff exactly once. See lib/support/support-sla.ts.
+ * (ticket, breach kind) to the side that answers its lane exactly once. See lib/support/support-sla.ts.
+ *
+ * Then the CLOSED-LOOP RECOVERY sweep (wave 147, lane 147H — owner ruling 15): re-triage a ticket the in-request
+ * triage never reached, the second-tier page, the evidenced close of a long-resolved ticket, a missing resolved_at.
+ * Cron is RECOVERY here (ruling 13) — the event path (the door's in-request triage → the owner's inbox; lane 147G's
+ * C14 completion supervision) drives the loop, and every act this sweep takes is stamped recovered_by: "cron".
  */
 export async function GET(request: NextRequest) {
   const unauth = verifyCronAuth(request)
@@ -31,10 +36,12 @@ export async function GET(request: NextRequest) {
 
   try {
     const svc = createServiceClient()
-    const summary = await runSupportSlaSweep(svc)
+    const sla = await runSupportSlaSweep(svc)
+    const loop = await runSupportLoopSweep(svc)
+    const summary = { ...sla, loop }
     await recordCronSuccessAction({
       context_id: contextId,
-      records_processed: summary.escalated,
+      records_processed: sla.escalated + loop.retriaged + loop.secondTier + loop.autoClosed + loop.repaired,
       metadata: summary as any,
     })
     return NextResponse.json({ message: "Support SLA sweep complete", summary })

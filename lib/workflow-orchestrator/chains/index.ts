@@ -8,7 +8,10 @@ import { listingApptPrepChain } from "./listing-appt-prep"
 import { complianceListingAutoCreateChain } from "./compliance-listing-auto-create"
 import { complianceTransactionAutoCreateChain } from "./compliance-transaction-auto-create"
 
-export const ALL_CHAINS: WorkflowChain[] = [
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): the registry's public doors are
+// getChainByKey / getChainsByTrigger below (live: engine.ts, orchestrator
+// internal, workflow-orchestrator action); no file read the raw array.
+const ALL_CHAINS: WorkflowChain[] = [
   listingApptPrepChain,
   complianceListingAutoCreateChain,
   complianceTransactionAutoCreateChain,

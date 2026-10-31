@@ -19,6 +19,22 @@ export interface PersonaWidget {
   format?: "currency" | "percent" | "number" | "text" | "date" | "boolean"
   emptyMessage?: string
   action?: { label: string; href: string }
+  /**
+   * THE RESOLVED VALUE — filled in by getPersonaWidgets from the contact's
+   * metadata, undefined when that key is absent.
+   *
+   * §1.2 — THIS FIELD WAS THE MISSING HALF. getPersonaWidgets has always
+   * produced it (`value: customFields?.[widget.dataKey]`) and the interface has
+   * never declared it, so a renderer could not read the one thing the reader
+   * exists to compute without casting the type away. That is why every
+   * `dataKey` in this file read as writerless: the mechanism was complete
+   * except for the two ends — a declared value and a render site — and the
+   * render site is now app/components/portal/PersonaPropertiesDashboard.tsx
+   * ("At a glance"). Absent stays UNDEFINED rather than defaulting to 0 or "":
+   * the strip must be able to tell "not set" from "set to nothing", because it
+   * shows `emptyMessage` for the first and the value for the second.
+   */
+  value?: unknown
 }
 
 export interface JourneyStage {
@@ -67,6 +83,45 @@ export interface PersonaConfig {
   aiContext: string // Context for AI assistant
   quickActions: { label: string; href: string; icon: LucideIcon }[]
   tabs?: PersonaTabConfig // Persona-specific tab labels and icons
+}
+
+// ============================================================================
+// INVESTOR CRITERIA — ONE SPELLING OF THE metadata ACCESS (§6 / §1.1)
+// ============================================================================
+//
+// The investor persona's criteria live on contacts.metadata under three keys
+// that used to be spelled TWICE: once here as widget dataKeys (display, via
+// getPersonaWidgets) and once hand-picked inside
+// app/components/portal/PersonaPropertiesDashboard.tsx feeding the cap-rate
+// ARITHMETIC (meetsTarget, the deal analyzer's target line). Two spellings of
+// one access meant a renamed key would split display from arithmetic silently.
+// Both features are real and both stay — what merged is the ACCESS: the keys
+// are declared once below, the widget defs reference them, and
+// getInvestorCriteria() is the one accessor the dashboard's arithmetic reads.
+// Defaults (7% cap target, "Buy and Hold", 0 properties) moved here with it —
+// they are criteria semantics, not render semantics.
+
+export const INVESTOR_CRITERIA_KEYS = {
+  portfolioSize:      "portfolio_size",
+  targetCapRate:      "target_cap_rate",
+  investmentStrategy: "investment_strategy",
+} as const
+
+export interface InvestorCriteria {
+  /** % — the cap-rate bar a deal must clear (meetsTarget). */
+  targetCapRate: number
+  investmentStrategy: string
+  /** Properties currently owned. */
+  portfolioSize: number
+}
+
+/** The ONE reader of the investor criteria off contacts.metadata (customFields). */
+export function getInvestorCriteria(customFields?: Record<string, any> | null): InvestorCriteria {
+  return {
+    targetCapRate: Number(customFields?.[INVESTOR_CRITERIA_KEYS.targetCapRate]) || 7,
+    investmentStrategy: (customFields?.[INVESTOR_CRITERIA_KEYS.investmentStrategy] as string) || "Buy and Hold",
+    portfolioSize: Number(customFields?.[INVESTOR_CRITERIA_KEYS.portfolioSize]) || 0,
+  }
 }
 
 // ============================================================================
@@ -638,7 +693,7 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
         title: "Portfolio Size",
         description: "Properties owned",
         icon: Building,
-        dataKey: "portfolio_size",
+        dataKey: INVESTOR_CRITERIA_KEYS.portfolioSize,
         format: "number",
       },
       {
@@ -646,7 +701,7 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
         title: "Target Cap Rate",
         description: "Your investment criteria",
         icon: Percent,
-        dataKey: "target_cap_rate",
+        dataKey: INVESTOR_CRITERIA_KEYS.targetCapRate,
         format: "percent",
       },
       {
@@ -654,7 +709,7 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
         title: "Strategy",
         description: "Investment approach",
         icon: Target,
-        dataKey: "investment_strategy",
+        dataKey: INVESTOR_CRITERIA_KEYS.investmentStrategy,
         format: "text",
       },
       {

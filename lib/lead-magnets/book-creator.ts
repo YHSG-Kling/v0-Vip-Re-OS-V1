@@ -1,0 +1,880 @@
+// lib/lead-magnets/book-creator.ts
+//
+// THE BOOK CREATOR — wave 142, lane 142E (owner: "we have built a capability for creating a book to publish
+// for using as a lead magnet but not sure if it built correctly"). Audited at fec8b6a95: NO book pipeline
+// existed — lib/education/book-authority-program.ts is a CURRICULUM that coaches agents to write their own
+// book (KDP), and the nearest producing survivor is the buyer/seller GUIDE BOOKLET (a 5-chapter PDF the
+// lead-magnet delivery renders). This is the smallest production pipeline, built ON those survivors:
+//
+//   concept → RESEARCH (lib/marketing/content-topics-runner.ts fetchContentTopics — the gated, platform-
+//   covered search rail — plus lib/content-intel/topic-bank.ts pickTopics, the tenant's own topic bank)
+//   → OUTLINE (routed lane book_manuscript) → ORIGINAL CHAPTERS (same lane, a bounded number per advance)
+//   → FACT CHECK (routed lane book_fact_check + the deterministic unsupportedFigures scan: every figure,
+//   statistic, date or law the chapters assert that the research did not supply is a finding)
+//   → EDIT (one pass per chapter resolving the fact findings, then the public-copy FAIR-HOUSING REWRITE
+//   LOOP, lib/kernel/marketing/public-copy-rewrite.ts, capped and escalated per chapter)
+//   → COVER + LAYOUT + PDF (lib/documents/client-pdf.ts bookPdfSpec on the SAME engine as the booklet;
+//   hosted + recorded in the document library by lib/documents/client-document-producer.ts)
+//   → the DRAFT lead magnet that DISTRIBUTES it (lib/kernel/lead-magnets.ts — since wave 145 the project record
+//   lives on the book's OWN row, public.book_projects (m867, lib/lead-magnets/book-entity.ts); the capture form carries
+//   settings.book_id only; a human reviews, edits and PUBLISHES it — publishLeadMagnet refuses an unfinished book)
+//   → capture → DELIVERY (lead-magnet-delivery-runner ships the book PDF and records
+//   the asset refs on the activity) → follow-up → attribution (the existing spine, untouched).
+//
+// STAGED AND RESUMABLE: one advance = one stage (or a bounded slice of one), each a counted, tenant-pinned
+// write of the project record under withActionLedger evidence and the routed lane's cost booking; the UI
+// auto-continues, the daily sweep is the safety net (CLAUDE.md wave 142: cron is a backup). Every
+// collaborator is a seam so scripts/autonomous-marketing-guard.ts drives the whole pipeline in memory
+// with real PDF bytes. No model ever fills a fact: the writer is told to state NO figures; whatever it
+// states anyway is caught and removed. Entitlement (mayUseAndAfford "ai.generate") before every spend.
+
+import { createLeadMagnet, type CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
+// Wave 145 (lane 145G, owner ruling 19 — "a lead magnet is … not a manuscript or book"): the BOOK is its own entity.
+import { BOOK_ROW_COLUMNS, insertBookRow, loadBookRow, loadDistributionForm, locatorOf, ownerScopeFor, saveBookRow, type BookLocator, type BookRow } from "./book-entity"
+import { bookPdfSpec, type BookPdfData, type ClientPdfBrand, type ClientPdfSpec } from "@/lib/documents/client-pdf"
+import { rewritePublicCopyUntilCompliant, scanPublicCopy, renderFindingsForRewrite, type CopyFinding } from "@/lib/kernel/marketing/public-copy-rewrite"
+import type { ContentTopic } from "@/lib/marketing/content-topics"
+// Wave 143 (lane 143F): a "55+ / senior living" claim in a chapter is verified against the tenant's recorded
+// housing-for-older-persons exemption (42 U.S.C. § 3607(b)); a held claim is rewritten around, then a human decides.
+import { OLDER_PERSONS_WRITING_DIRECTIVE } from "@/lib/compliance/fair-housing-older-persons"
+import { loadOlderPersonsVerifications } from "@/lib/compliance/fair-housing-older-persons-store"
+// Wave 144 (lane 144H, owner ruling 15): WHOSE book (publication context), WHY this topic (demand evidence), and the
+// mandatory HUMANIZED review — the pure rules live in lib/lead-magnets/book-editorial.ts.
+import {
+  bookContextAllowed, conceptSpecifics, defaultBookContext, isBookPublicationContext, publicationRecord, scanAiTells, scoreBookTopicEvidence,
+  type BookPublication, type BookPublicationContext, type BookTopicEvidence, type HumanizedReviewRecord,
+} from "./book-editorial"
+
+// ── The project record (public.book_projects.project — wave 145; was lead_capture_forms.settings.book) ──────────
+
+export const BOOK_STAGES = ["research", "outline", "chapters", "fact_check", "edit", "layout", "ready_for_review"] as const
+export type BookStage = (typeof BOOK_STAGES)[number]
+
+export type BookAudience = "buyer" | "seller"
+
+interface BookChapter {
+  heading: string
+  body: string
+  words: number
+  written_at: string
+  /** Set by the edit pass: fact findings resolved, fair-housing rewrites run, escalated to a human? `ai_tells` are the
+   *  machine-written phrases the HUMANIZED review must rewrite (none once the human revised the chapter). */
+  edited?: { fact_findings: number; fair_housing_rewrites: number; escalated: boolean; findings: string[]; human_revised_at?: string; ai_tells?: string[] }
+}
+
+interface BookFactFinding {
+  chapter: number
+  claim: string
+  verdict: "unsupported" | "needs_qualification"
+  note: string
+  /** "model" for the fact-check lane's finding, "scan" for the deterministic figure scan. */
+  by: "model" | "scan"
+}
+
+export interface BookProject {
+  stage: BookStage
+  concept: string
+  audience: BookAudience
+  area: string | null
+  brand: string | null
+  title: string
+  subtitle: string | null
+  tagline: string | null
+  introduction: string | null
+  closing: string | null
+  /** `evidence` (wave 144): demand, audience problem, competitor positioning, gaps, originality, conversion and the verdict
+   *  the outline gate reads — absent on projects researched before it existed (scored from the stored topics then). */
+  research: { topics: string[]; bank_topics: string[]; fetched_at: string | null; evidence?: BookTopicEvidence | null } | null
+  outline: Array<{ heading: string; summary: string; key_points: string[] }> | null
+  chapters: BookChapter[]
+  fact_check: { findings: BookFactFinding[]; checked_at: string } | null
+  pdf_url: string | null
+  document_id: string | null
+  page_count: number | null
+  /** The reviewer's tally — the routed lane books the ledger; this is what THIS book cost in tokens. */
+  cost: { tokens: number; model_calls: number }
+  /** Chapters the edit pass could not make compliant within the cap — the human owns them. */
+  needs_human_review: number[]
+  started_by: string
+  started_at: string
+  updated_at: string
+  log: Array<{ stage: BookStage; at: string; note: string }>
+  /** WHOSE book and where it publishes (lead magnet / tenant KDP / platform KDP) — absent on pre-144 projects (= lead_magnet). */
+  publication?: BookPublication
+  /** The human's sign-off after reading the draft as a reader (set by the lead-magnet publish or the KDP attestation;
+   *  cleared by any revision). */
+  humanized_review?: HumanizedReviewRecord | null
+}
+
+/** Public-facing surface text the book's landing page carries once the title exists. */
+export const BOOK_MIN_CHAPTERS = 4
+export const BOOK_MAX_CHAPTERS = 10
+/** Chapters written / edited per advance — bounded so one advance fits a request. */
+export const BOOK_CHAPTERS_PER_ADVANCE = 2
+/** A chapter under this many words is a stub, not a chapter — refused and rewritten. */
+export const BOOK_MIN_CHAPTER_WORDS = 250
+/** The budget ask handed to mayUseAndAfford per advance (one chapter ≈ 1,800 tokens; an advance writes two). */
+const BOOK_ADVANCE_EST_TOKENS = 4500
+
+// ── PURE helpers (proven directly) ────────────────────────────────────────────────────────────────
+
+/** @proofSeam the stage order is the contract the UI and the sweep walk. */
+export function nextBookStage(stage: BookStage): BookStage {
+  const i = BOOK_STAGES.indexOf(stage)
+  return i < 0 || i >= BOOK_STAGES.length - 1 ? "ready_for_review" : BOOK_STAGES[i + 1]
+}
+
+export function wordCount(text: string): number {
+  return (text ?? "").trim().split(/\s+/).filter(Boolean).length
+}
+
+/** The first `{…}` object in a model answer, or null — never a throw. */
+export function parseJsonObject<T = Record<string, unknown>>(text: string): T | null {
+  const m = (text ?? "").match(/\{[\s\S]*\}/)
+  if (!m) return null
+  try { return JSON.parse(m[0]) as T } catch { return null }
+}
+
+/**
+ * PURE: every FIGURE a chapter asserts — a percentage, a dollar amount, a 4-digit year, a "N days/months/
+ * years" span, a statute number — that the research corpus (topics + outline + concept) never supplied.
+ * A figure that appears verbatim in the allowed text is supported (the writer repeated what it was given);
+ * everything else is unsupported and the edit pass removes or qualifies it. @proofSeam asserted directly.
+ */
+export function unsupportedFigures(chapterBody: string, allowedText: string): string[] {
+  const allowed = (allowedText ?? "").toLowerCase()
+  const FIGURE = /(\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:k|m|million|billion))?|\d+(?:\.\d+)?\s?%|\b(?:19|20)\d{2}\b|\b\d+(?:\.\d+)?\s+(?:percent|days?|months?|years?|basis points?)\b|§\s?\d[\d.()a-z-]*)/gi
+  const out = new Set<string>()
+  for (const m of (chapterBody ?? "").matchAll(FIGURE)) {
+    const fig = m[1].trim()
+    if (!allowed.includes(fig.toLowerCase())) out.add(fig)
+  }
+  return [...out]
+}
+
+/** PURE: the PDF spec data for a finished manuscript. */
+export function composeBookPdfData(p: BookProject): BookPdfData {
+  return {
+    title: p.title,
+    subtitle: p.subtitle,
+    tagline: p.tagline,
+    introduction: p.introduction,
+    chapters: p.chapters.map((c) => ({ heading: c.heading, body: c.body })),
+    closing: p.closing,
+    areaLabel: p.area,
+  }
+}
+
+/** PURE: the corpus a chapter's figures are checked against — what the writer was GIVEN. */
+function allowedCorpus(p: BookProject): string {
+  return [p.concept, ...(p.research?.topics ?? []), ...(p.research?.bank_topics ?? []), ...(p.outline ?? []).flatMap((o) => [o.heading, o.summary, ...o.key_points])].join("\n")
+}
+
+function newProject(input: { concept: string; audience: BookAudience; area: string | null; brand: string | null; startedBy: string; now: string; publication: BookPublication }): BookProject {
+  return {
+    stage: "research", concept: input.concept, audience: input.audience, area: input.area, brand: input.brand,
+    title: workingTitle(input.concept), subtitle: null, tagline: null, introduction: null, closing: null,
+    research: null, outline: null, chapters: [], fact_check: null, pdf_url: null, document_id: null, page_count: null,
+    cost: { tokens: 0, model_calls: 0 }, needs_human_review: [], started_by: input.startedBy, started_at: input.now, updated_at: input.now,
+    log: [{ stage: "research", at: input.now, note: `book project started (${input.publication.context}, owned by the ${input.publication.owner})` }],
+    publication: input.publication, humanized_review: null,
+  }
+}
+
+/** PURE: a working title from the concept until the outline names the real one. */
+export function workingTitle(concept: string): string {
+  const c = (concept ?? "").replace(/\s+/g, " ").trim()
+  if (!c) return "Untitled book"
+  const first = c.split(/[.:;!?]/)[0].trim()
+  const t = first.length > 70 ? `${first.slice(0, 67).trim()}…` : first
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
+// ── Seams ─────────────────────────────────────────────────────────────────────────────────────────
+
+interface BookWriterRequest {
+  brokerageId: string
+  userId: string | null
+  system: string
+  prompt: string
+  maxTokens: number
+}
+interface BookWriterResult { text: string; tokens: number; model: string | null }
+/** The manuscript lane (outline, chapters, edit) and the fact-check lane — two routed features. */
+type BookWriter = (req: BookWriterRequest) => Promise<BookWriterResult | null>
+
+type Svc = { from: (t: string) => any }
+
+export interface BookDeps {
+  client?: NonNullable<Parameters<typeof createLeadMagnet>[1]>["client"]
+  /** The gated search rail (default fetchContentTopics, platform-covered, tenant-attributed). */
+  researcher?: (audience: BookAudience, area: string | null, brokerageId: string) => Promise<ContentTopic[]>
+  /** The tenant's own topic bank (default pickTopics on the same client). */
+  topicReader?: (brokerageId: string, svc: Svc) => Promise<string[]>
+  /** COMPETITOR POSITIONING — books already on the topic (default: the same gated search rail, titles + snippets kept as
+   *  facts, never copied into the manuscript). null = not researched (no provider result). */
+  positioningResearcher?: (q: { concept: string; audience: BookAudience; area: string | null; brokerageId: string }) => Promise<{ titles: string[]; snippets: string[] } | null>
+  /** CONVERSION — this tenant's magnets of the same type and their captures (default: lead_capture_forms + form_submissions). */
+  conversionReader?: (svc: Svc, q: { brokerageId: string; magnetType: string; excludeMagnetId: string }) => Promise<{ magnets: number; captures: number } | null>
+  /** Is this the platform's HOUSE tenant (brokerages.is_demo)? Default reads it; an unreadable row is NOT the house tenant. */
+  tenantReader?: (svc: Svc, brokerageId: string) => Promise<{ isHouseTenant: boolean; readable: boolean }>
+  manuscriptWriter?: BookWriter
+  factCheckWriter?: BookWriter
+  entitlement?: (ask: { brokerageId: string; estTokens: number; actor?: { platformRole?: string | null; userType?: string | null } | null }) => Promise<{ allowed: boolean; reason: string; message?: string }>
+  brandResolver?: (svc: Svc, brokerageId: string, agentUserId: string | null) => Promise<ClientPdfBrand>
+  /** Render + host + record (default produceClientDocument). The proof's producer renders REAL bytes too. */
+  producer?: (svc: Svc, args: { brokerageId: string; agentUserId: string | null; spec: ClientPdfSpec; metadata: Record<string, unknown> }) => Promise<{ ok: boolean; pdfUrl: string | null; documentId: string | null; pageCount: number | null; error: string | null }>
+  chaptersPerAdvance?: number
+  now?: Date
+}
+
+// ── Production defaults (routed, feature-keyed, tenant-booked; lazy so the proof never loads them) ──
+
+const routedManuscriptWriter: BookWriter = async (req) => {
+  try {
+    const { generateTextRouted } = await import("@/lib/ai/models")
+    const { text, usage } = await generateTextRouted({ feature: "book_manuscript", brokerageId: req.brokerageId, userId: req.userId, system: req.system, prompt: req.prompt, maxTokens: req.maxTokens, temperature: 0.6 })
+    return { text, tokens: usage?.totalTokens ?? 0, model: usage?.model ?? null }
+  } catch {
+    return null
+  }
+}
+
+const routedFactCheckWriter: BookWriter = async (req) => {
+  try {
+    const { generateTextRouted } = await import("@/lib/ai/models")
+    const { text, usage } = await generateTextRouted({ feature: "book_fact_check", brokerageId: req.brokerageId, userId: req.userId, system: req.system, prompt: req.prompt, maxTokens: req.maxTokens, temperature: 0 })
+    return { text, tokens: usage?.totalTokens ?? 0, model: usage?.model ?? null }
+  } catch {
+    return null
+  }
+}
+
+const defaultResearcher: NonNullable<BookDeps["researcher"]> = async (audience, area, brokerageId) => {
+  const { fetchContentTopics } = await import("@/lib/marketing/content-topics-runner")
+  return fetchContentTopics(audience === "buyer" ? "buyer_guide" : "seller_guide", area, { brokerageId, limit: 10 })
+}
+
+const defaultTopicReader: NonNullable<BookDeps["topicReader"]> = async (brokerageId, svc) => {
+  const { pickTopics } = await import("@/lib/content-intel/topic-bank")
+  const topics = await pickTopics({ brokerageId, limit: 6, client: svc as never })
+  return topics.map((t) => (t.value_angle ? `${t.topic_title} — ${t.value_angle}` : t.topic_title))
+}
+
+const defaultPositioningResearcher: NonNullable<BookDeps["positioningResearcher"]> = async (q) => {
+  try {
+    const { webSearch } = await import("@/lib/ai/web-search")
+    const audience = q.audience === "buyer" ? "home buyers" : q.audience === "seller" ? "home sellers" : "real estate"
+    const res = await webSearch({ query: `books for ${audience} about ${q.concept.slice(0, 120)}${q.area ? ` ${q.area}` : ""} kindle`, mode: "research", maxResults: 8, spend: { brokerageId: q.brokerageId, systemSource: "content_topics" } })
+    const titles = (res.hits ?? []).map((h) => (h.title ?? "").trim()).filter(Boolean)
+    const snippets = [res.answer ?? "", ...(res.hits ?? []).map((h) => h.snippet ?? "")].map((s) => s.trim()).filter(Boolean)
+    return titles.length || snippets.length ? { titles, snippets } : null
+  } catch {
+    return null
+  }
+}
+
+// The tenant's PUBLISHED magnets of the type (a draft — another book still being written — has captured nothing yet).
+const defaultConversionReader: NonNullable<BookDeps["conversionReader"]> = async (svc, q) => {
+  const { data: forms, error } = await svc.from("lead_capture_forms").select("id").eq("brokerage_id", q.brokerageId).eq("magnet_type", q.magnetType).eq("is_active", true).limit(200)
+  if (error) return null
+  const ids = ((forms ?? []) as Array<{ id: string }>).map((f) => f.id).filter((id) => id !== q.excludeMagnetId)
+  if (ids.length === 0) return { magnets: 0, captures: 0 }
+  const { data: subs, error: subErr } = await svc.from("form_submissions").select("id").eq("brokerage_id", q.brokerageId).in("form_id", ids).limit(5000)
+  if (subErr) return null
+  return { magnets: ids.length, captures: (subs ?? []).length }
+}
+
+const defaultTenantReader: NonNullable<BookDeps["tenantReader"]> = async (svc, brokerageId) => {
+  const { data, error } = await svc.from("brokerages").select("is_demo").eq("id", brokerageId).maybeSingle()
+  if (error) return { isHouseTenant: false, readable: false }
+  return { isHouseTenant: (data as { is_demo?: boolean | null } | null)?.is_demo === true, readable: true }
+}
+
+const defaultEntitlement: NonNullable<BookDeps["entitlement"]> = async (ask) => {
+  const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+  const d = await mayUseAndAfford({ brokerageId: ask.brokerageId, capability: "ai.generate", estTokens: ask.estTokens, actor: ask.actor ?? null })
+  return { allowed: d.allowed, reason: d.reason, message: d.message }
+}
+
+const defaultBrandResolver: NonNullable<BookDeps["brandResolver"]> = async (svc, brokerageId, agentUserId) => {
+  const { resolvePdfBrand } = await import("@/lib/documents/client-document-producer")
+  // The compliance block (names, licence line, EHO) stays resolvePdfBrand's — every client PDF carries it.
+  const base = await resolvePdfBrand(svc, { brokerageId, agentUserId })
+  // + THE BRAND CASCADE (wave 144 — lane 144H Outside-lane 4, owner ruling 15): the lead-magnet PDF carries the logo, the
+  // brand colours and the APPROVED tagline too, vetted by the SAME helper the KDP cover uses (approvedBookBrandAssets). Any
+  // failure leaves the PDF on the names + colour it always carried — the book is never held for its brand.
+  try {
+    const { resolveBrandContext } = await import("@/lib/branding/resolve-brand-context")
+    const b = await resolveBrandContext({ brokerageId, agentUserId })
+    const { approvedBookBrandAssets } = await import("@/lib/lead-magnets/book-publishing-produce")
+    const olderPersons = await loadOlderPersonsVerifications(svc as never, brokerageId)
+    const assets = await approvedBookBrandAssets({ tagline: b.display.tagline, logoUrl: b.visual.logoUrl }, { brokerageName: base.brokerageName, olderPersons })
+    for (const w of assets.warnings) console.warn(`[book-creator] lead-magnet PDF brand: ${w}`)
+    return {
+      ...base,
+      primaryColor: b.visual.primaryColor ?? base.primaryColor ?? null,
+      accentColor: b.visual.accentColor ?? null,
+      tagline: assets.tagline,
+      logo: assets.logo ? new Uint8Array(assets.logo) : null,
+    }
+  } catch (e) {
+    console.warn("[book-creator] brand cascade unavailable for the lead-magnet PDF (names + colour only):", (e as Error)?.message ?? String(e))
+    return base
+  }
+}
+
+const defaultProducer: NonNullable<BookDeps["producer"]> = async (svc, args) => {
+  const { produceClientDocument } = await import("@/lib/documents/client-document-producer")
+  const r = await produceClientDocument(svc, { brokerageId: args.brokerageId, agentUserId: args.agentUserId, documentType: "book", spec: args.spec, metadata: args.metadata })
+  return { ok: r.ok, pdfUrl: r.pdfUrl, documentId: r.documentId, pageCount: null, error: r.error }
+}
+
+// ── The writing rules (the prompt carries fair housing — CLAUDE.md §5) ────────────────────────────
+
+function manuscriptSystem(p: BookProject): string {
+  return (
+    `You are ghost-writing an ORIGINAL ${p.audience === "buyer" ? "home-buyer's" : "home-seller's"} book for a real-estate ${p.brand ? `brand, ${p.brand}` : "agent"}${p.area ? ` serving ${p.area}` : ""}. ` +
+    "HARD RULES: (1) FAIR HOUSING — never reference or imply race, religion, national origin, family status, disability, sex, or use steering language ('safe neighborhood', 'perfect for families', 'great for retirees', 'exclusive community', 'good schools'); describe the home, the process and the service, never who should want it. " +
+    OLDER_PERSONS_WRITING_DIRECTIVE + " " +
+    "(2) STATE NO FIGURES: no prices, rates, percentages, statistics, dates, deadlines or statute numbers — speak in process and principles; a figure you were not given is a fabrication. " +
+    "(3) No legal, tax or lending advice; no guarantees or market predictions. (4) Plain, warm, specific prose in the agent's voice — a knowledgeable coach, never a template. (5) Original writing only: never reproduce another author's or a competitor's wording."
+  )
+}
+
+function outlinePrompt(p: BookProject, evidence?: BookTopicEvidence | null): string {
+  const asked = (p.research?.topics ?? []).slice(0, 10)
+  const bank = (p.research?.bank_topics ?? []).slice(0, 6)
+  const gaps = (evidence?.gaps ?? []).slice(0, 6)
+  const rivals = (evidence?.positioning.competitor_titles ?? []).slice(0, 6)
+  return (
+    `Concept from the agent: ${p.concept}\n` +
+    (evidence?.audience_problem ? `The problem this book exists to solve (the most-asked question): ${evidence.audience_problem}\n` : "") +
+    (asked.length ? `What ${p.audience}s are actually asking right now:\n${asked.map((t) => `- ${t}`).join("\n")}\n` : "") +
+    (gaps.length ? `UNMET questions — existing books do not answer these well; the outline must own them:\n${gaps.map((t) => `- ${t}`).join("\n")}\n` : "") +
+    (rivals.length ? `Books already on this topic — position AGAINST them; never reuse their titles, structure or wording:\n${rivals.map((t) => `- ${t}`).join("\n")}\n` : "") +
+    (bank.length ? `Topics the brokerage is already seeing traction on (inspiration only, never copy):\n${bank.map((t) => `- ${t}`).join("\n")}\n` : "") +
+    `Plan a ${BOOK_MIN_CHAPTERS}-${BOOK_MAX_CHAPTERS} chapter book. Return ONLY JSON: {"title": "≤60 chars", "subtitle": "≤90 chars", "tagline": "one line for the cover", "introduction": "two short paragraphs", "closing": "one short closing paragraph inviting the reader to talk to the agent", "chapters": [{"heading": "Chapter title", "summary": "2 sentences", "key_points": ["3-5 points the chapter must cover"]}]}`
+  )
+}
+
+function chapterPrompt(p: BookProject, i: number): string {
+  const o = p.outline![i]
+  return (
+    `Book: "${p.title}"${p.subtitle ? ` — ${p.subtitle}` : ""}. Write chapter ${i + 1} of ${p.outline!.length}: "${o.heading}".\n` +
+    `Summary: ${o.summary}\nIt must cover:\n${o.key_points.map((k) => `- ${k}`).join("\n")}\n` +
+    (p.research?.topics?.length ? `Questions readers actually ask (answer the relevant ones in prose):\n${p.research.topics.slice(0, 8).map((t) => `- ${t}`).join("\n")}\n` : "") +
+    `Write 450-700 words of original prose in 4-6 paragraphs separated by blank lines. Return ONLY the chapter text — no heading, no JSON, no figures.`
+  )
+}
+
+function factCheckSystem(): string {
+  return "You are a fact-checker for a real-estate book. You review chapters against the research the writer was given and flag every claim the research does NOT support: any price, rate, percentage, statistic, date, deadline, legal rule, statute, program name or guarantee. You never rewrite; you only report. Return STRICT JSON."
+}
+
+function factCheckPrompt(p: BookProject, chapters: Array<{ i: number; body: string }>): string {
+  return (
+    `Research the writer was given:\n${allowedCorpus(p).slice(0, 6000)}\n\n` +
+    chapters.map((c) => `=== CHAPTER ${c.i + 1}: ${p.chapters[c.i].heading} ===\n${c.body}`).join("\n\n") +
+    `\n\nReturn ONLY JSON: {"findings": [{"chapter": <1-based number>, "claim": "the exact words", "verdict": "unsupported" | "needs_qualification", "note": "why"}]} — an empty findings array when every claim is supported by the research.`
+  )
+}
+
+function editPrompt(p: BookProject, i: number, factFindings: BookFactFinding[], fh: CopyFinding[]): string {
+  // The edit already being made also strips the machine-written tells it can see (the human review still reads every chapter).
+  const tells = scanAiTells(p.chapters[i].body)
+  return (
+    `Book: "${p.title}". Chapter ${i + 1}: "${p.chapters[i].heading}".\n\nCURRENT TEXT:\n${p.chapters[i].body}\n\n` +
+    (factFindings.length ? `FACT-CHECK FINDINGS (remove each unsupported figure or claim, or restate it without the number — never invent a replacement):\n${factFindings.map((f) => `- "${f.claim}" — ${f.verdict}: ${f.note}`).join("\n")}\n\n` : "") +
+    (fh.length ? `FAIR-HOUSING FINDINGS (resolve every one):\n${renderFindingsForRewrite(fh)}\n\n` : "") +
+    (tells.length ? `MACHINE-WRITTEN PHRASES (rewrite each as the agent would say it out loud):\n${tells.map((t) => `- "${t.phrase}" — ${t.rule}`).join("\n")}\n\n` : "") +
+    `Rewrite the chapter resolving every finding, keeping its length, structure and voice. Return ONLY the chapter text.`
+  )
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────────────────────────
+
+interface StartBookInput {
+  /** The VERIFIED tenant (session) — never a request body. */
+  brokerageId: string
+  /** agents.id (lead_capture_forms.agent_id). */
+  agentId: string
+  /** users.id of the requester — the ledger's actor. */
+  createdBy: string
+  concept: string
+  audience: BookAudience
+  area?: string | null
+  brand?: string | null
+  actor?: { platformRole?: string | null; userType?: string | null } | null
+  /** Where the book publishes. Omitted = the tenant's default (lead_magnet; platform_kdp in the platform's house tenant). */
+  context?: BookPublicationContext | null
+  /**
+   * DISTRIBUTE IT AS A LEAD MAGNET (owner ruling 19: a book "may be distributed as a lead magnet but keeps its Book entity").
+   * true = a DRAFT capture form is created that points at the book (settings.book_id) — the lead-magnet builder's door.
+   * Omitted = distributed only when the context is lead_magnet; a KDP book started elsewhere needs no capture form.
+   */
+  distributeAsLeadMagnet?: boolean
+  /** A book an agent makes for the team they lead is the TEAM's (owner_scope team) — the caller verifies the lead. */
+  teamId?: string | null
+  teamOwned?: boolean
+}
+
+interface StartBookOutput { success: boolean; bookId?: string; magnetId?: string; slug?: string; title?: string; context?: BookPublicationContext; error?: string }
+
+/**
+ * Concept → a NEW BOOK (its own book_projects row, stage "research", owned by the agent / brokerage / team / platform) and,
+ * when it is distributed as a lead magnet, the DRAFT capture form that points at it. Entitlement first (a refusal writes
+ * nothing). The capture form's type is the audience's guide type, so capture, intent routing and attribution ride the
+ * survivors unchanged; the finished book replaces the booklet at delivery. A failed capture form rolls the book back (one
+ * request, one outcome).
+ */
+export async function startBookProject(input: StartBookInput, deps: BookDeps = {}): Promise<StartBookOutput> {
+  const concept = (input.concept ?? "").trim()
+  if (!input.brokerageId || !input.agentId || !input.createdBy) return { success: false, error: "Missing required fields: brokerageId, agentId, createdBy" }
+  if (concept.length < 12) return { success: false, error: "Describe the book in a sentence or two first." }
+  if (input.audience !== "buyer" && input.audience !== "seller") return { success: false, error: "The book's audience must be buyer or seller." }
+  if (input.context != null && !isBookPublicationContext(input.context)) return { success: false, error: "The book's publication context must be lead_magnet, tenant_kdp or platform_kdp." }
+  // NOT GENERIC (owner ruling 15): a concept that names no niche is refused before anything is spent or written.
+  if (conceptSpecifics(concept).length === 0) return { success: false, error: "That concept names no niche — every real-estate book could carry it. Say who the book is for, the one problem it solves, and where (a neighbourhood, a situation, a kind of move)." }
+  const gate = deps.entitlement ?? defaultEntitlement
+  const verdict = await gate({ brokerageId: input.brokerageId, estTokens: BOOK_ADVANCE_EST_TOKENS, actor: input.actor ?? null }).catch((e): { allowed: boolean; reason: string; message?: string } => ({ allowed: false, reason: `entitlement_threw: ${(e as Error)?.message ?? String(e)}` }))
+  if (!verdict.allowed) return { success: false, error: verdict.message ?? `AI book writing is not available right now (${verdict.reason}).` }
+
+  // WHOSE BOOK: the platform's house tenant makes PLATFORM books; every other tenant its own. An unreadable tenant row is
+  // read as NOT the house tenant (the less-privileged answer) and a platform book is then refused, never assumed.
+  const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
+  const tenant = await (deps.tenantReader ?? defaultTenantReader)(svc, input.brokerageId).catch(() => ({ isHouseTenant: false, readable: false }))
+  if (input.context === "platform_kdp" && !tenant.readable) return { success: false, error: "Could not verify this is the platform's house tenant — a platform book was not started." }
+  const context = defaultBookContext(input.context ?? null, tenant)
+  const allowed = bookContextAllowed(context, tenant)
+  if (!allowed.ok) return { success: false, error: allowed.error }
+
+  const now = (deps.now ?? new Date()).toISOString()
+  const publication = publicationRecord({ context, agentId: input.agentId, isHouseTenant: tenant.isHouseTenant, by: input.createdBy, at: now, why: input.context ? "chosen at start" : "tenant default at start" })
+  const project = newProject({ concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, startedBy: input.createdBy, now, publication })
+  const magnetType: CreateLeadMagnetInput["magnetType"] = input.audience === "buyer" ? "buyer_guide" : "seller_guide"
+  const distribute = input.distributeAsLeadMagnet ?? context === "lead_magnet"
+  const ownerScope = ownerScopeFor(publication, { agentId: input.agentId, teamId: input.teamId ?? null, teamOwned: input.teamOwned === true })
+  type StartBody = { success: boolean; bookId?: string; magnetId?: string; slug?: string; error?: string }
+  const body = async (): Promise<StartBody> => {
+    // 1 · THE BOOK — its own entity, whatever happens to its distribution.
+    const ins = await insertBookRow(svc, {
+      brokerage_id: input.brokerageId, owner_scope: ownerScope, team_id: ownerScope === "team" ? (input.teamId ?? null) : null,
+      agent_id: input.agentId, created_by: input.createdBy, title: project.title, audience: input.audience,
+      publication_context: context, stage: project.stage, project: project as unknown as Record<string, unknown>, created_at: now, updated_at: now,
+    })
+    if (!ins.ok) return { success: false, error: ins.error }
+    if (!distribute) return { success: true, bookId: ins.id }
+    // 2 · ITS DISTRIBUTION — a DRAFT capture form that POINTS at the book (never a copy of the manuscript).
+    const created = await createLeadMagnet({
+      title: project.title,
+      description: `A ${input.audience}'s book written from the agent's concept: ${concept.slice(0, 160)}`,
+      magnetType, brokerageId: input.brokerageId, agentId: input.agentId, createdBy: input.createdBy,
+      thankYouMessage: "Thank you! Your book is on its way to your inbox.",
+      publishState: "draft",
+      settings: {
+        authoring: { by: "ai", feature: "book_manuscript", kind: "book", concept, generated_at: now, requested_by: input.createdBy, from_ai_copy: true, fallback_reason: null, fair_housing_flags: [] },
+        book_id: ins.id,
+      },
+    }, { client: deps.client })
+    if (!created.success || !created.magnetId) {
+      // One request, one outcome: the book the form was for is rolled back (counted — a delete that matched nothing is said).
+      const { data: gone, error: delErr } = await svc.from("book_projects").delete().eq("brokerage_id", input.brokerageId).eq("id", ins.id).select("id")
+      const rollback = delErr ? ` (and the book row could not be rolled back: ${delErr.message})` : (gone ?? []).length === 1 ? "" : " (the book row to roll back was not found)"
+      return { success: false, error: `${created.error ?? "The lead magnet that distributes the book was not created."}${rollback}` }
+    }
+    const attached = await saveBookRow(svc, input.brokerageId, ins.id, { distribution_form_id: created.magnetId, updatedAt: now })
+    if (attached) return { success: false, bookId: ins.id, magnetId: created.magnetId, error: `The book and its lead magnet were created but not linked: ${attached}` }
+    return { success: true, bookId: ins.id, magnetId: created.magnetId, slug: created.slug }
+  }
+  try {
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const result = await withActionLedger<StartBody>(
+      {
+        brokerageId: input.brokerageId, action: "marketing.lead_magnet.book_start", actor: { type: "user", userId: input.createdBy },
+        subject: { type: "book_project", ref: concept.slice(0, 120) }, reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: `AI book project (${input.audience}, ${context}, owned by the ${ownerScope}${distribute ? ", distributed as a lead magnet" : ""}) started from the agent's concept`, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
+        detail: { audience: input.audience, magnetType, feature: "book_manuscript", context, owner: publication.owner, owner_scope: ownerScope, brand_source: publication.brand_source, distributed: distribute },
+      },
+      body,
+      {
+        settle: (r) => r.success ? { status: "executed", outcome: "book_project_started", providerRef: r.bookId ?? null } : { status: "failed", outcome: "create_refused", error: r.error ?? null },
+        replay: (claim) => ({ success: false, error: claim.kind === "replay" ? "already started" : `ledger refused the book: ${claim.kind}` }),
+      },
+      { client: deps.client as any },
+    )
+    if (!result.success || !result.bookId) return { success: false, error: result.error ?? "The book project was not created." }
+    return { success: true, bookId: result.bookId, magnetId: result.magnetId, slug: result.slug, title: project.title, context }
+  } catch (e) {
+    return { success: false, error: (e as Error)?.message ?? String(e) }
+  }
+}
+
+interface AdvanceBookInput {
+  brokerageId: string
+  /** The book's own id (book_projects.id) — or the lead magnet that distributes it (the review surface's handle). */
+  bookId?: string
+  magnetId?: string
+  /** users.id of whoever asked for the next stage (the reviewer clicking Continue, or the sweep's system actor). */
+  actorUserId: string | null
+  actor?: { platformRole?: string | null; userType?: string | null } | null
+}
+
+interface AdvanceBookOutput {
+  success: boolean
+  stage?: BookStage
+  /** true once the book is ready for the human's review (nothing left to advance). */
+  done?: boolean
+  note?: string
+  project?: BookProject
+  error?: string
+}
+
+/** The book as the pipeline reads it: the entity row (id, owner, the capture form that distributes it) + its project record. */
+export interface LoadedBook {
+  /** book_projects.id */
+  id: string
+  name: string
+  /** agents.id of the book's author (book_projects.agent_id). */
+  agent_id: string | null
+  /** The capture form that distributes it (null = not distributed as a lead magnet). */
+  distribution_form_id: string | null
+  /** That form's landing copy (the layout stage names the book on it). */
+  landing_content: Record<string, unknown> | null
+  /** The KDP package record (book_projects.publishing), null until built. */
+  publishing: Record<string, unknown> | null
+  owner_scope: BookRow["owner_scope"]
+}
+
+/**
+ * Read the BOOK — tenant-pinned, by its own id or by the lead magnet that distributes it (wave 145: book_projects, m867). A
+ * capture form that distributes no book is not a book project; a refused read is an error, never "no book".
+ */
+export async function loadProject(svc: Svc, brokerageId: string, locator: BookLocator | string): Promise<{ ok: true; row: LoadedBook; project: BookProject } | { ok: false; error: string }> {
+  const loc: BookLocator | null = typeof locator === "string" ? locatorOf({ magnetId: locator }) : locator
+  const res = await loadBookRow(svc, brokerageId, loc)
+  if (!res.ok) return { ok: false, error: res.error }
+  const project = res.row.project as unknown as BookProject | undefined
+  if (!project || typeof project !== "object" || !project.stage) return { ok: false, error: "This book carries no project record" }
+  const form = await loadDistributionForm(svc, brokerageId, res.row.distribution_form_id)
+  if (!form.ok) return { ok: false, error: form.error }
+  return {
+    ok: true,
+    row: {
+      id: res.row.id, name: res.row.title, agent_id: res.row.agent_id, distribution_form_id: res.row.distribution_form_id,
+      landing_content: form.form?.landing_content ?? null, publishing: res.row.publishing ?? null, owner_scope: res.row.owner_scope,
+    },
+    project,
+  }
+}
+
+/**
+ * A COUNTED, tenant-pinned write of the book's project record (its stage / title / context mirrored onto the entity's columns
+ * in the same write) — plus, when the title lands, the name / landing copy of the capture form that distributes it.
+ */
+async function saveProject(svc: Svc, brokerageId: string, book: LoadedBook, project: BookProject, formPatch: Record<string, unknown> = {}): Promise<string | null> {
+  const saved = await saveBookRow(svc, brokerageId, book.id, { project: project as unknown as Record<string, unknown>, updatedAt: project.updated_at })
+  if (saved) return saved
+  if (book.distribution_form_id && Object.keys(formPatch).length > 0) {
+    const { data, error } = await svc.from("lead_capture_forms").update({ ...formPatch, updated_at: project.updated_at }).eq("brokerage_id", brokerageId).eq("id", book.distribution_form_id).select("id")
+    if (error) return `The book was saved, but the lead magnet that distributes it was not updated: ${error.message}`
+    if ((data ?? []).length !== 1) return "The book was saved, but the lead magnet that distributes it matched no row in this brokerage"
+  }
+  return null
+}
+
+/**
+ * Run the NEXT stage (or the next bounded slice of it). Idempotent per stage: a re-run after a saved stage
+ * simply runs the following one; a failed model call leaves the record untouched and reports why.
+ */
+export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps = {}): Promise<AdvanceBookOutput> {
+  const locator = locatorOf(input)
+  if (!input.brokerageId || !locator) return { success: false, error: "Missing required fields: brokerageId, bookId (or the magnetId that distributes it)" }
+  const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
+  const loaded = await loadProject(svc, input.brokerageId, locator)
+  if (!loaded.ok) return { success: false, error: loaded.error }
+  const { row } = loaded
+  const p: BookProject = { ...loaded.project, chapters: [...loaded.project.chapters], log: [...loaded.project.log], needs_human_review: [...(loaded.project.needs_human_review ?? [])], cost: { ...loaded.project.cost } }
+  const now = (deps.now ?? new Date()).toISOString()
+  if (p.stage === "ready_for_review") return { success: true, stage: p.stage, done: true, note: "The book is finished — review and publish it.", project: p }
+
+  // Entitlement BEFORE any spend, every advance (a refusal changes nothing).
+  const gate = deps.entitlement ?? defaultEntitlement
+  const verdict = await gate({ brokerageId: input.brokerageId, estTokens: BOOK_ADVANCE_EST_TOKENS, actor: input.actor ?? null }).catch((e): { allowed: boolean; reason: string; message?: string } => ({ allowed: false, reason: `entitlement_threw: ${(e as Error)?.message ?? String(e)}` }))
+  if (!verdict.allowed) return { success: false, stage: p.stage, error: verdict.message ?? `AI book writing is not available right now (${verdict.reason}).` }
+
+  const writer = deps.manuscriptWriter ?? routedManuscriptWriter
+  const checker = deps.factCheckWriter ?? routedFactCheckWriter
+  const perAdvance = Math.max(1, deps.chaptersPerAdvance ?? BOOK_CHAPTERS_PER_ADVANCE)
+  const agentUserId = await resolveAgentUserId(svc, input.brokerageId, row.agent_id)
+  const book = (req: Omit<BookWriterRequest, "brokerageId" | "userId">, lane: BookWriter) => lane({ ...req, brokerageId: input.brokerageId, userId: input.actorUserId }).then((r) => { if (r) { p.cost.tokens += r.tokens; p.cost.model_calls += 1 } return r })
+
+  const stageBefore = p.stage
+  let note = ""
+  let extra: Record<string, unknown> = {}
+  try {
+    switch (p.stage) {
+      case "research": {
+        const topics = await (deps.researcher ?? defaultResearcher)(p.audience, p.area, input.brokerageId).catch(() => [] as ContentTopic[])
+        const bank = await (deps.topicReader ?? defaultTopicReader)(input.brokerageId, svc).catch(() => [] as string[])
+        // THE EVIDENCE (owner ruling 15): demand + the audience problem + who already wrote on it + what they leave
+        // unanswered + whether the concept is original + what this tenant's magnets of the type already converted.
+        const positioning = await (deps.positioningResearcher ?? defaultPositioningResearcher)({ concept: p.concept, audience: p.audience, area: p.area, brokerageId: input.brokerageId }).catch(() => null)
+        const magnetType = p.audience === "buyer" ? "buyer_guide" : "seller_guide"
+        const conversion = await (deps.conversionReader ?? defaultConversionReader)(svc, { brokerageId: input.brokerageId, magnetType, excludeMagnetId: row.distribution_form_id ?? "" }).catch(() => null)
+        const evidence = scoreBookTopicEvidence({ concept: p.concept, workingTitle: p.title, demand: topics, bank, positioning, conversion, now })
+        p.research = { topics: topics.map((t) => t.topic), bank_topics: bank, fetched_at: now, evidence }
+        p.stage = "outline"
+        note = `research: ${topics.length} demand topic(s), ${bank.length} topic-bank topic(s); evidence ${evidence.verdict} (${evidence.gaps.length} unmet question(s), positioning ${evidence.positioning.researched ? `${evidence.positioning.competitor_titles.length} competing title(s)` : "not researched"})`
+        break
+      }
+      case "outline": {
+        // THE EVIDENCE GATE — before any model spend: a generic, demand-less or crowded topic does not get an outline.
+        const evidence = p.research?.evidence ?? scoreBookTopicEvidence({ concept: p.concept, workingTitle: p.title, demand: (p.research?.topics ?? []).map((topic) => ({ topic })), bank: p.research?.bank_topics ?? [], positioning: null, conversion: null, now })
+        if (evidence.verdict !== "evidenced") return { success: false, stage: p.stage, error: `Topic evidence: ${evidence.verdict.replace(/_/g, " ")} — ${evidence.reasons.join(" ")} Start the book again with a sharper concept${evidence.gaps[0] ? ` (an unmet question to build on: "${evidence.gaps[0]}")` : ""}.`, project: p }
+        const r = await book({ system: manuscriptSystem(p), prompt: outlinePrompt(p, evidence), maxTokens: 1400 }, writer)
+        const o = r ? parseJsonObject<{ title?: string; subtitle?: string; tagline?: string; introduction?: string; closing?: string; chapters?: Array<{ heading?: string; summary?: string; key_points?: string[] }> }>(r.text) : null
+        const chapters = (o?.chapters ?? []).map((c) => ({ heading: String(c?.heading ?? "").trim().slice(0, 90), summary: String(c?.summary ?? "").trim().slice(0, 400), key_points: Array.isArray(c?.key_points) ? c.key_points.map((k) => String(k).trim()).filter(Boolean).slice(0, 6) : [] })).filter((c) => c.heading)
+        if (!o || chapters.length < BOOK_MIN_CHAPTERS || chapters.length > BOOK_MAX_CHAPTERS) return { success: false, stage: p.stage, error: `The outline did not land (${chapters.length} chapter(s); needs ${BOOK_MIN_CHAPTERS}-${BOOK_MAX_CHAPTERS}) — try again.`, project: p }
+        p.outline = chapters
+        p.title = String(o.title ?? "").trim().slice(0, 60) || p.title
+        p.subtitle = String(o.subtitle ?? "").trim().slice(0, 90) || null
+        p.tagline = String(o.tagline ?? "").trim().slice(0, 120) || null
+        p.introduction = String(o.introduction ?? "").trim() || null
+        p.closing = String(o.closing ?? "").trim() || null
+        p.stage = "chapters"
+        note = `outline: "${p.title}" — ${chapters.length} chapters`
+        extra = { name: p.title }
+        break
+      }
+      case "chapters": {
+        const outline = p.outline ?? []
+        let wrote = 0
+        while (p.chapters.length < outline.length && wrote < perAdvance) {
+          const i = p.chapters.length
+          const r = await book({ system: manuscriptSystem(p), prompt: chapterPrompt(p, i), maxTokens: 1400 }, writer)
+          const body = (r?.text ?? "").trim()
+          if (!r || wordCount(body) < BOOK_MIN_CHAPTER_WORDS) return { success: false, stage: p.stage, error: `Chapter ${i + 1} did not land (${wordCount(body)} words; a chapter needs ${BOOK_MIN_CHAPTER_WORDS}+) — try again.`, project: p }
+          p.chapters.push({ heading: outline[i].heading, body, words: wordCount(body), written_at: now })
+          wrote++
+        }
+        if (p.chapters.length >= outline.length) p.stage = "fact_check"
+        note = `chapters: ${p.chapters.length}/${outline.length} written`
+        break
+      }
+      case "fact_check": {
+        const corpus = allowedCorpus(p)
+        const findings: BookFactFinding[] = []
+        // The deterministic scan first — it needs no model and cannot be talked out of a figure.
+        p.chapters.forEach((c, i) => {
+          for (const fig of unsupportedFigures(c.body, corpus)) findings.push({ chapter: i + 1, claim: fig, verdict: "unsupported", note: "figure not present in the research the writer was given", by: "scan" })
+        })
+        const r = await book({ system: factCheckSystem(), prompt: factCheckPrompt(p, p.chapters.map((c, i) => ({ i, body: c.body }))), maxTokens: 1200 }, checker)
+        const parsed = r ? parseJsonObject<{ findings?: Array<{ chapter?: number; claim?: string; verdict?: string; note?: string }> }>(r.text) : null
+        for (const f of parsed?.findings ?? []) {
+          const ch = Number(f?.chapter)
+          const claim = String(f?.claim ?? "").trim()
+          if (!claim || !Number.isInteger(ch) || ch < 1 || ch > p.chapters.length) continue
+          findings.push({ chapter: ch, claim: claim.slice(0, 200), verdict: f?.verdict === "needs_qualification" ? "needs_qualification" : "unsupported", note: String(f?.note ?? "").slice(0, 200), by: "model" })
+        }
+        p.fact_check = { findings, checked_at: now }
+        p.stage = "edit"
+        note = `fact check: ${findings.length} finding(s)`
+        break
+      }
+      case "edit": {
+        let edited = 0
+        const olderPersons = await loadOlderPersonsVerifications(svc as never, input.brokerageId)
+        for (let i = 0; i < p.chapters.length && edited < perAdvance; i++) {
+          if (p.chapters[i].edited) continue
+          const factFindings = (p.fact_check?.findings ?? []).filter((f) => f.chapter === i + 1)
+          let body = p.chapters[i].body
+          if (factFindings.length > 0) {
+            const r = await book({ system: manuscriptSystem(p), prompt: editPrompt(p, i, factFindings, []), maxTokens: 1400 }, writer)
+            const next = (r?.text ?? "").trim()
+            if (!r || wordCount(next) < BOOK_MIN_CHAPTER_WORDS) return { success: false, stage: p.stage, error: `The edit of chapter ${i + 1} did not land — try again.`, project: p }
+            body = next
+          }
+          // THE FAIR-HOUSING REWRITE LOOP — the book is PUBLIC housing marketing; cap + escalate per chapter.
+          const loop = await rewritePublicCopyUntilCompliant({
+            text: body, surface: "book", brokerageName: p.brand, olderPersons,
+            rewrite: async (text, fh) => {
+              const snapshot: BookProject = { ...p, chapters: p.chapters.map((c, j) => (j === i ? { ...c, body: text } : c)) }
+              const r = await book({ system: manuscriptSystem(p), prompt: editPrompt(snapshot, i, [], fh), maxTokens: 1400 }, writer)
+              const next = (r?.text ?? "").trim()
+              return r && wordCount(next) >= BOOK_MIN_CHAPTER_WORDS ? next : null
+            },
+          })
+          p.chapters[i] = { ...p.chapters[i], body: loop.text, words: wordCount(loop.text), edited: { fact_findings: factFindings.length, fair_housing_rewrites: loop.rewrites, escalated: loop.escalated, findings: loop.findings.map((f) => f.phrase), ai_tells: scanAiTells(loop.text).map((t) => t.phrase) } }
+          if (loop.escalated && !p.needs_human_review.includes(i + 1)) p.needs_human_review.push(i + 1)
+          edited++
+        }
+        if (p.chapters.every((c) => c.edited)) p.stage = "layout"
+        const tellChapters = p.chapters.filter((c) => (c.edited?.ai_tells ?? []).length > 0).length
+        note = `edit: ${p.chapters.filter((c) => c.edited).length}/${p.chapters.length} chapters edited${p.needs_human_review.length ? `; ${p.needs_human_review.length} escalated to the reviewer` : ""}${tellChapters ? `; ${tellChapters} chapter(s) still read machine-written — the humanized review rewrites them` : ""}`
+        break
+      }
+      case "layout": {
+        const brand = await (deps.brandResolver ?? defaultBrandResolver)(svc, input.brokerageId, agentUserId)
+        const dateLabel = new Date(now).toLocaleDateString("en-US", { year: "numeric", month: "long" })
+        const spec = bookPdfSpec(composeBookPdfData(p), brand, dateLabel)
+        const produced = await (deps.producer ?? defaultProducer)(svc, { brokerageId: input.brokerageId, agentUserId, spec, metadata: { source: "lead_magnet_book", book_id: row.id, magnet_id: row.distribution_form_id, chapters: p.chapters.length, audience: p.audience } })
+        if (!produced.ok || !produced.pdfUrl) return { success: false, stage: p.stage, error: produced.error ?? "The book PDF was not produced.", project: p }
+        p.pdf_url = produced.pdfUrl
+        p.document_id = produced.documentId
+        p.page_count = produced.pageCount
+        p.stage = "ready_for_review"
+        note = `layout: PDF hosted${produced.pageCount ? ` (${produced.pageCount} pages)` : ""} — ready for review`
+        // The landing surface names the book: a human still reviews and edits before publishing.
+        const prevLanding = row.landing_content ?? {}
+        extra = {
+          name: p.title,
+          landing_content: {
+            ...prevLanding,
+            headline: p.title, subhead: p.tagline ?? p.subtitle ?? `A ${p.audience}'s guide, written for you.`, cta: "Send me the book",
+            bullets: p.chapters.slice(0, 3).map((c) => c.heading), topics: p.research?.topics?.slice(0, 6) ?? [],
+            faq: Array.isArray((prevLanding as { faq?: unknown }).faq) ? (prevLanding as { faq: unknown[] }).faq : [], faqJsonLd: (prevLanding as { faqJsonLd?: string | null }).faqJsonLd ?? null,
+            fromTopics: (p.research?.topics?.length ?? 0) > 0, generatedAt: now,
+          },
+        }
+        break
+      }
+    }
+  } catch (e) {
+    return { success: false, stage: p.stage, error: (e as Error)?.message ?? String(e), project: p }
+  }
+
+  p.updated_at = now
+  p.log.push({ stage: p.stage, at: now, note })
+
+  // EVIDENCE (LAW 5) around the counted write: which stage ran, what it cost, who asked.
+  let saveError: string | null = null
+  try {
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    saveError = await withActionLedger<string | null>(
+      {
+        brokerageId: input.brokerageId, action: "marketing.lead_magnet.book_stage",
+        actor: input.actorUserId ? { type: "user", userId: input.actorUserId } : { type: "system" },
+        subject: { type: "book_project", id: row.id }, reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: `book stage ${stageBefore} → ${p.stage}: ${note}`, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
+        detail: { stage_before: stageBefore, stage_after: p.stage, chapters: p.chapters.length, tokens: p.cost.tokens, model_calls: p.cost.model_calls, needs_human_review: p.needs_human_review },
+      },
+      () => saveProject(svc, input.brokerageId, row, p, extra),
+      {
+        settle: (err) => err ? { status: "failed", outcome: "save_refused", error: err } : { status: "executed", outcome: p.stage },
+        replay: (claim) => `ledger refused the stage: ${claim.kind}`,
+      },
+      { client: deps.client as any },
+    )
+  } catch (e) {
+    saveError = (e as Error)?.message ?? String(e)
+  }
+  if (saveError) return { success: false, stage: stageBefore, error: saveError, project: p }
+  return { success: true, stage: p.stage, done: p.stage === "ready_for_review", note, project: p }
+}
+
+interface ReviseBookChapterInput {
+  brokerageId: string
+  /** The book's own id — or the lead magnet that distributes it. */
+  bookId?: string
+  magnetId?: string
+  /** 1-based chapter number. */
+  chapter: number
+  body: string
+  actorUserId: string | null
+}
+
+/**
+ * THE HUMAN'S REWRITE of a chapter (owner: the human approves the CORRECTED creative). An escalated chapter is
+ * the reviewer's to fix; any chapter may be revised. The reviewer's words run the SAME public-copy scan (a
+ * steering revision is refused — nobody is exempt from fair housing), must clear the word floor, replace the
+ * chapter, clear it from needs_human_review, and send a finished book back to LAYOUT so the PDF is re-rendered
+ * from the corrected manuscript (the stale PDF is dropped, never served). A COUNTED tenant-pinned write under
+ * ledger evidence (marketing.lead_magnet.book_revise).
+ */
+export async function reviseBookChapter(input: ReviseBookChapterInput, deps: BookDeps = {}): Promise<AdvanceBookOutput> {
+  const locator = locatorOf(input)
+  if (!input.brokerageId || !locator) return { success: false, error: "Missing required fields: brokerageId, bookId (or the magnetId that distributes it)" }
+  const text = (input.body ?? "").trim()
+  const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
+  const loaded = await loadProject(svc, input.brokerageId, locator)
+  if (!loaded.ok) return { success: false, error: loaded.error }
+  const { row } = loaded
+  const p: BookProject = { ...loaded.project, chapters: [...loaded.project.chapters], log: [...loaded.project.log], needs_human_review: [...(loaded.project.needs_human_review ?? [])], cost: { ...loaded.project.cost } }
+  const i = input.chapter - 1
+  if (!Number.isInteger(input.chapter) || i < 0 || i >= p.chapters.length) return { success: false, stage: p.stage, error: `Chapter ${input.chapter} does not exist (the book has ${p.chapters.length}).`, project: p }
+  if (wordCount(text) < BOOK_MIN_CHAPTER_WORDS) return { success: false, stage: p.stage, error: `A chapter needs ${BOOK_MIN_CHAPTER_WORDS}+ words (${wordCount(text)} given).`, project: p }
+  const scan = await scanPublicCopy(text, "book", { brokerageName: p.brand, olderPersons: await loadOlderPersonsVerifications(svc as never, input.brokerageId) })
+  if (!scan.ok) return { success: false, stage: p.stage, error: `Fair-housing review: the revision still says ${scan.findings.map((f) => `"${f.phrase}"`).join(", ")} — ${scan.findings.map((f) => f.fix).join("; ")}.`, project: p }
+
+  const now = (deps.now ?? new Date()).toISOString()
+  const stageBefore = p.stage
+  const prior = p.chapters[i].edited
+  // The reviewer's own words ARE the humanized review of this chapter: never re-flagged (ai_tells empty). Any revision
+  // changes the manuscript, so a recorded sign-off is cleared and given again on the next publish / KDP approval.
+  p.chapters[i] = { ...p.chapters[i], body: text, words: wordCount(text), edited: { fact_findings: prior?.fact_findings ?? 0, fair_housing_rewrites: prior?.fair_housing_rewrites ?? 0, escalated: false, findings: [], human_revised_at: now, ai_tells: [] } }
+  p.needs_human_review = p.needs_human_review.filter((n) => n !== input.chapter)
+  p.humanized_review = null
+  if (p.stage === "ready_for_review") { p.stage = "layout"; p.pdf_url = null; p.document_id = null; p.page_count = null }
+  p.updated_at = now
+  const note = `chapter ${input.chapter} revised by the reviewer${stageBefore === "ready_for_review" ? "; back to layout for a fresh PDF" : ""}`
+  p.log.push({ stage: p.stage, at: now, note })
+
+  let saveError: string | null = null
+  try {
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    saveError = await withActionLedger<string | null>(
+      {
+        brokerageId: input.brokerageId, action: "marketing.lead_magnet.book_revise",
+        actor: input.actorUserId ? { type: "user", userId: input.actorUserId } : { type: "system" },
+        subject: { type: "book_project", id: row.id }, reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: note, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
+        detail: { chapter: input.chapter, stage_before: stageBefore, stage_after: p.stage, words: wordCount(text), needs_human_review: p.needs_human_review },
+      },
+      () => saveProject(svc, input.brokerageId, row, p),
+      {
+        settle: (err) => err ? { status: "failed", outcome: "save_refused", error: err } : { status: "executed", outcome: "chapter_revised" },
+        replay: (claim) => `ledger refused the revision: ${claim.kind}`,
+      },
+      { client: deps.client as any },
+    )
+  } catch (e) {
+    saveError = (e as Error)?.message ?? String(e)
+  }
+  if (saveError) return { success: false, stage: stageBefore, error: saveError, project: p }
+  // A revision never leaves the book ready: a finished one went back to layout for its fresh PDF.
+  return { success: true, stage: p.stage, done: false, note, project: p }
+}
+
+/** lead_capture_forms.agent_id is agents.id; the PDF brand and the document library want users.id (disjoint, CLAUDE.md §3). */
+async function resolveAgentUserId(svc: Svc, brokerageId: string, agentId: string | null): Promise<string | null> {
+  if (!agentId) return null
+  const { data, error } = await svc.from("agents").select("user_id").eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) return null
+  return ((data as { user_id?: string | null } | null)?.user_id) ?? null
+}
+
+/**
+ * THE SAFETY NET (cron is a backup, never the primary way): advance every unfinished book project of a tenant
+ * that has sat untouched for `staleMinutes` — one stage each, bounded per sweep. The UI's auto-continue is the
+ * primary driver; this catches a closed tab.
+ */
+export async function sweepStalledBookProjects(svc: Svc, brokerageId: string, opts: { staleMinutes?: number; max?: number; now?: Date; deps?: BookDeps } = {}): Promise<{ advanced: number; errors: string[] }> {
+  const now = opts.now ?? new Date()
+  const stale = new Date(now.getTime() - (opts.staleMinutes ?? 15) * 60_000).toISOString()
+  const out = { advanced: 0, errors: [] as string[] }
+  // Wave 145: the BOOKS themselves (book_projects), not capture forms — a KDP book with no lead magnet is swept too.
+  const { data, error } = await svc.from("book_projects").select(BOOK_ROW_COLUMNS).eq("brokerage_id", brokerageId).neq("stage", "ready_for_review").limit(200)
+  if (error) { out.errors.push(`book sweep read refused: ${error.message}`); return out }
+  const max = opts.max ?? 2
+  for (const r of (data ?? []) as BookRow[]) {
+    if (out.advanced >= max) break
+    const book = (r.project ?? null) as unknown as BookProject | null
+    if (!book || typeof book !== "object" || !book.stage || book.stage === "ready_for_review") continue
+    if ((book.updated_at ?? "") > stale) continue
+    const res = await advanceBookProject({ brokerageId, bookId: r.id, actorUserId: null }, { ...(opts.deps ?? {}), client: (opts.deps?.client ?? svc) as never, now })
+    if (res.success) out.advanced++
+    else out.errors.push(`${r.id}: ${res.error}`)
+  }
+  return out
+}

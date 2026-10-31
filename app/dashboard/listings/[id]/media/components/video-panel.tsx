@@ -14,7 +14,11 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { createVideoProject, deleteVideoProject } from "@/app/actions/listing-media"
+import { deleteVideoProject } from "@/app/actions/listing-media"
+// createVideoProject: the CANONICAL creator (fair-housing render hold before the row
+// exists) — the listing-media copy was merged onto it and deleted (wave 56).
+import { createVideoProject } from "@/app/actions/video/create-video-project"
+import { createClient } from "@/lib/supabase/client"
 import { manuallyTriggerListingPromo } from "@/app/actions/listing-promo-manual-trigger"
 import {
   PlusIcon,
@@ -116,18 +120,43 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
   const handleCreate = () => {
     if (!form.title.trim() || !form.scriptContent.trim()) return
     startTransition(async () => {
+      // agentUserId is the SESSION user (users.id); the canonical creator resolves
+      // users→agents itself and refuses when the user holds no agent row here.
+      const { data: { user } } = await createClient().auth.getUser()
+      if (!user) {
+        toast({ title: "Not signed in", description: "Sign in again to create a video project.", variant: "destructive" })
+        return
+      }
       const result = await createVideoProject({
-        listingId,
         brokerageId,
-        title:             form.title.trim(),
-        scriptContent:     form.scriptContent.trim(),
-        videoType:         form.videoType,
+        agentUserId: user.id,
+        listingId,
+        title:       form.title.trim(),
+        script:      form.scriptContent.trim(),
+        videoType:   form.videoType,
         avatarId:    form.avatarId.trim() || undefined,
         voiceId:     form.voiceId.trim() || undefined,
         templateId:  form.templateId.trim() || undefined,
+        // Listing-video defaults (the panel collects title/script/type/avatar/voice
+        // only): the property is the background, horizontal for MLS/YouTube, a
+        // 60-second listing tour, captions on for sound-off viewing.
+        backgroundType:  "property",
+        format:          "horizontal",
+        durationSeconds: 60,
+        captionsEnabled: true,
+        audienceType:    "customer_facing",
+        brandComplianceCheck: true,
       })
-      if (result.error) {
-        toast({ title: "Error creating project", description: result.error, variant: "destructive" })
+      if (result.complianceHold) {
+        toast({
+          title: "Held for compliance review",
+          description: result.complianceReasons?.[0] ?? "This script needs a human look before a video is made.",
+          variant: "destructive",
+        })
+        return
+      }
+      if (!result.success) {
+        toast({ title: "Error creating project", description: result.error ?? "Unknown error", variant: "destructive" })
         return
       }
       const updated = await import("@/app/actions/listing-media").then(m => m.getVideoProjects(listingId))

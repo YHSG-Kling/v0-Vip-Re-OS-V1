@@ -43,9 +43,6 @@ import {
   Mail,
   RefreshCw,
   Search,
-  ArrowUpRight,
-  ArrowDownRight,
-  Filter,
   ChevronRight,
   Loader2,
   AlertTriangle,
@@ -58,13 +55,11 @@ import {
   SlidersHorizontal,
   Printer,
 } from "lucide-react"
-import Link from "next/link"
 import {
   getSourcePerformance,
   generateSourceAIInsights,
   exportSourceCSV,
   emailSourceReport,
-  getSourceComparison,
   type SourceMetrics,
   type SourceFamily,
 } from "@/app/actions/source-analytics"
@@ -73,9 +68,9 @@ import {
 // Props
 // ─────────────────────────────────────────────────────────────────────────────
 interface Props {
-  userId: string
   brokerageId: string
-  userType: string
+  /** Lane 90A: the server-resolved scope (null = brokerage-wide) — the client never re-derives it from a role. */
+  scopeAgentIds: string[] | null
   agentId: string | null
   initialSources: SourceMetrics[]
   initialSummary: {
@@ -95,9 +90,9 @@ interface Props {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 const FAMILY_LABELS: Record<SourceFamily, { label: string; color: string; bg: string; icon: typeof Globe }> = {
-  raw:            { label: "Raw / Acquisition", color: "text-orange-600",  bg: "bg-orange-500/10", icon: Database },
+  raw:            { label: "Raw / Acquisition", color: "text-orange-700",  bg: "bg-orange-500/10", icon: Database },
   lead:           { label: "Lead",               color: "text-blue-600",   bg: "bg-blue-500/10",   icon: Zap },
-  contact_direct: { label: "Direct Contact",     color: "text-emerald-600",bg: "bg-emerald-500/10",icon: Globe },
+  contact_direct: { label: "Direct Contact",     color: "text-emerald-700",bg: "bg-emerald-500/10",icon: Globe },
 }
 
 function FamilyBadge({ family }: { family: SourceFamily }) {
@@ -184,13 +179,13 @@ function SourceRow({
       </TableCell>
       <TableCell className="text-sm">
         {source.source_family === "raw" && (
-          <span className="text-orange-600">{source.raw_record_count.toLocaleString()} raw</span>
+          <span className="text-orange-700">{source.raw_record_count.toLocaleString()} raw</span>
         )}
         {source.source_family === "lead" && (
           <span className="text-blue-600">{source.lead_count.toLocaleString()} leads</span>
         )}
         {source.source_family === "contact_direct" && (
-          <span className="text-emerald-600">{source.contact_count.toLocaleString()} contacts</span>
+          <span className="text-emerald-700">{source.contact_count.toLocaleString()} contacts</span>
         )}
       </TableCell>
       <TableCell className="text-sm text-muted-foreground">
@@ -203,12 +198,34 @@ function SourceRow({
         {source.closed_count.toLocaleString()}
       </TableCell>
       <TableCell>
-        <span className={`text-sm font-medium ${source.close_rate >= 10 ? "text-emerald-600" : source.close_rate >= 3 ? "text-amber-600" : "text-muted-foreground"}`}>
+        <span className={`text-sm font-medium ${source.close_rate >= 10 ? "text-emerald-700" : source.close_rate >= 3 ? "text-amber-700" : "text-muted-foreground"}`}>
           {source.close_rate}%
         </span>
+        {/* Wording-vs-quality verdict. A weak source with a fixable opener must NOT
+            be downranked — that throws away good leads over a copy problem. */}
+        {source.diagnostic && source.diagnostic.verdict !== "healthy" && (
+          <div
+            className={`mt-1 text-[10px] leading-tight ${
+              source.diagnostic.verdict === "wording_issue"
+                ? "text-amber-700"
+                : source.diagnostic.verdict === "insufficient_data"
+                  ? "text-muted-foreground"
+                  : "text-red-600"
+            }`}
+            title={source.diagnostic.why}
+          >
+            {source.diagnostic.verdict === "wording_issue"
+              ? "copy, not source — test new opener"
+              : source.diagnostic.verdict === "source_quality_issue"
+                ? "source quality — consider downranking"
+                : source.diagnostic.verdict === "targeting_issue"
+                  ? "targeting/cadence mismatch"
+                  : "not enough touches to judge"}
+          </div>
+        )}
       </TableCell>
       <TableCell>
-        <span className={`text-sm font-medium ${source.roi_multiple >= 5 ? "text-emerald-600" : source.roi_multiple >= 2 ? "text-amber-600" : "text-red-500"}`}>
+        <span className={`text-sm font-medium ${source.roi_multiple >= 5 ? "text-emerald-700" : source.roi_multiple >= 2 ? "text-amber-700" : "text-red-600"}`}>
           {source.roi_multiple > 0 ? `${source.roi_multiple}x` : "—"}
         </span>
       </TableCell>
@@ -244,6 +261,8 @@ function CompareDialog({
   if (!open || sources.length === 0) return null
   const metrics: Array<{ label: string; fn: (s: SourceMetrics) => string }> = [
     { label: "Source Family", fn: s => s.source_family },
+    // Lane 82B — the platform-paid scraping vendor behind this source (SOURCE_VENDOR).
+    { label: "Vendor", fn: s => s.vendor ?? "—" },
     { label: "Raw Records", fn: s => s.raw_record_count > 0 ? s.raw_record_count.toLocaleString() : "—" },
     { label: "Leads", fn: s => s.lead_count > 0 ? s.lead_count.toLocaleString() : "—" },
     { label: "Contacts", fn: s => s.contact_count.toLocaleString() },
@@ -347,9 +366,8 @@ function EmailReportDialog({
 // Main Component
 // ─────────────────────────────────────────────────────────────────────────────
 export function SourceAnalyticsClient({
-  userId,
   brokerageId,
-  userType,
+  scopeAgentIds,
   agentId,
   initialSources,
   initialSummary,
@@ -381,8 +399,6 @@ export function SourceAnalyticsClient({
   const [emailSuccess, setEmailSuccess] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
 
-  const isBrokerOrAdmin = userType === "broker" || userType === "admin" || userType === "superadmin"
-
   // Filter sources by tab and search
   const filteredSources = sources.filter(s => {
     if (familyFilter !== "all" && s.source_family !== familyFilter) return false
@@ -404,7 +420,7 @@ export function SourceAnalyticsClient({
     startLoading(async () => {
       const result = await getSourcePerformance({
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
         sourceFamilies: familyFilter !== "all" ? [familyFilter as SourceFamily] : undefined,
@@ -415,7 +431,7 @@ export function SourceAnalyticsClient({
         setSummary(result.summary)
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo, familyFilter, sortBy])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo, familyFilter, sortBy])
 
   const handleGenerateInsights = useCallback(() => {
     setAIError(null)
@@ -434,7 +450,7 @@ export function SourceAnalyticsClient({
     startExporting(async () => {
       const result = await exportSourceCSV({
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
       })
@@ -450,13 +466,13 @@ export function SourceAnalyticsClient({
         setExportError(result.error ?? "Export failed")
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo])
 
   const handleSendEmail = useCallback((email: string, name: string) => {
     startEmailing(async () => {
       const result = await emailSourceReport(brokerageId, email, name, "brokerage", {
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
       })
@@ -465,7 +481,7 @@ export function SourceAnalyticsClient({
         setEmailSuccess(true)
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo])
 
   const handlePrint = useCallback(() => {
     window.print()
@@ -540,10 +556,10 @@ export function SourceAnalyticsClient({
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         <MetricCard label="Total Sources" value={summary.total_sources.toString()} icon={Target} color="text-primary" />
         <MetricCard label="Total Contacts" value={summary.total_contacts.toLocaleString()} icon={Users} color="text-blue-600" />
-        <MetricCard label="Total Leads" value={summary.total_leads.toLocaleString()} icon={Zap} color="text-amber-600" />
-        <MetricCard label="Raw Records" value={summary.total_raw_records.toLocaleString()} icon={Database} color="text-orange-600" />
-        <MetricCard label="Transactions" value={summary.total_transactions.toLocaleString()} icon={TrendingUp} color="text-emerald-600" />
-        <MetricCard label="Revenue" value={`$${(summary.total_revenue / 1000).toFixed(0)}k`} icon={DollarSign} color="text-emerald-600" />
+        <MetricCard label="Total Leads" value={summary.total_leads.toLocaleString()} icon={Zap} color="text-amber-700" />
+        <MetricCard label="Raw Records" value={summary.total_raw_records.toLocaleString()} icon={Database} color="text-orange-700" />
+        <MetricCard label="Transactions" value={summary.total_transactions.toLocaleString()} icon={TrendingUp} color="text-emerald-700" />
+        <MetricCard label="Revenue" value={`$${(summary.total_revenue / 1000).toFixed(0)}k`} icon={DollarSign} color="text-emerald-700" />
       </div>
 
       {/* Controls */}
@@ -652,7 +668,7 @@ export function SourceAnalyticsClient({
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Award className="h-4 w-4 text-emerald-500" />
+              <Award className="h-4 w-4 text-emerald-600" />
               Top ROI Sources
             </CardTitle>
           </CardHeader>
@@ -665,7 +681,7 @@ export function SourceAnalyticsClient({
                   <span className="text-xs text-muted-foreground w-4">{i + 1}.</span>
                   <span className="text-xs capitalize">{s.source.replace(/_/g, " ")}</span>
                 </div>
-                <Badge variant="outline" className="text-xs text-emerald-600 border-emerald-500">{s.roi_multiple}x</Badge>
+                <Badge variant="outline" className="text-xs text-emerald-700 border-emerald-500">{s.roi_multiple}x</Badge>
               </div>
             ))}
           </CardContent>
@@ -711,7 +727,7 @@ export function SourceAnalyticsClient({
                   <span className="text-xs text-muted-foreground w-4">{i + 1}.</span>
                   <span className="text-xs capitalize">{s.source.replace(/_/g, " ")}</span>
                 </div>
-                <Badge variant="outline" className="text-xs text-red-500 border-red-400">{s.roi_multiple}x</Badge>
+                <Badge variant="outline" className="text-xs text-red-600 border-red-400">{s.roi_multiple}x</Badge>
               </div>
             ))}
           </CardContent>
@@ -721,7 +737,7 @@ export function SourceAnalyticsClient({
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Globe className="h-4 w-4 text-emerald-500" />
+              <Globe className="h-4 w-4 text-emerald-600" />
               Best Direct Sources
             </CardTitle>
           </CardHeader>
@@ -734,7 +750,7 @@ export function SourceAnalyticsClient({
                   <span className="text-xs text-muted-foreground w-4">{i + 1}.</span>
                   <span className="text-xs capitalize">{s.source.replace(/_/g, " ")}</span>
                 </div>
-                <span className="text-xs font-medium text-emerald-600">{s.close_rate}% close</span>
+                <span className="text-xs font-medium text-emerald-700">{s.close_rate}% close</span>
               </div>
             ))}
           </CardContent>

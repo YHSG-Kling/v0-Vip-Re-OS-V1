@@ -1,10 +1,11 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { MapPin, Clock, Phone, Navigation, CheckCircle, Home, ChevronRight } from "lucide-react"
+import { Phone, Navigation, CheckCircle, Home, ChevronRight } from "lucide-react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 import { completeShowing } from "@/app/actions/showings"
@@ -36,10 +37,10 @@ interface Showing {
 
 interface ShowingDayPanelProps {
   showings: Showing[]
-  onShowingSelect?: (showingId: string) => void
 }
 
-export function ShowingDayPanel({ showings, onShowingSelect }: ShowingDayPanelProps) {
+export function ShowingDayPanel({ showings }: ShowingDayPanelProps) {
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
@@ -73,6 +74,16 @@ export function ShowingDayPanel({ showings, onShowingSelect }: ShowingDayPanelPr
 
   const handleCallAgent = (phone: string) => {
     window.location.href = `tel:${phone}`
+  }
+
+  // BUILD (wave 54, orphan doctrine §1): onShowingSelect was declared, never
+  // called anywhere in this file (the main row's onClick only toggled the
+  // local expand/collapse state, see below) and never passable from its mount
+  // point (app/mobile/assistant/page.tsx is a Server Component — a closure
+  // cannot cross that Server->Client prop boundary). The existing per-showing
+  // detail route is the showing-brief page: app/dashboard/showings/prep/[showingId].
+  const handleShowingSelect = (showingId: string) => {
+    router.push(`/dashboard/showings/prep/${showingId}`)
   }
 
   if (sortedShowings.length === 0) {
@@ -154,11 +165,11 @@ export function ShowingDayPanel({ showings, onShowingSelect }: ShowingDayPanelPr
               {/* Expanded Actions */}
               {isExpanded && (
                 <div className="mt-3 pt-3 border-t space-y-2">
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button
                       size="sm"
                       variant="outline"
-                      className="flex flex-col items-center gap-1 h-auto py-2"
+                      className="flex-1 min-w-[70px] flex flex-col items-center gap-1 h-auto py-2"
                       onClick={() => handleGetDirections(address)}
                     >
                       <Navigation className="h-4 w-4 text-blue-600" />
@@ -168,18 +179,27 @@ export function ShowingDayPanel({ showings, onShowingSelect }: ShowingDayPanelPr
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex flex-col items-center gap-1 h-auto py-2"
+                        className="flex-1 min-w-[70px] flex flex-col items-center gap-1 h-auto py-2"
                         onClick={() => handleCallAgent(buyerPhone)}
                       >
                         <Phone className="h-4 w-4 text-green-600" />
                         <span className="text-xs">Call</span>
                       </Button>
                     )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1 min-w-[70px] flex flex-col items-center gap-1 h-auto py-2"
+                      onClick={() => handleShowingSelect(showing.id)}
+                    >
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      <span className="text-xs">Brief</span>
+                    </Button>
                     {!isCompleted && (
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex flex-col items-center gap-1 h-auto py-2"
+                        className="flex-1 min-w-[70px] flex flex-col items-center gap-1 h-auto py-2"
                         onClick={() => handleCompleteShowing(showing.id)}
                         disabled={isPending}
                       >

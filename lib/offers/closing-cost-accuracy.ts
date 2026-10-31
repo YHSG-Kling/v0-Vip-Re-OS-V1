@@ -60,7 +60,8 @@ export const CD_ACCURACY_FIELD_KEYS = [
   "recording_fees",
 ] as const
 
-export interface ActualCdFigures {
+// internal type — used only by extractActualCdFigures/mapAccuracyLines, both un-exported in-file helpers
+interface ActualCdFigures {
   loanAmount: number | null
   cashToClose: number | null
   totalClosingCosts: number | null
@@ -94,13 +95,15 @@ export function parseMoney(v: unknown): number | null {
 /** PROVENANCE GATE: a ledger row is usable when a human verified it (any
  *  confidence) or the scan confidence is high/medium. Low-confidence
  *  unverified rows are refused — an uncertain extraction is not an outcome. */
-export function isProvenanceUsable(row: LedgerFieldRow): boolean {
+// internal helper — called in-file by mapAccuracyLines/mapSellerAccuracyLines, both reachable from getClosingCostAccuracyReport
+function isProvenanceUsable(row: LedgerFieldRow): boolean {
   if (row.verified_at != null) return true
   return row.confidence === "high" || row.confidence === "medium"
 }
 
 /** Pure: fold provenance-usable ledger rows into the actual CD figures. */
-export function extractActualCdFigures(rows: LedgerFieldRow[]): {
+// internal helper — called in-file by recordClosingCostAccuracy
+function extractActualCdFigures(rows: LedgerFieldRow[]): {
   figures: ActualCdFigures
   usableFieldKeys: string[]
   anyVerified: boolean
@@ -143,12 +146,16 @@ export type SellerAccuracyLineKey =
   | "mortgage_payoff"
   | "seller_title_settlement"
   | "seller_transfer_tax"
+  | "seller_tax_proration"
 
 export const SELLER_ACCURACY_LINE_LABELS: Record<SellerAccuracyLineKey, string> = {
   commission: "Real estate commission",
   mortgage_payoff: "Mortgage payoff",
   seller_title_settlement: "Seller title & settlement charges",
   seller_transfer_tax: "Transfer / deed tax (seller share)",
+  // Wave 144 (144D, owner ruling 6): the proration the net sheet COMPUTED from the deal's convention, graded against the
+  // statement's proration figure (magnitudes — statements state the direction in the column, not the sign).
+  seller_tax_proration: "Property-tax proration",
 }
 
 /** Which side of the deal an observation grades. Rows written before the side
@@ -192,7 +199,8 @@ const mkLine = (key: AccuracyLineKey, est: BuyerCostLine, actual: number): Accur
  *  cash_to_close and total_closing_costs are deliberately NOT mapped to the
  *  estimate total: cash-to-close includes the down payment, and the CD's
  *  section-J total nets lender credits — neither is the estimated quantity. */
-export function mapAccuracyLines(estimateLines: BuyerCostLine[], actual: ActualCdFigures): AccuracyLine[] {
+// internal helper — called in-file by recordClosingCostAccuracy
+function mapAccuracyLines(estimateLines: BuyerCostLine[], actual: ActualCdFigures): AccuracyLine[] {
   const out: AccuracyLine[] = []
   const find = (pred: (l: BuyerCostLine) => boolean) =>
     estimateLines.find((l) => pred(l) && !l.pending && l.high > 0)
@@ -232,6 +240,8 @@ export interface SellerActualFigures {
   titleEscrow: number | null
   transferTax: number | null
   netToSeller: number | null
+  /** Wave 144 (144D): the statement's property-tax proration figure, when stated (a magnitude). */
+  taxProration?: number | null
 }
 
 /** Pure: tolerant pick of SELLER-side figures from a settlement statement's
@@ -254,6 +264,7 @@ export function parseSellerSettlementFigures(
     titleEscrow: pick("title_fees", "escrow_fees", "title_escrow", "settlement_fees"),
     transferTax: pick("transfer_tax", "transfer_taxes", "deed_tax", "doc_stamps", "documentary_stamps", "excise_tax", "conveyance_tax"),
     netToSeller: pick("seller_net", "net_to_seller", "cash_to_seller", "seller_net_proceeds", "net_proceeds", "proceeds_to_seller"),
+    taxProration: pick("tax_proration", "property_tax_proration", "prorated_taxes", "county_tax_proration", "taxes_prorated"),
   }
 }
 
@@ -313,6 +324,14 @@ export function mapSellerAccuracyLines(
   const transfer = find("Transfer / deed tax (seller share)")
   if (transfer && transfer.high > 0 && actual.transferTax != null) {
     out.push(mkSellerLine("seller_transfer_tax", transfer.low, transfer.high, actual.transferTax))
+  }
+
+  // Wave 144 (144D): graded only when the net sheet COMPUTED the proration from the deal's convention (a pending note
+  // has no number to grade) and the statement states one. Magnitudes: a reimbursement is a negative cost on our side.
+  const proration = find("Property-tax proration")
+  if (proration && proration.high !== 0 && actual.taxProration != null) {
+    const est = Math.abs(proration.high)
+    out.push(mkSellerLine("seller_tax_proration", est, est, Math.abs(actual.taxProration)))
   }
 
   return out

@@ -15,6 +15,8 @@ export interface CreateAudienceParams {
   sourceRule: SourceRule
   consentBasis: string
   adCampaignId?: string
+  /** Wave 144 (lane 144Z): the synced audience a LOOKALIKE is modelled on (verified in-tenant by the kernel). */
+  lookalikeSeedAudienceId?: string | null
 }
 
 export interface SyncAudienceParams {
@@ -23,8 +25,7 @@ export interface SyncAudienceParams {
   audienceId: string
 }
 
-export interface LoadAudiencesParams {
-  brokerageId: string
-  agentId: string
-  campaignId?: string
-}
+// LoadAudiencesParams — DELETED with its only consumer (orphan burn-down lane C).
+// It typed lib/ads/facebook-audience-sync.ts:loadFacebookAudiences, which was
+// removed as a duplicate of lib/kernel/ads.ts:261 loadAdsWorkspace; see the
+// tombstone in that file. Left behind it would have been a new orphan export.

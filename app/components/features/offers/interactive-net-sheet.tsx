@@ -99,6 +99,8 @@ export function InteractiveNetSheet({
   const [countyCityTaxes, setCountyCityTaxes] = useState(initialCosts.countyCityTaxes)
   const [hoaDuesProration, setHoaDuesProration] = useState(initialCosts.hoaDuesProration)
   const [otherProratedFees, setOtherProratedFees] = useState(initialCosts.otherProratedFees)
+  // Brokerage transaction fee charged to the SELLER — flat dollars, not a percentage.
+  const [transactionFee, setTransactionFee] = useState(initialCosts.transactionFee)
   const [counterPrice, setCounterPrice] = useState<number | null>(null)
 
   const ranking = useMemo(
@@ -109,8 +111,9 @@ export function InteractiveNetSheet({
         countyCityTaxes,
         hoaDuesProration,
         otherProratedFees,
+        transactionFee,
       }),
-    [offers, commissionPct, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees],
+    [offers, commissionPct, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees, transactionFee],
   )
 
   const netWinner = ranking.lines.find((l) => l.offerId === ranking.topByNet)
@@ -120,9 +123,9 @@ export function InteractiveNetSheet({
     return counterScenario(
       { offerPrice: netWinner.offerPrice, buyerClosingCredit: netWinner.buyerClosingCredit },
       counterPrice,
-      { commissionRate: commissionPct / 100, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees },
+      { commissionRate: commissionPct / 100, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees, transactionFee },
     )
-  }, [netWinner, counterPrice, commissionPct, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees])
+  }, [netWinner, counterPrice, commissionPct, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees, transactionFee])
   const delta =
     netWinner && priceWinner && ranking.netBeatsPrice ? netWinner.netProceeds - priceWinner.netProceeds : 0
 
@@ -173,10 +176,19 @@ export function InteractiveNetSheet({
             <NumberField label="County/city taxes" value={countyCityTaxes} onChange={setCountyCityTaxes} readOnly={readOnly} />
             <NumberField label="HOA dues/proration" value={hoaDuesProration} onChange={setHoaDuesProration} readOnly={readOnly} />
             <NumberField label="Other prorated fees" value={otherProratedFees} onChange={setOtherProratedFees} readOnly={readOnly} />
+            <NumberField label="Transaction fee (flat)" value={transactionFee} onChange={setTransactionFee} readOnly={readOnly} />
           </div>
+          {/* The payoff warning is the single most important line on this sheet —
+              a defaulted $0 overstates net proceeds by the whole mortgage balance.
+              In READ-ONLY (seller portal) mode the fields are disabled, so the
+              agent-facing instruction "enter the real payoff before presenting"
+              names an action the reader cannot take; the warning itself must NOT
+              be softened or dropped, only addressed to whoever is reading it. */}
           {mortgagePayoff === 0 && (
             <p className="mt-2 text-xs text-red-700">
-              ⛔ Payoff is still $0 — every net figure above overstates what the seller keeps. Enter the real payoff before presenting.
+              {readOnly
+                ? "⛔ Mortgage payoff is still $0 — every net figure above overstates what you would keep. Ask your agent to enter your real payoff before you rely on these numbers."
+                : "⛔ Payoff is still $0 — every net figure above overstates what the seller keeps. Enter the real payoff before presenting."}
             </p>
           )}
 
@@ -263,6 +275,7 @@ export function InteractiveNetSheet({
               <Row label="County/city taxes" lines={ranking.lines} pick={(l) => l.countyCityTaxes} subtract />
               <Row label="HOA dues/proration" lines={ranking.lines} pick={(l) => l.hoaDuesProration} subtract />
               <Row label="Other prorated fees" lines={ranking.lines} pick={(l) => l.otherProratedFees} subtract />
+              <Row label="Transaction fee" lines={ranking.lines} pick={(l) => l.transactionFee} subtract />
               <Row label="Buyer closing credit" lines={ranking.lines} pick={(l) => l.buyerClosingCredit} subtract />
               <tr className="border-t-2 border-foreground/20">
                 <td className="py-2 font-semibold flex items-center gap-1">

@@ -49,7 +49,10 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — retired monolith pick, canonical table, owned]")
   check("the deprecated matchMentor is removed from the monolith", /matchMentor RETIRED/.test(src("app/actions/ai-agent-onboarding.ts")) && !/export async function matchMentor/.test(src("app/actions/ai-agent-onboarding.ts")))
-  check("the actions barrel no longer re-exports the old matchMentor", !/^\s*matchMentor,/m.test(src("app/actions/index.ts")))
+  // The barrel was DELETED in wave 14 (zero importers); a file that does not
+  // exist re-exports nothing, which is the assertion at its strongest.
+  check("the actions barrel no longer re-exports the old matchMentor (deleted in wave 14)",
+    (() => { try { return !/^\s*matchMentor,/m.test(src("app/actions/index.ts")) } catch { return true } })())
   const act = src("app/actions/onboarding/mentorship.ts")
   check("the canonical matcher uses the deterministic scorer + writes agent_mentor_relationships", /rankMentorMatches\(/.test(act) && /from\("agent_mentor_relationships"\)\.insert/.test(act))
   check("the client imports the canonical action (not the monolith)", /from "@\/app\/actions\/onboarding\/mentorship"/.test(src("app/dashboard/onboarding/mentorship/mentorship-client.tsx")))

@@ -161,8 +161,15 @@ export async function writeAutonomyGrant(
   return { ok: !error, error: error?.message }
 }
 
-/** @deprecated compatibility alias — routes through writeAutonomyGrant. */
-export const writeDocKernelGrant = writeAutonomyGrant
+// TOMBSTONE (§1.3, 2026-08-29): `writeDocKernelGrant` — a `@deprecated`
+// compatibility alias kept for callers that never existed — is DELETED.
+// SURVIVOR: `writeAutonomyGrant` immediately above, which the alias was a bare
+// re-binding of. Checked before deleting, comment-stripped over the whole tree
+// (app/, lib/, scripts/, supabase/): the ONLY occurrence of the name anywhere
+// was its own declaration line, plus its entry in the opposite-missing baseline.
+// A compatibility alias exists to spare importers a rename; with no importer it
+// only ever offered a second name for one function, which is the §6 defect the
+// alias was meant to prevent.
 
 export interface RatchetSweepResult {
   shapesQualified: number

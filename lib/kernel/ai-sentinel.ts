@@ -44,6 +44,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders). Only ever
 // writes through a caller-supplied / service client — never import client-side.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { FAIR_HOUSING_PATTERNS } from "@/lib/compliance-rules/fair-housing-patterns"
 
@@ -316,7 +317,10 @@ export async function runSentinelOnInbound(
   // Mirrors the opt-out seed's activity write (free-text activity_type, no fabricated
   // table). status 'open' so the idempotency lookup + the timeline both see it.
   let incidentId: string | undefined
-  const { data: incident } = await supabase
+  // The incident row IS the halt record AND the idempotency key for it — if it
+  // is rejected, the lookup that suppresses a duplicate halt finds nothing and
+  // the Sentinel re-escalates. `{ data }` alone cannot see a refusal.
+  const { data: incident, error: incidentError } = await supabase
     .from("activities")
     .insert({
       contact_id: contactId, // null for a lead — honest (activities has no lead_id column)
@@ -341,6 +345,9 @@ export async function runSentinelOnInbound(
     })
     .select("id")
     .maybeSingle()
+  if (incidentError) {
+    console.error("[ai-sentinel] license-risk incident activity REJECTED — the halt has no compliance record and will not de-duplicate:", incidentError.message)
+  }
   incidentId = (incident as { id?: string } | null)?.id
 
   // Audit line on the manager bus — the Command Center talk feed shows the Sentinel
@@ -365,14 +372,14 @@ export async function runSentinelOnInbound(
       supabase,
     )
     if (pub.ok && pub.signalId && !pub.reason) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("manager_signals")
         .update({
           status: "consumed",
           consumed_at: now,
           consumed_action: `license-risk escalation executed: automation halted on the ${entityType} + broker/compliance paged (priority ${priority}); no auto-reply`,
         })
-        .eq("id", pub.signalId)
+        .eq("id", pub.signalId), { table: "manager_signals", flow: "sentinel_escalation_consume", reason: "consumes the escalation signal already executed" })
     }
   } catch (e) {
     // The bus audit line is non-blocking — a halt + escalation must never depend on it.

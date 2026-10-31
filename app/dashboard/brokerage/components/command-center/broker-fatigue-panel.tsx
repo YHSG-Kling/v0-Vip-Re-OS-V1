@@ -8,7 +8,6 @@ import Link from "next/link"
 import {
   Heart,
   ArrowRight,
-  AlertTriangle,
   User,
 } from "lucide-react"
 
@@ -46,14 +45,14 @@ export function BrokerFatiguePanel({ buyers, alertCount, summary }: BrokerFatigu
       badge: "secondary" as const,
       bg: "bg-orange-500/10",
       border: "border-orange-500/30",
-      text: "text-orange-600",
+      text: "text-orange-700",
       progress: "bg-orange-500",
     },
     watch: {
       badge: "secondary" as const,
       bg: "bg-yellow-500/10",
       border: "border-yellow-500/30",
-      text: "text-yellow-600",
+      text: "text-yellow-700",
       progress: "bg-yellow-500",
     },
   }
@@ -92,11 +91,11 @@ export function BrokerFatiguePanel({ buyers, alertCount, summary }: BrokerFatigu
             <div className="text-xs text-muted-foreground">Critical</div>
           </div>
           <div>
-            <div className="text-lg font-bold text-orange-600">{summary.warning}</div>
+            <div className="text-lg font-bold text-orange-700">{summary.warning}</div>
             <div className="text-xs text-muted-foreground">Warning</div>
           </div>
           <div>
-            <div className="text-lg font-bold text-yellow-600">{summary.watch}</div>
+            <div className="text-lg font-bold text-yellow-700">{summary.watch}</div>
             <div className="text-xs text-muted-foreground">Watch</div>
           </div>
         </div>

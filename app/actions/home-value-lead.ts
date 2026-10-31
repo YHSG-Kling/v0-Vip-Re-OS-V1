@@ -8,8 +8,9 @@
  * kernel event → portal invite with magic link. Then hand the seller intent to the Listing Concierge.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { captureConsentedContact } from "@/lib/contact-pipeline/contact-capture"
 
 export interface HomeValueLeadInput {
   agentId: string
@@ -42,6 +43,22 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
 
   const svc = createServiceClient()
 
+  // PUBLIC lane (lane 92A, CLAUDE.md §4): an unauthenticated homeowner submits this from
+  // /home-value/[agentSlug], so there is no session tenant to prefer — the three ids are
+  // the page's own agents row (app/home-value/[agentSlug]/page.tsx reads id, user_id,
+  // brokerage_id off ONE row). They are a CONSISTENCY KEY, not a grant: before any write
+  // they must still name ONE agent of ONE brokerage, or a forged body could file a contact
+  // into one tenant under another tenant's agent, or notify a user of a different tenant.
+  const { data: agentRow, error: agentErr } = await svc
+    .from("agents")
+    .select("id")
+    .eq("id", input.agentId)
+    .eq("brokerage_id", input.brokerageId)
+    .eq("user_id", input.agentUserId)
+    .maybeSingle()
+  if (agentErr) return { success: false, error: `Could not verify the agent for this home value request: ${agentErr.message}` }
+  if (!agentRow) return { success: false, error: "That agent is not part of that brokerage — the home value request was not recorded" }
+
   // Split name
   const nameParts = input.fullName.trim().split(/\s+/)
   const firstName = nameParts[0] ?? ""
@@ -52,7 +69,26 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
   // address (feeds skip-trace enrichment). estimated_value + provenance ride enrichment_profile.
   let contactId: string
   try {
-    const result = await captureContact({
+    // C8 (wave 147, lane 147A — owner ruling 1): the consented home-value request → the canonical CONTACT + its consent record +
+    // the arbiter told. The tenant is the AGENT row's (verified above: this agent, this brokerage, this user) — re-read by the
+    // contract against agents. The wording is the page's own label (app/home-value/[agentSlug]/home-value-client.tsx); it refers
+    // to "the contact methods I provided", so the channels ARE the methods provided.
+    const providedChannels = [...(input.phone ? (["voice", "sms"] as const) : []), ...(input.email ? (["email"] as const) : [])]
+    const result = await captureConsentedContact({
+      consents: [{
+        family: input.phone ? "phone" : "email",
+        given: input.consentToContact === true,
+        // The label's TEMPLATE (the page fills {agentName}; the agent is on the evidence) — one hash per wording version.
+        text: "I agree to be contacted by {agentName} about real estate services via the contact methods I provided. I understand I can opt out at any time.",
+        textVersion: "home_value_page:v1",
+        purposes: ["home_valuation", "requested_information"],
+        channels: providedChannels,
+      }],
+      intake: {
+        channel: "web_form", sourceUrl: "/home-value",
+        evidence: { agent_id: input.agentId, property_address: input.property.address ?? null },
+        formOwner: { table: "agents", id: input.agentId },
+      },
       brokerageId: input.brokerageId,
       ownerAgentId: input.agentId,           // agents.id (contacts.agent_id contract)
       source: "home_value_form",
@@ -66,9 +102,6 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
       zip_code: input.property.zip || null,
       contact_type: "seller",                // clear seller intent
       preferred_channel: input.phone ? "phone" : "email",
-      tcpa_consent: input.consentToContact,
-      tcpa_consent_date: new Date().toISOString(),
-      tcpa_consent_source: "home_value_form",
       enrichmentProfile: {
         home_value_request: {
           property_address: input.property.address,
@@ -78,13 +111,16 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
         },
       },
     })
+    if (!result.ok || !result.contactId) return { success: false, error: result.reason ?? "Failed to capture contact" }
     contactId = result.contactId
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Failed to capture contact" }
   }
 
   // Log the home-value-specific activity (carries the AVM context the generic capture doesn't).
-  await svc.from("activities").insert({
+  // Read the result: this row is the only record that the valuation was what
+  // brought the lead in, and the follow-up copy keys off it.
+  const { error: avmActivityError } = await svc.from("activities").insert({
     contact_id: contactId,
     brokerage_id: input.brokerageId,
     agent_user_id: input.agentUserId,
@@ -96,8 +132,12 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     metadata: { property: input.property },
   })
 
+  if (avmActivityError) {
+    console.error("[home-value-lead] AVM activity NOT recorded:", avmActivityError.message)
+  }
+
   // Notify the agent — surfaces in their morning brief with the AVM context.
-  await svc.from("notifications").insert({
+  await sentinelWrite(svc, svc.from("notifications").insert({
     user_id: input.agentUserId,
     brokerage_id: input.brokerageId,
     title: "🏠 New home value lead",
@@ -109,7 +149,7 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     entity_id: contactId,
     priority: "high",
     is_read: false,
-  })
+  }), { table: "notifications", flow: "home_value_lead_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   // MANAGER-ORCHESTRATED — a "what's my home worth" request is the strongest inbound SELLER intent.
   // Hand it to the Listing Concierge over the bus so it responds like a human listing lead (a gated

@@ -38,9 +38,10 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
 
   console.log("\n[Layer 1 · the idle rule]")
-  check("no open proposals → idle (initiative allowed)", isManagerIdle({}, "marketing_agent"))
-  check("open proposals → BUSY (no initiative onto a backlog)", !isManagerIdle({ marketing_agent: 2 }, "marketing_agent"))
-  check("another manager's backlog doesn't block this one", isManagerIdle({ sphere_of_influence: 5 }, "marketing_agent"))
+  // m618: "marketing_agent" retired as a ManagerKey — survivor campaign_orchestrator.
+  check("no open proposals → idle (initiative allowed)", isManagerIdle({}, "campaign_orchestrator"))
+  check("open proposals → BUSY (no initiative onto a backlog)", !isManagerIdle({ campaign_orchestrator: 2 }, "campaign_orchestrator"))
+  check("another manager's backlog doesn't block this one", isManagerIdle({ sphere_of_influence: 5 }, "campaign_orchestrator"))
   check("seasonal plays: every month maps to a season, named by year",
     seasonalPlayFor(3, 2026).name === "Spring Sellers 2026" && seasonalPlayFor(6, 2026).name === "Summer Movers 2026"
     && seasonalPlayFor(8, 2026).name === "Fall Market Reset 2026" && seasonalPlayFor(11, 2026).name === "Year-End Gratitude 2026"
@@ -111,10 +112,15 @@ async function main() {
       dispatches.every((d) => d.bypassPolicy === false && d.eventType === "just_sold"))
 
     // Data Steward: enrichment queued for the missing phone.
-    const { data: eq } = await svc.from("contact_enrichment_queue").select("id, status, source")
-      .eq("contact_id", (gap as any).id).eq("source", "idle_hands").maybeSingle()
-    if (eq) cleanup.push({ table: "contact_enrichment_queue", id: (eq as any).id })
-    check("Data Steward: self-healing enrichment queued (source=idle_hands)", r1.enrichmentsQueued >= 1 && (eq as any)?.status === "pending")
+    // §1.1 (2026-09-04) — re-pointed off `contact_enrichment_queue` (no drain
+    // exists for it) onto the SURVIVOR `lead_enrichment_queue`, written through
+    // lib/enrichment/contact-enrichment-core.ts :: queueContactEnrichment.
+    // Provenance moved from `source` to `trigger_type`.
+    const { data: eq } = await svc.from("lead_enrichment_queue").select("id, status, trigger_type")
+      .eq("contact_id", (gap as any).id).eq("trigger_type", "idle_hands").maybeSingle()
+    if (eq) cleanup.push({ table: "lead_enrichment_queue", id: (eq as any).id })
+    check("Data Steward: self-healing enrichment queued on the DRAINED queue (trigger_type=idle_hands)",
+      r1.enrichmentsQueued >= 1 && (eq as any)?.status === "pending")
 
     // AI ISA: re-engage PRE-DRAFTED — proposed, NOT approved (auto-draft, not auto-send).
     const { data: pd } = await svc.from("agent_client_messages").select("id, status, approved_by, rationale")

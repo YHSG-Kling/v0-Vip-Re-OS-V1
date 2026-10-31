@@ -17,8 +17,8 @@ import { Card } from "@/components/ui/card"
 import { Calculator, ChevronDown, ChevronUp, Sparkles } from "lucide-react"
 import { getBuyerClosingCosts } from "@/app/actions/buyer-closing-costs"
 import type { BuyerClosingEstimate, BuyerCostLine } from "@/lib/offers/buyer-closing-costs"
-
-const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+import { usd } from "@/lib/format/money"
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 function sourceBadge(l: BuyerCostLine): string | null {
   if (l.pending) return null // the pending state is its own label
@@ -85,14 +85,14 @@ export function BuyerClosingCostsCard({ contactId, transactionId }: { contactId:
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
             <Sparkles className="h-3 w-3" />
-            {refining ? "Sharpening…" : "Sharpen this estimate with AI"}
+            {refining ? "Explaining…" : "Explain this estimate with AI"}
           </button>
         )}
       </div>
       {est.aiRefined && est.aiRefineSummary && (
         <p className="mt-2 text-xs text-muted-foreground">
           <Sparkles className="mr-1 inline h-3 w-3" />
-          AI accuracy pass (bounded by the regional model): {est.aiRefineSummary}
+          AI explanation (the figures are the regional model&apos;s; your lender&apos;s Loan Estimate is the authority): {est.aiRefineSummary}
         </p>
       )}
       {open && (

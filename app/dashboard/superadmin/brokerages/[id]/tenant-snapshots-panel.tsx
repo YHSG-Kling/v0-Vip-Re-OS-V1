@@ -16,6 +16,17 @@ import {
 // SELF-SERVE FUNNEL rule (mirrors lib/platform/trial-funnel resolveNewestPerTier —
 // kept inline because that module is server-only): per tier, the NEWEST snapshot
 // recommending it is what a self-serve signup on that tier gets applied.
+/** WHO captured it — platform surface, so an unresolvable id means the users
+ *  row is no longer on file (there is no tenant line to be "outside" of). */
+function capturedByText(s: SnapshotRow): string {
+  switch (s.capturedByState) {
+    case 'resolved':       return `captured by ${s.capturedByName}`
+    case 'unresolved':     return 'captured by an account no longer on file'
+    case 'lookup_refused': return 'capturer lookup refused'
+    case 'not_recorded':   return 'capturer not recorded'
+  }
+}
+
 function liveFunnelIds(snapshots: SnapshotRow[]): Map<string, string> {
   const live = new Map<string, string>() // tier → winning snapshot id
   for (const s of snapshots) {
@@ -35,6 +46,9 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
   const [pending, startTransition] = useTransition()
   const [name, setName] = useState('')
   const [recTier, setRecTier] = useState('')
+  // Wave 140N: a re-apply fills only what this tenant has NOT set unless staff explicitly choose to
+  // overwrite — that choice is audited server-side (superadmin_audit_log snapshot.apply.overwrite).
+  const [overwrite, setOverwrite] = useState(false)
 
   function refresh() {
     listSnapshotsAction().then((r) => { if (r.ok) setSnapshots(r.snapshots); else setErr(r.error); setLoading(false) })
@@ -53,8 +67,12 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
   function apply(id: string, label: string) {
     setErr(null); setMsg(null)
     startTransition(async () => {
-      const r = await applySnapshotAction({ snapshotId: id, targetBrokerageId: brokerageId })
-      if (!r.ok) setErr(r.error ?? 'Apply failed'); else setMsg(`Applied "${label}": ${(r.applied ?? []).join(', ') || 'nothing to apply'}`)
+      const r = await applySnapshotAction({ snapshotId: id, targetBrokerageId: brokerageId, overwrite })
+      if (!r.ok) setErr(r.error ?? 'Apply failed')
+      else {
+        const kept = (r.preserved ?? []).length, replaced = (r.overwritten ?? []).length
+        setMsg(`Applied "${label}" (${r.mode === 'replace' ? 'overwrite — audited' : 'absent keys only'}): ${(r.applied ?? []).join(', ') || 'nothing to apply'}${kept ? ` · kept ${kept} of this tenant's own value${kept === 1 ? '' : 's'}` : ''}${replaced ? ` · overwrote ${replaced}` : ''}`)
+      }
     })
   }
   function remove(id: string) {
@@ -69,7 +87,7 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {err && <p className="text-xs text-red-600">{err}</p>}
-        {msg && <p className="text-xs text-emerald-600">{msg}</p>}
+        {msg && <p className="text-xs text-emerald-700">{msg}</p>}
 
         <div className="flex flex-wrap items-center gap-2">
           <input className="flex-1 min-w-[10rem] rounded border px-2 py-1 text-sm" placeholder="Snapshot name (captures THIS tenant)" value={name} onChange={(e) => setName(e.target.value)} />
@@ -83,6 +101,10 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
           <Button size="sm" disabled={pending} onClick={capture} className="gap-1.5"><Camera className="h-3.5 w-3.5" />Capture</Button>
         </div>
         <p className="text-[11px] text-muted-foreground -mt-2">Captures branding, brand voice, public-site content, and feature enablement. Secrets/credentials are never included. The recommended tier is preselected when provisioning a new subscriber from the snapshot.</p>
+        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <input type="checkbox" className="h-3 w-3" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} aria-label="Overwrite this tenant's own values" />
+          <span>Overwrite this tenant&apos;s own values when applying (audited). Off: only values the tenant has not set are filled.</span>
+        </label>
 
         {loading ? (
           <p className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Loading…</p>
@@ -100,6 +122,7 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
                       <span className="font-medium">{s.name}</span>
                       <span className="ml-2 text-[11px] text-muted-foreground">
                         {s.counts.global + s.counts.brand} brand · {s.counts.voice} voice · {s.counts.site} site · {s.counts.features} features
+                        {' · '}{capturedByText(s)} · {new Date(s.createdAt).toLocaleDateString()}
                       </span>
                       {s.recommendedTier && <Badge variant="secondary" className="ml-2 text-[9px]">recommended: {s.recommendedTier}</Badge>}
                       {isLive && (

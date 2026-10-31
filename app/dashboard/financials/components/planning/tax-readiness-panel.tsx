@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { AlertTriangle, Sparkles, Loader2, Calendar, Copy, Check } from "lucide-react"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
@@ -84,7 +83,7 @@ export function TaxReadinessPanel({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5 text-amber-500" />
+          <AlertTriangle className="h-5 w-5 text-amber-600" />
           Tax Readiness
         </CardTitle>
       </CardHeader>
@@ -131,7 +130,7 @@ export function TaxReadinessPanel({
               <p className="text-2xl font-bold text-amber-700">{formatCurrency(quarterlyPayment)}</p>
               <div className="flex items-center gap-1 mt-1">
                 <Calendar className="h-3 w-3 text-amber-600" />
-                <p className="text-xs text-amber-600">Due: {nextQuarterDue}</p>
+                <p className="text-xs text-amber-700">Due: {nextQuarterDue}</p>
               </div>
             </div>
             <Button

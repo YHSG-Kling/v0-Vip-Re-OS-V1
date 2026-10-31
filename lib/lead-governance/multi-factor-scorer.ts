@@ -14,6 +14,18 @@
  * Scores are normalized 0-100 and must be explainable.
  */
 
+import type { StandardTimeline } from '@/constants/crm-standards'
+
+/** Points contributed by `leads.timeline` to the urgency factor (0-15). */
+const TIMELINE_URGENCY_POINTS: Record<StandardTimeline, number> = {
+  immediate:     15,
+  '1-3_months':  12,
+  '3-6_months':   8,
+  '6-12_months':  4,
+  '12+_months':   0,
+  researching:    0,
+}
+
 export interface LeadScoringFactors {
   intentScore: number // 0-30 points
   urgencyScore: number // 0-25 points
@@ -97,10 +109,14 @@ function calculateUrgencyScore(lead: any): number {
   let score = 0
 
   // Timeline urgency (0-15 points)
-  if (lead.timeline === 'immediate') score += 15
-  else if (lead.timeline === '1-3 months') score += 12
-  else if (lead.timeline === '3-6 months') score += 8
-  else if (lead.timeline === '6-12 months') score += 4
+  //
+  // REPOINTED to the one timeline vocabulary (constants/crm-standards.ts:
+  // STANDARD_TIMELINES). This ladder tested the SPACED spelling, which no
+  // writer of leads.timeline produces; outside 'immediate' the highest-weighted
+  // urgency signal in the "AUTHORITATIVE" scorer was worth a structural 0.
+  // A Record over the vocabulary, so a member added or dropped upstream is a
+  // type error here instead of a silent zero.
+  score += TIMELINE_URGENCY_POINTS[lead.timeline as StandardTimeline] ?? 0
 
   // Motivation type urgency (0-10 points)
   const highUrgencyMotivations = [

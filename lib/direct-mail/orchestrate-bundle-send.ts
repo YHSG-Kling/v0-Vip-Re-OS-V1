@@ -23,6 +23,7 @@
  * across channels" rather than tallying per-channel one at a time.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { orchestratePresetSend, type OrchestratePresetSendArgs } from "./orchestrate-preset-send"
 import { orchestrateEmailPresetSend } from "@/lib/email/orchestrate-email-preset-send"
@@ -366,13 +367,13 @@ export async function orchestrateBundleSend(
   }
 
   // 4. Persist the channel outcomes blob on the dispatch row.
-  await svc
+  await sentinelWrite(svc, svc
     .from("campaign_bundle_dispatches")
     .update({
       channel_outcomes: channelOutcomesJsonb,
       updated_at:       new Date().toISOString(),
     })
-    .eq("id", bundleDispatchId)
+    .eq("id", bundleDispatchId), { table: "campaign_bundle_dispatches", flow: "campaign_bundle_dispatches_write", reason: "channel-outcome blob for reporting; each channel's own rows already landed" })
 
   const anyOk = outcomes.some((o) => o.success)
   return {

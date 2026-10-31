@@ -23,7 +23,8 @@ import {
   Sparkles,
 } from "lucide-react"
 import { toast } from "sonner"
-import { generateCallSummaryEmail, getAgentCallInsights } from "@/app/actions/ai-voice-transcription"
+import { generateCallSummaryEmail, getAgentCallInsights, transcribeAudio } from "@/app/actions/ai-voice-transcription"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 
 export interface CallRow {
   id: string
@@ -74,8 +75,35 @@ export function VoiceIntelligenceClient({ calls, agentId, brokerageId }: Props) 
   const [insights, setInsights] = useState<any>(null)
   const [timeframe, setTimeframe] = useState<"week" | "month" | "quarter">("month")
   const [, startTransition] = useTransition()
+  // Transcripts produced THIS session by transcribeAudio, keyed by voice_calls.id.
+  // `calls` is server-loaded and immutable here; the action stamps
+  // voice_calls.transcription server-side, so on the next load the row carries it.
+  const [localTranscripts, setLocalTranscripts] = useState<Record<string, string>>({})
+  const [transcribingId, setTranscribingId] = useState<string | null>(null)
 
   const selected = calls.find((c) => c.id === selectedId) ?? null
+  const selectedTranscript = selected ? (selected.transcription ?? localTranscripts[selected.id] ?? null) : null
+
+  function transcribeRecording(callId: string, audioUrl: string) {
+    setTranscribingId(callId)
+    startTransition(async () => {
+      try {
+        // The action gates on the session, scopes the call to the caller's
+        // brokerage, and refuses any audio host this system does not produce
+        // (lib/security/audio-source-allowlist). The refusal reason comes back
+        // verbatim — never an optimistic "Transcribed".
+        const result = await transcribeAudio({ voiceCallId: callId, audioUrl })
+        if ((result as any).success && typeof (result as any).transcript === "string") {
+          setLocalTranscripts((prev) => ({ ...prev, [callId]: (result as any).transcript as string }))
+          toast.success("Recording transcribed — transcript filed to the call and the contact's memory.")
+        } else {
+          toast.error((result as any).error ?? "Couldn't transcribe that recording.")
+        }
+      } finally {
+        setTranscribingId(null)
+      }
+    })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -299,8 +327,16 @@ export function VoiceIntelligenceClient({ calls, agentId, brokerageId }: Props) 
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {selected.recording_url && (
-                    <audio controls src={selected.recording_url} className="w-full" />
+                  {/* recording_url holds the api.twilio.com media URL, which is
+                      behind HTTP Basic auth — an <audio src> pointed at it is a
+                      guaranteed 401. Playback goes through the authenticated,
+                      tenant-scoped same-origin proxy, keyed by voice_calls.id. */}
+                  {selected.recording_url ? (
+                    <audio controls src={recordingPlaybackPath(selected.id)} className="w-full" />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      No recording for this call.
+                    </p>
                   )}
                   {selected.summary && (
                     <div>
@@ -321,7 +357,27 @@ export function VoiceIntelligenceClient({ calls, agentId, brokerageId }: Props) 
                       </ul>
                     </div>
                   )}
-                  <div className="flex items-center justify-end">
+                  <div className="flex items-center justify-end gap-2">
+                    {selected.recording_url && !selectedTranscript && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => transcribeRecording(selected.id, selected.recording_url as string)}
+                        disabled={transcribingId === selected.id}
+                      >
+                        {transcribingId === selected.id ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                            Transcribing…
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="h-3.5 w-3.5 mr-1.5" />
+                            Transcribe recording
+                          </>
+                        )}
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="outline"
@@ -344,14 +400,14 @@ export function VoiceIntelligenceClient({ calls, agentId, brokerageId }: Props) 
                 </CardContent>
               </Card>
 
-              {selected.transcription && (
+              {selectedTranscript && (
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm">Transcript</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <pre className="text-xs whitespace-pre-wrap leading-relaxed bg-muted/30 rounded p-3 max-h-96 overflow-y-auto">
-                      {selected.transcription}
+                      {selectedTranscript}
                     </pre>
                   </CardContent>
                 </Card>

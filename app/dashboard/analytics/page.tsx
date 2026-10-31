@@ -10,7 +10,6 @@ import {
   DollarSign,
   BarChart3,
   PieChart,
-  Calendar,
   Target,
   Activity,
   ArrowUpRight,
@@ -42,7 +41,18 @@ export default async function AnalyticsPage() {
   // NOT users(id) — every filter below used user.id and returned ZERO for every
   // agent (the whole analytics page rendered empty). Resolve the agents.id once.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const agentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
+  // NOT `?? user.id` (m353). The comment directly above states that user.id
+  // "returned ZERO for every agent" — and then the fallback put user.id back.
+  // The diagnosis and the defect were the same expression. An unresolved agent
+  // gets an honest notice instead of a page of confident zeros.
+  const agentId = await resolveAgentId(supabase as any, user.id)
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your analytics.
+      </div>
+    )
+  }
 
   // Fetch comprehensive stats
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -138,7 +148,7 @@ export default async function AnalyticsPage() {
                 Financial Reports
               </Button>
             </Link>
-            <Link href="/dashboard/leaderboard">
+            <Link href="/dashboard/motivation">
               <Button size="sm" variant="outline" className="text-xs gap-1">
                 <BarChart3 className="h-3 w-3" />
                 Leaderboard
@@ -188,7 +198,7 @@ export default async function AnalyticsPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded-lg bg-green-500/10">
-                    <Home className="h-5 w-5 text-green-500" />
+                    <Home className="h-5 w-5 text-green-600" />
                   </div>
                   <div>
                     <p className="text-2xl font-bold text-foreground">{activeListings}</p>
@@ -220,7 +230,7 @@ export default async function AnalyticsPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded-lg bg-emerald-500/10">
-                    <DollarSign className="h-5 w-5 text-emerald-500" />
+                    <DollarSign className="h-5 w-5 text-emerald-600" />
                   </div>
                   <div>
                     <p className="text-2xl font-bold text-foreground">
@@ -230,7 +240,7 @@ export default async function AnalyticsPage() {
                   </div>
                 </div>
                 {volumeChange !== 0 && (
-                  <div className={`flex items-center gap-1 text-xs ${volumeChange > 0 ? "text-green-500" : "text-red-500"}`}>
+                  <div className={`flex items-center gap-1 text-xs ${volumeChange > 0 ? "text-green-700" : "text-red-600"}`}>
                     {volumeChange > 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
                     {Math.abs(volumeChange).toFixed(0)}%
                   </div>
@@ -294,7 +304,7 @@ export default async function AnalyticsPage() {
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-lg bg-green-500/10">
                   <span className="text-sm text-foreground">Active</span>
-                  <span className="text-lg font-bold text-green-600">{activeListings}</span>
+                  <span className="text-lg font-bold text-green-700">{activeListings}</span>
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-lg bg-blue-500/10">
                   <span className="text-sm text-foreground">Pending</span>

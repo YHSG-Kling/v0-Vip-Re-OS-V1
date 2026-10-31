@@ -22,6 +22,9 @@ export const VENDOR_POLICY: Record<string, VendorPolicy> = {
   elevenlabs: { freeAlternative: "browser_tts" },
   // Outbound AI voice calls — no free equivalent; the ISA layer reroutes to a
   // cheaper channel (SMS/email) on block, so treat as block here.
+  // twilio_voice is the live lane (wave 145, lane 145D: vendor-capability-registry voice_call routes here);
+  // the retired vendor's row stays only so historical vendor_usage_tracking rows keep a policy (never delete).
+  twilio_voice: { freeAlternative: null },
   vapi: { freeAlternative: null },
   // Property valuation / comps — degrade to the free Perplexity + OSINT AVM tiers.
   rentcast: { freeAlternative: "perplexity_osint_avm" },

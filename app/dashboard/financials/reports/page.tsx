@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, Download, FileText, Calendar, DollarSign, TrendingUp } from "lucide-react"
@@ -14,7 +14,12 @@ export default async function FinancialReportsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  const context = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const context = await ensureAgentContextInPlace()
   if (!context.isAuthenticated) redirect("/login")
   if (!context.brokerageId) redirect("/dashboard/onboarding")
 
@@ -93,7 +98,7 @@ export default async function FinancialReportsPage() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-green-500/10">
-                  <DollarSign className="h-5 w-5 text-green-500" />
+                  <DollarSign className="h-5 w-5 text-green-600" />
                 </div>
                 <div>
                   <p className="text-2xl font-bold">
@@ -136,7 +141,7 @@ export default async function FinancialReportsPage() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-orange-500/10">
-                  <Calendar className="h-5 w-5 text-orange-500" />
+                  <Calendar className="h-5 w-5 text-orange-600" />
                 </div>
                 <div>
                   <p className="text-2xl font-bold">
@@ -186,7 +191,7 @@ export default async function FinancialReportsPage() {
                         <td className="py-2 pr-4 text-right">
                           {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(report.total_expenses ?? 0)}
                         </td>
-                        <td className={`py-2 pr-4 text-right font-medium ${(report.net_profit ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                        <td className={`py-2 pr-4 text-right font-medium ${(report.net_profit ?? 0) >= 0 ? "text-green-700" : "text-red-600"}`}>
                           {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(report.net_profit ?? 0)}
                         </td>
                         <td className="py-2 text-muted-foreground">
@@ -210,6 +215,7 @@ export default async function FinancialReportsPage() {
           ytdCommissions={ytdCommissions}
           ytdAgentNet={ytdAgentNet}
           ytdExpenses={ytdExpenses}
+          userType={userType ?? "agent"}
         />
       </div>
     </div>

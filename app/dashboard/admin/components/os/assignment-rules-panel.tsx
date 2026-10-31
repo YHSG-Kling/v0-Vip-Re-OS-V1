@@ -9,8 +9,7 @@ import {
   ChevronRight,
   AlertCircle,
   CheckCircle2,
-  Loader2,
-  Activity
+  Loader2
 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
@@ -142,7 +141,7 @@ export function AssignmentRulesPanel({ brokerageId }: AssignmentRulesPanelProps)
               >
                 <div className="flex items-center gap-2">
                   {rule.is_active ? (
-                    <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                    <CheckCircle2 className="h-3 w-3 text-emerald-600" />
                   ) : (
                     <AlertCircle className="h-3 w-3 text-muted-foreground" />
                   )}

@@ -44,6 +44,7 @@
 // lifecycle_events       — all major state transitions (insert)
 // contact_suppression_list — opt-out / stop handling (insert)
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { ActorRole, LeadLifecycleStage } from "@/lib/kernel/types"
 
@@ -75,6 +76,16 @@ export interface AiIsaWorkspaceData {
   queue: AiIsaLeadRow[]
   recentCalls: AiIsaCallRow[]
   pendingHandoffs: AiIsaHandoffRow[]
+  /**
+   * The ledger of handoffs a human already took — newest first, bounded to
+   * COMPLETED_HANDOFFS_BOUND rows (the bound is echoed in stats so a consumer
+   * can say "showing the last N" instead of implying it saw them all).
+   * Written by app/actions/leads.ts handOffToHumanAgent (handoff_status =
+   * 'completed', completed_at, to_agent_type = 'human'); until this read the
+   * repo had no completed-handoff view of any kind — every reader filtered
+   * handoff_status = 'pending'.
+   */
+  completedHandoffs: AiIsaCompletedHandoffRow[]
   stats: {
     activeCampaigns: number
     leadsInQueue: number
@@ -82,8 +93,38 @@ export interface AiIsaWorkspaceData {
     pendingHandoffs: number
     appointmentsBooked: number
     conversionRate: number
+    /** Rows in completedHandoffs — may equal completedHandoffsBound (truncated). */
+    completedHandoffs: number
+    completedHandoffsBound: number
   }
 }
+
+/** Upper bound on the completed-handoff ledger read by loadAiIsaWorkspace. */
+export const COMPLETED_HANDOFFS_BOUND = 20
+
+/*
+ * SURVIVOR DECISION — "what is the ISA handing me?" (wave 25, lane W1)
+ *
+ * Two sources answered that question and disagreed about what it meant:
+ *
+ *   · app/dashboard/isa/ai-isa-console-client.tsx derives a per-LEAD state
+ *     (handoff_ready / agent_handoff_required) from the lead's qualification
+ *     row, urgency score and last call analysis. That is a PREDICTION —
+ *     "this lead looks ready to hand off" — computed on every render.
+ *   · agent_handoffs is the LEDGER — a row exists only because handoffToHumanAgent
+ *     (below) or app/actions/leads.ts actually issued one, and only the ledger
+ *     row carries the context_package written FOR the receiving human.
+ *
+ * They are not duplicates; they are the forecast and the record. The console
+ * keeps its forecast for triage. The ledger is the survivor for "what has been
+ * handed to me": it is what the operations dashboard and the team page already
+ * count as "pending handoffs", and it is the sole home of the package. Until
+ * wave 25 this loader had NO caller — a written contract nobody read — while
+ * the console showed an "accept" affordance that had never seen the ledger.
+ * app/dashboard/isa/page.tsx now calls this loader, joins the pending ledger
+ * onto the console's lead cards by entity_id, and renders the completed ledger
+ * with its bound printed. Do not re-derive the ledger from lead state.
+ */
 
 export interface AiIsaCampaignRow {
   id: string
@@ -121,6 +162,40 @@ export interface AiIsaCallRow {
   created_at: string
 }
 
+/**
+ * The EXACT shape handoffToHumanAgent (this file, COMMAND 7) writes into
+ * agent_handoffs.context_package. It is the package written FOR the receiving
+ * human: who handed the lead over and, when the lead had already converted,
+ * the contact the human should open instead of the lead. Curated fields only —
+ * a consumer renders these two, never the raw jsonb.
+ *
+ * The other writer of agent_handoffs (app/actions/leads.ts handOffToHumanAgent)
+ * writes this package too since 2026-09-03 ({ from_user_id, contact_id: null }
+ * — it hands over a LEAD, so there is no contact to open). Rows written before
+ * that date carry NULL, so the column stays nullable on read and every field
+ * inside it is optional: an older or foreign row must not throw on `.contact_id`.
+ * The two writers still disagree on handoff_status ("completed" there,
+ * "pending" here) — a product divergence recorded, not resolved.
+ */
+export interface AiIsaHandoffContextPackage {
+  /** users.id of the actor who triggered the handoff (ctx.userId) — NOT agents.id. */
+  from_user_id?: string | null
+  /** contacts.id (the PK, not contacts.contact_id) when the lead had already converted. */
+  contact_id?: string | null
+}
+
+/** Pick the curated fields out of a context_package jsonb value; anything that
+ *  is not an object (NULL, a string, an array) yields an empty package. */
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function readHandoffContextPackage(raw: unknown): AiIsaHandoffContextPackage {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const r = raw as Record<string, unknown>
+  return {
+    from_user_id: typeof r.from_user_id === "string" ? r.from_user_id : null,
+    contact_id: typeof r.contact_id === "string" ? r.contact_id : null,
+  }
+}
+
 export interface AiIsaHandoffRow {
   id: string
   // Live schema uses an entity_type/entity_id discriminator instead of
@@ -131,6 +206,22 @@ export interface AiIsaHandoffRow {
   handoff_reason: string | null
   handoff_status: string
   human_agent_id: string | null
+  /** CHECK: coaching_agent | content_agent | human | isa_agent | none | router | tc_agent */
+  to_agent_type: string | null
+  /** Curated from the jsonb by readHandoffContextPackage — see that type. */
+  context_package: AiIsaHandoffContextPackage
+  created_at: string
+}
+
+export interface AiIsaCompletedHandoffRow {
+  id: string
+  entity_type: string
+  entity_id: string
+  handoff_reason: string | null
+  to_agent_type: string | null
+  human_agent_id: string | null
+  /** When the human took it. NULL only for a 'completed' row written before completed_at existed. */
+  completed_at: string | null
   created_at: string
 }
 
@@ -263,7 +354,7 @@ export async function loadAiIsaWorkspace(
     const { ctx, limit = 50 } = input
     const supabase = createServiceClient()
 
-    const [campaignsRes, queueRes, callsRes, handoffsRes] = await Promise.all([
+    const [campaignsRes, queueRes, callsRes, handoffsRes, completedRes] = await Promise.all([
       supabase
         .from("ai_isa_campaigns")
         .select("id, name, campaign_type, status, leads_targeted, touches_sent, conversions, created_at")
@@ -287,19 +378,49 @@ export async function loadAiIsaWorkspace(
         .order("created_at", { ascending: false })
         .limit(20),
 
+      // to_agent_type + context_package: the package COMMAND 7 writes FOR the
+      // receiving human (who handed it over, which contact to open) was never
+      // selected by any reader — every agent_handoffs read in the tree stopped
+      // at handoff_reason. Curated by readHandoffContextPackage below.
       supabase
         .from("agent_handoffs")
-        .select("id, entity_type, entity_id, handoff_reason, handoff_status, human_agent_id, created_at")
+        .select("id, entity_type, entity_id, handoff_reason, handoff_status, human_agent_id, to_agent_type, context_package, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .eq("handoff_status", "pending")
         .order("created_at", { ascending: false })
         .limit(20),
+
+      // The completed ledger — bounded; the bound is reported in stats.
+      supabase
+        .from("agent_handoffs")
+        .select("id, entity_type, entity_id, handoff_reason, to_agent_type, human_agent_id, completed_at, created_at")
+        .eq("brokerage_id", ctx.brokerageId)
+        .eq("handoff_status", "completed")
+        .order("completed_at", { ascending: false, nullsFirst: false })
+        .limit(COMPLETED_HANDOFFS_BOUND),
     ])
+
+    // supabase-js RESOLVES a refusal (CLAUDE.md §3). Every lane above used to
+    // coalesce `data ?? []`, which renders a refused read as an empty console.
+    // Log each refusal by lane so an empty workspace is at least not silent.
+    for (const [lane, res] of [
+      ["ai_isa_campaigns", campaignsRes],
+      ["leads", queueRes],
+      ["ai_isa_calls", callsRes],
+      ["agent_handoffs(pending)", handoffsRes],
+      ["agent_handoffs(completed)", completedRes],
+    ] as const) {
+      if (res.error) console.error(`[ai-isa] loadAiIsaWorkspace ${lane} read refused:`, res.error.message)
+    }
 
     const campaigns: AiIsaCampaignRow[] = campaignsRes.data ?? []
     const queue: AiIsaLeadRow[] = queueRes.data ?? []
     const calls: AiIsaCallRow[] = callsRes.data ?? []
-    const handoffs: AiIsaHandoffRow[] = handoffsRes.data ?? []
+    const handoffs: AiIsaHandoffRow[] = (handoffsRes.data ?? []).map((h) => ({
+      ...h,
+      context_package: readHandoffContextPackage(h.context_package),
+    }))
+    const completedHandoffs: AiIsaCompletedHandoffRow[] = completedRes.data ?? []
 
     const today = new Date().toISOString().slice(0, 10)
     const callsToday = calls.filter((c) => c.created_at.startsWith(today)).length
@@ -314,6 +435,7 @@ export async function loadAiIsaWorkspace(
         queue,
         recentCalls: calls,
         pendingHandoffs: handoffs,
+        completedHandoffs,
         stats: {
           activeCampaigns: campaigns.filter((c) => c.status === "active").length,
           leadsInQueue: queue.length,
@@ -321,6 +443,8 @@ export async function loadAiIsaWorkspace(
           pendingHandoffs: handoffs.length,
           appointmentsBooked: apptBooked,
           conversionRate,
+          completedHandoffs: completedHandoffs.length,
+          completedHandoffsBound: COMPLETED_HANDOFFS_BOUND,
         },
       },
     }
@@ -422,7 +546,7 @@ export async function evaluateAiIsaEligibility(
     // Record evaluation in ai_isa_qualifications
     // Live schema uses qualification_result/stage/qualified_at/qualification_signals
     // (structured rationale). evaluator id + blockers + reasons go into signals jsonb.
-    await supabase
+    const { error: qualRecordErr } = await supabase
       .from("ai_isa_qualifications")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -438,6 +562,7 @@ export async function evaluateAiIsaEligibility(
         stage: lead.lifecycle_state ?? null,
         qualified_at: new Date().toISOString(),
       })
+    if (qualRecordErr) console.error(`[kernel/ai-isa] qualification record NOT saved: ${qualRecordErr.message}`)
 
     return {
       success: true,
@@ -483,16 +608,40 @@ export async function assignAiIsaToLeadAfterGate(
     const { ctx, leadId, campaignId } = input
     const supabase = createServiceClient()
 
-    // Re-check minimum_viable_for_isa — the gate must have been evaluated
+    // Re-check minimum_viable_for_isa — the gate must have been evaluated.
+    //
+    // `contact_id` and `is_active` ADDED: this select carried NEITHER, so the
+    // second ISA door assigned AI-ISA ownership to leads that had already become
+    // contacts — and then wrote `lifecycle_state='isa_qualifying'`, which is the
+    // exact value lib/ai-isa/ghost-reengagement.ts:detectGhostLeads sweeps on.
+    // lib/contact-promotion/lead-deactivator.ts used to CLAIM this gate checked
+    // is_active + ai_isa_owner. It checked neither; that comment is corrected at
+    // its source.
     const { data: lead, error: fetchErr } = await supabase
       .from("leads")
-      .select("id, call_stop_flag, opted_out_at, lifecycle_state")
+      .select("id, contact_id, is_active, call_stop_flag, opted_out_at, lifecycle_state")
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     if (fetchErr || !lead) {
       return { success: false, error: "Lead not found" }
+    }
+
+    // CONVERSION FINALITY — refusal, not re-route. There is no contact-side
+    // equivalent of "assign AI-ISA ownership of a LEAD": a contact's ISA
+    // engagement is governed by `contacts.ai_isa_enabled` (which
+    // lib/kernel/crm.ts:convertLeadToContact already turns on at conversion) and
+    // driven by initiateAIISAContactEngagement. Re-arming lead ownership here
+    // would put a client back on the lead outreach queue, which is precisely
+    // what the ruling forbids. The refusal is REPORTABLE — `blockedReason`
+    // carries the contact that owns the relationship now.
+    {
+      const { conversionVerdictForRow } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) {
+        return { success: false, blocked: true, blockedReason: verdict.reason }
+      }
     }
 
     if (lead.call_stop_flag || lead.opted_out_at) {
@@ -523,18 +672,16 @@ export async function assignAiIsaToLeadAfterGate(
 
     if (updateErr) throw updateErr
 
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_assigned",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_assigned",
         metadata: {
           assigned_by: ctx.userId,
           campaign_id: campaignId ?? null,
         },
-      })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -593,14 +740,15 @@ export async function startAiIsaAutomation(
       return { success: false, blocked: true, blockedReason: "Lead is under representation" }
     }
 
-    await Promise.all([
+    const startWrites = await Promise.all([
       supabase
         .from("leads")
         .update({ ai_outreach_paused: false, updated_at: new Date().toISOString() })
         .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
+        .eq("brokerage_id", ctx.brokerageId)
+        .select("id"),
 
-      supabase.from("ai_isa_activities").insert({
+      sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
         activity_type: "automation_started",
@@ -608,18 +756,21 @@ export async function startAiIsaAutomation(
         summary: notes ?? null,
         qualifying_response: { actor_user_id: ctx.userId, campaign_id: campaignId ?? null },
         created_at: new Date().toISOString(),
-      }),
+      }), { table: "ai_isa_activities", flow: "isa_automation_started", brokerageId: ctx.brokerageId, reason: "activity echo of the lead flag written (and checked) beside it" }),
     ])
+    // The lead flag IS the start: a refused (or tenant-mismatched, zero-row) write used
+    // to return success while AI outreach stayed in its old state.
+    const startLeadFlag = startWrites[0]
+    if (startLeadFlag.error) return { success: false, error: `Could not start AI ISA automation: ${startLeadFlag.error.message}` }
+    if ((startLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_automation_started",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_automation_started",
         metadata: { channel, campaign_id: campaignId ?? null, actor: ctx.userId },
-      })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -661,32 +812,36 @@ export async function pauseAiIsaAutomation(
 
     const supabase = createServiceClient()
 
-    await Promise.all([
+    const pauseWrites = await Promise.all([
       supabase
         .from("leads")
         .update({ ai_outreach_paused: true, updated_at: new Date().toISOString() })
         .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
+        .eq("brokerage_id", ctx.brokerageId)
+        .select("id"),
 
-      supabase.from("ai_isa_activities").insert({
+      sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
         activity_type: "automation_paused",
         summary: reason,
         qualifying_response: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
-      }),
+      }), { table: "ai_isa_activities", flow: "isa_automation_paused", brokerageId: ctx.brokerageId, reason: "activity echo of the lead flag written (and checked) beside it" }),
     ])
+    // The lead flag IS the pause: a refused (or tenant-mismatched, zero-row) write used
+    // to return success while AI outreach stayed in its old state.
+    const pauseLeadFlag = pauseWrites[0]
+    if (pauseLeadFlag.error) return { success: false, error: `Could not pause AI ISA automation: ${pauseLeadFlag.error.message}` }
+    if ((pauseLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_automation_paused",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_automation_paused",
         metadata: { reason, actor: ctx.userId },
-      })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -736,32 +891,36 @@ export async function resumeAiIsaAutomation(
       return { success: false, blocked: true, blockedReason: "Lead is under representation — AI ISA permanently blocked" }
     }
 
-    await Promise.all([
+    const resumeWrites = await Promise.all([
       supabase
         .from("leads")
         .update({ ai_outreach_paused: false, updated_at: new Date().toISOString() })
         .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
+        .eq("brokerage_id", ctx.brokerageId)
+        .select("id"),
 
-      supabase.from("ai_isa_activities").insert({
+      sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
         activity_type: "automation_resumed",
         summary: notes ?? null,
         qualifying_response: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
-      }),
+      }), { table: "ai_isa_activities", flow: "isa_automation_resumed", brokerageId: ctx.brokerageId, reason: "activity echo of the lead flag written (and checked) beside it" }),
     ])
+    // The lead flag IS the resume: a refused (or tenant-mismatched, zero-row) write used
+    // to return success while AI outreach stayed in its old state.
+    const resumeLeadFlag = resumeWrites[0]
+    if (resumeLeadFlag.error) return { success: false, error: `Could not resume AI ISA automation: ${resumeLeadFlag.error.message}` }
+    if ((resumeLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_automation_resumed",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_automation_resumed",
         metadata: { actor: ctx.userId, notes: notes ?? null },
-      })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -804,8 +963,11 @@ export async function handoffToHumanAgent(
 
     const supabase = createServiceClient()
 
-    const [handoffRes] = await Promise.all([
-      supabase
+    // Sequential, not Promise.all: the ownership flip's result was dropped on the
+    // floor (only the handoff insert was destructured), so a refused flip left the
+    // ISA still owning a lead a human had been handed. The flip now follows the
+    // handoff row it depends on, and its refusal is read.
+    const handoffRes = await supabase
         .from("agent_handoffs")
         .insert({
           brokerage_id: ctx.brokerageId,
@@ -825,30 +987,28 @@ export async function handoffToHumanAgent(
           created_at: new Date().toISOString(),
         })
         .select("id")
-        .single(),
-
-      supabase
-        .from("leads")
-        .update({ ai_isa_owner: false, updated_at: new Date().toISOString() })
-        .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
-    ])
+        .single()
 
     if (handoffRes.error) throw handoffRes.error
 
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_handoff_created",
+    const { error: ownerFlipErr } = await supabase
+      .from("leads")
+      .update({ ai_isa_owner: false, updated_at: new Date().toISOString() })
+      .eq("id", leadId)
+      .eq("brokerage_id", ctx.brokerageId)
+    if (ownerFlipErr) throw new Error(`Handoff ${handoffRes.data.id} created, but the lead's AI ISA ownership was not released: ${ownerFlipErr.message}`)
+
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_handoff_created",
         metadata: {
           handoff_id: handoffRes.data.id,
           assigned_agent_id: assignedAgentId ?? null,
           reason: handoffReason,
         },
-      })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true, data: { handoffId: handoffRes.data.id } }
   } catch (err) {
@@ -922,15 +1082,16 @@ export async function recordAiIsaOutcome(
     }
 
     // Update lead
-    await supabase
+    const { error: outcomeLeadErr } = await supabase
       .from("leads")
       .update(leadUpdate)
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
+    if (outcomeLeadErr) return { success: false, error: `Could not record the outcome on the lead: ${outcomeLeadErr.message}` }
 
     // Insert activity. `outcome` is a text column (the categorical result);
     // structured context (actor, appointment date) lives in qualifying_response jsonb.
-    await supabase.from("ai_isa_activities").insert({
+    await sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
       brokerage_id: ctx.brokerageId,
       lead_id: leadId,
       activity_type: "outcome_recorded",
@@ -941,13 +1102,30 @@ export async function recordAiIsaOutcome(
         appointment_date: appointmentDate ?? null,
       },
       created_at: now,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "activity echo of an outcome recorded on the lead above" })
+
+    // THE ISA OUTCOME 'appointment_set' on the qualification ledger (wave 91 lane 91A) — the
+    // radar / analytics read ai_isa_qualifications.qualification_result, which no path wrote.
+    // The ONE writer; a refused stamp is logged by name and does not undo the outcome the lead
+    // update above already recorded (the activity + lifecycle echo below still land).
+    if (outcome === "appointment_set") {
+      const { stampQualificationOutcome } = await import("@/lib/ai-isa/qualification-outcome-stamp")
+      const stamped = await stampQualificationOutcome(supabase, { brokerageId: ctx.brokerageId, leadId, result: "appointment_set" })
+      if (!stamped.ok) {
+        console.error(`[kernel/ai-isa] appointment_set NOT stamped on the ISA qualification for lead ${leadId}: ${stamped.error}`)
+        // Lane 92A: surfaced where refusals are shown (self_heal_events → the repair digest /
+        // Exception Center), not only logged.
+        const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+        await recordBestEffortLoss(supabase, { table: "ai_isa_qualifications", flow: "isa_outcome_stamp", brokerageId: ctx.brokerageId,
+          reason: "the booking itself stands; the ISA radar / analytics / managers' appointment_set count misses this person until the qualification row is re-stamped" }, stamped.error)
+      }
+    }
 
     // Update the call record if callId is provided. ai_isa_calls has no
     // categorical outcome column — the result is captured above; here we
     // persist the appointment booking on the call row.
     if (callId) {
-      await supabase
+      const { error: apptOnCallErr } = await supabase
         .from("ai_isa_calls")
         .update({
           appointment_set: outcome === "appointment_set",
@@ -955,17 +1133,16 @@ export async function recordAiIsaOutcome(
         })
         .eq("id", callId)
         .eq("brokerage_id", ctx.brokerageId)
+      if (apptOnCallErr) console.error(`[kernel/ai-isa] appointment outcome NOT recorded on the ISA call: ${apptOnCallErr.message}`)
     }
 
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_outcome_recorded",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_outcome_recorded",
         metadata: { outcome, call_id: callId ?? null, actor: ctx.userId },
-      })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // ── Side-effects gated on outcome ────────────────────────────────────
     if (outcome === "explicit_opt_out") {
@@ -1023,16 +1200,27 @@ export async function recordAiIsaOutcome(
           .maybeSingle()
 
         if (sequenceRow?.id) {
-          const { enrollContactInSequence } = await import(
-            "@/app/actions/campaign-sequences"
-          )
-          await enrollContactInSequence({
+          // UNATTENDED LANE: this runs with no session, so it uses the shared
+          // enrollment library directly and supplies its tenant explicitly. It used
+          // to call the `"use server"` action `enrollContactInSequence`, which
+          // omitted the NOT NULL `brokerage_id` — every enrollment here was refused
+          // by the database, and the swallowing catch below reported "enrolled in
+          // long-term nurture" while enrolling nobody. That catch is kept (the
+          // outcome record must not fail on a nurture miss) but the failure is now
+          // at least logged instead of vanishing.
+          const { enrollInSequence } = await import("@/lib/campaigns/enroll-in-sequence")
+          const { error: enrollError } = await enrollInSequence({
             sequenceId: sequenceRow.id,
+            brokerageId: ctx.brokerageId,
             leadId,
+            enrolledBy: ctx.userId ?? null,
           })
+          if (enrollError) {
+            console.error("[ai-isa] long-term nurture enrollment failed:", enrollError)
+          }
         }
       } catch (e) {
-        // best effort
+        console.error("[ai-isa] long-term nurture enrollment threw:", e)
       }
     }
 
@@ -1068,17 +1256,18 @@ export async function routeHistoryToCanonicalEntity(
     const now = new Date().toISOString()
 
     // Write the inbound event
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: ctx.brokerageId,
-      entity_type: entityType,
-      entity_id: entityId,
-      event_type: "isa_reply_received",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: entityType,
+      entityId: entityId,
+      event: "isa_reply_received",
       metadata: {
         channel,
         text: inboundText.slice(0, 500),
         provider_message_id: providerMessageId ?? null,
       },
-    })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // Update last activity. leads has last_activity_at; contacts tracks
     // recency via last_contacted_at (no last_activity_at column).
@@ -1113,7 +1302,9 @@ export async function routeHistoryToCanonicalEntity(
           .maybeSingle()
         suppressContactId = leadLink?.contact_id ?? null
       }
-      await supabase.from("contact_suppression_list").insert({
+      // FAIL CLOSED, same as the contact opt-out below: an inbound STOP whose
+      // suppression row was refused must not be acknowledged as honoured.
+      const { error: suppressErr } = await supabase.from("contact_suppression_list").insert({
         brokerage_id: ctx.brokerageId,
         contact_id: suppressContactId,
         channel,
@@ -1121,20 +1312,36 @@ export async function routeHistoryToCanonicalEntity(
         source: inboundText.slice(0, 200),
         created_at: now,
       })
+      if (suppressErr) {
+        console.error(`[ai-isa] TCPA suppression row REFUSED for ${entityType} ${entityId}:`, suppressErr.message)
+        return { success: false, error: `Opt-out suppression write refused: ${suppressErr.message}` }
+      }
 
       // Mark the lead/contact as opted out
       if (entityType === "lead") {
-        await supabase
+        const { error: leadOptOutErr } = await supabase
           .from("leads")
           .update({ opted_out_at: now, ai_outreach_paused: true, updated_at: now })
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
+        if (leadOptOutErr) {
+          console.error(`[ai-isa] lead opt-out write REFUSED for ${entityId}:`, leadOptOutErr.message)
+          return { success: false, error: `Lead opt-out write refused: ${leadOptOutErr.message}` }
+        }
       } else {
-        await supabase
+        // FAIL CLOSED (CLAUDE.md §4). supabase-js RESOLVES a refused UPDATE, so
+        // this discarded result let a rejected opt-out return `{ success: true }`
+        // — the inbound "STOP" was acknowledged to the caller while the contact
+        // row still permitted outreach.
+        const { error: dncError } = await supabase
           .from("contacts")
           .update({ dnc_status: true, isa_reengage_allowed: false, updated_at: now })
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
+        if (dncError) {
+          console.error(`[ai-isa] contact opt-out write REFUSED for ${entityId}:`, dncError.message)
+          return { success: false, error: `Contact opt-out write refused: ${dncError.message}` }
+        }
       }
     }
 
@@ -1208,4 +1415,95 @@ export async function resolveLeadChannel(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Failed to resolve channel" }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OBSERVED DEAD ENDS (wave 100, lane 100B) — the SYSTEM writer beside recordAiIsaOutcome.
+//
+// The 7-value dead-end vocabulary (lib/ai-isa/settings-types.ts DEAD_END_OUTCOMES) had
+// `property_sold` with NO writer: nothing a person tells the ISA records it — the PLATFORM
+// observes it (the RentCast active-listing monitor sees a sold transition; a transaction closes
+// on the address). It is written onto the EXISTING dead-end source both NBAs already read —
+// ai_isa_activities (activity_type 'outcome_recorded', outcome) — keyed by lead_id OR contact_id,
+// so deadEndsFromLeadSources picks it up on the lead sweep and on the contact NBA alike. No new
+// table, no new column. Idempotent per (person, outcome): an existing row is not re-written.
+// Callers: lib/kernel/listings-batchdata-feed.ts (sold transition) and
+// lib/kernel/transactions.ts closeTransactionCommand (seller leads at the closed address).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ObservedDeadEndInput {
+  brokerageId: string
+  subject: { type: "lead" | "contact"; id: string }
+  /** A canonical DEAD_END_OUTCOMES value the platform can OBSERVE (a person states the others). */
+  outcome: "property_sold"
+  /** Where it was observed — the evidence line a later decision shows. */
+  source: string
+  observed?: Record<string, unknown>
+}
+
+export async function recordObservedDeadEnd(
+  supabase: any,
+  input: ObservedDeadEndInput,
+): Promise<{ recorded: boolean; duplicate: boolean; error: string | null }> {
+  if (!input.brokerageId || !input.subject?.id) return { recorded: false, duplicate: false, error: "brokerageId and subject are required" }
+  const keyCol = input.subject.type === "lead" ? "lead_id" : "contact_id"
+  const { data: prior, error: priorErr } = await supabase
+    .from("ai_isa_activities")
+    .select("id")
+    .eq("brokerage_id", input.brokerageId)
+    .eq(keyCol, input.subject.id)
+    .eq("activity_type", "outcome_recorded")
+    .eq("outcome", input.outcome)
+    .limit(1)
+  // Fail closed on the dedupe read: a refused read is said, never treated as "no prior row".
+  if (priorErr) return { recorded: false, duplicate: false, error: `dead-end dedupe read refused: ${priorErr.message}` }
+  if ((prior ?? []).length > 0) return { recorded: false, duplicate: true, error: null }
+  const { data: written, error } = await supabase
+    .from("ai_isa_activities")
+    .insert({
+      brokerage_id: input.brokerageId,
+      lead_id: input.subject.type === "lead" ? input.subject.id : null,
+      contact_id: input.subject.type === "contact" ? input.subject.id : null,
+      activity_type: "outcome_recorded",
+      outcome: input.outcome,
+      summary: `Observed by the platform: ${input.source}`,
+      qualifying_response: { actor: "system", source: input.source, observed: input.observed ?? null },
+    })
+    .select("id")
+  if (error) return { recorded: false, duplicate: false, error: error.message }
+  const n = (written ?? []).length
+  return { recorded: n === 1, duplicate: false, error: n === 1 ? null : "insert returned no row" }
+}
+
+/**
+ * The closed-transaction half: a SELLER LEAD still being prospected at the address that just
+ * closed has sold — record property_sold on each (LEADS only: the transaction's own contacts are
+ * our clients, whose relationship continues as lifetime customers). Same address normaliser and
+ * the same 200-row page the listing feed's matcher uses.
+ */
+export async function recordPropertySoldForClosedAddress(
+  supabase: any,
+  input: { brokerageId: string; address: string | null | undefined; transactionId: string },
+): Promise<{ recorded: number; errors: string[] }> {
+  const out = { recorded: 0, errors: [] as string[] }
+  const { normalizeStreetAddress } = await import("@/lib/external/permit-signals")
+  const key = normalizeStreetAddress(input.address)
+  if (!key) return out
+  const { data: leads, error } = await supabase
+    .from("leads")
+    .select("id, address, mailing_address")
+    .eq("brokerage_id", input.brokerageId)
+    .is("converted_at", null)
+    .limit(200)
+  if (error) { out.errors.push(`leads read refused: ${error.message}`); return out }
+  for (const l of (leads ?? []) as Array<{ id: string; address: string | null; mailing_address: string | null }>) {
+    if (normalizeStreetAddress(l.address) !== key && normalizeStreetAddress(l.mailing_address) !== key) continue
+    const r = await recordObservedDeadEnd(supabase, {
+      brokerageId: input.brokerageId, subject: { type: "lead", id: l.id }, outcome: "property_sold",
+      source: "transactions.status=closed", observed: { transaction_id: input.transactionId },
+    })
+    if (r.recorded) out.recorded++
+    else if (r.error) out.errors.push(`lead ${l.id}: ${r.error}`)
+  }
+  return out
 }

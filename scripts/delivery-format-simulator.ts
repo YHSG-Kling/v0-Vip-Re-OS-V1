@@ -3,9 +3,9 @@
  * scripts/delivery-format-simulator.ts   (npm run test:delivery-format)
  * ─────────────────────────────────────────────────────────────────────────────
  * Proves DELIVERY FORMAT is baked into the business process: the MATERIAL picks the format (not every
- * lesson is a video), a CONTACT's age group then gauges the delivered format, and the VOICE follows the
- * audience (agent's own voice for a client, assistant voice for an agent). Pure — reuses the existing
- * DELIVERY_MATRIX / getEducationDelivery (no drift).
+ * lesson is a video), a format the CONTACT STATED then wins (wave 145, owner ruling 18 — never their age
+ * group; the band matrix is tombstoned), and the VOICE follows the audience (agent's own voice for a
+ * client, assistant voice for an agent). Pure.
  *
  * PURE:   resolveMaterialFormat + channelsForFormat + voiceForAudience + resolveContactDeliveryFormat.
  * SOURCE: the three education authors set channels from the material format (not hardcoded article).
@@ -32,11 +32,13 @@ function pureLayer() {
   check("a CONTACT-facing video speaks in the AGENT's own voice", voiceForAudience(["customer"]) === "agent_own")
   check("an AGENT-facing video speaks in the ASSISTANT voice", voiceForAudience(["agent"]) === "assistant" && voiceForAudience(["broker"]) === "assistant")
 
-  console.log("\n[resolveContactDeliveryFormat · pure — gauged by age group]")
-  check("a video explainer stays video for an 18-30 contact (video-primary cohort)", resolveContactDeliveryFormat("18-30", "video") === "video")
-  check("a video explainer becomes checklist for a 65+ contact (checklist-primary)", resolveContactDeliveryFormat("65+", "video") === "checklist")
-  check("a guide stays a guide for a 30-50 contact (guide-primary)", resolveContactDeliveryFormat("30-50", "guide") === "guide")
-  check("unknown age → the material's own format unchanged", resolveContactDeliveryFormat(null, "video") === "video")
+  // WAVE 145 (lane 145H, owner ruling 18 — 2026-10-27): RE-ASSERTED AS THE RULE. This block pinned "gauged by age
+  // group" (a video explainer became a checklist for a 65+ contact). Ruling 18: what the PERSON stated, never an age.
+  console.log("\n[resolveContactDeliveryFormat · pure — what the person STATED, else the material's own (never an age)]")
+  check("nothing stated → the material keeps its own format (a video explainer stays video)", resolveContactDeliveryFormat(null, "video") === "video")
+  check("…and a guide stays a guide", resolveContactDeliveryFormat(undefined, "guide") === "guide")
+  check("POSITIVE CONTROL — a format the PERSON stated wins (prefers a checklist → checklist)", resolveContactDeliveryFormat("checklist", "video") === "checklist")
+  check("the resolver takes no age: its first parameter is a stated FORMAT", !/AgeSegment/.test(readFileSync(join(process.cwd(), "lib/education/delivery-format.ts"), "utf8").split("export function resolveContactDeliveryFormat")[1]?.split("\n")[0] ?? "AgeSegment"))
 }
 
 function sourceLayer() {
@@ -58,6 +60,6 @@ function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ DELIVERY_FORMAT_FAIL"); process.exit(1) }
-  console.log(" ✅ DELIVERY_FORMAT_PASS — material + age pick the format; voice follows the audience")
+  console.log(" ✅ DELIVERY_FORMAT_PASS — the material picks the format, a stated preference wins (never an age); voice follows the audience")
 }
 main()

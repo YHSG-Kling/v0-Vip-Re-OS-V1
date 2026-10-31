@@ -26,23 +26,36 @@ interface CommissionRecord {
   blockerReason?: string
 }
 
+interface CommissionSummary {
+  pending: number
+  approved: number
+  paid: number
+  held: number
+  totalPending: number
+  totalApproved: number
+  totalPaid: number
+}
+
 interface CommissionIntelligencePanelProps {
   commissions: CommissionRecord[]
-  summary: {
-    pending: number
-    approved: number
-    paid: number
-    held: number
-    totalPending: number
-    totalApproved: number
-    totalPaid: number
-  }
+  summary?: CommissionSummary
+  /** optional by design: defaults to "/dashboard/transactions/", which IS the
+   *  live route (app/dashboard/transactions/[id]/page.tsx) — this panel's one
+   *  caller (app/dashboard/financials/commissions/page.tsx) builds
+   *  transactionId from the same `transactions.id` the default already points
+   *  at, so overriding it would only be needed for a future caller linking
+   *  somewhere else. */
   transactionLinkPrefix?: string // e.g., "/dashboard/transactions/"
 }
 
+const EMPTY_SUMMARY: CommissionSummary = {
+  pending: 0, approved: 0, paid: 0, held: 0, totalPending: 0, totalApproved: 0, totalPaid: 0,
+}
+
 export function CommissionIntelligencePanel({
-  commissions,
-  summary,
+  commissions = [],
+  // Default so a caller that omits summary can never crash on summary.pending.
+  summary = EMPTY_SUMMARY,
   transactionLinkPrefix = "/dashboard/transactions/",
 }: CommissionIntelligencePanelProps) {
   const formatCurrency = (val: number) =>
@@ -55,7 +68,7 @@ export function CommissionIntelligencePanel({
   const statusConfig = {
     pending: {
       icon: <Clock className="h-4 w-4" />,
-      color: "text-amber-600",
+      color: "text-amber-700",
       bg: "bg-amber-50 border-amber-200",
       label: "Pending",
     },
@@ -67,7 +80,7 @@ export function CommissionIntelligencePanel({
     },
     paid: {
       icon: <CheckCircle2 className="h-4 w-4" />,
-      color: "text-green-600",
+      color: "text-green-700",
       bg: "bg-green-50 border-green-200",
       label: "Paid",
     },
@@ -79,7 +92,7 @@ export function CommissionIntelligencePanel({
     },
     delayed: {
       icon: <AlertTriangle className="h-4 w-4" />,
-      color: "text-orange-600",
+      color: "text-orange-700",
       bg: "bg-orange-50 border-orange-200",
       label: "Delayed",
     },
@@ -117,11 +130,11 @@ export function CommissionIntelligencePanel({
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Summary Stats */}
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-center">
             <p className="text-xs text-amber-700">Pending</p>
-            <p className="text-lg font-bold text-amber-600">{summary.pending}</p>
-            <p className="text-xs text-amber-600">{formatCurrency(summary.totalPending)}</p>
+            <p className="text-lg font-bold text-amber-700">{summary.pending}</p>
+            <p className="text-xs text-amber-700">{formatCurrency(summary.totalPending)}</p>
           </div>
           <div className="p-2 rounded-lg bg-blue-50 border border-blue-200 text-center">
             <p className="text-xs text-blue-700">Approved</p>
@@ -130,8 +143,8 @@ export function CommissionIntelligencePanel({
           </div>
           <div className="p-2 rounded-lg bg-green-50 border border-green-200 text-center">
             <p className="text-xs text-green-700">Paid</p>
-            <p className="text-lg font-bold text-green-600">{summary.paid}</p>
-            <p className="text-xs text-green-600">{formatCurrency(summary.totalPaid)}</p>
+            <p className="text-lg font-bold text-green-700">{summary.paid}</p>
+            <p className="text-xs text-green-700">{formatCurrency(summary.totalPaid)}</p>
           </div>
           <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-center">
             <p className="text-xs text-red-700">Held</p>
@@ -178,7 +191,7 @@ export function CommissionIntelligencePanel({
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-bold text-green-600">
+                      <p className="text-sm font-bold text-green-700">
                         {formatCurrency(commission.agentNet)}
                       </p>
                       <Badge variant="outline" className={`text-xs ${config.bg} ${config.color}`}>

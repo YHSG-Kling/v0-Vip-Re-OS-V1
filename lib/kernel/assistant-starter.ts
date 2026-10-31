@@ -37,6 +37,8 @@ export async function seedStarterAssistant(svc: any, brokerageId: string): Promi
       purpose: "generic",
       size: "1024x1024",
       style: "natural",
+      // Seeded once per brokerage (the existing-profile check above) — the key holds a retried seed to one charge.
+      spend: { brokerageId, feature: "starter_assistant_headshot", manager: "asset_manager", idempotencyKey: `starter_assistant_headshot:${brokerageId}` },
     })
     if (img.success && img.imageUrl) photoUrl = img.imageUrl
   } catch { /* seed without a face — monogram PIP until one is set */ }
@@ -68,14 +70,15 @@ export async function seedStarterAssistant(svc: any, brokerageId: string): Promi
       })
       if (intro?.videoUrl) {
         const { data: admins } = await svc.from("users").select("id")
-          .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(3)
+          .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(3)
         for (const u of ((admins ?? []) as any[])) {
-          await svc.from("notifications").insert({
+          const { error: notifyError } = await svc.from("notifications").insert({
             user_id: u.id, brokerage_id: brokerageId, type: "assistant_intro",
             title: `Meet ${STARTER_ASSISTANT_NAME} — your AI assistant`,
             body: `${STARTER_ASSISTANT_NAME} introduces itself on camera: ${intro.videoUrl}`,
             priority: "medium", channel: "in_app", is_read: false,
           }).then(undefined, () => {})
+          if (notifyError) console.warn("[assistant-starter.ts] notifications insert refused — the bell will not ring:", notifyError.message)
         }
       }
     }

@@ -542,7 +542,7 @@ export function AgentFinancialsClient({
                     {plSummary.netProfit >= 0 ? (
                       <TrendingUp className="h-3 w-3 text-blue-500" />
                     ) : (
-                      <TrendingDown className="h-3 w-3 text-orange-500" />
+                      <TrendingDown className="h-3 w-3 text-orange-600" />
                     )}
                     <span className="text-xs text-muted-foreground">After expenses</span>
                   </div>

@@ -1,10 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import {
-  finalizeVoiceCockpitPacket,
-  finalizeLegacyEsignArtifacts,
-} from "@/lib/esign-webhooks/finalize-packet"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState } from "@/lib/forms/esign-execution-loop"
+import { providerTerminalState } from "@/lib/esign/packet-states"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTHENTISIGN WEBHOOK HANDLER  (Lone Wolf Authentisign)
@@ -61,8 +59,8 @@ export async function POST(request: NextRequest) {
 
     // Authentisign envelope events:
     //   - "signing.completed"   all signers have signed
-    //   - "signing.declined"    a signer declined (not handled here yet)
-    //   - "signing.expired"     envelope expired (not handled here yet)
+    //   - "signing.declined"    a signer declined  → recorded on the packet (wave 142, below)
+    //   - "signing.expired"     envelope expired   → recorded on the packet (wave 142, below)
     // SCHEMA ADAPTATION: documented shapes are direct paths; new shapes adapt
     // via taught aliases (drift, ledgered) or QUARANTINE — never lost.
     const { adaptPayload, ESIGN_COMPLETION_CONTRACTS } = await import("@/lib/kernel/schema-adaptation")
@@ -83,6 +81,13 @@ export async function POST(request: NextRequest) {
       const q = await quarantineDriftedPayload(supabase as any, { connector: "authentisign", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || status })
       return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
     }
+    // THE PROVIDER'S TERMINAL OUTCOME (wave 142, lane 142B): signing.declined / signing.expired / voided
+    // are recorded on the matched records through the ONE packet writer instead of being ignored.
+    const terminal = !isCompleted ? providerTerminalState(event, status) : null
+    if (terminal && envelopeId) {
+      const recorded = await recordEnvelopeTerminalState(supabase as any, { provider: "authentisign", envelopeId, state: terminal, reason: status || event || null })
+      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, refused: recorded.refused.length })
+    }
     if (!isCompleted || !envelopeId) {
       return NextResponse.json({ received: true, action: "ignored", event, status })
     }
@@ -94,8 +99,21 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "authentisign")
-    const legacy = await finalizeLegacyEsignArtifacts(supabase as any, envelopeId)
+    // PROVIDER-AGNOSTIC LOOP-EXECUTION GATE (wave 47 lane FA — see
+    // lib/forms/esign-execution-loop.ts). Authentisign's own completion event
+    // only proves ONE signing session finished; the gate reads every
+    // client_documents / transaction_documents row tracked for the matched
+    // transaction/listing and only finalizes when ALL of them are signed —
+    // otherwise it signals compliance_officer → deal_coordinator instead of
+    // finalizing early.
+    const brokerageId = await resolveEnvelopeBrokerageId(supabase as any, envelopeId)
+    const execution = brokerageId
+      ? await evaluateEnvelopeExecution(supabase as any, {
+          brokerageId,
+          providerSource: "authentisign",
+          externalEnvelopeId: envelopeId,
+        })
+      : null
 
     // INGRESS CONTINUITY: park an unmatched envelope as a dead letter for the
     // daily reconciler — never lost behind this 200.
@@ -103,11 +121,12 @@ export async function POST(request: NextRequest) {
     await ensureEsignIngressContinuity(supabase as any, { provider: "authentisign", envelopeId })
 
     return NextResponse.json({
-      received:    true,
+      received:   true,
       envelopeId,
-      docs_signed: voice.docs_signed,
-      bba_signed:  voice.bba_signed,
-      legacy,
+      evaluated:  execution?.evaluated ?? false,
+      fully_executed: execution?.fullyExecuted ?? false,
+      ready_writes_applied: execution?.readyWritesApplied ?? false,
+      signal_published: execution?.signalPublished ?? false,
     })
   } catch (error: any) {
     console.error("[authentisign-webhook] Error:", error)

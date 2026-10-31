@@ -8,34 +8,62 @@
  * the workflow OS form-fill engine consults when assembling offer/listing
  * packets.
  *
- * GET    list forms for the user's brokerage
- * POST   create a new form (multipart with optional PDF)
- * PATCH  update fields (name, description, field_schema, is_active)
+ * GET    list the library rows the caller's memberships reach, the teams they may share with, and the platform catalogue
+ * POST   upload a packet (multipart with the PDF) — shared with the whole brokerage, or with ONE team;
+ *        or (JSON { action: "add_from_catalogue", platform_packet_id, team_id?, state? }) add a platform-catalogue packet
+ * PATCH  update fields (name, description, state, packet_type, form_code, field_schema, licence, is_active)
  * DELETE soft-delete (is_active=false)
  *
- * Auth: requires admin/broker/superadmin role on the user's brokerage.
+ * WAVE 144 (lane 144C — owner ruling 3: "Form packets are NOT platform-owned. The brokerage or team uploads approved form packets …
+ * into THEIR OWN tenant/team bucket and shares them with their agents as templates"). This route was already the ONE upload path
+ * (app/actions/compliance/manage-required-docs.ts "keep-one"); it now writes through the ONE packet writer,
+ * lib/forms/tenant-form-packets.ts — which stores the master in the OWNER's folder (`brokerage/{id}/packets/…` or
+ * `teams/{id}/packets/…`), records the licence, counts the fillable fields, and refuses a sharer without the authority for the
+ * scope (brokerage-wide: the oversight class; one team: that team's lead or oversight). The platform catalogue is a SOURCE a
+ * brokerage adds from (lib/forms/platform-form-packets.ts addPlatformPacketToLibrary), never an owner.
+ *
+ * Auth: a signed-in tenant admin (users.user_type, including a team lead for their own team) or platform staff (platform_role) on
+ * the user's brokerage — the forms library is tenant-admin config, and platform staff administer tenants. Tenant from the
+ * SESSION; the service client is opened only after that gate (CLAUDE.md §4).
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { put } from "@vercel/blob"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { checkUpload } from "@/lib/storage/file-limits"
+import { isPlatformStaffIdentity, isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
+import {
+  FORM_PACKET_BUCKET, issueTenantPacketUrl, listLibraryForActor, mayManagePacketScope, registerTenantFormPacket, resolvePacketActor, retireTenantFormPacket, updateTenantFormPacket,
+  type PacketActor,
+} from "@/lib/forms/tenant-form-packets"
+import { PLATFORM_PACKET_PREVIEW_TTL_SECONDS, addPlatformPacketToLibrary, listPlatformPacketsForTenant, parsePlatformPacketPath } from "@/lib/forms/platform-form-packets"
 
-const ALLOWED_ROLES = new Set(["admin", "superadmin", "broker", "broker_admin"])
+type Svc = ReturnType<typeof createServiceClient>
 
-async function authAdmin(): Promise<{ userId: string; brokerageId: string } | NextResponse> {
+async function authAdmin(): Promise<{ userId: string; brokerageId: string; actor: PacketActor; svc: Svc } | NextResponse> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const { data: userRow } = await supabase
+  // `error` destructured: supabase-js resolves a refused read, and a refusal must
+  // not be reported as "no brokerage on user".
+  const { data: userRow, error: userError } = await supabase
     .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
+  if (userError) return NextResponse.json({ error: "Role lookup failed" }, { status: 500 })
   if (!userRow?.brokerage_id) return NextResponse.json({ error: "No brokerage on user" }, { status: 422 })
 
-  const role = userRow.user_type ?? userRow.platform_role
-  if (!role || !ALLOWED_ROLES.has(role)) {
+  // ONE vocabulary per column: user_type answers the tenant half, platform_role
+  // the staff half — never coalesced into a single mixed value.
+  if (!isTenantAdminOrPlatformStaff(userRow)) {
     return NextResponse.json({ error: "Admin role required" }, { status: 403 })
   }
-  return { userId: user.id, brokerageId: userRow.brokerage_id }
+  // GATE PASSED — only now the service client, and the actor is resolved from the SESSION user.
+  const svc = createServiceClient()
+  const resolved = await resolvePacketActor(svc as never, user.id)
+  if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: 500 })
+  // Platform staff administer tenants: they act with the brokerage's oversight authority on the brokerage they are attached to.
+  const actor: PacketActor = isPlatformStaffIdentity(userRow.user_type, userRow.platform_role) ? { ...resolved.actor, oversight: true } : resolved.actor
+  return { userId: user.id, brokerageId: userRow.brokerage_id, actor, svc }
 }
 
 // ─── GET — list forms ──────────────────────────────────────────────────────
@@ -44,26 +72,50 @@ export async function GET(): Promise<NextResponse> {
   const auth = await authAdmin()
   if (auth instanceof NextResponse) return auth
 
-  const supabase = await createClient()
-  const { data, error } = await supabase
-    .from("brokerage_form_library")
-    .select("id, name, description, state, packet_type, pdf_url, field_schema, is_active, created_at, updated_at")
-    .eq("brokerage_id", auth.brokerageId)
-    .order("state", { ascending: true })
-    .order("packet_type", { ascending: true })
-    .order("name", { ascending: true })
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ forms: data ?? [] })
+  const lib = await listLibraryForActor(auth.svc as never, auth.actor)
+  if (!lib.ok) return NextResponse.json({ error: lib.error }, { status: 500 })
+  // EVERY PACKET LINK IS MINTED PER VIEW (wave 145, lane 145A): a registered master's `pdf_url` in this response is a short-lived
+  // link from the ONE minting door, issued only for a row this manager has authority over — never the stored column (which used
+  // to carry a 10-year bearer URL no retirement or membership end could revoke). A row whose link cannot be minted shows none.
+  const forms = await Promise.all(lib.forms.map(async (f) => {
+    if (!f.storage_path) return f
+    const minted = await issueTenantPacketUrl(auth.svc as never, auth.actor, f, "manage")
+    return { ...f, pdf_url: minted.ok ? minted.url : null }
+  }))
+  // The platform catalogue — what this brokerage MAY add to its own library. A refused catalogue read is reported beside the
+  // library, never as an empty catalogue (and never blocks the brokerage's own forms).
+  const catalogue = await listPlatformPacketsForTenant(auth.svc as never, {})
+  const platformCatalogue: Array<Record<string, unknown>> = []
+  if (catalogue.ok) {
+    for (const p of catalogue.packets) {
+      // Only a well-formed catalogue master path is ever signed (never an arbitrary object a registry row happened to name).
+      const signed = parsePlatformPacketPath(p.path)
+        ? (await auth.svc.storage.from(FORM_PACKET_BUCKET).createSignedUrl(p.path, PLATFORM_PACKET_PREVIEW_TTL_SECONDS)).data
+        : null
+      platformCatalogue.push({ id: p.packetId, name: p.name, state: p.state, packet_type: p.packetType, form_code: p.formCode, version: p.version, license_note: p.licenseNote, license_expires_at: p.licenseExpiresAt, preview_url: signed?.signedUrl ?? null })
+    }
+  }
+  return NextResponse.json({
+    forms, share_teams: lib.shareTeams, may_share_brokerage_wide: mayManagePacketScope(auth.actor, null),
+    platform_catalogue: platformCatalogue, platform_catalogue_error: catalogue.ok ? null : catalogue.error,
+  })
 }
 
-// ─── POST — create form (multipart for PDF upload) ─────────────────────────
+// ─── POST — upload a packet (multipart), or add one from the platform catalogue (JSON) ─────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const auth = await authAdmin()
   if (auth instanceof NextResponse) return auth
 
   const ct = req.headers.get("content-type") ?? ""
+  if (ct.includes("application/json")) {
+    const body = await req.json().catch(() => ({})) as { action?: string; platform_packet_id?: string; team_id?: string | null; state?: string | null }
+    if (body.action !== "add_from_catalogue" || !body.platform_packet_id) return NextResponse.json({ error: "action add_from_catalogue with platform_packet_id required" }, { status: 400 })
+    const added = await addPlatformPacketToLibrary(auth.svc as never, auth.actor, { packetId: body.platform_packet_id, teamId: body.team_id ?? null, state: body.state ?? null })
+    if (!added.ok) return NextResponse.json({ error: added.error }, { status: 422 })
+    return NextResponse.json({ form: added.packet, existing: added.existing })
+  }
+
   let formData: FormData
   if (ct.includes("multipart/form-data")) {
     try {
@@ -79,26 +131,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const description = formData.get("description") as string | null
   const state       = formData.get("state")       as string | null
   const packetType  = formData.get("packet_type") as string | null
+  const teamId      = (formData.get("team_id") as string | null) || null
+  const formCode    = formData.get("form_code")   as string | null
+  const licenseNote = formData.get("license_note") as string | null
+  const licenseExpiresAt = (formData.get("license_expires_at") as string | null) || null
   const fieldSchemaRaw = formData.get("field_schema") as string | null
   const file        = formData.get("file")        as File | null
 
   if (!name || !state || !packetType) {
     return NextResponse.json({ error: "name, state, and packet_type required" }, { status: 400 })
   }
-
-  let pdfUrl: string | null = null
-  if (file && file.size > 0) {
-    if (file.type !== "application/pdf") {
-      return NextResponse.json({ error: "Only PDF uploads supported" }, { status: 415 })
+  // The PDF is optional, as it always was here: a field-schema-only entry is the AI form-fill engine's mapping with no master.
+  const hasFile = !!file && file.size > 0
+  if (hasFile && file!.type !== "application/pdf") {
+    return NextResponse.json({ error: "Only PDF uploads supported" }, { status: 415 })
+  }
+  if (hasFile) {
+    // The bytes ride a Vercel Function request body, so 4.5 MB is the real ceiling (the ONE limits table, lib/storage/file-limits.ts).
+    const gate = checkUpload({
+      bucket: "brokerage-forms",
+      transport: "route_handler",
+      bytes: file!.size,
+      contentType: file!.type,
+    })
+    if (!gate.ok) {
+      return NextResponse.json({ error: gate.reason }, { status: 413 })
     }
-    if (file.size > 10 * 1024 * 1024) {
-      return NextResponse.json({ error: "PDF exceeds 10MB limit" }, { status: 413 })
-    }
-    const slug = Math.random().toString(36).slice(2, 9)
-    const path = `brokerage-forms/${auth.brokerageId}/${state}-${packetType}-${Date.now()}-${slug}.pdf`
-    const buffer = Buffer.from(await file.arrayBuffer())
-    const blob = await put(path, buffer, { access: "public", contentType: "application/pdf" })
-    pdfUrl = blob.url
   }
 
   let fieldSchema: string[] | null = null
@@ -111,21 +169,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     } catch { /* invalid JSON — leave as null */ }
   }
 
-  const supabase = await createClient()
-  const { data, error } = await supabase.from("brokerage_form_library").insert({
-    brokerage_id: auth.brokerageId,
-    name,
-    description: description ?? null,
-    state: state.trim().toUpperCase(),
-    packet_type: packetType,
-    pdf_url: pdfUrl,
-    field_schema: fieldSchema,
-    uploaded_by: auth.userId,
-    is_active: true,
-  }).select("*").single()
+  const registered = await registerTenantFormPacket(auth.svc as never, auth.actor, {
+    teamId, name, description, state, packetType, formCode, licenseNote, licenseExpiresAt, fieldSchema,
+    fileName: hasFile ? file!.name : null, bytes: hasFile ? new Uint8Array(await file!.arrayBuffer()) : null,
+  })
+  if (!registered.ok) return NextResponse.json({ error: registered.error }, { status: 422 })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ form: data })
+  // NO LINK IS PERSISTED (wave 145, lane 145A). This used to write a 10-YEAR signed URL (issueBucketObjectUrl's default TTL) into
+  // brokerage_form_library.pdf_url — a bearer link to a licensed master that every reader of the row could keep using after the
+  // packet was retired, its licence expired or their membership ended. `storage_path` is the durable reference; the link the
+  // uploader sees now is minted per view by the ONE door (lib/forms/tenant-form-packets.ts issueTenantPacketUrl) and lives minutes.
+  const minted = registered.packet.storage_path ? await issueTenantPacketUrl(auth.svc as never, auth.actor, registered.packet, "manage") : null
+  return NextResponse.json({ form: { ...registered.packet, pdf_url: minted?.ok ? minted.url : null }, note: minted && !minted.ok ? `the preview link could not be minted (${minted.reason})` : null })
 }
 
 // ─── PATCH — update form ───────────────────────────────────────────────────
@@ -140,35 +195,16 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     description?: string
     state?: string
     packet_type?: string
+    form_code?: string | null
     field_schema?: string[]
     is_active?: boolean
+    license_note?: string | null
+    license_expires_at?: string | null
   }
   if (!body.id) return NextResponse.json({ error: "id required" }, { status: 400 })
-
-  const supabase = await createClient()
-  // Verify the form belongs to the user's brokerage before updating
-  const { data: existing } = await supabase
-    .from("brokerage_form_library")
-    .select("id")
-    .eq("id", body.id)
-    .eq("brokerage_id", auth.brokerageId)
-    .maybeSingle()
-  if (!existing) return NextResponse.json({ error: "Form not in your brokerage" }, { status: 403 })
-
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (body.name        !== undefined) updates.name        = body.name
-  if (body.description !== undefined) updates.description = body.description
-  if (body.state       !== undefined) updates.state       = body.state.trim().toUpperCase()
-  if (body.packet_type !== undefined) updates.packet_type = body.packet_type
-  if (body.field_schema !== undefined) updates.field_schema = body.field_schema
-  if (body.is_active   !== undefined) updates.is_active   = body.is_active
-
-  const { error } = await supabase
-    .from("brokerage_form_library")
-    .update(updates)
-    .eq("id", body.id)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
+  const { id, ...patch } = body
+  const updated = await updateTenantFormPacket(auth.svc as never, auth.actor, id, patch)
+  if (!updated.ok) return NextResponse.json({ error: updated.error }, { status: 403 })
   return NextResponse.json({ success: true })
 }
 
@@ -182,12 +218,7 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
   const id = url.searchParams.get("id")
   if (!id) return NextResponse.json({ error: "id query param required" }, { status: 400 })
 
-  const supabase = await createClient()
-  const { error } = await supabase
-    .from("brokerage_form_library")
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq("id", id)
-    .eq("brokerage_id", auth.brokerageId)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  const retired = await retireTenantFormPacket(auth.svc as never, auth.actor, id)
+  if (!retired.ok) return NextResponse.json({ error: retired.error }, { status: 403 })
   return NextResponse.json({ success: true })
 }

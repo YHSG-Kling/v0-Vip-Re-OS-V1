@@ -51,7 +51,7 @@ import { updateBlogPost, publishToWordPress, suggestSEOKeywords } from "@/app/ac
 import { generateOmnipresent, generateVariations } from "@/app/actions/content-generation-engine"
 import { createSocialPost } from "@/app/actions/social-publishing"
 import { createEmailCampaign } from "@/app/actions/email-campaigns"
-import { analyzeSEO } from "@/lib/blog/seo-optimizer"
+import { analyzeSEO, getSeoScoreHistory } from "@/lib/blog/seo-optimizer"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -104,8 +104,8 @@ const STATUS_COLORS: Record<string, string> = {
 
 function SeoScoreCircle({ score }: { score: number }) {
   const getColor = () => {
-    if (score >= 80) return "text-green-600 dark:text-green-400"
-    if (score >= 60) return "text-amber-600 dark:text-amber-400"
+    if (score >= 80) return "text-green-700 dark:text-green-400"
+    if (score >= 60) return "text-amber-700 dark:text-amber-400"
     return "text-red-600 dark:text-red-400"
   }
 
@@ -203,6 +203,13 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
   const [seoRecommendations, setSeoRecommendations] = useState(
     post.latestSeoLog?.recommendations || []
   )
+  // SEO score trend (getSeoScoreHistory) — the server page only ships the
+  // LATEST seo_optimization_log row, so before this the editor could never show
+  // whether an edit moved the score up or down. The history read is the
+  // brokerage-scoped, session-gated action in lib/blog/seo-optimizer.ts.
+  const [seoHistory, setSeoHistory] = useState<
+    Array<{ score: number; optimized_at: string }>
+  >([])
   const [wordpressPostId, setWordpressPostId] = useState(post.wordpress_post_id)
   const [suggestedKeywords, setSuggestedKeywords] = useState<
     Array<{ keyword: string; type: string }>
@@ -287,6 +294,19 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
     }
   }
 
+  // Load the score trend once on mount, and again after every re-analysis.
+  const refreshSeoHistory = async () => {
+    const h = await getSeoScoreHistory(post.id).catch(() => null)
+    if (h?.success && h.history) {
+      setSeoHistory(h.history.map((e) => ({ score: e.score, optimized_at: e.optimized_at })))
+    }
+  }
+
+  useEffect(() => {
+    void refreshSeoHistory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post.id])
+
   const handleAnalyzeSEO = async () => {
     setIsAnalyzing(true)
     setError(null)
@@ -308,6 +328,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
         setSeoRecommendations(result.result.recommendations)
         setSuccessMessage("SEO analysis complete")
         setTimeout(() => setSuccessMessage(null), 3000)
+        void refreshSeoHistory()
       } else {
         setError(result.error || "Failed to analyze SEO")
       }
@@ -388,12 +409,20 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
         userId,
       })
       if (result && (result as any).success === false) {
-        const msg = (result as any).complianceBlocked
-          ? ((result as any).message ?? "Post held for compliance review")
-          : "Failed to queue social post"
+        // Both refusals now carry their own reason — a compliance hold, or "no
+        // connected account for this platform". Show the server's own words
+        // rather than a generic failure.
+        const msg =
+          (result as any).message ??
+          ((result as any).complianceBlocked ? "Post held for compliance review" : "Failed to queue social post")
         toast.error(msg)
       } else {
-        toast.success("Queued for social — check Social dashboard")
+        const platforms: string[] = (result as any)?.scheduledPlatforms ?? []
+        toast.success(
+          platforms.length > 0
+            ? `Queued for ${platforms.join(", ")} — check Social dashboard`
+            : "Queued for social — check Social dashboard",
+        )
       }
     } finally {
       setSendingKey(null)
@@ -488,7 +517,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => router.push("/dashboard/marketing/blog")}>
+          <Button variant="ghost" size="icon" aria-label="Back to blog" onClick={() => router.push("/dashboard/marketing/blog")}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
@@ -558,7 +587,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
       {error && (
         <div className="mb-4 p-3 rounded-md bg-destructive/10 text-destructive text-sm flex items-center justify-between">
           <span>{error}</span>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setError(null)}>
+          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Dismiss error" onClick={() => setError(null)}>
             <X className="h-3 w-3" />
           </Button>
         </div>
@@ -612,9 +641,9 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
           <TrendingUp className="h-4 w-4" />
           <span className={
             displayScore >= 80
-              ? "text-green-600 dark:text-green-400 font-medium"
+              ? "text-green-700 dark:text-green-400 font-medium"
               : displayScore >= 60
-                ? "text-amber-600 dark:text-amber-400 font-medium"
+                ? "text-amber-700 dark:text-amber-400 font-medium"
                 : "text-red-600 dark:text-red-400 font-medium"
           }>
             SEO {displayScore}/100{seoScore === null ? " (live preview)" : ""}
@@ -851,7 +880,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
               />
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>{wordCount} words</span>
-                <span className={wordCount >= 600 ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                <span className={wordCount >= 600 ? "text-green-700 dark:text-green-400" : "text-amber-700 dark:text-amber-400"}>
                   {wordCount >= 600 ? "Good length" : `${600 - wordCount} more words for optimal SEO`}
                 </span>
               </div>
@@ -917,6 +946,49 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
                   Target: 80+ for best search ranking
                 </p>
               </div>
+
+              {/* Score trend — the last 10 recorded analyses for this post.
+                  Empty until the post has been analyzed at least once. */}
+              {seoHistory.length > 1 && (
+                <div className="w-full pt-3 border-t">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">
+                    Score history
+                  </p>
+                  <ul className="space-y-1">
+                    {seoHistory.map((entry, i) => {
+                      const prev = seoHistory[i + 1]
+                      const delta = prev ? entry.score - prev.score : null
+                      return (
+                        <li
+                          key={`${entry.optimized_at}-${i}`}
+                          className="flex items-center justify-between text-xs"
+                        >
+                          <span className="text-muted-foreground">
+                            {new Date(entry.optimized_at).toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                          <span className="flex items-center gap-1.5 font-medium">
+                            {entry.score}
+                            {delta !== null && delta !== 0 && (
+                              <span
+                                className={
+                                  delta > 0 ? "text-green-700" : "text-red-600"
+                                }
+                              >
+                                {delta > 0 ? `+${delta}` : delta}
+                              </span>
+                            )}
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -1010,7 +1082,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
           {seoIssues.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
                   <AlertTriangle className="h-5 w-5" />
                   Issues ({seoIssues.length})
                 </CardTitle>
@@ -1019,7 +1091,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
                 <ul className="space-y-2">
                   {seoIssues.map((issue, index) => (
                     <li key={index} className="text-sm text-muted-foreground flex items-start gap-2">
-                      <span className="text-amber-600 dark:text-amber-400 mt-0.5">•</span>
+                      <span className="text-amber-700 dark:text-amber-400 mt-0.5">•</span>
                       {issue}
                     </li>
                   ))}
@@ -1061,7 +1133,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
             <CardContent>
               {wordpressPostId ? (
                 <div className="space-y-2">
-                  <p className="text-sm text-green-600 dark:text-green-400 font-medium flex items-center gap-1">
+                  <p className="text-sm text-green-700 dark:text-green-400 font-medium flex items-center gap-1">
                     <CheckCircle className="h-4 w-4" />
                     Published to WordPress
                   </p>

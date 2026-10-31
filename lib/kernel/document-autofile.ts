@@ -344,7 +344,8 @@ export type DocClassifier = (input: ClassifierInput) => Promise<DocClassificatio
  * off-enum answer is rejected → null → the pure floor runs). Returns null on any failure
  * so production never blocks on the gateway. Token-spending; tests inject a stub instead.
  */
-export const realDocClassifier: DocClassifier = async (input) => {
+// internal helper — called in-file by runAutoFile
+const realDocClassifier: DocClassifier = async (input) => {
   try {
     const { gatewayChatJSON } = await import("@/lib/ai/gateway-chat")
     const enumList = DOC_CATEGORIES.join(", ")
@@ -469,17 +470,26 @@ export interface StorageMoverOutput {
 export type StorageMover = (input: StorageMoverInput) => Promise<StorageMoverOutput>
 
 /**
- * The REAL default mover — Supabase Storage move() within the bucket, then getPublicUrl() for
- * the destination. Honest: returns ok:false (never throws) so a storage hiccup never blocks the
- * row filing.
+ * The REAL default mover — Supabase Storage move() within the bucket, then a URL for the
+ * destination from the ONE issuer (lib/storage/document-buckets.ts). Honest: returns ok:false
+ * (never throws) so a storage hiccup never blocks the row filing.
+ *
+ * It used to call getPublicUrl(). DOCUMENT_BUCKET is `client-documents`, which has been
+ * public=false since it was created — so that call was already minting a URL that 403s and
+ * writing it onto the row as the document's new home. Signed, the URL both resolves and stays
+ * governed; a bucket that IS public-media still gets a public URL, because the issuer decides.
  */
-export function makeSupabaseStorageMover(supabase: Svc): StorageMover {
+// internal helper — called in-file by runAutoFile
+function makeSupabaseStorageMover(supabase: Svc): StorageMover {
   return async ({ bucket, fromPath, toPath }) => {
     try {
       const { error } = await (supabase as any).storage.from(bucket).move(fromPath, toPath)
       if (error) return { ok: false, error: error.message ?? String(error) }
-      const { data } = (supabase as any).storage.from(bucket).getPublicUrl(toPath)
-      return { ok: true, publicUrl: data?.publicUrl ?? null }
+      const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
+      const issued = await issueBucketObjectUrl(supabase as never, { bucket, objectPath: toPath })
+      // The MOVE succeeded either way; a URL we could not mint is reported as null
+      // rather than fabricated, exactly as fileStorageObject already tolerates.
+      return { ok: true, publicUrl: issued.ok ? issued.url : null }
     } catch (e: any) {
       return { ok: false, error: e?.message ?? String(e) }
     }
@@ -628,7 +638,7 @@ export async function runAutoFile(
 
   // 4. Below the floor → leave UNFILED + flag for a human (never misfile).
   if (!meetsFloor(confidence)) {
-    await supabase
+    const { error: needsReviewErr } = await supabase
       .from("client_documents")
       .update({
         ai_metadata: {
@@ -644,10 +654,11 @@ export async function runAutoFile(
         },
       })
       .eq("id", documentId)
+    if (needsReviewErr) console.error(`[document-autofile] needs-review flag NOT recorded on the document: ${needsReviewErr.message}`)
 
     let eventId: string | undefined
     if (row.brokerage_id) {
-      const { data: ev } = await supabase
+      const { data: ev, error: flagEventErr } = await supabase
         .from("lifecycle_events")
         .insert({
           brokerage_id: row.brokerage_id,
@@ -660,6 +671,7 @@ export async function runAutoFile(
         })
         .select("id")
         .maybeSingle()
+      if (flagEventErr) console.error(`[document-autofile] AUTOFILE_FLAGGED event NOT recorded: ${flagEventErr.message}`)
       eventId = (ev as { id?: string } | null)?.id
     }
 
@@ -733,12 +745,13 @@ export async function runAutoFile(
     update.document_url = storage.newPublicUrl
   }
 
-  await supabase.from("client_documents").update(update).eq("id", documentId)
+  const { error: fileErr } = await supabase.from("client_documents").update(update).eq("id", documentId)
+  if (fileErr) console.error(`[document-autofile] document filing (type/url) NOT recorded: ${fileErr.message}`)
 
   // RECORD the filing on the canonical lifecycle_events ledger.
   let eventId: string | undefined
   if (row.brokerage_id) {
-    const { data: ev } = await supabase
+    const { data: ev, error: filedEventErr } = await supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: row.brokerage_id,
@@ -764,6 +777,7 @@ export async function runAutoFile(
       })
       .select("id")
       .maybeSingle()
+    if (filedEventErr) console.error(`[document-autofile] AUTOFILE event NOT recorded: ${filedEventErr.message}`)
     eventId = (ev as { id?: string } | null)?.id
   }
 

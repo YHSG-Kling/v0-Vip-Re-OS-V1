@@ -7,9 +7,9 @@ import { triggerGhostRecovery, skipGhostContact, getGhostRecoveryQueue, type Gho
 
 const CHANNEL_ICON: Record<string, React.ReactNode> = {
   email:       <Mail className="h-3.5 w-3.5 text-blue-500" />,
-  sms:         <MessageSquare className="h-3.5 w-3.5 text-green-500" />,
+  sms:         <MessageSquare className="h-3.5 w-3.5 text-green-600" />,
   video:       <Video className="h-3.5 w-3.5 text-purple-500" />,
-  direct_mail: <FileText className="h-3.5 w-3.5 text-orange-500" />,
+  direct_mail: <FileText className="h-3.5 w-3.5 text-orange-600" />,
   phone:       <Phone className="h-3.5 w-3.5 text-gray-500" />,
 }
 

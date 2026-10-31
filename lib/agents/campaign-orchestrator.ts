@@ -160,8 +160,22 @@ export async function spawnCampaignOrchestratorForBrokerage(params: {
   })
   const snap = await buildOrchestrationSnapshot(params.brokerageId)
 
+  // THE PLAN STEP SELECTS, IT DOES NOT INVENT (wave 107, lane 107E): the tenant's ACTIVE strategies the
+  // orchestrator participates in, ranked (lib/kernel/strategy-engine.ts selectStrategies at BROKERAGE scope —
+  // eligibility is judged per subject when a strategy is activated; learned performance through the 107F
+  // seam). A refused read is said in the kickoff, never hidden.
+  const { selectStrategies } = await import("@/lib/kernel/strategy-engine")
+  const { strategyLabel } = await import("@/lib/kernel/strategy-library")
+  const selection = await selectStrategies({ brokerageId: params.brokerageId, manager: "campaign_orchestrator", facts: null })
+  const strategyLines = selection.readRefused
+    ? [`(active strategies unreadable: ${selection.readRefused} — compose from the snapshot only)`]
+    : selection.ranked.map((r) => `${r.rank}. ${strategyLabel(r.definition)} [${r.definition.key}]: ${r.definition.objective}; your steps: ${r.definition.steps.filter((s) => s.manager === "campaign_orchestrator").map((s) => `${s.purpose} (${s.capabilities.join(", ")}; playbooks ${s.playbooks.map((p) => p.key).join(", ") || "—"})`).join(" / ")}; cadence ${r.adaptation.timing.cadenceDays}d; budget $${r.adaptation.budget.usd}; ${r.performance ? `learned n=${r.performance.sample}` : `performance ${selection.learning}`}`)
+
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
+    "",
+    "──── ACTIVE STRATEGIES (compose WITHIN these — do not invent a new plan) ────",
+    ...(strategyLines.length ? strategyLines : ["(none activated — the broker activates strategies from the library on the Manager Trust page)"]),
     "",
     "──── ORCHESTRATION SNAPSHOT ────",
     `Sphere size (lifetime customers): ${snap.sphereSize}`,

@@ -2,7 +2,8 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
-import { engageContact } from './engage-contact'
+import { collectError } from '@/lib/errors/collect-error'
+import { engageContact, type ISAEngagementReason } from './engage-contact'
 
 /**
  * initiateAIISAContactEngagement
@@ -22,10 +23,30 @@ import { engageContact } from './engage-contact'
  *   1. UI/session-authed server actions (verify ctx.brokerageId matches the
  *      contact row's brokerage_id).
  *   2. Internal trusted callers (cron stale-contact-monitor — already auth'd
- *      via verifyCronAuth at the route layer — and ghost-reengagement which
- *      runs inside cron). CRON_SECRET must be set in env to permit this.
+ *      via verifyCronAuth at the route layer — ghost-reengagement which runs
+ *      inside cron, the manager tick and the no-show autopilot). Since lane 86E
+ *      they must PRESENT CRON_SECRET as opts.internalSecret; the env var being
+ *      set is no longer a credential (it was one any browser could satisfy).
+ *
+ * ── WHY `reason` IS A PARAMETER ─────────────────────────────────────────────
+ *
+ * It used to be the literal 'reactivation', hardcoded — and because EVERY
+ * production caller reaches engageContact through this wrapper, that one literal
+ * made two of the engine's six declared reasons unreachable from anywhere.
+ * engageContact branches on 'ghosted' twice (the 'ghost_recovery' call purpose
+ * handed to buildCallContext, and the situational voicemail's fresh hook), so
+ * those branches could not execute in production no matter what the detector
+ * found. The detector now reports 'stale' vs 'ghosted' per contact and the cron
+ * passes it through; the default stays 'reactivation' so every existing caller
+ * behaves exactly as before.
  */
-export async function initiateAIISAContactEngagement(contactId: string): Promise<{
+export async function initiateAIISAContactEngagement(
+  contactId: string,
+  reason: ISAEngagementReason = 'reactivation',
+  /** internalSecret — set ONLY by trusted in-process callers with no session (crons,
+   *  the kernel autopilots) — CRON_SECRET. See the AUTH GATE below (lane 86E). */
+  opts?: { internalSecret?: string },
+): Promise<{
   success: boolean
   emailSent?: boolean
   contactId?: string
@@ -34,12 +55,21 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
   error?: string
 }> {
   const supabase = createServiceClient()
+  // Hoisted so the catch can anchor the error row to a tenant. Every console that
+  // reads automation_errors filters on brokerage_id — an unanchored row is written
+  // and then invisible, which is the same outcome as not writing it.
+  let brokerageId: string | null = null
 
   try {
     // ── AUTH GATE ────────────────────────────────────────────────────────
+    // WAS: `!hasSession && !!process.env.CRON_SECRET` — the env var's PRESENCE was
+    // the credential, so on every real deploy an anonymous POST to this "use
+    // server" export (a public endpoint, §4) could fire outbound re-engagement at
+    // ANY contact id. The sessionless caller must now PRESENT the secret (lane 86E).
     const ctx = await getAgentContext()
     const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
-    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    const cronSecret = process.env.CRON_SECRET
+    const isTrustedInternal = !hasSession && !!cronSecret && !!opts?.internalSecret && opts.internalSecret === cronSecret
     if (!hasSession && !isTrustedInternal) {
       return { success: false, reason: 'Unauthorized' }
     }
@@ -60,6 +90,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     if (hasSession && ctx.brokerageId && contact.brokerage_id !== ctx.brokerageId) {
       return { success: false, reason: 'Forbidden' }
     }
+    brokerageId = (contact.brokerage_id as string) ?? null
     // Converted contacts have an assigned agent; nurture runs on the contact.
     if (!contact.agent_id) {
       return { success: false, reason: 'Contact not yet assigned to agent' }
@@ -69,7 +100,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     const result = await engageContact({
       contactId,
       brokerageId: contact.brokerage_id as string,
-      reason: 'reactivation',
+      reason,
       actorId: ctx.userId || undefined,
     })
 
@@ -85,17 +116,15 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     const message = error instanceof Error ? error.message : String(error)
     console.error('[initiateAIISAContactEngagement] Error:', message)
 
-    // automation_errors: no entity_type/entity_id columns — use context_json
-    await createServiceClient()
-      .from('automation_errors')
-      .insert({
-        workflow_name:  'ai_isa_contact_engagement',
-        error_message:  message,
-        context_json:   JSON.stringify({ contactId }),
-        severity:       'high',
-        status:         'new',
-      })
-      .then(() => void 0)
+    await collectError({
+      workflowName: 'ai_isa_contact_engagement',
+      errorMessage: message,
+      stack: error instanceof Error ? error.stack : undefined,
+      severity: 'high',
+      brokerageId: brokerageId ?? undefined,
+      context: { contactId },
+      client: supabase,
+    })
 
     return { success: false, error: message }
   }

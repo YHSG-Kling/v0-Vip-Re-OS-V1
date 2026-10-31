@@ -21,8 +21,12 @@ import { createClient } from "@/lib/supabase/client"
 
 interface OnboardingOperationsPanelProps {
   brokerageId: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stats?: any
+  /** From getAdminDashboardStats (app/actions/admin/get-admin-stats.ts) — the
+   *  caller already fetches this dashboard-wide; only newAgentsThisMonth is
+   *  read here (pendingOnboarding duplicates what `records.length` below
+   *  already counts live, so it stays unread on purpose). Hidden-wire census
+   *  category (c), 2026-09-10 wave 50: declared, passed, never read. */
+  stats?: { newAgentsThisMonth?: number }
 }
 
 interface OnboardingRecord {
@@ -35,7 +39,7 @@ interface OnboardingRecord {
   agentName?: string
 }
 
-export function OnboardingOperationsPanel({ brokerageId }: OnboardingOperationsPanelProps) {
+export function OnboardingOperationsPanel({ brokerageId, stats }: OnboardingOperationsPanelProps) {
   const [records, setRecords] = useState<OnboardingRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [reminderTarget, setReminderTarget] = useState<OnboardingRecord | null>(null)
@@ -62,7 +66,7 @@ export function OnboardingOperationsPanel({ brokerageId }: OnboardingOperationsP
           updated_at
         `)
         .eq("brokerage_id", brokerageId)
-        .in("status", ["pending", "in_progress"])
+        .in("status", ["in_progress"])
         .order("updated_at", { ascending: false })
         .limit(5)
 
@@ -135,9 +139,16 @@ export function OnboardingOperationsPanel({ brokerageId }: OnboardingOperationsP
               <UserPlus className="h-4 w-4 text-blue-600" />
               Onboarding Operations
             </CardTitle>
-            <Badge variant="outline" className="text-xs">
-              {records.length} Active
-            </Badge>
+            <div className="flex items-center gap-1.5">
+              {!!stats?.newAgentsThisMonth && (
+                <Badge variant="secondary" className="text-xs">
+                  +{stats.newAgentsThisMonth} this month
+                </Badge>
+              )}
+              <Badge variant="outline" className="text-xs">
+                {records.length} Active
+              </Badge>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="pt-0 space-y-3">
@@ -149,7 +160,7 @@ export function OnboardingOperationsPanel({ brokerageId }: OnboardingOperationsP
 
           {records.length === 0 ? (
             <div className="text-center py-6 text-muted-foreground">
-              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-600" />
               <p className="text-sm">No active onboarding</p>
             </div>
           ) : (

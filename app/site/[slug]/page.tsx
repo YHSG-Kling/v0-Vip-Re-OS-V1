@@ -18,12 +18,17 @@
  * Server-rendered with Organization/RealEstateAgent JSON-LD; indexed by the
  * sitemap + llms.txt so search AND AI search can read the whole storefront.
  */
-import { notFound } from "next/navigation"
+import { notFound, permanentRedirect } from "next/navigation"
 import Link from "next/link"
 import { createServiceClient } from "@/lib/supabase/service"
 import { siteUrl } from "@/lib/platform/site-url"
+import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 import { serializeJsonLd } from "@/lib/geo/video-landing"
 import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
+import { pickSiteHeroVideo } from "@/lib/video/public-video"
+import { tenantLandingPagePath, tenantWebsitePath } from "@/lib/kernel/tenant-creation"
+import { resolveArchivedSiteSuccessor } from "@/lib/tenant-site/successor"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 300
@@ -33,9 +38,17 @@ interface PageProps { params: Promise<{ slug: string }> }
 async function loadSite(slug: string) {
   const svc = createServiceClient()
   const { data: b } = await svc.from("brokerages")
-    .select("id, name, slug, logo_url, primary_color, about_text, bio_text, phone, email, website, license_number, license_state, city, state, recruiting_pitch, widget_enabled")
+    .select("id, name, slug, logo_url, primary_color, about_text, bio_text, phone, email, website, license_number, license_state, city, state, recruiting_pitch, widget_enabled, status")
     .eq("slug", slug).is("deleted_at", null).maybeSingle()
   if (!b) return null
+  // AN ARCHIVED WORKSPACE HAS NO STOREFRONT OF ITS OWN (wave 143G): an independent subscriber adopted by a brokerage is
+  // archived (lib/kernel/brokerage-transfer.ts) and its website content moved — the old URL forwards to the adopting
+  // brokerage's site (lib/tenant-site/successor.ts); with no completed transfer it is a 404. Never a hollow page whose
+  // chat and forms file new leads under a tenant nobody reads.
+  if ((b as { status?: string | null }).status === "archived") {
+    const successor = await resolveArchivedSiteSuccessor(svc, (b as { id: string }).id)
+    return { archived: true as const, successorSlug: successor.ok ? successor.successor.slug : null }
+  }
   const { data: identity } = await svc.from("ai_identity_profiles")
     .select("assistant_name").eq("scope_id", b.id).eq("scope_type", "brokerage").maybeSingle()
   const todayIso = new Date().toISOString().slice(0, 10)
@@ -56,21 +69,36 @@ async function loadSite(slug: string) {
       .select("slug, name, magnet_type")
       .eq("brokerage_id", (b as any).id).eq("is_active", true)
       .order("submission_count", { ascending: false }).limit(4),
+    // C12 (wave 147, lane 147F — ruling 8): the UPCOMING OPEN HOUSES block had no status and no archive filter, so a
+    // withdrawn or ARCHIVED listing with a future open-house date was advertised on the public site. Now the shared public
+    // predicate + the archive filter, like every public reader.
     svc.from("listings")
       .select("slug, address, city, list_price, open_house_event_date, primary_photo_url")
       .eq("brokerage_id", (b as any).id)
+      .in("status", publiclyVisibleListingStatuses())
+      .is("deleted_at", null)
       .gte("open_house_event_date", todayIso)
       .order("open_house_event_date", { ascending: true }).limit(6),
   ])
   const magnetRows = (magnets ?? []) as any[]
   const valuationMagnet = magnetRows.find((m) => String(m.magnet_type ?? "").toLowerCase().includes("valuation") || String(m.magnet_type ?? "").toLowerCase().includes("home_value")) ?? null
-  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet }
+  // D-ID Express v4 live agent AS AN OPTION on the public website (owner
+  // ruling, wave 58) — resolves an active, tenant-configured embed rather
+  // than fabricating one; null falls back to text-only unchanged.
+  const { resolveSiteLiveAgentEmbed } = await import("@/lib/embed/resolve-site-embed")
+  const liveEmbed = await resolveSiteLiveAgentEmbed(svc, { brokerageId: b.id }).catch(() => null)
+  // THE SITE'S VIDEO (wave 142, lane 142F; owner: "a landing page should include some type of
+  // video"): the newest PUBLISHED public-marketing reel (lib/video/public-video.ts — the /v/[slug]
+  // rail's own published rows, re-classified so a client video never reaches the storefront).
+  // Null = no slot rendered: a tenant with no approved public reel gets no empty box.
+  const heroVideo = await pickSiteHeroVideo(svc, b.id).catch(() => null)
+  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet, livePublicId: liveEmbed?.publicId ?? null, heroVideo }
 }
 
 export async function generateMetadata({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
-  if (!data) return { title: "Real Estate" }
+  if (!data || "archived" in data) return { title: "Real Estate", robots: { index: false, follow: false } }
   const desc = (data.b.about_text ?? data.b.bio_text ?? `${data.b.name} — real estate.`).slice(0, 160)
   return {
     title: data.b.name,
@@ -85,7 +113,11 @@ export default async function TenantSitePage({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
   if (!data) notFound()
-  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet } = data as any
+  if ("archived" in data) {
+    if (data.successorSlug) permanentRedirect(tenantWebsitePath(data.successorSlug))
+    notFound()
+  }
+  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet, livePublicId, heroVideo } = data as any
   const primary = /^#[0-9a-fA-F]{6}$/.test(b.primary_color ?? "") ? (b.primary_color as string) : "#0F172A"
   const base = siteUrl()
   const pageUrl = `${base}/site/${b.slug}`
@@ -127,6 +159,30 @@ export default async function TenantSitePage({ params }: PageProps) {
           </div>
         </div>
       </header>
+
+      {/* VIDEO — the brokerage's newest approved public reel (wave 142, lane 142F). Rendered only
+          when one exists; the player falls back to its poster / a link that still plays: the
+          YouTube copy when the reel is on the channel (the write-back's reader), else the reel's
+          own page. */}
+      {heroVideo && (
+        <section className="container mx-auto px-6 py-12" aria-label="Featured video">
+          <div className="mx-auto max-w-3xl">
+            <LandingVideo
+              src={heroVideo.videoUrl}
+              poster={heroVideo.thumbnailUrl}
+              title={heroVideo.title}
+              fallbackHref={heroVideo.youtubeUrl ?? `/v/${heroVideo.slug}`}
+              className="w-full aspect-video rounded-xl border bg-black shadow-sm"
+            />
+            <p className="mt-3 text-sm text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1">
+              <Link href={`/v/${heroVideo.slug}`} className="hover:underline" style={{ color: primary }}>{heroVideo.title} →</Link>
+              {heroVideo.youtubeUrl && (
+                <a href={heroVideo.youtubeUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">Watch on YouTube</a>
+              )}
+            </p>
+          </div>
+        </section>
+      )}
 
       {/* FEATURED LISTINGS — live inventory, each a lead-capture page */}
       {listings.length > 0 && (
@@ -183,7 +239,7 @@ export default async function TenantSitePage({ params }: PageProps) {
                 <h2 className="text-2xl font-bold">What's your home worth?</h2>
                 <p className="mt-2 text-muted-foreground">A real answer for your exact address — not a generic estimate.</p>
                 <a
-                  href={valuationMagnet ? `/lm/${valuationMagnet.slug}` : (magnets[0] ? `/lm/${magnets[0].slug}` : "#contact")}
+                  href={valuationMagnet ? tenantLandingPagePath(b.slug, valuationMagnet.slug) : (magnets[0] ? tenantLandingPagePath(b.slug, magnets[0].slug) : "#contact")}
                   className="mt-4 inline-flex rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground"
                 >
                   Get my home evaluation
@@ -195,7 +251,7 @@ export default async function TenantSitePage({ params }: PageProps) {
                   <ul className="mt-3 space-y-2">
                     {magnets.map((m: any) => (
                       <li key={m.slug}>
-                        <a href={`/lm/${m.slug}`} className="text-sm text-primary hover:underline">{m.name} →</a>
+                        <a href={tenantLandingPagePath(b.slug, m.slug)} className="text-sm text-primary hover:underline">{m.name} →</a>
                       </li>
                     ))}
                   </ul>
@@ -253,7 +309,7 @@ export default async function TenantSitePage({ params }: PageProps) {
       {/* LIVE AI — the site ANSWERS questions (the tenant's own assistant,
           same inventory-aware gated chat that answers their phone) */}
       {b.widget_enabled !== false && (
-        <SiteChatLauncher brokerageSlug={b.slug} accentColor={primary} assistantLabel={assistantName} />
+        <SiteChatLauncher brokerageSlug={b.slug} accentColor={primary} assistantLabel={assistantName} livePublicId={livePublicId} />
       )}
 
       {/* COMPLIANCE FOOTER */}
@@ -270,6 +326,12 @@ export default async function TenantSitePage({ params }: PageProps) {
           <div>
             <Link href="/privacy/request" className="underline underline-offset-2 hover:text-foreground">
               Privacy request (CCPA / GDPR)
+            </Link>
+          </div>
+          {/* The platform software's DISPLAYED rights notice (wave 144 — owner ruling 18; lane 144H Outside-lane 5). */}
+          <div>
+            <Link href="/legal" className="underline underline-offset-2 hover:text-foreground">
+              Site software: copyright and licensing notice
             </Link>
           </div>
         </div>

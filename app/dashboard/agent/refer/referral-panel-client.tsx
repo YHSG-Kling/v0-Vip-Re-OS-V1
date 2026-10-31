@@ -11,6 +11,7 @@ import { toast } from "sonner"
 import {
   Copy, Check, Share2, Mail, MessageSquare, Sparkles, Users, ArrowRight,
 } from "lucide-react"
+import { agoShort } from "@/lib/format/dates"
 
 interface Referral {
   id:          string
@@ -39,12 +40,8 @@ const STATUS_LABELS: Record<string, { label: string; tone: "default" | "secondar
   declined:        { label: "Declined",         tone: "outline"   },
 }
 
-const relative = (iso: string) => {
-  const diff = Date.now() - new Date(iso).getTime()
-  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`
-  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`
-  return `${Math.round(diff / 86_400_000)}d ago`
-}
+// `relative` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoShort` (imported above).
 
 export function ReferralPanelClient({
   firstName, brokerageName, brokeragePitch, referralUrl, referrals,
@@ -174,7 +171,7 @@ export function ReferralPanelClient({
                   <div key={r.id} className="flex items-center justify-between gap-3 p-3 rounded-md border">
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">{r.firstName} {r.lastName}</p>
-                      <p className="text-xs text-muted-foreground truncate">{r.email ?? "—"} · {relative(r.createdAt)}</p>
+                      <p className="text-xs text-muted-foreground truncate">{r.email ?? "—"} · {agoShort(r.createdAt)}</p>
                     </div>
                     <Badge variant={meta.tone}>{meta.label}</Badge>
                   </div>

@@ -24,11 +24,14 @@ import {
   getVoiceAssistantExpandedRoles,
 } from "@/lib/brokerage/get-brokerage-settings"
 
-const PRINCIPAL_VOICE_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+// SCOPE LADDER (kept inline — the expansion setting hands other tiers surface
+// access): 'superadmin' removed from both sets — dead as users.user_type
+// (0 live rows); platform staff are admitted via isPlatformStaffIdentity below.
+const PRINCIPAL_VOICE_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 // Management seats that may change the expansion setting — mirrors the
 // requireBrokerAdmin idiom of lib/kernel/global-settings.
-const MANAGEMENT_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+const MANAGEMENT_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 /**
  * Does the CURRENT user get the voice assistant surface (mic FAB + overlay)?

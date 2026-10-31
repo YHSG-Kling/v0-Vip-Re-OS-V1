@@ -26,19 +26,21 @@
  * cleanly with 1-3.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
-import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
+import { ContextCueRow, PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
+import { brollMountWindows } from "../lib/video/body-visual-model"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
+
+/** Clearance the presenter ring keeps above the highlight-chip row (the chips' own
+ *  height — value 36 + label 14 + 6 + 32 padding ≈ 92 px — plus a body-step gap). */
+const CHIP_ROW_CLEARANCE = 116
 
 export interface NeighborhoodHighlight {
   /** Short label — "Median price", "Walk score". 1-3 words. */
@@ -93,10 +95,13 @@ export interface NeighborhoodSpotlightReelProps {
 }
 
 const FPS    = 30
-const COVER  = 3  * FPS
-const BODY   = 11 * FPS
-const CTA    = 2  * FPS
-const TOTAL  = COVER + BODY + CTA  // 480 frames = 16s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = 11 * FPS` stood here. Bookends come from the ONE registry; the body
+// is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("NeighborhoodSpotlightReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps> = ({
   neighborhood, tagline, highlights, brollClips, ctaLabel,
@@ -108,6 +113,18 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
   const finalCta = ctaLabel ?? "Want a private tour?"
   const cues     = contextCues ?? []
   const overlay  = `${brand.primaryColor}A6`  // ~65% alpha — clips still readable
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
+  // WAVE 90 (lane 90E — the lane's real render): the highlight chips sat 56 px
+  // from the bottom edge (under the platform UI AND under the burned-in caption
+  // band), the presenter ring at a typed 160 px (across the caption band), the
+  // cue row 24 px from the top. The chips row now sits in the badge slot above
+  // the caption band (cinemaBadgeSlot — the same rule the QR badge and the EHO
+  // pill follow), the ring above the chips, the cue row on the safe top inset
+  // and the tagline below it.
+  const badge    = cinemaBadgeSlot(width, height)
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
 
   return (
     <AbsoluteFill style={{
@@ -116,12 +133,14 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
     }}>
       {voiceoverUrl && <Audio src={voiceoverUrl} />}
 
-      {/* B-roll layer — plays under the entire reel when supplied.
-          When no clips are passed, the layer returns null and the
-          brand background carries through. */}
-      {brollClips.length > 0 && (
-        <BrollLayer clips={brollClips} totalFrames={TOTAL} overlayColor={overlay} loop />
-      )}
+      {/* B-roll layer — plays under the cover and the body when supplied (the montage IS the
+          format: verdict "needed"). When no clips are passed, the layer returns null and the
+          brand background carries through.
+          WAVE 92 (lane 92E): it ran the WHOLE film (totalFrames = durationInFrames), decoding
+          footage under the opaque CTA end card that carries the disclosure and the QR. It now
+          mounts through the ONE windowed mount (brollMountWindows), cover + body, never the end card. */}
+      <PlannedBrollLayer clips={brollClips} windows={brollMountWindows(null, { within: { from: 0, durationInFrames: COVER + BODY }, fallback: "within" })}
+        overlayColor={overlay} loop filmGrain handheldDrift />
 
       {/* COVER — 0-3s. Neighborhood name + tagline. */}
       <Sequence from={0} durationInFrames={COVER}>
@@ -130,22 +149,22 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 5, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             Neighborhood spotlight
           </div>
           <div style={{
             fontSize: 96, fontWeight: 900, color: "#fff", lineHeight: 0.98,
-            opacity: interpolate(frame, [12, 32], [0, 1]),
+            opacity: interpolate(frame, [12, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             textShadow: "0 4px 24px rgba(0,0,0,0.45)",
           }}>
             {neighborhood}
@@ -157,14 +176,14 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
       <Sequence from={COVER} durationInFrames={BODY}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", justifyContent: "space-between",
-          padding: 56,
+          padding: `${safe.top + 52}px ${safe.right}px ${badge.bottom}px ${safe.left}px`,
         }}>
           {/* Top tagline */}
           <div style={{
             fontSize: 44, fontWeight: 700, color: "#fff", lineHeight: 1.2,
             textAlign: "center", maxWidth: 880, marginLeft: "auto", marginRight: "auto",
             textShadow: "0 4px 16px rgba(0,0,0,0.45)",
-            opacity: interpolate(frame, [6, 24], [0, 1]),
+            opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {tagline}
           </div>
@@ -172,16 +191,29 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           {/* Optional agent PIP — small, bottom-left */}
           {(avatarVideoUrl || agentPhotoUrl) && (
             <div style={{
-              position: "absolute", bottom: 160, left: 40,
+              position: "absolute", bottom: badge.bottom + CHIP_ROW_CLEARANCE, left: safe.left,
               width: 180, height: 180, borderRadius: 90,
               boxShadow: `0 0 0 4px ${brand.accentColor}`,
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
-                <Video src={avatarVideoUrl} startFrom={COVER} endAt={COVER + BODY}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER}> has already offset this child's clock —
+                // so trimBefore={COVER} here skipped the clip's first 3s TWICE.
+                // The D-ID pipeline's clips start speaking at source frame 0
+                // (the convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0} trimAfter={BODY}); no producer authors a
+                // full-reel-spanning avatar mp4 for this composition
+                // (remotion_compositions.requires_did_avatar=false, and every
+                // producer stages avatarVideoUrl:null). MarketUpdateReel /
+                // ExplainerAnimReel legitimately differ: they slice ONE
+                // continuous narration track across consecutive sequences by
+                // absolute frame ranges, which is why their PIPs trim by
+                // startFrame/endFrame and this one must not.
+                <Video src={avatarVideoUrl} objectFit="cover" trimBefore={0} trimAfter={BODY}
+                  style={{ width: "100%", height: "100%" }} />
               ) : (
-                <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <SafeImg src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               )}
             </div>
           )}
@@ -194,7 +226,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
                 padding: "16px 24px", borderRadius: 8,
                 backgroundColor: "rgba(0,0,0,0.65)",
                 color: "#fff", minWidth: 180,
-                opacity: interpolate(frame, [40 + i * 8, 60 + i * 8], [0, 1]),
+                opacity: interpolate(frame, [40 + i * 8, 60 + i * 8], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
               }}>
                 <div style={{ fontSize: 36, fontWeight: 900, color: brand.accentColor, lineHeight: 1 }}>
                   {h.value}
@@ -225,10 +257,9 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           {agentPhone && (
             <div style={{ fontSize: 24, color: "#fff", opacity: 0.85, marginTop: 12 }}>{agentPhone}</div>
           )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>
@@ -242,11 +273,13 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + BODY} />
     </AbsoluteFill>
   )
 }

@@ -2,10 +2,10 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TeamMembersClient } from "./members-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
-const MANAGER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead", "team_manager"])
 
 /**
  * Team Members & Splits — the management surface for the team_members write path. A broker/admin/
@@ -18,7 +18,7 @@ export default async function TeamMembersPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id || !MANAGER_ROLES.has(u.user_type ?? "")) redirect("/dashboard/team")
+  if (!u?.brokerage_id || !isAdminOrBroker({ user_type: u.user_type ?? "" })) redirect("/dashboard/team")
 
   const svc = createServiceClient()
   const [{ data: teams }, { data: agents }] = await Promise.all([

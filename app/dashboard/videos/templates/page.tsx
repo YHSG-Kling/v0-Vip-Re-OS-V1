@@ -5,6 +5,7 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Video Templates | Dashboard",
@@ -37,8 +38,8 @@ export default async function VideoTemplatesPage() {
     t.agent_id === agentRow?.id
   )
 
-  const canCreateBrokerageTemplate = ["broker", "admin", "superadmin"].includes(userData?.user_type ?? "")
-  const canCreateTeamTemplate = ["team_lead", "broker", "admin", "superadmin"].includes(userData?.user_type ?? "")
+  const canCreateBrokerageTemplate = isAdminOrBroker({ user_type: userData?.user_type ?? "" })
+  const canCreateTeamTemplate = isAdminOrBroker({ user_type: userData?.user_type ?? "" })
 
   return (
     <div className="container mx-auto py-8 space-y-6">
@@ -80,7 +81,7 @@ export default async function VideoTemplatesPage() {
                 <Button asChild size="sm" className="flex-1">
                   <Link href={`/dashboard/videos/create?template_id=${template.id}`}>Use</Link>
                 </Button>
-                {(template.agent_id === agentRow?.id || ["broker","admin","superadmin"].includes(userData?.user_type ?? "")) && (
+                {(template.agent_id === agentRow?.id || isAdminOrBroker({ user_type: userData?.user_type ?? "" })) && (
                   <Button asChild size="sm" variant="outline">
                     <Link href={`/dashboard/videos/templates/${template.id}/edit`}>Edit</Link>
                   </Button>

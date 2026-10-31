@@ -72,9 +72,9 @@ export function ComplianceCommandStrip({
 
   const urgencyBadgeStyles = {
     critical: "bg-destructive text-destructive-foreground",
-    high: "bg-orange-500 text-white",
+    high: "bg-orange-700 text-white",
     medium: "bg-yellow-500 text-yellow-950",
-    low: "bg-green-500 text-white",
+    low: "bg-green-700 text-white",
   }
 
   const Icon = priority.icon
@@ -85,7 +85,7 @@ export function ComplianceCommandStrip({
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className={`rounded-full p-3 ${priority.urgency === "critical" ? "bg-destructive/10" : priority.urgency === "high" ? "bg-orange-500/10" : priority.urgency === "medium" ? "bg-yellow-500/10" : "bg-green-500/10"}`}>
-              <Icon className={`h-6 w-6 ${priority.urgency === "critical" ? "text-destructive" : priority.urgency === "high" ? "text-orange-500" : priority.urgency === "medium" ? "text-yellow-600" : "text-green-500"}`} />
+              <Icon className={`h-6 w-6 ${priority.urgency === "critical" ? "text-destructive" : priority.urgency === "high" ? "text-orange-600" : priority.urgency === "medium" ? "text-yellow-700" : "text-green-600"}`} />
             </div>
             <div className="space-y-1">
               <div className="flex items-center gap-2">

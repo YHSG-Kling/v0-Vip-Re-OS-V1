@@ -46,6 +46,8 @@ export const socialPostAdapter: ChannelAdapter = {
           style: "vivid",
           size,
           quality: "standard",
+          // One charge per enrollment step — a retried step books nothing more (wave 139, 139C).
+          spend: { brokerageId, userId: agentUserId, feature: "workflow_social_post_image", manager: "campaign_orchestrator", idempotencyKey: `workflow_image:${ctx.enrollmentId}:${step.id}` },
         })
         imageUrl = img.imageUrl
       } catch { /* best-effort */ }

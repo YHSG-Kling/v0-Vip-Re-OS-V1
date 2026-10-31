@@ -37,7 +37,6 @@ import {
   generateSourceAISummaryForSource,
   getSourceDrilldown,
   type SourceFamily,
-  type SourceMetrics,
   type SourceDrilldownResult,
 } from "@/app/actions/source-analytics"
 
@@ -46,15 +45,15 @@ interface Props {
   sourceName: string
   sourceFamily: SourceFamily
   brokerageId: string
-  userId: string
-  userType: string
+  /** Lane 90A: the server-resolved scope (null = brokerage-wide) — the client never re-derives it from a role. */
+  scopeAgentIds: string[] | null
   initialData: SourceDrilldownResult
 }
 
 const FAMILY_INFO: Record<SourceFamily, { label: string; color: string; icon: typeof Database; funnelStages: string[] }> = {
   raw:            {
     label: "Raw / Acquisition",
-    color: "text-orange-600",
+    color: "text-orange-700",
     icon: Database,
     funnelStages: ["Raw Record", "Lead", "Contact", "Appointment", "Transaction", "Closed"],
   },
@@ -66,7 +65,7 @@ const FAMILY_INFO: Record<SourceFamily, { label: string; color: string; icon: ty
   },
   contact_direct: {
     label: "Direct Contact",
-    color: "text-emerald-600",
+    color: "text-emerald-700",
     icon: Globe,
     funnelStages: ["Contact", "Appointment", "Transaction", "Closed"],
   },
@@ -120,12 +119,12 @@ function TimelineChart({ data }: { data: Array<{ month: string; contacts: number
             {d.transactions > 0 && (
               <div className="flex items-center gap-1">
                 <div className="h-1.5 bg-emerald-400 rounded-full" style={{ width: `${Math.min((d.transactions / maxContacts) * 100 * 10, 100)}%`, minWidth: "4px" }} />
-                <span className="text-xs text-emerald-600">{d.transactions}tx</span>
+                <span className="text-xs text-emerald-700">{d.transactions}tx</span>
               </div>
             )}
           </div>
           {d.revenue > 0 && (
-            <span className="text-xs text-emerald-600 w-16 text-right">
+            <span className="text-xs text-emerald-700 w-16 text-right">
               ${(d.revenue / 1000).toFixed(0)}k
             </span>
           )}
@@ -136,7 +135,7 @@ function TimelineChart({ data }: { data: Array<{ month: string; contacts: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, userId, userType, initialData }: Props) {
+export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, scopeAgentIds, initialData }: Props) {
   const [data, setData] = useState<SourceDrilldownResult>(initialData)
   const [isRefreshing, startRefresh] = useTransition()
   const [isAILoading, startAILoading] = useTransition()
@@ -146,18 +145,16 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
   const info = FAMILY_INFO[sourceFamily]
   const s = data.source
 
-  const isBrokerOrAdmin = userType === "broker" || userType === "admin" || userType === "superadmin"
-
   const handleRefresh = useCallback(() => {
     startRefresh(async () => {
       const result = await getSourceDrilldown(
         brokerageId,
         `${sourceName}::${sourceFamily}`,
-        isBrokerOrAdmin ? undefined : userId,
+        scopeAgentIds,
       )
       setData(result)
     })
-  }, [brokerageId, sourceName, sourceFamily, userId, isBrokerOrAdmin])
+  }, [brokerageId, sourceName, sourceFamily, scopeAgentIds])
 
   const handleGenerateAI = useCallback(() => {
     if (!s) return
@@ -240,17 +237,17 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
       {/* Summary Metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         {sourceFamily === "raw" && (
-          <StatCard label="Raw Records" value={s.raw_record_count.toLocaleString()} icon={Database} color="text-orange-600" />
+          <StatCard label="Raw Records" value={s.raw_record_count.toLocaleString()} icon={Database} color="text-orange-700" />
         )}
         {sourceFamily !== "contact_direct" && (
           <StatCard label="Leads" value={s.lead_count.toLocaleString()} icon={Zap} color="text-blue-600" />
         )}
         <StatCard label="Contacts" value={s.contact_count.toLocaleString()} icon={Users} color="text-indigo-600" />
         <StatCard label="Appointments" value={s.appointment_count.toLocaleString()} icon={Calendar} color="text-purple-600" />
-        <StatCard label="Transactions" value={s.transaction_count.toLocaleString()} icon={Target} color="text-amber-600" />
-        <StatCard label="Closed" value={s.closed_count.toLocaleString()} icon={UserCheck} color="text-emerald-600" />
-        <StatCard label="Revenue" value={`$${(s.revenue_attributed / 1000).toFixed(0)}k`} icon={DollarSign} color="text-emerald-600" />
-        <StatCard label="ROI" value={s.roi_multiple > 0 ? `${s.roi_multiple}x` : "—"} icon={TrendingUp} color="text-emerald-600" />
+        <StatCard label="Transactions" value={s.transaction_count.toLocaleString()} icon={Target} color="text-amber-700" />
+        <StatCard label="Closed" value={s.closed_count.toLocaleString()} icon={UserCheck} color="text-emerald-700" />
+        <StatCard label="Revenue" value={`$${(s.revenue_attributed / 1000).toFixed(0)}k`} icon={DollarSign} color="text-emerald-700" />
+        <StatCard label="ROI" value={s.roi_multiple > 0 ? `${s.roi_multiple}x` : "—"} icon={TrendingUp} color="text-emerald-700" />
         <StatCard label="Close Rate" value={`${s.close_rate}%`} icon={BarChart3} color="text-primary" />
         <StatCard label="Cost/Contact" value={s.cost_per_contact > 0 ? `$${s.cost_per_contact.toFixed(0)}` : "—"} icon={Clock} color="text-muted-foreground" />
       </div>
@@ -381,7 +378,12 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
                             {new Date(l.created_at).toLocaleDateString()}
                           </TableCell>
                           <TableCell>
-                            <Link href={`/dashboard/leads/${l.id}`}>
+                            {/* The lead detail route is app/leads/[leadId] — this
+                                linked to /dashboard/leads/, which has never existed,
+                                so every View button here 404'd. Invisible to the
+                                dangling-link sweep because the href is a template
+                                literal (recorded as a sweep blind spot, 2026-09-02). */}
+                            <Link href={`/leads/${l.id}`}>
                               <Button size="sm" variant="ghost" className="h-7 px-2 text-xs">View</Button>
                             </Link>
                           </TableCell>
@@ -424,7 +426,7 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
                           {t.purchase_price ? `$${(t.purchase_price / 1000).toFixed(0)}k` : "—"}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className={`text-xs ${t.status === "closed" ? "text-emerald-600 border-emerald-500" : ""}`}>
+                          <Badge variant="outline" className={`text-xs ${t.status === "closed" ? "text-emerald-700 border-emerald-500" : ""}`}>
                             {t.status}
                           </Badge>
                         </TableCell>
@@ -471,7 +473,7 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
                         <TableCell className="font-medium">{a.agent_name}</TableCell>
                         <TableCell>{a.contact_count}</TableCell>
                         <TableCell>{a.transaction_count}</TableCell>
-                        <TableCell className="text-emerald-600">
+                        <TableCell className="text-emerald-700">
                           {a.revenue > 0 ? `$${(a.revenue / 1000).toFixed(0)}k` : "—"}
                         </TableCell>
                       </TableRow>

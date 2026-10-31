@@ -16,26 +16,21 @@
  * brokerage per cycle in the worst case — well below the per-cycle
  * vendor budget ceiling.
  *
- * Auth: CRON_SECRET dual-scheme (Bearer header OR ?secret= query).
+ * Auth: verifyCronAuth (lib/cron-auth.ts) — Bearer CRON_SECRET, fail closed
+ * when unset; the old ?secret= query credential is retired (lane 88E).
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { renderLetterAudio } from "@/lib/direct-mail/render-letter-audio"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   if (!process.env.ELEVENLABS_API_KEY) {
     return NextResponse.json({ ran_at: new Date().toISOString(), skipped: "ELEVENLABS_API_KEY not configured" })

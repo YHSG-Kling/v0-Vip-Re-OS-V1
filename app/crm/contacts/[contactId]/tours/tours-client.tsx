@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TourPlanTab }    from './components/tour-plan-tab'
@@ -65,6 +65,17 @@ export function ToursClient({
   const router   = useRouter()
   const [tab, setTab]     = useState<string>(defaultTab)
   const [tours, setTours] = useState<Tour[]>(initialTours)
+
+  // `useState(initialTours)` only seeds the FIRST render — router.refresh()
+  // (handleTourCreated / the onRefresh callbacks below) re-fetches the server
+  // page and hands this component a NEW `initialTours` prop, but React does
+  // not re-run useState's initializer on a prop change, so `tours` was frozen
+  // at whatever the page held on mount (unread-state-census: setTours was
+  // never called). Every tab downstream read the stale list after every
+  // create/confirm/cancel.
+  useEffect(() => {
+    setTours(initialTours)
+  }, [initialTours])
 
   const buyerName = `${contact.first_name} ${contact.last_name}`
 

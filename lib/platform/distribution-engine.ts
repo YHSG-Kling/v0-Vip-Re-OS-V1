@@ -27,6 +27,7 @@
  * (un-park) and AI ISA engagement begins off the distributed_at stamp.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isPhoneOnSuppressionList, isEmailOnSuppressionList } from "./suppression-list"
 
@@ -56,6 +57,10 @@ interface LeadDistributionRow {
   motivation_type: string | null
   urgency_level: string | null
   raw_record_id: string | null
+  /** Identity fields — read only so the person can be RE-HOMED under the receiving tenant (R1). */
+  first_name: string | null
+  last_name: string | null
+  phone: string | null
 }
 
 /**
@@ -73,7 +78,7 @@ export async function distributePlatformLead(params: {
     .from("leads")
     .select(
       "id, source_origin, property_zip_code, mailing_zip, zip_code, brokerage_id, distribution_brokerage_id, " +
-        "phone_digits, email, source_family, motivation_type, urgency_level, raw_record_id"
+        "phone_digits, email, source_family, motivation_type, urgency_level, raw_record_id, first_name, last_name, phone"
     )
     .eq("id", leadId)
     .single()
@@ -165,7 +170,7 @@ export async function distributePlatformLead(params: {
     return { success: false, reason: `Lead distribution write failed: ${updateErr.message}` }
   }
 
-  await supabase.from("platform_lead_distributions").insert({
+  await sentinelWrite(supabase, supabase.from("platform_lead_distributions").insert({
     zip_code: zip,
     brokerage_id: targetBrokerageId,
     lead_id: leadId,
@@ -175,21 +180,130 @@ export async function distributePlatformLead(params: {
     source_family: lead.source_family,
     motivation_type: lead.motivation_type,
     urgency_level: lead.urgency_level,
-  })
+  }), { table: "platform_lead_distributions", flow: "platform_lead_distributions_write", reason: "distribution audit row after the lead distribution write landed (checked above)" })
 
   // 9. Stamp the raw record too so downstream visibility is consistent
   if (lead.raw_record_id) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("raw_scraped_leads")
       .update({ brokerage_id: targetBrokerageId, updated_at: nowIso })
-      .eq("id", lead.raw_record_id)
+      .eq("id", lead.raw_record_id), { table: "raw_scraped_leads", flow: "platform_lead_distribution_raw_stamp", brokerageId: targetBrokerageId, reason: "visibility mirror of the lead's distribution (the lead row, checked above, is the record)" })
   }
+
+  // 10. PERSON RE-HOME (R1, wave 102.1, lane 102E). The pipeline resolved this lead's person under
+  //     the MARKET-OWNER tenant (effectiveBrokerageId) while the lead was parked. Now that it belongs
+  //     to a subscriber, the person is resolved UNDER THE RECEIVING BROKERAGE and the lead (and its
+  //     raw row, stamped above) linked there — tenant isolation over a global person index: nothing
+  //     crosses tenants, the market-owner row stays its own evidence, and no id from it is copied.
+  //     dedup_match (the verdict "this lead is this person, placed here at distribution") at 1.0;
+  //     no chokepoint event exists here, so the one person.identity_linked event is emitted.
+  //     Best-effort: the distribution write landed above and is never un-reported.
+  await rehomePersonUnderReceivingBrokerage(supabase, lead, targetBrokerageId, rotationPosition)
 
   return {
     success: true,
     brokerageId: targetBrokerageId,
     rotationPosition,
     reason: `distributed_to_${targetBrokerageId}_position_${rotationPosition}`,
+  }
+}
+
+async function rehomePersonUnderReceivingBrokerage(
+  supabase: ReturnType<typeof createServiceClient>,
+  lead: LeadDistributionRow,
+  targetBrokerageId: string,
+  rotationPosition: number,
+): Promise<void> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const person = await resolvePerson(supabase, {
+      brokerageId: targetBrokerageId,
+      firstName: lead.first_name, lastName: lead.last_name, email: lead.email, phone: lead.phone ?? lead.phone_digits,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn(`[distribution-engine] person not re-homed under ${targetBrokerageId}: ${person.reason}`)
+      return
+    }
+    const common = {
+      brokerageId: targetBrokerageId, personId: person.personId, source: "platform_distribution",
+      actor: { type: "system" as const, userId: null }, identity: person.identity,
+      matchMethod: "dedup_match" as const, matchScore: 1,
+    }
+    const links = [
+      linkPersonEvidence(supabase, { ...common, entityType: "lead", entityId: lead.id, detail: { stage: "distribution", distribution_brokerage_id: targetBrokerageId, rotation_position: rotationPosition, raw_record_id: lead.raw_record_id } }),
+      ...(lead.raw_record_id ? [linkPersonEvidence(supabase, { ...common, entityType: "raw_scraped_lead", entityId: lead.raw_record_id, detail: { stage: "distribution", distribution_brokerage_id: targetBrokerageId, lead_id: lead.id } })] : []),
+    ]
+    for (const r of await Promise.all(links)) if (!r.ok) console.warn(`[distribution-engine] person evidence not recorded at distribution: ${r.reason}`)
+  } catch (err) {
+    console.warn("[distribution-engine] person re-home threw (distribution unaffected):", err instanceof Error ? err.message : String(err))
+  }
+}
+
+export interface DistributionLedgerEntry {
+  id: string
+  zip_code: string | null
+  brokerage_id: string
+  brokerage_name: string | null
+  lead_id: string | null
+  raw_lead_id: string | null
+  distributed_at: string | null
+  rotation_position: number | null
+  source_family: string | null
+  motivation_type: string | null
+  urgency_level: string | null
+}
+
+/**
+ * The distribution ledger, read back — the READER half of
+ * `platform_lead_distributions`.
+ *
+ * Every placement writes which lead went to which subscriber, when, at which
+ * rotation slot, and what the lead looked like (source_family / motivation /
+ * urgency). The engine itself only ever counts rows per zip for rotation; the
+ * record of WHO received WHAT — the platform's answer when a subscriber asks
+ * "are we actually getting our turn in this zip?" — had no reader until this.
+ *
+ * PLATFORM-ONLY by design: the ledger spans every tenant, so this loader is
+ * for the superadmin platform board (behind requireSuperadmin), never a tenant
+ * surface. Callers must gate before calling — this uses the service client.
+ */
+export async function loadRecentPlatformDistributions(limit = 50): Promise<
+  { ok: true; entries: DistributionLedgerEntry[] } | { ok: false; error: string }
+> {
+  const supabase = createServiceClient()
+
+  const { data, error } = await supabase
+    .from("platform_lead_distributions")
+    .select(
+      "id, zip_code, brokerage_id, lead_id, raw_lead_id, distributed_at, rotation_position, source_family, motivation_type, urgency_level"
+    )
+    .order("distributed_at", { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 200))
+
+  // supabase-js RESOLVES a refused read — an error here must not render as
+  // "no distributions yet" on the board.
+  if (error) return { ok: false, error: error.message }
+
+  const rows = (data ?? []) as Array<Omit<DistributionLedgerEntry, "brokerage_name">>
+
+  // Recipient names, best-effort: a failed name read degrades to the id, it
+  // never hides a ledger row.
+  const brokerageIds = [...new Set(rows.map((r) => r.brokerage_id).filter(Boolean))]
+  const nameById = new Map<string, string>()
+  if (brokerageIds.length > 0) {
+    const { data: brokerages, error: bErr } = await supabase
+      .from("brokerages")
+      .select("id, name")
+      .in("id", brokerageIds)
+    if (bErr) console.error("[distribution-engine] brokerage name read failed:", bErr.message)
+    for (const b of brokerages ?? []) {
+      if ((b as { name?: string }).name) nameById.set((b as { id: string }).id, (b as { name: string }).name)
+    }
+  }
+
+  return {
+    ok: true,
+    entries: rows.map((r) => ({ ...r, brokerage_name: nameById.get(r.brokerage_id) ?? null })),
   }
 }
 

@@ -2,10 +2,10 @@
 
 import { useEffect, useState, useTransition, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import {
-  getProviderRoiMetrics,
-  providerMetricsToCsv,
-} from '@/lib/analytics/vendor-roi'
+// lane 88F — metrics through the gated server door (tenant from the SESSION); the CSV
+// formatter from its client-safe module. Nothing here imports the service-role module.
+import { getProviderRoiMetricsAction } from '@/app/actions/admin/brokerage-intelligence-doors'
+import { providerMetricsToCsv } from '@/lib/analytics/vendor-roi-csv'
 import type { ProviderMetrics, ProviderTrendPoint, DateRange } from '@/lib/analytics/vendor-roi'
 import {
   BarChart,
@@ -71,7 +71,9 @@ export default function ProviderIntelligencePage() {
     if (!brokerageId) return
     startTransition(async () => {
       try {
-        const result = await getProviderRoiMetrics({ brokerageId, dateRangeDays: dateRange })
+        const res = await getProviderRoiMetricsAction(dateRange)
+        if (!res.ok) throw new Error(res.error)
+        const result = res.result
         setProviders(result.providers)
         setTrendData(result.trendData)
         setGeneratedAt(result.generatedAt)
@@ -299,7 +301,7 @@ export default function ProviderIntelligencePage() {
                         <td className={tdClass}>{fmt$(p.costPerLead)}</td>
                         <td className={tdClass}>{fmt$(p.costPerQualifiedLead)}</td>
                         <td className={tdClass}>
-                          <span className={p.estRoi >= 0 ? 'text-green-600' : 'text-red-500'}>
+                          <span className={p.estRoi >= 0 ? 'text-green-700' : 'text-red-600'}>
                             {fmtPct(p.estRoi)} <span className="text-foreground/40 text-xs">Est.</span>
                           </span>
                         </td>

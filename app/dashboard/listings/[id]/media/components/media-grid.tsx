@@ -29,6 +29,7 @@ import {
   runComplianceCheck,
 } from "@/app/actions/listing-media"
 import { createClient } from "@/lib/supabase/client"
+import { checkUpload } from "@/lib/storage/file-limits"
 import {
   MoreHorizontalIcon,
   PlusIcon,
@@ -68,12 +69,19 @@ interface MediaGridProps {
   onMediaChange: (media: MediaItem[]) => void
 }
 
+// listing_media.media_type admits: photo | video | floorplan | virtual_tour |
+// document | graphic | reel | story. This list said "floor_plan" — one
+// underscore the column does not have — so every floor plan upload was rejected,
+// and graphic / reel / story were real types nobody could choose.
 const MEDIA_TYPE_OPTIONS = [
-  { value: "photo",         label: "Photo" },
-  { value: "video",         label: "Video" },
-  { value: "floor_plan",    label: "Floor Plan" },
-  { value: "virtual_tour",  label: "Virtual Tour" },
-  { value: "document",      label: "Document" },
+  { value: "photo",        label: "Photo" },
+  { value: "video",        label: "Video" },
+  { value: "floorplan",    label: "Floor Plan" },
+  { value: "virtual_tour", label: "Virtual Tour" },
+  { value: "graphic",      label: "Graphic" },
+  { value: "reel",         label: "Reel" },
+  { value: "story",        label: "Story" },
+  { value: "document",     label: "Document" },
 ]
 
 export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaChange }: MediaGridProps) {
@@ -98,6 +106,24 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function uploadFile(file: File) {
+    // This surface had NO size or type check at all and PUTs straight to
+    // listing-media, which enforces both — 52,428,800 bytes and an image/video
+    // mime list. Without this an agent uploading a 60 MB drone clip or a PDF
+    // watched the spinner and then got a raw storage error string. COURTESY
+    // ONLY, but here the bucket is the WHOLE gate: no Vercel Function is in
+    // this path, so nothing else could have refused it earlier.
+    const gate = checkUpload({
+      bucket: "listing-media",
+      transport: "direct_to_storage",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      setFileUploadError(gate.reason)
+      toast({ title: "File upload failed", description: gate.reason, variant: "destructive" })
+      return
+    }
+
     setFileUploading(true)
     setFileUploadError(null)
     setFileUploadSuccess(false)
@@ -189,12 +215,18 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
       setForm({ fileUrl: "", thumbnailUrl: "", caption: "", altText: "", mediaType: "photo", isPrimary: false })
       setFileUploadSuccess(false)
       setFileUploadError(null)
+      // Lane 92A: a refused hero-photo fan-out rides the same toast that reports this
+      // upload's compliance problems — saved, but not sent on to marketing.
+      const fanoutWarning = result.data?.fanoutWarning ?? null
       toast({
         title: "Media uploaded",
-        description: result.data?.compliance?.passed
-          ? "Brand compliance passed."
-          : "Uploaded — compliance check flagged some issues.",
-        variant: result.data?.compliance?.passed ? "default" : "destructive",
+        description: [
+          result.data?.compliance?.passed
+            ? "Brand compliance passed."
+            : "Uploaded — compliance check flagged some issues.",
+          fanoutWarning,
+        ].filter(Boolean).join(" "),
+        variant: result.data?.compliance?.passed && !fanoutWarning ? "default" : "destructive",
       })
     })
   }
@@ -255,7 +287,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
         <p className="text-sm text-muted-foreground">
           {media.length} file{media.length !== 1 ? "s" : ""}
           {media.filter(m => m.is_approved).length > 0 && (
-            <span className="ml-2 text-green-600 dark:text-green-400">
+            <span className="ml-2 text-green-700 dark:text-green-400">
               · {media.filter(m => m.is_approved).length} approved
             </span>
           )}
@@ -305,12 +337,12 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
               {/* Status badges */}
               <div className="absolute top-2 left-2 flex flex-col gap-1">
                 {item.is_primary && (
-                  <Badge className="text-xs bg-yellow-500 text-white border-0 flex items-center gap-1">
+                  <Badge className="text-xs bg-yellow-700 text-white border-0 flex items-center gap-1">
                     <StarIcon className="w-3 h-3" /> Primary
                   </Badge>
                 )}
                 {item.kernel_compliance_passed ? (
-                  <Badge className="text-xs bg-green-600 text-white border-0 flex items-center gap-1">
+                  <Badge className="text-xs bg-green-700 text-white border-0 flex items-center gap-1">
                     <ShieldCheckIcon className="w-3 h-3" /> OK
                   </Badge>
                 ) : (
@@ -325,7 +357,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                 {item.approval_required && !item.is_approved ? (
                   <Badge variant="secondary" className="text-xs">Pending</Badge>
                 ) : item.is_approved ? (
-                  <Badge className="text-xs bg-green-600 text-white border-0">Approved</Badge>
+                  <Badge className="text-xs bg-green-700 text-white border-0">Approved</Badge>
                 ) : null}
               </div>
 
@@ -441,7 +473,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                   ) : fileUploadSuccess ? (
                     <div className="flex flex-col items-center gap-1">
                       <CheckCircleIcon className="h-6 w-6 text-green-600" />
-                      <p className="text-xs font-medium text-green-600">File uploaded successfully</p>
+                      <p className="text-xs font-medium text-green-700">File uploaded successfully</p>
                       <p className="text-[10px] text-muted-foreground">Click or drop to replace</p>
                     </div>
                   ) : (

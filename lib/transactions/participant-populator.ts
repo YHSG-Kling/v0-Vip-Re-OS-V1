@@ -24,16 +24,19 @@
  * agent is filling those fields — but we never auto-insert them as
  * participants. Honors "no stubs / never assume the transaction team".
  *
- * Idempotent: safe to call multiple times. Skips entirely if the transaction
- * already has any participants.
+ * Idempotent: safe to call multiple times. Fills only the roles the transaction
+ * does not already hold (wave 96 — it used to skip entirely on ANY row).
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { resolveOutsideAgentForDeal } from "@/lib/offers/outside-agent-record"
 
 export interface PopulateResult {
   inserted_count: number
   roles_inserted: string[]
   skipped_existing: boolean
+  /** Set when a read or the insert was REFUSED — never read as "nobody to add". */
+  error?: string
 }
 
 interface PendingParticipant {
@@ -59,22 +62,35 @@ export async function populateInitialParticipants(
   transactionId: string,
   brokerageId: string,
 ): Promise<PopulateResult> {
-  // Skip if any participants already exist for this transaction — idempotency
-  // guard for webhook retries.
-  const { count: existingCount } = await supabase
+  // IDEMPOTENT PER ROLE, NOT PER TRANSACTION (wave 96, lane 96A). This used to skip
+  // ENTIRELY when the deal held ANY participant row. A second writer can land first:
+  // lib/documents/auto-populate-participants.ts lifts the title company off the
+  // executed contract the moment its scan settles — and the contract is uploaded
+  // right before the accept (the 95A walk's S9a → S9). One title row then kept the
+  // whole roster off the deal: no buyer, no seller, and NO COOPERATING BUYER'S
+  // AGENT — so notifyTransactionParties (the accept moment's owner) had nobody
+  // outside to email. Each role is now filled only when the deal lacks it, which is
+  // the same rule auto-populate-participants already keeps. FAIL CLOSED: a refused
+  // read inserts nothing and says so (a retry is safe; a duplicate roster is not).
+  const { data: existingRows, error: existingErr } = await supabase
     .from("transaction_participants")
-    .select("id", { count: "exact", head: true })
+    .select("role")
     .eq("transaction_id", transactionId)
-  if ((existingCount ?? 0) > 0) {
-    return { inserted_count: 0, roles_inserted: [], skipped_existing: true }
+    .eq("brokerage_id", brokerageId)
+  if (existingErr) {
+    console.error(`[participant-populator] existing roster read refused for ${transactionId}: ${existingErr.message}`)
+    return { inserted_count: 0, roles_inserted: [], skipped_existing: false, error: `existing roster read refused: ${existingErr.message}` }
   }
+  const existingRoles = new Set(((existingRows ?? []) as Array<{ role: string | null }>).map((r) => String(r.role ?? "").toLowerCase()))
 
   // Look up the transaction + offer + listing fan-out in one round
-  const { data: tx } = await supabase
+  const { data: tx, error: txErr } = await supabase
     .from("transactions")
-    .select("id, brokerage_id, offer_id, listing_id, buyer_contact_id, seller_contact_id, agent_id")
+    .select("id, brokerage_id, offer_id, listing_id, buyer_contact_id, seller_contact_id, contact_id, deal_type, agent_id")
     .eq("id", transactionId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  if (txErr) return { inserted_count: 0, roles_inserted: [], skipped_existing: false, error: `transaction read refused: ${txErr.message}` }
   if (!tx) return { inserted_count: 0, roles_inserted: [], skipped_existing: false }
 
   // Pull offer for buyer fields. We deliberately do NOT read financing_type
@@ -102,6 +118,10 @@ export async function populateInitialParticipants(
   }
 
   const pending: PendingParticipant[] = []
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): the roster also says who REPRESENTS whom — kept as
+  // ids beside the name rows and derived once the roster insert lands (planRosterEdges).
+  let buyerAgentRef: { type: "agent" | "outside_agent"; id: string } | null = null
+  let sellerAgentUserId: string | null = null
 
   // ── BUYER ─────────────────────────────────────────────────────────────────
   const buyerContactId = (tx.buyer_contact_id as string | null) ?? (offer?.contact_id as string | null) ?? null
@@ -125,11 +145,46 @@ export async function populateInitialParticipants(
   }
 
   // ── BUYER_AGENT ───────────────────────────────────────────────────────────
-  const buyerAgentId = (tx.agent_id as string | null) ?? (offer?.agent_id as string | null) ?? null
-  if (buyerAgentId) {
-    const buyerAgent = await resolveAgent(supabase, buyerAgentId)
-    if (buyerAgent) pending.push({ role: "buyer_agent", ...buyerAgent })
+  // THE COOPERATING AGENT FIRST (wave 94, lane 94B). An offer that arrived from
+  // an outside buyer's agent carries their outside_agents record
+  // (offers.metadata.outside_agent_id, walked up the counter chain). On such a
+  // deal `offers.agent_id` / `transactions.agent_id` is OUR listing agent — the
+  // old read put the listing agent on the roster TWICE (buyer_agent and
+  // seller_agent) and the real buyer's agent nowhere, so notifyTransactionParties
+  // could never email them the terms. A refused read is logged, never mistaken
+  // for "no outside agent": the in-house fallback below only runs when the
+  // chain genuinely names none.
+  let cooperating: Awaited<ReturnType<typeof resolveOutsideAgentForDeal>> = { agent: null, offerId: null, error: null }
+  if (tx.offer_id) {
+    cooperating = await resolveOutsideAgentForDeal(supabase, { brokerageId, offerId: tx.offer_id as string })
+    if (cooperating.error) console.error(`[participant-populator] cooperating agent lookup for ${transactionId}: ${cooperating.error}`)
   }
+  const outsideAgent = cooperating.agent
+  const outsideName = outsideAgent
+    ? (outsideAgent.full_name ?? [outsideAgent.first_name, outsideAgent.last_name].filter(Boolean).join(" ")).trim() || outsideAgent.email
+    : null
+  if (outsideAgent && outsideName) {
+    pending.push({
+      role:           "buyer_agent",
+      name:           outsideName,
+      company:        outsideAgent.outside_brokerage_name ?? null,
+      email:          outsideAgent.email ?? null,
+      phone:          outsideAgent.phone ?? null,
+      license_number: outsideAgent.license_number ?? null,
+      notes:          "Cooperating buyer's agent (outside brokerage) — copied by email on deal activity.",
+    })
+  } else if (!cooperating.error) {
+    const buyerAgentId = (tx.agent_id as string | null) ?? (offer?.agent_id as string | null) ?? null
+    if (buyerAgentId) {
+      const buyerAgent = await resolveAgent(supabase, buyerAgentId)
+      if (buyerAgent) {
+        const { userId, ...row } = buyerAgent
+        buyerAgentRef = { type: "agent", id: userId }
+        pending.push({ role: "buyer_agent", ...row })
+      }
+    }
+  }
+  if (outsideAgent && outsideName) buyerAgentRef = { type: "outside_agent", id: outsideAgent.id as string }
 
   // ── SELLER ────────────────────────────────────────────────────────────────
   const sellerContactId = (tx.seller_contact_id as string | null) ?? (listing?.seller_contact_id as string | null) ?? null
@@ -155,7 +210,11 @@ export async function populateInitialParticipants(
   // ── SELLER_AGENT (a.k.a. listing agent) ──────────────────────────────────
   if (listing?.agent_id) {
     const sellerAgent = await resolveAgent(supabase, listing.agent_id as string)
-    if (sellerAgent) pending.push({ role: "seller_agent", ...sellerAgent })
+    if (sellerAgent) {
+      const { userId, ...row } = sellerAgent
+      sellerAgentUserId = userId
+      pending.push({ role: "seller_agent", ...row })
+    }
   }
 
   // ── LENDER (from buyer's most-recent PAL on file) ────────────────────────
@@ -219,12 +278,37 @@ export async function populateInitialParticipants(
   // preferred inspectors exist, and we don't have a single source of truth
   // for which one this deal will use.
 
-  // Insert all collected participants in one statement
-  if (pending.length === 0) {
-    return { inserted_count: 0, roles_inserted: [], skipped_existing: false }
+  // Insert all collected participants in one statement — only the roles the deal
+  // does not already hold (see the per-role rule at the top).
+  const missing = pending.filter(p => !existingRoles.has(p.role.toLowerCase()))
+  // represented_by edges ride on the ids resolved above, whether or not a name row was new
+  // (idempotent on the graph's UNIQUE key; a lost edge is logged, the roster is never failed).
+  const rosterEdges = async () => {
+    try {
+      const { planRosterEdges, upsertRelationships, resolveCoBuyerContactIds } = await import("@/lib/kernel/relationship-graph")
+      const observedAt = new Date().toISOString()
+      const planned = planRosterEdges({ buyerContactId, buyerAgent: buyerAgentRef, sellerContactId, sellerAgentUserId, observedAt })
+      // 102F — a second buyer-side contact on the roster (the row's client on a buyer deal, or a
+      // buyer / co_buyer row whose email is a contact of this tenant) is a co_buyer of the buyer.
+      if (buyerContactId) {
+        const co = await resolveCoBuyerContactIds(supabase, { brokerageId, transactionId, tx: { ...tx, buyer_contact_id: buyerContactId } })
+        if (co.errors.length > 0) console.warn(`[participant-populator] co-buyer resolution partial for ${transactionId}: ${co.errors.join("; ")}`)
+        for (const id of co.ids) {
+          planned.push({ from: { type: "contact", id: buyerContactId }, to: { type: "contact", id }, type: "co_buyer", evidence: { source: "transaction_roster", confidence: 0.85, observed_at: observedAt } })
+        }
+      }
+      const r = await upsertRelationships(supabase, brokerageId, planned, null)
+      if (r.errors.length > 0 && !r.degraded) console.error(`[participant-populator] represented_by / co_buyer edges for ${transactionId}: ${r.errors.join("; ")}`)
+    } catch (e) {
+      console.error("[participant-populator] relationship edge derivation failed (non-blocking)", e)
+    }
+  }
+  if (missing.length === 0) {
+    await rosterEdges()
+    return { inserted_count: 0, roles_inserted: [], skipped_existing: pending.length > 0 }
   }
 
-  const rows = pending.map(p => ({
+  const rows = missing.map(p => ({
     transaction_id:  transactionId,
     brokerage_id:    brokerageId,
     role:            p.role,
@@ -241,12 +325,13 @@ export async function populateInitialParticipants(
     .insert(rows)
   if (insertErr) {
     console.error("[participant-populator] insert failed:", insertErr.message)
-    return { inserted_count: 0, roles_inserted: [], skipped_existing: false }
+    return { inserted_count: 0, roles_inserted: [], skipped_existing: false, error: `roster insert refused: ${insertErr.message}` }
   }
+  await rosterEdges()
 
   return {
     inserted_count: rows.length,
-    roles_inserted: pending.map(p => p.role),
+    roles_inserted: missing.map(p => p.role),
     skipped_existing: false,
   }
 }
@@ -260,7 +345,7 @@ export async function populateInitialParticipants(
 async function resolveAgent(
   supabase: SupabaseClient,
   agentId: string,
-): Promise<{ name: string; email?: string | null; phone?: string | null; license_number?: string | null } | null> {
+): Promise<{ name: string; email?: string | null; phone?: string | null; license_number?: string | null; userId: string } | null> {
   const { data: agentRow } = await supabase
     .from("agents")
     .select("id, user_id, license_number")
@@ -283,6 +368,7 @@ async function resolveAgent(
     email:          user.email ?? null,
     phone:          (user as any).phone ?? null,
     license_number: agentRow.license_number ?? null,
+    userId:         agentRow.user_id as string,
   }
 }
 

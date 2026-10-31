@@ -20,18 +20,23 @@
  * for the headline; 6×9 reserves it for the photo because at 6×9
  * sizes a photo HAS impact, where at 4×6 it just looks small.
  *
- * Branding sourced via resolveBrokerageBrandContext, copy via
+ * Branding sourced via resolveBrandContext
+ * (lib/branding/resolve-brand-context.ts), copy via
  * draftPostcardCopy. Same pipeline as the 4×6 — different layout.
  */
 import React from "react"
 import { AbsoluteFill, Img } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface PostcardFront6x9Props {
   headline: string
   body:     string
   cta:      string
   /** Optional status badge — "JUST LISTED", "JUST SOLD", "OPEN HOUSE",
-   *  "PRICE REDUCED", etc. Null = no badge. */
+   *  "PRICE IMPROVED", etc. Null = no badge. The only writer is
+   *  lib/direct-mail/listing-lifecycle-mail-reactor.ts EVENT_DEFAULTS, which
+   *  takes the price wording from lib/listings/price-improvement-label.ts —
+   *  this card is PRINTED for a consumer, so it never says "reduced". */
   statusBadge:   string | null
   /** Property hero photo URL. When provided, becomes the top ~55% of
    *  the canvas. When null, falls back to a brand-color gradient. */
@@ -68,7 +73,7 @@ export const PostcardFront6x9: React.FC<PostcardFront6x9Props> = ({
         overflow: "hidden",
       }}>
         {propertyPhotoUrl ? (
-          <Img src={propertyPhotoUrl} style={{
+          <SafeImg src={propertyPhotoUrl} style={{
             width: "100%", height: "100%", objectFit: "cover",
           }} />
         ) : (
@@ -102,7 +107,7 @@ export const PostcardFront6x9: React.FC<PostcardFront6x9Props> = ({
           padding: "12px 20px", borderRadius: 8,
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{ height: 44, width: "auto", objectFit: "contain" }} />
+            <SafeImg src={brand.logoUrl} style={{ height: 44, width: "auto", objectFit: "contain" }} />
           )}
           <div style={{ fontSize: 24, fontWeight: 700 }}>{brand.brokerageName}</div>
         </div>

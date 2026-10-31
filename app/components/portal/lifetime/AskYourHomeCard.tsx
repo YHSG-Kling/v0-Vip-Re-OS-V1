@@ -70,7 +70,7 @@ export function AskYourHomeCard({
             maxLength={500}
             disabled={busy}
           />
-          <Button type="submit" disabled={busy} size="icon" className="shrink-0">
+          <Button type="submit" disabled={busy} size="icon" className="shrink-0" aria-label="Ask">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </Button>
         </form>

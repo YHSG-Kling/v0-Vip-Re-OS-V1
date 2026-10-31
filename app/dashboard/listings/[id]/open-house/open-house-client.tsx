@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Badge } from "@/components/ui/badge"
 import { CalendarDays, Megaphone, BarChart3, Sparkles } from "lucide-react"
 import { MarketingTab } from "./tabs/marketing-tab"
 import { EventDayTab } from "./tabs/event-day-tab"

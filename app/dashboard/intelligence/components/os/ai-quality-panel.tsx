@@ -10,7 +10,6 @@ import {
   ThumbsUp,
   ThumbsDown,
   AlertCircle,
-  CheckCircle2,
   ArrowRight,
   TrendingUp,
   TrendingDown,
@@ -45,9 +44,9 @@ export function AIQualityPanel({
                        thisWeekMetrics.positiveRate >= 70 ? "Good" :
                        thisWeekMetrics.positiveRate >= 50 ? "Needs Improvement" : "Critical"
 
-  const qualityColor = thisWeekMetrics.positiveRate >= 85 ? "text-green-600" :
+  const qualityColor = thisWeekMetrics.positiveRate >= 85 ? "text-green-700" :
                        thisWeekMetrics.positiveRate >= 70 ? "text-blue-600" :
-                       thisWeekMetrics.positiveRate >= 50 ? "text-amber-600" : "text-red-600"
+                       thisWeekMetrics.positiveRate >= 50 ? "text-amber-700" : "text-red-600"
 
   return (
     <Card>
@@ -71,7 +70,7 @@ export function AIQualityPanel({
               <span className="font-semibold">{thisWeekMetrics.positiveRate}%</span>
               {weekOverWeekChange.positiveRate !== 0 && (
                 <span className={`flex items-center text-xs ${
-                  weekOverWeekChange.positiveRate > 0 ? "text-green-600" : "text-red-600"
+                  weekOverWeekChange.positiveRate > 0 ? "text-green-700" : "text-red-600"
                 }`}>
                   {weekOverWeekChange.positiveRate > 0 ? (
                     <TrendingUp className="h-3 w-3" />
@@ -119,7 +118,7 @@ export function AIQualityPanel({
         {recentIssues.length > 0 && (
           <div className="space-y-2">
             <h4 className="flex items-center gap-2 text-sm font-medium">
-              <AlertCircle className="h-4 w-4 text-amber-500" />
+              <AlertCircle className="h-4 w-4 text-amber-600" />
               Recent Issues ({recentIssues.length})
             </h4>
             {recentIssues.slice(0, 2).map((issue) => (

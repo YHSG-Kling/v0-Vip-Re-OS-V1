@@ -21,6 +21,7 @@ export async function GET(request: Request) {
   const supabase = createServiceClient()
   const results: Array<{ task: string; actor_id: string; alive: boolean }> = []
   const deadTasks: string[] = []
+  const refusedWrites: string[] = []
 
   for (const task of Object.keys(ACTOR_REGISTRY) as ApifyTask[]) {
     let anyAlive = false
@@ -28,7 +29,9 @@ export async function GET(request: Request) {
       const alive = await checkActorExists(actorId)
       if (alive) anyAlive = true
       results.push({ task, actor_id: actorId, alive })
-      await supabase
+      // READ (lane 88F): the admin diagnostics page renders this table as the actor
+      // health board, so a refused write would leave a stale "alive" on a dead actor.
+      const { error: healthErr } = await supabase
         .from("scraper_actor_health")
         .upsert(
           {
@@ -40,6 +43,7 @@ export async function GET(request: Request) {
           },
           { onConflict: "task,actor_id" },
         )
+      if (healthErr) refusedWrites.push(`${task}/${actorId}: ${healthErr.message}`)
     }
     // A task with NO live candidate needs a registry update — surface it loudly.
     if (!anyAlive) {
@@ -53,5 +57,6 @@ export async function GET(request: Request) {
     alive: results.filter((r) => r.alive).length,
     dead: results.filter((r) => !r.alive).length,
     tasks_with_no_live_actor: deadTasks,
-  })
+    health_writes_refused: refusedWrites,
+  }, { status: refusedWrites.length > 0 ? 500 : 200 })
 }

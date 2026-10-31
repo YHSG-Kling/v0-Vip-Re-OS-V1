@@ -3,14 +3,12 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
 import Link from "next/link"
 import {
   Users,
   ArrowRight,
   TrendingUp,
   TrendingDown,
-  AlertTriangle,
 } from "lucide-react"
 
 interface AgentPerformance {
@@ -44,7 +42,7 @@ export function BrokerTeamPerformancePanel({ agents, summary }: BrokerTeamPerfor
   const statusStyles = {
     top_performer: {
       badge: "outline" as const,
-      text: "text-green-600",
+      text: "text-green-700",
       label: "Top Performer",
     },
     on_track: {
@@ -54,7 +52,7 @@ export function BrokerTeamPerformancePanel({ agents, summary }: BrokerTeamPerfor
     },
     underperforming: {
       badge: "secondary" as const,
-      text: "text-orange-600",
+      text: "text-orange-700",
       label: "Below Target",
     },
     at_risk: {
@@ -102,7 +100,7 @@ export function BrokerTeamPerformancePanel({ agents, summary }: BrokerTeamPerfor
         {/* Summary Stats */}
         <div className="grid grid-cols-3 gap-4 p-3 bg-muted/50 rounded-lg text-center">
           <div>
-            <div className="text-lg font-bold text-green-600">{summary.topPerformers}</div>
+            <div className="text-lg font-bold text-green-700">{summary.topPerformers}</div>
             <div className="text-xs text-muted-foreground">Top Performers</div>
           </div>
           <div>
@@ -110,7 +108,7 @@ export function BrokerTeamPerformancePanel({ agents, summary }: BrokerTeamPerfor
             <div className="text-xs text-muted-foreground">Avg Conversion</div>
           </div>
           <div>
-            <div className="text-lg font-bold text-orange-600">{summary.atRisk}</div>
+            <div className="text-lg font-bold text-orange-700">{summary.atRisk}</div>
             <div className="text-xs text-muted-foreground">Need Support</div>
           </div>
         </div>
@@ -140,7 +138,7 @@ export function BrokerTeamPerformancePanel({ agents, summary }: BrokerTeamPerfor
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <span>{agent.transactions} deals</span>
                     <span className="h-1 w-1 rounded-full bg-muted-foreground" />
-                    <span className={`flex items-center gap-0.5 ${agent.trend === "up" ? "text-green-600" : agent.trend === "down" ? "text-red-600" : ""}`}>
+                    <span className={`flex items-center gap-0.5 ${agent.trend === "up" ? "text-green-700" : agent.trend === "down" ? "text-red-600" : ""}`}>
                       <TrendIcon className="h-3 w-3" />
                       {agent.conversionRate.toFixed(0)}%
                     </span>

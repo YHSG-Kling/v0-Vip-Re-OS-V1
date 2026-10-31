@@ -1,7 +1,6 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { isValidUUID } from "@/lib/validations"
 
 // Both exports previously trusted a caller-supplied userId, so any
 // signed-in caller could read another user's HeyGen avatar/voice IDs

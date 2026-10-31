@@ -7,7 +7,6 @@ import {
   updateListingTaskTemplate,
   deleteListingTaskTemplate,
 } from "@/app/actions/settings/listing-task-templates"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -233,6 +232,7 @@ export function ListingTaskTemplatesClient({
               </span>
               <span className="text-xs text-gray-500">{rows.length} task{rows.length !== 1 ? "s" : ""}</span>
             </div>
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
@@ -301,6 +301,7 @@ export function ListingTaskTemplatesClient({
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )
       })}

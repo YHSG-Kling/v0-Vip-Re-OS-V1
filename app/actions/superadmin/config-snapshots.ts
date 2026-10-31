@@ -6,22 +6,35 @@
 // brand + voice + feature enablement as a reusable template, apply it to other tenants.
 // requireSuperadmin-gated, audited (superadmin_audit_log), service-client writes. The
 // capture layer is allow-list-based, so a snapshot can never carry a secret.
+//
+// APPLY (wave 140N): a tenant that already exists may already hold customizations, so a
+// re-apply fills ABSENT keys only (lib/platform/config-snapshots.ts applySnapshotPayload,
+// mode fill_absent — the same rule provisioning and the readiness repair use). Only an
+// EXPLICIT boolean `overwrite: true` from the staff actor selects replace mode, and that
+// apply is audited twice: the INTENT before the write (a refused audit row refuses the
+// overwrite — fail closed) and the RESULT after it, naming every `<table>.<key>` overwritten.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
-import { buildSnapshotPayload, applySnapshotPayload, payloadLeaksSecret, type SnapshotPayload } from "@/lib/platform/config-snapshots"
+import { buildSnapshotPayload, applySnapshotPayload, payloadLeaksSecret, type SnapshotPayload, type SnapshotApplyMode } from "@/lib/platform/config-snapshots"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
-async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
+/** One superadmin_audit_log row. The insert is READ: a refused row is returned, never swallowed. */
+async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const svc = createServiceClient()
     const h = await headers()
-    await svc.from("superadmin_audit_log").insert({
+    const { error } = await svc.from("superadmin_audit_log").insert({
       actor_user_id: actorUserId, actor_email: actorEmail, action, target_type: "brokerage", target_id: targetId,
       details, ip_address: h.get("x-forwarded-for") ?? h.get("x-real-ip"), user_agent: h.get("user-agent"),
     })
-  } catch (err) { console.error("[config-snapshots audit] failed:", err) }
+    if (error) { console.error("[config-snapshots audit] refused:", error.message); return { ok: false, error: error.message } }
+    return { ok: true }
+  } catch (err) {
+    console.error("[config-snapshots audit] failed:", err)
+    return { ok: false, error: (err as Error)?.message ?? "audit insert threw" }
+  }
 }
 
 export interface SnapshotRow {
@@ -33,6 +46,17 @@ export interface SnapshotRow {
   /** Tier hint for "provision new subscriber from this snapshot" (payload metadata). */
   recommendedTier: string | null
   counts: { global: number; brand: number; voice: number; site: number; features: number }
+  /**
+   * WHO CAPTURED IT. `captured_by` FKs users(id) (scripts/schema-fk-map.ts) and
+   * is stamped from the superadmin gate's userId on every capture; it was read
+   * by nothing. This is a PLATFORM surface (requireSuperadmin, which honours
+   * `platform_role`), so the name is resolved platform-wide — there is no tenant
+   * to anchor on, and "unresolved" here means the users row is no longer on
+   * file, not "another brokerage". Never "the system".
+   */
+  capturedByUserId: string | null
+  capturedByName: string | null
+  capturedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
 }
 
 function counts(payload: SnapshotPayload) {
@@ -72,33 +96,81 @@ export async function listSnapshotsAction(): Promise<{ ok: true; snapshots: Snap
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { data } = await svc.from("platform_config_snapshots").select("id, name, description, source_brokerage_id, payload, created_at").order("created_at", { ascending: false }).limit(100)
+  // `error` is read — a refused list used to resolve as "No snapshots yet".
+  const { data, error } = await svc.from("platform_config_snapshots").select("id, name, description, source_brokerage_id, payload, captured_by, created_at").order("created_at", { ascending: false }).limit(100)
+  if (error) return { ok: false, error: error.message }
+  const rows = (data ?? []) as any[]
+
+  // One batched name read for every distinct capturer on the page.
+  const capturerIds = Array.from(new Set(rows.map((s) => s.captured_by).filter((id): id is string => !!id)))
+  const capturerNameById = new Map<string, string>()
+  let capturerLookupRefused = false
+  if (capturerIds.length > 0) {
+    const { data: capturers, error: capturersErr } = await svc.from("users").select("id, first_name, last_name, email").in("id", capturerIds)
+    if (capturersErr) {
+      capturerLookupRefused = true
+      console.error("[config-snapshots] capturer name lookup refused:", capturersErr.message)
+    }
+    for (const u of (capturers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) capturerNameById.set(u.id as string, label as string)
+    }
+  }
+
   return {
     ok: true,
-    snapshots: ((data ?? []) as any[]).map((s) => ({
-      id: s.id, name: s.name, description: s.description, sourceBrokerageId: s.source_brokerage_id, createdAt: s.created_at,
-      recommendedTier: ((s.payload ?? {}) as SnapshotPayload).recommendedTier ?? null,
-      counts: counts((s.payload ?? {}) as SnapshotPayload),
-    })),
+    snapshots: rows.map((s) => {
+      const capturedByUserId = (s.captured_by as string | null) ?? null
+      const capturedByName = capturedByUserId ? capturerNameById.get(capturedByUserId) ?? null : null
+      const capturedByState: SnapshotRow["capturedByState"] =
+        !capturedByUserId ? "not_recorded"
+        : capturedByName ? "resolved"
+        : capturerLookupRefused ? "lookup_refused"
+        : "unresolved"
+      return {
+        id: s.id, name: s.name, description: s.description, sourceBrokerageId: s.source_brokerage_id, createdAt: s.created_at,
+        recommendedTier: ((s.payload ?? {}) as SnapshotPayload).recommendedTier ?? null,
+        counts: counts((s.payload ?? {}) as SnapshotPayload),
+        capturedByUserId, capturedByName, capturedByState,
+      }
+    }),
   }
 }
 
-/** Apply a snapshot to a target tenant. */
-export async function applySnapshotAction(params: { snapshotId: string; targetBrokerageId: string }): Promise<{ ok: boolean; applied?: string[]; error?: string }> {
+/**
+ * Apply a snapshot to a target tenant. DEFAULT = fill absent keys only (a re-apply never overwrites
+ * a customization). `overwrite: true` (an explicit boolean from the staff actor, never a truthy string)
+ * selects replace mode, audited as snapshot.apply.overwrite — intent before, result after, naming the
+ * keys overwritten. FAIL CLOSED: an overwrite whose intent row cannot be written does not run.
+ */
+export async function applySnapshotAction(params: { snapshotId: string; targetBrokerageId: string; overwrite?: boolean }): Promise<{ ok: boolean; mode?: SnapshotApplyMode; applied?: string[]; preserved?: string[]; overwritten?: string[]; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!params.snapshotId || !params.targetBrokerageId) return { ok: false, error: "Snapshot + target brokerage required" }
+  const overwrite = params.overwrite === true
+  const mode: SnapshotApplyMode = overwrite ? "replace" : "fill_absent"
   const svc = createServiceClient()
 
-  const { data: snap } = await svc.from("platform_config_snapshots").select("payload, name").eq("id", params.snapshotId).maybeSingle()
+  const { data: snap, error: snapErr } = await svc.from("platform_config_snapshots").select("payload, name").eq("id", params.snapshotId).maybeSingle()
+  if (snapErr) return { ok: false, error: `Snapshot read refused: ${snapErr.message}` }
   if (!snap) return { ok: false, error: "Snapshot not found" }
-  const { data: brk } = await svc.from("brokerages").select("id").eq("id", params.targetBrokerageId).maybeSingle()
+  const { data: brk, error: brkErr } = await svc.from("brokerages").select("id").eq("id", params.targetBrokerageId).maybeSingle()
+  if (brkErr) return { ok: false, error: `Target brokerage read refused: ${brkErr.message}` }
   if (!brk) return { ok: false, error: "Target brokerage not found" }
+  const name = (snap as { name: string }).name
 
-  const { applied } = await applySnapshotPayload((snap as any).payload as SnapshotPayload, params.targetBrokerageId, auth.userId, svc)
-  await audit(auth.userId, auth.email, "snapshot.apply", params.targetBrokerageId, { snapshot_id: params.snapshotId, name: (snap as any).name, applied })
+  if (overwrite) {
+    // INTENT first — an overwrite the audit log cannot record does not run (LAW 5: evidence before consequence).
+    const intent = await audit(auth.userId, auth.email, "snapshot.apply.overwrite", params.targetBrokerageId, { snapshot_id: params.snapshotId, name, mode, phase: "intent" })
+    if (!intent.ok) return { ok: false, mode, error: `Overwrite refused: the audit row could not be written (${intent.error}) — nothing was applied` }
+  }
+  const { applied, refused, preserved, filled, overwritten } = await applySnapshotPayload((snap as any).payload as SnapshotPayload, params.targetBrokerageId, auth.userId, svc, { mode })
+  const result = await audit(auth.userId, auth.email, overwrite ? "snapshot.apply.overwrite" : "snapshot.apply", params.targetBrokerageId, { snapshot_id: params.snapshotId, name, mode, phase: "result", applied, refused, preserved, filled, overwritten })
   revalidatePath(`/dashboard/superadmin/brokerages/${params.targetBrokerageId}`)
-  return { ok: true, applied }
+  const auditNote = result.ok ? "" : ` (the result audit row was refused: ${result.error})`
+  if (refused.length > 0) return { ok: false, mode, applied, preserved, overwritten, error: `Snapshot partly applied — refused: ${refused.join("; ")}${auditNote}` }
+  if (!result.ok) return { ok: false, mode, applied, preserved, overwritten, error: `Applied, but the audit row was refused: ${result.error}` }
+  return { ok: true, mode, applied, preserved, overwritten }
 }
 
 /** Delete a snapshot. */

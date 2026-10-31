@@ -19,6 +19,10 @@ interface StateClassRow {
   regulation_reference: string
   severity_default:     "low" | "medium" | "high" | "critical"
   patterns:             string[]
+  // m744 (wave 138C law-rule registry) — read through select("*") so the evaluator keeps working before the
+  // migration is applied (an absent column is simply undefined: scope advertising, mode enforce).
+  rule_scope?:          string | null
+  enforcement_mode?:    string | null
 }
 
 const cache = new Map<string, { rows: StateClassRow[]; expiresAt: number }>()
@@ -33,7 +37,7 @@ async function loadStateClasses(stateCode: string): Promise<StateClassRow[]> {
     const svc = createServiceClient()
     const { data } = await svc
       .from("state_protected_classes")
-      .select("protected_class, regulation_reference, severity_default, patterns")
+      .select("*")
       .eq("state_code", upper)
       .eq("is_active", true)
     const rows = (data ?? []) as StateClassRow[]
@@ -62,14 +66,20 @@ export async function evaluateStateProtectedClasses(params: {
   const lower = params.content.toLowerCase()
 
   for (const c of classes) {
-    // 1. Direct mention of the protected-class name (high severity)
+    // WARN mode (m744): a rule the law-rule healing loop auto-enabled (lib/kernel/law-rule-healing.ts) FLAGS at
+    // low severity — review, never a fail and never a block — until a compliance officer promotes it to enforce.
+    const warn = c.enforcement_mode === "warn"
+    const sev: RuleViolation["severity"] = warn ? "low" : c.severity_default === "critical" ? "high" : c.severity_default
+    const tag = warn ? " [warn mode — auto-enabled from cited law, pending compliance-officer review]" : ""
+    // 1. Direct mention of the protected-class name (high severity) — a fair-housing (advertising) row only;
+    //    another scope's row names a rule, not a class, and runs its patterns alone.
     const className = c.protected_class.toLowerCase()
-    if (lower.includes(className)) {
+    if ((c.rule_scope ?? "advertising") === "advertising" && lower.includes(className)) {
       violations.push({
         rule_category:        "regulatory",
         rule_name:            `state_fair_housing_${c.protected_class.replace(/\s+/g, "_")}`,
-        severity:             c.severity_default === "critical" ? "high" : c.severity_default,
-        description:          `Content references "${c.protected_class}" — a state-protected class under ${c.regulation_reference}.`,
+        severity:             sev,
+        description:          `Content references "${c.protected_class}" — a state-protected class under ${c.regulation_reference}.${tag}`,
         offending_excerpt:    c.protected_class,
         suggested_fix:        "Rewrite to describe property features instead of demographic categories.",
         regulation_reference: c.regulation_reference,
@@ -85,8 +95,8 @@ export async function evaluateStateProtectedClasses(params: {
           violations.push({
             rule_category:        "regulatory",
             rule_name:            `state_fair_housing_pattern_${c.protected_class.replace(/\s+/g, "_")}`,
-            severity:             c.severity_default === "critical" ? "high" : c.severity_default,
-            description:          `Phrase "${matches[0]}" violates ${c.protected_class} protections in ${params.stateCode}.`,
+            severity:             sev,
+            description:          `Phrase "${matches[0]}" violates ${c.protected_class} protections in ${params.stateCode}.${tag}`,
             offending_excerpt:    matches[0],
             suggested_fix:        "Remove or rephrase to focus on property features.",
             regulation_reference: c.regulation_reference,

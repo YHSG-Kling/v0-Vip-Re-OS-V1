@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
-import { Loader2, Activity, CheckCircle2, XCircle, Pause, DollarSign, TrendingUp } from "lucide-react"
+import { Loader2, Activity, CheckCircle2, XCircle, TrendingUp } from "lucide-react"
 import type { WorkflowReportSummary, ReportScope } from "@/app/actions/workflow-reports"
 
 interface Props {
@@ -124,32 +124,48 @@ export default function WorkflowReportsClient({
           {/* Top stat cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <StatCard label="Enrollments"      value={report.totalEnrollments} icon={Activity} color="text-blue-600" />
-            <StatCard label="Active"           value={report.activeEnrollments} icon={Activity} color="text-amber-600" />
-            <StatCard label="Completed"        value={report.completedEnrollments} icon={CheckCircle2} color="text-emerald-600" />
+            <StatCard label="Active"           value={report.activeEnrollments} icon={Activity} color="text-amber-700" />
+            <StatCard label="Completed"        value={report.completedEnrollments} icon={CheckCircle2} color="text-emerald-700" />
             <StatCard label="Avg days to done" value={report.averageCompletionDays != null ? report.averageCompletionDays.toFixed(1) : "—"} icon={Activity} color="text-violet-600" />
           </div>
+          {report.inheritedEnrollments > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Credited to whoever holds each contact now. {report.inheritedEnrollments} of these
+              enrollments were started by another agent before the contact moved; the enroller is kept as history.
+            </p>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <StatCard label="Steps run"        value={report.totalStepsRun} icon={Activity} color="text-slate-600" />
-            <StatCard label="Successful"       value={report.successfulSteps} icon={CheckCircle2} color="text-emerald-600" />
+            <StatCard label="Successful"       value={report.successfulSteps} icon={CheckCircle2} color="text-emerald-700" />
             <StatCard label="Failed / blocked" value={report.failedSteps + report.blockedSteps} icon={XCircle} color="text-red-600" />
-            <StatCard label="Success rate"     value={`${(report.successRate * 100).toFixed(1)}%`} icon={TrendingUp} color="text-emerald-600" />
+            <StatCard label="Success rate"     value={`${(report.successRate * 100).toFixed(1)}%`} icon={TrendingUp} color="text-emerald-700" />
           </div>
 
+          {/* Both of these used to read workflow_step_runs.converted_at /
+              conversion_value_cents — columns with no writer anywhere in the
+              codebase, so the pair rendered "0" and "$0" for every brokerage,
+              permanently. The count now comes from the enrollment (stamped when
+              an enrolled contact's transaction closes); the dollar tile is gone
+              because splitting deal revenue across what touched a contact is
+              the attribution engine's job, and a second answer here is what put
+              the dead columns on this page to begin with. */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <StatCard
-              label="Conversions tracked"
+              label="Converted"
               value={report.totalConversions}
               icon={CheckCircle2}
               color="text-emerald-700"
-              hint="Step runs marked converted_at"
+              hint="Enrolled contacts who went on to a transaction"
             />
             <StatCard
-              label="Conversion value"
-              value={`$${(report.totalConversionValueCents / 100).toLocaleString()}`}
-              icon={DollarSign}
+              label="Conversion rate"
+              value={report.totalEnrollments > 0
+                ? `${((report.totalConversions / report.totalEnrollments) * 100).toFixed(1)}%`
+                : "—"}
+              icon={TrendingUp}
               color="text-emerald-700"
-              hint="Sum of conversion_value_cents across attributed step runs"
+              hint="Converted ÷ enrollments in range"
             />
           </div>
 
@@ -180,7 +196,7 @@ export default function WorkflowReportsClient({
                             <tr key={channel} className="border-b last:border-0">
                               <td className="py-2.5 font-medium capitalize">{channel.replace(/_/g, " ")}</td>
                               <td className="text-right">{stats.runs}</td>
-                              <td className="text-right text-emerald-600">{stats.successes}</td>
+                              <td className="text-right text-emerald-700">{stats.successes}</td>
                               <td className="text-right text-red-600">{stats.failures}</td>
                               <td className="text-right">
                                 <Badge variant={successRate >= 80 ? "default" : successRate >= 50 ? "secondary" : "destructive"}>

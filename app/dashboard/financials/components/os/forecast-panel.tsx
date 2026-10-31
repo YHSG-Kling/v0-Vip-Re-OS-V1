@@ -72,7 +72,7 @@ export function ForecastPanel({
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <p className="text-xs text-muted-foreground">Projected Income</p>
-                <p className="text-lg font-bold text-green-600">
+                <p className="text-lg font-bold text-green-700">
                   {formatCurrency(yearEndProjection.projectedIncome)}
                 </p>
               </div>
@@ -90,7 +90,7 @@ export function ForecastPanel({
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Profit Margin</p>
-                <p className={`text-lg font-bold ${yearEndProjection.profitMargin >= 25 ? "text-green-600" : yearEndProjection.profitMargin >= 15 ? "text-amber-600" : "text-red-600"}`}>
+                <p className={`text-lg font-bold ${yearEndProjection.profitMargin >= 25 ? "text-green-700" : yearEndProjection.profitMargin >= 15 ? "text-amber-700" : "text-red-600"}`}>
                   {yearEndProjection.profitMargin.toFixed(1)}%
                 </p>
               </div>
@@ -124,7 +124,7 @@ export function ForecastPanel({
                   </div>
                   <div className="flex items-center gap-4 text-sm">
                     <div className="text-right">
-                      <span className="text-green-600 font-medium">
+                      <span className="text-green-700 font-medium">
                         {formatCurrency(month.projectedRevenue)}
                       </span>
                     </div>

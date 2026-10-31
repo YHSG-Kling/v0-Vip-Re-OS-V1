@@ -63,20 +63,33 @@ export function PerformanceDashboard({ magnetId, brokerageId, magnetName }: Prop
     setError(null)
     const result = await getMagnetPerformanceAction(magnetId)
     if (result.success) {
+      // Wave 14: these numbers are the ledger's now, not this component's.
+      // getMagnetPerformanceAction absorbed lib/kernel/lead-magnets.ts:
+      // getMagnetPerformance from the retired /api/lead-magnets/performance route,
+      // which counts lead_magnet_view / lead_magnet_qr_scan off lifecycle_events.
+      // This block used to set totalViews = submissions.length and conversionRate
+      // = 1 whenever a single submission existed — a panel that could only ever
+      // report a 100% conversion rate and zero QR scans.
       const subs = result.submissions ?? []
-      const byDay: Record<string, number> = {}
-      for (const sub of subs) {
-        const date = (sub as any).created_at?.substring(0, 10) ?? ""
-        if (date) byDay[date] = (byDay[date] ?? 0) + 1
+      if (result.performance) {
+        setPerformance(result.performance)
+      } else {
+        // The metrics read failed. Report what IS known (submissions) and leave
+        // the unknowable at zero rather than restating submissions as views.
+        const byDay: Record<string, number> = {}
+        for (const sub of subs) {
+          const date = ((sub as any).submitted_at ?? (sub as any).created_at)?.substring(0, 10) ?? ""
+          if (date) byDay[date] = (byDay[date] ?? 0) + 1
+        }
+        setPerformance({
+          totalViews: 0,
+          totalSubmissions: subs.length,
+          totalQrScans: 0,
+          conversionRate: 0,
+          submissionsByDay: Object.entries(byDay).map(([date, count]) => ({ date, count })),
+          topSources: [],
+        })
       }
-      setPerformance({
-        totalViews: subs.length,
-        totalSubmissions: subs.length,
-        totalQrScans: 0,
-        conversionRate: subs.length > 0 ? 1 : 0,
-        submissionsByDay: Object.entries(byDay).map(([date, count]) => ({ date, count })),
-        topSources: [],
-      })
     } else {
       setError(result.error ?? "Failed to load performance")
     }

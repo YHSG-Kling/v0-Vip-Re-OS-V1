@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { runDailyWealthScan } from "@/lib/wealth-advisor/scan-opportunities"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -17,10 +18,11 @@ export const maxDuration = 600
  * Schedule: `0 7 * * *` (7am UTC, after PLS scoring at 6am).
  */
 export async function GET(request: Request) {
-  const auth = request.headers.get("authorization")
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Fail closed (lane 86G): this compared against `Bearer ${process.env.CRON_SECRET}`,
+  // which is the literal "Bearer undefined" when the secret is unset — a
+  // guessable credential. Survivor: lib/cron-auth.ts verifyCronAuth.
+  const denied = verifyCronAuth(request)
+  if (denied) return denied
 
   const ctx = await createCronRunContextAction({
     cron_name: "wealth-opportunity-scan",

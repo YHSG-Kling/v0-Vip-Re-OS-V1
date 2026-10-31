@@ -125,6 +125,12 @@ const FIELD_QUESTIONS: Partial<Record<keyof ListingIntake, string>> = {
 export async function extractListingIntake(input: {
   text:  string
   prior?: ListingIntake
+  /** Tenant + actor for the AI cost ledger. Every caller resolves both
+   *  server-side — the assistant tool-call route from its session row, the
+   *  voice-assistant actions and the workflow route from `users.brokerage_id`
+   *  for the authenticated user. Never a request body (CLAUDE.md §4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<VoiceToListingResult> {
   const intake = input.prior ? structuredClone(input.prior) : emptyIntake()
 
@@ -151,6 +157,8 @@ JSON ONLY:`
   let extracted: Partial<ListingIntake> = {}
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.userId ?? null,
       feature: "listing_intake_extraction",
       messages: [{ role: "user", content: prompt }],
     })
@@ -231,6 +239,29 @@ function summarizeIntake(intake: ListingIntake): string {
   return lines.join("\n")
 }
 
+// KEPT, not merged with lib/workflow/intake/voice-to-offer.ts's
+// `intakeToOfferDraftParams` (same-body census, round 4, 2026-09-09, lane
+// FC): the two share a structural template but not a contract — this one
+// takes a `ListingIntake` (a different field set than `OfferIntake`), always
+// hard-codes `listingId: null` (a fresh listing draft never has one yet),
+// and its error names "listing agreement" rather than "offer". Forcing a
+// generic over the two intake types would trade a real behavioral
+// difference (the offer twin reads `intake.listingId.value`) for a thinner
+// abstraction, which §1.1 forbids.
+//
+// RE-VERIFIED — duplicates round 9, 2026-09-14, lane 63C: the census still
+// flags this pair as "SAME BODY" every run. It is a scanner false positive,
+// not a fresh regression: `diff` on the two functions' real text shows three
+// live differences (the input type name, the "listing agreement"/"offer"
+// error string, and the `listingId: null` vs
+// `listingId: input.intake.listingId.value ?? null` line) that a
+// whitespace/comment-only normalization cannot erase. The likely cause is
+// scripts/duplicate-function-census.ts's own documented blind spot: this
+// function's return type is itself an object literal (`): { brokerageId:
+// string; ...; listingId?: string | null }`), so its `{` can be misread as
+// the body-open brace, hashing the (identical) return-type shape instead of
+// the (different) body. Do not merge these on a future SAME BODY hit without
+// re-diffing them first — see the rationale above, which still holds.
 export function intakeToListingDraftParams(input: {
   intake:       ListingIntake
   brokerageId:  string

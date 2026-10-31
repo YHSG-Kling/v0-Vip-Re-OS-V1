@@ -55,7 +55,7 @@ export function BrokerageAgentList({ agents = [], brokerageId: _brokerageId }: B
   const getTrendIcon = (trend?: string) => {
     switch (trend) {
       case "up":
-        return <TrendingUp className="w-4 h-4 text-emerald-500" />
+        return <TrendingUp className="w-4 h-4 text-emerald-600" />
       case "down":
         return <TrendingDown className="w-4 h-4 text-red-500" />
       default:

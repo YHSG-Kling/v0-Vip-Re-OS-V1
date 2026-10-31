@@ -12,6 +12,7 @@
 // webhook retries.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -104,7 +105,10 @@ export async function ingestShowingTimeRequest(svc: Svc, input: {
   if ((listing as any)?.agent_id) {
     const { data: a } = await svc.from("agents").select("user_id").eq("id", (listing as any).agent_id).maybeSingle()
     if ((a as any)?.user_id) {
-      await svc.from("notifications").insert({
+      // Blind-spot burn-down (lane 75D, notification fan-out census) —
+      // sentinelWrite: every caller of this module hands it the
+      // service-role client (the webhook + the ingress reconciler).
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id:      (a as any).user_id,
         brokerage_id: brokerageId,
         type:         "showing.request.listing.showingtime",
@@ -114,11 +118,11 @@ export async function ingestShowingTimeRequest(svc: Svc, input: {
         entity_id:    (showing as any).id,
         priority:     "high",
         channel:      "in_app",
-      }).then(() => null, () => null)
+      }), { table: "notifications", flow: "showingtime_listing_agent_notify", brokerageId, reason: "the showing request itself already saved; this is only the agent heads-up" })
     }
   }
   if ((listing as any)?.seller_contact_id) {
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       contact_id:   (listing as any).seller_contact_id,
       brokerage_id: brokerageId,
       type:         "showing.request.seller",
@@ -128,7 +132,7 @@ export async function ingestShowingTimeRequest(svc: Svc, input: {
       entity_id:    (showing as any).id,
       priority:     "high",
       channel:      "in_app",
-    }).then(() => null, () => null)
+    }), { table: "notifications", flow: "showingtime_seller_notify", brokerageId, reason: "the showing request itself already saved; this is only the seller's portal heads-up" })
   }
   return { ok: true, showingRequestId: (showing as any).id }
 }

@@ -115,11 +115,20 @@ export async function resolveResponsibleAgentUserId(
       const u = await agentIdToUser((data as { recruiter_agent_id?: string | null } | null)?.recruiter_agent_id ?? null)
       if (u) return u
     } else if (msg.entity_type === "vendor_booking") {
-      const { data } = await supabase.from("vendor_bookings").select("contact_id").eq("id", msg.entity_id).maybeSingle()
-      const cid = (data as { contact_id?: string | null } | null)?.contact_id ?? null
+      const { data } = await supabase.from("vendor_bookings").select("contact_id, listing_id, booked_by").eq("id", msg.entity_id).maybeSingle()
+      const vb = data as { contact_id?: string | null; listing_id?: string | null; booked_by?: string | null } | null
+      const cid = vb?.contact_id ?? null
       if (cid) {
         const { data: c } = await supabase.from("contacts").select("agent_id").eq("id", cid).maybeSingle()
         const u = await agentIdToUser((c as { agent_id?: string | null } | null)?.agent_id ?? null)
+        if (u) return u
+      }
+      // Wave 107B — a PROCUREMENT request (lib/kernel/procurement.ts) has no contact: the human who asked
+      // (booked_by, a users.id) approves it, else the listing's agent.
+      if (vb?.booked_by) return vb.booked_by
+      if (vb?.listing_id) {
+        const { data: l } = await supabase.from("listings").select("agent_id").eq("id", vb.listing_id).maybeSingle()
+        const u = await agentIdToUser((l as { agent_id?: string | null } | null)?.agent_id ?? null)
         if (u) return u
       }
     }

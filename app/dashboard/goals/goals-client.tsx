@@ -14,16 +14,15 @@ import {
   aiRecommendGoals,
   aiCoachGoalProgress,
   syncGoalCurrentValues,
+  updateGoalProgress,
 } from "@/app/actions/ai-agent-goals"
+import { AGENT_GOAL_LABELS, isAgentGoalType, isAutoSynced } from "@/lib/goals/goal-types"
 
-const GOAL_LABELS: Record<string, string> = {
-  transactions: "Closed Transactions",
-  gci: "Gross Commission Income ($)",
-  listings_taken: "Listings Taken",
-  buyer_clients: "Buyer Clients Signed",
-  referrals_generated: "Referrals Generated",
-  reviews_requested: "Reviews Requested",
-}
+// DERIVED, not hand-written. This list used to name six goal types of which
+// FOUR were refused by agent_goals_goal_type_check — every save of those four
+// failed with 23514 while the page reported nothing wrong. The labels now come
+// from the same constant the server validates against.
+const GOAL_LABELS: Record<string, string> = AGENT_GOAL_LABELS
 
 const STATUS_CONFIG = {
   on_track: { label: "On Track", color: "bg-green-100 text-green-700" },
@@ -53,6 +52,9 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
   const [coaching, setCoaching] = useState<any>(null)
   const [recommendations, setRecommendations] = useState<any>(null)
   const [editTarget, setEditTarget] = useState<Record<string, string>>({})
+  // Wave 144 (lane 144Z): a MANUAL-tracking goal (isAutoSynced false — the sync cannot measure it) is logged by hand through the
+  // ONE progress writer (app/actions/ai-agent-goals.ts updateGoalProgress — gated, owner-pinned, records the goal's mission).
+  const [editProgress, setEditProgress] = useState<Record<string, string>>({})
   const [isPending, startTransition] = useTransition()
   const [coachLoading, setCoachLoading] = useState(false)
   const [recLoading, setRecLoading] = useState(false)
@@ -72,6 +74,21 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
         toast.success("Goal saved")
       } else {
         toast.error((result as any).error ?? "Failed to save goal")
+      }
+    })
+  }
+
+  const handleLogProgress = (goalType: string, goalId: string) => {
+    const val = Number(editProgress[goalType])
+    if (!Number.isFinite(val) || val < 0) { toast.error("Enter a progress value of 0 or more"); return }
+    startTransition(async () => {
+      const result = await updateGoalProgress({ goalId, agentId, currentValue: val })
+      if (result.success) {
+        setGoals(prev => prev.map(g => (g.id === goalId ? { ...g, current_value: val } : g)))
+        setEditProgress(prev => { const n = { ...prev }; delete n[goalType]; return n })
+        toast.success("Progress logged")
+      } else {
+        toast.error((result as { error?: string }).error ?? "Progress was not saved")
       }
     })
   }
@@ -154,8 +171,15 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
             <Card key={goalType}>
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium">
+                  <CardTitle className="text-sm font-medium flex items-center gap-1.5">
                     {GOAL_LABELS[goalType] ?? goalType.replace(/_/g, " ")}
+                    {/* isAutoSynced is the vocabulary's own verdict on whether the
+                        sync can measure this type — an unmeasurable one must say
+                        "update by hand" instead of showing a stalled zero as if
+                        the sync ran and found nothing. */}
+                    {isAgentGoalType(goalType) && !isAutoSynced(goalType) && (
+                      <Badge variant="outline" className="text-[10px] font-normal">manual tracking</Badge>
+                    )}
                   </CardTitle>
                   {goal && (
                     <span className="text-xs text-muted-foreground">
@@ -214,6 +238,29 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
                     {goal ? "Edit Target" : "Set Target"}
                   </Button>
                 )}
+                {goal && isAgentGoalType(goalType) && !isAutoSynced(goalType) && /^[0-9a-f-]{36}$/i.test(goal.id) && (
+                  goalType in editProgress ? (
+                    <div className="flex gap-2">
+                      <Input
+                        type="number"
+                        placeholder="Progress so far"
+                        className="h-8 text-sm"
+                        value={editProgress[goalType]}
+                        onChange={e => setEditProgress(prev => ({ ...prev, [goalType]: e.target.value }))}
+                      />
+                      <Button size="sm" className="h-8" onClick={() => handleLogProgress(goalType, goal.id)} disabled={isPending}>
+                        Log
+                      </Button>
+                      <Button size="sm" variant="ghost" className="h-8" onClick={() => setEditProgress(prev => { const n = { ...prev }; delete n[goalType]; return n })}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="ghost" className="h-9 text-xs w-full" onClick={() => setEditProgress(prev => ({ ...prev, [goalType]: goal.current_value.toString() }))}>
+                      Log progress
+                    </Button>
+                  )
+                )}
               </CardContent>
             </Card>
           )
@@ -246,7 +293,7 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
               <ul className="space-y-1">
                 {coaching.weeklyActions?.map((action: string, i: number) => (
                   <li key={i} className="text-sm flex items-start gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                    <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
                     {action}
                   </li>
                 ))}
@@ -255,7 +302,7 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
             {coaching.byGoal?.some((g: any) => g.status === "at_risk" || g.status === "behind") && (
               <div>
                 <p className="text-sm font-medium mb-2 flex items-center gap-1">
-                  <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
                   Needs Attention
                 </p>
                 {coaching.byGoal
@@ -330,7 +377,7 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
                 <ul className="space-y-1">
                   {recommendations.quickWins.map((w: string, i: number) => (
                     <li key={i} className="text-xs text-muted-foreground flex items-center gap-2">
-                      <CheckCircle2 className="h-3 w-3 text-green-500" />
+                      <CheckCircle2 className="h-3 w-3 text-green-600" />
                       {w}
                     </li>
                   ))}

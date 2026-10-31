@@ -176,6 +176,10 @@ async function loadBrokerageForms(input: {
       .eq("state", input.state)
       .eq("packet_type", input.packetType)
       .eq("is_active", true)
+      // BROKERAGE-WIDE packets only (wave 144, lane 144C — m853 gave the library a team owner). This engine is handed a
+      // brokerage and no person, so it cannot tell whose team a packet is shared with; a team packet reaches its own agents
+      // through the FormWizard (lib/forms/tenant-form-packets.ts listFormPacketsForActor), never another team's packet here.
+      .is("team_id", null)
     return data ?? []
   } catch {
     return []                       // table may not exist yet — graceful degrade

@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 import type { Metadata } from "next"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
@@ -8,6 +9,7 @@ import { Bed, Bath, Square, Calendar, MapPin, Phone, Mail } from "lucide-react"
 import { PublicShowingForm } from "./public-showing-form"
 import { OutsideAgentShowingForm } from "./outside-agent-showing-form"
 import { PublicInfoForm } from "./public-info-form"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -15,18 +17,56 @@ interface ListingPageProps {
   params: Promise<{ listingId: string }>
 }
 
+// ─── Coming Soon address rule (wave 145, lane 145Z — owner ruling 1; lane 145B Outside-lane 10) ──────────────────────
+// A PUBLIC page for a listing whose status is coming_soon prints only the line the address rule allows: the heading,
+// the location line, the metadata title, every alt/title attribute, and the remarks (scrubbed in redact mode). Any
+// other status prints the street as before. The rule's two reads (brokerage policy + executed listing agreement) need
+// the service client — the visitor is anonymous — and are pinned by the listing row's own brokerage; fail closed inside.
+interface PublicAddressDisplay { heading: string; locationLine: string; description: string | null; titleLine: string }
+async function publicAddressDisplay(listing: { id?: string | null; brokerage_id?: string | null; address: string | null; city: string | null; state: string | null; zip: string | null; status?: string | null; description?: string | null }): Promise<PublicAddressDisplay> {
+  const street: PublicAddressDisplay = {
+    heading: listing.address ?? "",
+    locationLine: [`${listing.city ?? ""}, ${listing.state ?? ""}`.replace(/^, |, $/g, ""), listing.zip ?? ""].filter(Boolean).join(" "),
+    description: listing.description ?? null,
+    titleLine: `${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}`,
+  }
+  if (listing.status !== "coming_soon") return street
+  const { resolveComingSoonCreativeAddress, guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+  if (!listing.id || !listing.brokerage_id) {
+    // No row identity to check the rule against → withhold (fail closed).
+    const loc = [listing.city, (listing.state ?? "").toUpperCase()].filter(Boolean).join(", ") || "this area"
+    return { heading: loc, locationLine: loc, description: null, titleLine: loc }
+  }
+  const row = { id: listing.id, brokerage_id: listing.brokerage_id, address: listing.address, city: listing.city, state: listing.state, zip: listing.zip }
+  const svc = createServiceClient()
+  const resolved = await resolveComingSoonCreativeAddress({ policyClient: svc as any, termsClient: svc as any, listing: row })
+  if (resolved.decision.disclose) return street
+  return {
+    heading: resolved.addressLine,
+    locationLine: resolved.publicLocation,
+    description: listing.description ? guardComingSoonCreativeText(listing.description, row, resolved, "redact").text : null,
+    titleLine: resolved.addressLine,
+  }
+}
+
+/** The statuses a public visitor may see (the listing row is the gate on this anonymous page). WAVE 147 (lane 147F, C12):
+ *  the ONE shared predicate (lib/listings/listing-status-sync.ts publiclyVisibleListingStatuses) — this page's own literal
+ *  list is gone; both reads below still pair it with `deleted_at IS NULL` (an archived listing is never public). */
+const PUBLIC_LISTING_STATUSES = publiclyVisibleListingStatuses()
+
 // ─── Metadata ────────────────────────────────────────────────────────────────
 
 export async function generateMetadata({ params }: ListingPageProps): Promise<Metadata> {
   const { listingId } = await params
-  const service = await createClient()
+  const service = createServiceClient()
 
   const { data: listing } = await service
     .from("listings")
-    .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
+    .select("id, brokerage_id, status, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
     .eq("id", listingId)
-    .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])
-    .single()
+    .in("status", PUBLIC_LISTING_STATUSES)
+    .is("deleted_at", null)
+    .maybeSingle()
 
   if (!listing) {
     return { title: "Listing Not Found" }
@@ -36,9 +76,10 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
     ? `$${Number(listing.list_price).toLocaleString()}`
     : "Price on Request"
 
-  const title = `${listing.address}, ${listing.city}, ${listing.state} ${listing.zip} — ${price}`
+  const shown = await publicAddressDisplay(listing as any)
+  const title = `${shown.titleLine} — ${price}`
   const description =
-    listing.description ||
+    shown.description ||
     `${listing.bedrooms ?? "?"} bed, ${listing.bathrooms ?? "?"} bath home in ${listing.city}, ${listing.state}. ${price}.`
 
   return {
@@ -56,18 +97,34 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
 
 export default async function PublicListingPage({ params }: ListingPageProps) {
   const { listingId } = await params
-  const service = await createClient()
+  // THE PUBLIC READ (wave 146, lane 146H — ruling 18 "validate each on its real surface"). This page is
+  // the ANONYMOUS visitor's listing page: the QR "View the listing" / "Book a time" targets
+  // (lib/marketing/qr-contract.ts listing_detail → /listings/<id>) and the public agent profile's listing
+  // cards (app/p/[agentSlug]/page.tsx) land here, and it carries the public showing-request form. It read
+  // through the SESSION client while its own comment said "service client": live RLS on `listings`
+  // admits only agents / brokers / TC / compliance / team leads / platform admin of the row's brokerage
+  // (pg_policies, read 2026-10-29) and `listing_media` only `authenticated` same-brokerage — so an
+  // anonymous visitor got notFound() and a signed-in visitor from another brokerage did too.
+  // The service client is safe HERE because the row itself is the gate: the id plus a PUBLIC status; every
+  // child read is pinned to that row's own id / brokerage.
+  // ARCHIVED IS HIDDEN (wave 146, lane 146Z): once the proxy made this page PUBLIC (app/constants/auth.ts
+  // classifyProxyPath), it stopped being a staff retention surface — the staff record page is
+  // app/dashboard/listings/[id] and getListingById, which still read archived rows. Whether an ARCHIVED
+  // listing should stay PUBLIC at its link is an OWNER question (lane 146H notes, Still open 5); until the owner
+  // answers, an archived listing is not shown to an anonymous visitor (`deleted_at` filtered — fail closed).
+  const service = createServiceClient()
 
-  // Fetch listing (no auth required — service client reads publicly relevant data)
   const { data: listing, error: listingError } = await service
     .from("listings")
     .select(
       "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks, property_type, year_built, mls_number, status, agent_id, brokerage_id, created_at"
     )
     .eq("id", listingId)
-    .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])
-    .single()
+    .in("status", PUBLIC_LISTING_STATUSES)
+    .is("deleted_at", null)
+    .maybeSingle()
 
+  if (listingError) console.error("[listings/public] listing read refused:", listingError.message)
   if (listingError || !listing) {
     notFound()
   }
@@ -77,21 +134,26 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
     service
       .from("listing_media")
       .select("id, file_url, thumbnail_url, media_type, sort_order, is_approved, approval_required")
-      .eq("listing_id", listingId)
+      .eq("listing_id", listing.id)
+      .eq("brokerage_id", listing.brokerage_id)
       .order("sort_order", { ascending: true }),
 
     (async () => {
       if (!listing.agent_id) return null
+      // listings.agent_id is an AGENTS id (m348); agents.id and users.id are DISJOINT (CLAUDE.md §3). This
+      // matched `agents.user_id = listing.agent_id`, which never matches, so the listing agent's card never
+      // rendered for anyone. Cross via agents.user_id, never by reusing one id as the other.
       const { data: agentRow } = await service
         .from("agents")
         .select("user_id, profile_image_url")
-        .eq("user_id", listing.agent_id)
+        .eq("id", listing.agent_id)
+        .eq("brokerage_id", listing.brokerage_id)
         .maybeSingle()
-      if (!agentRow) return null
+      if (!agentRow?.user_id) return agentRow ? { agentRow, userRow: null } : null
       const { data: userRow } = await service
         .from("users")
         .select("first_name, last_name, email, phone")
-        .eq("id", agentRow.user_id ?? listing.agent_id)
+        .eq("id", agentRow.user_id)
         .maybeSingle()
       return { agentRow, userRow }
     })(),
@@ -127,6 +189,8 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
   const price = listing.list_price
     ? `$${Number(listing.list_price).toLocaleString()}`
     : "Price on Request"
+
+  const shown = await publicAddressDisplay(listing as any)
 
   const statusLabel =
     listing.status === "active"
@@ -175,7 +239,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
         {heroPhoto?.file_url || heroPhoto?.thumbnail_url ? (
           <Image
             src={heroPhoto.file_url || heroPhoto.thumbnail_url}
-            alt={`${listing.address} — hero photo`}
+            alt={`${shown.heading} — hero photo`}
             fill
             className="object-cover"
             priority
@@ -202,11 +266,11 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
                   {statusLabel}
                 </span>
                 <h1 className="text-2xl sm:text-4xl font-bold text-white drop-shadow-md leading-tight">
-                  {listing.address}
+                  {shown.heading}
                 </h1>
                 <p className="text-white/90 text-sm sm:text-base mt-1 flex items-center gap-1">
                   <MapPin className="h-4 w-4 shrink-0" />
-                  {listing.city}, {listing.state} {listing.zip}
+                  {shown.locationLine}
                 </p>
               </div>
               <div className="text-right shrink-0">
@@ -258,11 +322,11 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {videos.map((video) => (
               <div key={video.id} className="rounded-xl overflow-hidden bg-black aspect-video">
-                <video
+                {/* ONE video slot (wave 142, lane 142F): poster + a functional fallback, never a broken player. */}
+                <LandingVideo
                   src={video.file_url}
-                  poster={video.thumbnail_url ?? undefined}
-                  controls
-                  playsInline
+                  poster={video.thumbnail_url ?? null}
+                  title={`${shown.heading || "Property"} video`}
                   className="w-full h-full object-cover"
                 />
               </div>
@@ -312,11 +376,11 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
           </section>
 
           {/* Description */}
-          {listing.description && (
+          {shown.description && (
             <section>
               <h2 className="text-lg font-semibold text-gray-900 mb-3">About This Property</h2>
               <p className="text-gray-700 leading-relaxed whitespace-pre-line">
-                {listing.description}
+                {shown.description}
               </p>
             </section>
           )}

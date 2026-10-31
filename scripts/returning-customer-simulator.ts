@@ -55,6 +55,32 @@ function pureLayer(): void {
   check("recalls the prior deal in the body (area + band + months)", /Oak Park/.test(draft.body) && /\$300–500k/.test(draft.body) && /month/.test(draft.body))
   check("rationale carries the dedup tag", draft.rationale.startsWith(REENGAGE_TAG))
   check("no-memory contact still gets a clean (generic) draft", !!composeReEngagement({ contactName: "Pat", memory: summarizePriorDeals([], "C"), signalType: "reactivation" }).body)
+
+  // ── signal PROVENANCE (§1.2, 2026-09-04) ───────────────────────────────────
+  // signal_reactivations.signal_strength / .signal_data / .isa_reactivated_at
+  // were written and read by nobody; the approver saw the signal's name alone.
+  // POSITIVE CONTROL: the line must be ABSENT when the facts are absent, so a
+  // passing "it renders" check cannot be satisfied by always printing it.
+  const withProvenance = composeReEngagement({
+    contactName: "James Carter", memory: mem, signalType: "returning_buyer_criteria_request",
+    signalStrength: 80, signalData: { source: "inbound_intent", side: "buyer" },
+    lastReactivatedAt: new Date(Date.parse("2026-07-01T00:00:00.000Z") - 3 * 86_400_000).toISOString(),
+    now: new Date("2026-07-01T00:00:00.000Z"),
+  })
+  // `check` in this file takes (name, cond) — a third "detail" argument type-checks
+  // nowhere and was the one error `tsc --noEmit` caught on integration. The detail
+  // prints on failure, which is where it was useful anyway.
+  const provenanceOk =
+    /strength 80/.test(withProvenance.rationale) &&
+    /via inbound_intent/.test(withProvenance.rationale) &&
+    /last re-engaged 3 days ago/.test(withProvenance.rationale)
+  if (!provenanceOk) console.log(`      rationale was: ${withProvenance.rationale}`)
+  check("rationale carries the signal's strength, source and prior re-engagement age", provenanceOk)
+
+  const noInventedProvenance = !/strength|via |last re-engaged/.test(draft.rationale)
+  if (!noInventedProvenance) console.log(`      rationale was: ${draft.rationale}`)
+  check("POSITIVE CONTROL — no provenance facts ⇒ NO provenance line invented (an absent strength is never printed as a number)",
+    noInventedProvenance)
 }
 
 async function liveLayer(): Promise<void> {

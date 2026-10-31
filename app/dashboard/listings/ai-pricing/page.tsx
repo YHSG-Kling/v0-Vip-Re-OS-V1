@@ -1,9 +1,8 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
   ArrowLeft,
@@ -16,6 +15,7 @@ import {
   Clock,
 } from "lucide-react"
 import Link from "next/link"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
 
@@ -24,6 +24,13 @@ export default async function ListingsAIPricingPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const service = createServiceClient()
   const { data: profile } = await service
     .from("users")
@@ -156,7 +163,7 @@ export default async function ListingsAIPricingPage() {
                           {/* Trend icon */}
                           <div className="flex items-center">
                             {pred.trend_direction === "up" ? (
-                              <TrendingUp className="h-5 w-5 text-green-500" />
+                              <TrendingUp className="h-5 w-5 text-green-600" />
                             ) : pred.trend_direction === "down" ? (
                               <TrendingDown className="h-5 w-5 text-red-500" />
                             ) : (
@@ -174,7 +181,7 @@ export default async function ListingsAIPricingPage() {
                               const pct = ((diff / currentPrice) * 100).toFixed(1)
                               const positive = diff >= 0
                               return (
-                                <p className={`text-xs ${positive ? "text-green-600" : "text-red-500"}`}>
+                                <p className={`text-xs ${positive ? "text-green-700" : "text-red-600"}`}>
                                   {positive ? "+" : ""}
                                   {pct}% ({positive ? "+" : ""}${Math.abs(diff).toLocaleString()})
                                 </p>
@@ -214,7 +221,7 @@ export default async function ListingsAIPricingPage() {
                           <p className="text-xs text-muted-foreground mb-1">Trend</p>
                           <div className="flex items-center gap-1.5">
                             {pred.trend_direction === "up" ? (
-                              <TrendingUp className="h-3.5 w-3.5 text-green-500" />
+                              <TrendingUp className="h-3.5 w-3.5 text-green-600" />
                             ) : pred.trend_direction === "down" ? (
                               <TrendingDown className="h-3.5 w-3.5 text-red-500" />
                             ) : (

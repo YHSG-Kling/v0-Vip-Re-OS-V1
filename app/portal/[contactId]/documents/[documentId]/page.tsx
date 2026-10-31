@@ -13,7 +13,6 @@ import {
   Sparkles,
   CheckCircle2,
   AlertTriangle,
-  XCircle,
   HelpCircle,
   Play,
   ChevronDown,
@@ -22,6 +21,7 @@ import {
 import Link from "next/link"
 import { getDocumentWithAnalysis, getEducationalOverlay, checkStateCompliance } from "@/app/actions/documents"
 import { loadActiveSignaturePacket, type ActiveSignaturePacket } from "@/app/actions/portal-document-requests"
+import { formatFieldName } from "@/lib/format/strings"
 
 export default function DocumentViewerPage() {
   const params = useParams()
@@ -45,7 +45,7 @@ export default function DocumentViewerPage() {
     async function loadDocument() {
       try {
         // Fetch document with metadata (using canonical schema columns)
-        const { document: doc, extractionLog: analysisData } = await getDocumentWithAnalysis(documentId)
+        const { document: doc, extractionLog: analysisData } = await getDocumentWithAnalysis(documentId, contactId)
         
         if (!doc) {
           setDocument(null)
@@ -91,12 +91,9 @@ export default function DocumentViewerPage() {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }))
   }
 
-  const formatFieldName = (key: string) => {
-    return key
-      .replace(/_/g, " ")
-      .replace(/([A-Z])/g, " $1")
-      .replace(/^./, (str) => str.toUpperCase())
-  }
+  // `formatFieldName` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to lib/format/strings.ts `formatFieldName`
+  // (imported above).
 
   const formatFieldValue = (value: any) => {
     if (typeof value === "number") {
@@ -131,7 +128,7 @@ export default function DocumentViewerPage() {
   const isPdf = document.file_type?.includes("pdf")
 
   return (
-    <div className="flex h-[calc(100vh-4rem)]">
+    <div className="flex flex-col lg:flex-row lg:h-[calc(100vh-4rem)]">
       {/* Left: Document Preview */}
       <div className="flex-1 bg-muted/30 p-6 overflow-auto">
         <div className="mb-4">
@@ -154,8 +151,8 @@ export default function DocumentViewerPage() {
         </div>
       </div>
 
-      {/* Right: Educational Sidebar */}
-      <div className="w-96 bg-background border-l overflow-auto">
+      {/* Right: Educational Sidebar — stacks under the preview on phones (wave 141, 141I mobile census) */}
+      <div className="w-full lg:w-96 bg-background border-t lg:border-t-0 lg:border-l overflow-auto">
         <div className="p-6 space-y-6">
           {/* Document Info */}
           <div>
@@ -309,7 +306,7 @@ export default function DocumentViewerPage() {
                       <ul className="mt-2 space-y-1 pl-5">
                         {educationalOverlay.red_flags_to_watch.map((flag: string, idx: number) => (
                           <li key={idx} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <span className="text-red-500">•</span>
+                            <span className="text-red-600">•</span>
                             {flag}
                           </li>
                         ))}
@@ -323,7 +320,7 @@ export default function DocumentViewerPage() {
                   <div>
                     <button
                       onClick={() => toggleSection("proTips")}
-                      className="flex items-center justify-between w-full text-sm text-green-600 hover:text-green-700 font-medium"
+                      className="flex items-center justify-between w-full text-sm text-green-700 hover:text-green-700 font-medium"
                     >
                       <span className="flex items-center gap-1">
                         <Sparkles className="h-4 w-4" />
@@ -337,7 +334,7 @@ export default function DocumentViewerPage() {
                       <ul className="mt-2 space-y-1 pl-5">
                         {educationalOverlay.pro_tips.map((tip: string, idx: number) => (
                           <li key={idx} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <span className="text-green-500">•</span>
+                            <span className="text-green-700">•</span>
                             {tip}
                           </li>
                         ))}
@@ -372,12 +369,23 @@ export default function DocumentViewerPage() {
                 (owner rule) — with a direct route to the envelope when the provider gave one. */}
             {signaturePacket && (
               signaturePacket.signingUrl ? (
-                <Button className="w-full" asChild>
-                  <a href={signaturePacket.signingUrl} target="_blank" rel="noopener noreferrer">
-                    <PenTool className="h-4 w-4 mr-2" />
-                    Sign Document
-                  </a>
-                </Button>
+                <>
+                  <Button className="w-full" asChild>
+                    <a href={signaturePacket.signingUrl} target="_blank" rel="noopener noreferrer">
+                      <PenTool className="h-4 w-4 mr-2" />
+                      Sign Document
+                    </a>
+                  </Button>
+                  {signaturePacket.signingOrder.length > 1 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Signing order: {signaturePacket.signingOrder.map((s, i) => `${i + 1}. ${s.name} (${s.role})`).join(" → ")}
+                    </p>
+                  ) : signaturePacket.signers.length > 1 && (
+                    <p className="text-xs text-muted-foreground">
+                      Also signing: {signaturePacket.signers.map((s) => `${s.name} (${s.role})`).join(", ")}
+                    </p>
+                  )}
+                </>
               ) : (
                 <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-800 dark:text-blue-200">
                   <p className="font-medium flex items-center gap-1.5"><PenTool className="h-4 w-4" /> Ready for your signature</p>
@@ -385,6 +393,15 @@ export default function DocumentViewerPage() {
                     Your signing invite{signaturePacket.sentAt ? ` was sent ${new Date(signaturePacket.sentAt).toLocaleDateString()}` : " is on its way"} — open the email from your e-sign provider to sign.
                     {signaturePacket.expiresAt ? ` It expires ${new Date(signaturePacket.expiresAt).toLocaleDateString()}.` : ""}
                   </p>
+                  {signaturePacket.signingOrder.length > 1 ? (
+                    <p className="mt-1 text-xs">
+                      Signing order: {signaturePacket.signingOrder.map((s, i) => `${i + 1}. ${s.name} (${s.role})`).join(" → ")}
+                    </p>
+                  ) : signaturePacket.signers.length > 1 && (
+                    <p className="mt-1 text-xs">
+                      Also signing: {signaturePacket.signers.map((s) => `${s.name} (${s.role})`).join(", ")}
+                    </p>
+                  )}
                 </div>
               )
             )}

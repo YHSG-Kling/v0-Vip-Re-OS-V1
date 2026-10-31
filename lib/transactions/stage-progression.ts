@@ -1,7 +1,9 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
-import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage, STAGE_TO_STATUS_MAP } from "./transaction-stages"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage, STAGE_TO_STATUS_MAP, MILESTONE_NAMES } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
+import { resolveMilestoneIdentity } from "./milestone-identity"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { seedStageAutoTasks } from "./stage-auto-tasks"
 import { seedTransactionComplianceChecks } from "./compliance-checks-seeder"
@@ -13,6 +15,12 @@ export interface StageProgressionResult {
   blockers?: string[]
   error?: string
 }
+
+/** The VERIFIED-CLOSING stage — the one transition the review ask, the lifetime conversion and the post-close
+ *  touchpoints key on. Named once so the gate and the close effects cannot drift apart. */
+const CLOSED_STAGE: TransactionStage = "CLOSED"
+/** The CDA milestone CRITICAL_MILESTONES pins on CLOSING_PREP — required only when the brokerage uses a CDA. */
+const CDA_MILESTONE: string = MILESTONE_NAMES.CDA_DELIVERED
 
 /**
  * Check if transaction can advance to next stage
@@ -28,7 +36,8 @@ export async function canAdvanceStage(
   const blockers: string[] = []
 
   // 1. Validate transition is allowed by state machine
-  const allowedTargets = STAGE_TRANSITIONS[currentStage]
+  // An unknown / null current stage has no allowed targets — refused by name, never a TypeError out of the gate.
+  const allowedTargets: TransactionStage[] = STAGE_TRANSITIONS[currentStage] ?? []
   if (!allowedTargets.includes(targetStage)) {
     return {
       allowed: false,
@@ -58,16 +67,53 @@ export async function canAdvanceStage(
     blockers.push("compliance_passed_at must be set before advancing to post-contract stages")
   }
 
-  // 5. Check critical milestones for current stage
-  const criticalForStage = CRITICAL_MILESTONES[currentStage] || []
+  // 5. Check critical milestones for current stage.
+  //    CDA IF THE BROKERAGE REQUIRES ONE (owner, wave 142: "CDA … available ONLY when brokerage settings say the
+  //    brokerage uses CDA … Disabled → no mandatory CDA … NOTHING BLOCKS CLOSING"; wave 144 ruling 19: "CDA if the
+  //    brokerage requires"). CRITICAL_MILESTONES pins `cda_delivered` on CLOSING_PREP for EVERY deal, so a brokerage
+  //    that never uses a CDA could never leave closing prep. The ONE answer to "does this brokerage use a CDA?" is
+  //    lib/transactions/cda-closing-policy.ts resolveCdaMode over brokerages.offers_cda — read here, never re-spelled.
+  //    FAIL CLOSED (§4): a refused read keeps the milestone requirement (and says why); only an explicit no-CDA answer
+  //    lifts it.
+  let criticalForStage = CRITICAL_MILESTONES[currentStage] || []
+  if (criticalForStage.includes(CDA_MILESTONE)) {
+    const { data: brokerageRow, error: brokerageErr } = await supabase
+      .from("brokerages")
+      .select("offers_cda, non_cda_payout_default")
+      .eq("id", brokerageId)
+      .maybeSingle()
+    if (brokerageErr || !brokerageRow) {
+      blockers.push(`CDA requirement could not be read (${brokerageErr?.message ?? "brokerage not found"}) — the CDA milestone stays required`)
+    } else {
+      const { resolveCdaMode } = await import("./cda-closing-policy")
+      const mode = resolveCdaMode({
+        offersCda: (brokerageRow as { offers_cda?: boolean | null }).offers_cda ?? null,
+        nonCdaPayoutDefault: (brokerageRow as { non_cda_payout_default?: string | null }).non_cda_payout_default ?? null,
+      })
+      if (!mode.cdaRequired) criticalForStage = criticalForStage.filter((m) => m !== CDA_MILESTONE)
+    }
+  }
   if (criticalForStage.length > 0) {
-    const milestones = await getMilestones(transactionId, brokerageId)
-    
+    // A milestone read that FAILS refuses the advance with its reason (fail closed, §4) instead of throwing out of
+    // the gate.
+    let milestones: Array<{ milestone_type?: string | null; milestone_name?: string | null; status?: string | null; completed_at?: string | null }> = []
+    try {
+      milestones = await getMilestones(transactionId, brokerageId)
+    } catch (e) {
+      blockers.push(`Critical milestones could not be read (${e instanceof Error ? e.message : String(e)})`)
+    }
+
+    // ONE milestone vocabulary (§6). transaction_milestones carries milestone_type + milestone_name — there is NO
+    // `name` column (scripts/schema-snapshot.ts), so the `m.name === criticalName` lookup that stood here never matched
+    // a real row: every advance out of INSPECTION / APPRAISAL / FINANCING_PENDING / CLOSING_PREP was refused with
+    // "not found", the gated close was unreachable, and closings went through the ungated door instead. The canonical
+    // bridge is lib/transactions/milestone-identity.ts resolveMilestoneIdentity (closing-orchestration and the
+    // milestone service already read it); completion is completed_at OR status 'completed', as detectCDAMissing reads it.
     for (const criticalName of criticalForStage) {
-      const milestone = milestones.find(m => m.name === criticalName)
+      const milestone = milestones.find((m) => resolveMilestoneIdentity(m) === criticalName)
       if (!milestone) {
         blockers.push(`Critical milestone "${criticalName}" not found`)
-      } else if (!milestone.completed_at) {
+      } else if (!milestone.completed_at && milestone.status !== "completed") {
         blockers.push(`Critical milestone "${criticalName}" must be completed`)
       }
     }
@@ -78,25 +124,19 @@ export async function canAdvanceStage(
     .from("transactions")
     .select("contact_id, offer_id")
     .eq("id", transactionId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
-  // 7. Check contingency initialed status from offer/contract intelligence
-  if (txn?.offer_id && targetStage !== "LOST") {
-    const { data: offer } = await supabase
-      .from("offers")
-      .select("contingencies, appraisal_contingency_days, financing_contingency_days, inspection_period_days")
-      .eq("id", txn.offer_id)
-      .maybeSingle()
-
-    if (offer) {
-      // Block if any contingency is not initialed (contingencies array contains un-initialed items)
-      const contingencies = offer.contingencies ?? []
-      const notInitialed = contingencies.filter((c: string) => c && !c.toLowerCase().includes("initialed"))
-      if (notInitialed.length > 0) {
-        blockers.push(`Contingencies not initialed: ${notInitialed.join(", ")}`)
-      }
-    }
-  }
+  // 7. TOMBSTONE (wave 144, lane 144B): "Contingencies not initialed" — this step read offers.contingencies (a list
+  //    of contingency TYPES: createOffer writes ["financing", "inspection", "appraisal"], app/actions/buyer-offers.ts)
+  //    and refused every advance while any entry lacked the substring "initialed". No writer ever stores an initialing
+  //    state there, so every deal with a contingency was frozen at UNDER_CONTRACT. Initials are verified on the
+  //    EXECUTED DOCUMENTS before the transaction exists — SURVIVOR: lib/transactions/transaction-creation-gate.ts
+  //    (obligation 4, INITIALS ARE COMPLETE, via lib/compliance/signature-completeness.ts) — and re-checked on the
+  //    closing packet by lib/transactions/closing-compliance.ts (step 9 below). Whether a contingency must be actively
+  //    REMOVED before closing depends on the state and the contract form (an active removal form in some, a deadline
+  //    that lapses on its own in others) and is not invented here; transactions.*_contingency_removed_at stay the
+  //    record the closing managers (closing-orchestration, deal-autopsy, fire-drills) read.
 
   // 8. Check compliance_flags for unresolved deal_breaker severity by contact linkage
   if (txn?.contact_id) {
@@ -105,7 +145,7 @@ export async function canAdvanceStage(
       .select("id, flag_type:violation_type, severity, status")
       .eq("contact_id", txn.contact_id)
       .eq("severity", "deal_breaker")
-      .in("status", ["unresolved", "flagged"])
+      .in("status", ["flagged"])
 
     if (dealBreakerFlags && dealBreakerFlags.length > 0) {
       for (const flag of dealBreakerFlags) {
@@ -114,8 +154,13 @@ export async function canAdvanceStage(
     }
   }
 
-  // 9. Block CLOSING_PREP if any blocking transaction compliance checks have failed
-  if (targetStage === "CLOSING_PREP") {
+  // 9. Block CLOSING_PREP — AND the CLOSE itself — if any blocking transaction compliance check has failed or is
+  //    still pending / needs review. CLOSING COMPLIANCE (lib/transactions/closing-compliance.ts runClosingCompliance:
+  //    governing terms vs the settlement statement, the closing-stage checklist, signatures/initials, closing
+  //    participants) writes its findings as blocking transaction_compliance_log rows and is typically re-run DURING
+  //    closing prep, when the final statement lands. Asking this gate only on the way INTO closing prep let a
+  //    mismatch found afterwards close the deal anyway (wave 144, lane 144B). The SAME rule, read by the SAME function.
+  if (targetStage === "CLOSING_PREP" || targetStage === CLOSED_STAGE) {
     const complianceResult = await canProceedToClosingPrep(transactionId, brokerageId)
     if (!complianceResult.allowed) {
       blockers.push(...complianceResult.blockers)
@@ -207,10 +252,19 @@ export async function advanceStage(params: {
   // LOWERCASE coarse status (transactions_status_check). Writing the UPPERCASE stage straight into
   // status violated the status CHECK, so Postgres rejected the WHOLE row and no advance past
   // UNDER_CONTRACT ever persisted. Map stage → the valid status value instead.
+  // THE VERIFIED-CLOSING DATE. `close_date` is written at transaction creation from the CONTRACT's scheduled closing
+  // (lib/transactions/offer-bridge.ts contractDeadlines.closingDate), and closeTransactionCommand overwrites it with the
+  // day the deal really closed. This writer — the gated stage machine's close — left the SCHEDULED date in place, so
+  // the review ask (lib/reputation/review-ask.ts: close_date + the tenant's delay) and the post-close touchpoints were
+  // timed from a date on the contract instead of the verified closing event (owner, wave 144 ruling 19: "Review
+  // requests fire at the VERIFIED closing event, not a scheduled date"). Same atomic write as the stage.
+  const closesDeal = params.targetStage === CLOSED_STAGE
+  const closedOn = new Date().toISOString().slice(0, 10)
   const stageUpdate = {
     stage: params.targetStage,
     status: STAGE_TO_STATUS_MAP[params.targetStage],
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
+    ...(closesDeal ? { close_date: closedOn } : {}),
   }
   // tenant anchor (scope burn-down): pinned to the caller's transaction + brokerage
   const { error: updateError } = await supabase
@@ -235,6 +289,32 @@ export async function advanceStage(params: {
     eventType:    "stage.advanced",
     metadata:     { reason: params.reason ?? null },
   })
+
+  // 4b. KernelEvent.TRANSACTION_STAGE_CHANGED — CLAUDE.md §1 (BUILD the missing half, lane Z1
+  // 2026-09-08 hunt 3): the dotted `lifecycle.stage.advanced` row above is the audit trail, but
+  // nothing was ever emitting the ENUM event that the kernel event-reactor, the portal ("Deal
+  // update" card), the just-in-time education firer, the deal-ended contact-recheck, and the Deal
+  // Coordinator spawn trigger all read (lib/kernel/event-reactor.ts, lib/kernel/event-fanout.ts) —
+  // every one of them was silently dead on the real stage-advance path since this IS where a
+  // transaction's stage actually changes. Best-effort / non-blocking: the stage write above already
+  // succeeded, so a fan-out failure here must not undo or fail the advance.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.TRANSACTION_STAGE_CHANGED,
+      brokerageId: params.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: params.userId,
+      metadata: {
+        from_stage: currentStage,
+        to_stage:   params.targetStage,
+        reason:     params.reason ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[stage-progression] emitTransactionEvent(TRANSACTION_STAGE_CHANGED) failed (non-blocking)", err)
+  }
 
   // 5. Seed stage auto-tasks for the new stage
   await seedStageAutoTasks({
@@ -402,12 +482,46 @@ export async function advanceStage(params: {
 
     // ── Session D: Close Listing requirements ─────────────────────────────────
     // 1. Get transaction to find seller_contact_id and listing_id
-    const { data: closedTxn } = await supabase
+    const { data: closedTxn, error: closedTxnErr } = await supabase
       .from("transactions")
-      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date")
+      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date, brokerage_id, agent_id")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
+    if (closedTxnErr) console.error(`[stage-progression] closed transaction re-read REFUSED (${closedTxnErr.message}) — the close landed; the post-close fan-out below runs on what could be read`)
+
+    // ── THE CLOSE IS AN EVENT (wave 144, lane 144B) ───────────────────────────
+    // lib/kernel/transactions.ts closeTransactionCommand — the other close door — emits TRANSACTION_CLOSED and
+    // DEAL_CLOSED. This door (the GATED one) emitted only TRANSACTION_STAGE_CHANGED, so for a deal closed through the
+    // stage machine the post-close sequences (campaign_sequences trigger_event 'transaction_closed'), the portal
+    // "Closed!" cards (event-fanout), the deal_closed notification rules, tenant webhooks, gamification and the
+    // journey resume (JOURNEY_PROGRESS_CONTRACT: "Journey resumes on transaction.closed") never fired. Same events,
+    // same payload shape as the kernel close; a per-transaction dedupe key so one closing fans out once. Best-effort:
+    // the close already landed.
+    try {
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      for (const event of [KernelEvent.TRANSACTION_CLOSED, KernelEvent.DEAL_CLOSED]) {
+        const emitted = await emitKernelEvent({
+          event,
+          brokerageId:     params.brokerageId,
+          entityType:      "transaction",
+          entityId:        params.transactionId,
+          transactionId:   params.transactionId,
+          listingId:       (closedTxn?.listing_id as string | null) ?? undefined,
+          buyerContactId:  (closedTxn?.buyer_contact_id as string | null) ?? undefined,
+          sellerContactId: (closedTxn?.seller_contact_id as string | null) ?? undefined,
+          actorUserId:     params.userId,
+          agentUserId:     params.userId,
+          metadata:        { reason: params.reason ?? null, close_date: closedOn, closed_via: "stage_machine" },
+          dedupeKey:       `${event}:${params.transactionId}`,
+          dedupeWindowSec: 7 * 86_400,
+        })
+        if (emitted.error) console.error(`[stage-progression] ${event} for transaction ${params.transactionId}: ${emitted.error}`)
+      }
+    } catch (e) {
+      console.error("[stage-progression] TRANSACTION_CLOSED / DEAL_CLOSED emit failed (non-blocking):", e)
+    }
 
     // ── AI-PREDICTION CLOSE-TIME GRADER (owner round 36) ──────────────────────
     // The deal just CLOSED — the one moment the real outcome exists. Stamp
@@ -435,51 +549,90 @@ export async function advanceStage(params: {
       console.error("[stage-progression] ai-prediction close-time grading failed:", e)
     }
 
-    // 2. Update seller contact_type to the CANONICAL lifetime_customer (migration 433) so they enter the
-    //    past-client journey AND every contact_type reader (reel persona, referral radar, portal role)
-    //    recognizes them. Writing the legacy 'lifetime' here drifted from the listing close path.
-    if (closedTxn?.seller_contact_id) {
-      await supabase
-        .from("contacts")
-        .update({
-          contact_type: LIFETIME_CUSTOMER_TYPE,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", closedTxn.seller_contact_id)
+    // 2. CONTACT → LIFETIME, THROUGH THE ONE WRITER (wave 144, lane 144B — §1 case 1: the duplicate merged onto the
+    //    survivor). TOMBSTONE: an inline `contacts.update({ contact_type: lifetime_customer, lifecycle_state: … })` for
+    //    the SELLER only stood here. It (a) never converted the BUYER of a deal closed through the stage machine,
+    //    (b) ignored the tenant's lifetime_conversion policy, so a brokerage that holds conversion until the agent's
+    //    payout is recorded ("CLOSED / PAYOUT PENDING", owner wave 142) was converted anyway, and (c) scheduled no
+    //    post-close touchpoints. SURVIVOR: lib/kernel/lifetime-conversion.ts — lifetimeConversionVerdict +
+    //    promoteDealContactsToLifetime (both parties, both columns, tenant-pinned, COUNTED, the touchpoint schedule
+    //    ONCE per transaction) or holdLifetimeConversionPendingPayout, the exact sequence closeTransactionCommand runs,
+    //    released later by markCommissionPaid → releaseLifetimeConversionOnPayout. The close itself is the verified
+    //    closing (canAdvanceStage above gated it); its records are the ones that gate requires.
+    let sellerConvertedToLifetime = false
+    const lifetimeContactIds = [closedTxn?.buyer_contact_id, closedTxn?.seller_contact_id]
+      .filter((id): id is string => typeof id === "string" && id.length > 0)
+    if (lifetimeContactIds.length > 0) {
+      try {
+        const { readLifetimeConversionPolicy, lifetimeConversionVerdict, promoteDealContactsToLifetime, holdLifetimeConversionPendingPayout } =
+          await import("@/lib/kernel/lifetime-conversion")
+        const policy = await readLifetimeConversionPolicy(supabase, params.brokerageId)
+        const verdict = lifetimeConversionVerdict({ closed: true, requiredRecordsComplete: true, payoutVerified: false, requirePayoutVerified: policy.requirePayoutVerified })
+        // agents.id of the DEAL's agent (transactions.agent_id FKs agents) — the touchpoints belong to the agent on the
+        // deal, never to whoever clicked the stage change.
+        const agentRecordId = (closedTxn?.agent_id as string | null) ?? null
+        if (verdict.action === "convert") {
+          const promotion = await promoteDealContactsToLifetime(supabase, {
+            brokerageId: params.brokerageId, transactionId: params.transactionId, contactIds: lifetimeContactIds,
+            agentRecordId, closeDate: closedOn,
+          })
+          for (const e of promotion.errors) console.error(`[stage-progression] lifetime conversion at close: ${e}`)
+          // COUNTED (§3): every party on the deal matched — the seller is a lifetime customer now.
+          sellerConvertedToLifetime = !!closedTxn?.seller_contact_id && promotion.promoted === lifetimeContactIds.length
+        } else {
+          const hold = await holdLifetimeConversionPendingPayout(supabase, { brokerageId: params.brokerageId, transactionId: params.transactionId, contactIds: lifetimeContactIds, agentRecordId })
+          if (hold.error) console.error(`[stage-progression] lifetime conversion HOLD (${verdict.label}) not recorded: ${hold.error}`)
+        }
+      } catch (e) {
+        console.error("[stage-progression] lifetime conversion step failed:", e instanceof Error ? e.message : String(e))
+      }
+    }
 
+    if (closedTxn?.seller_contact_id) {
       // Promote the past client into the FB retargeting audiences (brokerage + agent) —
       // past clients are the highest-ROI referral/repeat + lookalike-seed audience, and the
       // lifetime transition previously had no audience hook. Consent-gated, idempotent,
-      // non-blocking (a sync hiccup never blocks closing the deal).
-      try {
-        const { onContactBecameLifetimeForAudience } = await import("@/lib/audiences/audience-sync")
-        void onContactBecameLifetimeForAudience({
-          contactId: closedTxn.seller_contact_id, brokerageId: params.brokerageId,
-        }).catch((e) => console.error("[stage-progression] lifetime audience promote failed:", e))
-      } catch { /* best-effort */ }
+      // non-blocking (a sync hiccup never blocks closing the deal). Only once the seller IS a
+      // lifetime customer: a conversion the tenant holds until payout is not one yet.
+      if (sellerConvertedToLifetime) {
+        try {
+          const { onContactBecameLifetimeForAudience } = await import("@/lib/audiences/audience-sync")
+          void onContactBecameLifetimeForAudience({
+            contactId: closedTxn.seller_contact_id, brokerageId: params.brokerageId,
+          }).catch((e) => console.error("[stage-progression] lifetime audience promote failed:", e))
+        } catch { /* best-effort */ }
 
-      // Content channel — keep the past client on the AGENT's newsletter (source 'auto_lifetime').
-      try {
-        const { enrollContactInNewsletter } = await import("@/lib/content/newsletter-enrollment")
-        void enrollContactInNewsletter({ contactId: closedTxn.seller_contact_id, brokerageId: params.brokerageId, tier: "lifetime" })
-          .catch((e) => console.error("[stage-progression] lifetime newsletter enroll failed:", e))
-      } catch { /* best-effort */ }
+        // Content channel — keep the past client on the AGENT's newsletter (source 'auto_lifetime').
+        try {
+          const { enrollContactInNewsletter } = await import("@/lib/content/newsletter-enrollment")
+          void enrollContactInNewsletter({ contactId: closedTxn.seller_contact_id, brokerageId: params.brokerageId, tier: "lifetime" })
+            .catch((e) => console.error("[stage-progression] lifetime newsletter enroll failed:", e))
+        } catch { /* best-effort */ }
+      }
 
       // 3. Grant portal access to the sold listing view if not already enabled
-      await supabase
+      //    Tenant comes from the TRANSACTION record this grant hangs off —
+      //    closedTxn.brokerage_id, which the select above already constrained
+      //    to params.brokerageId, so the row cannot carry a tenant the deal
+      //    doesn't belong to. Unstamped it would be readable AND writable by
+      //    every brokerage (`brokerage_id IS NULL OR …` policy), which for a
+      //    portal-access grant means any tenant could toggle a client's portal.
+      await sentinelWrite(supabase, supabase
         .from("contact_portal_modules")
         .upsert({
+          brokerage_id: closedTxn.brokerage_id,
           contact_id: closedTxn.seller_contact_id,
           module_key: "sold_listing",
           is_enabled: true,
-          enabled_by_agent_id: params.userId,
+          // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+          enabled_by_agent_id: await resolveAgentId(supabase, params.userId),
           enabled_at: new Date().toISOString(),
-        }, { onConflict: "contact_id,module_key" })
+        }, { onConflict: "contact_id,module_key" }), { table: "contact_portal_modules", flow: "contact_portal_modules_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     // 4. Mark the listing as sold
     if (closedTxn?.listing_id) {
-      await supabase
+      const { error: listingSoldErr } = await supabase
         .from("listings")
         .update({
           status: "sold",
@@ -489,37 +642,25 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
+      if (listingSoldErr) console.error(`[stage-progression] listing NOT marked sold on close: ${listingSoldErr.message}`)
+
+      // A newly-closed listing grades the listing_price accuracy rail — drop the
+      // accuracy-gate's cached verdicts so autonomy reflects the new track record
+      // without waiting out the TTL or a process restart. Best-effort.
+      try {
+        const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+        __clearAccuracyGateCache()
+      } catch { /* cache invalidation is never load-bearing */ }
     }
 
-    // 5. Auto-schedule review request draft (5 days post-close)
-    // Creates a draft in review_requests so it's ready; agent is notified via task at day 5
-    void (async () => {
-      try {
-        const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
-        await aiGenerateReviewRequest({
-          transactionId: params.transactionId,
-          agentId: params.userId,
-          platform: "google",
-          channel: "email",
-        })
-
-        // Schedule an agent notification 5 days from now to send the review
-        const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
-        await supabase.from("activities").insert({
-          brokerage_id: params.brokerageId,
-          agent_id: params.userId,
-          activity_type: "review_request_scheduled",
-          title: "Review request ready to send",
-          notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,
-          entity_type: "transaction",
-          entity_id: params.transactionId,
-          status: "pending",
-          scheduled_at: sendDate.toISOString(),
-        })
-      } catch {
-        // Non-blocking — review request draft failure doesn't affect close
-      }
-    })()
+    // 5. TOMBSTONE (wave 143, lane 143E): "Auto-schedule review request draft (5 days post-close)" — this hook drafted a
+    //    `pending` review_requests row at the stage move AND wrote a reminder activity a hard-coded 5 days out (ignoring
+    //    the tenant's review_request_delay_days). The pending row then made the review-request-on-close cron skip the
+    //    client (its dedupe was "any review_requests row for this contact"), so the autonomous ask never went out; the
+    //    reminder told the agent to send a draft nobody had reviewed. SURVIVOR: lib/reputation/review-ask.ts
+    //    askForReviewAtClose — the ONE path from a verified closing (status closed | funded) to a sent ask, called by
+    //    app/api/cron/review-request-on-close once the tenant's delay has elapsed. Nothing is written here: the closing
+    //    IS the trigger, and the engine owns timing, duplicates, platform, copy screening and the send.
   } else if (params.targetStage === "LOST") {
     // ── AI-PREDICTION CLOSE-TIME GRADER, lost side (owner round 36) ───────────
     // LOST is the other REAL terminal event — grading only wins would inflate

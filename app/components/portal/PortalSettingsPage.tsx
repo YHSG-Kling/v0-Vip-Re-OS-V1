@@ -11,9 +11,12 @@ import { Switch } from "@/components/ui/switch"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle, Globe } from "lucide-react"
 import Link from "next/link"
-import { updateContactProfile } from "@/app/actions/portal-settings"
+import { uploadProfilePhoto, updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
+import { AccessibilityPreferencesCard } from "@/components/contact/AccessibilityPreferencesCard"
+import type { AccessibilityOptionLists, AccessibilityPreferences } from "@/lib/contacts/accessibility-preferences"
 
 interface Contact {
   id: string
@@ -28,7 +31,9 @@ interface Contact {
   zip_code?: string
   avatar_url?: string
   contact_persona?: string
-  preferred_contact_method?: string
+  /** contacts.preferred_channel — the person's stated channel (email / sms / phone). */
+  preferred_channel?: string | null
+  preferred_language?: string
   notes?: string
   metadata?: Record<string, any>
 }
@@ -36,10 +41,72 @@ interface Contact {
 interface PortalSettingsPageProps {
   contact: Contact
   contactId: string
+  /** LOCALE_TO_ELEVENLABS_LANGUAGE's 23 codes, resolved server-side (§6 —
+   *  the ONE vocabulary, lib/video/multilingual-reel.ts LANGUAGE_OPTIONS). */
+  languageOptions: { code: string; name: string }[]
+  /** Accessibility preferences (wave 145, owner ruling 18) — the person's own choices + the ONE vocabulary's options,
+   *  read server-side through lib/contacts/accessibility-preferences.ts. */
+  accessibility: {
+    initial: AccessibilityPreferences
+    options: AccessibilityOptionLists
+    unavailable: string | null
+  }
 }
 
-export default function PortalSettingsPage({ contact, contactId }: PortalSettingsPageProps) {
+export default function PortalSettingsPage({ contact, contactId, languageOptions, accessibility }: PortalSettingsPageProps) {
+  // Both privacy controls below used to render with no onClick at all. These
+  // are CCPA/CPRA and GDPR obligations with a statutory clock, so a control
+  // that silently does nothing is worse than no control — the client believes
+  // they have exercised a right.
+  const [dsarPending, setDsarPending] = useState<"export" | "delete" | null>(null)
+  const [dsarResult, setDsarResult] = useState<{ type: "export" | "delete"; dueDate?: string } | null>(null)
+  const [dsarError, setDsarError] = useState<string | null>(null)
+
+  async function fileRequest(requestType: "export" | "delete") {
+    if (requestType === "delete" && !confirm(
+      "This files a formal request to delete your account and personal data. Your brokerage must action it, and they will contact you to confirm. Continue?",
+    )) return
+    setDsarPending(requestType)
+    setDsarError(null)
+    try {
+      const res = await fileDataSubjectRequestFromPortal({ contactId, requestType })
+      if (!res.success) {
+        setDsarError(res.error ?? "We could not file that request. Please contact your agent.")
+        return
+      }
+      setDsarResult({ type: requestType, dueDate: res.dueDate })
+    } finally {
+      setDsarPending(null)
+    }
+  }
+
   const router = useRouter()
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [photoMsg, setPhotoMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // The 2MB limit is enforced HERE as well as advertised below the button.
+  // Without it the file goes to storage, Supabase rejects it, and the client
+  // sees a raw provider error for a rule we already told them about.
+  const MAX_AVATAR_BYTES = 2 * 1024 * 1024
+
+  const handlePhotoUpload = async (file: File) => {
+    setPhotoMsg(null)
+    if (file.size > MAX_AVATAR_BYTES) {
+      setPhotoMsg({ ok: false, text: "That image is over 2MB. Pick a smaller one." })
+      return
+    }
+    setUploadingPhoto(true)
+    const res = await uploadProfilePhoto(contact.id, file)
+    setUploadingPhoto(false)
+    // Returns { success, url, error } and never throws — read it.
+    if (res.success) {
+      setPhotoMsg({ ok: true, text: "Photo updated." })
+      router.refresh()
+    } else {
+      setPhotoMsg({ ok: false, text: res.error ?? "That photo could not be uploaded." })
+    }
+  }
+
   const [isSaving, setIsSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -53,7 +120,12 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
   const [city, setCity] = useState(contact.city || "")
   const [state, setState] = useState(contact.state || "")
   const [zipCode, setZipCode] = useState(contact.zip_code || "")
-  const [preferredContact, setPreferredContact] = useState(contact.preferred_contact_method || "email")
+  // The live column is preferred_channel (wave 145, lane 145Z); the readers' word for text is "sms".
+  const [preferredContact, setPreferredContact] = useState(contact.preferred_channel === "sms" ? "text" : (contact.preferred_channel || "email"))
+  // Owner ruling (wave 51): default is English wherever a language is
+  // resolved and none is known — "en" here means "not yet set", matching
+  // lib/video/multilingual-reel.ts DEFAULT_LANGUAGE, never a second literal.
+  const [preferredLanguage, setPreferredLanguage] = useState(contact.preferred_language || "en")
 
   // Notification preferences — HYDRATED from the buyer's saved choices (contacts.metadata), so the
   // panel reflects reality. A missing key falls back to its sensible default (opt-in for service
@@ -99,7 +171,8 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
         city,
         state,
         zip_code: zipCode,
-        preferred_contact_method: preferredContact,
+        preferred_channel: preferredContact === "text" ? "sms" : preferredContact,
+        preferred_language: preferredLanguage,
       })
 
       if (result.success) {
@@ -157,7 +230,7 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link href={`/portal/${contactId}`}>
-            <Button variant="ghost" size="icon">
+            <Button variant="ghost" size="icon" aria-label="Back">
               <ArrowLeft className="h-5 w-5" />
             </Button>
           </Link>
@@ -208,12 +281,36 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                 <AvatarImage src={contact.avatar_url || "/placeholder.svg"} alt={displayName} />
                 <AvatarFallback className="bg-primary text-primary-foreground text-2xl">{initials}</AvatarFallback>
               </Avatar>
+              {/* Had no onClick, no file input, nothing. uploadProfilePhoto was
+                  complete — storage upload, signed URL for the private bucket,
+                  contact row update — with ZERO callers, and this file already
+                  imported two of its siblings from the same module. */}
               <div className="space-y-2">
-                <Button variant="outline" size="sm">
-                  <Camera className="h-4 w-4 mr-2" />
-                  Upload Photo
-                </Button>
+                <label htmlFor="portal-avatar-input">
+                  <Button variant="outline" size="sm" asChild>
+                    <span className="cursor-pointer">
+                      <Camera className="h-4 w-4 mr-2" />
+                      {uploadingPhoto ? "Uploading…" : "Upload Photo"}
+                    </span>
+                  </Button>
+                </label>
+                <input
+                  id="portal-avatar-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  className="hidden"
+                  disabled={uploadingPhoto}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) handlePhotoUpload(f)
+                  }}
+                />
                 <p className="text-xs text-muted-foreground">JPG, PNG or GIF. Max size 2MB.</p>
+                {photoMsg && (
+                  <p className={`text-xs ${photoMsg.ok ? "text-emerald-700" : "text-destructive"}`}>
+                    {photoMsg.text}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -335,6 +432,30 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                 </div>
               </div>
 
+              <Separator />
+
+              <div className="space-y-2">
+                <Label htmlFor="preferredLanguage" className="flex items-center gap-2">
+                  <Globe className="h-4 w-4" />
+                  Preferred Language
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  The language your avatar videos, updates, and captions are delivered in
+                </p>
+                <Select value={preferredLanguage} onValueChange={setPreferredLanguage}>
+                  <SelectTrigger id="preferredLanguage" className="w-full sm:w-64">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {languageOptions.map((opt) => (
+                      <SelectItem key={opt.code} value={opt.code}>
+                        {opt.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="flex justify-end pt-4">
                 <Button onClick={handleSaveProfile} disabled={isSaving}>
                   <Save className="h-4 w-4 mr-2" />
@@ -343,6 +464,15 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
               </div>
             </CardContent>
           </Card>
+
+          {/* Accessibility preferences (wave 145, owner ruling 18) — the person's own choices; nothing is assumed. */}
+          <AccessibilityPreferencesCard
+            contactId={contactId}
+            mode="self"
+            initial={accessibility.initial}
+            options={accessibility.options}
+            unavailable={accessibility.unavailable}
+          />
         </TabsContent>
 
         {/* Notifications Tab */}
@@ -455,25 +585,41 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
               <CardDescription>Control your data and privacy preferences</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label className="text-base">Share Activity with Agent</Label>
-                  <p className="text-sm text-muted-foreground">Allow your agent to see your property search activity</p>
-                </div>
-                <Switch defaultChecked />
+              {/* TOMBSTONE (wave 147, lane 147H — owner ruling 9: "every exposed function works, gives an honest
+                  configuration message, or leaves the advertised launch surface"). Two DISABLED switches stood here
+                  (wave 141I made them honest: they had no handler, column or reader), each captioned "Not available yet".
+                  · "Share Activity with Agent" was never a preference this product offers: the agent sees the client's
+                    portal activity BY DESIGN (it is how the agent helps — lib/portal-stream/**). A switch that can never
+                    work left the launch surface; what stands now is the rule itself, stated, and the real exits (the
+                    data-subject requests below — fileDataSubjectRequestFromPortal).
+                  · "Family Search Visibility" was a toggle for a control that ALREADY EXISTS one screen away: who sees
+                    your ratings and comments is exactly who is on your shared search, managed (invite / remove) on the
+                    portal search page (CollaborativeSearchDashboard → app/actions/collaborative-search.ts inviteFamilyMember
+                    / removeMember). It is now a link to that control — present-but-unwired, wired. */}
+              <div className="space-y-0.5">
+                <Label className="text-base">Activity your agent sees</Label>
+                <p className="text-sm text-muted-foreground">
+                  Your agent sees what you do on this portal — saved homes, searches and the listings you open — so they can
+                  help with your search. That is part of how the portal works rather than a setting. If you want it to stop,
+                  ask your agent to close your portal access, or use Delete Account below.
+                </p>
               </div>
 
               <Separator />
 
-              {/* Family Search Visibility - Only for family-oriented personas */}
-              {["first_time_buyer", "military_buyer", "upsizing", "relocating"].includes(contact.contact_persona || "") && (
+              {/* Family search visibility — the family-oriented personas the portal search page offers a shared search to */}
+              {["first_time_buyer", "military_buyer", "upsizing", "relocating", "repeat_buyer"].includes(contact.contact_persona || "") && (
                 <>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-4">
                     <div className="space-y-0.5">
-                      <Label className="text-base">Family Search Visibility</Label>
-                      <p className="text-sm text-muted-foreground">Allow family members to see your ratings and comments</p>
+                      <Label className="text-base">Who sees your ratings and comments</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Only the family members on your shared search. Invite or remove them on your search page.
+                      </p>
                     </div>
-                    <Switch defaultChecked />
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href={`/portal/${contactId}/search`}>Manage shared search</Link>
+                    </Button>
                   </div>
 
                   <Separator />
@@ -487,8 +633,17 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                     Get a copy of all your data including documents, messages, and activity
                   </p>
                 </div>
-                <Button variant="outline" size="sm">
-                  Request Data Export
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileRequest("export")}
+                  disabled={dsarPending !== null || dsarResult?.type === "export"}
+                >
+                  {dsarPending === "export"
+                    ? "Filing request..."
+                    : dsarResult?.type === "export"
+                      ? "Request filed"
+                      : "Request Data Export"}
                 </Button>
               </div>
 
@@ -501,9 +656,31 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                     Permanently delete your account and all associated data
                   </p>
                 </div>
-                <Button variant="destructive" size="sm">
-                  Delete Account
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => fileRequest("delete")}
+                  disabled={dsarPending !== null || dsarResult?.type === "delete"}
+                >
+                  {dsarPending === "delete"
+                    ? "Filing request..."
+                    : dsarResult?.type === "delete"
+                      ? "Request filed"
+                      : "Delete Account"}
                 </Button>
+
+                {/* Say what actually happens. Deletion is a governed, audited
+                    act with a human in the loop — the button files a request,
+                    it does not erase anything on the spot, and pretending
+                    otherwise would be the same lie in the other direction. */}
+                {dsarResult && (
+                  <p className="text-sm text-green-700">
+                    Your {dsarResult.type === "delete" ? "deletion" : "data export"} request has been
+                    filed{dsarResult.dueDate ? ` and is due by ${new Date(dsarResult.dueDate).toLocaleDateString()}` : ""}.
+                    Your brokerage has been notified and will contact you.
+                  </p>
+                )}
+                {dsarError && <p className="text-sm text-destructive">{dsarError}</p>}
               </div>
             </CardContent>
           </Card>

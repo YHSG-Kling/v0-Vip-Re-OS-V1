@@ -145,18 +145,59 @@ async function main() {
   const year = now2.getUTCFullYear()
   const yearStart = new Date(Date.UTC(year, 0, 1)).toISOString().slice(0, 10)
   const cleanup: Array<{ table: string; id: string }> = []
+  // The cap is seeded into agent_cap_tracking — the LEDGER. Either the agent
+  // already has a window covering today (m461 backfilled four), in which case its
+  // cap_amount is borrowed and restored, or a window is created and deleted.
   let savedCap: number | null | undefined
+  let borrowedCapRowId: string | null = null
+  let seededCapRowId: string | null = null
   let agentId: string | null = null
 
   try {
-    const { data: agent } = await svc.from("agents").select("id, brokerage_id, cap_amount").not("brokerage_id", "is", null).limit(1).single()
+    const { data: agent } = await svc.from("agents").select("id, brokerage_id").not("brokerage_id", "is", null).limit(1).single()
     if (!agent) { console.log("  ⏭  Skipped — need an agent."); report(); return }
     const brokerageId = (agent as any).brokerage_id
     agentId = (agent as any).id
-    savedCap = (agent as any).cap_amount
 
-    // Configure a known cap so distance is deterministic: cap 100k.
-    await svc.from("agents").update({ cap_amount: 100000 }).eq("id", agentId)
+    // ── CONFIGURE A KNOWN CAP, IN THE PLACE THE ENGINE READS ─────────────────
+    //
+    // This used to write `agents.cap_amount = 100000` — and resolveCap used to
+    // PREFER that column over the ledger, so the simulator was proving the
+    // forecaster agreed with a copy the commission engine never applies. Once
+    // resolveCap was corrected to read agent_cap_tracking only, seeding the
+    // agents row would have proved nothing at all: the assertion below would
+    // have failed for the right reason, and the fix is to seed the right table,
+    // not to relax the assertion.
+    //
+    // The window MUST CONTAIN `now2` — that is stage 07's filter and resolveCap
+    // uses the same one — so it is anchored on the run date rather than a fixed
+    // date that could fall outside it.
+    const today2 = now2.toISOString().slice(0, 10)
+    const { data: liveCapRows, error: liveCapErr } = await svc
+      .from("agent_cap_tracking")
+      .select("id, cap_amount")
+      .eq("agent_id", agentId).eq("brokerage_id", brokerageId)
+      .lte("anniversary_start", today2).gte("anniversary_end", today2)
+      .limit(1)
+    if (liveCapErr) { console.log(`  ⏭  Skipped — could not read the cap ledger: ${liveCapErr.message}`); report(); return }
+
+    const liveCapRow = (liveCapRows ?? [])[0] as { id: string; cap_amount: number | null } | undefined
+    if (liveCapRow) {
+      // Borrow the existing window rather than inserting a second overlapping
+      // one: resolveCap takes .limit(1) over a date range, so two matching rows
+      // would make which cap it sees a matter of ordering luck.
+      borrowedCapRowId = liveCapRow.id
+      savedCap = liveCapRow.cap_amount
+      await svc.from("agent_cap_tracking").update({ cap_amount: 100000 }).eq("id", liveCapRow.id)
+    } else {
+      const { data: seeded } = await svc.from("agent_cap_tracking").insert({
+        agent_id: agentId, brokerage_id: brokerageId,
+        anniversary_start: `${now2.getUTCFullYear()}-01-01`,
+        anniversary_end: `${now2.getUTCFullYear()}-12-31`,
+        cap_amount: 100000, cap_paid_to_date: 0, is_capped: false,
+      }).select("id").single()
+      seededCapRowId = (seeded as any)?.id ?? null
+    }
 
     const { data: con } = await svc.from("contacts").select("id").eq("brokerage_id", brokerageId).limit(1).maybeSingle()
     const contactId = (con as any)?.id ?? null
@@ -213,13 +254,26 @@ async function main() {
       .ilike("rationale", `%agent:${agentId}%`)
     check("idempotent: one forecast per agent per week (no duplicate)", (msgCount ?? 0) === 1, `count=${msgCount}, secondRunProposed=${r2.forecastsProposed}`)
   } finally {
-    // Restore the agent's original cap.
-    if (agentId) { try { await svc.from("agents").update({ cap_amount: savedCap ?? null }).eq("id", agentId) } catch { /* noop */ } }
+    // Put the cap ledger back exactly as it was: a BORROWED window keeps its
+    // original cap_amount, a SEEDED one is deleted outright. Money rows are not
+    // left behind, and a borrowed row is never deleted — cap_paid_to_date on it
+    // is real collections history.
+    if (borrowedCapRowId) {
+      try { await svc.from("agent_cap_tracking").update({ cap_amount: savedCap ?? null }).eq("id", borrowedCapRowId) } catch { /* noop */ }
+    }
+    if (seededCapRowId) {
+      try { await svc.from("agent_cap_tracking").delete().eq("id", seededCapRowId) } catch { /* noop */ }
+    }
     for (const c of [...cleanup].reverse()) {
       try { await svc.from(c.table).delete().eq("id", c.id) } catch { /* noop */ }
     }
     const { count } = await svc.from("transactions").select("id", { count: "exact", head: true }).like("property_address", `${TAG}%`)
     check("cleanup verified — 0 seeded transactions remain", (count ?? 0) === 0)
+    if (seededCapRowId) {
+      const { count: capLeft } = await svc.from("agent_cap_tracking")
+        .select("id", { count: "exact", head: true }).eq("id", seededCapRowId)
+      check("cleanup verified — the seeded cap ledger row is gone", (capLeft ?? 0) === 0)
+    }
   }
 
   report()

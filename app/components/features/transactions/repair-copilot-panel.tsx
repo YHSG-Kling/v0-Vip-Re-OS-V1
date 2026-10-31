@@ -144,7 +144,7 @@ export function RepairCoPilotPanel({ transactionId, side }: Props) {
       </div>
 
       {error && (
-        <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2">{error}</p>
+        <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">{error}</p>
       )}
 
       {result && result.transactionSnapshot && (

@@ -12,6 +12,7 @@
  * Valid share_channel: 'facebook' | 'twitter' | 'linkedin' | 'whatsapp'
  *   | 'email_share' | 'copy_link'
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -37,13 +38,13 @@ export async function POST(req: NextRequest) {
   const p = post as { id: string; brokerage_id: string | null } | null
   if (!p || !p.brokerage_id) return NextResponse.json({ error: "blog post not found" }, { status: 404 })
 
-  await svc.from("blog_post_share_clicks").insert({
+  await sentinelWrite(svc, svc.from("blog_post_share_clicks").insert({
     blog_post_id:            p.id,
     brokerage_id:            p.brokerage_id,
     viewer_contact_id:       body.contact_id ?? null,
     viewer_persona_snapshot: body.persona_snapshot ?? null,
     share_channel:           body.share_channel,
-  })
+  }), { table: "blog_post_share_clicks", flow: "blog_post_share_clicks_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   try { await svc.rpc("increment_blog_share_count", { p_blog_post_id: p.id }) }
   catch { /* best-effort denormalized counter */ }
   return NextResponse.json({ ok: true })

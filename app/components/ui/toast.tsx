@@ -31,7 +31,10 @@ const toastVariants = cva(
       variant: {
         default: 'border bg-background text-foreground',
         destructive:
-          'destructive group border-destructive bg-destructive text-destructive-foreground',
+          // dark:bg-destructive/60 — the SAME composite the Button and Badge primitives use (wave 146, 146Z): the dark
+          // destructive token is bright enough for error TEXT on the dark background, which leaves a full-opacity fill
+          // below AA for its label (3.60:1); composited at /60 it reads 7.74:1 (scripts/ui-palette-contrast-guard.ts DARK_PAIRS).
+          'destructive group border-destructive bg-destructive text-destructive-foreground dark:bg-destructive/60',
       },
     },
     defaultVariants: {

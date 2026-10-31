@@ -14,9 +14,13 @@ import type { AgentCapability } from '@/lib/intelligence/agent-registry'
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  // Verify internal API secret
+  // Verify internal API secret — FAIL CLOSED when unset (CLAUDE.md §4). The old
+  // comparison interpolated the env var into the template, so an unset secret
+  // produced the literal expected value "Bearer undefined", which any caller
+  // could type. A gate that cannot run must refuse, not pass.
+  const expectedSecret = process.env.INTERNAL_API_SECRET
   const authHeader = request.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.INTERNAL_API_SECRET}`) {
+  if (!expectedSecret || authHeader !== `Bearer ${expectedSecret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   

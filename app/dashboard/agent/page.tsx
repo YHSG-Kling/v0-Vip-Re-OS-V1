@@ -4,8 +4,16 @@ import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
-import { generateDailyGameplan } from "@/app/actions/copilot"
+import { getPendingFollowups } from "@/app/actions/activities"
+import {
+  generateDailyGameplan,
+  executeCopilotTask,
+  suggestNextActions,
+  analyzeContactPriority,
+  checkOverdueMilestones,
+} from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
+import { resolveAutopilotActionStatus } from "@/app/actions/open-house-kernel"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
 import AutonomyHaltNotice from "@/app/components/shell/autonomy-halt-notice"
@@ -15,8 +23,10 @@ import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-ma
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
-import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { initiateWhisperBridge, triggerAiVoiceCall } from "@/app/actions/voice-call-bridge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
 import ReactMarkdown from "react-markdown"
@@ -38,7 +48,7 @@ import { AgentFinancialIntelligence } from "./components/agent-financial-intelli
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
-import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
+import { NewContactHandoffPanel } from "./components/handoff"
 import { PredictiveListingCard } from "./components/predictive-listing-card"
 import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
 import { DealRiskWidget } from "./components/deal-risk-widget"
@@ -52,6 +62,7 @@ import { getAgentRevenueProtection, type AgentRevenueProtection } from "@/app/ac
 import { IncomeForecastCard } from "./components/income-forecast-card"
 import { getAgentIncomeForecast, type AgentIncomeForecast } from "@/app/actions/lifetime-npv"
 import { OpenActionsCard } from "./components/open-actions-card"
+import { ResumeIntakeCard } from "./components/resume-intake-card"
 import { AgentActionQueueCard } from "./components/agent-action-queue-card"
 import { TimeToValueCard } from "./components/time-to-value-card"
 import { ConnectionHealthCard } from "./components/connection-health-card"
@@ -110,12 +121,42 @@ export default function AgentDashboard() {
   const [revenueProtection, setRevenueProtection] = useState<AgentRevenueProtection | null>(null)
   const [incomeForecast, setIncomeForecast] = useState<AgentIncomeForecast | null>(null)
   const [actionPlans, setActionPlans] = useState<any[]>([])
+  /**
+   * §1.2 — the reader for ai_autopilot_actions.executed_at. null means the
+   * count could not be read (a refusal), which is NOT the same as zero and is
+   * rendered differently.
+   */
+  const [autopilotResolvedToday, setAutopilotResolvedToday] = useState<number | null>(0)
   const [aiInsights, setAiInsights] = useState<AiInsightRow[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
   const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
   const [gameplan, setGameplan] = useState<any>(null)
   const [gameplanLoading, setGameplanLoading] = useState(false)
+  // Gameplan rows were read-only text. runCopilotTask turns each one into the
+  // action it names, through the single copilot executor (executeCopilotTask ->
+  // initiateWhisperBridge / sendPropertyMatches / checkTransactionDeadlines).
+  const [copilotTaskId, setCopilotTaskId] = useState<string | null>(null)
+  // LOOSE ENDS — suggestNextActions is the deterministic counterpart to the
+  // LLM-written briefing: unanswered inbound messages, showings still missing
+  // feedback, and clients who have not been contacted in 14+ days, each with the
+  // ids behind them. It was complete and had no caller anywhere in the repo.
+  const [nextActions, setNextActions] = useState<Array<{
+    type: string
+    priority: string
+    action: string
+    contact_ids?: string[]
+    showing_ids?: string[]
+  }>>([])
+  // Per-contact "why is this person on my list" read (analyzeContactPriority).
+  const [priorityById, setPriorityById] = useState<Record<string, {
+    priority: string
+    score: number
+    factors: string[]
+    recommended_action: string
+  }>>({})
+  const [priorityLoadingId, setPriorityLoadingId] = useState<string | null>(null)
+  const [scanningMilestones, setScanningMilestones] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -211,55 +252,166 @@ export default function AgentDashboard() {
         const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
           .toISOString().split('T')[0]
 
-        // 5. Load action plans from activities table
-        const { data: plans } = await supabase
+        // 5. Load action plans from activities table.
+        // This sat OUTSIDE the `if (agentRow)` block above and re-reached for
+        // agentRow?.id — with no agents row the filter matched nothing and the
+        // agent's "next actions" feed rendered empty, which reads as "you are
+        // all caught up" rather than "we could not look this up".
+        const { data: plans } = agentRow?.id ? await supabase
           .from("activities")
           .select("id, title, description, priority, contact_id")
-          .eq("agent_id", agentRow?.id)
+          .eq("agent_id", agentRow.id)
           .eq("activity_type", "agent_action_plan")
           .eq("status", "pending")
           .order("created_at", { ascending: false })
-          .limit(5)
+          .limit(5) : { data: null }
 
         // 5b. Merge queued AI Autopilot next-actions (open-house follow-ups from
         // lib/kernel/open-house.ts) into the same suggestions feed — labeled by
         // source. ai_autopilot_actions.agent_id references agents.id.
         let autopilotPlans: any[] = []
         if (agentRow?.id) {
+          // ORPHAN DOCTRINE §1.2 (2026-09-04) — `metadata` joined this select.
+          // lib/kernel/open-house.ts:543/659 writes the whole substance of an
+          // open-house follow-up into it — the AI-DRAFTED MESSAGE
+          // (`suggested_message`), the attendee's interest level, the open house
+          // it came from — and nothing read any of it. So the agent was shown a
+          // one-line "Send follow-up: Dana" while the message the platform had
+          // already written for them sat in a column with no reader, and the
+          // check-in score that decides how urgent it is was invisible.
           const { data: autopilotActions, error: autopilotError } = await supabase
             .from("ai_autopilot_actions")
-            .select("id, title, description, priority, action_type, entity_type, entity_id, scheduled_for")
+            .select("id, title, description, priority, action_type, entity_type, entity_id, scheduled_for, metadata")
             .eq("agent_id", agentRow.id)
             .eq("status", "pending")
             .order("scheduled_for", { ascending: true })
             .limit(5)
 
           if (!autopilotError && autopilotActions) {
-            autopilotPlans = autopilotActions.map((a: any) => ({
-              id: a.id,
-              title: a.title || a.action_type?.replace(/_/g, " ") || "Suggested action",
-              description: a.description || undefined,
-              priority: a.priority || undefined,
-              contact_id: a.entity_type === "contact" ? a.entity_id : null,
-              source: "AI Autopilot",
+            autopilotPlans = autopilotActions.map((a: any) => {
+              const meta = (a.metadata ?? {}) as Record<string, unknown>
+              const suggested = typeof meta.suggested_message === "string" ? meta.suggested_message : null
+              const interest = typeof meta.interest_level === "number" ? meta.interest_level : null
+              return {
+                id: a.id,
+                title: a.title || a.action_type?.replace(/_/g, " ") || "Suggested action",
+                // The drafted message IS the description when one exists; the
+                // generic description is the fallback, never the other way round.
+                description: suggested || a.description || undefined,
+                priority: a.priority || undefined,
+                contact_id: a.entity_type === "contact" ? a.entity_id : null,
+                // `source` stays the EXACT literal "AI Autopilot": the card
+                // matches on it to decide whether to offer the executed/skipped
+                // buttons (agent-next-best-actions.tsx:146), so decorating it
+                // with the interest score would have silently removed the only
+                // way to resolve these rows. The score travels beside it.
+                source: "AI Autopilot",
+                sourceDetail: interest !== null ? `interest ${interest}/5` : undefined,
+              }
+            })
+          }
+
+          // §1.2 — `executed_at`, written by app/actions/open-house-kernel.ts:438
+          // when an agent marks a suggestion executed or skipped, was read by
+          // nobody: the feed could only ever show what is still PENDING, so an
+          // agent who cleared every suggestion saw the same empty list as one
+          // whose autopilot never produced any. A refused read is logged, not
+          // rendered as "you did nothing" (§4).
+          const dayAgo = new Date(Date.now() - 86_400_000).toISOString()
+          const { count: resolvedToday, error: resolvedError } = await supabase
+            .from("ai_autopilot_actions")
+            .select("id", { count: "exact", head: true })
+            .eq("agent_id", agentRow.id)
+            .gte("executed_at", dayAgo)
+          if (resolvedError) {
+            console.error("[agent-dashboard] autopilot resolved-count read refused:", resolvedError.message)
+            setAutopilotResolvedToday(null)
+          } else {
+            setAutopilotResolvedToday(resolvedToday ?? 0)
+          }
+        }
+
+        // 5c. Pending FOLLOW-UPS from the same `activities` table — the half of
+        // it this feed had never read. Step 5 above filters
+        // activity_type='agent_action_plan'; every followup / callback / reminder
+        // / task row that logActivity (app/actions/activities.ts) writes is a
+        // DISJOINT activity_type, so those rows were being written and never
+        // shown anywhere. An agent who scheduled a callback saw it nowhere.
+        //
+        // Read through the gated action rather than a fourth inline query: it
+        // resolves the agent from the SESSION and refuses a mismatch, and it
+        // brings the contact along so the card can say who the callback is with.
+        let followupPlans: any[] = []
+        // agentRow.id, NOT user.id. `activities.agent_id` is AGENTS-class (the
+        // same id steps 5 and 5b filter on) and getPendingFollowups compares the
+        // argument against the session's resolved agents.id — handing it a
+        // users.id would come back "Forbidden" for the agent's own follow-ups.
+        if (agentRow?.id) {
+          const followupRes = await getPendingFollowups(agentRow.id, 5)
+          if (followupRes.error) {
+            // Same posture as the insights feed below: this page has no error
+            // surface for its dashboard reads, so a refusal is logged rather
+            // than rendered as an empty "you are all caught up".
+            console.error("[v0] pending follow-ups read refused:", followupRes.error)
+          } else {
+            followupPlans = (followupRes.followups || []).map((f: any) => ({
+              id: f.id,
+              title:
+                f.title ||
+                [f.activity_type?.replace(/_/g, " "), f.contacts?.first_name, f.contacts?.last_name]
+                  .filter(Boolean)
+                  .join(" ") ||
+                "Follow-up",
+              description: f.description || undefined,
+              priority: f.priority || undefined,
+              contact_id: f.contact_id ?? null,
+              source: "Follow-up",
             }))
           }
         }
 
-        setActionPlans([...(plans || []), ...autopilotPlans])
+        setActionPlans([...(plans || []), ...autopilotPlans, ...followupPlans])
 
         // 5c. AI Insights feed — writers (app/actions/ai-predictions.ts) insert
-        // insight_title/insight_description and usually leave agent_id null, so
-        // include unattributed rows; RLS scopes reads to the caller's brokerage.
-        if (agentRow?.id) {
+        // insight_title/insight_description and almost always leave agent_id
+        // null, so unattributed rows are deliberately INCLUDED: an insight about
+        // a transaction or a market shift belongs to the desk, not to one agent.
+        //
+        // THE BROKERAGE PREDICATE IS THIS QUERY'S ONLY TENANT BOUNDARY, and it is
+        // stated here rather than assumed of RLS. The policy on ai_insights is
+        // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`,
+        // so the database admits every untenanted row from every tenant — the
+        // widening above would have widened ACROSS brokerages, not within one.
+        // agents.brokerage_id is NOT NULL and is already loaded above, so the
+        // filter is `.eq`, which also excludes brokerage_id IS NULL: the 64
+        // pre-rollout rows that nothing records a tenant for stay out of the
+        // feed rather than being shown to whoever loads the page first.
+        //
+        // actionable_steps / entity_type / entity_id: every one of the eleven
+        // ai_insights writers in app/actions/ai-predictions.ts records WHAT the
+        // insight is about and WHAT TO DO about it, and until this select the
+        // feed showed only title/description — the "do this next" half of every
+        // insight was written and never read. The card turns entity_type +
+        // entity_id into a deep link (see insightEntityHref in the card).
+        if (agentRow?.id && agentRow?.brokerage_id) {
           const { data: insightRows, error: insightsError } = await supabase
             .from("ai_insights")
-            .select("id, insight_type, insight_title, insight_description, priority, estimated_impact, created_at")
+            .select("id, insight_type, insight_title, insight_description, priority, estimated_impact, created_at, actionable_steps, entity_type, entity_id")
+            .eq("brokerage_id", agentRow.brokerage_id)
             .or(`agent_id.eq.${agentRow.id},agent_id.is.null`)
             .order("created_at", { ascending: false })
             .limit(8)
 
-          if (!insightsError && insightRows) {
+          // supabase-js RESOLVES a refused read, so `insightsError` is the only
+          // thing that tells a refusal apart from an empty feed. This page has no
+          // error surface for its dashboard reads (every one of them uses this
+          // same `if (!error && data)` shape and the card simply hides when
+          // empty), so the shape is left alone and the refusal is logged the way
+          // this file logs its other failures — a silently empty feed is at least
+          // no longer silent in the console.
+          if (insightsError) {
+            console.error("[v0] AI insights feed read refused:", insightsError.message)
+          } else if (insightRows) {
             setAiInsights(insightRows)
           }
         }
@@ -369,8 +521,102 @@ export default function AgentDashboard() {
       } finally {
         setGameplanLoading(false)
       }
+
+      // Loose ends ride alongside the gameplan — same identity, same card.
+      try {
+        const { suggestions } = await suggestNextActions(user.id)
+        setNextActions(suggestions ?? [])
+      } catch {
+        // non-critical — the gameplan still renders without it
+      }
     }
     loadGameplan()
+  }, [])
+
+  /**
+   * ONE executor for every gameplan row. executeCopilotTask is the copilot's
+   * task dispatcher — it delegates to the canonical lanes rather than
+   * re-implementing them (call_hot_lead -> initiateWhisperBridge, the single
+   * agent->contact calling lane; check_transaction_status -> the milestone
+   * deadline reader). The result is READ, so a refusal is shown rather than
+   * reported as done.
+   *
+   * ID CLASSES, verified against generateDailyGameplan's own queries:
+   *   people_to_call rows are `contacts` rows      -> contacts.id
+   *   deals_to_protect rows are transaction_milestones -> .transaction_id
+   */
+  const runCopilotTask = useCallback(
+    async (key: string, taskType: string, params: Record<string, any>) => {
+      setCopilotTaskId(key)
+      try {
+        const res: any = await executeCopilotTask(key, taskType, params)
+        if (res?.success) {
+          toast.success(res.message ?? "Done")
+        } else {
+          toast.error(res?.error ?? "That action did not run")
+        }
+      } catch (err: any) {
+        toast.error(err?.message ?? "That action did not run")
+      } finally {
+        setCopilotTaskId(null)
+      }
+    },
+    [],
+  )
+
+  /**
+   * "Why is this person on my call list?" — analyzeContactPriority scores the
+   * contact from live signals (recent property activity, recent replies,
+   * timeline urgency) and names the factors plus the recommended action. The
+   * gameplan listed names with no reason attached; this is the reason.
+   */
+  const explainContactPriority = useCallback(async (contactId: string) => {
+    setPriorityLoadingId(contactId)
+    try {
+      const result = await analyzeContactPriority(contactId)
+      setPriorityById((prev) => ({ ...prev, [contactId]: result }))
+    } catch (err: any) {
+      toast.error(err?.message ?? "Could not score that contact")
+    } finally {
+      setPriorityLoadingId(null)
+    }
+  }, [])
+
+  /**
+   * checkOverdueMilestones sweeps this brokerage's pending milestones past their
+   * target date and emits milestone_overdue for each — the event the
+   * orchestrator turns into an assistant suggestion. Complete, and nothing had
+   * ever run it.
+   */
+  const runOverdueMilestoneScan = useCallback(async () => {
+    setScanningMilestones(true)
+    try {
+      const res = await checkOverdueMilestones()
+      toast.success(
+        res.count > 0
+          ? `${res.count} overdue milestone${res.count === 1 ? "" : "s"} flagged — follow-ups queued`
+          : "No overdue milestones",
+      )
+    } catch (err: any) {
+      toast.error(err?.message ?? "Milestone scan did not run")
+    } finally {
+      setScanningMilestones(false)
+    }
+  }, [])
+
+  // Done/Skip for AI Autopilot suggestions. The rows are born 'pending'
+  // (lib/kernel/open-house.ts) and this feed reads .eq("status","pending") —
+  // until this handler existed the ONLY transition writer was the admin
+  // Command Center, so an agent's own suggestion feed could never clear.
+  // The card is removed from state only after the server confirms the
+  // transition; a refusal surfaces as a toast, never as a silent "done".
+  const handleResolveAutopilot = useCallback(async (planId: string, outcome: "executed" | "skipped") => {
+    const res = await resolveAutopilotActionStatus({ actionId: planId, outcome })
+    if (res.success) {
+      setActionPlans(prev => prev.filter(p => p.id !== planId))
+    } else {
+      toast.error(res.error ?? "Could not update the suggestion")
+    }
   }, [])
 
   const handleRefreshBriefing = useCallback(async () => {
@@ -408,24 +654,23 @@ export default function AgentDashboard() {
     setCallingId(null)
   }, [agentId])
 
-  const handleVapiBot = useCallback(async (contactId: string, triggerEvent: string) => {
-    setCallingId(contactId + 'vapi')
+  const handleAiVoiceCall = useCallback(async (contactId: string, triggerEvent: string) => {
+    setCallingId(contactId + 'ai-voice')
     try {
-      await triggerVapiVoiceBot({ contactId, triggerEvent })
+      await triggerAiVoiceCall({ contactId, triggerEvent })
     } catch (error) {
-      console.error("[v0] Error triggering VAPI bot:", error)
+      console.error("[v0] Error triggering the AI voice call:", error)
     }
     setCallingId(null)
   }, [])
 
   return (
     <div className="min-h-screen bg-background relative">
-      {/* Voice Assistant Panel */}
-      <VoiceAssistantPanel
-        userId={agentId}
-        userRole="agent"
-        brokerageId={brokerageId}
-      />
+      {/* The floating AI assistant is mounted once, globally, by AppShell (the
+          typed ask+voice copilot + the gated premium voice tier) — the separate
+          VoiceAssistantPanel that used to stack a third FAB here was removed in
+          the 2026-07 assistant consolidation. (It still serves the mobile voice
+          page, /mobile/voice.) */}
 
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
@@ -476,19 +721,33 @@ export default function AgentDashboard() {
             <LicenseComplianceWidget agentId={agentId} />
             <AgentCareerTierCard agentId={agentId} />
             <OnboardingJourneyCard agentId={agentId} />
+            {/* Unfinished voice intakes — identity is session-derived inside the
+                action; hides itself when there is nothing to resume. */}
+            <ResumeIntakeCard />
           </div>
         )}
 
         {/* Today's Gameplan */}
-        {(gameplan || gameplanLoading) && (
+        {(gameplan || gameplanLoading || nextActions.length > 0) && (
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm flex items-center gap-2">
-                Today&apos;s Gameplan
-                {gameplanLoading && (
-                  <span className="text-xs text-muted-foreground font-normal">Generating…</span>
-                )}
-              </CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  Today&apos;s Gameplan
+                  {gameplanLoading && (
+                    <span className="text-xs text-muted-foreground font-normal">Generating…</span>
+                  )}
+                </CardTitle>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-xs"
+                  disabled={scanningMilestones}
+                  onClick={runOverdueMilestoneScan}
+                >
+                  {scanningMilestones ? "Scanning…" : "Scan overdue milestones"}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {gameplanLoading ? (
@@ -501,12 +760,68 @@ export default function AgentDashboard() {
                     <div>
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Call Today</p>
                       <ul className="space-y-1">
-                        {gameplan.people_to_call.slice(0, 5).map((p: any, i: number) => (
-                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-                            {p.name ?? p.contact_name ?? "Contact"}
-                          </li>
-                        ))}
+                        {gameplan.people_to_call.slice(0, 5).map((p: any, i: number) => {
+                          const label =
+                            p.name ??
+                            p.contact_name ??
+                            [p.first_name, p.last_name].filter(Boolean).join(" ") ??
+                            "Contact"
+                          const busy = copilotTaskId === `call-${p.id}` || copilotTaskId === `match-${p.id}`
+                          return (
+                            <li key={p.id ?? i} className="text-sm text-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                                <span className="truncate">{label}</span>
+                              </div>
+                              {p.id && (
+                                <div className="flex gap-1 mt-1 ml-3">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 px-2 text-xs"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      runCopilotTask(`call-${p.id}`, "call_hot_lead", { contactId: p.id })
+                                    }
+                                  >
+                                    Call
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-6 px-2 text-xs"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      runCopilotTask(`match-${p.id}`, "send_property_alert", { contactId: p.id })
+                                    }
+                                  >
+                                    Send matches
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-6 px-2 text-xs"
+                                    disabled={priorityLoadingId === p.id}
+                                    onClick={() => explainContactPriority(p.id)}
+                                  >
+                                    {priorityLoadingId === p.id ? "…" : "Why?"}
+                                  </Button>
+                                </div>
+                              )}
+                              {p.id && priorityById[p.id] && (
+                                <div className="ml-3 mt-1 rounded border bg-muted/30 p-1.5 text-[11px] text-muted-foreground">
+                                  <span className="font-medium text-foreground">
+                                    {priorityById[p.id].priority.toUpperCase()} · {priorityById[p.id].score}
+                                  </span>
+                                  {priorityById[p.id].factors.length > 0 && (
+                                    <span> — {priorityById[p.id].factors.join(", ")}</span>
+                                  )}
+                                  <div className="mt-0.5">{priorityById[p.id].recommended_action}</div>
+                                </div>
+                              )}
+                            </li>
+                          )
+                        })}
                       </ul>
                     </div>
                   )}
@@ -515,9 +830,28 @@ export default function AgentDashboard() {
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Protect Deals</p>
                       <ul className="space-y-1">
                         {gameplan.deals_to_protect.slice(0, 5).map((d: any, i: number) => (
-                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-                            {d.milestone_name?.replace(/_/g, " ") ?? d.description ?? "Milestone"}
+                          <li key={d.id ?? i} className="text-sm text-foreground">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                              <span className="truncate">
+                                {d.milestone_name?.replace(/_/g, " ") ?? d.description ?? "Milestone"}
+                              </span>
+                            </div>
+                            {d.transaction_id && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 mt-1 ml-3 text-xs"
+                                disabled={copilotTaskId === `deadlines-${d.id}`}
+                                onClick={() =>
+                                  runCopilotTask(`deadlines-${d.id}`, "check_transaction_status", {
+                                    transactionId: d.transaction_id,
+                                  })
+                                }
+                              >
+                                Check deadlines
+                              </Button>
+                            )}
                           </li>
                         ))}
                       </ul>
@@ -541,6 +875,27 @@ export default function AgentDashboard() {
                       <ReactMarkdown>{gameplan.ai_summary}</ReactMarkdown>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* LOOSE ENDS — deterministic, id-backed follow-ups. */}
+              {nextActions.length > 0 && (
+                <div className="mt-4 pt-3 border-t">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    Loose Ends
+                  </p>
+                  <ul className="space-y-1">
+                    {nextActions.map((s, i) => (
+                      <li key={`${s.type}-${i}`} className="text-sm text-foreground flex items-start gap-1.5">
+                        <span
+                          className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${
+                            s.priority === "high" ? "bg-red-500" : "bg-amber-500"
+                          }`}
+                        />
+                        <span>{s.action}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
             </CardContent>
@@ -608,6 +963,20 @@ export default function AgentDashboard() {
 
         {upcomingListingPreps.length > 0 && <ListingApptPrepWidget preps={upcomingListingPreps} />}
 
+        {/* FIRST-TOUCH ACKNOWLEDGEMENT — owner ruling: "their needs to be an
+            agent side first touch acknolegement becaue the agent needs a heads
+            up that a new contact has been added and contact welcome package
+            sent." Sits ABOVE SmartQueue because it is a HEADS-UP, not a work
+            queue: a contact that arrived without the agent asking for it, and
+            the verified state of its welcome package. It is the only caller of
+            acknowledgeLeadHandoffAction — the sole writer of
+            assignment_log.claimed, which daily-briefing-generator,
+            isa-overnight (handoffs_unclaimed) and user-type-briefs/team-lead all
+            read as "still awaiting first touch". Self-scoping: it resolves the
+            caller's own agents row server-side and needs no props. Auto-hides
+            (empty state) when nothing is pending. */}
+        <NewContactHandoffPanel />
+
         {/* Smart Queue — single segmented list (🔥 Hot · ⚠ At-risk · 🆕 New ·
             💎 Likely seller). Aggregates lead_score_history +
             sphere_engagement_scores + contacts.last_contacted_at +
@@ -616,7 +985,7 @@ export default function AgentDashboard() {
         <SmartQueue />
 
         {/* Hot Leads quick-call panel — kept alongside SmartQueue because it
-            has unique whisper-bridge + VAPI bot actions (one-tap call) that
+            has unique whisper-bridge + AI voice-bot actions (one-tap call) that
             SmartQueue's draft_followup doesn't. Future: fold these actions
             into SmartQueue rows and retire this panel. */}
         {(hotLeads.length > 0 || loading) && (
@@ -624,7 +993,7 @@ export default function AgentDashboard() {
             hotLeads={hotLeads}
             agentId={agentId}
             onWhisperBridge={handleWhisperBridge}
-            onVapiBot={handleVapiBot}
+            onAiVoiceCall={handleAiVoiceCall}
             callingId={callingId}
             loading={loading}
           />
@@ -664,6 +1033,8 @@ export default function AgentDashboard() {
               dealsAtRisk={briefing?.deals_at_risk || []}
               upcomingShowings={showings}
               actionPlans={actionPlans}
+              onResolveAutopilot={handleResolveAutopilot}
+              autopilotResolvedToday={autopilotResolvedToday}
             />
             <AgentDealIntelligence transactions={transactions} loading={loading} />
             <AgentLifetimeCustomersPanel
@@ -692,16 +1063,10 @@ export default function AgentDashboard() {
             {motivatedSellers.length > 0 && (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      Motivated Seller Alerts
-                    </span>
-                    <Link
-                      href="/leads?tab=intelligence"
-                      className="text-xs text-primary font-normal underline underline-offset-2 hover:no-underline"
-                    >
-                      View all
-                    </Link>
+                  {/* No link out — /leads is a broker/admin desk; agents work contacts.
+                      The alerts themselves render right here. */}
+                  <CardTitle className="text-sm flex items-center gap-1.5">
+                    Motivated Seller Alerts
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
@@ -733,7 +1098,7 @@ export default function AgentDashboard() {
                 at_risk segment which now includes the same
                 contacts.last_contacted_at >= 21d signal as a fallback when
                 sphere_engagement_scores is sparse. Component file kept for
-                back-compat in case any other surface mounts it. */}
+                superseded by SmartQueue at_risk; component deleted. */}
 
             {/* My Source Performance */}
             <Card className="hover:shadow-md transition-shadow">

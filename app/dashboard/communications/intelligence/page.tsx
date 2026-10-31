@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import IntelligenceClient from "./IntelligenceClient"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
   title: "Communication Intelligence",
@@ -13,6 +14,13 @@ export default async function IntelligencePage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const service = createServiceClient()
 
   // Resolve user profile
@@ -42,6 +50,7 @@ export default async function IntelligencePage() {
     auditFlagsRes,
     agentInsightsRes,
     voiceInsightsRes,
+    voiceChartRes,
   ] = await Promise.all([
     // 1. avg health_score from conversation_insights (joined to conversations scoped by brokerage)
     service
@@ -70,10 +79,17 @@ export default async function IntelligencePage() {
       .eq("escalation_recommended", true)
       .gte("updated_at", sevenDaysAgo),
 
-    // 5. chart data — last 30 days health scores grouped by date + voice flag
+    // 5. chart data, TEXT series — last 30 days of health scores by date.
+    //    This read no longer selects `is_voice_conversation`: the ONE writer of
+    //    this table stamps it false on both of its paths (it analyzes message
+    //    threads — lib/intelligence/conversation-insights.ts:205-214, a ruling
+    //    that stands), so splitting these rows on that flag put every row in
+    //    the text bucket and rendered the chart's voice line as a PERMANENT
+    //    FABRICATED 0. The voice series now comes from the dialled-call ledger
+    //    (query 10 below), the same re-sourcing the Voice tab got (query 9).
     service
       .from("conversation_insights")
-      .select("health_score, is_voice_conversation, updated_at, conversations!inner(brokerage_id)")
+      .select("health_score, updated_at, conversations!inner(brokerage_id)")
       .eq("conversations.brokerage_id", brokerageId)
       .gte("updated_at", thirtyDaysAgo),
 
@@ -145,33 +161,105 @@ export default async function IntelligencePage() {
       .eq("conversations.brokerage_id", brokerageId)
       .gte("updated_at", thirtyDaysAgo),
 
-    // 9. voice insights — is_voice_conversation = true
-    // NOTE: voice_calls FK is via vapi_call_id on conversation_insights, not a direct conversations FK.
-    // We fetch contact + agent from conversations, then join voice_calls separately below.
+    // ── 9. VOICE INSIGHTS — READ FROM THE CALL LEDGER, NOT THE THREAD ANALYSER
+    //
+    // This query used to read `conversation_insights` filtered on
+    // `is_voice_conversation = true`, selecting `voice_quality_score`,
+    // `interruption_count`, `silence_duration_seconds` and
+    // `call_completion_status`. All four were READ BY CODE AND WRITTEN BY NOBODY
+    // (census 1b), and the filter itself could never match: the ONE writer of
+    // that table stamps `is_voice_conversation: false` on both its insert and
+    // its update paths, and says why in a ruling that stands
+    // (lib/intelligence/conversation-insights.ts:205-214) —
+    //
+    //   "This writer analyzes a TEXT thread. The voice metrics have no honest
+    //    source yet (no per-utterance timestamps anywhere) and stay NULL."
+    //
+    // So the Voice tab was structurally empty on every tenant, forever, and its
+    // own empty state read "Insights are generated automatically after calls are
+    // analyzed" — a promise about a pipeline that did not exist.
+    //
+    // A CONVERSATION AND A CALL ARE DIFFERENT THINGS. `conversations` is the
+    // message-thread spine; a dialled call lives on `voice_calls`, and its
+    // analysis on `call_analyses`. The page even admitted the mismatch — it
+    // reached voice_calls afterwards "by contact_id overlap", a guess. So the
+    // voice board now reads the voice ledger directly, and the four columns
+    // above are gone from this file:
+    //
+    //   voice_quality_score      → SURVIVOR call_analyses.coaching_score, the
+    //                              0-100 "did this conversation serve the
+    //                              caller" reading, written on every analysed
+    //                              call at lib/voice/call-analysis.ts:97.
+    //   call_completion_status   → SURVIVOR voice_calls.status + outcome,
+    //                              written by the Twilio status callback — the
+    //                              provider's own account of how the call ended.
+    //   interruption_count       → NO SURVIVOR. Deriving either needs
+    //   silence_duration_seconds   per-utterance timestamps, and
+    //                              call_transcriptions.speaker_turns is written
+    //                              as `[]` (app/actions/ai-voice-transcription.ts:545).
+    //                              They are DROPPED rather than shown as 0 —
+    //                              a zero here reads as "a flawless call".
+    //
+    // Analysed calls only (`call_analyses` is an inner embed): an unanalysed
+    // call has no quality reading and belongs on the calls list, not on an
+    // intelligence board.
     service
-      .from("conversation_insights")
+      .from("voice_calls")
       .select(`
         id,
-        conversation_id,
-        health_score,
-        overall_sentiment,
-        voice_quality_score,
-        interruption_count,
-        silence_duration_seconds,
-        call_completion_status,
-        updated_at,
-        conversations!inner(
-          id,
-          brokerage_id,
-          contacts(id, first_name, last_name),
-          agents(id, users(first_name, last_name))
-        )
+        status,
+        outcome,
+        recording_url,
+        transcription,
+        started_at,
+        contacts(id, first_name, last_name),
+        agents(id, users(first_name, last_name)),
+        call_analyses!inner(coaching_score, sentiment, analyzed_at)
       `)
-      .eq("is_voice_conversation", true)
-      .eq("conversations.brokerage_id", brokerageId)
-      .order("updated_at", { ascending: false })
+      .eq("brokerage_id", brokerageId)
+      .order("started_at", { ascending: false })
       .limit(50),
+
+    // ── 10. chart data, VOICE series — ALSO FROM THE CALL LEDGER ────────────
+    //
+    // The chart's voice_score used to be computed from conversation_insights
+    // rows where `is_voice_conversation = true` — a filter that can never
+    // match, for the reason documented on query 5: that table's one writer is
+    // the TEXT-conversation analyser and stamps the flag false, by ruling
+    // ("conversation_insights = TEXT conversations; voice_calls/call_analyses
+    // = actual dialled calls"). So the Voice line sat at 0 on every tenant,
+    // forever — a written-but-constant column no census category could raise.
+    //
+    // A voice conversation's health reading lives on the call ledger:
+    // call_analyses.coaching_score, the 0-100 "did this conversation serve the
+    // caller" score written on every analysed call (lib/voice/call-analysis.ts)
+    // — the SAME reading the Voice tab shows per call since the query-9
+    // re-sourcing. Analysed calls only (inner embed): an unanalysed call has no
+    // quality reading, and a day with none has NO point rather than a zero.
+    service
+      .from("voice_calls")
+      .select("started_at, call_analyses!inner(coaching_score, analyzed_at)")
+      .eq("brokerage_id", brokerageId)
+      .gte("started_at", thirtyDaysAgo),
   ])
+
+  // ── Contacts for the Fair-Housing Review card (lane F2 2026-08-28) ─────────
+  // Brokerage-scoped names only — the picker for the restored contact-linked
+  // post-hoc review (analyzeFairHousingRisk). The action re-verifies the
+  // contact's tenant server-side; this list is just the affordance.
+  const { data: reviewContactRows, error: reviewContactsError } = await service
+    .from("contacts")
+    .select("id, first_name, last_name")
+    .eq("brokerage_id", brokerageId)
+    .order("first_name", { ascending: true })
+    .limit(500)
+  if (reviewContactsError) {
+    console.error("[intelligence] contacts read refused for fair-housing review picker:", reviewContactsError.message)
+  }
+  const reviewContacts = (reviewContactRows ?? []).map((c: any) => ({
+    id: c.id as string,
+    name: `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed contact",
+  }))
 
   // ── Compute KPI values ──────────────────────────────────────────────────────
   const healthRows = healthScoreRes.data ?? []
@@ -185,26 +273,53 @@ export default async function IntelligencePage() {
   const escalationsLast7Days    = escalationsRes.count ?? 0
 
   // ── Build chart data (bucket by day) ────────────────────────────────────────
+  // Two honest sources, one chart: text from conversation_insights.health_score
+  // (0-1, the thread analyser), voice from call_analyses.coaching_score (0-100,
+  // the call ledger — see query 10). Both render on the chart's 0-100 axis.
   const chartRaw = chartRawRes.data ?? []
+  const dayKeyOf = (iso: string) => {
+    const d = new Date(iso)
+    return `${d.getMonth() + 1}/${d.getDate()}`
+  }
   const dayMap = new Map<string, { text: number[]; voice: number[] }>()
-
-  for (const row of chartRaw) {
-    const d = new Date(row.updated_at)
-    const key = `${d.getMonth() + 1}/${d.getDate()}`
+  const dayBucket = (key: string) => {
     if (!dayMap.has(key)) dayMap.set(key, { text: [], voice: [] })
-    const bucket = dayMap.get(key)!
-    if (row.is_voice_conversation) bucket.voice.push(row.health_score ?? 0)
-    else bucket.text.push(row.health_score ?? 0)
+    return dayMap.get(key)!
   }
 
-  const avg = (arr: number[]) => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 100) : 0
+  for (const row of chartRaw) {
+    // health_score is 0-1 in the DB; scale to the chart's 0-100 axis here.
+    dayBucket(dayKeyOf(row.updated_at)).text.push((row.health_score ?? 0) * 100)
+  }
+
+  // §3: a refused read must not render as "no voice calls happened".
+  if (voiceChartRes.error) {
+    console.error("[intelligence] voice chart ledger read refused — the chart's Voice series will show no points:", voiceChartRes.error.message)
+  }
+  for (const call of (voiceChartRes.data ?? []) as any[]) {
+    // Inner embed comes back as an array; the newest analysis is the current
+    // reading of the call (same convention as the Voice tab mapping below).
+    const analyses = Array.isArray(call.call_analyses) ? call.call_analyses : call.call_analyses ? [call.call_analyses] : []
+    const newest = analyses
+      .slice()
+      .sort((a: any, b: any) => new Date(b.analyzed_at ?? 0).getTime() - new Date(a.analyzed_at ?? 0).getTime())[0]
+    if (typeof newest?.coaching_score === "number" && call.started_at) {
+      dayBucket(dayKeyOf(call.started_at)).voice.push(newest.coaching_score)
+    }
+  }
+
+  // A day with no readings on a series gets NULL, not 0 — recharts leaves a gap
+  // where nothing was measured. The old avg() returned 0 for an empty bucket,
+  // which is how an unfed series rendered as a flat line pinned to zero.
+  const avgOrNull = (arr: number[]) =>
+    arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null
 
   const chartData = Array.from(dayMap.entries())
     .sort(([a], [b]) => new Date(`2024/${a}`).getTime() - new Date(`2024/${b}`).getTime())
     .map(([date, { text, voice }]) => ({
       date,
-      text_score: avg(text),
-      voice_score: avg(voice),
+      text_score: avgOrNull(text),
+      voice_score: avgOrNull(voice),
     }))
 
   // ── Shape health table rows ──────────────────────────────────────────────────
@@ -292,52 +407,48 @@ export default async function IntelligencePage() {
     .map(([topic, count]) => ({ topic, count }))
 
   // ── Voice insights ────────────────────────────────────────────────────────
-  // Fetch voice_calls separately — there is no direct FK from conversations to voice_calls.
-  // voice_calls links to conversation_insights via vapi_call_id (stored on voice_calls).
-  // We fetch by contact_id overlap for the same brokerage.
-  const voiceInsightRows = voiceInsightsRes.data ?? []
-  const voiceConversationIds = voiceInsightRows.map((r: any) => r.conversations?.id).filter(Boolean)
-
-  let voiceCallMap: Record<string, { recording_url: string | null; transcription: string | null }> = {}
-  if (voiceConversationIds.length > 0) {
-    // voice_calls does not have a direct conversation_id FK; join via agent_id + contact_id proximity.
-    // Best available match: fetch voice_calls for the brokerage, match by contact_id from the conversation.
-    const contactIds = voiceInsightRows
-      .map((r: any) => r.conversations?.contacts?.id)
-      .filter(Boolean)
-    if (contactIds.length > 0) {
-      const { data: vcRows } = await service
-        .from("voice_calls")
-        .select("id, contact_id, recording_url, transcription")
-        .eq("brokerage_id", brokerageId)
-        .in("contact_id", contactIds)
-      for (const vc of vcRows ?? []) {
-        if (!voiceCallMap[vc.contact_id]) {
-          voiceCallMap[vc.contact_id] = { recording_url: vc.recording_url ?? null, transcription: vc.transcription ?? null }
-        }
-      }
-    }
+  // One row per ANALYSED call, straight off the voice ledger. The whole
+  // contact_id-overlap lookup that used to live here is gone with the
+  // conversation_insights read it existed to patch up: voice_calls.id is now the
+  // row's own primary key, so the recording no longer has to be guessed at by
+  // matching contacts (which handed every one of a contact's calls the FIRST
+  // call's recording).
+  //
+  // recording_url is still carried alongside voice_call_id because the UI cannot
+  // play it directly: it is the api.twilio.com media URL, behind HTTP Basic
+  // auth, and the browser plays the authenticated same-origin proxy keyed by
+  // voice_calls.id.
+  if (voiceInsightsRes.error) {
+    console.error("[intelligence] voice call ledger read refused — the Voice tab will read as empty:", voiceInsightsRes.error.message)
   }
-
-  const voiceInsights = voiceInsightRows.map((row: any) => {
-    const conv = row.conversations
-    const contact = conv?.contacts
-    const agent = conv?.agents
-    const vc = contact?.id ? (voiceCallMap[contact.id] ?? null) : null
+  const voiceInsights = (voiceInsightsRes.data ?? []).map((row: any) => {
+    const contact = row.contacts
+    const agent = row.agents
+    // `call_analyses` is an inner embed and PostgREST returns it as an array;
+    // the newest analysis is the current reading of the call.
+    const analyses = Array.isArray(row.call_analyses) ? row.call_analyses : row.call_analyses ? [row.call_analyses] : []
+    const analysis = analyses
+      .slice()
+      .sort((a: any, b: any) => new Date(b.analyzed_at ?? 0).getTime() - new Date(a.analyzed_at ?? 0).getTime())[0] ?? null
     return {
-      id:                       row.id,
-      conversation_id:          conv?.id ?? row.id,
-      contact_name:             contact ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Unknown" : "Unknown",
-      agent_name:               agent?.users ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "—" : "—",
-      voice_quality_score:      row.voice_quality_score ?? null,
-      interruption_count:       row.interruption_count ?? null,
-      silence_duration_seconds: row.silence_duration_seconds ?? null,
-      call_completion_status:   row.call_completion_status ?? null,
-      overall_sentiment:        row.overall_sentiment ?? null,
-      recording_url:            vc?.recording_url ?? null,
+      id:                     row.id,
+      contact_name:           contact ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Unknown" : "Unknown",
+      agent_name:             agent?.users ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "—" : "—",
+      // 0-100 on this scale — see the note on query 9. Not rescaled to 0-1:
+      // the old column was 0-1 and the tab multiplied by 100, which is why
+      // VoiceTab now takes it as a percentage outright.
+      coaching_score:         typeof analysis?.coaching_score === "number" ? analysis.coaching_score : null,
+      // The provider's own account of how the call ended. `outcome` carries the
+      // real disposition when it exists (voice_calls.status is "completed" on
+      // every terminated leg — stated at app/dashboard/voice/isa/page.tsx:158-163);
+      // status is the fallback.
+      call_completion_status: (row.outcome as string | null) ?? (row.status as string | null) ?? null,
+      overall_sentiment:      (analysis?.sentiment as string | null) ?? null,
+      voice_call_id:          row.id,
+      recording_url:          row.recording_url ?? null,
       // DB column is transcription (not transcript) — mapped here
-      transcript:               vc?.transcription ?? null,
-      updated_at:               row.updated_at,
+      transcript:             row.transcription ?? null,
+      updated_at:             (analysis?.analyzed_at as string | null) ?? row.started_at,
     }
   })
 
@@ -352,6 +463,7 @@ export default async function IntelligencePage() {
       topicFrequency={topicFrequency}
       voiceInsights={voiceInsights}
       userId={user.id}
+      reviewContacts={reviewContacts}
     />
   )
 }

@@ -21,12 +21,15 @@ export async function GET(request: Request) {
     const svc = createServiceClient()
     const { data: live } = await svc.from("ad_campaigns").select("brokerage_id").in("status", ["live", "launching"])
     const brokerageIds = Array.from(new Set((live ?? []).map((r: { brokerage_id: string }) => r.brokerage_id)))
-    let campaigns = 0, ingested = 0, skipped = 0
+    let campaigns = 0, ingested = 0, skipped = 0, historyRecorded = 0, fatigued = 0
     for (const bid of brokerageIds) {
       const res = await ingestAdPerformance(bid, svc)
       campaigns += res.campaigns; ingested += res.ingested; skipped += res.skipped
+      historyRecorded += res.historyRecorded; fatigued += res.fatigued
     }
-    return NextResponse.json({ ok: true, brokerages: brokerageIds.length, campaigns, ingested, skipped })
+    // history_recorded / fatigued: the creative-fatigue monitor's two halves
+    // (time-series append + gated HIGH-risk signal), wired 2026-09-03.
+    return NextResponse.json({ ok: true, brokerages: brokerageIds.length, campaigns, ingested, skipped, history_recorded: historyRecorded, fatigued })
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
   }

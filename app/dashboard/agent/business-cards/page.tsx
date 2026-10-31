@@ -2,11 +2,69 @@
 
 import { useState, useRef, useCallback, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { uploadBusinessCard, getRecentScans } from "@/app/actions/business-card/business-card-actions"
+import { uploadBusinessCard, getRecentScans, confirmBusinessCardScan } from "@/app/actions/business-card/business-card-actions"
 import { createPartner, createReferral } from "@/app/actions/referrals/referral-actions"
 import { enrollContactInSequence, listCampaignSequences } from "@/app/actions/campaign-sequences"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
+// PURE module (no server-only): the field list and the confidence floor the action applies,
+// read here rather than re-typed so the surface and the rule cannot drift (wave 141F).
+import { CARD_FIELDS, CARD_FIELD_CONFIDENCE_FLOOR, type CardField, type CardSubjectType, type PreScanChoice, type ScanEntity } from "@/lib/contacts/card-classifier"
+
+// THE PRE-SCAN CHOICE (wave 142, lane 142D; owner verbatim 2026-10-18: "before scanning, the user
+// chooses which type and then scans"). The choice is EXPLICIT: the placeholder cannot be submitted (the
+// upload zone stays closed until a choice is made), a concrete type wins outright over the reader and the
+// notes (owner ruling 2026-09-10), and "Not sure" is itself a pick — the reader + notes suggest a type and
+// the scan is HELD until you confirm it. TOMBSTONE: the pre-142 "Auto-detect" DEFAULT (value "") that
+// silently let the classifier decide is gone.
+const PRE_SCAN_CHOICES: Array<{ value: PreScanChoice | ""; label: string; disabled?: boolean }> = [
+  { value: "", label: "Choose who this is…", disabled: true },
+  { value: "vendor", label: "Vendor / service provider" },
+  { value: "contact", label: "Contact (ready client)" },
+  { value: "potential_contact", label: "Potential client" },
+  { value: "agent", label: "Fellow agent (recruiting prospect — never a client contact)" },
+  { value: "sphere", label: "Sphere of influence (someone I know — no record)" },
+  { value: "auto", label: "Not sure — read the card and I'll confirm the type" },
+]
+
+/** The concrete types the confirm surface offers once a held scan needs its type. */
+const CONFIRM_TYPE_CHOICES: Array<{ value: CardSubjectType; label: string }> = PRE_SCAN_CHOICES
+  .filter((c): c is { value: CardSubjectType; label: string } => c.value !== "" && c.value !== "auto")
+
+// Wave 142: the entity a scan became (business_card_scans.routed_entity_type + the typed id) — rendered
+// truthfully: a vendor card is a VENDOR, an agent's card is a RECRUITING PROSPECT, a sphere card is NO record.
+const ENTITY_LABEL: Record<ScanEntity["kind"], string> = {
+  contact: "Contact",
+  vendor: "Vendor (bench, pending verification)",
+  recruit: "Recruiting prospect",
+  none: "No record — kept as a scan",
+}
+function entityHref(e: ScanEntity | null | undefined): string | null {
+  if (!e || !e.id) return null
+  if (e.kind === "contact") return `/crm?contact=${e.id}`
+  if (e.kind === "vendor") return `/dashboard/vendors?vendor=${e.id}`
+  if (e.kind === "recruit") return "/dashboard/agent/refer"
+  return null
+}
+
+// Reader for business_card_scans.classified_by (m617 typed column) — which
+// determination tier decided the class (lib/contacts/card-classifier.ts).
+const CLASSIFIED_BY_LABEL: Record<"picker" | "reader" | "notes" | "match" | "default", string> = {
+  picker: "you picked it",
+  reader: "read off the card",
+  notes: "from your notes",
+  match: "matched an existing record",
+  default: "unclassified",
+}
+
+const SUBJECT_TYPE_LABEL: Record<CardSubjectType, string> = {
+  sphere: "Sphere of influence",
+  agent: "Fellow agent — recruiting prospect",
+  potential_contact: "Potential client",
+  contact: "Contact created",
+  vendor: "Vendor bench candidate",
+  unknown: "Unclassified — needs a human to pick",
+}
 
 type PostScanContact = {
   id: string
@@ -27,17 +85,52 @@ type ScanRow = {
   created_at: string
   extracted_data: Record<string, string>
   confidence_score: number
-  review_status: "approved" | "rejected"
+  review_status: "approved" | "pending" | "rejected"
   contact_id: string | null
   raw_image_url: string
+  /** users.id of the human who confirmed the scan (confirmBusinessCardScan, wave 141F);
+   *  null when the automatic viability gate approved it. */
+  reviewed_by: string | null
+  /** When the viability gate ran, or when a human confirmed. */
+  reviewed_at: string | null
+  cardSubjectType: CardSubjectType | null
+  subjectUserId: string | null
+  subjectNotes: string | null
+  classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  needsConfirmation: boolean
+  /** Wave 142 — held for its TYPE ("Not sure" pre-scan choice). */
+  needsTypeConfirmation: boolean
+  suggestedSubjectType: CardSubjectType | null
+  /** Wave 142 — WHICH domain entity the scan became (null = held / rejected / not yet routed). */
+  entity: ScanEntity | null
 }
 
 type ScanResult = {
   scanId: string
   contactId: string | null
   viable: boolean
-  extracted?: Record<string, string>
+  needsConfirmation: boolean
+  needsTypeConfirmation?: boolean
+  suggestedSubjectType?: CardSubjectType | null
+  entity?: ScanEntity | null
+  extracted: Record<string, string>
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  lowFields: CardField[]
   confidence?: number
+  cardSubjectType?: CardSubjectType
+  subjectUserId?: string | null
+}
+
+/** What the review surface edits: the reader's fields, their confidence, whether a contact already exists
+ *  (correction mode), and — wave 142 — whether the TYPE is still the human's to pick. */
+type ConfirmTarget = {
+  scanId: string
+  fields: Partial<Record<CardField, string>>
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  contactId: string | null
+  needsSubjectType: boolean
+  suggestedSubjectType: CardSubjectType | null
 }
 
 function ConfidenceBadge({ score }: { score: number }) {
@@ -53,6 +146,129 @@ function ConfidenceBadge({ score }: { score: number }) {
   )
 }
 
+const FIELD_LABEL: Record<CardField, string> = {
+  first_name: "First Name", last_name: "Last Name", email: "Email",
+  phone: "Phone", company: "Company", title: "Title",
+  address: "Address", website: "Website",
+}
+
+/**
+ * CONFIRM / CORRECT THE READING (wave 141F — owner: "human confirmation where
+ * needed … never overwrite higher-confidence data with weak extraction"). Every
+ * field is editable; the ones the reader was unsure of (below the floor) are
+ * marked. Confirming a HELD scan routes it; confirming a scan that already
+ * produced a contact applies the correction field by field under the merge rule
+ * and reports what was kept and why. Mobile: one column, 16 px inputs, 44 px taps.
+ */
+function CardConfirmForm({ target, onDone, onCancel }: { target: ConfirmTarget; onDone: (summary: { contactId: string | null; entity: ScanEntity | null; message: string }) => void; onCancel: () => void }) {
+  const [values, setValues] = useState<Record<CardField, string>>(() => {
+    const v = {} as Record<CardField, string>
+    for (const f of CARD_FIELDS) v[f] = target.fields[f] ?? ""
+    return v
+  })
+  // Wave 142: the TYPE is the human's — pre-filled with the reader's suggestion when there is one, never
+  // submitted without a pick while the scan is held for it.
+  const [needsType, setNeedsType] = useState(target.needsSubjectType)
+  const [typePick, setTypePick] = useState<CardSubjectType | "">(target.needsSubjectType && target.suggestedSubjectType && target.suggestedSubjectType !== "unknown" ? target.suggestedSubjectType : "")
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const floorPct = Math.round(CARD_FIELD_CONFIDENCE_FLOOR * 100)
+
+  const submit = async () => {
+    if (needsType && !typePick) { setError("Pick who this card is for before filing it."); return }
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await confirmBusinessCardScan({ scanId: target.scanId, fields: values, ...(typePick ? { subjectType: typePick } : {}) })
+      if (!res.ok) {
+        if (res.needsSubjectType) { setNeedsType(true); if (!typePick && res.suggestedSubjectType && res.suggestedSubjectType !== "unknown") setTypePick(res.suggestedSubjectType) }
+        setError(res.error)
+        return
+      }
+      if (res.mode === "routed") {
+        const r = res.result
+        onDone({ contactId: r.contactId, entity: r.entity, message: `Confirmed — ${ENTITY_LABEL[r.entity.kind].toLowerCase()}${r.entity.kind === "none" ? ((r as { existingUserId?: string | null }).existingUserId ? " (already on your team)" : ` (${r.cardSubjectType.replace(/_/g, " ")})`) : ""}.` })
+      } else {
+        const applied = res.applied.length ? `updated ${res.applied.map((f) => FIELD_LABEL[f].toLowerCase()).join(", ")}` : "nothing needed updating"
+        const kept = res.kept.length ? `; kept ${res.kept.map((k) => `${FIELD_LABEL[k.field].toLowerCase()} (${k.reason.replace(/_/g, " ")})`).join(", ")}` : ""
+        onDone({ contactId: res.contactId, entity: { kind: "contact", id: res.contactId }, message: `Correction applied — ${applied}${kept}.` })
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not confirm the scan. Please try again.")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-amber-300 bg-amber-50/40 p-4 space-y-3" aria-label={target.contactId ? "Correct the card reading" : "Confirm the card reading"}>
+      <div>
+        <p className="text-sm font-semibold text-foreground">
+          {target.contactId ? "Correct what the reader got wrong" : "Please confirm this card before it becomes a record"}
+        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {target.contactId
+            ? "Your correction overwrites the card's own reading; a value that came from a verified source or a person's own entry is kept and noted instead."
+            : `Fields the reader was less than ${floorPct}% sure of are marked. Nothing is written until you confirm.`}
+        </p>
+      </div>
+      {needsType && (
+        <div>
+          <label htmlFor="confirm-subject-type" className="block text-xs font-medium text-foreground mb-1">
+            Who is this?{target.suggestedSubjectType && target.suggestedSubjectType !== "unknown" ? ` The reader suggests: ${target.suggestedSubjectType.replace(/_/g, " ")}.` : ""}
+          </label>
+          <select
+            id="confirm-subject-type"
+            value={typePick}
+            onChange={(e) => setTypePick(e.target.value as CardSubjectType | "")}
+            className="w-full min-h-[44px] rounded-md border border-border bg-background px-3 py-2 text-base focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="" disabled>Choose who this is…</option>
+            {CONFIRM_TYPE_CHOICES.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-muted-foreground">A vendor goes to your vendor bench, a fellow agent to your recruiting pipeline, a client to your contacts — you decide, not the reader.</p>
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {CARD_FIELDS.map((f) => {
+          const conf = target.fieldConfidence[f]
+          const low = !!target.fields[f] && (conf ?? 0) < CARD_FIELD_CONFIDENCE_FLOOR
+          return (
+            <div key={f}>
+              <label htmlFor={`confirm-${f}`} className="flex items-center justify-between text-xs font-medium text-foreground mb-1">
+                <span>{FIELD_LABEL[f]}</span>
+                {target.fields[f] ? (
+                  <span className={`text-[11px] ${low ? "text-amber-700" : "text-muted-foreground"}`}>
+                    {conf == null ? "unsure" : `${Math.round(conf * 100)}% sure`}{low ? " — please check" : ""}
+                  </span>
+                ) : null}
+              </label>
+              <input
+                id={`confirm-${f}`}
+                value={values[f]}
+                onChange={(e) => setValues((p) => ({ ...p, [f]: e.target.value }))}
+                inputMode={f === "email" ? "email" : f === "phone" ? "tel" : f === "website" ? "url" : "text"}
+                className={`w-full min-h-[44px] rounded-md border bg-background px-3 py-2 text-base focus:outline-none focus:ring-1 focus:ring-ring ${low ? "border-amber-400" : "border-border"}`}
+              />
+            </div>
+          )
+        })}
+      </div>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <button type="button" onClick={onCancel} disabled={submitting} className="min-h-[44px] flex-1 rounded-lg border border-border py-2 text-sm text-muted-foreground hover:bg-muted transition-colors disabled:opacity-60">
+          Not now
+        </button>
+        <button type="button" onClick={submit} disabled={submitting} className="min-h-[44px] flex-1 rounded-lg bg-foreground py-2 text-sm font-medium text-background hover:opacity-90 disabled:opacity-60 transition-opacity">
+          {submitting ? "Saving…" : target.contactId ? "Apply correction" : "Confirm and file"}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export default function BusinessCardsPage() {
   const router = useRouter()
   const { toast } = useToast()
@@ -65,13 +281,29 @@ export default function BusinessCardsPage() {
   const [agentId, setAgentId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState<string | null>(null)
 
+  // wave 48 — card review surface: free-text notes (priority-2 classification
+  // source) + an explicit picker (wins outright over the auto-classifier).
+  // wave 142 — the picker is THE PRE-SCAN CHOICE: "" is the unsubmittable placeholder, never a default.
+  const [cardNotes, setCardNotes] = useState("")
+  const [cardSubjectPick, setCardSubjectPick] = useState<PreScanChoice | "">("")
+
   // Post-scan sheet state
   const [postScanContact, setPostScanContact] = useState<PostScanContact | null>(null)
   const [showNextSteps, setShowNextSteps] = useState(false)
 
+  // Wave 141F — the confirm / correct surface (a held low-confidence scan, or
+  // "Report extraction error" on a scan that already produced a contact).
+  const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
+
   // Option 1 — Referral partner form state
   const [showReferralForm, setShowReferralForm] = useState(false)
-  const [referralPartnerType, setReferralPartnerType] = useState<"agent_to_agent" | "vendor" | "lender" | "title" | "other">("agent_to_agent")
+  // referral_partners.partner_type CHECK — the UI used to offer agent_to_agent /
+  // vendor / lender / title, NONE of which the column accepts, so every scanned
+  // card failed on insert and the agent just saw "Please try again" forever.
+  const [referralPartnerType, setReferralPartnerType] = useState<
+    "real_estate_agent" | "mortgage_broker" | "title_company" | "home_inspector"
+    | "contractor" | "insurance_agent" | "attorney" | "property_manager" | "other"
+  >("real_estate_agent")
   const [referralNotes, setReferralNotes] = useState("")
   const [referralSubmitting, setReferralSubmitting] = useState(false)
   const [referralDone, setReferralDone] = useState(false)
@@ -118,7 +350,28 @@ export default function BusinessCardsPage() {
   }, [])
 
   const processFile = useCallback(async (file: File) => {
-    if (!agentId || !brokerageId) return
+    // Don't silently swallow the drop ("file won't add" from the walkthrough) — a
+    // signed-in but not-yet-provisioned account (agent record / brokerage still
+    // being set up by the login-time self-heal) gets clear feedback instead of
+    // nothing. Once /dashboard has provisioned the records, the ids resolve and
+    // the scan works.
+    if (!agentId || !brokerageId) {
+      toast({
+        title: "Finishing your account setup",
+        description: "We're still setting up your agent profile — refresh in a moment, then add your card.",
+        variant: "destructive",
+      })
+      return
+    }
+    // THE PRE-SCAN CHOICE (wave 142): no choice, no scan — the server refuses too (fail closed on both sides).
+    if (!cardSubjectPick) {
+      toast({
+        title: "Choose who this card is for first",
+        description: "Vendor, contact, or fellow agent — or \"Not sure\" to have the card read and confirm the type afterwards.",
+        variant: "destructive",
+      })
+      return
+    }
     setScanning(true)
     setResult(null)
     try {
@@ -130,20 +383,31 @@ export default function BusinessCardsPage() {
         "image/jpeg"
       ) as "image/jpeg" | "image/png" | "image/webp"
 
-      const res = await uploadBusinessCard({ imageBase64: base64, mimeType, agentId, brokerageId })
+      const res = await uploadBusinessCard({
+        imageBase64: base64, mimeType, agentId, brokerageId,
+        notes: cardNotes.trim() || undefined,
+        subjectType: cardSubjectPick,
+      })
 
       // Reload history
       const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
       setScans(history)
 
-      // Find extracted data from history
       const newScan = history.find((s) => s.id === res.scanId)
-      const extracted = newScan?.extracted_data ?? {}
+      const extracted = res.extracted
       setResult({
         ...res,
         extracted,
         confidence: newScan?.confidence_score,
       })
+      // Reset the review-surface inputs for the next scan.
+      setCardNotes("")
+      setCardSubjectPick("")
+
+      // A reading the reader was unsure of — or a type still to confirm — is HELD: open the confirmation form at once.
+      if (res.needsConfirmation) {
+        setConfirmTarget({ scanId: res.scanId, fields: res.extracted, fieldConfidence: res.fieldConfidence, contactId: null, needsSubjectType: res.needsTypeConfirmation, suggestedSubjectType: res.suggestedSubjectType })
+      }
 
       // Trigger post-scan sheet only on viable scans that produced a contact
       if (res.viable && res.contactId) {
@@ -166,7 +430,7 @@ export default function BusinessCardsPage() {
     } finally {
       setScanning(false)
     }
-  }, [agentId, brokerageId])
+  }, [agentId, brokerageId, cardNotes, cardSubjectPick])
 
   const dismissSheet = () => {
     setShowNextSteps(false)
@@ -182,7 +446,8 @@ export default function BusinessCardsPage() {
       const partnerResult = await createPartner({
         partnerName: postScanContact.name,
         partnerType: referralPartnerType,
-        agreementType: "referral_fee",
+        agreementType: "informal",
+        notes: referralNotes.trim() || undefined,
       })
 
       // Step 2: log the referral, linking the scanned contact as the referred person
@@ -255,30 +520,94 @@ export default function BusinessCardsPage() {
     if (file) handleFile(file)
   }
 
-  const fields = ["first_name", "last_name", "email", "phone", "company", "title", "address", "website"]
-  const fieldLabel: Record<string, string> = {
-    first_name: "First Name", last_name: "Last Name", email: "Email",
-    phone: "Phone", company: "Company", title: "Title",
-    address: "Address", website: "Website",
+  const fields = CARD_FIELDS
+  const fieldLabel: Record<string, string> = FIELD_LABEL
+
+  /** After a confirm / correction: refresh history, tell the agent, and open next steps when a contact exists. */
+  const handleConfirmDone = async (summary: { contactId: string | null; entity: ScanEntity | null; message: string }) => {
+    setConfirmTarget(null)
+    toast({ title: summary.message })
+    if (agentId && brokerageId) {
+      const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
+      setScans(history)
+      if (result) {
+        const refreshed = history.find((s) => s.id === result.scanId)
+        if (refreshed) {
+          setResult({ ...result, needsConfirmation: false, needsTypeConfirmation: false, contactId: refreshed.contact_id, entity: refreshed.entity ?? summary.entity, extracted: refreshed.extracted_data, confidence: refreshed.confidence_score, cardSubjectType: refreshed.cardSubjectType ?? result.cardSubjectType })
+        }
+      }
+    }
+    if (summary.contactId) {
+      const f = confirmTarget?.fields ?? {}
+      setPostScanContact({
+        id: summary.contactId,
+        name: [f.first_name, f.last_name].filter(Boolean).join(" "),
+        email: f.email ?? "",
+        company: f.company ?? "",
+        title: f.title ?? "",
+      })
+      setShowNextSteps(true)
+    }
   }
 
   return (
     <main className="max-w-3xl mx-auto p-6 space-y-8">
       <h1 className="text-2xl font-semibold text-foreground">Business Card Scanner</h1>
 
-      {/* Upload zone */}
+      {/* STEP 1 — THE PRE-SCAN CHOICE (wave 142; owner: "before scanning, the user chooses which type and
+          then scans"). A card is never assumed a client; the choice is yours, made first. "Not sure" has
+          the reader suggest a type and holds the card until you confirm it. */}
+      <section className="space-y-3 rounded-xl border border-border p-4">
+        <div>
+          <label htmlFor="card-subject-type" className="block text-xs font-medium text-foreground mb-1">
+            1 · Who is this card for?
+          </label>
+          <select
+            id="card-subject-type"
+            value={cardSubjectPick}
+            onChange={(e) => setCardSubjectPick(e.target.value as PreScanChoice | "")}
+            className="w-full min-h-[44px] rounded-md border border-border bg-background px-3 py-2 text-base focus:outline-none focus:ring-1 focus:ring-ring"
+            required
+          >
+            {PRE_SCAN_CHOICES.map((opt) => (
+              <option key={opt.value} value={opt.value} disabled={opt.disabled}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            A vendor goes to your vendor bench, a fellow agent to your recruiting pipeline (never a client contact),
+            a client to your contacts, someone you know stays a scan. Your choice wins over what the card says.
+          </p>
+        </div>
+        <div>
+          <label htmlFor="card-notes" className="block text-xs font-medium text-foreground mb-1">
+            Notes on this card (optional)
+          </label>
+          <textarea
+            id="card-notes"
+            value={cardNotes}
+            onChange={(e) => setCardNotes(e.target.value)}
+            rows={2}
+            placeholder="e.g. &quot;old friend from the block party&quot;, &quot;fellow agent at another shop&quot;, &quot;interested in selling next year&quot;..."
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+      </section>
+
+      {/* STEP 2 — Upload zone: closed until the choice above is made (the server refuses too). */}
       <section
-        className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
-          dragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/60"
+        className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors ${
+          !cardSubjectPick ? "cursor-not-allowed opacity-60 border-border" :
+          dragging ? "cursor-pointer border-primary bg-primary/5" : "cursor-pointer border-border hover:border-primary/60"
         }`}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+        onDragOver={(e) => { e.preventDefault(); if (cardSubjectPick) setDragging(true) }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => { if (cardSubjectPick) fileInputRef.current?.click() }}
         role="button"
         tabIndex={0}
-        aria-label="Upload business card image"
-        onKeyDown={(e) => e.key === "Enter" && fileInputRef.current?.click()}
+        aria-disabled={!cardSubjectPick}
+        aria-label={cardSubjectPick ? "Upload business card image" : "Choose who the card is for before uploading"}
+        onKeyDown={(e) => { if (e.key === "Enter" && cardSubjectPick) fileInputRef.current?.click() }}
       >
         <input
           ref={fileInputRef}
@@ -300,11 +629,16 @@ export default function BusinessCardsPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
-            <p className="text-sm font-medium text-foreground">Drop a photo or click to upload</p>
+            <p className="text-sm font-medium text-foreground">{cardSubjectPick ? "2 · Drop a photo or click to upload" : "2 · Choose who the card is for first"}</p>
             <p className="text-xs text-muted-foreground">Tap to use camera on mobile — JPG, PNG, WebP</p>
           </div>
         )}
       </section>
+
+      {/* Confirm / correct surface — a held scan, or a correction on a routed one */}
+      {confirmTarget && (
+        <CardConfirmForm target={confirmTarget} onDone={handleConfirmDone} onCancel={() => setConfirmTarget(null)} />
+      )}
 
       {/* Result */}
       {result && (
@@ -316,28 +650,36 @@ export default function BusinessCardsPage() {
                   <span className="text-sm font-medium text-foreground">Extraction confidence</span>
                   {result.confidence !== undefined && <ConfidenceBadge score={result.confidence} />}
                 </div>
-                <span className="text-xs text-green-700 bg-green-100 px-2 py-1 rounded font-medium">Contact created</span>
+                <span className={`text-xs px-2 py-1 rounded font-medium ${
+                  result.needsConfirmation || result.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-700"
+                }`}>
+                  {result.needsConfirmation
+                    ? (result.needsTypeConfirmation ? `Waiting for you to pick the type${result.suggestedSubjectType && result.suggestedSubjectType !== "unknown" ? ` (reader suggests ${result.suggestedSubjectType.replace(/_/g, " ")})` : ""}` : "Waiting for your confirmation")
+                    : result.entity ? ENTITY_LABEL[result.entity.kind] : result.cardSubjectType ? SUBJECT_TYPE_LABEL[result.cardSubjectType] : "Not routed"}
+                </span>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 {fields.map((k) => {
                   const val = result.extracted?.[k]?.trim()
                   if (!val) return null
+                  const conf = result.fieldConfidence?.[k]
+                  const low = (conf ?? 0) < CARD_FIELD_CONFIDENCE_FLOOR
                   return (
                     <div key={k}>
-                      <p className="text-xs text-muted-foreground">{fieldLabel[k]}</p>
+                      <p className="text-xs text-muted-foreground">{fieldLabel[k]}{conf != null ? <span className={low ? " text-amber-700" : ""}> · {Math.round(conf * 100)}%</span> : null}</p>
                       <p className="text-sm text-foreground font-medium">{val}</p>
                     </div>
                   )
                 })}
               </div>
 
-              {result.contactId && (
+              {entityHref(result.entity) && result.entity && (
                 <a
-                  href={`/crm?contact=${result.contactId}`}
+                  href={entityHref(result.entity)!}
                   className="inline-flex items-center gap-1 text-sm text-primary underline underline-offset-2"
                 >
-                  View contact record
+                  {result.entity.kind === "contact" ? "View contact record" : result.entity.kind === "vendor" ? "Open on the vendor bench" : "Open your recruiting pipeline"}
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                   </svg>
@@ -348,11 +690,16 @@ export default function BusinessCardsPage() {
                 Note: Physical business cards do not constitute TCPA digital consent. The contact will require explicit opt-in before receiving automated outreach.
               </p>
 
+              {/* WIRED (wave 141F): this used to show a toast and flag nothing. It now opens the
+                  correction form — the human's values are applied field by field under the
+                  merge rule (a human beats the card's reading; a verified or self-entered value
+                  is kept and noted). */}
               <button
-                className="text-xs text-muted-foreground underline underline-offset-2"
-                onClick={() => toast({ title: "Feedback received", description: "Extraction data flagged for review." })}
+                type="button"
+                className="min-h-[44px] text-xs text-muted-foreground underline underline-offset-2"
+                onClick={() => setConfirmTarget({ scanId: result.scanId, fields: result.extracted, fieldConfidence: result.fieldConfidence ?? {}, contactId: result.contactId, needsSubjectType: !!result.needsTypeConfirmation, suggestedSubjectType: result.suggestedSubjectType ?? null })}
               >
-                Report extraction error
+                {result.needsConfirmation ? (result.needsTypeConfirmation ? "Pick the type and confirm" : "Confirm the fields") : "Report extraction error"}
               </button>
             </>
           ) : (
@@ -398,7 +745,8 @@ export default function BusinessCardsPage() {
                   <th className="px-4 py-2 text-left font-medium text-muted-foreground">Name Extracted</th>
                   <th className="px-4 py-2 text-left font-medium text-muted-foreground">Confidence</th>
                   <th className="px-4 py-2 text-left font-medium text-muted-foreground">Status</th>
-                  <th className="px-4 py-2 text-left font-medium text-muted-foreground">Contact</th>
+                  {/* Wave 142: "Record", not "Contact" — a vendor card is a vendor, an agent's card is a recruiting prospect. */}
+                  <th className="px-4 py-2 text-left font-medium text-muted-foreground">Record</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -416,19 +764,54 @@ export default function BusinessCardsPage() {
                       </td>
                       <td className="px-4 py-3">
                         {s.review_status === "approved" ? (
-                          <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded font-medium">Contact created</span>
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                            s.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-800"
+                          }`}>
+                            {s.cardSubjectType ? SUBJECT_TYPE_LABEL[s.cardSubjectType] : s.entity ? ENTITY_LABEL[s.entity.kind] : "Unclassified (older scan)"}
+                          </span>
+                        ) : s.review_status === "pending" ? (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmTarget({ scanId: s.id, fields: s.extracted_data as Partial<Record<CardField, string>>, fieldConfidence: s.fieldConfidence, contactId: s.contact_id, needsSubjectType: s.needsTypeConfirmation, suggestedSubjectType: s.suggestedSubjectType })}
+                            className="min-h-[44px] text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium underline underline-offset-2"
+                          >
+                            {s.needsTypeConfirmation ? "Needs its type — pick and confirm" : "Needs your confirmation — confirm"}
+                          </button>
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
+                        {/* business_card_scans.classified_by (m617 typed column) — which
+                            tier decided the class, so a picker override reads differently
+                            from an auto-detect. */}
+                        {s.review_status === "approved" && s.classifiedBy ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground">{CLASSIFIED_BY_LABEL[s.classifiedBy]}</p>
+                        ) : null}
+                        {/* business_card_scans.subject_notes — the free-text note typed on
+                            the review surface at scan time. */}
+                        {s.subjectNotes ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground italic">&ldquo;{s.subjectNotes}&rdquo;</p>
+                        ) : null}
+                        {/* The status above is the automatic viability gate's verdict unless a
+                            person confirmed the scan (confirmBusinessCardScan stamps reviewed_by,
+                            wave 141F) — said truthfully either way. */}
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {s.reviewed_by
+                            ? `confirmed by a person${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""}`
+                            : s.review_status === "pending"
+                              ? "held for your confirmation — nothing written yet"
+                              : `auto-gated${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""} — not reviewed by a person`}
+                        </p>
                       </td>
                       <td className="px-4 py-3">
-                        {s.contact_id ? (
-                          <a
-                            href={`/crm?contact=${s.contact_id}`}
-                            className="text-primary underline underline-offset-2"
-                          >
-                            View
-                          </a>
+                        {/* Wave 142: the entity the scan BECAME (typed m789 columns) — never "Contact" for a vendor or an agent. */}
+                        {s.entity ? (
+                          entityHref(s.entity) ? (
+                            <a href={entityHref(s.entity)!} className="text-primary underline underline-offset-2">
+                              {ENTITY_LABEL[s.entity.kind]}
+                            </a>
+                          ) : (
+                            <span className="text-muted-foreground">{ENTITY_LABEL[s.entity.kind]}</span>
+                          )
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}
@@ -527,10 +910,14 @@ export default function BusinessCardsPage() {
                       onChange={(e) => setReferralPartnerType(e.target.value as typeof referralPartnerType)}
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     >
-                      <option value="agent_to_agent">Agent to Agent</option>
-                      <option value="vendor">Vendor</option>
-                      <option value="lender">Lender</option>
-                      <option value="title">Title</option>
+                      <option value="real_estate_agent">Real estate agent</option>
+                      <option value="mortgage_broker">Lender / mortgage broker</option>
+                      <option value="title_company">Title company</option>
+                      <option value="home_inspector">Home inspector</option>
+                      <option value="contractor">Contractor</option>
+                      <option value="insurance_agent">Insurance agent</option>
+                      <option value="attorney">Attorney</option>
+                      <option value="property_manager">Property manager</option>
                       <option value="other">Other</option>
                     </select>
                   </div>

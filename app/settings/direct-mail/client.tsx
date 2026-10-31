@@ -109,7 +109,7 @@ function FarmMailSection({ initialConfig }: { initialConfig: FarmMailConfig }) {
       </div>
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
-      {saved && <p className="mt-3 text-sm text-green-600">Saved.</p>}
+      {saved && <p className="mt-3 text-sm text-green-700">Saved.</p>}
 
       <button
         onClick={handleSave}

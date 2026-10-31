@@ -27,7 +27,7 @@ export function AdoptionHealthPanel({ recentOnboardings, avgCompletion }: Adopti
         {/* Health Status */}
         <div className={`p-4 rounded-lg ${isHealthy ? 'bg-green-50' : 'bg-yellow-50'}`}>
           <div className="flex items-center gap-2">
-            <TrendingUp className={`h-5 w-5 ${isHealthy ? 'text-green-600' : 'text-yellow-600'}`} />
+            <TrendingUp className={`h-5 w-5 ${isHealthy ? 'text-green-600' : 'text-yellow-700'}`} />
             <div>
               <p className="font-medium">{isHealthy ? 'On Track' : 'Needs Attention'}</p>
               <p className="text-sm text-muted-foreground">

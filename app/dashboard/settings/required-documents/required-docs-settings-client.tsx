@@ -4,8 +4,35 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Loader2 } from "lucide-react"
+import { Loader2, Plus } from "lucide-react"
 import { seedRequiredDocsForBrokerage } from "@/app/actions/compliance/seed-required-docs"
+import { addRequiredDocument } from "@/app/actions/compliance/manage-required-docs"
+import {
+  ALL_DOCUMENT_CLASSIFICATIONS,
+  DOCUMENT_CLASSIFICATION_LABEL,
+  SELLER_SIDE_CLASSIFICATIONS,
+} from "@/lib/compliance/document-classifications"
+import {
+  CHECKLIST_STAGES, CHECKLIST_STAGE_LABEL,
+  CONTRACT_SUBTYPES, CONTRACT_SUBTYPE_LABEL,
+  FINANCING_KINDS, FINANCING_KIND_LABEL,
+  REPRESENTATIONS, REPRESENTATION_LABEL,
+} from "@/lib/compliance/checklist-dimensions"
+
+// THE PICKER READS THE ONE VOCABULARY. This was a hand-kept THIRD copy of the
+// classification list — it had already drifted, missing listing_agreement,
+// seller_broker_agreement and preliminary_closing_statement, so a broker could
+// not require the document that starts a listing even after the CHECK admitted
+// it. The union now lives in a client-safe module, so screen, resolver and
+// database read one list.
+const CLASSIFICATIONS = ALL_DOCUMENT_CLASSIFICATIONS.map((value) => ({
+  value,
+  label: DOCUMENT_CLASSIFICATION_LABEL[value],
+  seller: SELLER_SIDE_CLASSIFICATIONS.includes(value),
+}))
+
+/** A dimension's picker options (lib/compliance/adaptive-vocabulary.ts vocabularyOptions — platform + the brokerage's approved terms). */
+type DimensionOption = { value: string; label: string }
 
 interface Props {
   brokerageId:     string
@@ -13,20 +40,62 @@ interface Props {
   userId:          string
   userType:        string
   supportedStates: string[]
+  /**
+   * Wave 144A — the ADAPTIVE VOCABULARY's options for the two extensible dimensions, or null when the
+   * brokerage's vocabulary could not be read (the pickers then offer the platform lists below — never an
+   * empty list). No alternate labels are typed here: every option comes from the one vocabulary.
+   */
+  dimensionOptions?: { contract_subtype: DimensionOption[]; representation: DimensionOption[] } | null
+  /** The session's seat may record a STATE REQUIREMENT (a compliance approver — checked again server-side). */
+  canCiteStateRequirement?: boolean
 }
 
-export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userType, supportedStates }: Props) {
+export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userType, supportedStates, dimensionOptions, canCiteStateRequirement }: Props) {
+  const subtypeOptions: DimensionOption[] = dimensionOptions?.contract_subtype ?? CONTRACT_SUBTYPES.map((k) => ({ value: k, label: CONTRACT_SUBTYPE_LABEL[k] }))
+  const representationOptions: DimensionOption[] = dimensionOptions?.representation ?? REPRESENTATIONS.map((k) => ({ value: k, label: REPRESENTATION_LABEL[k] }))
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [stateCode, setStateCode] = useState<string>("")
   const [scope, setScope] = useState<"brokerage" | "team" | "agent">("brokerage")
+  // WHICH SIDE OF THE DEAL to seed. This was hardcoded "buyer", so the seller
+  // stack — the listing agreement above all — was unreachable from the UI, and
+  // seeding "seller" would previously have installed buyer paperwork anyway.
+  const [seedDealType, setSeedDealType] = useState<"buyer" | "seller" | "dual">("buyer")
   const [result, setResult] = useState<string | null>(null)
+
+  // ── Add-a-custom-rule form state ──
+  const [addPending, startAdd] = useTransition()
+  const [addClass, setAddClass] = useState<string>("pre_approval_letter")
+  const [addDealType, setAddDealType] = useState<"buyer" | "seller" | "dual">("buyer")
+  const [addState, setAddState] = useState<string>("")
+  const [addScope, setAddScope] = useState<"brokerage" | "team" | "agent">("brokerage")
+  const [addBlocking, setAddBlocking] = useState<boolean>(true)
+  const [addDesc, setAddDesc] = useState<string>("")
+  // The checklist dimensions (m806). Empty = "any" — a rule that sets none behaves exactly as before.
+  const [addStage, setAddStage] = useState<string>("")
+  const [addFinancing, setAddFinancing] = useState<string>("")
+  const [addSubtype, setAddSubtype] = useState<string>("")
+  const [addRepresentation, setAddRepresentation] = useState<string>("")
+  // Wave 144A: a rule that says the STATE requires the document cites the official source (compliance approver only).
+  const [addStateRequirement, setAddStateRequirement] = useState<boolean>(false)
+  const [addSourceUrl, setAddSourceUrl] = useState<string>("")
+  const [addResult, setAddResult] = useState<string | null>(null)
 
   // Scope choices depend on the user's role.
   const allowedScopes: ("brokerage" | "team" | "agent")[] = []
-  if (["broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("brokerage")
-  if (teamId && ["team_lead","broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("team")
-  if (["agent","team_lead","broker","broker_admin","admin","superadmin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("agent")
+  // SCOPE LADDER (kept inline — each rung admits a different tier): 'superadmin'
+  // removed from every rung — dead as users.user_type (0 live rows);
+  // broker_owner added — storable seat that owns the brokerage.
+  //
+  // 'tc' added to every rung. Owner's ruling: "the required document list is in
+  // the settings for the transaction coordinator or admin." The picker is not
+  // the authorization — app/actions/compliance/manage-required-docs.ts
+  // re-checks the same roster server-side on every write — but a TC whose scope
+  // picker was empty could not compose a rule at all.
+  const PRINCIPALS = ["tc","broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"]
+  if (PRINCIPALS.includes(userType)) allowedScopes.push("brokerage")
+  if (teamId && ["team_lead", ...PRINCIPALS].includes(userType)) allowedScopes.push("team")
+  if (["agent","team_lead", ...PRINCIPALS].includes(userType)) allowedScopes.push("agent")
 
   function seed() {
     setResult(null)
@@ -42,10 +111,13 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
         scopeId,
         stateCode: stateCode || null,
         actorUserId: userId,
-        dealType: "buyer",
+        dealType: seedDealType,
       })
       if (r.success) {
-        setResult(`Seeded ${r.inserted_count} new rule${r.inserted_count === 1 ? "" : "s"} (${r.skipped_count} already on file).`)
+        // Wave 145: seeded rules that name a legal source without citing it are a human compliance task — said here,
+        // and listed on this page until a compliance approver verifies the official source.
+        const tasks = r.citation_tasks?.length ?? 0
+        setResult(`Seeded ${r.inserted_count} new ${seedDealType} rule${r.inserted_count === 1 ? "" : "s"} (${r.skipped_count} already on file).${tasks ? ` ${tasks} name a legal source without a citation — see "Compliance task" below; they apply as brokerage policy until a compliance approver verifies the official source.` : ""}`)
         router.refresh()
       } else {
         setResult(`Failed: ${r.error}`)
@@ -53,15 +125,157 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
     })
   }
 
+  function addRule() {
+    setAddResult(null)
+    const scopeId = addScope === "team" ? (teamId ?? "") : addScope === "agent" ? userId : brokerageId
+    if (addScope === "team" && !teamId) { setAddResult("You aren't on a team — choose brokerage or agent scope."); return }
+    startAdd(async () => {
+      const r = await addRequiredDocument({
+        scope: addScope,
+        scopeId,
+        classification: addClass as any,
+        dealType: addDealType,
+        stateCode: addState || null,
+        blockOnMissing: addBlocking,
+        description: addDesc || null,
+        requiredStage: addStage || null,
+        financingKind: addFinancing || null,
+        contractSubtype: addSubtype || null,
+        representation: addRepresentation || null,
+        legalBasis: addStateRequirement ? "state_requirement" : null,
+        sourceUrl: addStateRequirement ? addSourceUrl || null : null,
+      })
+      if (r.ok) {
+        setAddResult(r.duplicate ? "That rule already exists at this scope." : "Added.")
+        setAddDesc("")
+        router.refresh()
+      } else {
+        setAddResult(`Failed: ${r.error}`)
+      }
+    })
+  }
+
   return (
+    <div className="space-y-6">
+    <Card>
+      <CardHeader><CardTitle>Add a custom required document</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Require a document beyond the state preset. Blocking rules refuse "submit to compliance"
+          until the document is on file; warning rules flag but pass through.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Document</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addClass} onChange={e => setAddClass(e.target.value)}>
+              {CLASSIFICATIONS.map(c => (
+                <option key={c.value} value={c.value}>{c.label}{c.seller ? " — seller side" : ""}</option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Deal type</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addDealType} onChange={e => setAddDealType(e.target.value as any)}>
+              <option value="buyer">Buyer</option>
+              <option value="seller">Seller</option>
+              <option value="dual">Both (dual)</option>
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Scope</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addScope} onChange={e => setAddScope(e.target.value as any)}>
+              {allowedScopes.includes("brokerage") && <option value="brokerage">Brokerage (everyone here)</option>}
+              {allowedScopes.includes("team")      && <option value="team">My team only</option>}
+              {allowedScopes.includes("agent")     && <option value="agent">Just me</option>}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">State (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addState} onChange={e => setAddState(e.target.value)}>
+              <option value="">Any state (US baseline)</option>
+              {supportedStates.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Due by (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addStage} onChange={e => setAddStage(e.target.value)}>
+              <option value="">Any stage</option>
+              {CHECKLIST_STAGES.map(s => <option key={s} value={s}>{CHECKLIST_STAGE_LABEL[s]}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Cash or financed (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addFinancing} onChange={e => setAddFinancing(e.target.value)}>
+              <option value="">Either</option>
+              {FINANCING_KINDS.map(k => <option key={k} value={k}>{FINANCING_KIND_LABEL[k]}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Contract type (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addSubtype} onChange={e => setAddSubtype(e.target.value)}>
+              <option value="">Any contract type</option>
+              {subtypeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Representation (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addRepresentation} onChange={e => setAddRepresentation(e.target.value)}>
+              <option value="">Any</option>
+              {representationOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+          {canCiteStateRequirement && (
+            <label className="text-sm md:col-span-3">
+              <span className="flex items-center gap-2 text-xs font-medium mb-1">
+                <input type="checkbox" checked={addStateRequirement} onChange={e => setAddStateRequirement(e.target.checked)} />
+                The state requires this document (cite the official source — otherwise it is saved as brokerage policy)
+              </span>
+              {addStateRequirement && (
+                <input className="w-full border rounded px-2 py-1.5 text-sm" value={addSourceUrl} onChange={e => setAddSourceUrl(e.target.value)} placeholder="Official source (.gov / .us)" />
+              )}
+            </label>
+          )}
+          <label className="text-sm md:col-span-2">
+            <span className="block text-xs font-medium mb-1">Description (optional)</span>
+            <input className="w-full border rounded px-2 py-1.5 text-sm" value={addDesc} onChange={e => setAddDesc(e.target.value)} placeholder="Why this is required / where it comes from" />
+          </label>
+        </div>
+        <div className="flex items-center gap-4">
+          <label className="text-sm flex items-center gap-2">
+            <input type="checkbox" checked={addBlocking} onChange={e => setAddBlocking(e.target.checked)} />
+            <span>Blocking (refuse submit if missing)</span>
+          </label>
+          <Button onClick={addRule} disabled={addPending} size="sm">
+            {addPending ? <Loader2 className="h-3 w-3 mr-2 animate-spin" /> : <Plus className="h-3 w-3 mr-2" />}
+            Add rule
+          </Button>
+        </div>
+        {addResult && <p className="text-xs text-muted-foreground">{addResult}</p>}
+      </CardContent>
+    </Card>
+
     <Card>
       <CardHeader><CardTitle>Seed defaults from a per-state preset</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Loads the US baseline plus the state-specific stack (TX, CA, FL, NY, IL, GA, AZ, CO, WA, NC).
-          Existing rules at the same scope are skipped — your customizations are preserved.
+          Loads the baseline for the side of the deal you pick, plus the state-specific stack
+          (TX, CA, FL, NY, IL, GA, AZ, CO, WA, NC). Existing rules at the same scope are
+          skipped — your customizations are preserved.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          The state stacks are a starting point of common practice, not legal citations: each seeded rule is saved as
+          your brokerage&apos;s policy. To mark a rule as a state requirement, a compliance approver adds it above with the
+          official (.gov / .us) source.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Deal side</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={seedDealType} onChange={e => setSeedDealType(e.target.value as any)}>
+              <option value="buyer">Buyer side (contract, pre-approval, buyer-broker agreement)</option>
+              <option value="seller">Seller side (listing agreement, disclosures, title)</option>
+              <option value="dual">Both sides (dual)</option>
+            </select>
+          </label>
           <label className="text-sm">
             <span className="block text-xs font-medium mb-1">Scope</span>
             <select className="w-full border rounded px-2 py-1.5 text-sm" value={scope} onChange={e => setScope(e.target.value as any)}>
@@ -87,5 +301,6 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
         {result && <p className="text-xs text-muted-foreground">{result}</p>}
       </CardContent>
     </Card>
+    </div>
   )
 }

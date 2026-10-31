@@ -11,11 +11,13 @@
 import { Button } from "@/components/ui/button"
 import { ExternalLink } from "lucide-react"
 
+// Tenant-facing wording (owner, wave 141 provider-visibility ruling): the note says WHAT the
+// tenant gets and never names platform configuration — the env-var names the earlier text
+// listed are platform-staff detail (docs/architecture + the superadmin console carry them).
 export const FALLBACK_DEFAULT_NOTE =
   "If the embedded window stays blank, Zoom is refusing to render inside the OS — " +
-  "use “Join Zoom meeting” above. A fully in-page meeting requires the Zoom Meeting " +
-  "SDK credentials (ZOOM_SDK_KEY/ZOOM_SDK_SECRET, or a Zoom General app's client " +
-  "credentials) — set them to upgrade this pane to the native embed."
+  "use “Join Zoom meeting” above. A fully in-page meeting isn't enabled on this platform yet; " +
+  "once it is, this pane upgrades to the native embed automatically."
 
 export function ZoomJoinFallback({
   joinUrl,

@@ -23,7 +23,7 @@ interface AgentHotLeadsPanelProps {
   hotLeads: HotLead[]
   agentId: string
   onWhisperBridge: (contactId: string, context: string) => Promise<void>
-  onVapiBot: (contactId: string, triggerEvent: string) => Promise<void>
+  onAiVoiceCall: (contactId: string, triggerEvent: string) => Promise<void>
   callingId: string | null
   loading?: boolean
 }
@@ -32,7 +32,7 @@ export function AgentHotLeadsPanel({
   hotLeads,
   agentId,
   onWhisperBridge,
-  onVapiBot,
+  onAiVoiceCall,
   callingId,
   loading
 }: AgentHotLeadsPanelProps) {
@@ -41,7 +41,7 @@ export function AgentHotLeadsPanel({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-amber-500" />
+            <Zap className="h-5 w-5 text-amber-600" />
             Hot Leads Now
           </CardTitle>
           <CardDescription>These contacts are showing real buying signals right now.</CardDescription>
@@ -60,17 +60,18 @@ export function AgentHotLeadsPanel({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-amber-500" />
+            <Zap className="h-5 w-5 text-amber-600" />
             Hot Leads Now
           </CardTitle>
           <CardDescription>These contacts are showing real buying signals right now.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="text-center py-6">
-            <CheckCircle2 className="h-10 w-10 text-green-500 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground">All high-intent leads have been actioned — great work.</p>
-            <Link href="/leads" className="text-sm text-primary hover:underline mt-2 inline-block">
-              View All Leads →
+            <CheckCircle2 className="h-10 w-10 text-green-600 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">All high-intent contacts have been actioned — great work.</p>
+            {/* Agents work CONTACTS — /leads is the broker/admin desk. */}
+            <Link href="/crm" className="text-sm text-primary hover:underline mt-2 inline-block">
+              View your contacts →
             </Link>
           </div>
         </CardContent>
@@ -82,7 +83,7 @@ export function AgentHotLeadsPanel({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Zap className="h-5 w-5 text-amber-500" />
+          <Zap className="h-5 w-5 text-amber-600" />
           Hot Leads Now
         </CardTitle>
         <CardDescription>These contacts are showing real buying signals right now.</CardDescription>
@@ -94,7 +95,7 @@ export function AgentHotLeadsPanel({
             lead={lead}
             compact={false}
             onWhisperBridge={onWhisperBridge}
-            onVapiBot={onVapiBot}
+            onAiVoiceCall={onAiVoiceCall}
             callingId={callingId}
           />
         ))}

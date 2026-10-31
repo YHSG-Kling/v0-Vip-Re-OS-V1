@@ -1,0 +1,962 @@
+/**
+ * MISSIONS — the durable objective runtime (wave 104, lane 104D; owner scope 107). ONE kernel
+ * service over `missions` + append-only `mission_events` (m710).
+ *
+ * SURVIVORS EVALUATED (none replaced — each is WIRED, see m710's header for the measurement):
+ *   · agent_goals (app/actions/ai-agent-goals.ts) — a KPI row; a goal becomes a mission's
+ *     objective (upsertAgentGoal → createMission, agent_goals.mission_id).
+ *   · workflow_runs (lib/workflow-orchestrator/engine.ts) — a chain instance; a run started under
+ *     a mission carries workflow_runs.mission_id and is attached as an action.
+ *   · manager_signals / signal-registry — the coordination channel an escalation rides.
+ *   · stale-run-reaper — THE reaper; it now also sweeps mission deadlines + stale blockers
+ *     (sweepMissionDeadlines) — no second reaper.
+ *   · MANAGERS (manager-registry) — owner_manager / participating_managers are registry keys.
+ *   · action ledger + causation — every transition is an agent_action_ledger row
+ *     (reason MISSION_LIFECYCLE, detail.mission_id) and a mission_events row carrying the
+ *     causation / correlation of the scope it ran under (LAW 5).
+ *   · autonomy gate / authority ladder — authority_ceiling = resolveAgentAuthorityLevel(owner).
+ *   · mayUseAndAfford — entitlement at creation ("app.access": a lapsed tenant gets no mission).
+ *
+ * TENANT: every entry point takes the VERIFIED brokerageId (the session's — app/actions/missions.ts
+ * resolves it through requireCallerTenant — or the event's / the cron's). Never a request body.
+ * Every read and write is pinned to it; a mission id from another tenant matches nothing and the
+ * caller is told (`not_found`), never silently succeeds.
+ *
+ * No `import "server-only"`: the proof (scripts/missions-guard.ts) drives the state machine through
+ * an in-memory client, as the ledger and causation modules allow.
+ *
+ * WIRED (lane 104F — every door has its real caller):
+ *   · escalateMission ← sweepMissionDeadlines (deadline passed / stale blocker) and the stale-run
+ *     reaper (a stalled run under a mission); the engine (a non-workflow mission's run failed).
+ *   · failMission ← sweepMissionDeadlines (ESCALATED, deadline passed, unanswered 72h) and the
+ *     engine (a `workflow` mission's run failed).
+ *   · completeMission ← recordMissionProgress (criteria met, deterministic) and the engine (a
+ *     `workflow` mission's run completed).
+ *   · recordMissionProgress ← the engine (steps_completed per run), app/actions/ai-agent-goals.ts
+ *     (the goal's measured current_value) and syncMissionProgressFromTwin (twin-path criteria).
+ *   · attachOutcome ← lib/intelligence/roi-ledger.ts recordMissionOutcomes (an attributed outcome
+ *     whose last-touch action a mission owns), on the per-tenant learning cron.
+ *   · decomposeObjective (twin) ← createMission, a brokerage_objective with no criteria.
+ *   · registerTwinSeam("missions") at the bottom of this file, loaded by the Command Center build.
+ *
+ * SUPERVISED (wave 105, lane 105B): lib/kernel/mission-controller.ts is the deterministic
+ * EXECUTIVE MISSION CONTROLLER above this service — ownership / participation / progress /
+ * dependencies / disagreement / budget / authority / human-intervention verdicts per mission, on
+ * the same reaper tick as sweepMissionDeadlines. It coordinates THROUGH this file only:
+ * transitionMission / blockMission / escalateMission move state, enlistMissionParticipants widens
+ * the bench, recordMissionEvidence writes the verdict (reason_code MISSION_CONTROL). No second
+ * mission service, no second writer of `missions`.
+ */
+import { MANAGERS, PLATFORM_MANAGERS, type ManagerKey, type PlatformManagerKey } from "@/lib/kernel/manager-registry"
+import { currentCausation } from "@/lib/kernel/causation"
+import { MIN_AUTHORITY_FOR_RISK, type AuthorityLevel, type ToolRiskClass } from "@/lib/ai-isa/persona-tool-policy"
+import { KernelEvent } from "@/lib/kernel/events"
+import { registerTwinSeam, decomposeObjective, readTwinMeasure, recruitingNeeds, recruitingNeedObjective, type BrokerageTwin, type RecruitingNeed } from "@/lib/kernel/brokerage-twin"
+
+// ─── vocabularies (mirrors of the m710 CHECKs — one spelling, CLAUDE.md §6) ───────────────────
+export const MISSION_STATES = ["PROPOSED", "PLANNING", "ACTIVE", "WAITING", "BLOCKED", "APPROVAL_REQUIRED", "ESCALATED", "COMPLETED", "FAILED", "CANCELLED"] as const
+export type MissionState = (typeof MISSION_STATES)[number]
+export const MISSION_TYPES = ["agent_goal", "brokerage_objective", "workflow", "campaign", "transaction", "recruiting", "compliance", "custom"] as const
+export type MissionType = (typeof MISSION_TYPES)[number]
+export const MISSION_PRIORITIES = ["low", "normal", "high", "critical"] as const
+export type MissionPriority = (typeof MISSION_PRIORITIES)[number]
+export const MISSION_TERMINAL_STATES: ReadonlySet<MissionState> = new Set(["COMPLETED", "FAILED", "CANCELLED"])
+/** The states a human / manager must look at — the stand-up and the team-lead brief list these. */
+export const MISSION_ATTENTION_STATES: ReadonlySet<MissionState> = new Set(["BLOCKED", "APPROVAL_REQUIRED", "ESCALATED"])
+/** A BLOCKED mission nobody unblocked for this long is escalated by the reaper sweep; an ESCALATED
+ *  mission whose deadline has passed and that nobody moved for this long is FAILED by the same
+ *  sweep (the deadline hard-expired after escalation). ONE stale window, not two spellings. */
+export const MISSION_BLOCKED_STALE_HOURS = 72
+/** The ledger WHY of every transition (m710 widens agent_action_ledger_reason_code_check). */
+export const MISSION_LIFECYCLE_REASON = "MISSION_LIFECYCLE"
+/** The mission_events reason_code of a CONTROLLER verdict (lib/kernel/mission-controller.ts) —
+ *  mission_events.reason_code is free text (m710), so no CHECK widens for it; the ledger rows the
+ *  controller's transitions ride keep MISSION_LIFECYCLE. */
+export const MISSION_CONTROL_REASON = "MISSION_CONTROL"
+/** The manager signal types an escalation publishes (catalogued in lib/kernel/signal-registry.ts). */
+export const MISSION_ESCALATED_SIGNAL = "mission_escalated"
+export const MISSION_APPROVAL_REQUIRED_SIGNAL = "mission_escalated_for_approval"
+
+/**
+ * THE STATE MACHINE. A transition not listed here is refused (recorded as a `refused`
+ * mission_events row, never thrown). Terminal states have no exits.
+ * @proofSeam the proof asserts every edge and every refusal directly
+ */
+export const MISSION_TRANSITIONS: Readonly<Record<MissionState, readonly MissionState[]>> = {
+  PROPOSED:          ["PLANNING", "ACTIVE", "CANCELLED"],
+  PLANNING:          ["ACTIVE", "BLOCKED", "APPROVAL_REQUIRED", "CANCELLED"],
+  ACTIVE:            ["WAITING", "BLOCKED", "APPROVAL_REQUIRED", "ESCALATED", "COMPLETED", "FAILED", "CANCELLED"],
+  WAITING:           ["ACTIVE", "BLOCKED", "APPROVAL_REQUIRED", "ESCALATED", "FAILED", "CANCELLED"],
+  BLOCKED:           ["ACTIVE", "WAITING", "ESCALATED", "FAILED", "CANCELLED"],
+  APPROVAL_REQUIRED: ["ACTIVE", "ESCALATED", "FAILED", "CANCELLED"],
+  ESCALATED:         ["ACTIVE", "BLOCKED", "APPROVAL_REQUIRED", "COMPLETED", "FAILED", "CANCELLED"],
+  COMPLETED:         [],
+  FAILED:            [],
+  CANCELLED:         [],
+}
+
+export function isMissionState(v: unknown): v is MissionState { return typeof v === "string" && (MISSION_STATES as readonly string[]).includes(v) }
+export function canTransition(from: MissionState, to: MissionState): boolean { return MISSION_TRANSITIONS[from]?.includes(to) ?? false }
+
+// ─── shapes ───────────────────────────────────────────────────────────────────────────────────
+export interface SuccessCriterion { metric: string; op: ">=" | "<=" | "=="; target: number }
+export interface MissionBudget { usd?: number | null; tokens?: number | null; on_exhausted?: "WAITING" | "APPROVAL_REQUIRED" }
+export interface MissionBlocker { key: string; reason: string; added_at: string; cleared_at?: string | null }
+export interface MissionActor {
+  type: "manager" | "user" | "agent" | "system"; id?: string | null
+  /**
+   * Wave 108B — PLATFORM SCOPE. Only an actor that declares `scope: "platform"` (the platform
+   * SaaS-operations sweep, lib/platform/saas-operations.ts, and the staff door behind
+   * requirePlatformCapability, app/actions/superadmin/saas-operations.ts) can read or move a
+   * platform-scope mission; every tenant path reads one as `not_found` (no id oracle).
+   */
+  scope?: "platform"
+}
+
+/**
+ * PLATFORM SELF-OPERATION (wave 108B). A platform SUPPORT mission is the platform operating on one
+ * subscriber: brokerage_id = the SUBJECT tenant (missions.brokerage_id is NOT NULL and the tenant IS
+ * the subject), subject_type = PLATFORM_SUPPORT_SUBJECT_TYPE (the platform flag — no new table, no
+ * new column), owner_manager = a PLATFORM_MANAGERS key (platform_sentinel). Tenants never see it:
+ * activeMissionsFor / sweepMissionDeadlines / the mission controller skip it, getMission reads it as
+ * not_found for a tenant actor, and m728 narrows the missions / mission_events SELECT policies.
+ * Its authority ceiling is fixed at Draft (2) — a support mission never contacts the tenant itself.
+ */
+export const PLATFORM_SUPPORT_SUBJECT_TYPE = "platform_support"
+export const PLATFORM_SUPPORT_AUTHORITY_CEILING: AuthorityLevel = 2
+/** PURE: is this row a platform-scope mission? */
+export function isPlatformScopeMission(m: { subject_type?: string | null } | null | undefined): boolean {
+  return !!m && m.subject_type === PLATFORM_SUPPORT_SUBJECT_TYPE
+}
+function isPlatformManagerKey(v: unknown): v is PlatformManagerKey { return typeof v === "string" && v in PLATFORM_MANAGERS }
+
+export interface MissionRow {
+  id: string
+  brokerage_id: string
+  objective: string
+  mission_type: MissionType
+  owner_manager: ManagerKey
+  participating_managers: ManagerKey[]
+  subject_type: string | null
+  subject_id: string | null
+  state: MissionState
+  priority: MissionPriority
+  success_criteria: SuccessCriterion[]
+  budget: MissionBudget
+  spent_usd: number
+  spent_tokens: number
+  authority_ceiling: AuthorityLevel
+  deadline: string | null
+  dependencies: string[]
+  blockers: MissionBlocker[]
+  evidence: Array<Record<string, unknown>>
+  progress: Record<string, number>
+  actions: string[]
+  outcomes: Array<Record<string, unknown>>
+  created_by: string | null
+  parent_mission: string | null
+  state_changed_at: string
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type MissionResult = { ok: true; mission: MissionRow } | { ok: false; reason: string; mission?: MissionRow }
+
+/**
+ * THE WORKING CONTEXT (wave 105, lane 105C) — the mission's short-term state a manager needs on
+ * every turn and must never re-derive from the database: what is being pursued right now, which
+ * requests are out (105A delegations), who is waiting on what, the subject's availability, free
+ * notes. DISTINCT from long-term memory (contacts.metadata.context_spine). It lives on the mission
+ * row as `evidence` entries of kind `working_context` (latest wins — a revision IS mission
+ * evidence; `progress` is numeric, so no m714), written ONLY by this service's transitions /
+ * progress and by delegation results, never by free-form manager chat. Read through
+ * currentWorkingContext; compiled into the prompt by lib/kernel/mission-context.ts.
+ */
+export interface WorkingContext {
+  objective_now?: string | null
+  open_requests?: Array<{ id: string; to: string; what: string; since: string }>
+  waiting_on?: { who: string; what: string; since: string } | null
+  availability?: Record<string, unknown> | null
+  notes?: string[]
+  /** Derived at write time from the row (budget − spent); null = unmetered. */
+  budget_remaining_usd?: number | null
+  updated_at: string
+  updated_by: string
+}
+export const WORKING_CONTEXT_EVIDENCE_KIND = "working_context"
+
+/** PURE: the latest working-context revision on the row, or null. @proofSeam the proof asserts latest-wins directly */
+export function currentWorkingContext(m: Pick<MissionRow, "evidence">): WorkingContext | null {
+  const rows = (m.evidence ?? []).filter((e) => e && e.kind === WORKING_CONTEXT_EVIDENCE_KIND && typeof (e as { updated_at?: unknown }).updated_at === "string") as unknown as WorkingContext[]
+  if (rows.length === 0) return null
+  return rows.reduce((a, b) => (b.updated_at >= a.updated_at ? b : a))
+}
+
+type Client = { from: (table: string) => any }
+
+/**
+ * Test seams — every default is THE survivor (lazy imports keep this module off the proxy graph).
+ * A proof swaps one to observe the evidence it writes; production never passes `deps`.
+ */
+export interface MissionDeps {
+  now?: () => Date
+  afford?: (brokerageId: string, client: Client) => Promise<{ allowed: boolean; reason: string }>
+  authority?: (brokerageId: string, manager: ManagerKey, client: Client) => Promise<AuthorityLevel>
+  ledger?: (ctx: LedgerCtx, client: Client) => Promise<string | null>
+  emit?: (input: EmitCtx, client: Client) => Promise<void>
+  signal?: (input: SignalCtx, client: Client) => Promise<void>
+}
+interface LedgerCtx { brokerageId: string; action: string; actor: MissionActor; missionId: string; from: MissionState | null; to: MissionState; reason: string; causationId: string | null; correlationId: string | null; costUsd?: number | null }
+interface EmitCtx { brokerageId: string; event: string; missionId: string; metadata: Record<string, unknown>; actorUserId: string | null; causationId: string | null; correlationId: string | null }
+interface SignalCtx { brokerageId: string; fromManager: ManagerKey; toManager: ManagerKey; signalType: string; message: string; missionId: string; payload: Record<string, unknown> }
+
+const defaultDeps: Required<MissionDeps> = {
+  now: () => new Date(),
+  afford: async (brokerageId, client) => {
+    const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+    const d = await mayUseAndAfford({ brokerageId, capability: "app.access", client })
+    return { allowed: d.allowed, reason: d.reason }
+  },
+  authority: async (brokerageId, manager, client) => {
+    const { resolveAgentAuthorityLevel } = await import("@/lib/managers/autonomy-gate")
+    return resolveAgentAuthorityLevel(brokerageId, manager, client as any)
+  },
+  ledger: async (ctx, client) => {
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    let id: string | null = null
+    await withActionLedger(
+      {
+        brokerageId: ctx.brokerageId, action: ctx.action,
+        actor: { type: ctx.actor.type, userId: ctx.actor.type === "user" ? ctx.actor.id ?? null : null, agentId: ctx.actor.type === "agent" ? ctx.actor.id ?? null : null, managerKey: ctx.actor.type === "manager" ? ctx.actor.id ?? null : null },
+        subject: { type: "mission", id: ctx.missionId },
+        reasonCode: MISSION_LIFECYCLE_REASON, reasonDetail: ctx.reason,
+        causationId: ctx.causationId, correlationId: ctx.correlationId,
+        riskClass: "LOW_RISK_WRITE", systemSource: "missions",
+        detail: { mission_id: ctx.missionId, from_state: ctx.from, to_state: ctx.to },
+      },
+      async () => ({ status: "executed" as const, outcome: `${ctx.from ?? "∅"}→${ctx.to}` }),
+      { settle: (r) => ({ status: r.status, outcome: r.outcome, costUsd: ctx.costUsd ?? null }), replay: () => ({ status: "executed" as const, outcome: "replay" }) },
+      { client },
+    )
+    // The ledger row id is read back by the mission's subject (the claim does not return it here).
+    const { data } = await client.from("agent_action_ledger").select("id").eq("subject_type", "mission").eq("subject_id", ctx.missionId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    id = (data as { id?: string } | null)?.id ?? null
+    return id
+  },
+  emit: async (input, client) => {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    await emitKernelEvent({
+      event: input.event, brokerageId: input.brokerageId, entityType: "mission", entityId: input.missionId,
+      metadata: input.metadata, actorUserId: input.actorUserId, causationId: input.causationId, correlationId: input.correlationId,
+      auditOnly: true, client,
+    })
+  },
+  signal: async (input, client) => {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    const r = await publishManagerSignal({
+      brokerageId: input.brokerageId, fromManager: input.fromManager, toManager: input.toManager, signalType: input.signalType,
+      message: input.message, entityType: "mission", entityId: input.missionId, payload: input.payload,
+    }, client as any)
+    if (!r.ok) console.error(`[missions] signal ${input.signalType} not published: ${r.reason}`)
+  },
+}
+
+async function svcOf(client?: Client): Promise<Client> {
+  if (client) return client
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  return createServiceClient() as unknown as Client
+}
+
+function isManagerKey(v: unknown): v is ManagerKey { return typeof v === "string" && v in MANAGERS }
+
+/** PURE, deterministic: every criterion met against the recorded progress. Unknown metric = unmet.
+ *  @proofSeam the proof asserts the rule directly */
+export function evaluateSuccess(criteria: SuccessCriterion[], progress: Record<string, number>): { met: boolean; unmet: string[] } {
+  const unmet: string[] = []
+  for (const c of criteria) {
+    const v = progress[c.metric]
+    const ok = typeof v === "number" && (c.op === ">=" ? v >= c.target : c.op === "<=" ? v <= c.target : v === c.target)
+    if (!ok) unmet.push(`${c.metric} ${c.op} ${c.target} (is ${typeof v === "number" ? v : "unknown"})`)
+  }
+  return { met: unmet.length === 0, unmet }
+}
+
+/** PURE: is the budget exhausted after this spend? null budget = unmetered.
+ *  @proofSeam the proof asserts the rule directly */
+export function budgetExhausted(budget: MissionBudget, spentUsd: number, spentTokens: number): boolean {
+  const usdCap = typeof budget.usd === "number" ? budget.usd : null
+  const tokCap = typeof budget.tokens === "number" ? budget.tokens : null
+  return (usdCap !== null && spentUsd >= usdCap) || (tokCap !== null && spentTokens >= tokCap)
+}
+
+/** PURE: may a mission at `ceiling` run an action of `riskClass`? (the ladder, persona-tool-policy)
+ *  @proofSeam the proof asserts the rule directly */
+export function withinAuthorityCeiling(ceiling: AuthorityLevel, riskClass: ToolRiskClass): boolean {
+  const min = MIN_AUTHORITY_FOR_RISK[riskClass]
+  if (min === null || min === undefined) return false // a class the ladder never grants autonomously
+  return ceiling >= min
+}
+
+// ─── reads ────────────────────────────────────────────────────────────────────────────────────
+export async function getMission(brokerageId: string, missionId: string, client?: Client, scope?: "platform"): Promise<MissionRow | null> {
+  const svc = await svcOf(client)
+  const { data, error } = await svc.from("missions").select("*").eq("brokerage_id", brokerageId).eq("id", missionId).maybeSingle()
+  // Wave 108B: scope must MATCH — a tenant path never reads a platform-scope mission, and the
+  // platform door never reaches a tenant's own mission through this read.
+  if (!error && data && isPlatformScopeMission(data as MissionRow) !== (scope === "platform")) return null
+  if (error) { console.error(`[missions] read refused: ${error.message}`); return null }
+  return (data as MissionRow | null) ?? null
+}
+
+export interface ActiveMissionsSummary {
+  active: MissionRow[]
+  attention: MissionRow[]
+  counts: Record<MissionState, number>
+  readRefused: string | null
+}
+
+/**
+ * THE LAZY SEAM other layers read missions through (the digital twin — lane 104B — the morning
+ * stand-up, the team-lead brief): every non-terminal mission of the tenant, optionally narrowed to
+ * a subject or an agent (created_by), with the attention set (BLOCKED / APPROVAL_REQUIRED /
+ * ESCALATED) pulled out. A refused read is PUBLISHED (readRefused), never an empty "all clear".
+ */
+export async function activeMissionsFor(
+  brokerageId: string,
+  opts: { subject?: { type: string; id: string } | null; createdBy?: string | null; ownerManager?: ManagerKey | PlatformManagerKey | null; limit?: number; scope?: "platform" } = {},
+  client?: Client,
+): Promise<ActiveMissionsSummary> {
+  const counts = Object.fromEntries(MISSION_STATES.map((s) => [s, 0])) as Record<MissionState, number>
+  const out: ActiveMissionsSummary = { active: [], attention: [], counts, readRefused: null }
+  if (!brokerageId) { out.readRefused = "no tenant"; return out }
+  const svc = await svcOf(client)
+  let q = svc.from("missions").select("*").eq("brokerage_id", brokerageId)
+    .in("state", MISSION_STATES.filter((s) => !MISSION_TERMINAL_STATES.has(s)))
+  if (opts.subject) q = q.eq("subject_type", opts.subject.type).eq("subject_id", opts.subject.id)
+  if (opts.createdBy) q = q.eq("created_by", opts.createdBy)
+  if (opts.ownerManager) q = q.eq("owner_manager", opts.ownerManager)
+  const { data, error } = await q.order("priority", { ascending: false }).order("deadline", { ascending: true, nullsFirst: false }).limit(opts.limit ?? 200)
+  if (error) { out.readRefused = error.message; return out }
+  for (const m of (data ?? []) as MissionRow[]) {
+    // Wave 108B: tenant readers (twin seam, command center, recruiting) never see platform-scope
+    // support missions; the platform sweep asks with scope "platform" and sees ONLY those.
+    if (isPlatformScopeMission(m) !== (opts.scope === "platform")) continue
+    counts[m.state] = (counts[m.state] ?? 0) + 1
+    out.active.push(m)
+    if (MISSION_ATTENTION_STATES.has(m.state)) out.attention.push(m)
+  }
+  return out
+}
+
+// ─── evidence (append-only) ───────────────────────────────────────────────────────────────────
+async function appendEvent(svc: Client, m: Pick<MissionRow, "id" | "brokerage_id">, e: {
+  kind: "created" | "transition" | "refused" | "action_attached" | "outcome_attached" | "blocker_added" | "blocker_cleared" | "evidence" | "progress"
+  from?: MissionState | null; to?: MissionState | null; reason?: string | null; reasonCode?: string | null
+  actor: MissionActor; evidence?: Record<string, unknown>; ledgerEntryId?: string | null
+}): Promise<void> {
+  const c = currentCausation()
+  const { error } = await svc.from("mission_events").insert({
+    mission_id: m.id, brokerage_id: m.brokerage_id, event_kind: e.kind,
+    from_state: e.from ?? null, to_state: e.to ?? null, reason_code: e.reasonCode ?? null, reason: e.reason ?? null,
+    actor_type: e.actor.type, actor_id: e.actor.id ?? null, evidence: e.evidence ?? {},
+    ledger_entry_id: e.ledgerEntryId ?? null, causation_id: c.causationId, correlation_id: c.correlationId,
+  })
+  if (error) console.error(`[missions] mission_events append refused (${e.kind}): ${error.message}`)
+}
+
+/**
+ * Append an `evidence` / `progress` row WITHOUT moving state — the controller's verdict door
+ * (lib/kernel/mission-controller.ts) and any supervisor that must leave a reasoned record on the
+ * mission's append-only log (LAW 5). Tenant-pinned: a mission of another tenant matches nothing and
+ * the caller is told. The refusal of the insert itself is published by appendEvent.
+ */
+export async function recordMissionEvidence(p: {
+  brokerageId: string; missionId: string; kind: "evidence" | "progress"; reason: string
+  reasonCode?: string | null; actor?: MissionActor; evidence?: Record<string, unknown>
+}, client?: Client): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  await appendEvent(svc, m, { kind: p.kind, reason: p.reason, reasonCode: p.reasonCode ?? null, actor: p.actor ?? { type: "system" }, evidence: p.evidence })
+  return { ok: true }
+}
+
+/**
+ * Widen the bench ADDITIVELY: registry keys the mission's work needs that the row does not yet
+ * name (the controller's participation verdict). Never removes a participant a human chose, never
+ * touches the owner, never moves state; the enlistment is an `evidence` row naming who and why.
+ */
+export async function enlistMissionParticipants(p: { brokerageId: string; missionId: string; managers: ManagerKey[]; reason: string; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { enlisted?: ManagerKey[] }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  if (MISSION_TERMINAL_STATES.has(m.state)) return { ok: false, reason: `terminal:${m.state}`, mission: m }
+  const bad = p.managers.find((k) => !isManagerKey(k))
+  if (bad) return { ok: false, reason: `unknown_participating_manager:${String(bad)}`, mission: m }
+  const have = new Set<ManagerKey>(m.participating_managers ?? [])
+  const enlisted = [...new Set(p.managers)].filter((k) => k !== m.owner_manager && !have.has(k))
+  if (enlisted.length === 0) return { ok: true, mission: m, enlisted: [] }
+  const participating_managers = [...have, ...enlisted]
+  const { data, error } = await svc.from("missions").update({ participating_managers, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  if (!Array.isArray(data) || data.length !== 1) return { ok: false, reason: "not_found", mission: m }
+  await appendEvent(svc, m, { kind: "evidence", reason: `participants enlisted: ${enlisted.join(", ")} — ${p.reason}`, reasonCode: MISSION_CONTROL_REASON, actor: p.actor ?? { type: "system" }, evidence: { enlisted, participating_managers } })
+  return { ok: true, mission: { ...m, participating_managers }, enlisted }
+}
+
+// ─── create ───────────────────────────────────────────────────────────────────────────────────
+export interface CreateMissionInput {
+  /** VERIFIED tenant (session / event / cron) — never a request body. */
+  brokerageId: string
+  objective: string
+  missionType?: MissionType
+  /** A tenant MANAGERS key — or, ONLY for a platform-scope mission (subject.type =
+   *  PLATFORM_SUPPORT_SUBJECT_TYPE, actor.scope = "platform"), a PLATFORM_MANAGERS key (wave 108B). */
+  ownerManager: ManagerKey | PlatformManagerKey
+  participatingManagers?: ManagerKey[]
+  subject?: { type: string; id: string } | null
+  priority?: MissionPriority
+  successCriteria?: SuccessCriterion[]
+  budget?: MissionBudget
+  deadline?: string | null
+  dependencies?: string[]
+  createdBy?: string | null
+  parentMission?: string | null
+  actor?: MissionActor
+  /** Start PROPOSED (default) or go straight to ACTIVE (a goal the agent already committed to). */
+  initialState?: "PROPOSED" | "PLANNING" | "ACTIVE"
+  /**
+   * A brokerage_objective in the agent_goals vocabulary (goal type + target). When no successCriteria
+   * are given, the criteria are DERIVED through the twin's decomposition (lib/kernel/brokerage-twin.ts
+   * decomposeObjective): one criterion per supported sub-target, each keyed on the twin field that
+   * measures it, so the Command Center's twin build measures the mission (syncMissionProgressFromTwin).
+   * A twin handed in sharpens the sub-targets (closings needed at the brokerage's own average).
+   */
+  objectiveSpec?: { goalType: string; targetValue: number; currentValue?: number } | null
+  twin?: BrokerageTwin | null
+}
+
+/** PURE: the success criteria a decomposed objective yields — the supported sub-targets, keyed on
+ *  the twin field that measures each (metric = the dotted twin path; a mission criterion whose
+ *  metric contains "." is a twin measure, written by syncMissionProgressFromTwin). */
+export function criteriaFromDecomposition(d: ReturnType<typeof decomposeObjective>): SuccessCriterion[] {
+  const out: SuccessCriterion[] = []
+  const seen = new Set<string>()
+  for (const s of d.subTargets) {
+    if (s.status !== "ok" || s.measuredBy === null || typeof s.target !== "number" || seen.has(s.measuredBy)) continue
+    // The twin reports LEVELS; a decomposition's sub-targets are INCREMENTS unless marked absolute. Judging
+    // an increment against a level let a mission complete the moment it went active (wave 108 integration):
+    // the criterion is the level at creation plus the increment.
+    // An unknown baseline counts as 0: the criterion can only be harder to meet, never met early.
+    const level = s.basis === "absolute" ? s.target : (typeof s.current === "number" ? s.current : 0) + s.target
+    seen.add(s.measuredBy)
+    out.push({ metric: s.measuredBy, op: ">=", target: level })
+  }
+  return out
+}
+
+export async function createMission(input: CreateMissionInput, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  if (!input.brokerageId) return { ok: false, reason: "no_tenant" }
+  if (!input.objective?.trim()) return { ok: false, reason: "objective_required" }
+  // PLATFORM SCOPE (wave 108B) is all-or-nothing: the platform subject, a platform owner and a
+  // platform actor together — any one without the others is refused, so a tenant path can never
+  // mint a mission its own readers would hide, and the platform can never own a tenant objective.
+  const platformScope = input.subject?.type === PLATFORM_SUPPORT_SUBJECT_TYPE
+  if (platformScope) {
+    if (!isPlatformManagerKey(input.ownerManager)) return { ok: false, reason: `platform_scope_requires_platform_owner:${String(input.ownerManager)}` }
+    if (input.actor?.scope !== "platform") return { ok: false, reason: "platform_scope_requires_platform_actor" }
+    if ((input.participatingManagers ?? []).length > 0) return { ok: false, reason: "platform_scope_takes_no_tenant_participants" }
+  } else if (!isManagerKey(input.ownerManager)) return { ok: false, reason: `unknown_owner_manager:${String(input.ownerManager)}` }
+  const participants = [...new Set((input.participatingManagers ?? []).filter((k) => k !== input.ownerManager))]
+  const bad = participants.find((k) => !isManagerKey(k))
+  if (bad) return { ok: false, reason: `unknown_participating_manager:${String(bad)}` }
+  if (input.missionType && !(MISSION_TYPES as readonly string[]).includes(input.missionType)) return { ok: false, reason: `unknown_mission_type:${input.missionType}` }
+  if (input.priority && !(MISSION_PRIORITIES as readonly string[]).includes(input.priority)) return { ok: false, reason: `unknown_priority:${input.priority}` }
+
+  // ENTITLEMENT (LAW: every build integrates mayUseAndAfford) — a tenant that may not use the OS
+  // gets no mission. Fail closed: a refused answer is a refusal.
+  // A PLATFORM support mission is the platform's own work ON the tenant, not the tenant's use of the
+  // OS: the tenant's entitlement answer is still asked and RECORDED as evidence (a lapsed tenant is
+  // often exactly why support opens), but it does not refuse — refusing would make a billing-failure
+  // support mission impossible by construction.
+  const afford = await d.afford(input.brokerageId, svc)
+  if (!afford.allowed && !platformScope) return { ok: false, reason: `entitlement:${afford.reason}` }
+
+  // AUTHORITY CEILING from the ladder for the OWNER manager (managed_agents.config.authority_level);
+  // a platform support mission is pinned at Draft — staff send, the mission never contacts the tenant.
+  const ceiling = platformScope ? PLATFORM_SUPPORT_AUTHORITY_CEILING : await d.authority(input.brokerageId, input.ownerManager as ManagerKey, svc)
+  const actor: MissionActor = input.actor ?? (input.createdBy ? { type: "user", id: input.createdBy } : { type: "manager", id: input.ownerManager })
+  const state: MissionState = input.initialState ?? "PROPOSED"
+
+  // A brokerage objective with no criteria of its own is DECOMPOSED through the twin (104B's
+  // decomposeObjective): the criteria are the supported sub-targets, each keyed on the twin field
+  // that measures it. An unsupported decomposition yields no criteria and is recorded as evidence —
+  // the mission still exists; it completes only once a human gives it measurable criteria.
+  let successCriteria = input.successCriteria ?? []
+  let decomposition: ReturnType<typeof decomposeObjective> | null = null
+  if ((input.missionType ?? "custom") === "brokerage_objective" && successCriteria.length === 0 && input.objectiveSpec) {
+    decomposition = decomposeObjective(input.objectiveSpec, input.twin ?? null)
+    successCriteria = criteriaFromDecomposition(decomposition)
+  }
+
+  const { data, error } = await svc.from("missions").insert({
+    brokerage_id: input.brokerageId, objective: input.objective.trim(), mission_type: input.missionType ?? "custom",
+    owner_manager: input.ownerManager, participating_managers: participants,
+    subject_type: input.subject?.type ?? null, subject_id: input.subject?.id ?? null,
+    state, priority: input.priority ?? "normal",
+    success_criteria: successCriteria, budget: input.budget ?? {},
+    authority_ceiling: ceiling, deadline: input.deadline ?? null, dependencies: input.dependencies ?? [],
+    created_by: input.createdBy ?? null, parent_mission: input.parentMission ?? null,
+  }).select("*").single()
+  if (error || !data) return { ok: false, reason: `insert_refused:${error?.message ?? "no row"}` }
+  const mission = data as MissionRow
+
+  const c = currentCausation()
+  const ledgerId = await d.ledger({ brokerageId: mission.brokerage_id, action: "mission.objective.create", actor, missionId: mission.id, from: null, to: state, reason: `created: ${mission.objective}`, causationId: c.causationId, correlationId: c.correlationId }, svc)
+  await appendEvent(svc, mission, { kind: "created", to: state, reasonCode: MISSION_LIFECYCLE_REASON, reason: "created", actor, ledgerEntryId: ledgerId, evidence: { owner_manager: mission.owner_manager, participating_managers: participants, authority_ceiling: ceiling, entitlement: platformScope ? `platform_scope (tenant entitlement: ${afford.allowed ? "allowed" : "refused"} — ${afford.reason})` : afford.reason, ...(decomposition ? { decomposition: { goal_type: decomposition.goalType, status: decomposition.status, remaining: decomposition.remaining, reason: decomposition.reason ?? null, sub_targets: decomposition.subTargets, criteria_derived: successCriteria.length } } : {}) } })
+  // The tenant's kernel event stream is the TENANT's — a platform support mission's evidence is the
+  // ledger row + mission_events above (LAW 5), never an event on the subject tenant's bus.
+  if (!platformScope) await d.emit({ brokerageId: mission.brokerage_id, event: KernelEvent.MISSION_CREATED, missionId: mission.id, metadata: { mission_id: mission.id, state, owner_manager: mission.owner_manager, objective: mission.objective }, actorUserId: input.createdBy ?? null, causationId: c.causationId, correlationId: c.correlationId }, svc)
+  return { ok: true, mission }
+}
+
+// ─── transition (the one writer of `state`) ───────────────────────────────────────────────────
+export interface TransitionInput {
+  brokerageId: string
+  missionId: string
+  to: MissionState
+  reason: string
+  actor?: MissionActor
+  evidence?: Record<string, unknown>
+}
+
+export async function transitionMission(input: TransitionInput, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const actor: MissionActor = input.actor ?? { type: "system" }
+  const m = await getMission(input.brokerageId, input.missionId, svc, actor.scope)
+  if (!m) return { ok: false, reason: "not_found" }
+  const platformScope = isPlatformScopeMission(m)
+  // The pre-move state, captured BEFORE the update (a client that hands back live row objects
+  // would otherwise show the evidence the post-move state).
+  const from: MissionState = m.state
+  if (!isMissionState(input.to)) return { ok: false, reason: `unknown_state:${String(input.to)}`, mission: m }
+  if (!canTransition(m.state, input.to)) {
+    await appendEvent(svc, m, { kind: "refused", from: m.state, to: input.to, reason: `refused: ${m.state} → ${input.to} is not a transition (${input.reason})`, reasonCode: MISSION_LIFECYCLE_REASON, actor, evidence: input.evidence })
+    return { ok: false, reason: `invalid_transition:${m.state}->${input.to}`, mission: m }
+  }
+  // Completing is judged against the success criteria, deterministically — never by assertion.
+  if (input.to === "COMPLETED") {
+    const verdict = evaluateSuccess(m.success_criteria ?? [], m.progress ?? {})
+    if (!verdict.met) {
+      await appendEvent(svc, m, { kind: "refused", from: m.state, to: "COMPLETED", reason: `refused: success criteria unmet — ${verdict.unmet.join("; ")}`, reasonCode: MISSION_LIFECYCLE_REASON, actor, evidence: { unmet: verdict.unmet } })
+      return { ok: false, reason: `criteria_unmet:${verdict.unmet.join("; ")}`, mission: m }
+    }
+  }
+  const now = d.now().toISOString()
+  const patch: Record<string, unknown> = { state: input.to, state_changed_at: now, updated_at: now }
+  if (MISSION_TERMINAL_STATES.has(input.to)) patch.completed_at = now
+  const { data: updated, error } = await svc.from("missions").update(patch).eq("brokerage_id", input.brokerageId).eq("id", m.id).eq("state", m.state).select("*")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  if (!Array.isArray(updated) || updated.length !== 1) return { ok: false, reason: "raced:state_moved_under_us", mission: m }
+  const next = updated[0] as MissionRow
+
+  const c = currentCausation()
+  const ledgerId = await d.ledger({ brokerageId: m.brokerage_id, action: "mission.state.transition", actor, missionId: m.id, from, to: input.to, reason: input.reason, causationId: c.causationId, correlationId: c.correlationId }, svc)
+  await appendEvent(svc, m, { kind: "transition", from, to: input.to, reason: input.reason, reasonCode: MISSION_LIFECYCLE_REASON, actor, ledgerEntryId: ledgerId, evidence: input.evidence })
+  if (!platformScope) await d.emit({ brokerageId: m.brokerage_id, event: KernelEvent.MISSION_STATE_CHANGED, missionId: m.id, metadata: { mission_id: m.id, from_state: from, to_state: input.to, reason: input.reason, owner_manager: m.owner_manager }, actorUserId: actor.type === "user" ? actor.id ?? null : null, causationId: c.causationId, correlationId: c.correlationId }, svc)
+
+  // COORDINATION: an escalation / approval need is told to the owner manager through the signal
+  // bus (signal-registry catalogues both types) and, for APPROVAL_REQUIRED, to the human who owns it.
+  // A platform-scope mission never rides the TENANT's bus or notifies a tenant user (wave 108B).
+  if (!platformScope && (input.to === "ESCALATED" || input.to === "APPROVAL_REQUIRED")) {
+    const fromMgr: ManagerKey = actor.type === "manager" && isManagerKey(actor.id) && actor.id !== m.owner_manager ? actor.id : "cron_manager"
+    const toMgr: ManagerKey = m.owner_manager === fromMgr ? (m.participating_managers?.[0] ?? "data_steward") : m.owner_manager
+    await d.signal({ brokerageId: m.brokerage_id, fromManager: fromMgr, toManager: toMgr, signalType: input.to === "ESCALATED" ? MISSION_ESCALATED_SIGNAL : MISSION_APPROVAL_REQUIRED_SIGNAL, message: `Mission "${m.objective}" is ${input.to}: ${input.reason}`, missionId: m.id, payload: { from_state: from, reason: input.reason, deadline: m.deadline, priority: m.priority } }, svc)
+    if (input.to === "APPROVAL_REQUIRED" && m.created_by) {
+      const { error: nErr } = await svc.from("notifications").insert({
+        user_id: m.created_by, brokerage_id: m.brokerage_id, type: "mission_approval_required",
+        title: "A mission needs your approval", body: `"${m.objective}" is waiting on you: ${input.reason}`,
+        entity_type: "mission", entity_id: m.id, priority: m.priority === "critical" ? "high" : "medium", is_read: false,
+      })
+      if (nErr) console.error(`[missions] approval notification refused: ${nErr.message}`)
+    }
+  }
+  // WORKING CONTEXT (105C): a hold state records who is waited on; returning to work clears it.
+  if (input.to === "WAITING" || input.to === "BLOCKED" || input.to === "APPROVAL_REQUIRED" || input.to === "ESCALATED") {
+    await updateMissionWorkingContext({ brokerageId: m.brokerage_id, missionId: m.id, actor, patch: { waiting_on: { who: input.to === "APPROVAL_REQUIRED" ? (m.created_by ?? "approver") : input.to === "ESCALATED" ? m.owner_manager : (actor.id ?? actor.type), what: input.reason, since: now } } }, svc, deps)
+  } else if (input.to === "ACTIVE" && from !== "PROPOSED" && from !== "PLANNING") {
+    await updateMissionWorkingContext({ brokerageId: m.brokerage_id, missionId: m.id, actor, patch: { waiting_on: null } }, svc, deps)
+  }
+  return { ok: true, mission: next }
+}
+
+/**
+ * THE ONE WRITER of the working context (header of WorkingContext above). Merges `patch` onto the
+ * latest revision, appends the new revision to missions.evidence (latest wins) and records an
+ * `evidence` mission_events row — so the flight record shows every change of the shared state.
+ * Wired: transitionMission (hold states), recordMissionProgress (objective progress), and the
+ * 105A delegation service (request issued → open_requests; result returned → cleared + note).
+ */
+export async function updateMissionWorkingContext(p: { brokerageId: string; missionId: string; patch: Partial<Omit<WorkingContext, "updated_at" | "updated_by">>; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { working?: WorkingContext }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc, p.actor?.scope)
+  if (!m) return { ok: false, reason: "not_found" }
+  const actor = p.actor ?? { type: "system" }
+  const prev = currentWorkingContext(m)
+  const usdCap = typeof m.budget?.usd === "number" ? m.budget.usd : null
+  const next: WorkingContext = {
+    ...(prev ?? {}), ...p.patch,
+    budget_remaining_usd: usdCap === null ? null : Math.max(0, usdCap - Number(m.spent_usd ?? 0)),
+    updated_at: d.now().toISOString(), updated_by: `${actor.type}${actor.id ? `:${actor.id}` : ""}`,
+  }
+  const evidence = [...(m.evidence ?? []), { kind: WORKING_CONTEXT_EVIDENCE_KIND, ...next }]
+  const { error } = await svc.from("missions").update({ evidence, updated_at: next.updated_at }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "evidence", actor, reason: "working context revised", evidence: { working_context: next, patch_keys: Object.keys(p.patch) } })
+  return { ok: true, mission: { ...m, evidence }, working: next }
+}
+
+// ─── blockers / escalation / completion ───────────────────────────────────────────────────────
+export async function blockMission(p: { brokerageId: string; missionId: string; key: string; reason: string; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  const blockers = [...(m.blockers ?? []).filter((b) => b.key !== p.key || b.cleared_at), { key: p.key, reason: p.reason, added_at: d.now().toISOString(), cleared_at: null }]
+  const { error } = await svc.from("missions").update({ blockers, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "blocker_added", reason: `${p.key}: ${p.reason}`, actor: p.actor ?? { type: "system" }, evidence: { key: p.key } })
+  if (m.state === "BLOCKED") return { ok: true, mission: { ...m, blockers } }
+  return transitionMission({ brokerageId: p.brokerageId, missionId: m.id, to: "BLOCKED", reason: `blocked: ${p.key} — ${p.reason}`, actor: p.actor }, svc, deps)
+}
+
+export async function unblockMission(p: { brokerageId: string; missionId: string; key: string; reason: string; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  const now = d.now().toISOString()
+  const blockers = (m.blockers ?? []).map((b) => (b.key === p.key && !b.cleared_at ? { ...b, cleared_at: now } : b))
+  const { error } = await svc.from("missions").update({ blockers, updated_at: now }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "blocker_cleared", reason: `${p.key}: ${p.reason}`, actor: p.actor ?? { type: "system" }, evidence: { key: p.key } })
+  const open = blockers.some((b) => !b.cleared_at)
+  if (open || m.state !== "BLOCKED") return { ok: true, mission: { ...m, blockers } }
+  return transitionMission({ brokerageId: p.brokerageId, missionId: m.id, to: "ACTIVE", reason: `unblocked: ${p.key} — ${p.reason}`, actor: p.actor }, svc, deps)
+}
+
+export async function escalateMission(p: { brokerageId: string; missionId: string; reason: string; actor?: MissionActor; needsHuman?: boolean }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+  return transitionMission({ brokerageId: p.brokerageId, missionId: p.missionId, to: p.needsHuman ? "APPROVAL_REQUIRED" : "ESCALATED", reason: p.reason, actor: p.actor }, client, deps)
+}
+
+export async function completeMission(p: { brokerageId: string; missionId: string; reason: string; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+  return transitionMission({ brokerageId: p.brokerageId, missionId: p.missionId, to: "COMPLETED", reason: p.reason, actor: p.actor }, client, deps)
+}
+
+export async function failMission(p: { brokerageId: string; missionId: string; reason: string; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+  return transitionMission({ brokerageId: p.brokerageId, missionId: p.missionId, to: "FAILED", reason: p.reason, actor: p.actor }, client, deps)
+}
+
+/**
+ * Record measured progress — the writers are the surveys that read the real tables: the goal sync
+ * (app/actions/ai-agent-goals.ts syncGoalCurrentValues / updateGoalProgress → the goal's metric), the
+ * workflow engine (steps_completed per run) and the twin build (syncMissionProgressFromTwin → the
+ * twin-path metrics). COMPLETION IS DETERMINISTIC: when the recorded progress meets every success
+ * criterion and the state admits it (ACTIVE / ESCALATED), the mission is COMPLETED here, through
+ * completeMission — never asserted by a caller. A mission with NO criteria never completes on
+ * progress alone (an empty criteria set is "nothing measurable yet", not "done").
+ */
+export async function recordMissionProgress(p: { brokerageId: string; missionId: string; progress: Record<string, number>; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { completed?: boolean }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc, p.actor?.scope)
+  if (!m) return { ok: false, reason: "not_found" }
+  if (MISSION_TERMINAL_STATES.has(m.state)) return { ok: false, reason: `terminal:${m.state}`, mission: m }
+  const progress = { ...(m.progress ?? {}), ...p.progress }
+  const { error } = await svc.from("missions").update({ progress, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  const verdict = evaluateSuccess(m.success_criteria ?? [], progress)
+  await appendEvent(svc, m, { kind: "progress", actor: p.actor ?? { type: "system" }, evidence: { progress: p.progress, verdict } })
+  // WORKING CONTEXT (105C): what is being pursued now = the criteria still unmet after this progress.
+  await updateMissionWorkingContext({ brokerageId: p.brokerageId, missionId: m.id, actor: p.actor, patch: { objective_now: verdict.met ? "all success criteria met" : `unmet: ${verdict.unmet.join("; ") || "no criteria yet"}` } }, svc, deps)
+  if (verdict.met && (m.success_criteria?.length ?? 0) > 0 && canTransition(m.state, "COMPLETED")) {
+    const done = await completeMission({ brokerageId: p.brokerageId, missionId: m.id, reason: `success criteria met on progress: ${Object.entries(p.progress).map(([k, v]) => `${k}=${v}`).join(", ")}`, actor: p.actor }, svc, deps)
+    return done.ok ? { ...done, completed: true } : { ok: true, mission: { ...m, progress }, completed: false }
+  }
+  return { ok: true, mission: { ...m, progress }, completed: false }
+}
+
+/**
+ * THE TWIN MEASURES THE OBJECTIVE. For every non-terminal mission whose criteria name twin fields
+ * (dotted paths — the criteria createMission derives for a brokerage_objective), read each field
+ * from the twin the Command Center just built and record it as progress (which completes the
+ * mission when every criterion is met). Called after buildBrokerageTwin (lib/kernel/command-center.ts).
+ * A field the twin does not carry is skipped (unknown = unmet), never written as 0.
+ */
+export async function syncMissionProgressFromTwin(twin: BrokerageTwin, client?: Client, deps: MissionDeps = {}): Promise<{ scanned: number; measured: number; completed: number; readRefused: string | null }> {
+  const out = { scanned: 0, measured: 0, completed: 0, readRefused: null as string | null }
+  if (!twin?.brokerageId) return out
+  const svc = await svcOf(client)
+  const list = await activeMissionsFor(twin.brokerageId, { limit: 500 }, svc)
+  if (list.readRefused) { out.readRefused = list.readRefused; return out }
+  for (const m of list.active) {
+    const twinMetrics = (m.success_criteria ?? []).filter((c) => c.metric.includes("."))
+    if (twinMetrics.length === 0) continue
+    out.scanned++
+    const progress: Record<string, number> = {}
+    for (const c of twinMetrics) { const v = readTwinMeasure(twin, c.metric); if (v !== null) progress[c.metric] = v }
+    if (Object.keys(progress).length === 0) continue
+    const r = await recordMissionProgress({ brokerageId: twin.brokerageId, missionId: m.id, progress, actor: { type: "system", id: "brokerage-twin" } }, svc, deps)
+    if (r.ok) { out.measured++; if (r.completed) out.completed++ }
+  }
+  return out
+}
+
+// ─── 106E: need-driven recruiting — the twin's need becomes a RECRUITING MISSION ──────────────
+//
+// Owner: "twin says North territory seller demand ↑, capacity insufficient, luxury seller coverage
+// weak → Recruiting Manager mission 'find experienced listing agents in target territory with
+// luxury specialization'" — RECOMMENDATION FIRST: the mission is created PLANNING and moved to
+// APPROVAL_REQUIRED at once (the owner manager is signalled through the bus; a human approves it
+// through decideMissionAction before anything reaches a prospect — the recruiting pipeline reads
+// targeting from ACTIVE missions only, recruitingTargetingFor). Idempotent per (territory,
+// specialization): the subject is a deterministic uuid of the need, and an open mission with that
+// subject is left alone. Nothing here sends outreach.
+
+export const RECRUITING_NEED_SUBJECT_TYPE = "recruiting_need"
+export const RECRUITING_TARGETING_EVIDENCE_KIND = "recruiting_targeting"
+
+/** PURE: a stable uuid-shaped id for a need (missions.subject_id is uuid) — the idempotency key.
+ *  Not a security hash; two 32-bit mixes over the key, version/variant nibbles set.
+ *  @proofSeam the proof asserts determinism and the uuid shape directly */
+export function recruitingNeedSubjectId(brokerageId: string, territory: string, specialization: string): string {
+  return stableMissionSubjectId(`${brokerageId}|${territory.trim().toLowerCase()}|${specialization.trim().toLowerCase()}`)
+}
+
+/** PURE: the stable uuid-shaped subject id for any idempotency key — the recruiting need above and
+ *  the platform support missions (lib/platform/saas-operations.ts) share this ONE derivation.
+ *  @proofSeam the proof asserts determinism and the uuid shape directly */
+export function stableMissionSubjectId(s: string): string {
+  let h1 = 5381, h2 = 0x811c9dc5, h3 = 7, h4 = 0x1234567
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    h1 = ((h1 << 5) + h1 + c) | 0
+    h2 = Math.imul(h2 ^ c, 0x01000193)
+    h3 = (h3 * 31 + c) | 0
+    h4 = Math.imul(h4 + c, 0x9e3779b1) ^ (h4 >>> 15)
+  }
+  const hex = [h1, h2, h3, h4].map((h) => (h >>> 0).toString(16).padStart(8, "0")).join("")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
+export interface RecruitingTargeting { missionId: string; territory: string; specialization: string; count: number; zips: string[] }
+
+/** PURE: the targeting a recruiting mission carries (its recruiting_targeting evidence), or null. */
+export function recruitingTargetingOf(m: Pick<MissionRow, "id" | "evidence">): RecruitingTargeting | null {
+  const e = (m.evidence ?? []).find((x) => x && x.kind === RECRUITING_TARGETING_EVIDENCE_KIND) as { territory?: unknown; specialization?: unknown; count?: unknown; zips?: unknown } | undefined
+  if (!e || typeof e.territory !== "string" || typeof e.specialization !== "string") return null
+  return { missionId: m.id, territory: e.territory, specialization: e.specialization, count: Number(e.count) || 1, zips: Array.isArray(e.zips) ? e.zips.map(String) : [] }
+}
+
+export interface RecruitingMissionsResult {
+  needs: RecruitingNeed[]
+  created: string[]
+  /** Needs an open mission already covers (left alone — idempotent). */
+  existing: string[]
+  refused: string[]
+  readRefused: string | null
+}
+
+/**
+ * Create the recruiting mission each need lacks. Called after the Command Center's twin build
+ * (lib/kernel/command-center.ts, brokerage-wide only — a team's board never recruits for the
+ * brokerage). createMission applies entitlement (mayUseAndAfford) and the owner's authority
+ * ceiling; the ledger + mission_events + MISSION_CREATED event ride the service as for any mission.
+ */
+export async function ensureRecruitingMissionsFromTwin(twin: BrokerageTwin, client?: Client, deps: MissionDeps = {}): Promise<RecruitingMissionsResult> {
+  const out: RecruitingMissionsResult = { needs: [], created: [], existing: [], refused: [], readRefused: null }
+  if (!twin?.brokerageId || !twin.workforce) return out
+  out.needs = recruitingNeeds(twin)
+  if (out.needs.length === 0) return out
+  const svc = await svcOf(client)
+  const open = await activeMissionsFor(twin.brokerageId, { ownerManager: "recruiting_manager", limit: 500 }, svc)
+  if (open.readRefused) { out.readRefused = open.readRefused; return out }
+  const openBySubject = new Set(open.active.filter((m) => m.mission_type === "recruiting" && m.subject_type === RECRUITING_NEED_SUBJECT_TYPE && m.subject_id).map((m) => m.subject_id as string))
+  const actor: MissionActor = { type: "system", id: "brokerage-twin" }
+  for (const need of out.needs) {
+    const subjectId = recruitingNeedSubjectId(twin.brokerageId, need.territory, need.specialization)
+    if (openBySubject.has(subjectId)) { out.existing.push(subjectId); continue }
+    const created = await createMission({
+      brokerageId: twin.brokerageId, objective: recruitingNeedObjective(need), missionType: "recruiting",
+      ownerManager: "recruiting_manager", participatingManagers: ["data_steward"],
+      subject: { type: RECRUITING_NEED_SUBJECT_TYPE, id: subjectId }, priority: "high",
+      successCriteria: [{ metric: "recruits_joined", op: ">=", target: need.count }],
+      initialState: "PLANNING", actor,
+    }, svc, deps)
+    if (!created.ok) { out.refused.push(`${need.territory}/${need.specialization}: ${created.reason}`); continue }
+    await attachEvidence({ brokerageId: twin.brokerageId, missionId: created.mission.id, actor, evidence: { kind: RECRUITING_TARGETING_EVIDENCE_KIND, ref: subjectId, territory: need.territory, specialization: need.specialization, count: need.count, zips: need.zips, reasons: need.reasons, twin_at: twin.at, twin_digest: twin.digest } }, svc, deps)
+    // RECOMMENDATION FIRST — a human approves (decideMissionAction → ACTIVE) before any outreach.
+    const held = await escalateMission({ brokerageId: twin.brokerageId, missionId: created.mission.id, reason: `recommendation from the brokerage twin — ${need.reasons[0]}; a human approves before the recruiting pipeline targets anyone`, actor, needsHuman: true }, svc, deps)
+    if (!held.ok) out.refused.push(`${need.territory}/${need.specialization}: created but not held for approval: ${held.reason}`)
+    out.created.push(created.mission.id)
+  }
+  return out
+}
+
+/**
+ * The targeting the recruiting pipeline consumes as search criteria (lib/recruit-pipeline/
+ * recruit-sourcer.ts via app/api/cron/lead-scraping): territory + specialization of every
+ * APPROVED (ACTIVE) recruiting mission — never a mission still awaiting its human.
+ */
+export async function recruitingTargetingFor(brokerageId: string, client?: Client): Promise<{ targeting: RecruitingTargeting[]; readRefused: string | null }> {
+  const svc = await svcOf(client)
+  const r = await activeMissionsFor(brokerageId, { ownerManager: "recruiting_manager", limit: 200 }, svc)
+  if (r.readRefused) return { targeting: [], readRefused: r.readRefused }
+  const targeting = r.active.filter((m) => m.mission_type === "recruiting" && m.state === "ACTIVE").map(recruitingTargetingOf).filter((t): t is RecruitingTargeting => !!t)
+  return { targeting, readRefused: null }
+}
+
+// ─── actions + outcomes ───────────────────────────────────────────────────────────────────────
+/**
+ * Link an agent_action_ledger row (or a workflow run) to the mission, charge its cost against the
+ * budget (the usage/cost vocabulary: cost_usd + tokens) and enforce the AUTHORITY CEILING: an
+ * action whose risk class the ceiling does not admit is refused and the mission goes to
+ * APPROVAL_REQUIRED; an exhausted budget moves it to budget.on_exhausted (default APPROVAL_REQUIRED).
+ */
+export async function attachAction(p: {
+  brokerageId: string; missionId: string; ledgerEntryId: string; riskClass?: ToolRiskClass | null
+  costUsd?: number | null; tokens?: number | null; actor?: MissionActor; detail?: Record<string, unknown>
+}, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { refusedAction?: boolean }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  const actor = p.actor ?? { type: "system" }
+  if (MISSION_TERMINAL_STATES.has(m.state)) return { ok: false, reason: `terminal:${m.state}`, mission: m }
+  if (p.riskClass && !withinAuthorityCeiling(m.authority_ceiling, p.riskClass)) {
+    await appendEvent(svc, m, { kind: "refused", reason: `action ${p.ledgerEntryId} refused: ${p.riskClass} exceeds authority ceiling ${m.authority_ceiling}`, reasonCode: MISSION_LIFECYCLE_REASON, actor, evidence: { ledger_entry_id: p.ledgerEntryId, risk_class: p.riskClass, ceiling: m.authority_ceiling } })
+    const moved = m.state === "APPROVAL_REQUIRED" ? { ok: true as const, mission: m } : await transitionMission({ brokerageId: p.brokerageId, missionId: m.id, to: "APPROVAL_REQUIRED", reason: `authority ceiling ${m.authority_ceiling} does not admit a ${p.riskClass} action`, actor }, svc, deps)
+    return { ...moved, ok: false, reason: `authority_ceiling:${p.riskClass}>${m.authority_ceiling}`, refusedAction: true }
+  }
+  const spentUsd = Number(m.spent_usd ?? 0) + Math.max(0, p.costUsd ?? 0)
+  const spentTokens = Number(m.spent_tokens ?? 0) + Math.max(0, p.tokens ?? 0)
+  const actions = m.actions?.includes(p.ledgerEntryId) ? m.actions : [...(m.actions ?? []), p.ledgerEntryId]
+  const { error } = await svc.from("missions").update({ actions, spent_usd: spentUsd, spent_tokens: spentTokens, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "action_attached", actor, evidence: { ledger_entry_id: p.ledgerEntryId, risk_class: p.riskClass ?? null, cost_usd: p.costUsd ?? 0, tokens: p.tokens ?? 0, spent_usd: spentUsd, spent_tokens: spentTokens, ...(p.detail ?? {}) } })
+  const next: MissionRow = { ...m, actions, spent_usd: spentUsd, spent_tokens: spentTokens }
+  if (budgetExhausted(m.budget ?? {}, spentUsd, spentTokens) && !MISSION_ATTENTION_STATES.has(m.state) && m.state !== "WAITING") {
+    const to = m.budget?.on_exhausted === "WAITING" ? "WAITING" : "APPROVAL_REQUIRED"
+    return transitionMission({ brokerageId: p.brokerageId, missionId: m.id, to, reason: `budget exhausted: $${spentUsd.toFixed(2)} / ${spentTokens} tokens against ${JSON.stringify(m.budget)}`, actor }, svc, deps)
+  }
+  return { ok: true, mission: next }
+}
+
+/** Attribute an outcome (roi-ledger vocabulary: reply / appointment / contract / closed GCI …) to the mission. */
+export async function attachOutcome(p: {
+  brokerageId: string; missionId: string
+  outcome: { kind: string; entityType: string; entityId: string; valueUsd?: number | null; occurredAt?: string | null; ledgerEntryId?: string | null }
+  progressMetric?: string | null; actor?: MissionActor
+}, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { duplicate?: boolean }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  // IDEMPOTENT on (kind, entityType, entityId): the attribution pass re-runs on every cron tick and
+  // must never count one closing twice (a wrong number here is a wrong objective).
+  const dup = (m.outcomes ?? []).some((o) => o.kind === p.outcome.kind && o.entityType === p.outcome.entityType && o.entityId === p.outcome.entityId)
+  if (dup) return { ok: true, mission: m, duplicate: true }
+  const row = { ...p.outcome, occurredAt: p.outcome.occurredAt ?? d.now().toISOString() }
+  const outcomes = [...(m.outcomes ?? []), row]
+  const progress = { ...(m.progress ?? {}) }
+  if (p.progressMetric) progress[p.progressMetric] = (progress[p.progressMetric] ?? 0) + (typeof p.outcome.valueUsd === "number" && p.progressMetric.endsWith("_usd") ? p.outcome.valueUsd : 1)
+  const { error } = await svc.from("missions").update({ outcomes, progress, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "outcome_attached", actor: p.actor ?? { type: "system" }, evidence: { ...row, progress_metric: p.progressMetric ?? null } })
+  return { ok: true, mission: { ...m, outcomes, progress } }
+}
+
+/**
+ * Append a piece of EVIDENCE to the mission (the `evidence` jsonb array m710 carries) and record it
+ * as an `evidence` mission_events row. Wave 105A: the delegation service writes the delegation ref
+ * (request / return / escalation) here, so a mission's row names the work it asked other managers for.
+ * Idempotent per (kind, ref): the same delegation transition appended twice lands once.
+ */
+export async function attachEvidence(p: { brokerageId: string; missionId: string; evidence: { kind: string; ref: string } & Record<string, unknown>; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { duplicate?: boolean }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc, p.actor?.scope)
+  if (!m) return { ok: false, reason: "not_found" }
+  const dup = (m.evidence ?? []).some((e) => e.kind === p.evidence.kind && e.ref === p.evidence.ref)
+  if (dup) return { ok: true, mission: m, duplicate: true }
+  const row = { ...p.evidence, at: d.now().toISOString() }
+  const evidence = [...(m.evidence ?? []), row]
+  const { error } = await svc.from("missions").update({ evidence, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "evidence", actor: p.actor ?? { type: "system" }, evidence: row })
+  return { ok: true, mission: { ...m, evidence } }
+}
+
+// ─── the reaper pass (called from the ONE stale-run reaper) ───────────────────────────────────
+export interface MissionSweepResult { scanned: number; escalated: number; failed: number; readRefused: string | null }
+
+/**
+ * Deadlines + stale blockers, swept on the existing reaper tick (lib/workflow-orchestrator/
+ * stale-run-reaper.ts → reaper-net). A non-terminal mission past its deadline, or BLOCKED longer
+ * than MISSION_BLOCKED_STALE_HOURS, is ESCALATED through escalateMission (the owner manager is
+ * signalled). An ESCALATED mission whose deadline has passed and that nobody moved for another
+ * MISSION_BLOCKED_STALE_HOURS is FAILED through failMission — the deadline hard-expired after the
+ * escalation went unanswered. Idempotent: a freshly ESCALATED mission is left alone until the window.
+ */
+export async function sweepMissionDeadlines(brokerageId: string, client?: Client, opts: { now?: Date; limit?: number } = {}, deps: MissionDeps = {}): Promise<MissionSweepResult> {
+  const now = opts.now ?? new Date()
+  const result: MissionSweepResult = { scanned: 0, escalated: 0, failed: 0, readRefused: null }
+  if (!brokerageId) return result
+  const svc = await svcOf(client)
+  const { data, error } = await svc.from("missions").select("id, state, deadline, state_changed_at, objective, subject_type")
+    .eq("brokerage_id", brokerageId)
+    .in("state", MISSION_STATES.filter((s) => !MISSION_TERMINAL_STATES.has(s)))
+    .limit(opts.limit ?? 200)
+  if (error) { result.readRefused = error.message; return result }
+  const sweepDeps = { ...deps, now: () => now }
+  const cron: MissionActor = { type: "manager", id: "cron_manager" }
+  for (const m of (data ?? []) as Array<Pick<MissionRow, "id" | "state" | "deadline" | "state_changed_at" | "objective" | "subject_type">>) {
+    if (isPlatformScopeMission(m)) continue // wave 108B: the tenant reaper never escalates a platform support mission onto the tenant bus
+    const pastDeadline = !!m.deadline && new Date(m.deadline).getTime() < now.getTime()
+    const hoursInState = m.state_changed_at ? (now.getTime() - new Date(m.state_changed_at).getTime()) / 3_600_000 : 0
+    if (m.state === "ESCALATED") {
+      // Hard expiry: escalated, deadline passed, and the escalation went unanswered for the window.
+      if (!pastDeadline || hoursInState < MISSION_BLOCKED_STALE_HOURS) continue
+      result.scanned++
+      const r = await failMission({ brokerageId, missionId: m.id, reason: `deadline ${m.deadline} hard-expired: escalated ${Math.round(hoursInState)}h ago and nobody moved it (reaped)`, actor: cron }, svc, sweepDeps)
+      if (r.ok) result.failed++
+      continue
+    }
+    result.scanned++
+    const staleBlock = m.state === "BLOCKED" && hoursInState >= MISSION_BLOCKED_STALE_HOURS
+    if (!pastDeadline && !staleBlock) continue
+    const reason = pastDeadline ? `deadline ${m.deadline} passed (reaped)` : `blocked for ${Math.round(hoursInState)}h with nobody unblocking it (reaped)`
+    const r = await escalateMission({ brokerageId, missionId: m.id, reason, actor: cron }, svc, sweepDeps)
+    if (r.ok) result.escalated++
+  }
+  return result
+}
+
+// ─── the twin seam (lib/kernel/brokerage-twin.ts registerTwinSeam) ───────────────────────────
+// Registered AT MODULE LOAD: the Command Center's twin build lazy-imports this module before
+// buildBrokerageTwin, so objectives.missions reads "present" with the live non-terminal count. The
+// seam degrades on its own refusal (the twin names it in blindSpots) — never a fake 0.
+registerTwinSeam("missions", async (svc, brokerageId, teamId) => {
+  const r = await activeMissionsFor(brokerageId, { limit: 500 }, svc as Client)
+  if (r.readRefused) throw new Error(`missions read refused: ${r.readRefused}`)
+  // A team's board: the missions its own members created (created_by ∈ the team's users is resolved
+  // by the caller's scope; the count here is the tenant's — the team sees its attention set through
+  // the team-lead brief). Published as the source so the evidence names the narrowing.
+  return { active: r.active.length, source: teamId ? `missions (brokerage-wide; team ${teamId} sees its attention set via the team-lead brief)` : "missions (lib/kernel/missions.ts activeMissionsFor)" }
+})

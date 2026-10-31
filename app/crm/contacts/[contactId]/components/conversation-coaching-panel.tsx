@@ -91,10 +91,16 @@ export function ConversationCoachingPanel({
   function handleUseDraft(draft: Draft) {
     startTransition(async () => {
       const supabase = createClient()
-      await supabase
+      const { data: acceptedRows, error: acceptErr } = await supabase
         .from("ai_message_drafts")
         .update({ status: "accepted", acted_at: new Date().toISOString(), final_body: draft.draft_body })
         .eq("id", draft.id)
+        .select("id")
+      // Never mark accepted over a refusal (or an RLS-filtered zero-row update).
+      if (acceptErr || (acceptedRows ?? []).length === 0) {
+        toast({ title: "Draft not accepted", description: acceptErr?.message ?? "This draft is not editable from your account.", variant: "destructive" })
+        return
+      }
       setDrafts(prev => prev.map(d => d.id === draft.id ? { ...d, status: "accepted" } : d))
       toast({ title: "Draft accepted", description: "Body copied to clipboard" })
       await navigator.clipboard.writeText(draft.draft_body).catch(() => {})
@@ -109,10 +115,15 @@ export function ConversationCoachingPanel({
   function handleSaveEdit(draft: Draft) {
     startTransition(async () => {
       const supabase = createClient()
-      await supabase
+      const { data: editedRows, error: editErr } = await supabase
         .from("ai_message_drafts")
         .update({ status: "accepted", final_body: editBody, acted_at: new Date().toISOString() })
         .eq("id", draft.id)
+        .select("id")
+      if (editErr || (editedRows ?? []).length === 0) {
+        toast({ title: "Edit not saved", description: editErr?.message ?? "This draft is not editable from your account.", variant: "destructive" })
+        return
+      }
       setDrafts(prev => prev.map(d => d.id === draft.id ? { ...d, draft_body: editBody, status: "accepted" } : d))
       setEditingId(null)
       toast({ title: "Draft edited and accepted" })
@@ -122,10 +133,15 @@ export function ConversationCoachingPanel({
   function handleDismiss(id: string) {
     startTransition(async () => {
       const supabase = createClient()
-      await supabase
+      const { data: dismissedRows, error: dismissErr } = await supabase
         .from("ai_message_drafts")
         .update({ status: "dismissed", acted_at: new Date().toISOString() })
         .eq("id", id)
+        .select("id")
+      if (dismissErr || (dismissedRows ?? []).length === 0) {
+        toast({ title: "Draft not dismissed", description: dismissErr?.message ?? "This draft is not editable from your account.", variant: "destructive" })
+        return
+      }
       setDrafts(prev => prev.map(d => d.id === id ? { ...d, status: "dismissed" } : d))
     })
   }

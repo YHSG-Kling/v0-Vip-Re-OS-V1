@@ -197,35 +197,6 @@ export async function getProviderRoiMetrics(params: {
 }
 
 // ─── CSV EXPORT HELPER ────────────────────────────────────────────────────────
-
-export function providerMetricsToCsv(providers: ProviderMetrics[]): string {
-  const headers = [
-    'Provider',
-    'Total Leads',
-    'Leads Qualified',
-    'Conversion Rate %',
-    'Total Spend ($)',
-    'Cost / Lead ($)',
-    'Cost / Qualified Lead ($)',
-    'Est. ROI %',
-    'Avg Lead Score',
-    'Avg Days to Qualify',
-  ]
-
-  const rows = providers.map(p => [
-    p.providerName,
-    p.totalLeads,
-    p.leadsQualified,
-    (p.conversionRate * 100).toFixed(1),
-    p.totalSpend.toFixed(2),
-    p.costPerLead.toFixed(2),
-    p.costPerQualifiedLead.toFixed(2),
-    (p.estRoi * 100).toFixed(1),
-    p.avgLeadScore.toFixed(1),
-    p.avgDaysToQualify !== null ? p.avgDaysToQualify.toFixed(1) : 'N/A',
-  ])
-
-  return [headers, ...rows]
-    .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
-    .join('\n')
-}
+// TOMBSTONE (lane 88F, §1.3) — providerMetricsToCsv lived here; it moved to the
+// client-safe lib/analytics/vendor-roi-csv.ts:10 because the only caller is a "use client"
+// page and this module builds the service-role client.

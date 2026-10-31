@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Sparkles,
+  FileText,
 } from "lucide-react"
 import { endOpenHouseEvent, createQrCodeForEvent, checkInAttendee, convertAttendeeToContact } from "@/app/actions/seller-open-house"
 import {
@@ -389,7 +390,7 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                   <span className="text-muted-foreground">attendees</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-sm">
-                  <Flame className="h-4 w-4 text-amber-500" />
+                  <Flame className="h-4 w-4 text-amber-600" />
                   <span className="font-medium">{hotLeads.length}</span>
                   <span className="text-muted-foreground">hot leads</span>
                 </div>
@@ -426,7 +427,7 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                     Generate QR Code
                   </Button>
                 )}
-                {packetJob?.output_url && (
+                {packetJob?.output_url ? (
                   <a
                     href={packetJob.output_url}
                     target="_blank"
@@ -436,7 +437,19 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                     <Download className="h-3.5 w-3.5" />
                     Listing Packet
                   </a>
-                )}
+                ) : packetJob?.status === "completed" ? (
+                  // The packet is content in listing_packet_jobs.config, not a
+                  // hosted file — output_url has no writer today. Link to the
+                  // panel that renders it instead of hiding the packet behind
+                  // a download that can never exist.
+                  <a
+                    href={`/dashboard/listings/${listingId}/lifecycle`}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted/50 transition-colors"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    View Listing Packet
+                  </a>
+                ) : null}
               </div>
 
               {/* Attendee list */}

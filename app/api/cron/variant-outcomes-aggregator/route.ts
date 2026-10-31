@@ -30,22 +30,17 @@
  * window start prevents double-counting across overlapping cron
  * windows.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs       = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 
@@ -126,14 +121,14 @@ export async function GET(req: NextRequest) {
       // would normally land first via recordVariantSend, but a slow
       // bandit pick path could let scans arrive first if the variant
       // FK is somehow stale; cover the case.)
-      await svc.from("direct_mail_variant_outcomes").insert({
+      await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes").insert({
         variant_id:    v.variantId,
         brokerage_id:  v.brokerageId,
         sends_count:   0,
         scans_count:   v.scans,
         last_scan_at:  v.lastScanAt,
         updated_at:    new Date().toISOString(),
-      })
+      }), { table: "direct_mail_variant_outcomes", flow: "variant_outcome_seed", reason: "analytics aggregate; recomputed on the next window" })
       updated++
       continue
     }
@@ -141,13 +136,13 @@ export async function GET(req: NextRequest) {
       // Already advanced past this window — skip to avoid double-count.
       continue
     }
-    await svc.from("direct_mail_variant_outcomes")
+    await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes")
       .update({
         scans_count:   (existing.scans_count as number) + v.scans,
         last_scan_at:  v.lastScanAt,
         updated_at:    new Date().toISOString(),
       })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "direct_mail_variant_outcomes", flow: "variant_outcome_scans", reason: "analytics aggregate; recomputed on the next window" })
     updated++
   }
 

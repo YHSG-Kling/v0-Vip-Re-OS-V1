@@ -20,7 +20,14 @@ export const voiceDropAdapter: ChannelAdapter = {
   channel: "voice_drop",
 
   async execute(ctx: StepContext): Promise<StepResult> {
-    const { contact, step, brokerageId, agentUserId } = ctx
+    const { contact, step, brokerageId, agentUserId, entity } = ctx
+
+    // Wave 91 (lane 91B) — a LEAD never gets a voicedrop; the ONE lead-stage predicate decides.
+    const { channelRefusalForRecipient } = await import("@/lib/ai-isa/lead-channel-policy")
+    const leadStage = channelRefusalForRecipient(entity === "lead" ? { leadId: (contact?.id as string) ?? "lead" } : { contactId: (contact?.id as string) ?? null }, "voicedrop")
+    if (leadStage) {
+      return { status: "skipped", providerKey: "voicedrop", error: leadStage }
+    }
 
     if (!contact?.phone) {
       return { status: "error", providerKey: "voicedrop", error: "No phone on contact" }

@@ -8,6 +8,7 @@
 // staying empty. Idempotent per signal (a resolved huddle is never re-recorded). Best-effort.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { recordConsultOutcome } from "./consensus-memory-runner"
 
@@ -77,12 +78,12 @@ export async function resolveConsultOutcomes(input: ResolveConsultInput, client?
     if (!r.ok) continue
 
     // Mark the huddle resolved so the verdict is recorded exactly once.
-    await svc.from("manager_signals").update({
+    await sentinelWrite(svc, svc.from("manager_signals").update({
       status: "consumed",
       consumed_action: `consult outcome recorded: ${sig.to_manager}'s ${playType} read proven ${input.success ? "right" : "wrong"}`,
       consumed_at: new Date().toISOString(),
       payload: { ...(sig.payload ?? {}), outcome_recorded: true, outcome_success: input.success },
-    }).eq("id", sig.id).then(() => {}, () => {})
+    }).eq("id", sig.id), { table: "manager_signals", flow: "consult_outcome_consume", reason: "marks the huddle resolved after the outcome was recorded" })
 
     out.resolved++
     if (!out.consults.includes(sig.to_manager)) out.consults.push(sig.to_manager)

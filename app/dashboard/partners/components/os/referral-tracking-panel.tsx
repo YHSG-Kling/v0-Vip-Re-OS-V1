@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Users, ArrowRight, TrendingUp } from "lucide-react"
+import { ArrowRight, TrendingUp } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
 
@@ -134,7 +134,7 @@ export function ReferralTrackingPanel({ brokerageId }: ReferralTrackingPanelProp
             <p className="text-xs text-muted-foreground">Total</p>
           </div>
           <div className="text-center">
-            <p className="text-2xl font-bold text-yellow-600">{stats.pendingReferrals}</p>
+            <p className="text-2xl font-bold text-yellow-700">{stats.pendingReferrals}</p>
             <p className="text-xs text-muted-foreground">Pending</p>
           </div>
           <div className="text-center">
@@ -148,7 +148,7 @@ export function ReferralTrackingPanel({ brokerageId }: ReferralTrackingPanelProp
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Conversion Rate</span>
             <div className="flex items-center gap-1">
-              <TrendingUp className="h-4 w-4 text-green-500" />
+              <TrendingUp className="h-4 w-4 text-green-600" />
               <span className="font-bold">{stats.conversionRate.toFixed(1)}%</span>
             </div>
           </div>

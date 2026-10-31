@@ -63,6 +63,19 @@ export interface VideoScript {
   created_by: string | null
   created_at: string
   updated_at: string
+  // ── MERGED ONTO THE SURVIVOR ──────────────────────────────────────────────
+  // These three were declared on a DUPLICATE `VideoScript` interface local to
+  // app/dashboard/videos/library/page.tsx, which existed only because this one
+  // did not carry them; that page then double-cast every row
+  // (`rows as unknown as VideoScript[]`) to get past the mismatch. They are the
+  // three fields app/actions/video-generation.ts:getVideoScriptLibrary actually
+  // maps onto each row, so they belong here and the duplicate is deleted.
+  /** Derived by getVideoScriptLibrary from the `script_variations(id)` embed. */
+  variation_count?: number
+  /** The `video_templates(...)` embed, flattened by the readers to one name. */
+  template?: { id: string; template_name: string; category: string } | null
+  /** Present only on the by-id read, which embeds the variations in full. */
+  script_variations?: ScriptVariation[]
 }
 
 export interface ScriptVariation {
@@ -112,3 +125,41 @@ export const PERFORMANCE_THRESHOLDS = {
     maxClickThroughRate: 1,
   },
 } as const
+
+/**
+ * WHAT "VIRAL" MEANS, IN ONE PLACE.
+ *
+ * The owner's ruling: "if the video goes viral using that script, it should be
+ * shared to the whole brokerage." That needs a number, and a number that lives
+ * at a call site is a number nobody can change on purpose — so it lives here,
+ * next to the thresholds it is a sibling of, and lib/video/viral-script-share.ts
+ * imports it rather than restating it.
+ *
+ * THIS IS A PRODUCT PARAMETER, NOT A CONSTANT OF NATURE. It is the audience size
+ * at which one agent's script stops being their private work and becomes
+ * something their whole brokerage should have. Moving it is a product decision;
+ * it is not tuning.
+ *
+ * WHY total_views AND NOT A BETTER METRIC. Measured against the live database,
+ * not assumed:
+ *
+ *   · `video_performance_tracking.total_views` is incremented by +1 per 'view'
+ *     event by BOTH engagement writers — app/actions/video-generation.ts
+ *     :recordVideoEngagementEvent and POST /api/video/engagement. It is really
+ *     recorded.
+ *   · `share_rate` would be the more natural reading of "viral", and it is NOT
+ *     usable: both writers compute it as a PERCENTAGE by round-tripping through
+ *     the previous percentage
+ *     (`Math.floor(share_rate * views / 100) + 1`, then `/ views`), so it loses
+ *     the share COUNT it was derived from and cannot be compared against an
+ *     absolute. Naming it here would be picking a number off a lossy field.
+ *   · `ai_video_projects.view_count` exists, is NOT NULL, and NOTHING in the
+ *     tree writes it. Reading it would be inventing a counter with no producer.
+ *
+ * So the honest metric is total_views, and the threshold is stated against it.
+ * It is deliberately HIGHER than PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minViews
+ * (100): "this video is doing well, tell the agent" and "this script now belongs
+ * to the brokerage" are different claims, and the second one takes work away
+ * from its author's exclusive use.
+ */
+export const VIRAL_VIEW_THRESHOLD = 1000

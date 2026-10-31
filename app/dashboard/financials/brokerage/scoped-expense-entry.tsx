@@ -121,7 +121,7 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
             {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : "Save Expense"}
           </Button>
           {saved && (
-            <span className="flex items-center gap-1.5 text-sm text-emerald-600">
+            <span className="flex items-center gap-1.5 text-sm text-emerald-700">
               <CheckCircle2 className="h-4 w-4" /> Logged — P&amp;L updates on the next nightly rollup
             </span>
           )}

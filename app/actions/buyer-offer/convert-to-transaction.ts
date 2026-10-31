@@ -5,7 +5,10 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
 import { validateAcceptanceEligibility } from "@/lib/buyer-offer";
-import { createTransactionFromOffer } from "@/lib/transactions";
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { createTransactionFromOffer } from "@/lib/transactions/offer-bridge";
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 /**
  * System 7.1A Domain 4: Transition to Transaction
@@ -109,7 +112,7 @@ export async function convertOfferToTransaction(
       .select("created_at")
       .eq("entity_type", "offer")
       .eq("entity_id", offerId)
-      .eq("activity_type", "buyer.offer.compliance.passed")
+      .eq("activity_type", OFFER_AUDIT_EVENT.COMPLIANCE_PASSED)
       .order("created_at", { ascending: false })
       .limit(1)
       .single();
@@ -133,8 +136,14 @@ export async function convertOfferToTransaction(
       }
     });
 
-    return { 
-      success: result.success, 
+    // FREEZE THE EXECUTED TERMS (wave 143, lane 143A — contract precedence). Logged, never fatal.
+    if (result.success && result.transactionId) {
+      const { freezeExecutedTermsAfterPromotion } = await import("@/lib/offers/governing-terms");
+      await freezeExecutedTermsAfterPromotion({ brokerageId, offerId, transactionId: result.transactionId });
+    }
+
+    return {
+      success: result.success,
       transaction_id: result.transactionId,
       error: result.success ? undefined : "Failed to create transaction via offer-bridge"
     };

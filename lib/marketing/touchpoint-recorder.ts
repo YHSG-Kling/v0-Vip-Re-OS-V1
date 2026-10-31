@@ -16,6 +16,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { touchpointManagerForChannel } from "@/lib/campaign-sequences/touchpoint-bridge"
 
 export interface RecordTouchpointInput {
   brokerageId:    string
@@ -47,12 +48,32 @@ export async function recordCampaignTouchpointSafe(
         external_id:    input.externalId    ?? null,
         status:         input.status        ?? "sent",
         source:         input.source        ?? "launch",
-        metadata:       input.metadata      ?? {},
+        // metadata.manager is what the Manager Standup keys its receipts on
+        // (lib/intelligence/manager-touch-provenance.ts). This recorder never
+        // stamped it, so every launch/trigger/manual/retarget touch aggregated to
+        // "unattributed" — matching no ManagerKey, and therefore dropped from the
+        // standup entirely. The receipts surface was showing sequence-engine sends
+        // ONLY. Resolved through the same pure helper the sequence bridge uses, so
+        // one channel cannot be credited to two different managers depending on
+        // which writer recorded it (§6). An explicit caller-supplied manager wins.
+        metadata: {
+          manager: touchpointManagerForChannel(input.channel),
+          ...(input.metadata ?? {}),
+        },
         sent_at:        new Date().toISOString(),
       })
       .select("id")
       .maybeSingle()
     if (error || !data) return { ok: false }
+    // RELATIONSHIP GRAPH (wave 105, lane 105D): the touchpoint IS an interacted_with_campaign fact
+    // (contact → campaign). Derived after the row landed; a lost edge is logged, never thrown.
+    try {
+      const { deriveCampaignInteraction } = await import("@/lib/kernel/relationship-graph")
+      const r = await deriveCampaignInteraction(svc, { brokerageId: input.brokerageId, campaignId: input.campaignId, contactIds: [input.contactId], source: "marketing_campaign_touchpoints" })
+      if (r.errors.length > 0 && !r.degraded) console.error(`[touchpoint-recorder] interacted_with_campaign edge not derived: ${r.errors.join("; ")}`)
+    } catch (e) {
+      console.error("[touchpoint-recorder] relationship edge derivation failed (non-blocking)", e)
+    }
     return { ok: true, touchpointId: data.id as string }
   } catch (err) {
     console.error("[touchpoint-recorder] insert failed:", err)
@@ -70,6 +91,9 @@ export async function recordCampaignTouchpointsBulkSafe(
   contactIds:  string[],
   channel:     RecordTouchpointInput["channel"],
   source:      RecordTouchpointInput["source"] = "launch",
+  /** Wave 144 (lane 144Z — 144I Outside-lane 6): WHAT was sent, when the caller knows it — `marketing_assets` + the asset id when
+   *  the thing sent IS a library asset (the marketing.asset>touchpoint edge: which asset reached the contact). Absent = unrecorded. */
+  ref?:        { externalTable: string; externalId: string } | null,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (contactIds.length === 0) return { ok: true, inserted: 0 }
   try {
@@ -82,9 +106,19 @@ export async function recordCampaignTouchpointsBulkSafe(
       source,
       status:       "sent",
       sent_at:      new Date().toISOString(),
+      external_table: ref?.externalTable ?? null,
+      external_id:    ref?.externalId ?? null,
     }))
     const { error } = await svc.from("marketing_campaign_touchpoints").insert(rows)
     if (error) return { ok: false, inserted: 0 }
+    // RELATIONSHIP GRAPH (wave 105, lane 105D): one interacted_with_campaign edge per audience contact.
+    try {
+      const { deriveCampaignInteraction } = await import("@/lib/kernel/relationship-graph")
+      const r = await deriveCampaignInteraction(svc, { brokerageId, campaignId, contactIds: contactIds, source: "marketing_campaign_touchpoints" })
+      if (r.errors.length > 0 && !r.degraded) console.error(`[touchpoint-recorder] interacted_with_campaign edges not derived: ${r.errors.slice(0, 3).join("; ")}`)
+    } catch (e) {
+      console.error("[touchpoint-recorder] relationship edge derivation failed (non-blocking)", e)
+    }
     return { ok: true, inserted: rows.length }
   } catch (err) {
     console.error("[touchpoint-recorder] bulk insert failed:", err)

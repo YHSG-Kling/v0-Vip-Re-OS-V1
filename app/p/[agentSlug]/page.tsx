@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
-  Star, Award, Phone, Mail, MapPin, Home as HomeIcon, ArrowRight, Sparkles,
+  Star, Award, Phone, Mail, MapPin, Home as HomeIcon, Sparkles,
 } from "lucide-react"
 import { ProfileLeadCaptureForm } from "./profile-lead-capture-form"
 import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
@@ -54,6 +54,19 @@ interface ReviewItem {
   reviewer_name: string | null
   platform: string | null
   created_at: string
+  /** Where the review lives on the platform it came from — app/actions/agent-reviews.ts. */
+  source_url: string | null
+}
+
+/** "Read on Google" / "Read on Zillow" — a friendly label from a review's source_url host. */
+function reviewSourceHost(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "")
+    const label = host.split(".")[0]
+    return label.charAt(0).toUpperCase() + label.slice(1)
+  } catch {
+    return "the original site"
+  }
 }
 
 async function loadProfile(slug: string): Promise<{
@@ -61,7 +74,7 @@ async function loadProfile(slug: string): Promise<{
   listings: ListingItem[]
   reviews: ReviewItem[]
   averageRating: number
-  chat: { brokerageSlug: string | null; widgetEnabled: boolean; assistantName: string | null }
+  chat: { brokerageSlug: string | null; widgetEnabled: boolean; assistantName: string | null; livePublicId: string | null }
 } | null> {
   const svc = createServiceClient()
 
@@ -86,12 +99,15 @@ async function loadProfile(slug: string): Promise<{
         .from("listings")
         .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status")
         .eq("agent_id", agent.id)
+        // C12 (wave 147, lane 147F — owner ruling 8): the public profile NARROWS the shared public set to `active` and,
+        // like every public reader, never shows an ARCHIVED listing (`deleted_at` — it was missing here).
         .eq("status", "active")
+        .is("deleted_at", null)
         .order("listing_date", { ascending: false })
         .limit(6),
       svc
         .from("agent_reviews")
-        .select("id, rating, review_text, reviewer_name, platform, created_at")
+        .select("id, rating, review_text, reviewer_name, platform, created_at, source_url")
         .eq("agent_id", agent.id)
         .eq("is_published", true)
         .order("created_at", { ascending: false })
@@ -100,6 +116,13 @@ async function loadProfile(slug: string): Promise<{
 
   const { data: agentIdentity } = await svc.from("ai_identity_profiles")
     .select("assistant_name").eq("scope_type", "agent").eq("scope_id", agent.id).maybeSingle()
+
+  // D-ID Express v4 live agent AS AN OPTION on the agent's own public profile
+  // (owner ruling, wave 58) — prefers an embed scoped to THIS agent so it is
+  // their own twin/voice, never another agent's borrowed by a brokerage-wide
+  // fallback (lib/embed/resolve-site-embed.ts).
+  const { resolveSiteLiveAgentEmbed } = await import("@/lib/embed/resolve-site-embed")
+  const liveEmbed = await resolveSiteLiveAgentEmbed(svc, { brokerageId: agent.brokerage_id, agentId: agent.id }).catch(() => null)
 
   const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || "Your Agent"
   const reviewArr = reviews ?? []
@@ -136,6 +159,7 @@ async function loadProfile(slug: string): Promise<{
       brokerageSlug: (brokerage as any)?.slug ?? null,
       widgetEnabled: (brokerage as any)?.widget_enabled !== false,
       assistantName: (agentIdentity as any)?.assistant_name ?? null,
+      livePublicId: liveEmbed?.publicId ?? null,
     },
   }
 }
@@ -354,6 +378,16 @@ export default async function AgentPublicProfilePage({
                       {r.review_text && (
                         <p className="text-sm text-gray-700 mt-1.5 leading-relaxed">{r.review_text}</p>
                       )}
+                      {r.source_url && (
+                        <a
+                          href={r.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                        >
+                          Read on {reviewSourceHost(r.source_url)}
+                        </a>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -406,6 +440,7 @@ export default async function AgentPublicProfilePage({
           accentColor={profile.primaryColor ?? "#0f172a"}
           assistantLabel={chat.assistantName}
           widgetQuery={`agent=${agentSlug}`}
+          livePublicId={chat.livePublicId}
         />
       )}
 

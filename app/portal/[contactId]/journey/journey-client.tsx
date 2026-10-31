@@ -121,7 +121,7 @@ export default function JourneyClient({
   const getMilestoneIcon = (milestone: TransactionMilestone, index: number) => {
     if (milestone.status === "completed") {
       return (
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-100 text-green-600">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-100 text-green-700">
           <CheckCircle2 className="h-5 w-5" />
         </div>
       )
@@ -323,7 +323,7 @@ export default function JourneyClient({
                             <span
                               className={`${
                                 milestone.status === "completed"
-                                  ? "text-green-600"
+                                  ? "text-green-700"
                                   : isCurrent
                                   ? "text-primary"
                                   : "text-muted-foreground"

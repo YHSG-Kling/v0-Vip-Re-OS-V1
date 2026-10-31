@@ -37,6 +37,8 @@ export const aiImageAdapter: ChannelAdapter = {
         style: (step.image_style ?? "vivid") as "vivid" | "natural",
         size,
         quality: "standard",
+        // One charge per enrollment step — a retried step books nothing more (wave 139, 139C).
+        spend: { brokerageId, userId: ctx.agentUserId, feature: "workflow_ai_image", manager: "campaign_orchestrator", idempotencyKey: `workflow_image:${ctx.enrollmentId}:${step.id}` },
       })
 
       if (!result.imageUrl) {

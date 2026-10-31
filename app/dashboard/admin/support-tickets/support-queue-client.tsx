@@ -1,15 +1,17 @@
 "use client"
 
 import { useMemo, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { LifeBuoy, Clock } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { updateTicketStatus, getBrokerageTicketThread, replyToBrokerageTicket } from "@/app/actions/support"
+import { updateTicketStatus, getBrokerageTicketThread, replyToBrokerageTicket, logSupportRequestOnBehalf } from "@/app/actions/support"
 import { TICKET_STATUSES, type SupportTicket, type TicketStatus } from "@/lib/support/ticket-constants"
 import type { TicketThread as Thread } from "@/lib/support/support-thread"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 const STATUS_BADGE: Record<string, string> = {
   open: "bg-blue-100 text-blue-700 border-blue-200",
@@ -17,7 +19,11 @@ const STATUS_BADGE: Record<string, string> = {
   resolved: "bg-emerald-100 text-emerald-700 border-emerald-200",
   closed: "bg-gray-100 text-gray-600 border-gray-200",
 }
-const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
+// TOMBSTONE (§1.1, 2026-09-03): the local `PRIORITY_RANK {urgent:0 … low:3}`
+// that stood here was one of five hand copies of the same map. Survivor:
+// lib/kernel/priority-rank.ts:45 (PRIORITY_RANK, `urgent` aliased to
+// `critical`) and its comparator `byPriorityDesc`, imported above. An unknown
+// priority still sorts LAST (it ranked 9 here; it ranks 0 there — same end).
 
 /** Inline thread for a ticket — view the conversation + reply on the tenant side.
  *  Mirrors the agent-facing thread in dashboard/help/ticket-thread.tsx, on the
@@ -60,6 +66,21 @@ function AdminTicketThread({ ticketId }: { ticketId: string }) {
               {thread.requesterName && (
                 <p className="text-xs text-muted-foreground">Raised by {thread.requesterName}</p>
               )}
+              {thread.triage && (
+                <p className="rounded border border-indigo-200 bg-indigo-50/40 px-2 py-1 text-[11px] text-indigo-700">
+                  AI triage: {thread.triage.category ?? "—"} · {thread.triage.priority ?? "—"}
+                  {thread.triage.summary ? ` — ${thread.triage.summary}` : ""}
+                  {thread.triage.answerDelivered ? " · submitter pointed to help articles" : ""}
+                  {thread.triage.needsHuman ? " · a person owes the reply" : ""}
+                </p>
+              )}
+              {/* Wave 147 (lane 147H — ruling 15): what closing this ticket needs NOW, who owns it and by when (the same
+                  completion shape the manager supervision loop tracks), so nobody has to guess whether it is stranded. */}
+              {thread.completion && (
+                <p className="rounded border bg-muted px-2 py-1 text-[11px] text-foreground">
+                  Owed: {thread.completion.what} · owner {thread.completion.ownerManager.replace(/_/g, " ")} · due {new Date(thread.completion.dueAt).toLocaleString()}
+                </p>
+              )}
               {thread.messages.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No replies yet.</p>
               ) : thread.messages.map((m) => (
@@ -95,10 +116,87 @@ function AdminTicketThread({ ticketId }: { ticketId: string }) {
   )
 }
 
-export function SupportQueueClient({ initialTickets, loadError }: { initialTickets: SupportTicket[]; loadError: string | null }) {
+/** INTAKE FROM EVERY CHANNEL (wave 147, lane 147H — ruling 15): an agent or vendor who phones, emails or walks up to
+ *  the office gets the SAME ticket, triage, SLA clock and closure as one raised in the app. The office logs it here on
+ *  the requester's behalf (logSupportRequestOnBehalf → openInboundSupportTicket: the requester must be a member of
+ *  this brokerage; a double submit replays, never a second ticket). */
+function LogRequestForm({ onLogged }: { onLogged: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [email, setEmail] = useState("")
+  const [channel, setChannel] = useState<"phone" | "email" | "sms" | "in_person">("phone")
+  const [subject, setSubject] = useState("")
+  const [body, setBody] = useState("")
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [pending, start] = useTransition()
+  function submit() {
+    setMsg(null)
+    start(async () => {
+      const r = await logSupportRequestOnBehalf({ submitterEmail: email, channel, subject, body })
+      if (!r.ok) { setMsg({ ok: false, text: r.error }); return }
+      setMsg({ ok: true, text: r.created ? "Logged — the ticket is in the queue, triaged and on the clock." : "Already logged — that request is the existing ticket." })
+      setSubject(""); setBody("")
+      onLogged()
+    })
+  }
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <button onClick={() => setOpen(!open)} className="text-left text-sm font-medium text-primary hover:underline">
+          {open ? "Hide" : "Log a request received by phone, email or in person"}
+        </button>
+      </CardHeader>
+      {open && (
+        <CardContent className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input aria-label="Requester's email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Requester's email (an agent or vendor of this office)" className="rounded-md border border-input bg-background p-2 text-sm text-foreground" />
+            <select aria-label="Received by" value={channel} onChange={(e) => setChannel(e.target.value as typeof channel)} className="rounded-md border border-input bg-background p-2 text-sm text-foreground">
+              <option value="phone">Phone</option>
+              <option value="email">Email</option>
+              <option value="sms">Text message</option>
+              <option value="in_person">In person</option>
+            </select>
+          </div>
+          <input aria-label="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full rounded-md border border-input bg-background p-2 text-sm text-foreground" />
+          <textarea aria-label="What they asked" value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="What they asked, in their words" className="w-full rounded-md border border-input bg-background p-2 text-sm text-foreground" />
+          <div className="flex items-center gap-3">
+            <button onClick={submit} disabled={pending || !email.trim() || !body.trim()} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50">
+              {pending ? "Logging…" : "Log request"}
+            </button>
+            {msg && <p className={"text-xs " + (msg.ok ? "text-foreground" : "text-destructive")} role={msg.ok ? "status" : "alert"}>{msg.text}</p>}
+          </div>
+        </CardContent>
+      )}
+    </Card>
+  )
+}
+
+/** The two queues, and who answers each. The copy is lane-specific because the
+ *  audiences are: one is answered in this office, the other by the platform. */
+const LANE_COPY: Record<string, { title: string; blurb: string }> = {
+  user_to_brokerage: {
+    title: "Office Support Queue",
+    blurb: "Tickets your agents and vendors raised with this office. Your staff answer these.",
+  },
+  tenant_to_platform: {
+    title: "Our Tickets with the Platform",
+    blurb: "Tickets this brokerage raised with the platform. Platform support answer these — you are the requester here.",
+  },
+}
+
+export function SupportQueueClient({
+  lane,
+  initialTickets,
+  loadError,
+}: {
+  lane: string
+  initialTickets: SupportTicket[]
+  loadError: string | null
+}) {
   const { toast } = useToast()
+  const router = useRouter()
   const [tickets, setTickets] = useState<SupportTicket[]>(initialTickets)
   const [filter, setFilter] = useState<"all" | TicketStatus>("all")
+  const copy = LANE_COPY[lane] ?? LANE_COPY.user_to_brokerage
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: tickets.length }
@@ -108,7 +206,7 @@ export function SupportQueueClient({ initialTickets, loadError }: { initialTicke
 
   const visible = useMemo(() => {
     const list = filter === "all" ? tickets : tickets.filter((t) => t.status === filter)
-    return [...list].sort((a, b) => (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9))
+    return [...list].sort(byPriorityDesc)
   }, [tickets, filter])
 
   async function setStatus(id: string, status: TicketStatus) {
@@ -128,10 +226,29 @@ export function SupportQueueClient({ initialTickets, loadError }: { initialTicke
       <div className="flex items-center gap-2">
         <LifeBuoy className="h-6 w-6 text-primary" />
         <div>
-          <h1 className="text-2xl font-bold">Support Tickets</h1>
-          <p className="text-sm text-muted-foreground">Triage and resolve tickets raised by your agents.</p>
+          <h1 className="text-2xl font-bold">{copy.title}</h1>
+          <p className="text-sm text-muted-foreground">{copy.blurb}</p>
         </div>
       </div>
+
+      {/* The lane switch. Two queues, never merged into one list — a ticket you
+          RAISED with the platform is not a ticket waiting on your desk. */}
+      <div className="flex gap-2">
+        <a
+          href="/dashboard/admin/support-tickets?lane=user_to_brokerage"
+          className={"rounded-md border px-3 py-1.5 text-sm font-medium " + (lane === "user_to_brokerage" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
+        >
+          From my agents &amp; vendors
+        </a>
+        <a
+          href="/dashboard/admin/support-tickets?lane=tenant_to_platform"
+          className={"rounded-md border px-3 py-1.5 text-sm font-medium " + (lane === "tenant_to_platform" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
+        >
+          Raised with the platform
+        </a>
+      </div>
+
+      {lane === "user_to_brokerage" && <LogRequestForm onLogged={() => router.refresh()} />}
 
       {loadError ? (
         <Card><CardContent className="py-10 text-center text-red-600">Failed to load tickets: {loadError}</CardContent></Card>
@@ -167,7 +284,15 @@ export function SupportQueueClient({ initialTickets, loadError }: { initialTicke
                       {t.description && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.description}</p>}
                       <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
                         <Clock className="h-3 w-3" />{new Date(t.createdAt).toLocaleString()}
+                        {t.satisfactionRating != null && (
+                          <span className="ml-2">
+                            · CSAT {t.satisfactionRating}/5{t.satisfactionAt ? ` (${new Date(t.satisfactionAt).toLocaleDateString()})` : ""}
+                          </span>
+                        )}
                       </p>
+                      {t.satisfactionComment && (
+                        <p className="text-xs text-muted-foreground italic mt-1">&ldquo;{t.satisfactionComment}&rdquo;</p>
+                      )}
                       <AdminTicketThread ticketId={t.id} />
                     </div>
                     <Select value={t.status} onValueChange={(v) => setStatus(t.id, v as TicketStatus)}>

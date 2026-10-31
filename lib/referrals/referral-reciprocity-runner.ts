@@ -18,6 +18,7 @@ import {
   type PartnerReciprocity,
 } from "./referral-reciprocity"
 import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -110,15 +111,27 @@ export async function runReferralReciprocity(input: ReciprocityRunInput, client?
 
   if (input.escalate === false) { out.flagged = report.flagged.length; return out }
 
+  // IDENTITY CLASS. This value becomes notifications.user_id, which FKs users.
+  // referral_partners carries BOTH columns and they are different classes:
+  // agent_id FKs agents(id), user_id FKs auth.users(id) — and public.users.id
+  // is set to the auth uid on insert, so user_id is the usable one. The order
+  // was backwards: agent_id won whenever set, so the nudge insert was FK-
+  // rejected on exactly the partners that HAVE an assigned agent.
   const agentByPartner = new Map<string, string | null>()
-  for (const p of rows) agentByPartner.set(p.id, p.agent_id ?? p.user_id ?? null)
+  for (const p of rows) {
+    let notifyUserId: string | null = (p.user_id as string | null) ?? null
+    if (!notifyUserId && p.agent_id) {
+      notifyUserId = await resolveUserIdForAgentRecord(svc as any, p.agent_id as string)
+    }
+    agentByPartner.set(p.id, notifyUserId)
+  }
 
   for (const f of report.flagged) {
     out.flagged++
     const escalated = await escalateImbalance(svc, {
       brokerageId: input.brokerageId,
       partner: f,
-      agentUserId: agentByPartner.get(f.partnerId) ?? null,
+      notifyUserId: agentByPartner.get(f.partnerId) ?? null,
       copyGenerator: input.copyGenerator,
     })
     if (escalated) out.escalated++
@@ -129,7 +142,7 @@ export async function runReferralReciprocity(input: ReciprocityRunInput, client?
 
 async function escalateImbalance(
   svc: Svc,
-  args: { brokerageId: string; partner: PartnerReciprocity; agentUserId: string | null; copyGenerator?: CopyGenerator },
+  args: { brokerageId: string; partner: PartnerReciprocity; notifyUserId: string | null; copyGenerator?: CopyGenerator },
 ): Promise<boolean> {
   const { partner } = args
   // IDEMPOTENCY: one nudge per (partner, status) within the slow reciprocity window.
@@ -162,14 +175,20 @@ async function escalateImbalance(
   )
 
   let escalated = false
+  let nudged = false
   try {
-    if (args.agentUserId) {
-      await svc.from("notifications").insert({
-        user_id: args.agentUserId, brokerage_id: args.brokerageId, type: "referral_reciprocity",
+    if (args.notifyUserId) {
+      // The error was DISCARDED by `.then(() => {}, () => {})`, so an FK
+      // rejection read as a delivered nudge. The insert result now decides
+      // whether this counts as an escalation.
+      const { error: nudgeErr } = await svc.from("notifications").insert({
+        user_id: args.notifyUserId, brokerage_id: args.brokerageId, type: "referral_reciprocity",
         title: partner.status === "one_sided_inbound" ? "Reciprocate a top referrer" : "One-way referral relationship",
         body: `${draft.body}\n\n[${dedupeKey}]`,
         entity_type: "referral_partner", entity_id: partner.partnerId, priority: "medium",
-      }).then(() => {}, () => {})
+      })
+      if (nudgeErr) console.error("[reciprocity] agent nudge insert failed:", nudgeErr.message)
+      else nudged = true
     }
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const sig = await publishManagerSignal({
@@ -178,7 +197,7 @@ async function escalateImbalance(
       entityType: "referral_partner", entityId: partner.partnerId,
       payload: { status: partner.status, received: partner.received, sent: partner.sent, imbalance: partner.imbalance },
     }, svc)
-    escalated = sig.ok || !!args.agentUserId
+    escalated = sig.ok || nudged
   } catch { /* best-effort */ }
   return escalated
 }

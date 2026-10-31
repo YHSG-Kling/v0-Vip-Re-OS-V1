@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import useSWR, { mutate } from "swr"
 import { 
@@ -11,7 +11,6 @@ import {
   AlertTriangle,
   TrendingUp,
   TrendingDown,
-  Minus,
   Clock,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -292,7 +291,7 @@ export default function TransactionHealthPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => router.back()}>
+          <Button variant="ghost" size="icon" aria-label="Back" onClick={() => router.back()}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
@@ -330,11 +329,11 @@ export default function TransactionHealthPage() {
                   {healthScore.score_delta !== null && healthScore.score_delta !== 0 && (
                     <div className="flex items-center text-sm">
                       {healthScore.score_delta > 0 ? (
-                        <TrendingUp className="h-4 w-4 text-green-500 mr-1" />
+                        <TrendingUp className="h-4 w-4 text-green-600 mr-1" />
                       ) : (
                         <TrendingDown className="h-4 w-4 text-red-500 mr-1" />
                       )}
-                      <span className={healthScore.score_delta > 0 ? "text-green-500" : "text-red-500"}>
+                      <span className={healthScore.score_delta > 0 ? "text-green-700" : "text-red-600"}>
                         {healthScore.score_delta > 0 ? "+" : ""}{healthScore.score_delta}
                       </span>
                     </div>
@@ -428,7 +427,7 @@ export default function TransactionHealthPage() {
                         {comp.component_category.replace(/_/g, " ")}
                       </span>
                       {comp.pass ? (
-                        <CheckCircle className="h-4 w-4 text-green-500" />
+                        <CheckCircle className="h-4 w-4 text-green-600" />
                       ) : (
                         <XCircle className="h-4 w-4 text-red-500" />
                       )}
@@ -463,7 +462,7 @@ export default function TransactionHealthPage() {
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+              <AlertTriangle className="h-5 w-5 text-yellow-700" />
               <CardTitle>Active Interventions</CardTitle>
             </div>
             <CardDescription>Issues requiring attention</CardDescription>
@@ -543,10 +542,10 @@ export default function TransactionHealthPage() {
                         <span
                           className={
                             factor.risk_contribution > 0.5
-                              ? "text-red-500"
+                              ? "text-red-600"
                               : factor.risk_contribution > 0.25
-                              ? "text-yellow-500"
-                              : "text-green-500"
+                              ? "text-yellow-700"
+                              : "text-green-700"
                           }
                         >
                           {(factor.risk_contribution * 100).toFixed(0)}%

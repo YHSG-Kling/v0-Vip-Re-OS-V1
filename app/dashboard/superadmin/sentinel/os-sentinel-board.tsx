@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Activity, Loader2, ShieldCheck, ShieldAlert, ShieldX, Wrench } from 'lucide-react'
 import { getOsHealthAction } from '@/app/actions/superadmin/os-sentinel'
+import { resealLegacyPlaintextSecretsAction } from '@/app/actions/superadmin/secret-migration'
 import type { OsHealth, SubsystemStatus } from '@/lib/platform/os-sentinel'
 
 const STATUS_STYLE: Record<SubsystemStatus, { badge: string; dot: string; label: string }> = {
@@ -36,6 +37,21 @@ export function OsSentinelBoard() {
     })
   }
   useEffect(refresh, [])
+
+  // Wave 140H — on-demand legacy-plaintext re-seal (platform staff). The action verifies each row's
+  // round-trip before replacing it and reports COUNTS only; the daily heartbeat is the retry.
+  const [resealing, setResealing] = useState(false)
+  const [resealMsg, setResealMsg] = useState<string | null>(null)
+  function reseal() {
+    setResealing(true); setResealMsg(null)
+    resealLegacyPlaintextSecretsAction({}).then((r) => {
+      setResealMsg(r.ok
+        ? `re-sealed ${r.report.totals.migrated} · verify-failed ${r.report.totals.verifyFailed} · not matched ${r.report.totals.notMatched} · refused ${r.report.totals.refused}${r.report.moreRemaining ? ' · more remaining — run again' : ''}`
+        : r.error)
+      setResealing(false)
+      refresh()
+    })
+  }
 
   if (loading && !health) {
     return <p className="p-6 text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Reading the state of the OS…</p>
@@ -75,6 +91,10 @@ export function OsSentinelBoard() {
           <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5"><Wrench className="h-3.5 w-3.5" />Self-heal (24h): {health.selfHeal.replayed} replayed · {health.selfHeal.escalated} escalated · {health.selfHeal.runs} runs</span>
             <span>Red-team: {health.redTeam.lastRegressionAt ? `⚠ regression ${health.redTeam.lastRegressionAt.slice(0, 10)}` : '✓ no recent regression'}</span>
+            <button type="button" onClick={reseal} disabled={resealing} className="underline disabled:opacity-50">
+              {resealing ? 'Re-sealing stored secrets…' : 'Re-seal legacy plaintext secrets'}
+            </button>
+            {resealMsg && <span>{resealMsg}</span>}
           </div>
         </CardContent>
       </Card>
@@ -83,7 +103,7 @@ export function OsSentinelBoard() {
         <CardHeader className="pb-2"><CardTitle className="text-sm">Top open incidents</CardTitle></CardHeader>
         <CardContent>
           {health.topIncidents.length === 0 ? (
-            <p className="text-sm text-emerald-600">Nothing open — the OS is healthy.</p>
+            <p className="text-sm text-emerald-700">Nothing open — the OS is healthy.</p>
           ) : (
             <ul className="space-y-1.5">
               {health.topIncidents.map((inc, i) => (

@@ -4,15 +4,32 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { AlertCircle } from "lucide-react"
 
+/**
+ * STATUS IS THE STORED VOCABULARY, NOT A THIRD SPELLING (§6).
+ *
+ * This union used to be `"active" | "trial" | "cancelled"`. `subscriptions.status`
+ * is CHECK-constrained to active | past_due | cancelled | trialing | paused — so
+ * "trial" was a spelling no row can hold, and past_due / paused had nowhere to
+ * land at all. `"none"` is added for the real and currently universal case: a
+ * brokerage with NO subscription row (live: `subscriptions` holds zero rows).
+ */
+export type SubscriptionCardStatus =
+  | "active" | "trialing" | "past_due" | "cancelled" | "paused" | "none"
+
 interface SubscriptionTierCardProps {
   brokerageId: string
   tierName: string
-  status: "active" | "trial" | "cancelled"
+  status: SubscriptionCardStatus
+  /** optional by design: a caller-supplied override. When omitted, the card runs its OWN
+   *  refresh via router.refresh() below — needed because this card's one caller
+   *  (app/dashboard/admin/billing/page.tsx) is a server component, and a server component
+   *  cannot pass a function prop across the RSC boundary to a client component. */
   onUpdate?: () => void
 }
 
@@ -22,6 +39,7 @@ export function SubscriptionTierCard({
   status,
   onUpdate,
 }: SubscriptionTierCardProps) {
+  const router = useRouter()
   const [isUpdating, setIsUpdating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -47,7 +65,8 @@ export function SubscriptionTierCard({
         throw new Error(data.error || "Failed to update subscription")
       }
 
-      onUpdate?.()
+      if (onUpdate) onUpdate()
+      else router.refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
@@ -64,17 +83,23 @@ export function SubscriptionTierCard({
             variant={
               status === "active"
                 ? "default"
-                : status === "trial"
+                : status === "trialing" || status === "none"
                   ? "secondary"
                   : "destructive"
             }
           >
-            {status.toUpperCase()}
+            {status === "none" ? "NO SUBSCRIPTION" : status.replace("_", " ").toUpperCase()}
           </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-lg font-semibold">{tierName}</p>
+        {status === "none" && (
+          <p className="text-sm text-muted-foreground">
+            No subscription record exists for this brokerage yet — the plan shown is the
+            tenant&apos;s <code>brokerages.plan_tier</code>. Nothing is being billed.
+          </p>
+        )}
 
         {error && (
           <div className="flex items-center gap-2 p-3 bg-red-50 text-red-700 rounded">
