@@ -72,6 +72,7 @@ export async function GET(request: Request) {
     factsRouted?: number
     /** Wave 146 (146D): first-party starts / resumptions the first-party watcher routed for this tenant this tick. */
     firstPartyRouted?: number
+    movementRaised?: number
     error?: string
   }> = []
 
@@ -163,7 +164,22 @@ export async function GET(request: Request) {
       } catch (err) {
         console.error(`[EnrichmentProcessor] ${brokerage.id} first-party watcher failed:`, err)
       }
-      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp, factsRouted, firstPartyRouted })
+      // ── THE MOVEMENT WATCHER'S TICK (wave 147, lane 147B — owner ruling 3: life changes are real-estate events and a provider
+      // with no push signal still has to reach the manager) ────────────────────────────────────────────────────────────────────
+      // Poll-and-diff over what the permit / BatchData sweeps, the portal calculators and the public "recommend a realtor?"
+      // captures already store (lib/intent/movement-source-watcher.ts runMovementTick): one C9 signal per material change, no
+      // double raise after lost state, fails closed, and publishes the freshness it can promise. Cron here is RECONCILIATION
+      // (C14) — the event-driven paths raise first; this tick catches what they missed. No vendor is called; no new cron.
+      let movementRaised = 0
+      try {
+        const { runMovementTick } = await import('@/lib/intent/movement-source-watcher')
+        const mvt = await runMovementTick(supabase, brokerage.id)
+        movementRaised = mvt.watch.raised
+        for (const e of mvt.watch.errors.slice(0, 3)) console.error(`[EnrichmentProcessor] ${brokerage.id} movement watcher: ${e}`)
+      } catch (err) {
+        console.error(`[EnrichmentProcessor] ${brokerage.id} movement watcher failed:`, err)
+      }
+      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp, factsRouted, firstPartyRouted, movementRaised })
     } catch (err) {
       results.push({
         brokerageId: brokerage.id,
