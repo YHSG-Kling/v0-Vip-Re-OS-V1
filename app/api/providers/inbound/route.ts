@@ -191,6 +191,33 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     }
 
+    // ── Step 5s: A STAFF MEMBER WRITING IN IS ASKING FOR HELP (wave 147, lane 147Z — lane 147H Outside-lane 1; owner ruling 15:
+    //    support tickets are a closed loop from EVERY channel). An email from a USER of this tenant (a users row in the VERIFIED
+    //    brokerage — never a contact, matched at Steps 3/4 first) is not a stranger for the unknown-sender raw pipeline below:
+    //    it becomes a support ticket through THE one inbound intake (lib/support/ticket-triage.ts openInboundSupportTicket —
+    //    member-of-tenant proved again there, a contact refused by name, idempotent on the provider's message id, ledgered
+    //    support.ticket.open_inbound, then the same in-request AI triage the session door runs). A staff TEXT is the text-command
+    //    door's (Step 1c), unchanged. A refused intake falls through to the existing path — never dropped silently.
+    if ((!entityType || !entityId) && inbound.providerType !== "twilio" && emailNorm && inbound.messageId) {
+      try {
+        const { data: staff, error: staffErr } = await supabase
+          .from("users").select("id, user_type").eq("brokerage_id", inbound.brokerageId).eq("email", emailNorm).neq("user_type", "contact").limit(1).maybeSingle()
+        if (staffErr) console.error(`[InboundRouter] staff-sender lookup refused (the unknown-sender path continues): ${staffErr.message}`)
+        else if (staff) {
+          const { openInboundSupportTicket } = await import("@/lib/support/ticket-triage")
+          const ticket = await openInboundSupportTicket(supabase as never, {
+            brokerageId: inbound.brokerageId, senderUserId: (staff as { id: string }).id, channel: "email",
+            provider: inbound.providerType, providerRef: inbound.messageId, subject: inbound.subject ?? null,
+            body: inbound.text ?? inbound.subject ?? "", addressedToPlatform: false,
+          })
+          if (ticket.ok) return NextResponse.json({ linked: false, support_ticket: ticket.ticketId, created: ticket.created })
+          console.error(`[InboundRouter] staff support intake refused (the unknown-sender path continues): ${ticket.error ?? "unknown"}`)
+        }
+      } catch (err) {
+        console.error("[InboundRouter] staff support intake threw (the unknown-sender path continues):", err)
+      }
+    }
+
     // ── Step 5d: UNKNOWN EMAIL SENDER — identify before adding a lead/contact (wave 74) ────
     // Only the email path reaches here un-captured; Twilio's own hand-raise branch above
     // already handles the SMS/WhatsApp case (and is deliberately NOT routed through this
@@ -295,6 +322,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         agentUserId: numberCtx?.agentUserId ?? null,
         messageRef: inbound.messageId,
         body: inbound.text ?? "",
+        // Wave 147 (147Z — lane 147C Outside-lane 5): the channel said, never inferred from the message ref.
+        channel: "sms",
       })
     } catch (err) {
       console.error("[InboundRouter] written-criteria listener failed (non-blocking):", err)

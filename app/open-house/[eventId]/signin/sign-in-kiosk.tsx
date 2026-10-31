@@ -28,6 +28,8 @@ interface PublicOpenHouseEvent {
   brokerageName: string | null
   branding: { appName: string | null; logoUrl: string | null; primaryColor: string | null } | null
   agent: { displayName: string | null; photoUrl: string | null } | null
+  /** A broker open (wave 147, lane 147Z): the visitors are cooperating agents — no consumer consent is asked of them. */
+  brokerOpen?: boolean
 }
 
 interface Props {
@@ -88,7 +90,7 @@ export function SignInKiosk({ event }: Props) {
       setError("Please fill in all required fields.")
       return
     }
-    if (!tcpaConsent) {
+    if (!tcpaConsent && !event.brokerOpen) {
       setError("Consent is required before we can contact you across all communication channels.")
       return
     }
@@ -109,9 +111,9 @@ export function SignInKiosk({ event }: Props) {
           phone: phone.trim() || undefined,
           workingWithAgent,
           hearAboutUs: hearAboutUs ?? undefined,
-          tcpaConsent: true,
-          tcpaConsentText: consentText,
-          tcpaConsentSource: "/open-house/sign-in",
+          ...(event.brokerOpen
+            ? { tcpaConsent: false }
+            : { tcpaConsent: true, tcpaConsentText: consentText, tcpaConsentSource: "/open-house/sign-in" }),
         }),
       })
       const data = await res.json()
@@ -280,7 +282,12 @@ export function SignInKiosk({ event }: Props) {
               </div>
             </div>
 
-            {/* TCPA consent — unchecked by default per spec */}
+            {/* TCPA consent — unchecked by default per spec. A broker open asks none: its visitors are agents. */}
+            {event.brokerOpen ? (
+              <p className="rounded-lg border border-border bg-muted/40 p-4 text-xs text-foreground leading-relaxed">
+                Broker open: agent sign-in. Your visit is recorded for the listing agent. You are not added to any consumer list.
+              </p>
+            ) : (
             <div className="rounded-lg border border-border bg-muted/40 p-4">
               <label className="flex items-start gap-3 cursor-pointer">
                 <Checkbox
@@ -294,6 +301,7 @@ export function SignInKiosk({ event }: Props) {
                 </span>
               </label>
             </div>
+            )}
 
             {error && (
               <p className="text-sm text-destructive text-center">{error}</p>

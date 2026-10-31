@@ -2,11 +2,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MARKET-REPORT PRODUCER (wave 147, lane 147E — owner ruling 6, 2026-10-31: "Build the market report producer").
 //
-// SURVIVOR VERDICT. lib/market-intelligence/report-builder.ts buildMarketReportAnalysis (lane 75B) is the PARTIAL survivor of
-// "a market report": it hands the model raw rows and lets the MODEL author every figure (avgPriceChange, avgDaysOnMarket,
+// SURVIVOR VERDICT. lib/market-intelligence/report-builder.ts buildMarketReportAnalysis (lane 75B) WAS the partial survivor of
+// "a market report": it handed the model raw rows and let the MODEL author every figure (avgPriceChange, avgDaysOnMarket,
 // hotNeighborhoods[].avgPrice, forecasts, "topPerformingAgents") with no source and no date — generic text the owner ruled is
-// not a market report. Its consumers (the agent's on-demand analysis, the AI ISA's send_market_report capability) are routed
-// here in the lane notes (Outside-lane); this module is the producer, built on the data survivors (research.ts header).
+// not a market report. TOMBSTONE (wave 147, lane 147Z — orphan doctrine §1.1): both of its consumers now ride produceMarketReport
+// below (app/actions/ai-market-intelligence.ts generateMarketReport — the agent's on-demand analysis and the two workflow
+// adapters behind it; lib/ai-isa/capability-catalogue.ts send_market_report — the AI ISA), and the file is DELETED. Nothing was
+// merged first because nothing it had is wanted: every field this producer lacks (forecasts, hot neighbourhoods, competitor
+// averages, "top performing agents") was a model-invented figure — the very thing ruling 6 forbids.
 //
 //   topic (topics.ts: evidence-backed, or the caller's) → research (research.ts: dated, sourced facts; unavailable said)
 //   → narrative (the routed writer composes with {{datum}} tokens — never a typed figure — or the deterministic data composer

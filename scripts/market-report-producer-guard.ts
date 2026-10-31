@@ -315,6 +315,24 @@ async function main() {
   check("market_data writer: the CHECK's vocabulary ('sellers'/'buyers'), no 'seller' / 'buyer' literal", /'sellers'/.test(mig) && /'buyers'/.test(mig) && !/'seller'|'buyer'/.test(mig))
   check("market_data writer: no onConflict on market_data (no matching unique constraint live) and a refused write returns success: false", !/from\('market_data'\)\.upsert/.test(mig) && /write refused[\s\S]{0,80}success: false/.test(mig))
 
+  // ── I (wave 147, lane 147Z — this lane's Outside-lane 1 + 2, closed) ─────
+  section("I. ONE market-report path: both former callers of the model-authored builder ride the producer; the builder is gone")
+  {
+    const { existsSync } = await import("node:fs")
+    const builderGone = !existsSync(join(process.cwd(), "lib/market-intelligence/report-builder.ts"))
+    const action = code("app/actions/ai-market-intelligence.ts"), cat = code("lib/ai-isa/capability-catalogue.ts")
+    check("the agent's on-demand analysis (generateMarketReport) produces through produceMarketReport under the SESSION's tenant + agents.id (requireCallerWithAgent)",
+      /produceMarketReport\(createServiceClient\(\), \{\s*brokerageId: auth\.brokerageId, agentUserId: auth\.userId, agentId: auth\.agentId/.test(action) && /requireCallerWithAgent\(\)/.test(action))
+    const catTool = cat.slice(cat.indexOf("function buildSendMarketReportTool("), cat.indexOf("function buildSendExplainerVideoTool("))
+    check("the AI ISA's send_market_report PRODUCES through produceMarketReport, returns a refusal's REASON, tells the C5 reviewers, and never claims it was sent",
+      /produceMarketReport\(svc, \{/.test(catTool) && /if \(!produced\.ok\) return \{ success: false, error:/.test(catTool) && /produced\.approver\.primaryUserIds/.test(catTool) && /sent: false/.test(catTool) && /never say it has already been sent/.test(catTool))
+    check("…and no dollar figure or asset URL reaches the model's return value (territory, headline, counts only)", !/assetUrl|\$\{?Math\.round|price/i.test(catTool.slice(catTool.lastIndexOf("return {"))))
+    const anyImport = ["app", "lib"].length && [action, cat, code("lib/workflow/adapters/avm-cma.ts"), code("lib/workflow/adapters/draft-document.ts")].some((s) => /market-intelligence\/report-builder|buildMarketReportAnalysis\(/.test(s))
+    check("the model-authored builder is DELETED and nothing imports or calls it (stripped source — the tombstones stay)", builderGone && !anyImport)
+    check("positive control: the import finder sees a live import and ignores the tombstone comment", /market-intelligence\/report-builder/.test(stripComments('const { buildMarketReportAnalysis } = await import("@/lib/market-intelligence/report-builder")')) && !/market-intelligence\/report-builder|buildMarketReportAnalysis\(/.test(stripComments("// TOMBSTONE: buildMarketReportAnalysis( lived in lib/market-intelligence/report-builder.ts")))
+    check("the catalogue names the producer as the capability's survivor", /survivor: "lib\/market-reports\/producer\.ts::produceMarketReport"/.test(cat))
+  }
+
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   console.log("\nBlind spots (published beside the number):")
   for (const b of [

@@ -263,7 +263,8 @@ export async function readProtectedAttributes(
     await withActionLedger(
       { ...ledgerCtx, action: "research.protected_attribute.refuse", reasonDetail: verdict.reason.slice(0, 500), detail: { purpose: req.purpose, refused: verdict.refused, user_type: req.actor.userType ?? null } },
       async () => { evidenced = true; return verdict },
-      { settle: () => ({ status: "skipped", outcome: `refused:${verdict.refused}` }), replay: () => verdict },
+      // WAVE 147 (147Z — census II.2): a refusal the ledger could not record is NOT evidenced — said, never assumed.
+      { settle: () => ({ status: "skipped", outcome: `refused:${verdict.refused}` }), replay: (claim) => { if (claim.kind === "refused") evidenced = false; return verdict } },
       { client: opts.ledgerClient ?? svc },
     ).catch(() => { evidenced = false })
     return { ok: false, refused: verdict.refused, reason: verdict.reason, evidenced }
@@ -307,7 +308,8 @@ export async function readProtectedAttributes(
       settle: (r) => r.ok
         ? { status: "executed", outcome: `read:${r.attributes.length}`, provider: "protected_research_store" }
         : { status: "failed", outcome: r.refused, error: r.reason },
-      replay: () => ({ ok: false, refused: "unreadable", reason: "the ledger did not admit this read", evidenced: false }),
+      // WAVE 147 (147Z — census II.2): fail CLOSED on every non-acting claim — and name WHICH (a refused ledger vs a replay).
+      replay: (claim) => ({ ok: false, refused: "unreadable", reason: claim.kind === "refused" ? `the action ledger refused this read (${claim.error}) — nothing was read (fail closed)` : "the ledger did not admit this read (already recorded / in flight) — nothing was read", evidenced: false }),
     },
     { client: opts.ledgerClient ?? svc },
   )

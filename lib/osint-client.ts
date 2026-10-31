@@ -347,13 +347,14 @@ export class OSINTClient {
 
     // Look for indicators of life events in the HTML
     if (html.toLowerCase().includes("divorce")) {
-      life_events.push({ event: "divorce", source: "public_records" })
+      // §6 (wave 147, lane 147Z): the survivor spelling (lib/enrichment/life-event-vocabulary.ts) — was "divorce", which no scorer read.
+      life_events.push({ event: "divorce_filing", source: "public_records" })
     }
     if (html.toLowerCase().includes("bankruptcy")) {
       life_events.push({ event: "bankruptcy", source: "public_records" })
     }
     if (html.toLowerCase().includes("deceased") || html.toLowerCase().includes("death")) {
-      life_events.push({ event: "death_in_family", source: "public_records" })
+      life_events.push({ event: "death_in_household", source: "public_records" }) // §6: was "death_in_family"
     }
 
     return { records, life_events }

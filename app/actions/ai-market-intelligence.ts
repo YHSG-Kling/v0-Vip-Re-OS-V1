@@ -6,8 +6,9 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
-import { requireCaller } from "@/lib/auth/require-caller"
-import { buildMarketReportAnalysis } from "@/lib/market-intelligence/report-builder"
+import { requireCaller, requireCallerWithAgent } from "@/lib/auth/require-caller"
+// TOMBSTONE (wave 147, lane 147Z): `buildMarketReportAnalysis` (lib/market-intelligence/report-builder.ts) — the model-authored
+// analysis — is retired (file deleted); generateMarketReport below rides lib/market-reports/producer.ts:265 produceMarketReport.
 
 // Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
 const generateObject = bookedGenerateObject("ai_market_intelligence")
@@ -27,47 +28,59 @@ const generateObject = bookedGenerateObject("ai_market_intelligence")
  * Generate comprehensive market report with AI analysis
  */
 export async function generateMarketReport(params: {
-  agentId: string
+  /** The panel's agents.id — kept for the existing caller; scope comes from the SESSION, never this value (§4). */
+  agentId?: string
   zipCode?: string
   city?: string
-  county?: string
-  propertyType?: "single_family" | "condo" | "townhouse" | "multi_family" | "land"
-  timeframe?: "30_days" | "90_days" | "6_months" | "1_year"
+  state?: string
+  /** The workflow adapters' shape (lib/workflow/adapters/avm-cma.ts / draft-document.ts). */
+  location?: { city?: string | null; state?: string | null; zip?: string | null }
+  /** A report for ONE person — the document files to that contact (tenant-checked by the producer's render). */
+  contactId?: string | null
 }) {
-  if (!isValidUUID(params.agentId)) {
+  if (params.agentId !== undefined && !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
 
-  const auth = await requireCaller()
+  // Session tenant + the caller's agents.id (the C5 approval scope) — crossed via agents.user_id (§3, disjoint ids).
+  const auth = await requireCallerWithAgent()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  // TOMBSTONE (lane 75B) — the market-data read, recent-sales read and AI
-  // analysis call that stood here moved to lib/market-intelligence/
-  // report-builder.ts::buildMarketReportAnalysis, a PLAIN (non-"use server")
-  // lib module so lib/ai-isa/capability-catalogue.ts's `send_market_report`
-  // AI-agent capability can build the SAME analysis without this file's
-  // export becoming a brokerageId-by-argument public endpoint (CLAUDE.md §4).
-  // `auth.brokerageId` (the SESSION's own tenant) is the only source of scope
-  // here, same as before.
+  // WAVE 147 (lane 147Z — lane 147E Outside-lane 2; owner ruling 6): the agent's on-demand analysis is THE market-report
+  // PRODUCER now (lib/market-reports/producer.ts produceMarketReport — verified, dated, sourced data; the model writes around
+  // {{datum}} tokens and never types a figure; fair housing on the public copy; a tenant-branded PDF in the document library;
+  // ledgered marketing.market_report.produce). The old builder let the model invent every figure (avgPriceChange,
+  // hotNeighborhoods[].avgPrice, forecasts, "topPerformingAgents") — tombstoned onto the producer. The panel receives readable
+  // text (it rendered the old object as-is); the adapters receive the asset URL they already read (reportUrl).
   try {
-    const result = await buildMarketReportAnalysis({
-      brokerageId: auth.brokerageId,
-      zipCode: params.zipCode,
-      city: params.city,
-      county: params.county,
-      propertyType: params.propertyType,
-      timeframe: params.timeframe,
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { produceMarketReport } = await import("@/lib/market-reports/producer")
+    const loc = params.location ?? null
+    const contactId = params.contactId && isValidUUID(params.contactId) ? params.contactId : null
+    const result = await produceMarketReport(createServiceClient(), {
+      brokerageId: auth.brokerageId, agentUserId: auth.userId, agentId: auth.agentId,
+      actor: { type: "user", userId: auth.userId },
+      territoryHint: { zip: params.zipCode ?? loc?.zip ?? null, city: params.city ?? loc?.city ?? null, state: params.state ?? loc?.state ?? null },
+      contactId, reasonCode: "HUMAN_REQUESTED", purpose: "on_request",
     })
-    if (!result.success) return { success: false, error: result.error }
-
-    // pass 14: market_reports was a PHANTOM table (insert errored on every run;
-    // no reader anywhere — the adapters consume the returned analysis directly and
-    // persist it onto the documents record they own). The dead write is removed.
-
+    if (!result.ok) return { success: false, error: `The market report was not produced (${result.stage}): ${result.reason}` }
+    const n = result.report.narrative
+    const text = [
+      n.headline,
+      ...n.sections.map((s) => [s.heading, s.body].filter(Boolean).join("\n")),
+      result.report.unavailable.length ? `Not available for ${result.report.territory.label} as of ${result.report.asOf}: ${result.report.unavailable.map((u) => u.label).join(", ")}` : "",
+      `Sources: ${[...new Set(result.report.data.map((d) => `${d.source.provider} (${d.source.dataset})`))].join("; ")} — as of ${result.report.asOf}.`,
+      result.approver.ok ? "" : `Before anyone outside the brokerage receives it: ${result.approver.reason}`,
+    ].filter(Boolean).join("\n\n")
     return {
       success: true,
-      report: result.report,
-      reportId: undefined
+      report: text,
+      reportUrl: result.assetUrl,
+      documentId: result.documentId,
+      territory: result.report.territory.label,
+      asOf: result.report.asOf,
+      validation: result.validation,
+      reportId: result.documentId ?? undefined,
     }
   } catch (error) {
     console.error("[v0] Generate market report error:", error)

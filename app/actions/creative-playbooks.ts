@@ -254,7 +254,10 @@ export async function installCreativePlaybook(
         magnetType: "home_valuation" as any,
         brokerageId: ctx.brokerageId,
         agentId: ctx.agentId,
-        createdBy: ctx.agentId,
+        // WAVE 147 (lane 147Z — lane 147E Outside-lane 3): createdBy is a USERS id (the C5 approver check reads it) — this
+        // passed ctx.agentId, an agents.id (CLAUDE.md §3: agents.id and users.id are DISJOINT), so the playbook's magnet could
+        // never pass approval and stayed unpublished (fail closed). The session's own users.id is the creator.
+        createdBy: ctx.userId,
         description: copy.description,
         thankYouMessage: copy.thank_you,
       })

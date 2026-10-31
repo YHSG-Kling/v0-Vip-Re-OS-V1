@@ -189,6 +189,8 @@ export async function processInboundEmail(params: {
           agentUserId: alertAgentUserId,
           messageRef: null, // no provider message id on this path — content hash dedupes
           body: params.body,
+          // Wave 147 (147Z — lane 147C Outside-lane 5): the channel said, never inferred from the message ref.
+          channel: "email",
         })
       }
     } catch (err) {

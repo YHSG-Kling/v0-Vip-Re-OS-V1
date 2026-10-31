@@ -409,11 +409,21 @@ function testCaptureDoors() {
   // (they do NOT go through captureContact) — confirm each actually reaches
   // metadata.captured_language, not just imports+calls the resolver and drops
   // the result.
+  // WAVE 147 (lane 147Z): open-house/attend was MERGED onto contract C8 (captureConsentedContact → captureContact) — it no
+  // longer writes a raw contacts row, so both properties it used to carry itself are now the SURVIVOR's, pinned here: the
+  // kiosk threads the resolved value into the shared `language` param, captureContact's CREATE writes
+  // metadata.captured_language, and its MERGE fills only if empty.
   const openHouse = stripComments(readFileSync(`${process.cwd()}/app/api/open-house/attend/route.ts`, "utf8"))
-  check("open-house/attend: the CREATE branch writes metadata.captured_language on the contacts INSERT",
-    /metadata:\s*\{\s*captured_language:\s*capturedLanguage\s*\}/.test(openHouse))
-  check("open-house/attend: the RETURNING-attendee branch fills-if-empty (never overwrites an earlier/explicit capture)",
-    /!\(existingMetadata as any\)\?\.captured_language/.test(openHouse))
+  const capture = stripComments(readFileSync(`${process.cwd()}/lib/contact-pipeline/contact-capture.ts`, "utf8"))
+  const kioskThreadsLanguage = (s: string) => /const capturedLanguage = resolveCapturedLanguage\(/.test(s) && /captureConsentedContact\(\{[\s\S]{0,1500}?\blanguage:\s*capturedLanguage\b/.test(s)
+  check("open-house/attend (on C8): threads the resolved value into captureConsentedContact's `language` param (CaptureContactParams.language, not a second field)",
+    kioskThreadsLanguage(openHouse))
+  check("…the survivor's CREATE writes metadata.captured_language from that param",
+    /params\.language\s*\?\s*\{\s*metadata:\s*\{\s*captured_language:\s*params\.language\s*\}\s*\}/.test(capture))
+  check("…and the survivor's MERGE fills-if-empty (never overwrites an earlier/explicit capture)",
+    /params\.language\s*&&\s*!existingMetadata\?\.captured_language/.test(capture))
+  check("POSITIVE CONTROL: a kiosk that resolves the language and drops it (no `language:` on the C8 call) is red",
+    !kioskThreadsLanguage(openHouse.replace(/\blanguage:\s*capturedLanguage,/, "")))
 
   const portalLayout = stripComments(readFileSync(`${process.cwd()}/app/portal/[contactId]/layout.tsx`, "utf8"))
   check("portal invite acceptance: fill-if-empty gate BEFORE reading headers (never overwrites contacts.preferred_language's own tier-1 choice or an earlier capture)",

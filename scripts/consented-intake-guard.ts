@@ -89,7 +89,7 @@ function seed(): MemClient {
     qr_codes: [{ id: QR_A, brokerage_id: A, agent_id: AGENT_A, slug: "spring" }, { id: QR_B, brokerage_id: B, agent_id: AGENT_B, slug: "beta" }],
     contacts: [],
     leads: [{ id: LEAD_A, brokerage_id: A, first_name: "Jane", last_name: "Doe", email: "jane.doe@example.com", phone: "+15125550100", phone_digits: "5125550100", contact_id: null, is_active: true, lifecycle_state: "raw" }],
-    contact_consent_events: [], lead_enrichment_queue: [], manager_signals: [], agent_action_ledger: [], lifecycle_events: [],
+    contact_consent_events: [], lead_enrichment_queue: [], manager_signals: [], agent_action_ledger: [], lifecycle_events: [], manager_completions: [],
     person_identities: [], person_identity_evidence: [], lead_score_history: [], assignment_rules: [], transactions: [],
     activities: [], notifications: [], protected_research_attributes: [],
   }, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]], contact_consent_events: [["brokerage_id", "idempotency_key"]] } })
@@ -255,7 +255,12 @@ async function main() {
 
   // ── 9 ──────────────────────────────────────────────────────────────────────
   console.log("\n[9 — census (stripped source) + m889 agrees with the code]")
-  const MIGRATED = ["app/api/qr/submit/route.ts", "app/api/embed/capture/route.ts", "app/api/widget/capture-lead/route.ts", "app/actions/home-value-lead.ts", "app/actions/listing-landing.ts", "lib/lead-pipeline/portal-lead-intake.ts"]
+  // wave 147 (lane 147Z): + the /widget/chat intake route (the clearest twin) and the public open-house kiosk.
+  const MIGRATED = ["app/api/qr/submit/route.ts", "app/api/embed/capture/route.ts", "app/api/widget/capture-lead/route.ts", "app/actions/home-value-lead.ts", "app/actions/listing-landing.ts", "lib/lead-pipeline/portal-lead-intake.ts", "app/api/widget/intake/route.ts", "app/api/open-house/attend/route.ts"]
+  const ownUpsert = /\.from\(\s*["']contacts["']\s*\)\s*\.(?:insert|update)\(|\.from\(\s*["']contact_consent_events["']\s*\)\s*\.insert\(|persistContactConsent\(/
+  const stillOwn = ["app/api/widget/intake/route.ts"].filter((f) => ownUpsert.test(src(f)))
+  check("the merged twin (/api/widget/intake) writes NO contact row and NO consent row of its own — C8 is its upsert", stillOwn.length === 0, stillOwn.join(", "))
+  check("POSITIVE CONTROL — the own-upsert finder sees a contacts insert and a consent insert", ownUpsert.test('supabase.from("contacts").insert({})') && ownUpsert.test("supabase.from('contact_consent_events').insert({})"))
   const notOnC8 = MIGRATED.filter((f) => !/captureConsentedContact\(/.test(src(f)) || /\bcaptureContact\(/.test(src(f)))
   check(`every migrated consented door calls the C8 entry and no longer calls captureContact directly (${MIGRATED.length} doors)`, notOnC8.length === 0, notOnC8.join(", "))
   check("POSITIVE CONTROL — the door finder sees a direct captureContact( call", /\bcaptureContact\(/.test(stripComments("await captureContact({ brokerageId })")) && !/\bcaptureContact\(/.test(stripComments("// captureContact( in a comment")))
@@ -281,6 +286,42 @@ async function main() {
   check("m889's purposes CHECK lists exactly CONSENT_PURPOSES", JSON.stringify(arr("contact_consent_events_purposes_check")) === JSON.stringify([...consent.CONSENT_PURPOSES].sort()), JSON.stringify(arr("contact_consent_events_purposes_check")))
   check("m889's channels CHECK lists exactly CONSENT_CHANNELS", JSON.stringify(arr("contact_consent_events_channels_check")) === JSON.stringify([...consent.CONSENT_CHANNELS].sort()))
   check("m889 adds the tenant idempotency unique index and the supersedes pointer", /UNIQUE INDEX IF NOT EXISTS contact_consent_events_tenant_idempotency_uq[\s\S]*\(brokerage_id, idempotency_key\)/.test(sql) && /supersedes_id\s+uuid REFERENCES public\.contact_consent_events\(id\)/.test(sql))
+
+  // ── 10 ─────────────────────────────────────────────────────────────────────
+  console.log("\n[10 — WAVE 147 lane 147Z: the AI ISA ACTS on contact_consented_intake — consent record → arbiter → ONE C14 completion]")
+  {
+    const ms = await import("../lib/kernel/manager-signals")
+    const reg = (await import("../lib/kernel/signal-registry")).SIGNAL_REGISTRY.contact_consented_intake
+    check("the handler is REGISTERED (ai_isa:contact_consented_intake) and the registry row says handled by ai_isa (was feed_only)",
+      typeof ms.SIGNAL_HANDLERS["ai_isa:contact_consented_intake"] === "function" && reg.disposition === "handled" && (reg.consumers as readonly string[]).includes("ai_isa"))
+    const s1 = seed(); G.__147A.svc = s1
+    const c1 = await cap.captureConsentedContact(qrParams() as never, { client: s1 })
+    const line = rows(s1, "manager_signals").find((s) => s.signal_type === "contact_consented_intake" && s.entity_id === c1.contactId)
+    const asSignal = (row: any, cid: string, key: string | undefined) => ({ id: row?.id ?? "sig-x", fromManager: "data_steward", toManager: "ai_isa", signalType: "contact_consented_intake", entityType: "contact", entityId: cid, contactId: cid, payload: { idempotency_key: key, intake_channel: "qr" } }) as never
+    const engaged: any[] = []
+    const hold = async (p: any) => { engaged.push(p); return { success: false, reason: "nba:hold:recently_contacted" } }
+    const h1 = await ms.answerConsentedIntake(asSignal(line, c1.contactId!, c1.idempotencyKey), { brokerageId: A, supabase: s1 as never }, { engage: hold })
+    check("the consent RECORD answers the channel questions from the record alone (the QR wording names texts, calls and email)", /sms yes, voice yes, email yes/.test(h1 ?? ""), h1 ?? "")
+    check("the contact is handed to the follow-up arbiter NOW through the ONE governed engagement (engageContact, reason brokerage_rule)",
+      engaged.length === 1 && engaged[0].contactId === c1.contactId && engaged[0].reason === "brokerage_rule" && engaged[0].brokerageId === A)
+    const comps = () => rows(s1, "manager_completions").filter((c) => c.subject_id === c1.contactId && c.kind === "follow_up")
+    const k1 = comps()
+    check("ONE C14 completion, owned by ai_isa, CLOSED on the decision — the planner's hold after the welcome IS the decision (never a second hello)",
+      k1.length === 1 && k1[0].owner_manager === "ai_isa" && k1[0].status === "closed" && (k1[0].evidence ?? []).filter((e: any) => e.kind === "decision" && /held the next touch/.test(e.outcome ?? "")).length === 1, JSON.stringify(k1.map((c) => [c.status, c.stage, (c.evidence ?? []).length])))
+    await ms.answerConsentedIntake(asSignal(line, c1.contactId!, c1.idempotencyKey), { brokerageId: A, supabase: s1 as never }, { engage: hold })
+    check("the same intake handled again → the SAME completion (idempotent on the intake's own key), not a second", comps().length === 1)
+    check("POSITIVE CONTROL — the completion finder sees the row it counts (a broken finder and no completion would both read zero)", rows(s1, "manager_completions").length >= 1)
+    const s2 = seed(); G.__147A.svc = s2
+    const c2 = await cap.captureConsentedContact(qrParams() as never, { client: s2 })
+    await ms.answerConsentedIntake(asSignal(null, c2.contactId!, c2.idempotencyKey), { brokerageId: A, supabase: s2 as never }, { engage: async () => ({ success: false, reason: "experience:agent_intervention:delegated" }) })
+    const k2 = rows(s2, "manager_completions").find((c) => c.subject_id === c2.contactId)
+    check("a PERSON's answer keeps the completion OPEN at awaiting_human (the agent's completed task closes it; a stall bells them)",
+      k2?.status === "open" && k2?.stage === "awaiting_human" && k2?.context?.contact_id === c2.contactId, JSON.stringify([k2?.status, k2?.stage]))
+    const shut = memSupabase({ contacts: [], manager_completions: [] }, { refuse: { contacts: "permission denied" } } as never)
+    const engaged3: any[] = []
+    const h3 = await ms.answerConsentedIntake(asSignal(null, "c-z", "k"), { brokerageId: A, supabase: shut as never }, { engage: async (p: any) => { engaged3.push(p); return { success: true, channel: "email" } } })
+    check("FAIL CLOSED: an unreadable consent record engages NOTHING and says so (nobody checked never reads as allowed)", engaged3.length === 0 && /could not be read/.test(h3 ?? ""), h3 ?? "")
+  }
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed${fail ? ` — ${fails.join(" | ")}` : ""}`)
   process.exit(fail ? 1 : 0)

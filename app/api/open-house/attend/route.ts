@@ -4,8 +4,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
-import { persistContactConsent } from "@/lib/kernel/compliance/require-contact-consent"
-import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core"
 // THE ONE resolver (§6) — same one app/api/forms/submit/route.ts uses, now
 // shared rather than a second Accept-Language parser at this door.
 import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
@@ -14,9 +12,14 @@ import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
 // (lib/lead-pipeline/enrichment-column-map.ts stampFieldProvenance); persisted on the returning
 // branch through THE persistence door (lib/enrichment/field-provenance-store.ts).
 import { stampFieldProvenance, withFieldProvenance } from "@/lib/lead-pipeline/enrichment-column-map"
-import { persistFieldProvenance } from "@/lib/enrichment/field-provenance-store"
 
 const KIOSK_PROVENANCE = { source: "kiosk", capability: "open_house.kiosk_signin", purpose: "self_service" as const, matchConfidence: "self_reported", actor: null }
+
+/** The consent wording the kiosk shows beside its box (app/open-house/[eventId]/signin/sign-in-kiosk.tsx TCPA_CONSENT_TEXT), verbatim —
+ *  the C8 record hashes it. A change to the label is a new version here. */
+const KIOSK_CONSENT_TEXT = (brokerageName: string) =>
+  `By checking this box, you agree to receive calls, texts, emails, and direct mail from ${brokerageName} and its agents regarding your real estate needs. Consent is not a condition of purchase. You may unsubscribe or opt out at any time.`
+const KIOSK_CONSENT_VERSION = "open_house_kiosk:v1"
 
 export async function POST(req: NextRequest) {
   // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
@@ -57,9 +60,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
     }
 
-    if (!tcpaConsent) {
-      return NextResponse.json({ error: "TCPA consent is required" }, { status: 400 })
-    }
+    // The consumer-consent requirement is enforced below, after the event read: a BROKER OPEN's visitors are agents and are
+    // asked none (wave 147, lane 147Z). Every consumer path still refuses before its first write.
 
     const ip        = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null
     const userAgent = req.headers.get("user-agent") ?? null
@@ -77,7 +79,7 @@ export async function POST(req: NextRequest) {
     // for the personalized instant-greeting message at the end of this flow.
     const { data: event, error: eventErr } = await supabase
       .from("open_house_events")
-      .select("id, listing_id, brokerage_id, agent_id, qr_code_id, listings(address)")
+      .select("id, listing_id, brokerage_id, agent_id, qr_code_id, event_type, listings(address)")
       .eq("id", eventId)
       .single()
 
@@ -86,110 +88,77 @@ export async function POST(req: NextRequest) {
     }
     const listingAddress = ((event as { listings?: { address?: string } | null }).listings ?? null)?.address ?? null
 
-    // 1. Upsert contact by email (Layer 2 dedup pattern)
-    const { data: existingContact } = await supabase
-      .from("contacts")
-      .select("id, metadata")
-      .eq("email", email)
-      .eq("brokerage_id", event.brokerage_id)
-      .maybeSingle()
-
-    let contactId: string
-
-    if (existingContact) {
-      contactId = existingContact.id
-      // Update with any new info
-      // The error is READ. This is the RETURNING-attendee branch: it refreshes
-      // identity only and deliberately writes NO consent column (the CREATE
-      // branch below is where tcpa_consent is stamped), so a refusal does not
-      // move a consent flag — but it did return 200 while nothing changed.
-      const existingMetadata = (existingContact as { metadata?: Record<string, unknown> | null }).metadata ?? null
-      const { error: attendeeUpdateError } = await supabase
-        .from("contacts")
-        .update({
-          first_name: firstName,
-          last_name: lastName,
-          phone: phone ?? undefined,
-          updated_at: new Date().toISOString(),
-          // FILL-IF-EMPTY (same contract as CaptureContactParams.language / m620's
-          // tier 3): a returning attendee's earlier-captured language is never
-          // overwritten by this visit's possibly-different browser locale.
-          ...(capturedLanguage && !(existingMetadata as any)?.captured_language
-            ? { metadata: { ...(existingMetadata ?? {}), captured_language: capturedLanguage } }
-            : {}),
-        })
-        .eq("id", contactId)
-      if (attendeeUpdateError) {
-        console.error(`[open-house/attend] returning-attendee update REFUSED for ${contactId}:`, attendeeUpdateError.message)
-      } else {
-        const stamped = await persistFieldProvenance(supabase, { table: "contacts", id: contactId, brokerageId: event.brokerage_id },
-          stampFieldProvenance(["first_name", "last_name", ...(phone ? ["phone"] : [])], KIOSK_PROVENANCE))
-        if (!stamped.ok) console.error(`[open-house/attend] kiosk provenance not stamped for ${contactId}: ${stamped.error}`)
+    // 0. A BROKER OPEN (wave 147, lane 147Z — the producer half lane 147F found missing: app/actions/open-house.ts createOpenHouse
+    //    eventType "broker_open"). Its sign-ins are cooperating AGENTS previewing the listing for their buyers — not consumers:
+    //    the visit is recorded (the attendee row + the capture event the listing's reporting reads), and NO consumer contact,
+    //    consumer consent, enrichment spend or consumer greeting is created for a professional colleague.
+    if ((event as { event_type?: string | null }).event_type === "broker_open") {
+      const { data: agentVisit, error: agentVisitErr } = await supabase.from("open_house_attendees").insert({
+        event_id: eventId, brokerage_id: event.brokerage_id, name: `${firstName} ${lastName}`.trim(), email, phone: phone ?? null,
+        check_in_time: new Date().toISOString(), working_with_agent: true, tcpa_consent: false,
+        notes: `Broker open — cooperating agent${hearAboutUs ? ` (heard via ${hearAboutUs})` : ""}`,
+      }).select("id").single()
+      if (agentVisitErr) {
+        if (agentVisitErr.code === "23505") return NextResponse.json({ success: true, duplicate: true, brokerOpen: true })
+        return NextResponse.json({ error: "Failed to record attendance" }, { status: 500 })
       }
-    } else {
-      const now = new Date().toISOString()
-      const { data: newContact, error: contactErr } = await supabase
-        .from("contacts")
-        .insert({
-          brokerage_id: event.brokerage_id,
-          agent_id: event.agent_id,
-          first_name: firstName,
-          last_name: lastName,
-          email,
-          phone: phone ?? null,
-          source: "open_house",
-          // OWNER PRECEDENT (app/actions/seller-open-house.ts convertAttendeeToContact,
-          // lib/kernel/open-house.ts resolveOrCreateOpenHouseContact both already do
-          // this): an open-house attendee is touring a specific FOR-SALE listing, so
-          // they are a buyer-side lead by the nature of the visit — not a guess, the
-          // same classification every other open-house contact-creation path in this
-          // codebase already makes. This is what lets resolveWelcomeManagers route the
-          // welcome (owner ruling 2026-09-10, wave 51) to shopping_agent instead of
-          // silently matching no manager, the way an unclassified web-form contact does.
-          contact_type: "buyer",
-          status: "new",
-          tcpa_consent: true,
-          tcpa_consent_at: now,
-          tcpa_consent_date: now,
-          tcpa_consent_text: tcpaConsentText ?? null,
-          tcpa_consent_source: tcpaConsentSource ?? "/open-house/sign-in",
-          tcpa_consent_ip: ip,
-          isa_reengage_allowed: false,
-          enrichment_profile: withFieldProvenance({}, stampFieldProvenance(["first_name", "last_name", "email", ...(phone ? ["phone"] : [])], KIOSK_PROVENANCE)),
-          // TIER 3 OF resolveContactLanguage — see the ONE resolver's own doc
-          // (CaptureContactParams.language, lib/contact-pipeline/contact-capture.ts).
-          ...(capturedLanguage ? { metadata: { captured_language: capturedLanguage } } : {}),
-        })
-        .select("id")
-        .single()
+      await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: event.brokerage_id, entityType: "listing_stage_machine", entityId: event.listing_id, event: "listing.open_house.attendee_captured",
+        actorUserId: event.agent_id, metadata: { attendee_id: (agentVisit as { id: string }).id, event_id: eventId, broker_open: true },
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a broker-open visit already recorded on open_house_attendees" })
+      return NextResponse.json({ success: true, attendeeId: (agentVisit as { id: string }).id, brokerOpen: true })
+    }
 
-      if (contactErr || !newContact) {
-        return NextResponse.json({ error: "Failed to create contact" }, { status: 500 })
-      }
-      contactId = newContact.id
+    if (!tcpaConsent) {
+      return NextResponse.json({ error: "TCPA consent is required" }, { status: 400 })
+    }
 
-      // Persist consent audit event
-      await persistContactConsent({
-        brokerageId: event.brokerage_id,
-        agentId: event.agent_id,
-        contactId,
-        consentText: tcpaConsentText ?? "Consent given at open house sign-in",
-        consentSource: tcpaConsentSource ?? "/open-house/sign-in",
-        consented: true,
-        ipAddress: ip,
-        userAgent: userAgent,
-      }).catch(() => {})
-
-      // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). Only on the
-      // CREATE branch — a returning attendee already went through this. This
-      // public route emits no kernel event, so nothing else would have queued
-      // it. Voided: a sign-in must never fail because of enrichment.
-      void queueContactEnrichment({
-        contactId,
-        brokerageId: event.brokerage_id,
-        triggerType: "open_house",
-        supabase,
-      }).catch(() => {})
+    // 1. THE CONSENTED SIGN-IN → CONTACT (contract C8 — wave 147, lane 147Z; lane 147A Outside-lane 3 + lane 147F Outside-lane 3).
+    // TOMBSTONE (orphan doctrine §1.1): the exact-email match, the returning-attendee identity refresh, the contact insert with its
+    // own tcpa_* stamp, the route's own persistContactConsent call (no scope, no wording hash) and its own enrichment-queue call
+    // that stood here were a SECOND upsert of a consented person. Merged onto THE ONE survivor — lib/contact-pipeline/
+    // contact-capture.ts:818 captureConsentedContact → captureContact (fuzzy dedupe on email / phone, the assignment precedence
+    // with the event's agent as the owner hint, the welcome, the enrichment queue, person identity) → completeConsentedIntake (the
+    // consent record with the wording hash + version, purposes and channels, anchored to the contact; a same-person open lead
+    // closed onto it; the kernel event; the AI ISA desk told). Preserved door semantics: contact_type buyer (the visit is to a
+    // for-sale listing — the owner precedent below), the kiosk provenance stamp, the intake-time language, a NEW kiosk contact
+    // keeps isa_reengage_allowed = false (the event's agent follows up, not the ISA re-engagement loop), and everything after this
+    // step (the attendee row, RSVP tracking, QR counters, the OPEN_HOUSE_ATTENDEE_CAPTURED fan-out with contactId / eventId, the
+    // instant greeting and linkOpenHouseCheckInIdentity inside it) is unchanged.
+    // THE WORDING IS THE DOOR'S: the kiosk renders KIOSK_CONSENT_TEXT(brokerage name) beside the box (sign-in-kiosk.tsx). The
+    // server renders the same template from the event's own brokerage; the body's copy is evidence of a match, never the record.
+    const { data: brk, error: brkErr } = await supabase.from("brokerages").select("name").eq("id", event.brokerage_id).maybeSingle()
+    if (brkErr) console.error("[open-house/attend] brokerage name read refused — the consent wording names 'our brokerage':", brkErr.message)
+    const doorText = KIOSK_CONSENT_TEXT(((brk as { name?: string | null } | null)?.name ?? "").trim() || "our brokerage")
+    const { captureConsentedContact } = await import("@/lib/contact-pipeline/contact-capture")
+    const intake = await captureConsentedContact({
+      brokerageId: event.brokerage_id,
+      ownerAgentId: event.agent_id ?? null,
+      source: "open_house",
+      first_name: firstName, last_name: lastName, email, phone: phone ?? null,
+      // OWNER PRECEDENT (app/actions/seller-open-house.ts convertAttendeeToContact, lib/kernel/open-house.ts
+      // resolveOrCreateOpenHouseContact): an open-house attendee is touring a specific FOR-SALE listing — a buyer-side
+      // contact by the nature of the visit, which routes the welcome to shopping_agent (owner ruling 2026-09-10, wave 51).
+      contact_type: "buyer",
+      preferred_channel: phone ? "phone" : "email",
+      // TIER 3 OF resolveContactLanguage — the ONE resolver's own doc (CaptureContactParams.language).
+      language: capturedLanguage,
+      enrichmentProfile: withFieldProvenance({}, stampFieldProvenance(["first_name", "last_name", "email", ...(phone ? ["phone"] : [])], KIOSK_PROVENANCE)),
+      consents: [{ family: "phone", given: true, text: doorText, textVersion: KIOSK_CONSENT_VERSION, purposes: ["event_followup"] }],
+      intake: {
+        channel: "open_house", sourceUrl: tcpaConsentSource ?? "/open-house/sign-in",
+        evidence: { event_id: eventId, ip, user_agent: userAgent, kiosk_text_matched: typeof tcpaConsentText === "string" && tcpaConsentText.trim() === doorText },
+        formOwner: { table: "open_house_events", id: eventId },
+      },
+    })
+    if (!intake.ok || !intake.contactId) {
+      return NextResponse.json({ error: intake.reason ?? "Failed to record the sign-in" }, { status: intake.refused === "not_identifiable" ? 400 : intake.refused === "cross_tenant_form" ? 403 : 500 })
+    }
+    for (const w of intake.warnings) console.warn(`[open-house/attend] ${w}`)
+    const contactId: string = intake.contactId
+    if (intake.action === "created" && !intake.replay) {
+      const { data: held, error: holdErr } = await supabase.from("contacts").update({ isa_reengage_allowed: false }).eq("id", contactId).eq("brokerage_id", event.brokerage_id).select("id")
+      if (holdErr || !Array.isArray(held) || held.length !== 1) console.error(`[open-house/attend] isa_reengage_allowed not held false for ${contactId}: ${holdErr?.message ?? "matched no row"}`)
     }
 
     // 2. INSERT open_house_attendees

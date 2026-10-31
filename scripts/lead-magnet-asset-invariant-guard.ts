@@ -250,6 +250,12 @@ async function main() {
   check("createLeadMagnet produces the deliverable and deletes the magnet when its record cannot be written", /produceLeadMagnetDeliverable\(/.test(createFn) && /\.from\("lead_capture_forms"\)\.delete\(\)/.test(createFn))
   check("createLeadMagnet never inserts an asset-promising magnet active (is_active: liveAtInsert = !isDraft && !spec)", /liveAtInsert = !isDraft && !spec/.test(createFn) && /is_active: liveAtInsert/.test(createFn))
   check("publishLeadMagnet: the deliverable gate + the C5 approver BEFORE the ledgered activation; the approval recorded inside it", publishFn.indexOf("ensureDeliverableForPublish(") > 0 && publishFn.indexOf("deliverableApprover(") > publishFn.indexOf("ensureDeliverableForPublish(") && publishFn.indexOf("recordDeliverableApproval(") > publishFn.indexOf("withActionLedger<"))
+  // WAVE 147 (lane 147Z — this lane's Outside-lane 3, closed): createdBy is a USERS id at every createLeadMagnet caller — an
+  // agents.id there (CLAUDE.md §3: disjoint) can never be a C5 approver, so the magnet stays unpublished forever.
+  const createdByAgentsId = /createLeadMagnet\(\{[\s\S]{0,400}?createdBy:\s*(?:ctx|auth|caller)\.agentId\b/
+  const callers = ["app/actions/creative-playbooks.ts", "app/actions/lead-magnets-actions.ts"].filter((f) => createdByAgentsId.test(code(f)))
+  check("no createLeadMagnet caller passes an agents.id as createdBy (the creative playbook passes the session's users.id)", callers.length === 0 && /createdBy:\s*ctx\.userId/.test(code("app/actions/creative-playbooks.ts")), callers.join(", "))
+  check("positive control: the finder sees the old agents.id createdBy", createdByAgentsId.test("await createLeadMagnet({ title, agentId: ctx.agentId,\n createdBy: ctx.agentId, description })"))
 
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   console.log("\nBlind spots (published beside the number):")

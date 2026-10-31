@@ -453,6 +453,22 @@ export async function captureContact(
       },
       MERGE_FIELDS,
     )
+    // FIELD PROVENANCE IS A PER-FIELD MAP (wave 147, lane 147Z — merging the open-house kiosk onto C8 exposed this): the
+    // shallow spread above REPLACED the stored field_provenance block wholesale, erasing every other field's recorded source,
+    // and stamped this capture as the source of values the lossless merge KEPT from elsewhere. Layer the incoming stamps over
+    // the prior block (the persistence door's rule — lib/enrichment/field-provenance-store.ts persistFieldProvenance), and only
+    // for a field whose stored value IS the incoming one.
+    if (mergedEnrichmentProfile) {
+      const priorFp = (existing?.enrichment_profile as Record<string, unknown> | null)?.field_provenance
+      const incomingFp = (params.enrichmentProfile as Record<string, unknown> | null | undefined)?.field_provenance
+      if (incomingFp && typeof incomingFp === 'object') {
+        const stored = { ...((existing as Record<string, unknown> | null) ?? {}), ...stewardMerged } as Record<string, unknown>
+        const incoming = params as unknown as Record<string, unknown>
+        const landed = Object.fromEntries(Object.entries(incomingFp as Record<string, unknown>).filter(([f]) =>
+          !(f in stored) || stored[f] == null || String(stored[f]) === String(incoming[f] ?? '')))
+        mergedEnrichmentProfile.field_provenance = { ...(priorFp && typeof priorFp === 'object' ? priorFp as Record<string, unknown> : {}), ...landed }
+      }
+    }
     const noteAdditions = [
       ...(conflicts.length ? [`[merge ${new Date().toISOString().slice(0, 10)} via ${params.source}] ${conflicts.join('; ')}`] : []),
       ...(params.notes ? [params.notes] : []),
@@ -698,7 +714,8 @@ export async function captureContact(
 // lane notes as the DUPLICATED upsert half still to merge, with the blocker; the consent / event / signal half is already one.
 
 /** The tables a consented form can be OWNED by — the tenant is read off the owning row, never taken from the body. */
-const CONSENT_FORM_OWNER_TABLES = ['lead_capture_forms', 'qr_codes', 'embed_widgets', 'chat_sessions', 'listings', 'agents'] as const
+// open_house_events (wave 147, lane 147Z): the kiosk sign-in's owning row — the event carries the tenant the attendee is filed under.
+const CONSENT_FORM_OWNER_TABLES = ['lead_capture_forms', 'qr_codes', 'embed_widgets', 'chat_sessions', 'listings', 'agents', 'open_house_events'] as const
 export type ConsentFormOwnerTable = (typeof CONSENT_FORM_OWNER_TABLES)[number]
 
 /** One consent box on the submission. `family` is the box's channel family: 'phone' (TCPA — calls + texts) or 'email'. */

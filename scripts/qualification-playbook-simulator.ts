@@ -419,9 +419,23 @@ return { success: true, estimatedValue: avm.value, valueSource: avm.source }
 `
 check("POSITIVE CONTROL: the numeric-value-field scan DOES find estimatedValue/valueSource in a fixture that leaks one",
   /estimatedValue|valueSource|avmValue/.test(fixtureWithLeakedValue))
-check("send_market_report's return value is scoped to condition/trend/inventory/summary — no dollar-figure field (avgPriceChange/hotNeighborhoods/competitorAnalysis) leaves the tool",
-  !/return\s*\{\s*success:\s*true,\s*marketCondition[^}]*avgPriceChange/s.test(catalogueSrc) &&
-  catalogueSrc.includes("marketCondition: result.report.marketCondition"))
+// WAVE 147 (lane 147Z): the tool rides the verified producer now (lib/market-reports/producer.ts produceMarketReport; the
+// model-authored report-builder is tombstoned), so the RULE is asserted on its new return, not the retired waypoint shape
+// (marketCondition/trendDirection): the model gets the territory and the data COUNTS, is told the report is prepared and NOT
+// sent, and no dollar-bearing field (the old analysis fields, the report's headline — which leads with a formatted datum —,
+// its narrative or its data) leaves the tool.
+const marketReportReturn = (src: string): string => {
+  const at = src.indexOf("function buildSendMarketReportTool")
+  if (at < 0) return ""
+  const body = src.slice(at, src.indexOf("\nfunction ", at + 10) > 0 ? src.indexOf("\nfunction ", at + 10) : undefined)
+  const r = body.lastIndexOf("return {\n        success: true,")
+  return r < 0 ? "" : body.slice(r, body.indexOf("\n      }", r))
+}
+const DOLLAR_BEARING = /avgPriceChange|hotNeighborhoods|competitorAnalysis|headline|narrative|report\.data|medianPrice|avgPrice|\bprice\b/
+check("send_market_report's return value carries the territory + data counts, says prepared and NOT sent — no dollar-bearing field (old analysis fields, headline, narrative, data) leaves the tool",
+  (() => { const ret = marketReportReturn(catalogueSrc); return ret.length > 0 && /sent:\s*false/.test(ret) && /territory:/.test(ret) && /dataPoints:/.test(ret) && !DOLLAR_BEARING.test(ret) })())
+check("POSITIVE CONTROL: the same scan finds a dollar-bearing field (the report headline) put back on the return",
+  (() => { const mutated = catalogueSrc.replace(/territory: result\.territory,(\s*)dataPoints/, "territory: result.territory, headline: result.headline,$1dataPoints"); return mutated !== catalogueSrc && DOLLAR_BEARING.test(marketReportReturn(mutated)) })())
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 10 · brand settings toggle disables a catalogue capability]")

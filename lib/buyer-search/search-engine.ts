@@ -11,6 +11,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { isValidUUID } from '@/lib/validations'
+import { publiclyVisibleListingStatuses } from '@/lib/listings/listing-status-sync'
 import { handleError } from '@/lib/errors'
 import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } from './intent-parser'
 import { inferBuyerPersona } from './persona-inference'
@@ -26,11 +27,18 @@ import { intentWithStoredCriteria, fitCriteriaFor } from './conversational-searc
  * WHAT A BUYER CAN SHOP (wave 147C). A buyer search returns homes a buyer can act on: ACTIVE
  * listings. This is the buyer-shopping rule, NOT the public-visibility rule — lane 147F owns the
  * shared predicate `publiclyVisibleListingStatuses` (contract C12: archived is internal-only and
- * never reaches a public/portal search). Until F's module lands this list is the whole filter;
- * once it does, the integrator intersects the two (lane-147C notes, Outside-lane) so a status F
- * hides can never be shown here even if this list grows (e.g. to coming_soon).
+ * never reaches a public/portal search). WIRED (wave 147, lane 147Z — lane 147C Outside-lane 1):
+ * every buyer read filters on buyerShoppableListingStatuses() below — this list INTERSECTED with
+ * F's ONE public predicate — so a status F hides can never be shown here even if this list grows
+ * (e.g. to coming_soon). Archived rides deleted_at, filtered beside it at every read.
  */
 export const BUYER_SHOPPABLE_LISTING_STATUSES = ['active'] as const
+
+/** The statuses a buyer read may return: the shoppable list ∩ lane 147F's public predicate (contract C12). PURE. */
+export function buyerShoppableListingStatuses(): string[] {
+  const pub = new Set<string>(publiclyVisibleListingStatuses())
+  return BUYER_SHOPPABLE_LISTING_STATUSES.filter((s) => pub.has(s))
+}
 
 // The store→search glue (intentWithStoredCriteria, fitCriteriaFor) lives with the rest of the C10
 // conversation in ./conversational-search.ts and is imported above.
@@ -182,7 +190,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       // has_pool / has_septic / hoa_dues / lot_size / year_built / public_remarks (wave 147C) are what
       // the explainable fit answers lifestyle asks and deal-breakers from — columns the live table has.
       .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks')
-      .in('status', [...BUYER_SHOPPABLE_LISTING_STATUSES])
+      .in('status', buyerShoppableListingStatuses())
       .is('deleted_at', null)  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)
 
     if (filters.priceRange?.max) q = q.lte('list_price', filters.priceRange.max)

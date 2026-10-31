@@ -41,6 +41,7 @@ import type { LifeChangeKind, LifeChangeSignal } from "@/lib/ai-isa/followup-arb
 import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"
 import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
 import { LEAD_DESK_USER_TYPES } from "@/lib/auth/lead-visibility"
+import { canonicalLifeEventType, type LifeEventType } from "@/lib/enrichment/life-event-vocabulary"
 import {
   CONTEXT_RELEVANCE, COST_CLASSES, EPISTEMIC_RANK, INTIMATE_RELEVANCE, MOVEMENT_RELEVANCE, NEIGHBOURLY_HELPERS, RESEARCH_STRATEGIES,
   movementSource, movementSourceKeyForIntentSource,
@@ -290,13 +291,17 @@ export function movementSignalFromCalculatorRow(brokerageId: string, row: { id: 
   })
 }
 
-/** Every life-event spelling the writers use today → ONE relevance (CLAUDE.md §6 — the spellings drift; the mapping is one table). */
-export const LIFE_EVENT_RELEVANCE: Readonly<Record<string, { relevance: MovementRelevance; protectedProxy: boolean } | null>> = Object.freeze({
-  divorce: { relevance: "divorce", protectedProxy: true }, divorce_filing: { relevance: "divorce", protectedProxy: true },
-  inheritance: { relevance: "probate_estate", protectedProxy: false }, probate: { relevance: "probate_estate", protectedProxy: false }, probate_filing: { relevance: "probate_estate", protectedProxy: false },
-  death_in_family: { relevance: "probate_estate", protectedProxy: false }, death_in_household: { relevance: "probate_estate", protectedProxy: false },
+/**
+ * Every life event of THE one vocabulary (lib/enrichment/life-event-vocabulary.ts — CLAUDE.md §6) → ONE relevance. WAVE 147 (lane
+ * 147Z): keyed on the SURVIVOR spellings only — the retired `divorce` / `death_in_family` rows (and the dead `probate` /
+ * `probate_filing` keys no life-event writer ever wrote) are read through canonicalLifeEventType, not restated here; a key that is
+ * not a LifeEventType is a type error, so this table can never drift from the vocabulary again.
+ */
+export const LIFE_EVENT_RELEVANCE: Readonly<Record<LifeEventType, { relevance: MovementRelevance; protectedProxy: boolean } | null>> = Object.freeze({
+  divorce_filing: { relevance: "divorce", protectedProxy: true },
+  inheritance: { relevance: "probate_estate", protectedProxy: false }, death_in_household: { relevance: "probate_estate", protectedProxy: false },
   relocation: { relevance: "relocation", protectedProxy: false }, job_change: { relevance: "life_stage", protectedProxy: false }, job_change_to_non_local: { relevance: "relocation", protectedProxy: false },
-  marriage: { relevance: "life_stage", protectedProxy: true }, retirement: { relevance: "life_stage", protectedProxy: true },
+  marriage: { relevance: "life_stage", protectedProxy: true }, retirement: { relevance: "life_stage", protectedProxy: true }, new_baby: { relevance: "life_stage", protectedProxy: true },
   kids_graduated: { relevance: "life_stage", protectedProxy: true }, empty_nester: { relevance: "life_stage", protectedProxy: true },
   // financial distress is a property event (pre-foreclosure is a recorded notice); bankruptcy is not a movement signal here
   foreclosure_filing: { relevance: "property_event", protectedProxy: false }, bankruptcy: null,
@@ -306,8 +311,10 @@ export const LIFE_EVENT_RELEVANCE: Readonly<Record<string, { relevance: Movement
 export function movementSignalFromLifeEvent(
   a: { brokerageId: string; contactId: string; event: { event?: string; type?: string; details?: string; source?: string; url?: string | null; publishedDate?: string | null; date?: string | null } ; detectedAt: string },
 ): MovementBuild {
-  const token = String(a.event.event ?? a.event.type ?? "").toLowerCase()
-  const map = LIFE_EVENT_RELEVANCE[token]
+  const raw = String(a.event.type ?? a.event.event ?? "").toLowerCase()
+  const canon = canonicalLifeEventType(raw)
+  const token = canon ?? raw
+  const map = canon ? LIFE_EVENT_RELEVANCE[canon] : null
   if (!map) return { ok: false, code: "relevance_not_offered_by_source", reason: `life event "${token}" is not a movement signal` }
   const at = a.event.publishedDate ?? a.event.date ?? a.detectedAt
   const ref = a.event.url ?? a.event.source ?? `life_events:${token}`
@@ -797,7 +804,9 @@ export async function recordMovementSignal(svc: Svc, input: MovementSignalInput 
         id = (data as { id: string }).id
         return (status = "recorded")
       },
-      { settle: (s) => ({ status: s === "recorded" ? "executed" : s === "refused" ? "failed" : "skipped", outcome: s, error: s === "refused" ? reason : null }), replay: () => (status = "replayed") },
+      { settle: (s) => ({ status: s === "recorded" ? "executed" : s === "refused" ? "failed" : "skipped", outcome: s, error: s === "refused" ? reason : null }),
+        // WAVE 147 (147Z — census II.2): a REFUSED claim recorded nothing — a refusal with its reason, never "replayed".
+        replay: (claim) => (claim.kind === "refused" ? ((reason = `the action ledger refused the record: ${claim.error}`), (status = "refused")) : (status = "replayed")) },
       { client: svc as never },
     )
     if (status === "refused") return { status: "refused", code: "persist_refused", reason }
@@ -906,7 +915,9 @@ async function evaluateMovementSubject(svc: Svc, a: { brokerageId: string; subje
         if (stamped !== ids.length) console.warn(`[movement-signals] decision stamped ${stamped} of ${ids.length} rows${uErr ? ` (${uErr.message})` : ""}`)
         return (out = { status: "decided", reason: `${decision.action} (${decision.source})${stamped !== ids.length ? ` — ${stamped}/${ids.length} rows stamped` : ""}`, combination, decision, routed })
       },
-      { settle: (r) => ({ status: r.routed?.ok === false ? "failed" : "executed", outcome: r.decision?.action ?? r.status, error: r.routed?.ok === false ? r.routed.detail ?? "route refused" : null }), replay: () => out },
+      { settle: (r) => ({ status: r.routed?.ok === false ? "failed" : "executed", outcome: r.decision?.action ?? r.status, error: r.routed?.ok === false ? r.routed.detail ?? "route refused" : null }),
+        // WAVE 147 (147Z — census II.2): a REFUSED claim decided nothing — a refusal with its reason, never "already decided".
+        replay: (claim) => (claim.kind === "refused" ? (out = { status: "refused", reason: `the action ledger refused the decision: ${claim.error}`, combination }) : out) },
       { client: svc as never },
     )
     return out
@@ -961,8 +972,13 @@ async function actOnMovementDecision(
 
 export type MovementOutcomeResult = { status: "recorded" | "replayed" | "refused"; reason: string }
 
-/** One outcome on one movement record, ledgered once (`intent.movement_signal.outcome`). The tenant is the caller's verified one. */
-async function recordMovementOutcome(
+/**
+ * One outcome on one movement record, ledgered once (`intent.movement_signal.outcome`). The tenant is the caller's verified one.
+ * EXPORTED (wave 147, lane 147Z — lane 147I U1 / lane 147B "Still open" 4): the human disposition door
+ * (app/actions/movement-signals.ts markMovementSignalOutcomeAction — a lead-desk seat marks false_positive / declined) is its
+ * product caller beside the automatic reconciler below.
+ */
+export async function recordMovementOutcome(
   svc: Svc,
   a: { brokerageId: string; signalId: string; outcome: MovementOutcome; evidence: Record<string, unknown>; actor: { type: "user"; userId: string } | { type: "manager"; managerKey: string }; now?: Date },
   deps: Pick<MovementDeps, "ledger"> = {},
@@ -987,7 +1003,9 @@ async function recordMovementOutcome(
         if ((data ?? []).length === 0) return (out = { status: "refused", reason: "no open movement record with that id in this brokerage" })
         return (out = { status: "recorded", reason: `${a.outcome} recorded` })
       },
-      { settle: (r) => ({ status: r.status === "recorded" ? "executed" : "failed", outcome: r.status, error: r.status === "refused" ? r.reason : null }), replay: () => out },
+      { settle: (r) => ({ status: r.status === "recorded" ? "executed" : "failed", outcome: r.status, error: r.status === "refused" ? r.reason : null }),
+        // WAVE 147 (147Z — census II.2): a REFUSED claim recorded no outcome — said as a refusal, never "already recorded".
+        replay: (claim) => (claim.kind === "refused" ? (out = { status: "refused", reason: `the action ledger refused the outcome: ${claim.error}` }) : out) },
       { client: svc as never },
     )
     return out
@@ -1050,12 +1068,18 @@ export interface ArbiterMovementContext { signals: LifeChangeSignal[]; helpers: 
  * The movement evidence for ONE contact, combined, in the arbiter's own shape: at most one LifeChangeSignal for the dominant
  * relevance (its existing spelling, strength = the combination score), plus the neighbourly helpers the evidence supports and the
  * combination's own explanation. A refused read is a published blind spot, never a failed evaluation. Never throws.
+ * WIRED (wave 147, lane 147Z): lib/ai-isa/followup-arbiter.ts MOVEMENT_SIGNAL_CONSUMER calls this with the arbiter's own window
+ * (`sinceIso`, = followup_policy.sphere.lifeEventWindowDays); `windowDays` stays for direct callers. THE EPISTEMIC GATE (lane G's
+ * seam contract + C9): the dominant relevance becomes a LifeChangeSignal only when at least one VERIFIED or REPORTED record
+ * carries it — an inferred-only combination is evidence for research, never a life change the follow-up acts on.
  */
-export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: string; contactId: string; now: Date; windowDays: number }): Promise<ArbiterMovementContext> {
+export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: string; contactId: string; now: Date; windowDays?: number; sinceIso?: string }): Promise<ArbiterMovementContext> {
   const empty = (blindSpot: string | null): ArbiterMovementContext => ({ signals: [], helpers: [], explanation: null, blindSpot })
   try {
     if (!a.brokerageId || !a.contactId) return empty("movement: no tenant or contact")
-    const since = new Date(a.now.getTime() - a.windowDays * DAY_MS).toISOString()
+    const sinceMs = a.sinceIso ? Date.parse(a.sinceIso) : typeof a.windowDays === "number" ? a.now.getTime() - a.windowDays * DAY_MS : NaN
+    if (!Number.isFinite(sinceMs)) return empty("movement: no window (sinceIso or windowDays) — nothing read")
+    const since = new Date(sinceMs).toISOString()
     const { data: c, error: cErr } = await svc.from("contacts").select("id, zip_code").eq("id", a.contactId).eq("brokerage_id", a.brokerageId).maybeSingle()
     if (cErr) return empty(`movement: contact not read (${cErr.message})`)
     if (!c) return empty("movement: contact not in this brokerage")
@@ -1066,10 +1090,13 @@ export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: stri
     const allowed = allowedMovementActions(combo, ev.rows.map(scorable), { subjectClass: "contact" })
     const dom = combo.dominantRelevance
     const decisive = ev.rows.filter((r) => r.event_relevance === dom)
-    const t = dom && combo.band !== "none" ? lifeChangeTypeFor({ relevance: dom, side: decisive[0]?.side, intents: decisive[0]?.intents as IntentKind[], verified: decisive.some((r) => r.confidence === "verified") }) : null
-    const newest = decisive.reduce((m, r) => Math.max(m, Date.parse(r.observed_at) || 0), 0)
+    // The epistemic gate: an inference (alone) never reads as a life change — the arbiter acts only on what a record verifies or reports.
+    const grounded = decisive.filter((r) => r.confidence === "verified" || r.confidence === "reported")
+    const t = dom && combo.band !== "none" && grounded.length > 0 ? lifeChangeTypeFor({ relevance: dom, side: grounded[0]?.side, intents: grounded[0]?.intents as IntentKind[], verified: grounded.some((r) => r.confidence === "verified") }) : null
+    const newest = grounded.reduce((m, r) => Math.max(m, Date.parse(r.observed_at) || 0), 0)
     const signals: LifeChangeSignal[] = t ? [{ type: t.responderType, kind: t.kind, strength: combo.score, daysAgo: newest ? Math.max(0, Math.floor((a.now.getTime() - newest) / DAY_MS)) : 0 }] : []
-    return { signals, helpers: allowed.helpers, explanation: combo.explanation, blindSpot: ev.blind.length ? `movement: ${ev.blind.join("; ")}` : null }
+    const blind = [...ev.blind, ...(dom && combo.band !== "none" && grounded.length === 0 ? [`the ${dom.replace(/_/g, " ")} evidence is inferred only — research, not a life change`] : [])]
+    return { signals, helpers: signals.length > 0 ? allowed.helpers : [], explanation: combo.explanation, blindSpot: blind.length ? `movement: ${blind.join("; ")}` : null }
   } catch (e) {
     return empty(`movement: ${(e as Error)?.message ?? String(e)}`)
   }
@@ -1080,6 +1107,54 @@ export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: stri
 /** Raw movement signals are a LEAD-DESK read: the ONE roster (lib/auth/lead-visibility.ts) — m892's RLS mirrors it with
  *  public.is_lead_visible_role(). Agents read only agentFacingMovementSummary's words (an intimate event is never named to them). */
 export const MOVEMENT_RAW_SIGNAL_VIEWERS: ReadonlySet<string> = LEAD_DESK_USER_TYPES
+
+/** One movement record as the lead desk reads it (the human disposition door — app/actions/movement-signals.ts). */
+export interface LeadDeskMovementRecord {
+  id: string; subject: { type: string; id: string | null; ref: string | null }; sourceKey: string; relevance: MovementRelevance; confidence: EpistemicClass
+  identity: IdentityMatch; observedAt: string; outcome: MovementOutcome | null; nextAction: MovementNextAction | null; evidence: string; protectedProxy: boolean
+}
+
+/**
+ * WAVE 147 (lane 147Z — lane 147I U1, lane 147B "Still open" 4): the LEAD DESK's read of this tenant's movement records, newest
+ * first — the evidence label says HOW we know (verified / reported / inferred), never more. The CALLER proves the seat is on
+ * MOVEMENT_RAW_SIGNAL_VIEWERS and passes the SESSION tenant (§4); this reader pins every row to it. A refused read is said.
+ */
+export async function listMovementRecordsForLeadDesk(svc: Svc, a: { brokerageId: string; limit?: number; openOnly?: boolean }): Promise<{ records: LeadDeskMovementRecord[]; error: string | null }> {
+  if (!a.brokerageId) return { records: [], error: "no tenant" }
+  let q = svc.from("movement_signals")
+    .select("id, subject_type, contact_id, lead_id, raw_lead_id, property_address_key, territory_key, source_key, confidence, identity_match, event_relevance, evidence, observed_at, outcome, next_action, protected_proxy")
+    .eq("brokerage_id", a.brokerageId)
+  if (a.openOnly) q = q.is("outcome", null)
+  const { data, error } = await q.order("observed_at", { ascending: false }).limit(Math.min(Math.max(a.limit ?? 50, 1), 200))
+  if (error) return { records: [], error: `movement records unreadable: ${error.message}` }
+  const records = ((data ?? []) as Array<Record<string, any>>).map((r) => ({
+    id: String(r.id),
+    subject: { type: String(r.subject_type), id: r.contact_id ?? r.lead_id ?? r.raw_lead_id ?? null, ref: r.property_address_key ?? r.territory_key ?? null },
+    sourceKey: String(r.source_key), relevance: r.event_relevance as MovementRelevance, confidence: r.confidence as EpistemicClass, identity: r.identity_match as IdentityMatch,
+    observedAt: String(r.observed_at), outcome: (r.outcome ?? null) as MovementOutcome | null, nextAction: (r.next_action ?? null) as MovementNextAction | null,
+    evidence: r.evidence ? `${(r.evidence as MovementEvidence).summary ?? ""} — ${movementEvidenceLabel(r.evidence as MovementEvidence)}` : "no evidence recorded",
+    protectedProxy: r.protected_proxy === true,
+  }))
+  return { records, error: null }
+}
+
+/**
+ * The PUBLISHED freshness of each no-push source (owner ruling 3: "its freshness published"; m893 names the lead desk as the
+ * reader of movement_source_polls — the watcher, lib/intent/movement-source-watcher.ts, is its only writer). Read-only. A source
+ * that never succeeded promises NO freshness (null), never a number it cannot keep.
+ */
+export async function movementSourceFreshness(svc: Svc, brokerageId: string): Promise<{ sources: Array<{ sourceKey: string; lastPolledAt: string | null; lastSuccessAt: string | null; lastError: string | null; promisedFreshnessMinutes: number | null }>; error: string | null }> {
+  if (!brokerageId) return { sources: [], error: "no tenant" }
+  const { data, error } = await svc.from("movement_source_polls").select("source_key, last_polled_at, last_success_at, last_error, promised_freshness_minutes").eq("brokerage_id", brokerageId).order("source_key", { ascending: true }).limit(100)
+  if (error) return { sources: [], error: `source freshness unreadable: ${error.message}` }
+  return {
+    sources: ((data ?? []) as Array<Record<string, any>>).map((r) => ({
+      sourceKey: String(r.source_key), lastPolledAt: r.last_polled_at ?? null, lastSuccessAt: r.last_success_at ?? null, lastError: r.last_error ?? null,
+      promisedFreshnessMinutes: r.last_success_at && typeof r.promised_freshness_minutes === "number" ? r.promised_freshness_minutes : null,
+    })),
+    error: null,
+  }
+}
 
 /** PURE. The words an agent (or any non-lead-desk reader) sees. An intimate event is never named outside the lead desk. */
 function agentFacingMovementSummary(r: { eventRelevance: MovementRelevance; evidence: MovementEvidence; confidence: EpistemicClass }): string {

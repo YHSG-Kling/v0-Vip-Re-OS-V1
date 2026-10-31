@@ -245,6 +245,15 @@ export async function runSpeedToLead(
       // (the engagement door no longer treats the env var's presence as one).
       const result = await doLeadEngagement(lead.id, { internalSecret: process.env.CRON_SECRET, forceChannel: arb.channel })
 
+      // C14 (wave 147, lane 147Z): ONE completion per first-touch decision, opened and evidenced in one call.
+      await trackFirstTouchDecision(supabase, {
+        brokerageId, subject: { type: "lead", id: lead.id }, claimAt: claim.at, ledgerRef: arb.decision ? `arbiter:${arb.decision.optionId}` : null,
+        outcome: result?.success !== false
+          ? `first touch sent on ${String((result as { channel?: unknown } | null)?.channel ?? arb.channel)} (the arbiter's channel ${arb.channel})`
+          : `the first touch did not go out (${String((result as { reason?: unknown } | null)?.reason ?? (result as { error?: unknown } | null)?.error ?? "no reason")}) — the claim is released and the next sweep decides again`,
+        humanContactId: null,
+      })
+
       if (result?.success !== false) {
         // The claim already holds the ledger; record the channel the engagement actually used when it differs from the claim.
         const sentOn = typeof (result as { channel?: unknown } | null)?.channel === "string" ? (result as { channel: string }).channel : arb.channel
@@ -347,6 +356,16 @@ export async function runSpeedToLead(
       // A PERSON was the arbiter's answer (notify human — the agent's task exists, engage-contact routeToAgent): the requirement is
       // answered, so the claim is stamped `human_task` — otherwise this sweep would re-arbitrate the same contact every two minutes.
       const answeredByPerson = result?.success === false && /^experience:agent_intervention:/.test(String(result?.reason ?? ""))
+      // C14 (wave 147, lane 147Z): ONE completion per first-touch decision — a person's answer waits on that person's task.
+      await trackFirstTouchDecision(supabase, {
+        brokerageId: contact.brokerage_id, subject: { type: "contact", id: contact.id }, claimAt: claim.at, ledgerRef: null,
+        outcome: answeredByPerson
+          ? "the arbiter handed the first touch to a person (the agent's task)"
+          : result?.success !== false
+            ? `first touch sent on ${result?.channel ?? "the arbiter's channel"}`
+            : `the governed path held the first touch (${result?.reason ?? "no reason"}) — the claim is released and the next sweep decides again`,
+        humanContactId: answeredByPerson ? contact.id : null,
+      })
 
       if (result?.success !== false || answeredByPerson) {
         await sentinelWrite(
@@ -393,6 +412,31 @@ export async function runSpeedToLead(
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
+
+/**
+ * CONTRACT C14 (wave 147, lane 147Z — lane 147G's "Still open 2"): the speed-to-lead decision opens its completion and records
+ * the decision as its evidence in ONE call (lib/kernel/completion-tracking.ts trackManagerDecision). Keyed on this run's claim,
+ * so a released claim's retry is its own decision. A person's answer (the arbiter's notify-human) waits on the agent's task —
+ * the supervisor bells them if nobody acts. Never blocks the sweep: a refusal is logged as a blind spot.
+ */
+async function trackFirstTouchDecision(
+  supabase: ReturnType<typeof createServiceClient>,
+  a: { brokerageId: string; subject: { type: "lead" | "contact"; id: string }; claimAt: string; outcome: string; ledgerRef: string | null; humanContactId: string | null },
+): Promise<void> {
+  try {
+    const { trackManagerDecision } = await import("@/lib/kernel/completion-tracking")
+    const r = await trackManagerDecision(supabase, {
+      brokerageId: a.brokerageId, ownerManager: "ai_isa", subject: a.subject, sourceRef: `speed_to_lead:${a.subject.type}:${a.subject.id}:${a.claimAt}`,
+      what: `Answer a new ${a.subject.type} now (speed-to-lead first touch)`,
+      decision: { outcome: a.outcome, source: "speed_to_lead", ledgerRef: a.ledgerRef },
+      next: a.humanContactId ? { kind: "human", contactId: a.humanContactId } : { kind: "none" },
+      context: { [`${a.subject.type}_id`]: a.subject.id, claim_at: a.claimAt },
+    })
+    if (!r.ok) console.warn(`[speed-to-lead] completion not tracked for ${a.subject.type} ${a.subject.id}: ${r.reason}`)
+  } catch (e) {
+    console.warn(`[speed-to-lead] completion tracking threw for ${a.subject.type} ${a.subject.id}: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
 
 // TOMBSTONE (wave 146, lane 146C — orphan doctrine §1.1, merged onto the survivor): the file-local `claimFirstTouch` /
 // `releaseFirstTouch` that stood here MOVED, unchanged in behaviour, to lib/campaign-sequences/first-touch-coordination.ts

@@ -17,10 +17,11 @@
  * (never deleted — §1).
  *
  * Every call goes through lib/providers/dispatch.ts::dispatchWebSearch (tenant required, spend
- * booked platform-paid as vendor "exa"). Life-event tokens reuse the spellings the OSINT
- * scrape already writes (divorce / bankruptcy / death_in_family / foreclosure_filing /
- * inheritance) plus relocation / marriage / job_change, which the readers
- * (lib/kernel/referral-radar.ts) already classify — one vocabulary (§6).
+ * booked platform-paid as vendor "exa"). Life-event tokens are THE one vocabulary
+ * (lib/enrichment/life-event-vocabulary.ts — divorce_filing / bankruptcy / death_in_household /
+ * foreclosure_filing / inheritance / relocation / marriage / job_change), shared with the OSINT
+ * scrape and the scorers that read them (predictive listing, sphere resonance, C9) — §6; wave 147
+ * lane 147Z retired the drifted `divorce` / `death_in_family` writes the scorers never matched.
  *
  * Fair-housing: no compliance gate on intelligence (standing ruling) — but nothing here is a
  * protected-class inference; the events are public-record/life-stage facts, never used to
@@ -30,14 +31,16 @@
 import type { ExaResult } from "@/lib/external/exa-client"
 
 export type MentionLifeEvent =
-  | "death_in_family" | "inheritance" | "divorce" | "bankruptcy" | "foreclosure_filing"
+  // §6 (wave 147, lane 147Z): the survivor spellings of lib/enrichment/life-event-vocabulary.ts — "death_in_family" / "divorce"
+  // were retired (the scorers read death_in_household / divorce_filing and never matched these writes).
+  | "death_in_household" | "inheritance" | "divorce_filing" | "bankruptcy" | "foreclosure_filing"
   | "relocation" | "marriage" | "job_change"
 
 /** Event → the terms that must co-occur with the person's name in ONE result. */
 const EVENT_TERMS: ReadonlyArray<{ event: MentionLifeEvent; re: RegExp }> = [
-  { event: "death_in_family", re: /\b(obituary|passed away|in loving memory|survived by|funeral)\b/i },
+  { event: "death_in_household", re: /\b(obituary|passed away|in loving memory|survived by|funeral)\b/i },
   { event: "inheritance", re: /\b(probate|estate of|executor|executrix|personal representative|letters testamentary)\b/i },
-  { event: "divorce", re: /\b(divorce|dissolution of marriage)\b/i },
+  { event: "divorce_filing", re: /\b(divorce|dissolution of marriage)\b/i },
   { event: "bankruptcy", re: /\b(bankruptcy|chapter 7|chapter 13)\b/i },
   { event: "foreclosure_filing", re: /\b(foreclosure|notice of default|lis pendens|trustee'?s sale)\b/i },
   { event: "relocation", re: /\b(relocat(e|ed|ing|ion)|moving to|moved to|transferred to)\b/i },

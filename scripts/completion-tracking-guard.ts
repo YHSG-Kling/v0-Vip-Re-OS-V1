@@ -289,10 +289,76 @@ async function main() {
     check("the provider status callback and the inbound chain are the EVENTS that drive it", /onProviderTruth\(/.test(code("app/api/webhooks/twilio-sms-status/route.ts")) && /openCompletion\(/.test(code("lib/communications/inbound-record.ts")) && /recordCompletionEvidence\(/.test(code("lib/communications/inbound-record.ts")))
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════════════
+  section("K · wave 147 lane 147Z — every manager decision opens its completion (ONE call), video approvals and tickets are owned")
+  {
+    // trackManagerDecision — the three branches, idempotency, and the held-decision verifier arm
+    const db = world({ activities: [], ai_video_projects: [] })
+    const none = await ct.trackManagerDecision(db as never, { brokerageId: B1, ownerManager: "ai_isa", subject: { type: "contact", id: C1 }, sourceRef: "speed_to_lead:contact:c1:t1", what: "Answer a new contact now", decision: { outcome: "first touch sent on email", source: "speed_to_lead" }, next: { kind: "none" } }, { schedule })
+    const r0 = db.tables.manager_completions.find((c) => c.source_ref === "speed_to_lead:contact:c1:t1")
+    check("a decision that acted with no trackable reference (or held) is OPENED and CLOSED on the decision in one call — one decision evidence, not two",
+      none.ok && r0?.kind === "follow_up" && r0?.status === "closed" && r0?.closed_by === "decision" && (r0?.evidence ?? []).filter((e: any) => e.kind === "decision").length === 1, JSON.stringify(r0 && [r0.status, r0.evidence?.length]))
+    const again = await ct.trackManagerDecision(db as never, { brokerageId: B1, ownerManager: "ai_isa", subject: { type: "contact", id: C1 }, sourceRef: "speed_to_lead:contact:c1:t1", what: "Answer a new contact now", decision: { outcome: "first touch sent on email", source: "speed_to_lead" }, next: { kind: "none" } }, { schedule })
+    check("the same decision tracked again → the SAME (closed) completion, nothing re-opened", again.ok && db.tables.manager_completions.filter((c) => c.source_ref === "speed_to_lead:contact:c1:t1").length === 1)
+    const human = await ct.trackManagerDecision(db as never, { brokerageId: B1, ownerManager: "ai_isa", subject: { type: "contact", id: C1 }, sourceRef: "life_change:contact:c1:divorce_filing:d1", what: "Answer a life event signal", decision: { outcome: "isa_engagement: handed to a person", source: "agent_action_ledger:life_change.signal.respond" }, next: { kind: "human", contactId: C1 } }, { schedule })
+    const rh = db.tables.manager_completions.find((c) => c.source_ref === "life_change:contact:c1:divorce_filing:d1")
+    check("a decision that HANDED the person to a human waits at awaiting_human on that person (context.contact_id) — the agent's task closes it",
+      human.ok && rh?.stage === "awaiting_human" && rh?.status === "open" && rh?.context?.contact_id === C1 && JSON.stringify(rh?.expected_evidence) === JSON.stringify(["human_action"]))
+    db.tables.activities.push({ id: "act-1", brokerage_id: B1, contact_id: C1, activity_type: "followup_moment_due", created_at: new Date(Date.parse(rh!.created_at) + 1000).toISOString(), completed_at: NOW.toISOString() })
+    const sh1 = await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: rh!.id, trigger: "event" }, { schedule, engine })
+    check("…and the agent completing the task IS the evidence that closes it", sh1.verdict === "closed" && db.tables.manager_completions.find((c) => c.id === rh!.id)?.closed_by === "human_action", sh1.reason)
+    const del = await ct.trackManagerDecision(db as never, { brokerageId: B1, ownerManager: "ai_isa", subject: { type: "contact", id: C1 }, sourceRef: "promise:p1:d1", what: "Deliver what we promised", decision: { outcome: "delivered", source: "agent_action_ledger:lead_magnet.promise.deliver" }, next: { kind: "delivery", providerRef: "SM-147Z", channel: "sms" } }, { schedule })
+    const rd = db.tables.manager_completions.find((c) => c.source_ref === "promise:p1:d1")
+    check("a decision that SENT with a provider reference waits at awaiting_delivery on that reference (the status callback closes it)", del.ok && rd?.stage === "awaiting_delivery" && rd?.provider_ref === "SM-147Z")
+    // the held-decision arm: a follow_up whose move was lost still closes on the decision it HOLDS (never a false stalled decision)
+    const held = await ct.openCompletion(db as never, { brokerageId: B1, kind: "follow_up", ownerManager: "ai_isa", subject: { type: "contact", id: C1 }, sourceRef: "consented_intake:c1:k1", what: "Decide the next step", stage: "awaiting_decision", expectedEvidence: ["decision"], dueAt: ago(5), seedEvidence: [{ kind: "decision", at: ago(6), source: "manager_signals:ai_isa:contact_consented_intake", outcome: "held" }] }, { schedule })
+    const sh2 = held.ok ? await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: held.completion.id, trigger: "cron" }, { schedule, engine }) : null
+    check("a decision completion whose second write was lost CLOSES on the decision it holds — never a false 'stalled decision' (and the cron that found it says so)",
+      sh2?.verdict === "closed" && db.tables.manager_completions.find((c) => c.id === (held as any).completion?.id)?.recovered_by === "cron", sh2?.reason)
+    const bare = await ct.openCompletion(db as never, { brokerageId: B1, kind: "follow_up", ownerManager: "ai_isa", subject: { type: "contact", id: C1 }, sourceRef: "bare:1", what: "Decide", stage: "awaiting_decision", expectedEvidence: ["decision"], dueAt: ago(5) }, { schedule })
+    const sh3 = bare.ok ? await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: bare.completion.id, trigger: "event" }, { schedule, engine }) : null
+    check("(POSITIVE CONTROL) a decision completion holding NO decision past due is still a stall", !!sh3 && sh3.verdict !== "closed" && sh3.detection === "stalled_decision", `${sh3?.verdict} / ${sh3?.detection}`)
+
+    // ONE call per decision site (stripped source — a tombstone is not a call)
+    const sites: Array<[string, string, RegExp]> = [
+      ["lib/ai-isa/speed-to-lead.ts", "speed-to-lead (lead + contact halves through one helper)", /trackManagerDecision\(/g],
+      ["lib/ai-isa/followup-arbiter.ts", "life-change + promised-deliverable responders", /trackManagerDecision\(/g],
+      ["lib/kernel/manager-signals.ts", "the consented-intake handler", /trackManagerDecision\(/g],
+    ]
+    const counts = sites.map(([f, , re]) => (code(f).match(re) ?? []).length)
+    check(`each decision site calls trackManagerDecision (speed-to-lead 1 helper, arbiter 2 responders, intake handler 1): ${counts.join(" / ")}`, counts[0] === 1 && counts[1] === 2 && counts[2] === 1, JSON.stringify(counts))
+    check("speed-to-lead's helper is CALLED once per half (lead, contact)", (code("lib/ai-isa/speed-to-lead.ts").match(/await trackFirstTouchDecision\(/g) ?? []).length === 2)
+    check("(POSITIVE CONTROL) the site counter sees a call and ignores one in a comment", (stripComments("await trackManagerDecision(svc, x) // trackManagerDecision(") .match(/trackManagerDecision\(/g) ?? []).length === 1)
+
+    // the staged-video approval: opened at staging, closed by the approver's decision on the asset
+    const vdb = world({ ai_video_projects: [{ id: "v-1", brokerage_id: B1, approval_status: "pending_review" }] })
+    const vo = await ct.openCompletion(vdb as never, { brokerageId: B1, kind: "human_handoff", ownerManager: "asset_manager", subject: { type: "ai_video_project", id: "v-1" }, sourceRef: "video_staging:v-1", what: "Approve the staged video", stage: "awaiting_human", expectedEvidence: ["human_action"], dueAt: ago(1), context: { video_id: "v-1", agent_user_id: U1 } }, { schedule })
+    const before = vo.ok ? await ct.superviseCompletion(vdb as never, { brokerageId: B1, completionId: vo.completion.id, trigger: "event" }, { schedule, engine, notify: async () => ({ notified: 1 }) }) : null
+    check("a staged video still pending review past its SLA is an INCOMPLETE FOLLOW-UP (the approver is belled — never auto-approved)", before?.detection === "incomplete_follow_up", `${before?.verdict} / ${before?.detection}`)
+    vdb.tables.ai_video_projects[0].approval_status = "approved"
+    const vo2 = await ct.openCompletion(vdb as never, { brokerageId: B1, kind: "human_handoff", ownerManager: "asset_manager", subject: { type: "ai_video_project", id: "v-1" }, sourceRef: "video_staging:v-1b", what: "Approve the staged video", stage: "awaiting_human", expectedEvidence: ["human_action"], dueAt: ahead(60), context: { video_id: "v-1" } }, { schedule })
+    const after = vo2.ok ? await ct.superviseCompletion(vdb as never, { brokerageId: B1, completionId: vo2.completion.id, trigger: "event" }, { schedule, engine }) : null
+    check("the approver's decision on the asset (approval_status approved) is the evidence that closes it", after?.verdict === "closed")
+    check("video-staging OPENS that completion where the approver is assigned (human_handoff · asset_manager · video_staging:<id>)",
+      /openCompletion\(svc as never, \{[\s\S]{0,200}kind: "human_handoff", ownerManager: "asset_manager"[\s\S]{0,200}sourceRef: `video_staging:\$\{row\.id\}`/.test(code("lib/video/video-staging.ts")))
+
+    // tickets: the per-ticket owner is lane H's triage owner by category, with H's stall rule on the row
+    const tdb = world({ support_tickets: [
+      { id: "t-bill", brokerage_id: B1, subject: "Invoice wrong", priority: "high", status: "open", created_at: ago(60 * 24 * 3), first_response_at: null, resolved_at: null, lane: "user_to_brokerage", category: "billing" },
+      { id: "t-comp", brokerage_id: B1, subject: "Fair housing question", priority: "high", status: "open", created_at: ago(60 * 24 * 3), first_response_at: null, resolved_at: null, lane: "user_to_brokerage", category: "compliance" },
+      { id: "t-odd", brokerage_id: B1, subject: "Other", priority: "high", status: "open", created_at: ago(60 * 24 * 3), first_response_at: null, resolved_at: null, lane: "user_to_brokerage", category: "made_up" },
+    ] })
+    await ct.watchUnresolvedTickets(tdb as never, B1, { now: NOW }, { schedule })
+    const own = (id: string) => tdb.tables.manager_completions.find((c) => c.subject_id === id)
+    check("per-ticket OWNER = lane H's triage owner by category (billing → finance_manager, compliance → compliance_officer, unknown → data_steward)",
+      own("t-bill")?.owner_manager === "finance_manager" && own("t-comp")?.owner_manager === "compliance_officer" && own("t-odd")?.owner_manager === "data_steward", JSON.stringify(tdb.tables.manager_completions.map((c) => [c.subject_id, c.owner_manager])))
+    check("…and H's STALL RULE rides the completion (page the answering side once; second tier at 2×)", /page the answering side once/.test(String(own("t-bill")?.context?.stall_rule ?? "")) && /second tier/.test(String(own("t-bill")?.context?.stall_rule ?? "")))
+  }
+
   console.log("\n  BLIND SPOTS (published, not hidden):")
   console.log("  · the Workflow DevKit runtime (sleep / step retry) is not executed here — the timer is a seam; its body is read from stripped source and the supervisor it calls is driven directly;")
   console.log("  · m904 is WRITTEN, NOT APPLIED — the table is modelled in memory; test:schema-drift lists manager_completions as unguarded and test:manager-governance-change E1 waits for TABLE_MANAGER + LIVE_TABLES until the integrator applies it and lane 147I registers it;")
-  console.log("  · only inbound responses (and support tickets past SLA) OPEN completions in this wave; other manager decisions (speed-to-lead, life-change, promised deliverables) are listed for the integrator (notes: Still open);")
+  console.log("  · inbound responses, support tickets past SLA, speed-to-lead, life-change and promised-deliverable decisions, the consented-intake hand-off and staged-video approvals OPEN completions (K drives the shared call; the decision sites are proven by stripped-source count, their own proofs drive them); the platform prospect ladder and engageContact's other callers do not yet;")
   console.log("  · check-vocabulary reads status literals per table it can see; COMPLETION_EXCEPTION_STATUSES is a Set (membership, not a literal comparison) until the vocabulary cache carries manager_completions;")
   console.log("  · the self-healing policy and the healing-proposal writer are the defaults / a stub here (test:healing-policy and test:self-healing own them).")
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

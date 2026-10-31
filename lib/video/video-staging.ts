@@ -179,6 +179,9 @@ const defaultApproverFor: ApproverResolver = async (req, svc) => {
 
 // ── STAGE ────────────────────────────────────────────────────────────────────
 
+/** When the Asset Manager checks that the assigned approver acted on a staged video (C14 supervision window, not a publish timer). */
+const VIDEO_APPROVAL_SLA_HOURS = 24
+
 export interface StageVideoDeps {
   now?: Date
   approverFor?: ApproverResolver
@@ -299,6 +302,22 @@ export async function stageVideoForPublication(svc: Db, input: { brokerageId: st
       const n = await notify({ brokerageId: input.brokerageId, userIds: approver.primary_user_ids ?? approver.user_ids, videoId: row.id, title: row.title ?? `${String(row.video_type ?? "video").replace(/_/g, " ")} video` }, svc)
       notified = n.sent
       for (const e of n.errors) console.error(`[video-staging] approver bell refused for video ${row.id}: ${e}`)
+      // C14 (wave 147, lane 147Z — lane 147G Outside-lane 3): the approval is a PERSON's job the Asset Manager sees through —
+      // one human_handoff completion per staged video (idempotent on the video), closed by the approver's decision
+      // (ai_video_projects.approval_status, read back by lib/kernel/completion-tracking.ts) and belled once if nobody acts by
+      // the approval SLA. Never blocks staging; a refusal is said in the log.
+      try {
+        const { openCompletion } = await import("@/lib/kernel/completion-tracking")
+        const c = await openCompletion(svc as never, {
+          brokerageId: input.brokerageId, kind: "human_handoff", ownerManager: "asset_manager", subject: { type: "ai_video_project", id: row.id },
+          sourceRef: `video_staging:${row.id}`, what: `Approve or reject the staged video "${(row.title ?? String(row.video_type ?? "video")).slice(0, 80)}"`,
+          stage: "awaiting_human", expectedEvidence: ["human_action"], dueAt: new Date(now.getTime() + VIDEO_APPROVAL_SLA_HOURS * 3_600_000),
+          context: { video_id: row.id, agent_user_id: (approver.primary_user_ids ?? approver.user_ids)[0] ?? null },
+        })
+        if (!c.ok) console.warn(`[video-staging] approval completion not opened for video ${row.id}: ${c.reason}`)
+      } catch (e) {
+        console.warn(`[video-staging] approval completion threw for video ${row.id}: ${e instanceof Error ? e.message : String(e)}`)
+      }
     }
     const after = videoStageOf({ ...row, approval_status: (patch.approval_status as string | undefined) ?? row.approval_status, video_metadata: patch.video_metadata as Record<string, unknown> })
     return { ok: true, staged: true, stage: after.stage, blockers: record.blockers, waitingOn: after.blockers, channels, approverUserIds: approver?.user_ids ?? [], notified }

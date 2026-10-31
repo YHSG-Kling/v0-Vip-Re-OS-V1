@@ -186,8 +186,18 @@ const events = classifyMentionEvents([
   res("Obituary: Robert Lopez", "Robert Lopez passed away peacefully. He is survived by his wife Maria Lopez of Phoenix."),
   res("Community news", "Maria Lopez is relocating to Denver for a new role at the hospital."),
 ], who)
-check("name + event in ONE result → events with the URL and the evidence sentence (death_in_family, relocation)",
-  events.some((e) => e.event === "death_in_family" && /survived by/.test(e.evidence) && !!e.url) && events.some((e) => e.event === "relocation"), JSON.stringify(events))
+// WAVE 147 (lane 147Z, §6): the classifier writes the ONE life-event vocabulary (lib/enrichment/life-event-vocabulary.ts) —
+// a death in the household is `death_in_household` (the legacy `death_in_family` spelling is an alias read through
+// canonicalLifeEventType, never written).
+check("name + event in ONE result → events with the URL and the evidence sentence (death_in_household — the canonical spelling, relocation)",
+  events.some((e) => e.event === "death_in_household" && /survived by/.test(e.evidence) && !!e.url) && events.some((e) => e.event === "relocation"), JSON.stringify(events))
+{
+  const { LIFE_EVENT_TYPES, canonicalLifeEventType } = await import("../lib/enrichment/life-event-vocabulary")
+  check("…every event the classifier wrote is a canonical vocabulary value (no legacy spelling written)",
+    events.length > 0 && events.every((e) => (LIFE_EVENT_TYPES as readonly string[]).includes(e.event)), JSON.stringify(events.map((e) => e.event)))
+  check("POSITIVE CONTROL: the legacy spellings are NOT vocabulary values, and each reads back as its canonical one",
+    !(LIFE_EVENT_TYPES as readonly string[]).includes("death_in_family") && canonicalLifeEventType("death_in_family") === "death_in_household" && canonicalLifeEventType("divorce") === "divorce_filing")
+}
 const noise = classifyMentionEvents([res("Divorce attorneys in Phoenix", "Top divorce and bankruptcy lawyers. Call today.")], who)
 check("POSITIVE CONTROL vs the replaced OSINT scrape: a page that merely contains 'divorce'/'bankruptcy' WITHOUT the person yields nothing", noise.length === 0)
 check("a first+last name is required (no query, no spend, for a nameless contact)", buildPersonMentionQueries({ firstName: "Maria", lastName: "" }).length === 0 && buildPersonMentionQueries(who).length === 2)

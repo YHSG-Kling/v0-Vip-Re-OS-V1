@@ -141,6 +141,14 @@ export async function incrementLandingPageViews(pageId: string, currentViewCount
 export async function getListingBySlug(slug: string): Promise<ListingDetails | null> {
   const supabase = await createClient()
 
+  // WAVE 147 (lane 147Z — lane 147F "Still open", security): the public slug USED TO be interpolated into a PostgREST filter
+  // string — .or(`mls_number.eq.${slug},id.eq.${slug}`) — so a slug carrying `,` / `.` / `(` could append its own filter
+  // clauses (filter injection, bounded only by the status + archive predicates). The slug is now an OPERAND, never filter
+  // syntax: a UUID-shaped slug is matched on id, anything else on mls_number, each through a parameterised .eq().
+  const key = String(slug ?? "").trim()
+  if (!key || key.length > 128) return null
+  const byId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key)
+
   // Fetch listing with agent info
   const { data: listing, error } = await supabase
     .from("listings")
@@ -166,7 +174,7 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
     // an ARCHIVED listing (the archive filter was missing).
     .eq("status", "active")
     .is("deleted_at", null)
-    .or(`mls_number.eq.${slug},id.eq.${slug}`)
+    .eq(byId ? "id" : "mls_number", key)
     .single()
 
   if (error || !listing) {

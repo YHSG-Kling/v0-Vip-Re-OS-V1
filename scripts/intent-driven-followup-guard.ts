@@ -1009,14 +1009,16 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
   type NbeInput = import("../lib/ai-isa/lead-action-plan").NextBestExperienceInput
   const inputFor = (w: World, over: Partial<NbeInput> = {}): NbeInput =>
     base({ nba: { intent: intent(80), memoryFacts: [] }, policy: { complianceHardFlag: false, allowedChannels: w.allowed ?? ["email", "sms", "phone", "direct_mail"], autoSendAllowed: true, videoAllowed: true }, ...over })
-  const run = async (o: { world?: World; deliverable?: readonly string[] | null; decide?: () => Promise<Record<string, unknown>>; input?: NbeInput; priority?: "speed_to_lead"; noContact?: boolean }) => {
+  const run = async (o: { world?: World; deliverable?: readonly string[] | null; decide?: () => Promise<Record<string, unknown>>; input?: NbeInput; priority?: "speed_to_lead"; noContact?: boolean; prepare?: (db: any) => Promise<void> }) => {
     const w = o.world ?? {}
     const recorded: Array<Record<string, any>> = []
     let prompt = "", calls = 0
     const seed = seedOf(w)
     if (o.noContact) seed.contacts = []
     const input = o.input ?? inputFor(w)
-    const r = await arb.arbitrateAndRecordExperience(memSupabase(seed), {
+    const db = memSupabase(seed)
+    if (o.prepare) await o.prepare(db)
+    const r = await arb.arbitrateAndRecordExperience(db, {
       brokerageId: B, contactId: C, input, plan: lap.planNextBestExperience(input), now: NOW, policy, systemSource: "t",
       deliverable: (o.deliverable === undefined ? arb.CONTACT_ENGAGEMENT_DELIVERABLE : o.deliverable) as never, priority: o.priority ?? null,
     }, {
@@ -1274,6 +1276,45 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
       types.includes("returning_seller_ready:home_sale") && types.includes("made_up_thing:engagement") && !types.some((t) => t.startsWith("next_move_intent") || t.startsWith("divorce_filing")), types.join(","))
     check("the signal vocabulary covers the owner's examples (moving, refinance, home sale, buying, lawful life events, equity)",
       ["moving", "refinance", "home_sale", "buying", "life_event", "equity"].every((k) => Object.values(arb.LIFE_CHANGE_SIGNAL_KINDS).includes(k as never)) && arb.LIFE_CHANGE_SIGNAL_KINDS.refinance_opportunity === "refinance" && arb.LIFE_CHANGE_SIGNAL_KINDS.equity_milestone === "equity")
+
+    // WAVE 147 (lane 147Z, convergence — lane 147B's advisory): a LIFE EVENT that is the DECISIVE signal narrows the closed menu
+    // to a person or a bounded wait; the model can still choose, but only between those.
+    const divorce = await seller([sig("divorce_filing", 1)])
+    const dMenu = divorce.r.decision?.menu ?? []
+    check("147Z LIFE EVENT DECISIVE: the closed menu holds ONLY a person or a wait (no automated touch to pick), and with the model down the person stands",
+      dMenu.length > 0 && dMenu.includes("agent_intervention") && dMenu.every((m) => m === "agent_intervention" || m === "wait") && divorce.r.plan.chosen.kind === "agent_intervention", JSON.stringify(dMenu))
+    const tried = await run({ world: { signals: [sig("divorce_filing", 1)] }, input: sellerInput(), decide: reply({ optionId: "market_update", channel: "email" }) })
+    check("147Z …a model reply naming an automated touch is OFF the narrowed menu and refused — the person stands",
+      tried.r.decision?.source === "deterministic" && /not on the menu/.test(tried.r.decision?.fallbackReason ?? "") && tried.r.plan.chosen.kind === "agent_intervention", `${tried.r.decision?.fallbackReason} · ${tried.r.plan.chosen.kind}`)
+    const fresher = await seller([sig("divorce_filing", 6), sig("home_sale_interest", 1)])
+    check("147Z (control) a FRESHER home-sale signal is decisive: the menu is NOT narrowed — a market update stays on it",
+      (fresher.r.decision?.menu ?? []).includes("market_update"), JSON.stringify(fresher.r.decision?.menu))
+    const stl = await run({ world: { signals: [sig("divorce_filing", 1)] }, input: sellerInput(), priority: "speed_to_lead" })
+    check("147Z (control) a REQUIREMENT is never narrowed: speed-to-lead keeps its answer-now menu (a first touch or a person)",
+      (stl.r.decision?.menu ?? []).includes("communication") || (stl.r.decision?.fallbackReason ?? "").startsWith("speed_to_lead"), `${JSON.stringify(stl.r.decision?.menu)} · ${stl.r.decision?.fallbackReason}`)
+
+    // WAVE 147 (147Z): C9 movement records reach the arbiter through the WIRED seam (no injected consumer): lane B's own writer
+    // records a reported post + a verified first-party row on this contact; the arbiter's ledger row carries the movement signal
+    // and the prompt carries the neighbourly helpers. Control: an inferred-only record reaches nothing.
+    const mvMod = await import("../lib/intent/movement-signals")
+    const seedMovement = (verified: boolean) => async (db: any) => {
+      const deps = { route: false, windowDays: 180, now: NOW }
+      if (verified) {
+        await mvMod.recordMovementSignal(db, { brokerageId: B, subject: { type: "contact", id: C }, sourceKey: "pp_reddit_relocation", eventRelevance: "relocation", identity: "verified_match", capturedBy: "automation", observedAt: ago(4), evidence: { confidence: "reported", reportedBy: "self", reference: { kind: "public_post", id: "rd:1", retrievedAt: ago(4) }, summary: "moving to Denver in spring" } }, deps)
+        await mvMod.recordMovementSignal(db, { brokerageId: B, subject: { type: "contact", id: C }, sourceKey: "fp_calc_moving_cost", eventRelevance: "relocation", identity: "record_key", capturedBy: "automation", observedAt: ago(2), evidence: { confidence: "verified", reference: { kind: "first_party_row", id: "calculator_history:h", retrievedAt: ago(2) }, summary: "priced the move" } }, deps)
+      } else {
+        await mvMod.recordMovementSignal(db, { brokerageId: B, subject: { type: "contact", id: C }, sourceKey: "po_online_real_estate_activity", eventRelevance: "property_event", identity: "verified_match", capturedBy: "automation", observedAt: ago(1), evidence: { confidence: "inferred", basis: ["versium:a"], method: "vendor model", summary: "modeled online activity" } }, deps)
+        await mvMod.recordMovementSignal(db, { brokerageId: B, subject: { type: "contact", id: C }, sourceKey: "pr_owner_rental_listing", eventRelevance: "property_event", identity: "verified_match", capturedBy: "automation", observedAt: ago(1), evidence: { confidence: "inferred", basis: ["raw:rent1"], method: "owner listed for rent", summary: "listed their home for rent" } }, deps)
+      }
+    }
+    const viaSeam = await run({ world: {}, input: sellerInput(), prepare: seedMovement(true) })
+    const seamTypes = ((viaSeam.arbitration.signals ?? []) as Array<{ type: string; kind: string }>).map((s) => `${s.type}:${s.kind}`)
+    check("147Z C9 → ARBITER through the WIRED seam: the movement evidence arrives as ONE signal in the arbiter's spelling (moving_intent:moving) on the ledger row, and the prompt offers the neighbourly helpers",
+      seamTypes.includes("moving_intent:moving") && /neighbourlyHelpers/.test(viaSeam.prompt) && /relocation_checklist_on_disclosed_move/.test(viaSeam.prompt), `${seamTypes.join(",")} · helpers in prompt: ${/neighbourlyHelpers/.test(viaSeam.prompt)}`)
+    const infSeam = await run({ world: {}, input: sellerInput(), prepare: seedMovement(false) })
+    const infTypes = ((infSeam.arbitration.signals ?? []) as Array<{ type: string }>).map((s) => s.type)
+    check("147Z (control) INFERRED-only movement evidence reaches the arbiter as NO signal and NO helper — and the blind spot says so",
+      infTypes.length === 0 && !/neighbourlyHelpers/.test(infSeam.prompt) && /inferred only/.test(JSON.stringify(infSeam.arbitration.channel_blind_spots ?? [])), `${infTypes.join(",")} · ${JSON.stringify(infSeam.arbitration.channel_blind_spots)}`)
 
     // the responder: who the person is decides the rail
     const calls = { rec: [] as Array<Record<string, any>>, eng: [] as Array<Record<string, any>> }

@@ -856,6 +856,9 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
     maxAttendees: "",
     publicDescription: "",
     agentNotes: "",
+    // wave 147 (lane 147Z): the event kind (the live open_house_events.event_type CHECK) and, for a virtual one, its https link.
+    eventType: "open_house",
+    joinUrl: "",
   })
 
   // The dialog used to demand a pasted listing UUID ("Find the ID from your
@@ -906,12 +909,14 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
             : undefined,
           agentNotes: form.agentNotes || undefined,
           publicDescription: form.publicDescription || undefined,
+          eventType: form.eventType,
+          joinUrl: form.eventType === "virtual_open_house" ? form.joinUrl.trim() : undefined,
         })
         if (res.success && res.event) {
           toast({ title: "Open house scheduled" })
           setEvents((prev) => [res.event as OpenHouseEvent, ...prev])
           setOpen(false)
-          setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "" })
+          setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "", eventType: "open_house", joinUrl: "" })
         } else {
           toast({ title: res.error ?? "Failed to schedule open house", variant: "destructive" })
         }
@@ -980,6 +985,27 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
                     />
                     <p className="text-[10px] text-muted-foreground mt-1">Find the ID from your Listings page</p>
                   </>
+                )}
+              </div>
+              <div>
+                <Label className="text-xs">Kind</Label>
+                <Select value={form.eventType} onValueChange={(v) => setForm((f) => ({ ...f, eventType: v }))}>
+                  <SelectTrigger className="h-8 text-sm mt-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open_house">Open house (public)</SelectItem>
+                    <SelectItem value="broker_open">Broker open (agents only)</SelectItem>
+                    <SelectItem value="virtual_open_house">Virtual open house</SelectItem>
+                  </SelectContent>
+                </Select>
+                {form.eventType === "virtual_open_house" && (
+                  <Input
+                    placeholder="https:// meeting link"
+                    value={form.joinUrl}
+                    onChange={(e) => setForm((f) => ({ ...f, joinUrl: e.target.value }))}
+                    className="h-8 text-sm mt-2"
+                  />
                 )}
               </div>
               <div>

@@ -229,6 +229,19 @@ async function main() {
   check("C6 intake from every channel: the office logs a phone / email / in-person request through the SAME non-session door (openInboundSupportTicket) only after its OWN tenant desk scope resolves (gate before the service client; platform support refused), and the office queue renders the form and the ticket's completion line",
     logDoor.search(/resolveQueueScope\s*\(/) >= 0 && logDoor.search(/resolveQueueScope\s*\(/) < logDoor.search(/createServiceClient\s*\(/) && /scope\.kind\s*!==\s*"tenant"/.test(supportStrings.slice(supportStrings.indexOf("export async function logSupportRequestOnBehalf"))) && /openInboundSupportTicket\(/.test(logDoor)
     && /<LogRequestForm\b/.test(code("app/dashboard/admin/support-tickets/support-queue-client.tsx")) && /thread\.completion/.test(code("app/dashboard/admin/support-tickets/support-queue-client.tsx")) && /supportTicketCompletion\(/.test(code("lib/support/support-thread.ts")))
+  // WAVE 147 (lane 147Z — this lane's Outside-lane 1 + 2, closed): the C1 inbound door hands a STAFF sender's email to ticket
+  // intake BEFORE the unknown-sender raw pipeline (a member of the tenant is never minted a raw lead), and the C14 ticket watch
+  // owns each ticket by THIS lane's triage owner with this lane's stall rule.
+  const router = code("app/api/providers/inbound/route.ts")
+  const staffAt = router.search(/\.from\("users"\)\.select\("id, user_type"\)\.eq\("brokerage_id", inbound\.brokerageId\)\.eq\("email", emailNorm\)\.neq\("user_type", "contact"\)/)
+  const intakeAt = router.search(/openInboundSupportTicket\(supabase as never, \{/)
+  const rawAt = router.search(/identifyAndRouteUnknownSender\(\{/)
+  check("C7 the inbound email door: a sender who is a USER of the verified tenant (never a contact) → openInboundSupportTicket, BEFORE the unknown-sender raw pipeline; the contact / lead matches still run first",
+    staffAt > 0 && intakeAt > staffAt && rawAt > intakeAt && router.search(/\.from\("contacts"\)/) < staffAt && /channel: "email"/.test(router.slice(intakeAt, intakeAt + 400)) && /providerRef: inbound\.messageId/.test(router.slice(intakeAt, intakeAt + 400)), `staff ${staffAt} · intake ${intakeAt} · raw ${rawAt}`)
+  check("C8 POSITIVE CONTROL — the order finder rejects intake placed AFTER the raw pipeline", (() => { const t = "identifyAndRouteUnknownSender({ x }); openInboundSupportTicket(supabase as never, {"; return !(t.search(/openInboundSupportTicket\(supabase as never, \{/) < t.search(/identifyAndRouteUnknownSender\(\{/)) })())
+  const ctSrc = code("lib/kernel/completion-tracking.ts")
+  check("C9 the C14 ticket watch owns each ticket by TRIAGE_OWNER_BY_CATEGORY through supportTicketCompletion (owner + stall rule), not a hardcoded steward",
+    /supportTicketCompletion\(t as never, TRIAGE_OWNER_BY_CATEGORY, now\)/.test(ctSrc) && /stall_rule: plan\?\.stallRule/.test(ctSrc))
 
   // ── D · the built capabilities (static) ──────────────────────────────────────
   console.log("\n[D · vendor portfolio (m906) and the title closing appointment]")

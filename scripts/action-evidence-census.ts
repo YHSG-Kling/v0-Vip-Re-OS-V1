@@ -40,6 +40,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync } fro
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
+import { registerHooks } from "node:module"
 import { stripComments, blankStrings, blankComments } from "./strip-comments"
 import { stubModule, setSvc } from "./canaries/_harness"
 import { memSupabase, type MemClient } from "./in-memory-supabase"
@@ -84,7 +85,18 @@ function fileStub(spec: string, realRel: string | null, overrides: string): void
 stubModule("next/cache", "export const revalidatePath = () => {}; export const revalidateTag = () => {}; export const unstable_cache = (f) => f; export const unstable_noStore = () => {}")
 // node:dns → "no record yet" (the DNS probe is free and read-only; the claim under test is the routing call). The stub
 // imports the un-prefixed builtin so the hook does not resolve it back to itself.
-stubModule("node:dns", "import real from 'dns'; const nx = async () => { const e = new Error('nx'); e.code = 'ENOTFOUND'; throw e }; export const promises = { ...real.promises, resolve4: nx, resolveCname: nx }; export default { ...real, promises }")
+// WAVE 147 (lane 147Z — lane 147J Outside-lane 1): ESM IMPORTS ONLY. The shared stub map answered EVERY resolution, and a
+// CommonJS `require('node:dns')` cannot load a data: URL in place of a builtin ("Cannot read properties of undefined (reading
+// 'exports')" — measured by lane J at undici's interceptor/dns.js, reached by the enrichment queue → captureConsentedContact
+// capture_failed). A require keeps the real builtin — the same hook shape as scripts/canaries/wave147-harness.ts.
+const DNS_STUB = `data:text/javascript,${encodeURIComponent("import real from 'dns'; const nx = async () => { const e = new Error('nx'); e.code = 'ENOTFOUND'; throw e }; export const promises = { ...real.promises, resolve4: nx, resolveCname: nx }; export default { ...real, promises }")}`
+registerHooks({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:module's ResolveHookSync shape (the repo's idiom)
+  resolve(spec: string, ctx: any, next: any) {
+    if (spec === "node:dns" && Array.isArray(ctx?.conditions) && ctx.conditions.includes("import") && !ctx.conditions.includes("require")) return { url: DNS_STUB, shortCircuit: true }
+    return next(spec, ctx)
+  },
+})
 fileStub("@/lib/auth/require-caller", "lib/auth/require-caller.ts",
   "export const requireCaller = async () => ({ ok: true, ...globalThis.__147F.ctx }); export const requireCallerWithAgent = async () => ({ ok: true, ...globalThis.__147F.ctx })")
 fileStub("@/lib/platform/acting-context", "lib/platform/acting-context.ts",

@@ -454,7 +454,64 @@ async function answerLifeChangeSignal(
   return r.action === "refused" ? `life-change signal not answered: ${r.reason}` : `life-change ${signalType} answered (${r.action}${r.subjectClass ? `, ${r.subjectClass}` : ""})`
 }
 
+/**
+ * WAVE 147 (lane 147Z — lane 147A Outside-lane 2; owner ruling 1, contracts C8 + C14). The AI ISA ACTS on a consented intake:
+ * an identifiable person submitted a form WITH the consent box and went in as a CONTACT (lib/contact-pipeline/contact-capture.ts
+ * completeConsentedIntake publishes this line). The ISA answers on the RECORD, not a timetable:
+ *   1. the consent record is read (consentScopeFor → answerConsentQuestion) — may we text / call / email about their real-estate
+ *      needs? — and those answers ride the resolution (evidence, never re-derived from the payload);
+ *   2. the contact is handed to the follow-up arbiter NOW through the ONE governed engagement (engageContact — NBA hard stops,
+ *      the planner, the arbiter, the consent-gated dispatch). The welcome already went (captureContact's ensureClientWelcome),
+ *      so the planner's fatigue window normally HOLDS the next touch and the hold is the recorded decision — never a second
+ *      hello stacked on the welcome;
+ *   3. ONE C14 completion is opened and evidenced in the same call (trackManagerDecision): a person's answer waits on that
+ *      person's task; every other answer closes on the decision.
+ * Idempotent per intake (the completion keys on the intake's own idempotency key; the bus dedupes the open line).
+ * `deps` are the proofs' seams (scripts/consented-intake-guard.ts drives this handler on an in-memory client).
+ */
+export async function answerConsentedIntake(
+  signal: ManagerSignal,
+  ctx: { brokerageId: string; supabase: Svc },
+  deps: { engage?: (p: { contactId: string; brokerageId: string; reason: "brokerage_rule" }) => Promise<{ success: boolean; channel?: string; reason?: string }> } = {},
+): Promise<string | null> {
+  const contactId = signal.contactId ?? (signal.entityType === "contact" ? signal.entityId : null)
+  if (!contactId) return null
+  const payload = (signal.payload ?? {}) as { idempotency_key?: unknown; intake_channel?: unknown; purposes?: unknown }
+  const { consentScopeFor, answerConsentQuestion } = await import("@/lib/kernel/compliance/require-contact-consent")
+  const scope = await consentScopeFor(ctx.supabase as never, { brokerageId: ctx.brokerageId, contactId })
+  if (scope.error) return `consented intake not answered: the consent record could not be read (${scope.error}) — nothing assumed, nothing sent`
+  const ask = (channel: "sms" | "voice" | "email") => answerConsentQuestion(scope, { channel, purpose: "real_estate_services" })
+  const answers = { sms: ask("sms"), voice: ask("voice"), email: ask("email") }
+  const consentLine = (Object.entries(answers) as Array<[string, { allowed: boolean; basis: string }]>).map(([c, a]) => `${c} ${a.allowed ? "yes" : `no (${a.basis})`}`).join(", ")
+  const engage = deps.engage ?? (async (p) => (await import("@/app/actions/ai-isa/engage-contact")).engageContact(p))
+  let r: { success: boolean; channel?: string; reason?: string }
+  try {
+    r = await engage({ contactId, brokerageId: ctx.brokerageId, reason: "brokerage_rule" })
+  } catch (e) {
+    r = { success: false, reason: `engagement threw: ${e instanceof Error ? e.message : String(e)}` }
+  }
+  const toPerson = !r.success && /^experience:agent_intervention:/.test(String(r.reason ?? ""))
+  const decision = r.success ? `the ISA engaged on ${r.channel ?? "its chosen channel"}` : toPerson ? "the arbiter handed them to a person (the agent's task)" : `the governed path held the next touch (${r.reason ?? "no reason given"})`
+  const intakeKey = typeof payload.idempotency_key === "string" && payload.idempotency_key ? payload.idempotency_key : signal.id
+  try {
+    const { trackManagerDecision } = await import("@/lib/kernel/completion-tracking")
+    const t = await trackManagerDecision(ctx.supabase, {
+      brokerageId: ctx.brokerageId, ownerManager: "ai_isa", subject: { type: "contact", id: contactId }, sourceRef: `consented_intake:${contactId}:${intakeKey}`,
+      what: `Decide the next step for a consented new contact (${String(payload.intake_channel ?? "form")})`,
+      decision: { outcome: `${decision}; consent on record: ${consentLine}`, source: "manager_signals:ai_isa:contact_consented_intake", ledgerRef: signal.id },
+      next: toPerson ? { kind: "human", contactId } : { kind: "none" },
+      context: { manager_signal_id: signal.id, intake_key: intakeKey },
+    })
+    if (!t.ok) console.warn(`[manager-signals] consented-intake completion not tracked for ${contactId}: ${t.reason}`)
+  } catch (e) {
+    console.warn(`[manager-signals] consented-intake completion tracking threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  return `consented intake answered on the record (${consentLine}) — ${decision}`
+}
+
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
+  // WAVE 147 (lane 147Z — lane 147A Outside-lane 2): Data Steward → AI ISA — the consented intake is ACTED on (it was feed-only).
+  "ai_isa:contact_consented_intake": (signal, ctx) => answerConsentedIntake(signal, ctx),
   // ── Wave 141B — IMMEDIATE OPERATIONS: `<owner>:operation_failure_escalated` for every registered owning
   //    manager (tenant creation, user creation, invitation, seat provisioning, brokerage transfer, website,
   //    provider / transaction-provider connection, billing activation, phone/A2P). The handler RE-VERIFIES the

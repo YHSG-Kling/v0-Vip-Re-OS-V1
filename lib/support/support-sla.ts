@@ -462,7 +462,8 @@ async function autoCloseResolved(svc: any, t: LoopTicket & { subject?: string | 
     },
     {
       settle: (r) => ({ status: r.ok ? "executed" : "failed", outcome: r.ok ? "closed" : "not_closed", error: r.error }),
-      replay: () => ({ ok: true, error: null }),
+      // WAVE 147 (147Z — census II.2): a REFUSED claim closed nothing — it is not reported as closed (fail closed).
+      replay: (claim) => (claim.kind === "refused" ? { ok: false, error: `the action ledger refused the auto-close: ${claim.error}` } : { ok: true, error: null }),
     },
     { client: svc },
   )

@@ -271,8 +271,19 @@ async function main() {
   const eng = code("lib/buyer-search/search-engine.ts")
   check("engine: the renter's market reaches the external router", /listingType:\s*enrichedIntent\.listingType === 'rent' \? 'rental' : 'sale'/.test(eng))
   check("engine: every result carries its fit and the steering-checked neighbourly voice", /explainCriteriaFit\(/.test(eng) && /\bfit,/.test(eng) && /explanation_voice:\s*voiceScan\.clean/.test(eng))
-  check("engine: listings filtered on the shoppable-status list (not a bare literal)", /\.in\('status',\s*\[\.\.\.BUYER_SHOPPABLE_LISTING_STATUSES\]\)/.test(eng) && !/\.eq\('status',\s*'active'\)/.test(eng))
-  check("POSITIVE CONTROL: the status finder sees the old bare literal", /\.eq\('status',\s*'active'\)/.test(".eq('status', 'active')"))
+  // WAVE 147 (lane 147Z — this lane's Outside-lane 1, closed): the RULE, not the waypoint — every buyer read filters on the
+  // shoppable list INTERSECTED with lane 147F's ONE public predicate (archived / hidden statuses can never reach a buyer), and
+  // the archive column beside it.
+  const { buyerShoppableListingStatuses } = await import("../lib/buyer-search/search-engine")
+  const { publiclyVisibleListingStatuses } = await import("../lib/listings/listing-status-sync")
+  const shop = buyerShoppableListingStatuses()
+  check("engine: the buyer statuses ARE the shoppable list ∩ the public predicate (derived, every one public, none outside the shoppable list)",
+    shop.length > 0 && shop.every((s) => (publiclyVisibleListingStatuses() as string[]).includes(s) && (BUYER_SHOPPABLE_LISTING_STATUSES as readonly string[]).includes(s)) && /publiclyVisibleListingStatuses\(\)/.test(eng), JSON.stringify(shop))
+  const watch = code("lib/buyer-search/market-watch.ts")
+  const readers = [["lib/buyer-search/search-engine.ts", eng, /\.in\('status',\s*buyerShoppableListingStatuses\(\)\)\s*\.is\('deleted_at',\s*null\)/], ["app/actions/buyer-search/conversational-search.ts", code("app/actions/buyer-search/conversational-search.ts"), /\.in\("status",\s*buyerShoppableListingStatuses\(\)\)\.is\("deleted_at",\s*null\)/], ["lib/buyer-search/market-watch.ts", watch, /\.in\("status",\s*\(await import\("\.\/search-engine"\)\)\.buyerShoppableListingStatuses\(\)\)\.is\("deleted_at",\s*null\)/]] as const
+  const offReaders = readers.filter(([, s, re]) => !re.test(s)).map(([f]) => f)
+  check("every buyer listing read (search, why-this-home, market watch) filters on that intersection AND excludes archived (deleted_at)", offReaders.length === 0 && !/\.eq\('status',\s*'active'\)/.test(eng) && !/\.eq\("status",\s*"active"\)/.test(watch), offReaders.join(", "))
+  check("POSITIVE CONTROL: the status finder sees the old bare literal and an un-archived read", /\.eq\('status',\s*'active'\)/.test(".eq('status', 'active')") && !readers[2][2].test('.in("status", (await import("./search-engine")).buyerShoppableListingStatuses()).limit(200)'))
   const acts = code("app/actions/buyer-search/conversational-search.ts")
   const exported = [...acts.matchAll(/export\s+async\s+function\s+(\w+)\s*\(/g)].map((m) => m[1])
   const bodyOf = (name: string) => { const i = acts.indexOf(`function ${name}(`); return i < 0 ? "" : acts.slice(i, acts.indexOf("\nexport ", i + 10) > 0 ? acts.indexOf("\nexport ", i + 10) : undefined) }
@@ -332,6 +343,33 @@ async function main() {
   await proposeWrittenCriteriaAlert(xdb, { brokerageId: BRK, contactId: SELLER, agentUserId: null, messageRef: null, body: "we'd list at 600k in Frisco" })
   check("a SELLER's words never become buyer criteria (buyer-side contacts only)", !xdb.tables.property_preferences.some((r) => r.contact_id === SELLER))
   check("every criteria write in this layer is ledgered (one row per distinct change set, all executed)", xdb.tables.agent_action_ledger.length === 3 && xdb.tables.agent_action_ledger.every((r) => r.status === "executed" && r.action === "buyer_search.criteria.update"), JSON.stringify(xdb.tables.agent_action_ledger.map((r) => [r.idempotency_key, r.status])))
+
+  // ── H2 (wave 147, lane 147Z — this lane's Outside-lane 2 + 3, closed) ─────
+  console.log("\n[H2 · the phone call reaches the one store; the behaviour learner never overwrites what the buyer said]")
+  {
+    const { buyerUtterances } = await import("../lib/buyer-search/conversation-criteria")
+    const { recordStatedCriteriaTurn } = await import("../lib/buyer-search/criteria-turn")
+    const call = "Agent: Thanks for calling, how about something around 900k?\nCaller: We need 4 bedrooms and we want to stay under 700k\nAgent: Got it."
+    const spoken = buyerUtterances(call).join(". ")
+    const vt = await recordStatedCriteriaTurn(xdb as never, { brokerageId: BRK, contactId: CONTACT, text: spoken, channel: "voice", actor: { type: "system" }, idempotencyKey: "buyer_search.criteria.update:c:call:VC-1", allowModelAssist: false, ledgerClient: xdb })
+    const afterCall = await loadBuyerCriteria(xdb as never, CONTACT, { brokerageId: BRK })
+    check("a PHONE call's buyer lines reach the same store (said, channel voice) — the agent's '900k' never becomes the buyer's budget",
+      !vt.error && afterCall?.maxPrice === 700000 && afterCall?.provenance?.maxPrice?.channel === "voice" && afterCall?.provenance?.maxPrice?.source === "said" && afterCall?.minBeds === 4 && !/900/.test(spoken), JSON.stringify({ err: vt.error, max: afterCall?.maxPrice, beds: afterCall?.minBeds }))
+    const ca = code("lib/voice/call-analysis.ts")
+    const voiceDoor = /recordStatedCriteriaTurn\(svc, \{[\s\S]{0,300}channel: "voice"[\s\S]{0,200}idempotencyKey: `buyer_search\.criteria\.update:\$\{call\.contact_id\}:call:\$\{call\.id\}`/
+    check("the call analysis hands the BUYER's lines (buyerUtterances) of a BUYER-side contact to that writer, keyed on the call (a re-analysis replays)",
+      voiceDoor.test(ca) && /buyerUtterances\(call\.transcription\)/.test(ca) && /isBuyerSideContactType\(/.test(ca))
+    check("POSITIVE CONTROL: the voice-door finder rejects a writer call on the wrong channel", !voiceDoor.test('recordStatedCriteriaTurn(svc, { channel: "sms", idempotencyKey: `buyer_search.criteria.update:${call.contact_id}:call:${call.id}` })'))
+    const pu = code("lib/behavior-learning/preference-updater.ts")
+    const upsertBody = pu.slice(pu.indexOf('.from("property_preferences")\n    .upsert('), pu.indexOf('{ onConflict: "contact_id" }'))
+    check("the behaviour learner's upsert writes NO explicit preferred_price_* column and skips every field the buyer SAID (provenance read, columns omitted)",
+      upsertBody.length > 0 && !/preferred_price_(min|max):/.test(upsertBody) && /\.\.\.learned/.test(upsertBody) && /if \(said\(l\.field\)\) keptSaid\.push\(l\.field\)/.test(pu))
+    check("…and what it would have changed on a SAID field becomes a PROPOSAL in the one change history (learnFromBehaviour → recordCriteriaChanges)", /learnFromBehaviour\(criteria, history/.test(pu) && /recordCriteriaChanges\(supabase/.test(pu) && /d\.status === "proposed" && keptSaid\.includes\(d\.field\)/.test(pu))
+    check("POSITIVE CONTROL: the old overwrite (preferred_price_min in the learner's upsert) is recognised", /preferred_price_(min|max):/.test("        preferred_price_min:     preferred_price_min,"))
+    const saidMax = await loadBuyerCriteria(xdb as never, CONTACT, { brokerageId: BRK })
+    const props = learnFromBehaviour(saidMax!, [{ kind: "saved", price: 760000, city: null, propertyType: null, listingRef: "a" }, { kind: "saved", price: 790000, city: null, propertyType: null, listingRef: "b" }], { channel: "system" })
+    check("DRIVEN: behaviour above a SAID budget is only ever PROPOSED (with its reason), never applied", props.some((p) => p.field === "maxPrice" && p.status === "proposed" && /raise your top number/.test(p.reason)) && !props.some((p) => p.field === "maxPrice" && p.status === "applied"))
+  }
 
   // ── I ─────────────────────────────────────────────────────────────────────
   console.log("\n[I · prompt quality — both LLM prompts are expert and structured]")

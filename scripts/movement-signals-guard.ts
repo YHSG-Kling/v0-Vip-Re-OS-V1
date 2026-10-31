@@ -491,8 +491,31 @@ async function main() {
     const refusedDb = db({}, { refuse: { movement_signals: "permission denied" } })
     const rh = await quiet(() => mv.movementSignalsForArbiter(refusedDb as never, { brokerageId: B, contactId: "c1", now: NOW, windowDays: 180 }))
     ok(rh.signals.length === 0 && /refused/.test(rh.blindSpot ?? ""), "a refused read is a published BLIND SPOT, never a throw, never 'no signal'")
-    const wired = /movementSignalsForArbiter/.test(src("lib/ai-isa/followup-arbiter.ts"))
-    console.log(`  · arbiter wiring: ${wired ? "WIRED" : "UNWIRED — the one-line call is lane 147G's (lane 147B notes, Outside-lane 1)"}`)
+    // WAVE 147 (147Z, convergence): THE EPISTEMIC GATE at the hook — an inferred-only combination never reaches the arbiter as a
+    // life change (lane G's seam contract + C9). Positive control: the reported + verified pair above DID produce one signal.
+    const infOnly = db()
+    await quiet(async () => {
+      await mv.recordMovementSignal(infOnly as never, { brokerageId: B, subject: { type: "contact", id: "c2" }, sourceKey: "po_online_real_estate_activity", eventRelevance: "property_event", identity: "verified_match", capturedBy: "automation", observedAt: daysAgo(1), evidence: { confidence: "inferred", basis: ["versium:a"], method: "vendor model", summary: "modeled online activity" } }, { ...deps, route: false })
+      await mv.recordMovementSignal(infOnly as never, { brokerageId: B, subject: { type: "contact", id: "c2" }, sourceKey: "pr_owner_rental_listing", eventRelevance: "property_event", identity: "verified_match", capturedBy: "automation", observedAt: daysAgo(1), evidence: { confidence: "inferred", basis: ["raw:rent1"], method: "owner listed for rent", summary: "listed their home for rent" } }, { ...deps, route: false })
+    })
+    const ih = await quiet(() => mv.movementSignalsForArbiter(infOnly as never, { brokerageId: B, contactId: "c2", now: NOW, sinceIso: daysAgo(180) }))
+    ok(ih.signals.length === 0 && ih.helpers.length === 0 && /inferred only/.test(ih.blindSpot ?? ""), "INFERRED-ONLY evidence never reaches the arbiter as a life change — no signal, no helper, and the blind spot says why (control: the reported + verified pair above produced one)", ih.blindSpot ?? "")
+    const sinceForm = await quiet(() => mv.movementSignalsForArbiter(d as never, { brokerageId: B, contactId: "c1", now: NOW, sinceIso: daysAgo(180) }))
+    ok(sinceForm.signals.length === 1 && sinceForm.signals[0].type === s?.type, "the arbiter's own window (sinceIso) reads the same evidence as windowDays")
+    const noWindow = await quiet(() => mv.movementSignalsForArbiter(d as never, { brokerageId: B, contactId: "c1", now: NOW }))
+    ok(noWindow.signals.length === 0 && /no window/.test(noWindow.blindSpot ?? ""), "no window → nothing read, said as a blind spot (never an unbounded read)")
+    // THE WIRING, ASSERTED (was a console line whose regex matched the arbiter's OWN local function name — a false WIRED):
+    // the consumer constant must lazily import THIS module and must not be null. Stripped source (a tombstone is not a call site).
+    const seamWired = (text: string) => /const MOVEMENT_SIGNAL_CONSUMER\b[^=]*=\s*async[^\n]*import\("@\/lib\/intent\/movement-signals"\)\)\.movementSignalsForArbiter\(/.test(text)
+    const arbSrc = src("lib/ai-isa/followup-arbiter.ts")
+    ok(seamWired(arbSrc), "the arbiter's MOVEMENT_SIGNAL_CONSUMER lazily imports lib/intent/movement-signals and calls movementSignalsForArbiter (WIRED)")
+    ok(!seamWired("const MOVEMENT_SIGNAL_CONSUMER: MovementSignalConsumer | null = null\nasync function movementSignalsForArbiter() {}") && !seamWired(stripComments("// const MOVEMENT_SIGNAL_CONSUMER = async (s, a) => (await import(\"@/lib/intent/movement-signals\")).movementSignalsForArbiter(s, a)\nconst MOVEMENT_SIGNAL_CONSUMER = null")), "(positive control) a null seam beside a same-named local function, or the wiring only in a comment, reads UNWIRED")
+    // DRIVEN: the arbiter reads the movement evidence through its default (wired) seam and narrows the menu on a life event.
+    const arbiter = await import("../lib/ai-isa/followup-arbiter")
+    const dec = arbiter.decisiveLifeChangeSignal([{ type: "moving_intent", kind: "moving", strength: 50, daysAgo: 3 }, { type: "divorce_filing", kind: "life_event", strength: 60, daysAgo: 1 }])
+    ok(dec?.kind === "life_event", "the DECISIVE signal is the freshest non-engagement one (a divorce filing 1d ago beats a move 3d ago)")
+    const dec2 = arbiter.decisiveLifeChangeSignal([{ type: "moving_intent", kind: "moving", strength: 50, daysAgo: 1 }, { type: "divorce_filing", kind: "life_event", strength: 60, daysAgo: 9 }, { type: "property_engagement", kind: "engagement", strength: null, daysAgo: 0 }])
+    ok(dec2?.kind === "moving", "(control) a fresher move is decisive over an older life event, and mere engagement is never decisive")
     const cronWired = /runMovementTick/.test(src("app/api/cron/enrichment-processor/route.ts"))
     console.log(`  · tick wiring: ${cronWired ? "WIRED" : "UNWIRED — the one-line call is in lane 147B notes, Outside-lane 2"}`)
   }
@@ -515,6 +538,74 @@ async function main() {
     const published = [...src(SIG).matchAll(/toManager:\s*"[a-z_]+",\s*signalType:\s*"([a-z_]+)"/g)].map((m) => m[1])
     const registry = src("lib/kernel/signal-registry.ts")
     ok(published.length >= 1 && published.every((t) => new RegExp(`\\b${t}:\\s*\\{\\s*consumers:\\s*\\["ai_isa"\\],\\s*disposition:\\s*"handled"`).test(registry)), `every bus signal it publishes is an EXISTING handled registry row (${published.join(", ")}) — no new signal type`)
+  }
+
+  // ── J. ONE LIFE-EVENT VOCABULARY (wave 147, lane 147Z — CLAUDE.md §6; lane 147B "Still open" 5) ─────────────────────────────
+  console.log("\nJ. one life-event vocabulary — the writers write what the scorers read")
+  {
+    const voc = await import("../lib/enrichment/life-event-vocabulary")
+    const wm = await import("../lib/enrichment/web-mention-search")
+    const WRITERS = ["lib/osint-client.ts", "lib/enrichment/web-mention-search.ts", "lib/enrichment/contact-enrichment-core.ts"]
+    // A WRITTEN life-event token: `event: "<token>"` in a life-event writer (stripped source — a tombstone naming the retired
+    // spelling is not a write).
+    const writtenTokens = (text: string) => [...text.matchAll(/\bevent:\s*"([a-z_]+)"/g)].map((m) => m[1])
+    const retired = Object.keys(voc.LEGACY_LIFE_EVENT_ALIASES)
+    const offenders = WRITERS.flatMap((p) => writtenTokens(src(p)).filter((t) => retired.includes(t)).map((t) => `${p}: ${t}`))
+    ok(offenders.length === 0, `no life-event writer writes a RETIRED spelling (${retired.join(", ")}) — scanned ${WRITERS.length} writers, stripped`, offenders.join("; "))
+    const specimen = 'life_events.push({ event: "divorce", source: "public_records" })\n// was: life_events.push({ event: "death_in_family" })'
+    const specimenHits = writtenTokens(stripComments(specimen)).filter((t) => retired.includes(t))
+    ok(specimenHits.length === 1 && specimenHits[0] === "divorce", "(positive control) the scan sees a retired spelling in a live write and ignores it in a comment")
+    const lifeWrites = ["lib/osint-client.ts", "lib/enrichment/web-mention-search.ts"].flatMap((p) => writtenTokens(src(p)))
+    const outside = lifeWrites.filter((t) => !(voc.LIFE_EVENT_TYPES as readonly string[]).includes(t))
+    ok(lifeWrites.length >= 8 && outside.length === 0, `every token the OSINT + web-mention writers write is a LifeEventType (${[...new Set(lifeWrites)].join(", ")})`, outside.join(", "))
+    ok(voc.canonicalLifeEventType("divorce") === "divorce_filing" && voc.canonicalLifeEventType("death_in_family") === "death_in_household" && voc.canonicalLifeEventType("Divorce_Filing") === "divorce_filing" && voc.canonicalLifeEventType("bankruptcy_court") === null,
+      "stored history under a retired spelling reads as its survivor; an unknown token is null (never guessed)")
+    ok(voc.lifeEventTypeOf({ type: "divorce_filing" }) === "divorce_filing" && voc.lifeEventTypeOf({ event: "divorce" }) === "divorce_filing" && voc.lifeEventTypeOf({}) === null,
+      "ONE reader rule for both stored element shapes ({ type } from the life-change check, { event } from OSINT)")
+    const exa = (title: string, text: string) => ({ id: "x", url: "https://example.org/n", title, text, author: null, publishedDate: "2026-10-20" })
+    const hits = wm.classifyMentionEvents([exa("Court notices", "Pat Doe filed for divorce in Travis County."), exa("Pat Doe obituary", "Pat Doe passed away peacefully.")], { firstName: "Pat", lastName: "Doe" }).map((e) => e.event as string)
+    ok(hits.includes("divorce_filing") && hits.includes("death_in_household") && !hits.some((h) => retired.includes(h)), `DRIVEN: the web-mention writer emits the survivor spellings (${hits.join(", ")})`)
+    const a = mv.movementSignalFromLifeEvent({ brokerageId: B, contactId: "c1", event: { event: "divorce", url: "https://example.org/n" }, detectedAt: daysAgo(1) })
+    const b2 = mv.movementSignalFromLifeEvent({ brokerageId: B, contactId: "c1", event: { type: "divorce_filing", url: "https://example.org/n" }, detectedAt: daysAgo(1) })
+    ok(a.ok && b2.ok && a.record.eventRelevance === "divorce" && b2.record.eventRelevance === "divorce", "C9 reads a retired stored `divorce` and a survivor `divorce_filing` as the SAME relevance")
+    ok(Object.keys(mv.LIFE_EVENT_RELEVANCE).every((k) => (voc.LIFE_EVENT_TYPES as readonly string[]).includes(k)) && (voc.LIFE_EVENT_TYPES as readonly string[]).every((k) => k in mv.LIFE_EVENT_RELEVANCE),
+      "LIFE_EVENT_RELEVANCE is keyed on EXACTLY the vocabulary (no restated alias, no missing event)")
+    const readers: Record<string, RegExp> = { "lib/predictive-listing/signal-generators.ts": /lifeEventTypeOf\(/, "lib/sphere-resonance/run-resonance-scan.ts": /lifeEventTypeOf\(/, "lib/intent/movement-signals.ts": /canonicalLifeEventType\(/, "lib/enrichment/contact-enrichment-core.ts": /lifeEventTypeOf\(/ }
+    const unread = Object.entries(readers).filter(([p, re]) => !re.test(src(p))).map(([p]) => p)
+    ok(unread.length === 0, "every scorer / merger reads life events through the vocabulary (predictive listing, sphere resonance, C9, the life-change merge)", unread.join(", "))
+    ok(!/LIFE_EVENT_CONFIDENCE\[evt\.event\]/.test(src("lib/predictive-listing/signal-generators.ts")) && /LIFE_EVENT_CONFIDENCE\[evt\.event\]/.test("const cfg = LIFE_EVENT_CONFIDENCE[evt.event]"), "the predictive scorer no longer keys on the raw `evt.event` (positive control: the old line is recognised)")
+  }
+
+  // ── K. THE LEAD DESK'S DOOR (wave 147, lane 147Z — lane 147I U1; this lane's "Still open" 4) ────────────────────────────────
+  console.log("\nK. the lead desk reads the records and closes one (false_positive / declined) — session-gated, ledgered once")
+  {
+    const d = db({ movement_source_polls: [{ id: "p1", brokerage_id: B, source_key: "stored:motivated_seller_signals", last_polled_at: daysAgo(0), last_success_at: daysAgo(0), last_error: null, promised_freshness_minutes: 30 }, { id: "p2", brokerage_id: B, source_key: "stored:calculator_history", last_polled_at: daysAgo(0), last_success_at: null, last_error: "refused", promised_freshness_minutes: 30 }, { id: "p3", brokerage_id: B2, source_key: "stored:calculator_history", last_polled_at: daysAgo(0), last_success_at: daysAgo(0), last_error: null, promised_freshness_minutes: 15 }] })
+    const { deps } = seams()
+    const rec = await quiet(() => mv.recordMovementSignal(d as never, { brokerageId: B, subject: { type: "contact", id: "c1" }, sourceKey: "pp_reddit_relocation", eventRelevance: "relocation", identity: "verified_match", capturedBy: "automation", observedAt: daysAgo(3), evidence: { confidence: "reported", reportedBy: "self", reference: { kind: "public_post", id: "rd:k", retrievedAt: daysAgo(3) }, summary: "moving to Denver in spring" } }, { ...deps, route: false }))
+    const list = await mv.listMovementRecordsForLeadDesk(d as never, { brokerageId: B, limit: 10 })
+    const r0 = list.records[0]
+    ok(!list.error && list.records.length === 1 && r0.relevance === "relocation" && r0.confidence === "reported" && /^moving to Denver in spring — /.test(r0.evidence) && r0.outcome === null, `the lead desk reads the tenant's records with HOW we know each (${r0?.evidence ?? list.error})`)
+    const foreignList = await mv.listMovementRecordsForLeadDesk(d as never, { brokerageId: B2, limit: 10 })
+    ok(foreignList.records.length === 0, "TENANT-PINNED: another tenant reads none of them")
+    const fresh = await mv.movementSourceFreshness(d as never, B)
+    ok(!fresh.error && fresh.sources.length === 2 && fresh.sources.find((s) => s.sourceKey === "stored:motivated_seller_signals")?.promisedFreshnessMinutes === 30 && fresh.sources.find((s) => s.sourceKey === "stored:calculator_history")?.promisedFreshnessMinutes === null,
+      "the published freshness (m893) — a source that never succeeded promises NO number; the other tenant's poll is not read")
+    const id = rec.status === "recorded" ? rec.id : ""
+    const closed = await quiet(() => mv.recordMovementOutcome(d as never, { brokerageId: B, signalId: id, outcome: "false_positive", evidence: { by: "lead_desk" }, actor: { type: "user", userId: "u-desk" } }))
+    ok(closed.status === "recorded" && d.tables.movement_signals.find((x: any) => x.id === id)?.outcome === "false_positive", "a lead-desk person closes it as a FALSE POSITIVE through the exported outcome writer (ledgered intent.movement_signal.outcome)")
+    const again = await quiet(() => mv.recordMovementOutcome(d as never, { brokerageId: B, signalId: id, outcome: "declined", evidence: {}, actor: { type: "user", userId: "u-desk" } }))
+    ok(again.status !== "recorded", "…once: the same record cannot be closed a second time")
+    const refusedLedger = (async (_ctx: any, _run: any, hooks: any) => hooks.replay({ kind: "refused", error: "ledger down" })) as never
+    const viaRefused = await quiet(() => mv.recordMovementOutcome(d as never, { brokerageId: B, signalId: "x", outcome: "declined", evidence: {}, actor: { type: "user", userId: "u" } }, { ledger: refusedLedger }))
+    ok(viaRefused.status === "refused" && /ledger refused/.test(viaRefused.reason), "a REFUSED ledger claim records nothing and says so — never 'already recorded' (census II.2)", viaRefused.reason)
+    const act = stripComments(raw("app/actions/movement-signals.ts"))
+    const exportsAll = [...act.matchAll(/export\s+async\s+function\s+(\w+)/g)].map((m) => m[1])
+    const body = (n: string) => act.slice(act.indexOf(`function ${n}(`), act.indexOf("\nexport ", act.indexOf(`function ${n}(`) + 5) > 0 ? act.indexOf("\nexport ", act.indexOf(`function ${n}(`) + 5) : undefined)
+    const gatedFirst = exportsAll.every((n) => { const b = body(n); const gate = b.search(/await leadDeskSeat\(\)/); const svc = b.search(/createServiceClient\(\)/); return gate >= 0 && svc > gate })
+    ok(/^"use server"/.test(raw("app/actions/movement-signals.ts")) && exportsAll.length === 2 && gatedFirst && /MOVEMENT_RAW_SIGNAL_VIEWERS\.has\(/.test(act), `the door: "use server", ${exportsAll.length} exports, each gates on the SESSION's lead-desk seat (the ONE roster) BEFORE the service client`)
+    ok(/const PERSON_OUTCOMES = \["false_positive", "declined"\] as const/.test(act) && /recordMovementOutcome\(/.test(act) && !/brokerageId:\s*(?:input|params|opts)\./.test(act), "a person may record ONLY false_positive / declined, through the one outcome writer, with the tenant from the session (never a parameter)")
+    ok(!/MOVEMENT_RAW_SIGNAL_VIEWERS\.has\(/.test("const ok = true") && /MOVEMENT_RAW_SIGNAL_VIEWERS\.has\(/.test("if (!MOVEMENT_RAW_SIGNAL_VIEWERS.has(role)) return"), "(positive control) the roster-gate finder sees the gate and nothing else")
+    ok(/listMovementSignalsAction\(/.test(stripComments(raw("app/dashboard/intelligence/movement-signals/page.tsx"))) && /markMovementSignalOutcomeAction\(/.test(stripComments(raw("app/dashboard/intelligence/movement-signals/movement-signals-client.tsx"))), "the screen reads through the door and closes records through it")
   }
 
   console.log("\n──────────────────────────────────────────────────")

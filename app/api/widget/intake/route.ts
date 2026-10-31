@@ -1,8 +1,8 @@
 // POST /api/widget/intake
-// Canonical contact-first intake route for consented widget and form submissions.
-// Per spec: customer-facing consented submissions create/update CONTACTS (not leads).
-// Flow: validate → dedup → create or update contact → assign agent →
-//       enrichment queue → notify agent → emit lifecycle event → return.
+// The /widget/chat intake form's door (app/widget/chat/widget-chat-client.tsx). Per owner ruling 1 a consented submission is a
+// CONTACT, never a lead. Flow (wave 147, lane 147Z): validate → the session's tenant → C8 captureConsentedContact (dedupe →
+// contact upsert → consent record → enrichment → welcome → the AI ISA desk) → session attach → activity → agent bell →
+// lifecycle row → return.
 //
 // THE TENANT COMES FROM THE SESSION, NOT THE BODY. This route is public and it
 // used to take `brokerage_id` and `agent_id` straight off the POST, which meant
@@ -16,7 +16,6 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
-import { queueContactEnrichment } from '@/lib/enrichment/contact-enrichment-core'
 // The ONE way a notifications row gets its recipient and tenant — agents.id is
 // RESOLVED to users.id, never substituted into it.
 import { resolveAgentRecipient } from '@/lib/notifications/recipient-tenant'
@@ -32,6 +31,11 @@ function normalizeEmail(raw: string | undefined): string | null {
   const trimmed = raw.trim().toLowerCase()
   return trimmed.includes('@') ? trimmed : null
 }
+
+// The consent wording the visitor SAW under the intake form (app/widget/chat/widget-chat-client.tsx), verbatim — the C8 record
+// hashes it. A change to the label is a new version here.
+const WIDGET_INTAKE_CONSENT_TEXT = 'By submitting, you agree to be contacted by a real estate professional via phone, email, or text. Standard messaging rates may apply.'
+const WIDGET_INTAKE_CONSENT_VERSION = 'widget_chat_intake:v1'
 
 export async function POST(req: NextRequest) {
   try {
@@ -91,128 +95,56 @@ export async function POST(req: NextRequest) {
     const brokerage_id: string = session.brokerage_id
     const agent_id: string | null = session.agent_id ?? null
 
-    // ── 1. DEDUP: check existing contact by email, then phone ────────────────
-    let existingContact: any = null
-
-    if (email) {
-      const { data } = await supabase
-        .from('contacts')
-        .select('id, first_name, last_name, email, phone, phone_digits, agent_id, brokerage_id, tcpa_consent')
-        .eq('brokerage_id', brokerage_id)
-        .eq('email', email)
-        .maybeSingle()
-      existingContact = data
+    // ── 1–3. THE CONSENTED SUBMISSION → CONTACT (contract C8 — wave 147, lane 147Z; owner ruling 1) ──────────────────
+    // TOMBSTONE (orphan doctrine §1.1 — lane 147A "Still open" 1: this route was "the clearest twin"): the dedup (email, then
+    // phone_digits), the round-robin agent fallback, the contact create / fill-if-empty update with its own tcpa_* stamp, the
+    // route's own contact_consent_events insert and its own enrichment-queue call that stood here were a SECOND upsert of a
+    // consented person. They are merged onto THE ONE survivor — lib/contact-pipeline/contact-capture.ts:818
+    // captureConsentedContact → captureContact (fuzzy dedupe, the assignment precedence, the welcome, the enrichment queue
+    // under its budget gates, person identity) → completeConsentedIntake (the consent record with the wording hash + version,
+    // purposes and channels through THE one consent writer; any same-person open lead closed onto the contact; the kernel event;
+    // the AI ISA desk told). Kept here, door-specific: the session attach, the activity row, the agent bell, the utm lifecycle
+    // row. Semantics preserved: the session's agent owns a new contact (ownerAgentId — the C8 owner hint), source
+    // 'website_widget', the visitor's message as notes, the consent IP / user agent as evidence.
+    // THE WORDING IS THE DOOR'S, never the body's: the visitor saw WIDGET_INTAKE_CONSENT_TEXT under the form
+    // (app/widget/chat/widget-chat-client.tsx — "By submitting, you agree …"); a body-supplied text is ignored (a forged text
+    // would put words in a person's mouth). Submitting IS the act of consent on this form (no checkbox), so `tcpa_consent`
+    // from the client is read as the submit; an email / phone the visitor did not give grants nothing for that family.
+    const consentGiven = tcpa_consent === true
+    void tcpa_consent_text // the client's copy of the wording is not trusted (above)
+    const { captureConsentedContact } = await import('@/lib/contact-pipeline/contact-capture')
+    const intake = await captureConsentedContact({
+      brokerageId: brokerage_id,
+      ownerAgentId: agent_id,
+      source: source || 'website_widget',
+      first_name: first_name ?? null,
+      last_name: last_name ?? null,
+      email,
+      phone: phoneDigits ? rawPhone : null,
+      notes: message ?? null,
+      preferred_channel: consentGiven && phoneDigits ? 'phone' : 'email',
+      rawPayload: { session_token, source_page_url: source_page_url ?? null, utm_source: utm_source ?? null, utm_medium: utm_medium ?? null, utm_campaign: utm_campaign ?? null },
+      consents: [
+        { family: 'phone', given: consentGiven && !!phoneDigits, text: WIDGET_INTAKE_CONSENT_TEXT, textVersion: WIDGET_INTAKE_CONSENT_VERSION },
+        { family: 'email', given: consentGiven && !!email, text: WIDGET_INTAKE_CONSENT_TEXT, textVersion: WIDGET_INTAKE_CONSENT_VERSION },
+      ],
+      intake: {
+        channel: 'chat_widget', sourceUrl: source_page_url ?? '/api/widget/intake',
+        evidence: { chat_session_id: session.id, ip: ip_address ?? req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, user_agent: user_agent ?? req.headers.get('user-agent') ?? null, door: 'widget_intake' },
+        formOwner: { table: 'chat_sessions', id: session.id },
+      },
+    })
+    if (!intake.ok || !intake.contactId) {
+      // A fragment (no name, or no email / phone) is not a contact — it keeps the raw-lead gates (said, never silently created).
+      return NextResponse.json({ error: intake.reason ?? 'Failed to capture contact' }, { status: intake.refused === 'not_identifiable' ? 400 : intake.refused === 'cross_tenant_form' ? 403 : 500 })
     }
-
-    if (!existingContact && phoneDigits) {
-      const { data } = await supabase
-        .from('contacts')
-        .select('id, first_name, last_name, email, phone, phone_digits, agent_id, brokerage_id, tcpa_consent')
-        .eq('brokerage_id', brokerage_id)
-        .eq('phone_digits', phoneDigits)
-        .maybeSingle()
-      existingContact = data
-    }
-
-    // ── 2. Resolve agent assignment ──────────────────────────────────────────
-    // Use the session's agent_id first; fall back to brokerage routing
-    let assignedAgentId: string | null = agent_id ?? null
-
-    if (!assignedAgentId) {
-      // Simple round-robin fallback: pick first active agent in brokerage.
-      // contacts.agent_id is agents.id (per migration 111) — select id, NOT user_id,
-      // or the contact is RLS-invisible to the agent and orphaned from their CRM.
-      const { data: fallbackAgent } = await supabase
-        .from('agents')
-        .select('id')
-        .eq('brokerage_id', brokerage_id)
-        .eq('is_active', true)
-        .limit(1)
-        .maybeSingle()
-      assignedAgentId = fallbackAgent?.id ?? null
-    }
-
-    let contactId: string
-    let isNewContact = false
-
-    // ── 3a. UPDATE existing contact ──────────────────────────────────────────
-    if (existingContact) {
-      contactId = existingContact.id
-
-      const updatePayload: Record<string, any> = {
-        updated_at: new Date().toISOString(),
-        source_channel: 'widget',
-        source_family: 'direct',
-      }
-      if (first_name && !existingContact.first_name) updatePayload.first_name = first_name
-      if (last_name && !existingContact.last_name) updatePayload.last_name = last_name
-      if (email && !existingContact.email) updatePayload.email = email
-      if (phoneDigits && !existingContact.phone_digits) {
-        // phone only: contacts.phone_digits is GENERATED ALWAYS from phone, and
-        // writing it refused the whole update (and the create below) 428C9 —
-        // every website-widget lead was lost (wave 93, lane 93D).
-        updatePayload.phone = rawPhone
-      }
-      if (tcpa_consent && !existingContact.tcpa_consent) {
-        updatePayload.tcpa_consent = true
-        updatePayload.tcpa_consent_at = new Date().toISOString()
-        updatePayload.tcpa_consent_text = tcpa_consent_text ?? null
-        updatePayload.tcpa_consent_source = 'widget'
-        updatePayload.tcpa_consent_ip = ip_address ?? null
-      }
-
-      // FAIL CLOSED (CLAUDE.md §4). `updatePayload` CARRIES TCPA CONSENT — the
-      // block above stamps tcpa_consent/at/text/source/ip when the visitor ticks
-      // the box on a contact that had not consented before. supabase-js RESOLVES
-      // a refused UPDATE, so this returned 200 with the consent event logged at
-      // step 5 while the contact row still said `tcpa_consent = false`: an audit
-      // trail asserting a consent the gate would never see. The CREATE branch
-      // below already refuses on `insertError`; this branch now answers the same.
-      const { error: updateError } = await supabase
-        .from('contacts')
-        .update(updatePayload)
-        .eq('id', contactId)
-      if (updateError) {
-        console.error('[widget/intake] contact update error:', updateError)
-        return NextResponse.json({ error: 'Failed to update contact' }, { status: 500 })
-      }
-
-    } else {
-      // ── 3b. CREATE new contact ───────────────────────────────────────────
-      isNewContact = true
-
-      const { data: newContact, error: insertError } = await supabase
-        .from('contacts')
-        .insert({
-          brokerage_id,
-          agent_id: assignedAgentId,
-          first_name: first_name ?? null,
-          last_name: last_name ?? null,
-          email: email ?? null,
-          phone: rawPhone ?? null,
-          source,
-          source_channel: 'widget',
-          source_family: 'direct',
-          metadata: { source_page_url: source_page_url ?? null },
-          notes: message ?? null,
-          contact_type: 'prospect',
-          tcpa_consent: !!tcpa_consent,
-          tcpa_consent_at: tcpa_consent ? new Date().toISOString() : null,
-          tcpa_consent_text: tcpa_consent_text ?? null,
-          tcpa_consent_source: tcpa_consent ? 'widget' : null,
-          tcpa_consent_ip: ip_address ?? null,
-          status: 'active',
-        })
-        .select('id')
-        .maybeSingle()
-
-      if (insertError || !newContact) {
-        console.error('[widget/intake] contact insert error:', insertError)
-        return NextResponse.json({ error: 'Failed to create contact' }, { status: 500 })
-      }
-
-      contactId = newContact.id
-    }
+    const contactId: string = intake.contactId
+    const isNewContact = intake.action === 'created' && !intake.replay
+    for (const w of intake.warnings) console.warn(`[widget/intake] ${w}`)
+    // The owner the capture resolved (agents.id) — the activity row and the agent bell below name it.
+    const { data: owned, error: ownedErr } = await supabase.from('contacts').select('agent_id').eq('id', contactId).eq('brokerage_id', brokerage_id).maybeSingle()
+    if (ownedErr) console.error('[widget/intake] contact owner read refused (the bell falls back to the session agent):', ownedErr.message)
+    const assignedAgentId: string | null = (owned as { agent_id?: string | null } | null)?.agent_id ?? agent_id
 
     // ── 4. Attach session to contact ────────────────────────────────────────
     // Keyed on the row already resolved above rather than re-matching the token.
@@ -221,21 +153,8 @@ export async function POST(req: NextRequest) {
       .update({ contact_id: contactId, capture_state: 'captured', updated_at: new Date().toISOString() })
       .eq('id', session.id), { table: "chat_sessions", flow: "chat_sessions_write", reason: "session capture-state stamp; the contact is already captured" })
 
-    // ── 5. Log consent event ─────────────────────────────────────────────────
-    if (tcpa_consent) {
-      const { error: widgetConsentErr } = await supabase.from('contact_consent_events').insert({
-        contact_id: contactId,
-        brokerage_id,
-        agent_id: assignedAgentId,
-        consent_type: 'tcpa',
-        consented: true,
-        consent_source: 'widget',
-        consent_text: tcpa_consent_text ?? 'TCPA consent captured via website intake widget.',
-        ip_address: ip_address ?? null,
-        user_agent: user_agent ?? null,
-      })
-      if (widgetConsentErr) console.error(`[widget-intake] TCPA consent NOT recorded on the consent ledger: ${widgetConsentErr.message}`)
-    }
+    // ── 5. TOMBSTONE (wave 147, lane 147Z): the route's own contact_consent_events insert is C8's consent record now
+    //    (completeConsentedIntake → persistContactConsent — wording hash + version, purposes, channels, evidence).
 
     // ── 6. Create activity record for audit trail ────────────────────────────
     // A PUBLIC endpoint's record of an inbound consumer submission — this is
@@ -254,24 +173,8 @@ export async function POST(req: NextRequest) {
       console.error('[Widget/intake] widget_intake activity REJECTED — the contact exists but the inbound submission has no record:', intakeActivityError.message)
     }
 
-    // ── 7. Enrichment queue ──────────────────────────────────────────────────
-    // This route is PUBLIC (a website widget posts to it), and it used to write
-    // the queue row inline with no guards at all: no freshness check and no
-    // already-pending check, so a visitor who submitted the form five times
-    // queued five paid enrichments of the same person. It also could not observe
-    // the owner's rule that a contact in a live listing or transaction is not
-    // enriched.
-    //
-    // Delegated to the single writer, which carries all three
-    // (lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment).
-    // `enrichments_needed` is derived there from which identifiers the contact is
-    // actually missing rather than being a fixed list.
-    await queueContactEnrichment({
-      contactId,
-      brokerageId: brokerage_id,
-      triggerType: 'widget_intake',
-      supabase,
-    })
+    // ── 7. TOMBSTONE (wave 147, lane 147Z): the enrichment queue is captureContact's (queueContactEnrichmentAndScore →
+    //    queueContactEnrichment — freshness, already-pending and live-deal suppression), read back by C8 (enrichmentQueued).
 
     // ── 8. Notify assigned agent ─────────────────────────────────────────────
     // `assignedAgentId` is an `agents.id` — that is what `contacts.agent_id`,

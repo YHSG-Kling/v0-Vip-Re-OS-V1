@@ -1351,6 +1351,21 @@ function scanColumns(file: string, src: string) {
       opaqueWrite.add(table)
       unresolvedWriteObjects++
     }
+    // ── CALL-EXPRESSION WRITE OBJECT — `.insert(rowFor(r))` (FIX D, wave 147 lane 147Z) ──
+    // The same silent-zero class as FIX B, one shape over: a write object that is a helper CALL — lib/intent/movement-signals.ts
+    // recordMovementSignal's `.insert(movementRowFor(r))` — matched neither varM (an identifier followed by `[,)]`) nor memberM
+    // (a dotted name followed by `[,)]`), so the site produced NO write record AND NO opacity mark, and every movement_signals
+    // column a reader names was filed in 1b "written by NOBODY" over a live writer (each new reader added more). NO key
+    // resolution is attempted (a helper's return can be built any way, in any module) — straight to opaque, "not knowable",
+    // exactly as FIX B does. Scoped by the same `.from("<live table>")` anchor; proved by control below, both arms.
+    // A `.map(` callee is the inline row-mapper shape the branch above already RESOLVES (its returned literal's keys) —
+    // excluded here so this arm can never widen opacity over keys that branch reads.
+    const callM = writeChain.match(/\.(insert|upsert|update)\(\s*(?:await\s+)?([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*)\s*\(/)
+    if (callM && callM.index != null && !/(?:^|\.)map$/.test(callM[2])) {
+      tablesWritten.add(table)
+      opaqueWrite.add(table)
+      unresolvedWriteObjects++
+    }
     if (/\.delete\s*\(/.test(writeChain)) tablesWritten.add(table)
     // A chain that filled the window was READ INCOMPLETELY. Both directions lose
     // this table rather than report a half-read chain as a whole one.
@@ -1570,6 +1585,24 @@ stage("C1 columns")
       !stripeChain.opaque && stripeChain.write.length === 0 && stripeChain.read.length === 0)
     // The probes above marked contacts opaque 3 times; probe() restores the SET,
     // this restores the site COUNTER so the coverage line still describes the tree.
+    unresolvedWriteObjects = savedOpaqueSites
+  }
+  // ── CALL-EXPRESSION WRITE OBJECT (FIX D, wave 147 lane 147Z) — both arms ──────
+  {
+    const savedOpaqueSites = unresolvedWriteObjects
+    const callInsert = probe(`await svc.from("contacts").insert(contactRowFor(r)).select("id").single()`)
+    control("C1 marks a CALL-EXPRESSION write object opaque rather than 'writes nothing' (.insert(rowFor(r)))",
+      callInsert.opaque && callInsert.write.length === 0, callInsert.write.join(","))
+    const callUpsert = probe(`await svc.from("contacts").upsert(mapper.toRow(input), { onConflict: "id" })`)
+    control("C1 marks .upsert(mapper.toRow(input), { onConflict }) opaque — the dotted-callee arm of the call shape",
+      callUpsert.opaque && callUpsert.write.length === 0, callUpsert.write.join(","))
+    // MUST NOT REGRESS: an inline literal and a resolvable bare identifier still yield real keys, never opacity.
+    const inlineLit = probe(`await svc.from("contacts").insert({ first_name: f(a), phone: b })`)
+    control("C1 an INLINE object literal whose VALUES are calls still yields its real keys, never opacity",
+      inlineLit.write.includes("first_name") && inlineLit.write.includes("phone") && !inlineLit.opaque, inlineLit.write.join(","))
+    const mapper = probe(`await svc.from("contacts").insert(rows.map((r) => ({ first_name: r.f, phone: r.p })))`)
+    control("C1 the inline ROW-MAPPER shape (.insert(rows.map((r) => ({ … })))) still resolves its keys — FIX D never widens over it",
+      mapper.write.includes("first_name") && mapper.write.includes("phone") && !mapper.opaque, `${mapper.write.join(",")} opaque=${mapper.opaque}`)
     unresolvedWriteObjects = savedOpaqueSites
   }
   // ── VARIABLE WRITE OBJECT WITH A SPREAD (FIX C) — both arms ─────────────────

@@ -964,14 +964,18 @@ export async function runLifeChangeCheck(params: {
 
     let changesFound = 0
     const existingEvents: any[] = Array.isArray(contact.life_events) ? (contact.life_events as any[]) : []
-    const existingTypes = new Set(existingEvents.map((e: any) => e?.type))
+    // §6 (wave 147, lane 147Z): ONE vocabulary (lib/enrichment/life-event-vocabulary.ts). A stored row under a retired spelling
+    // (`divorce`, `death_in_family`) or the OSINT `{ event }` shape is the SAME event as its survivor — never appended twice.
+    const { lifeEventTypeOf, canonicalLifeEventType } = await import("@/lib/enrichment/life-event-vocabulary")
+    const existingTypes = new Set<string>(existingEvents.map((e: any) => lifeEventTypeOf(e) ?? String(e?.type ?? e?.event ?? "")))
     const merged = [...existingEvents]
 
     for (const event of found) {
-      if (existingTypes.has(event.event)) continue
-      existingTypes.add(event.event)
+      const type = canonicalLifeEventType(event.event) ?? event.event
+      if (existingTypes.has(type)) continue
+      existingTypes.add(type)
       merged.push({
-        type: event.event,
+        type,
         details: event.details,
         detected_at: new Date().toISOString(),
         confidence: event.confidence,

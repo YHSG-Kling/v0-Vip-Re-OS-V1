@@ -655,12 +655,23 @@ function staticLayer(): void {
     // (the route also writes contacts and lifecycle_events, and a match in
     // either of those would prove nothing about the attendee row), and the
     // consent check must be a REFUSAL, not merely a mention of the token.
-    const kioskAttendeeInsert = (() => {
-      const i = S.ohKiosk.indexOf('.from("open_house_attendees")')
-      return i === -1 ? "" : S.ohKiosk.slice(i, i + 400)
-    })()
-    check("TCPA-KIOSK-HOME-EXISTS", "the public kiosk home supplies contact_id on the attendee row itself",
-      /contact_id:/.test(kioskAttendeeInsert))
+    // WAVE 147 (lane 147Z): the kiosk now also records a BROKER OPEN's visitor — a cooperating agent, not a consumer — as an
+    // attendee with NO contact (no consumer contact is created for a colleague). That insert sits in the broker_open branch,
+    // ahead of the C8 consumer capture. EVERY OTHER attendee insert in the kiosk is a consumer's and must carry contact_id.
+    const consumerAttendeeInserts = (src: string): string[] => {
+      const boAt = src.search(/event_type\s*===\s*["']broker_open["']/), c8At = src.search(/captureConsentedContact\(/)
+      const out: string[] = []
+      for (let i = src.indexOf('.from("open_house_attendees")'); i !== -1; i = src.indexOf('.from("open_house_attendees")', i + 1)) {
+        if (boAt !== -1 && c8At > boAt && i > boAt && i < c8At) continue
+        out.push(src.slice(i, i + 400))
+      }
+      return out
+    }
+    const kioskConsumerInserts = consumerAttendeeInserts(S.ohKiosk)
+    check("TCPA-KIOSK-HOME-EXISTS", "the public kiosk home supplies contact_id on every CONSUMER attendee row itself (a broker open's agent visit carries none)",
+      kioskConsumerInserts.length > 0 && kioskConsumerInserts.every((s) => /contact_id:/.test(s.split(/\.select\(/)[0])))
+    check("TCPA-KIOSK-HOME-CONTROL", "POSITIVE CONTROL: a consumer attendee insert without contact_id is found",
+      !consumerAttendeeInserts(S.ohKiosk.replace(/contact_id:\s*contactId,/, "")).every((s) => /contact_id:/.test(s.split(/\.select\(/)[0])))
     check("TCPA-KIOSK-REFUSES", "the public kiosk REFUSES a check-in with no consent, it does not just note it",
       /if\s*\(\s*!\s*tcpaConsent\s*\)[\s\S]{0,200}?\b400\b/.test(S.ohKiosk))
     check("TCPA-AGENT-HOME-EXISTS", "the authenticated home still exists and supplies contact_id",

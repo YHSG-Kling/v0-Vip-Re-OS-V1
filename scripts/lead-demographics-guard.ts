@@ -309,8 +309,12 @@ console.log("\n[universal field provenance — one writer, every chokepoint, rea
     ["AVM value from the home-value form", "app/actions/home-value.ts", /persistFieldProvenance\(supabase, \{ table: "contacts"[\s\S]{0,120}stampFieldProvenance\(\["home_value_estimate"\]/],
     ["AVM chain refresh (RentCast / BatchData tier)", "lib/wealth-advisor/scan-opportunities.ts", /stampFieldProvenance\(\["home_value_estimate"\], \{\s*source: fresh\.source/],
     // Wave 102 (102D) — the 101C still-open NON-STAFF identity writers.
-    ["open-house kiosk sign-in: new contact stamped inline (source kiosk)", "app/api/open-house/attend/route.ts", /enrichment_profile: withFieldProvenance\(\{\}, stampFieldProvenance\(\["first_name", "last_name", "email", \.\.\.\(phone \? \["phone"\] : \[\]\)\], KIOSK_PROVENANCE\)\)/],
-    ["open-house kiosk sign-in: returning attendee through the one door", "app/api/open-house/attend/route.ts", /persistFieldProvenance\(supabase, \{ table: "contacts", id: contactId, brokerageId: event\.brokerage_id \},\s*stampFieldProvenance\(\["first_name", "last_name", \.\.\.\(phone \? \["phone"\] : \[\]\)\], KIOSK_PROVENANCE\)\)/],
+    // WAVE 147 (lane 147Z): the kiosk was MERGED onto contract C8 (captureConsentedContact → captureContact). It stamps the
+    // attendee's typed identity ONCE, on the C8 call; captureContact writes it on CREATE and, on a returning attendee's MERGE,
+    // layers it per field over the stored block (the persistence door's rule) — both halves pinned below.
+    ["open-house kiosk sign-in: the typed identity is stamped (source kiosk) on the C8 capture", "app/api/open-house/attend/route.ts", /captureConsentedContact\(\{[\s\S]{0,1500}enrichmentProfile: withFieldProvenance\(\{\}, stampFieldProvenance\(\["first_name", "last_name", "email", \.\.\.\(phone \? \["phone"\] : \[\]\)\], KIOSK_PROVENANCE\)\)/],
+    ["open-house kiosk sign-in: a NEW contact is written with that stamp (captureContact CREATE)", "lib/contact-pipeline/contact-capture.ts", /\.\.\.\(params\.enrichmentProfile \? \{ enrichment_profile: params\.enrichmentProfile \} : \{\}\)/],
+    ["open-house kiosk sign-in: a RETURNING attendee's stamp is layered per field over the stored block, only for values that landed (captureContact MERGE)", "lib/contact-pipeline/contact-capture.ts", /mergedEnrichmentProfile\.field_provenance = \{ \.\.\.\(priorFp && typeof priorFp === 'object' \? priorFp as Record<string, unknown> : \{\}\), \.\.\.landed \}/],
     ["AI-stated address (source ai_tool, actor = ISA system user via lib/auth/isa-actor.ts)", "lib/ai-isa/customer-context-tools.ts", /getIsaSystemUserIdCached\(svc, target\.brokerageId\)[\s\S]{0,80}persistFieldProvenance\(svc, target, stampFieldProvenance\(\["address"\], \{ source: "ai_tool", capability: `ai_isa\.\$\{toolName\}`, purpose: "self_service"/],
     ["AI-stated address: both tools stamp (home-value review + record_qualification)", "lib/ai-isa/customer-context-tools.ts", /stampAiStatedAddress\(svc, \{ table: "contacts", id: ctx\.contactId, brokerageId: ctx\.brokerageId \}, "schedule_home_value_review"\)[\s\S]*stampAiStatedAddress\(svc, \{ table, id, brokerageId: ctx\.brokerageId \}, "record_qualification"\)/],
     ["offer-intake placeholder buyer name (source inbound_email, confidence low)", "lib/inbound-mail/offer-intake.ts", /enrichment_profile: withFieldProvenance\(\{\}, stampFieldProvenance\(\["first_name", "last_name"\], \{\s*source: "inbound_email", capability: "offer_intake\.buyer_name", purpose: "acquisition",\s*matchConfidence: named\.first \? "medium" : "low"/],
@@ -318,6 +322,11 @@ console.log("\n[universal field provenance — one writer, every chokepoint, rea
   for (const [what, file, re] of wire) check(`WIRED: ${what} — ${file}`, re.test(stripped(file)))
   check("POSITIVE CONTROL: the wiring finder rejects the pre-100C self-edit spread (no stamp)",
     !wire[7][2].test(`const payload = { ...updates, updated_at: now }`))
+  {
+    const layering = wire.find(([what]) => what.startsWith("open-house kiosk sign-in: a RETURNING attendee"))![2]
+    check("POSITIVE CONTROL: the merge finder rejects the pre-147Z shallow spread (the whole stored provenance block replaced)",
+      !layering.test(`const mergedEnrichmentProfile = params.enrichmentProfile ? { ...((existing?.enrichment_profile as Record<string, unknown> | null) ?? {}), ...params.enrichmentProfile } : null`))
+  }
   const store = stripped("lib/enrichment/field-provenance-store.ts")
   check("the one persistence door is tenant-anchored on read AND write, COUNTS the update, and merges the prior block first",
     (store.match(/\.eq\("brokerage_id", target\.brokerageId\)/g) ?? []).length === 2 && /withFieldProvenance\(prior, fieldProvenanceOf\(prior\), stamps\)/.test(store)

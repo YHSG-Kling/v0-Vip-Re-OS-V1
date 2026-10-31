@@ -493,6 +493,9 @@ export interface ArbiterFacts {
   signals?: Array<{ type: string; kind: LifeChangeKind; daysAgo: number }>
   /** Wave 144: how soon the evidence says a touch matters (a fresh moving / sale / refinance signal or a rising high intent). */
   urgency?: "high" | "normal" | null
+  /** Wave 147 (147Z, lane 147B C9): the neighbourly helpers the verified / reported movement evidence supports — OPTIONS the
+   *  model may weigh (each names the planner experience that carries it), never a schedule and never the signal's source. */
+  neighbourlyHelpers?: Array<{ key: string; title: string; offer: string; experience: string }>
 }
 
 export interface ArbiterDecision {
@@ -537,14 +540,16 @@ const hoursSince = (d: Date | null | undefined, now: Date): number | null => (d 
 function arbiterFactsFromExperienceInput(
   input: NextBestExperienceInput,
   moment: ArbiterFacts["moment"] = null,
-  extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[] } = {},
+  extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; helpers?: readonly ArbiterMovementHelper[] } = {},
 ): ArbiterFacts {
   const n = input.nba
   const signals = (extra.signals ?? []).map((s) => ({ type: s.type, kind: s.kind, daysAgo: s.daysAgo }))
   const freshHigh = signals.some((s) => s.daysAgo <= 2 && s.kind !== "engagement") || (!!n.intent && n.intent.score >= 80 && String(n.intent.trend) === "rising")
+  const helpers = (extra.helpers ?? []).slice(0, 4).map((h) => ({ key: h.key, title: h.title, offer: h.offer, experience: h.experience }))
   return {
     ...(extra.checks ? { channels: extra.checks.map((c) => ({ channel: c.channel, available: c.available, approval: c.approval, spendTier: c.spendTier, why: c.reasons[0] ?? "" })) } : {}),
     ...(signals.length > 0 ? { signals } : {}),
+    ...(helpers.length > 0 ? { neighbourlyHelpers: helpers } : {}),
     urgency: freshHigh ? "high" : n.intent || signals.length > 0 ? "normal" : null,
     subject: input.subject,
     relationship: { type: input.person.contactType, persona: input.person.persona, hasAssignedAgent: input.person.hasAssignedAgent },
@@ -609,6 +614,8 @@ export interface ArbiterMenu {
   menu: ArbiterOption[]
   /** A hard verdict the model is never asked about (and why). */
   locked: { kind: ExperienceKind; reason: string } | null
+  /** Wave 147 (147Z): the menu was narrowed to a person / a wait because the decisive signal is a life event. */
+  narrowedForLifeEvent?: boolean
 }
 
 /**
@@ -637,6 +644,33 @@ function arbiterMenuFromPlan(
   return { menu, locked: null }
 }
 
+/**
+ * PURE (wave 147, lane 147Z — lane 147B's advisory, owner ruling 3). The DECISIVE signal is the freshest one that is not mere
+ * engagement (a tie goes to the life event — the conservative reading). When it is a LIFE EVENT (a divorce or probate filing, a
+ * disclosed life change, a provider's public life event) the follow-up is a person's conversation: the menu keeps only
+ * `agent_intervention` and `wait` (a person is always present — added when the planner did not rank one), so the model cannot pick
+ * an automated touch for that moment. Never applied to a locked menu (the hard verdict stands) or to a requirement (speed-to-lead /
+ * a promised deliverable — the person asked; that branch already offers a person).
+ */
+export function decisiveLifeChangeSignal(signals: readonly LifeChangeSignal[]): LifeChangeSignal | null {
+  let best: LifeChangeSignal | null = null
+  for (const s of signals) {
+    if (s.kind === "engagement") continue
+    if (!best || s.daysAgo < best.daysAgo || (s.daysAgo === best.daysAgo && s.kind === "life_event" && best.kind !== "life_event")) best = s
+  }
+  return best
+}
+
+function narrowMenuForLifeEvent(menu: ArbiterMenu, signals: readonly LifeChangeSignal[], priority: ArbiterPriority | null): ArbiterMenu {
+  if (menu.locked || priority) return menu
+  const decisive = decisiveLifeChangeSignal(signals)
+  if (!decisive || decisive.kind !== "life_event") return menu
+  const why = `the decisive signal is a life event (${decisive.type}, ${decisive.daysAgo}d ago) — a person's conversation, never an automated message`
+  const kept = menu.menu.filter((o) => o.kind === "agent_intervention" || o.kind === "wait")
+  const person = kept.some((o) => o.kind === "agent_intervention") ? [] : [{ id: "agent_intervention", kind: "agent_intervention" as ExperienceKind, channels: ["human_task" as ArbiterChannel], why: [why] }]
+  return { menu: [...person, ...kept].map((o) => (o.kind === "agent_intervention" && !o.why.includes(why) ? { ...o, why: [...o.why, why].slice(-4) } : o)), locked: null, narrowedForLifeEvent: true }
+}
+
 // ── prompt + validation ──────────────────────────────────────────────────────────────────────
 
 export const ARBITER_SYSTEM = [
@@ -650,6 +684,7 @@ export const ARBITER_SYSTEM = [
   "When moment.key is speed_to_lead the person is NEW and must be answered now: a fast first response is a high-priority requirement, so waiting is not offered — choose the best permitted way to answer (the first touch on the channel that fits their stage, consent, preference, urgency and any existing activity, or a person when the situation needs one). The one welcome on becoming a contact is a fixed send outside this judgment.",
   "When moment.key is promised_deliverable we promised this person something (a guide, report, video or book) and it has not reached them: deliver it now on the permitted channel that fits them, or hand it to a person — never wait.",
   "When moment.key starts with inbound_ the person just wrote to us: answer usefully (reply), or hand it to a person when it needs judgment (a complaint, distress, a legal or fair-housing question, a negotiation). A public comment is read by everyone — the reply stays general and invites a private conversation.",
+  "evidence.signals are recent life-change / intent signals — evidence, not certainty (a movement signal reaches you only when a verified or reported record carries it). A life event (divorce, probate, a disclosed life change) is a person's conversation: never an automated message about it. evidence.neighbourlyHelpers, when present, are neighbourly ways to help that the evidence supports (each names the experience that carries it) — weigh them as options, never mention the signal or where it came from, and never assume more than the evidence says.",
   "Reply with JSON only: {optionId, channel|null, format|null, waitHours|null, rationale (1-3 sentences, plain words), evidence (the fact keys you used), confidence 0..1}.",
 ].join(" ")
 
@@ -833,6 +868,8 @@ async function arbitrateExperiencePlan(
   a: {
     brokerageId: string; input: NextBestExperienceInput; plan: NextBestExperiencePlan; policy: FollowupPolicy; budget?: ArbiterBudget; moment?: ArbiterFacts["moment"]; daysDeferred?: number | null
     checks?: ChannelCheck[] | null; deliverable?: readonly ArbiterChannel[] | null; signals?: readonly LifeChangeSignal[]; priority?: ArbiterPriority | null
+    /** Wave 147 (147Z): the neighbourly helpers lane B's C9 evidence supports — options for the model, never a timetable. */
+    helpers?: readonly ArbiterMovementHelper[]
   },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbitratedPlan> {
@@ -842,9 +879,14 @@ async function arbitrateExperiencePlan(
     allowedChannels: a.input.policy.allowedChannels, videoAllowed: a.input.policy.videoAllowed, checks: a.checks ?? null, deliverable: a.deliverable ?? null,
     daysSinceMomentOpen: a.moment?.daysSinceOpen ?? a.daysDeferred ?? null,
   }
-  const menu = arbiterMenuFromPlan(a.plan, a.policy, ctx)
-  const chosenOpt: ArbiterOption = { id: a.plan.chosen.kind, kind: a.plan.chosen.kind, channels: channelsForKind(a.plan.chosen.kind, ctx), why: a.plan.chosen.reasons.slice(0, 4) }
-  const facts = arbiterFactsFromExperienceInput(a.input, moment, { checks: a.checks ?? null, signals: a.signals })
+  // WAVE 147 (147Z, lane 147B's advisory): a LIFE EVENT that is the decisive signal is a person's conversation — the closed menu
+  // narrows to a person or a bounded wait (never an automated touch the model might still pick). A requirement (speed-to-lead,
+  // a promised deliverable) is not narrowed: the person asked for that, and its own branch already offers a person.
+  const menu = narrowMenuForLifeEvent(arbiterMenuFromPlan(a.plan, a.policy, ctx), a.signals ?? [], a.priority ?? null)
+  const plannedKind: ExperienceKind = menu.narrowedForLifeEvent && !menu.menu.some((o) => o.kind === a.plan.chosen.kind) ? (menu.menu[0]?.kind ?? a.plan.chosen.kind) : a.plan.chosen.kind
+  const plannedRanked = a.plan.ranked.find((r) => r.kind === plannedKind)
+  const chosenOpt: ArbiterOption = { id: plannedKind, kind: plannedKind, channels: channelsForKind(plannedKind, ctx), why: (plannedKind === a.plan.chosen.kind ? a.plan.chosen.reasons : plannedRanked?.reasons ?? ["a life event is a person's conversation"]).slice(0, 4) }
+  const facts = arbiterFactsFromExperienceInput(a.input, moment, { checks: a.checks ?? null, signals: a.signals, helpers: a.helpers })
   const decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null }, deps)
   if (decision.kind === a.plan.chosen.kind && decision.waitHours === null) return { plan: a.plan, decision }
   let found: RankedExperience | undefined = a.plan.ranked.find((r) => r.kind === decision.kind)
@@ -1203,8 +1245,8 @@ async function loadChannelReadiness(
  */
 async function loadLifeChangeSignals(
   svc: { from: (t: string) => any },
-  a: { brokerageId: string; contactId: string; now: Date; policy: FollowupPolicy },
-): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null }> {
+  a: { brokerageId: string; contactId: string; now: Date; policy: FollowupPolicy; movementConsumer?: MovementSignalConsumer | null },
+): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null; helpers: ArbiterMovementHelper[] }> {
   const since = new Date(a.now.getTime() - a.policy.sphere.lifeEventWindowDays * DAY_MS).toISOString()
   const { data, error } = await svc.from("signal_reactivations").select("signal_type, signal_strength, triggered_at")
     .eq("brokerage_id", a.brokerageId).eq("contact_id", a.contactId).gte("triggered_at", since).order("triggered_at", { ascending: false }).limit(20)
@@ -1234,37 +1276,44 @@ async function loadLifeChangeSignals(
       blind.push(`signals: stored provider facts not read (${(e as Error)?.message ?? String(e)})`)
     }
   }
-  // Wave 147 — lane 147B's C9 movement signals (verified / reported / inferred), through the named seam below.
-  const moved = await movementSignalsForArbiter(svc, { brokerageId: a.brokerageId, contactId: a.contactId, now: a.now, sinceIso: since })
+  // Wave 147 — lane 147B's C9 movement signals (verified / reported only reach here), through the named seam below.
+  const moved = await readMovementSignals(svc, { brokerageId: a.brokerageId, contactId: a.contactId, now: a.now, sinceIso: since }, a.movementConsumer)
   for (const s of moved.signals) if (!seen.has(s.type)) { seen.add(s.type); signals.push(s) }
   if (moved.blindSpot) blind.push(moved.blindSpot)
-  return { signals, blindSpot: blind.length ? blind.join("; ") : null }
+  return { signals, blindSpot: blind.length ? blind.join("; ") : null, helpers: moved.helpers }
 }
 
 /**
- * SEAM — MOVEMENT_SIGNAL_CONSUMER (wave 147: lane 147G leaves it, lane 147B fills it; owner ruling 3 — "life changes …
- * it is also a real estate event … signalled to the manager/arbiter"). Lane B's contract C9 records (lib/intent/movement-signals.ts,
- * lane B's module) reach the arbiter as LifeChangeSignals here and nowhere else. The ONE-LINE wiring lane B hands over replaces
- * the `null` below with `async (svc, a) => (await import("@/lib/intent/movement-signals")).arbiterMovementSignals(svc, a)`.
- * The consumer must return ONLY records whose epistemic class is verified or reported (an `inferred` record is never read as
- * a life change — C9's own rule), already licence / consent / outreach-checked at the record. Until it is wired, the arbiter
- * says so as a blind spot — an unread source is never "no signal".
+ * SEAM — MOVEMENT_SIGNAL_CONSUMER (wave 147: lane 147G left it, lane 147B's hook fills it; WIRED by lane 147Z, convergence; owner
+ * ruling 3 — "life changes … it is also a real estate event … signalled to the manager/arbiter"). Lane B's contract C9 records
+ * reach the arbiter as LifeChangeSignals here and nowhere else, through lib/intent/movement-signals.ts movementSignalsForArbiter
+ * (the ONE hook — lane G's notes named it `arbiterMovementSignals`, lane B shipped `movementSignalsForArbiter`; one name, B's, so
+ * no twin was written). The hook returns ONLY a dominant relevance that at least one verified or reported record carries (an
+ * `inferred`-only combination is never read as a life change — C9's own rule, enforced in the hook), already licence / consent /
+ * outreach-checked at the record, plus the neighbourly helpers that evidence supports (described to the model as OPTIONS with
+ * the evidence they need, never a timetable). Lazily imported so the page graph stays light (test:proxy-graph-budget). A thrown
+ * or refused read is a blind spot — an unread source is never "no signal".
  */
-type MovementSignalConsumer = (svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string; now: Date; sinceIso: string }) => Promise<LifeChangeSignal[]>
-const MOVEMENT_SIGNAL_CONSUMER: MovementSignalConsumer | null = null
+interface ArbiterMovementHelper { key: string; title: string; offer: string; experience: string }
+type MovementSignalConsumer = (svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string; now: Date; sinceIso: string }) =>
+  Promise<LifeChangeSignal[] | { signals: LifeChangeSignal[]; blindSpot?: string | null; helpers?: ReadonlyArray<ArbiterMovementHelper> | null }>
+const MOVEMENT_SIGNAL_CONSUMER: MovementSignalConsumer | null = async (svc, a) => (await import("@/lib/intent/movement-signals")).movementSignalsForArbiter(svc as never, a)
 
 /** Read the movement signals through the seam (or an injected consumer — the proofs). Evidence, never a gate. */
-async function movementSignalsForArbiter(
+async function readMovementSignals(
   svc: { from: (t: string) => any },
   a: { brokerageId: string; contactId: string; now: Date; sinceIso: string },
-  consumer: MovementSignalConsumer | null = MOVEMENT_SIGNAL_CONSUMER,
-): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null }> {
-  if (!consumer) return { signals: [], blindSpot: "signals: movement signals (contract C9, lane 147B) are not wired into the arbiter yet" }
+  injected?: MovementSignalConsumer | null,
+): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null; helpers: ArbiterMovementHelper[] }> {
+  const consumer = injected === undefined ? MOVEMENT_SIGNAL_CONSUMER : injected
+  if (!consumer) return { signals: [], blindSpot: "signals: movement signals (contract C9, lane 147B) are not wired into the arbiter", helpers: [] }
   try {
     const got = await consumer(svc, a)
-    return { signals: (Array.isArray(got) ? got : []).filter((s) => !!s && typeof s.type === "string" && s.type.length > 0), blindSpot: null }
+    const list = Array.isArray(got) ? got : (got?.signals ?? [])
+    const helpers = Array.isArray(got) ? [] : (got?.helpers ?? []).map((h) => ({ key: String(h.key), title: String(h.title), offer: String(h.offer), experience: String(h.experience) }))
+    return { signals: list.filter((s) => !!s && typeof s.type === "string" && s.type.length > 0), blindSpot: Array.isArray(got) ? null : (got?.blindSpot ?? null), helpers }
   } catch (e) {
-    return { signals: [], blindSpot: `signals: movement signals not read (${(e as Error)?.message ?? String(e)})` }
+    return { signals: [], blindSpot: `signals: movement signals not read (${(e as Error)?.message ?? String(e)})`, helpers: [] }
   }
 }
 
@@ -1422,7 +1471,8 @@ export async function respondToLifeChangeSignal(
 
     const day = now.toISOString().slice(0, 10)
     let out: LifeChangeResponse = { action: "replayed", subjectClass, kind, reason: "this signal was already answered today for this person — not acted on twice" }
-    await ledger<LifeChangeResponse>(
+    // The ledger answers with the run's result, or the replay hook's on a non-acting claim — that answer IS the response.
+    const answered = await ledger<LifeChangeResponse>(
       {
         // WAVE 146 (lane 146B): was "life_change.respond" — two segments, which lib/kernel/action-ledger.ts ACTION_NAME_PATTERN
         // (domain.entity.action) REFUSES: the claim came back "unledgered", nothing was recorded, and the promised once-per-day
@@ -1452,10 +1502,34 @@ export async function respondToLifeChangeSignal(
       },
       {
         settle: (r) => ({ status: r.action === "refused" ? "failed" : r.action === "isa_engagement" && r.engagement?.success ? "executed" : "skipped", outcome: r.action, error: r.action === "refused" ? r.reason : null }),
-        replay: () => out,
+        // WAVE 147 (lane 147Z — lane 147F Outside-lane 1): a REFUSED claim (the ledger could not record) is a refusal, never
+        // "already answered today" — it did not act, and it says why (test:action-evidence-census, the five actions).
+        replay: (claim) => claim.kind === "refused" ? refused(`the action ledger refused: ${claim.error}`, subjectClass) : out,
       },
       { client: svc as never },
     )
+    if (answered) out = answered
+    // C14 (wave 147, lane 147Z — lane 147G "Still open 2"): ONE completion per life-change decision, opened and evidenced in one
+    // call. A person's answer (the ISA's governed path chose the agent) waits on that agent's task; every other answer — a
+    // touch sent, a hold, a signal handed to the nurture / Sphere loop — closes on the decision (the loop's next touch is its
+    // own decision). A replay or a refusal decided nothing new and opens nothing.
+    if (out.action !== "refused" && out.action !== "replayed") {
+      const toPerson = out.action === "isa_engagement" && !out.engagement?.success && /^experience:agent_intervention:/.test(String(out.engagement?.reason ?? ""))
+      try {
+        const { trackManagerDecision } = await import("@/lib/kernel/completion-tracking")
+        const t = await trackManagerDecision(svc, {
+          brokerageId: input.brokerageId, ownerManager: subjectClass === "lifetime" ? "sphere_of_influence" : "ai_isa",
+          subject: { type: subject.type, id: subject.id }, sourceRef: `life_change:${subject.type}:${subject.id}:${input.signalType}:${day}`,
+          what: `Answer a ${kind.replace(/_/g, " ")} signal (${input.signalType})`.slice(0, 200),
+          decision: { outcome: `${out.action}: ${out.reason}`, source: "agent_action_ledger:life_change.signal.respond", ledgerRef: `life_change:${input.signalType}:${day}` },
+          next: toPerson ? { kind: "human", contactId: subject.id } : { kind: "none" },
+          context: { signal_type: input.signalType, kind, subject_class: subjectClass, signal_id: out.signalId ?? null },
+        })
+        if (!t.ok) console.warn(`[followup-arbiter] life-change completion not tracked for ${subject.type} ${subject.id}: ${t.reason}`)
+      } catch (e) {
+        console.warn(`[followup-arbiter] life-change completion tracking threw: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
     return out
   } catch (e) {
     return refused(`threw: ${e instanceof Error ? e.message : String(e)}`)
@@ -1483,7 +1557,11 @@ export async function arbitrateAndRecordExperience(
     /** Wave 144: preloaded channel checks (else loaded here through loadChannelReadiness). */
     channelReadiness?: ChannelReadinessLoad | null
   },
-  deps: { decide?: ArbiterDecide; record?: Record<string, unknown>; readiness?: Parameters<typeof loadChannelReadiness>[2] } = {},
+  deps: {
+    decide?: ArbiterDecide; record?: Record<string, unknown>; readiness?: Parameters<typeof loadChannelReadiness>[2]
+    /** Wave 147 (147Z): the C9 movement consumer (a proof injects one; null = unwired, undefined = the wired hook). */
+    movement?: MovementSignalConsumer | null
+  } = {},
 ): Promise<{ plan: NextBestExperiencePlan; decision: ArbiterDecision | null; recorded: Awaited<ReturnType<typeof import("./lead-action-plan").recordAndExecuteExperience>> }> {
   const { loadFollowupPolicy } = await import("./followup-policy")
   const { recordAndExecuteExperience, EXPERIENCE_EXECUTORS, EXPERIENCE_KINDS } = await import("./lead-action-plan")
@@ -1507,11 +1585,11 @@ export async function arbitrateAndRecordExperience(
     if (load.ok) { checks = load.checks; channelBlindSpots.push(...load.blindSpots) }
     else channelBlindSpots.push(`channel readiness not loaded (${load.reason}) — the menu used the tenant's channel settings alone`)
     // WAVE 144 — the SIGNAL slice: a recent life change / intent signal adds the experiences that serve it (never unlocks a hard verdict).
-    const sig = await loadLifeChangeSignals(svc, { brokerageId: a.brokerageId, contactId: a.contactId, now: a.now, policy })
+    const sig = await loadLifeChangeSignals(svc, { brokerageId: a.brokerageId, contactId: a.contactId, now: a.now, policy, movementConsumer: deps.movement })
     if (sig.blindSpot) channelBlindSpots.push(sig.blindSpot)
     signals = sig.signals
     const withSignals = planWithLifeChangeSignals(a.plan, signals, { contactType: a.input.person.contactType }, { executors: EXPERIENCE_EXECUTORS, kinds: EXPERIENCE_KINDS })
-    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, priority: a.priority ?? null }, { decide: deps.decide })
+    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, helpers: sig.helpers, priority: a.priority ?? null }, { decide: deps.decide })
     plan = arbitrated.plan
     decision = arbitrated.decision
   }
@@ -1702,10 +1780,31 @@ export async function respondToPromisedDeliverable(svc: { from: (t: string) => a
       },
       {
         settle: (r) => ({ status: r.action === "delivered" ? "executed" : r.action === "refused" || r.action === "delivery_failed" ? "failed" : "skipped", outcome: r.action, error: r.action === "refused" || r.action === "delivery_failed" ? r.reason : null }),
-        replay: () => out,
+        // WAVE 147 (147Z): a REFUSED claim delivered nothing — it is a refusal that says why, never "already answered today".
+        replay: (claim) => (claim.kind === "refused" ? (out = { action: "refused", reason: `the action ledger refused: ${claim.error}`, promiseIds, channel, decision }) : out),
       },
       { client: svc as never },
     )
+    // C14 (wave 147, lane 147Z — lane 147G "Still open 2"): ONE completion per promise decision, opened and evidenced in one call.
+    // Delivered → closed on the C4 deliverer's confirmation; handed to a person (or a failed delivery a person was told about) →
+    // waits on that person's task; a refusal / replay decided nothing new.
+    if (out.action !== "replayed" && out.action !== "refused") {
+      try {
+        const { trackManagerDecision } = await import("@/lib/kernel/completion-tracking")
+        const toPerson = out.action === "human_task" || out.action === "delivery_failed"
+        const t = await trackManagerDecision(svc, {
+          brokerageId: input.brokerageId, ownerManager: "ai_isa", subject: { type: "contact", id: contactId },
+          sourceRef: `promise:${[...promiseIds].sort().join(",").slice(0, 200)}:${now.toISOString().slice(0, 10)}`,
+          what: `Deliver what we promised (${promiseIds.length} deliverable${promiseIds.length === 1 ? "" : "s"})`,
+          decision: { outcome: `${out.action}: ${out.reason}`, source: "agent_action_ledger:lead_magnet.promise.deliver", ledgerRef: `promise:${now.toISOString().slice(0, 10)}` },
+          next: toPerson && contactAgentId ? { kind: "human", contactId } : { kind: "none" },
+          context: { promise_ids: promiseIds, channel: channel ?? "human_task" },
+        })
+        if (!t.ok) console.warn(`[followup-arbiter] promise completion not tracked for contact ${contactId}: ${t.reason}`)
+      } catch (e) {
+        console.warn(`[followup-arbiter] promise completion tracking threw: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
     return out
   } catch (e) {
     return refused(`threw: ${e instanceof Error ? e.message : String(e)}`)

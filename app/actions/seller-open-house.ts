@@ -1187,6 +1187,9 @@ export async function getOpenHouseEventPublic(eventId: string): Promise<{
   brokerageName: string | null
   branding: { appName: string | null; logoUrl: string | null; primaryColor: string | null } | null
   agent: { displayName: string | null; photoUrl: string | null } | null
+  /** wave 147 (lane 147Z): a broker open's sign-ins are cooperating agents — the kiosk asks no consumer consent of them
+   *  (app/api/open-house/attend/route.ts records the visit and creates no consumer contact). */
+  brokerOpen: boolean
 } | null> {
   if (!isValidUUID(eventId)) return null
 
@@ -1197,7 +1200,7 @@ export async function getOpenHouseEventPublic(eventId: string): Promise<{
   const { data: event, error: eventErr } = await serviceClient
     .from("open_house_events")
     .select(
-      "id, event_date, start_time, end_time, status, brokerage_id, agent_id, listings:listing_id (address, city, state, brokerages:brokerage_id (name))"
+      "id, event_date, start_time, end_time, status, brokerage_id, agent_id, event_type, listings:listing_id (address, city, state, brokerages:brokerage_id (name))"
     )
     .eq("id", eventId)
     .in("status", ["scheduled", "marketing", "active"])
@@ -1262,6 +1265,7 @@ export async function getOpenHouseEventPublic(eventId: string): Promise<{
     brokerageName: listingRow?.brokerages?.name ?? null,
     branding,
     agent,
+    brokerOpen: (event as unknown as { event_type?: string | null }).event_type === "broker_open",
   }
 }
 

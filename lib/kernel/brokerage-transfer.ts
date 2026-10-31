@@ -133,6 +133,25 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   // delivered (ruling 10). Every parent it names moves — form_id → lead_capture_forms, submission_id → form_submissions,
   // contact_id → contacts, campaign_id → marketing_campaigns — so it follows the page (the landing-page zero-exception rule).
   { table: "lead_magnet_promises", what: "the promises those landing pages made each submitter, with their delivery evidence (form_id / submission_id stay in ONE tenant)" },
+  // WAVE 147 (lane 147Z — lane 147I Outside-lane 5; placed like wave 146's lead_magnet_promises): three tables born in wave 147
+  // that FK onto moved families are the tenant's OWN business data and move WITH it (never left behind pointing across tenants):
+  //  · lead_magnet_deliverables (m898, contract C11) — the produced asset of one of those landing pages: form_id → lead_capture_forms,
+  //    so it follows its page (the landing-page zero-exception rule, scripts/brokerage-identity-guard.ts);
+  //  · buyer_criteria_changes (m896, contract C10) — the client's own criteria history (what they said, accepted, rejected):
+  //    contact_id → contacts — the book it belongs to moves, so its history does (a proposal left behind would re-offer a
+  //    change the buyer already rejected);
+  //  · movement_signals (m892, contract C9) — the tenant's evidence about its own contacts / leads (with its outcome history):
+  //    contact_id → contacts, lead_id → leads. Tenant-owned like the contacts it describes; its licence / consent provenance
+  //    rides each row (and a raw-lead subject keeps its raw_lead_id — raw_scraped_leads is derived_readonly and re-scraped in
+  //    the target, never copied).
+  // Holding the FK-closure ceiling (scripts/brokerage-identity-guard.ts FROZEN_UNMOVED_FK_CHILDREN, never raised).
+  { table: "lead_magnet_deliverables", what: "the produced delivery asset of each of those landing pages (C11; form_id stays in ONE tenant)" },
+  { table: "buyer_criteria_changes", what: "each buyer's criteria change history — stated, accepted, rejected (C10; contact_id stays in ONE tenant)" },
+  { table: "movement_signals", what: "the C9 movement records on the tenant's own contacts / leads, with their provenance and outcomes (contact_id / lead_id stay in ONE tenant)" },
+  // …and the watcher's last-seen digest per watched item (m894) follows the records it points at (last_signal_id →
+  // movement_signals): the target's watcher continues from the same baseline (no history re-raised as "new") and the FK
+  // stays in ONE tenant. Still doorless by design (service-role only — scripts/production-readiness-guard.ts).
+  { table: "movement_source_items", what: "the movement watcher's last-seen digest per watched item (follows movement_signals via last_signal_id)" },
   // A BOOK DISTRIBUTED THROUGH ONE OF THOSE PAGES follows the page (wave 145, lane 145Z — owner ruling 19 + the landing-page
   // zero-exception rule, scripts/brokerage-identity-guard.ts): book_projects.distribution_form_id → lead_capture_forms (m867).
   // The subscriber's OWN book (its manuscript, chapters, publishing state) moves with its workspace; a PLATFORM-owned book has

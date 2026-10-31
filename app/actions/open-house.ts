@@ -87,11 +87,31 @@ export async function createOpenHouse(params: {
   agentNotes?: string
   publicDescription?: string
   sendInvites?: boolean
+  /**
+   * WAVE 147 (lane 147Z — lane 147F "Still open": the live CHECK admits broker_open and virtual_open_house and NOTHING produced
+   * them; orphan doctrine §1.2 — build the missing half). ONE scheduling door for all three kinds (no twin):
+   *   · open_house (default) — the public kiosk captures consumers as consented contacts (C8);
+   *   · broker_open — a cooperating-AGENT preview: the kiosk records the agent as an attendee and creates NO consumer contact,
+   *     claims no consumer consent and sends no consumer greeting (app/api/open-house/attend/route.ts);
+   *   · virtual_open_house — attended online: `joinUrl` (https) is the event's check-in URL; the join door
+   *     (app/open-house/[eventId]/join/route.ts) records an invited contact's attendance before it forwards them.
+   */
+  eventType?: string
+  joinUrl?: string
 }) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    // The live open_house_events.event_type CHECK (scripts/check-vocabularies.ts) — one spelling, validated before any write.
+    const OPEN_HOUSE_EVENT_TYPES = ["open_house", "broker_open", "virtual_open_house"] as const
+    const eventType = (params.eventType ?? "open_house") as (typeof OPEN_HOUSE_EVENT_TYPES)[number]
+    if (!(OPEN_HOUSE_EVENT_TYPES as readonly string[]).includes(eventType)) return { success: false, error: `Unknown event type "${params.eventType}"` }
+    let joinUrl: string | null = null
+    if (eventType === "virtual_open_house") {
+      try { const u = new URL(String(params.joinUrl ?? "")); if (u.protocol === "https:") joinUrl = u.toString() } catch { joinUrl = null }
+      if (!joinUrl) return { success: false, error: "A virtual open house needs its https join link" }
+    }
 
     const service = createServiceClient()
 
@@ -120,7 +140,9 @@ export async function createOpenHouse(params: {
         notes: params.agentNotes ?? null,
         description: params.publicDescription ?? null,
         status: "scheduled",
-        registration_required: false,
+        registration_required: eventType === "virtual_open_house",
+        event_type: eventType,
+        ...(joinUrl ? { check_in_url: joinUrl, allow_walkins: false } : {}),
       })
       .select()
       .maybeSingle()

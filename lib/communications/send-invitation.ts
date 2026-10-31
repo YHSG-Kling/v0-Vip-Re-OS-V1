@@ -223,6 +223,14 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
       appUrl && params.invitationId
         ? `${appUrl}/open-house/${params.eventId}/rsvp/${params.invitationId}`
         : null
+    // THE VIRTUAL OPEN HOUSE JOIN LINK (wave 147, lane 147Z): a virtual open house (app/actions/open-house.ts createOpenHouse,
+    // eventType "virtual_open_house") is attended through app/open-house/[eventId]/join/route.ts, which records the invited
+    // contact's attendance from the SAME (eventId, invitationId) credential before forwarding to the event's meeting URL.
+    // Same rule as the RSVP link: null rather than a guess when either half is missing.
+    const joinLink =
+      (event as { event_type?: string | null }).event_type === "virtual_open_house" && appUrl && params.invitationId
+        ? `${appUrl}/open-house/${params.eventId}/join?i=${params.invitationId}`
+        : null
 
     let email: ChannelOutcome | undefined
     let sms: ChannelOutcome | undefined
@@ -245,6 +253,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
             eventTime: `${event.start_time} - ${event.end_time}`,
             propertyImage: property.featured_image || "",
             rsvpLink,
+            joinLink,
             personalizedOpening: params.personalizedMessage,
           }),
           channelPurpose: "campaign",
@@ -280,8 +289,9 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
           agentId: contact.agent_id ?? undefined,
           to: contact.phone,
           message:
-            params.personalizedSms?.trim() ||
-            `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}.${rsvpLink ? ` RSVP: ${rsvpLink}` : ""}`,
+            (params.personalizedSms?.trim() ||
+            `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}.${rsvpLink ? ` RSVP: ${rsvpLink}` : ""}`) +
+            (joinLink ? ` Join online: ${joinLink}` : ""),
           systemSource: "open_house_invitation",
         })
         sms = {
@@ -517,6 +527,8 @@ function generateInvitationEmailHTML(data: {
   /** Absent when the caller could not supply an invitation id — see
    *  SendInvitationParams.invitationId. No link is better than a 404. */
   rsvpLink: string | null
+  /** A virtual open house's join link (the attendance-recording door); null for an in-person event. */
+  joinLink?: string | null
   personalizedOpening?: string
 }) {
   return `
@@ -558,6 +570,7 @@ function generateInvitationEmailHTML(data: {
           <p>Join us to explore this amazing property and discover if it's the perfect fit for you!</p>
 
           ${data.rsvpLink ? `<a href="${data.rsvpLink}" class="cta-button">RSVP Now</a>` : ""}
+          ${data.joinLink ? `<a href="${data.joinLink}" class="cta-button">Join Online</a>` : ""}
 
           <p>We look forward to seeing you there!</p>
         </div>

@@ -379,6 +379,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
+      // Wave 147 (lane 147Z): the lead desk's C9 movement records + source freshness (owner ruling 3) — lead-desk seats only.
+      { id: 'movement-signals', label: 'Movement Signals', href: '/dashboard/intelligence/movement-signals', icon: 'Activity' },
       // The funnel cockpit (raw→gate→promoted aggregates + hot seller-intent). The
       // page shows funnel + promoted leads to broker/broker_admin but withholds the
       // RAW review bench (platform-staff only via its isPlatform gate), so this is
@@ -577,6 +579,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'analytics', label: 'My Stats', href: '/dashboard/isa/analytics', icon: 'BarChart3' },
       { id: 'isa-settings', label: 'ISA Settings', href: '/dashboard/ai-isa/settings', icon: 'Settings' },
       { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
+      { id: 'movement-signals', label: 'Movement Signals', href: '/dashboard/intelligence/movement-signals', icon: 'Activity' },
       // Notification-rail parity: every tenant user type gets the /notifications home.
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'divider1', divider: true },
@@ -616,6 +619,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Admin Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
+      { id: 'movement-signals', label: 'Movement Signals', href: '/dashboard/intelligence/movement-signals', icon: 'Activity' },
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
       // Orphan-route sweep: the agent roster's ONLY link lived in RootRoleShortcuts,

@@ -92,7 +92,9 @@ export async function runMarketWatchForBuyer(
   // the pure scorer makes the final call.
   let q = supabase.from("listings")
     .select("id, list_price, bedrooms, bathrooms, city")
-    .eq("brokerage_id", brokerageId).eq("status", "active").limit(200)
+    // WAVE 147 (lane 147Z — lane 147F Outside-lane 2): the buyer-shoppable statuses ∩ the ONE public predicate, and an
+    // ARCHIVED listing (deleted_at set — internal only, contract C12) never matches into a buyer's market-watch alert.
+    .eq("brokerage_id", brokerageId).in("status", (await import("./search-engine")).buyerShoppableListingStatuses()).is("deleted_at", null).limit(200)
   if (criteria.maxPrice != null) q = q.lte("list_price", criteria.maxPrice)
   if (criteria.minBeds != null) q = q.gte("bedrooms", criteria.minBeds)
   const { data: listings } = await q

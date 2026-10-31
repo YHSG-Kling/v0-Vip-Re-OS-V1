@@ -13,8 +13,9 @@ import "server-only"
  * closed that blind spot and this was one of its three findings.
  *
  * Why a lib core and not a gate in place: the generator has a SESSIONLESS caller
- * (lib/voice/sms-inbound.ts draftProactiveReply — the inbound SMS webhook, whose
- * tenant comes from the number's routing) and a session gate in the action would
+ * (lib/communications/inbound-reply-executors.ts draftProactiveReply — the arbiter's inbound
+ * responder for a text, whose tenant comes from the number's routing through the verified C1
+ * record; it moved there from lib/voice/sms-inbound.ts in wave 147, lane 147G) and a session gate in the action would
  * read nothing there (test:sessionless-use-server-census). So:
  *   · THIS function trusts `params.brokerageId` / `params.agentUserId` — call it
  *     only with a tenant you resolved yourself (the webhook's routing, a session

@@ -501,7 +501,8 @@ export async function buyerKeepWatchingAction(input: { contactId: string }): Pro
     () => proposeWrittenCriteriaAlert(g.svc, { brokerageId: g.brokerageId, contactId: input.contactId, agentUserId, messageRef: ref, body, channel: "portal" }),
     {
       settle: (ok) => ok ? { status: "executed", outcome: "alert_proposed" } : { status: "skipped", outcome: "not_proposed" },
-      replay: () => false,
+      // WAVE 147 (147Z — census II.2): a REFUSED claim proposed nothing (fail closed) and is logged as a refusal, never a quiet "no".
+      replay: (claim) => { if (claim.kind === "refused") console.error(`[buyerKeepWatching] alert proposal not recorded — the action ledger refused: ${claim.error}`); return false },
     },
   )
   return {
@@ -526,10 +527,10 @@ export async function explainHomeForBuyerAction(input: { contactId: string; list
   if (!UUID_RE.test(input.listingId ?? "")) return { ok: false, error: "The explanation shown with this home is the full one for market listings." }
   const g = await gateBuyer(input.contactId)
   if (!g.ok) return g
-  const { BUYER_SHOPPABLE_LISTING_STATUSES } = await import("@/lib/buyer-search/search-engine")
+  const { buyerShoppableListingStatuses } = await import("@/lib/buyer-search/search-engine")
   const { data: listing, error } = await g.svc.from("listings")
     .select("id, address, city, zip, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, status, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks")
-    .eq("id", input.listingId).in("status", [...BUYER_SHOPPABLE_LISTING_STATUSES]).is("deleted_at", null).maybeSingle()
+    .eq("id", input.listingId).in("status", buyerShoppableListingStatuses()).is("deleted_at", null).maybeSingle()
   if (error) return { ok: false, error: "That home couldn't be read just now." }
   if (!listing) return { ok: false, error: "That home isn't available to explain." }
   const criteria = await loadBuyerCriteria(g.svc, input.contactId, { brokerageId: g.brokerageId })

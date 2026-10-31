@@ -200,6 +200,8 @@ export interface OpenCompletionInput {
   /** Ids and channel keys a re-drive needs — NEVER a message body or contact PII. */
   context?: Record<string, unknown>
   providerRef?: string | null
+  /** Wave 147 (147Z): evidence the opener already holds (trackManagerDecision's decision) — so a lost second write never reads as "no decision". */
+  seedEvidence?: CompletionEvidence[]
 }
 
 export type CompletionResult = { ok: true; completion: CompletionRow; duplicate?: boolean } | { ok: false; reason: string; completion?: CompletionRow }
@@ -229,7 +231,7 @@ export async function openCompletion(svc: Svc, input: OpenCompletionInput, deps:
       brokerage_id: input.brokerageId, kind: input.kind, owner_manager: input.ownerManager,
       subject_type: input.subject.type, subject_id: input.subject.id ?? null, subject_ref: input.subject.ref ?? null,
       source_ref: input.sourceRef.trim(), idempotency_key: key, what: input.what.trim().slice(0, 500), stage: input.stage,
-      expected_evidence: [...new Set(input.expectedEvidence)], evidence: [], status: "open", due_at: due.toISOString(), attempts: 0,
+      expected_evidence: [...new Set(input.expectedEvidence)], evidence: input.seedEvidence ?? [], status: "open", due_at: due.toISOString(), attempts: 0,
       provider_ref: input.providerRef ?? null, context: input.context ?? {}, created_at: now.toISOString(), updated_at: now.toISOString(),
     }).select(COLS).single()
     if (error) {
@@ -242,6 +244,67 @@ export async function openCompletion(svc: Svc, input: OpenCompletionInput, deps:
     const row = data as CompletionRow
     await scheduleCheck(row, deps)
     return { ok: true, completion: row }
+  } catch (e) {
+    return { ok: false, reason: `threw: ${errMsg(e)}` }
+  }
+}
+
+/**
+ * ONE CALL PER MANAGER DECISION (wave 147, lane 147Z — closes lane 147G's "Still open 2"; owner ruling 13, contract C14). A
+ * decision site that already DECIDED (speed-to-lead's first touch, a life-change response, a promised deliverable, a consented
+ * intake hand-off) opens its completion AND records that decision as the first evidence here, so it can never open one and
+ * forget the other:
+ *   · the decision ACTED and a provider reference came back → `awaiting_delivery` (the provider's status callback closes it;
+ *     a contradiction is a failed delivery the agent hears about);
+ *   · it HANDED the person to a human (an agent task) → `awaiting_human` (the agent's completed task closes it; a stall bells
+ *     them once, then the admins);
+ *   · it decided NOT to act now (a wait, a hold, a hard stop) or acted with no trackable reference → CLOSED on the decision
+ *     itself — the next follow-up is a NEW decision with its own completion, never this one held open on a clock.
+ * Idempotent per (tenant, follow_up, sourceRef) through openCompletion. Never throws, never blocks the decision: a refusal
+ * comes back for the caller to log as a blind spot.
+ */
+interface ManagerDecisionInput {
+  brokerageId: string
+  ownerManager: CompletionOwner
+  subject: { type: string; id?: string | null; ref?: string | null }
+  /** One completion per decision (e.g. `speed_to_lead:contact:<id>:<day>`, `life_change:<contact>:<type>:<day>`). */
+  sourceRef: string
+  what: string
+  decision: { outcome: string; source: string; ledgerRef?: string | null }
+  next:
+    | { kind: "delivery"; providerRef: string; channel: string; dueMinutes?: number }
+    | { kind: "human"; contactId: string; agentUserId?: string | null; dueMinutes?: number }
+    | { kind: "none" }
+  /** Ids only — never a body or PII. */
+  context?: Record<string, unknown>
+}
+
+export async function trackManagerDecision(svc: Svc, input: ManagerDecisionInput, deps: CompletionDeps = {}): Promise<CompletionResult & { closed?: boolean }> {
+  try {
+    const now = (deps.now ?? (() => new Date()))()
+    const evidence: CompletionEvidence = { kind: "decision", at: now.toISOString(), source: input.decision.source, ref: input.decision.ledgerRef ?? null, outcome: input.decision.outcome.slice(0, 300) }
+    const n = input.next
+    const context: Record<string, unknown> = {
+      ...(input.context ?? {}),
+      ...(n.kind === "human" ? { contact_id: n.contactId, ...(n.agentUserId ? { agent_user_id: n.agentUserId } : {}) } : {}),
+      ...(n.kind === "delivery" ? { channel: n.channel } : {}),
+    }
+    const opened = await openCompletion(svc, {
+      brokerageId: input.brokerageId, kind: "follow_up", ownerManager: input.ownerManager, subject: input.subject, sourceRef: input.sourceRef,
+      what: input.what, stage: "awaiting_decision", expectedEvidence: ["decision"], dueAt: new Date(now.getTime() + 15 * 60_000), context,
+      seedEvidence: [evidence],
+    }, { ...deps, schedule: deps.schedule ?? (async () => ({ scheduled: false, reason: "the decision is recorded in the same call" })) })
+    if (!opened.ok) return opened
+    if (opened.duplicate && !COMPLETION_OPEN_STATUSES.has(opened.completion.status)) return { ...opened, closed: true }
+    if (opened.duplicate && opened.completion.stage !== "awaiting_decision") return opened
+    const due = (m: number | undefined, d: number) => new Date(now.getTime() + (m ?? d) * 60_000)
+    return await recordCompletionEvidence(svc, {
+      brokerageId: input.brokerageId, completionId: opened.completion.id, evidence,
+      advanceTo: n.kind === "delivery" ? { stage: "awaiting_delivery", expected: ["delivery_outcome"], dueAt: due(n.dueMinutes, DECISION_DUE_MINUTES[n.channel] ?? 240), providerRef: n.providerRef }
+        : n.kind === "human" ? { stage: "awaiting_human", expected: ["human_action"], dueAt: due(n.dueMinutes, HUMAN_DUE_MINUTES) }
+        : null,
+      terminal: n.kind === "none",
+    }, deps)
   } catch (e) {
     return { ok: false, reason: `threw: ${errMsg(e)}` }
   }
@@ -292,7 +355,11 @@ export async function recordCompletionEvidence(svc: Svc, input: EvidenceInput, d
     if (!row) return { ok: false, reason: "no open completion for this evidence" }
     if (!COMPLETION_OPEN_STATUSES.has(row.status)) return { ok: true, completion: row, closed: true, duplicate: true }
     const now = (deps.now ?? (() => new Date()))()
-    const evidence = [...(Array.isArray(row.evidence) ? row.evidence : []), { ...input.evidence, at: input.evidence.at || now.toISOString() }].slice(-40)
+    const held = Array.isArray(row.evidence) ? row.evidence : []
+    const last = held[held.length - 1]
+    // The opener's seeded copy of this SAME evidence (trackManagerDecision) is not appended twice.
+    const same = !!last && last.kind === input.evidence.kind && last.source === input.evidence.source && (last.ref ?? null) === (input.evidence.ref ?? null) && (last.outcome ?? null) === (input.evidence.outcome ?? null)
+    const evidence = (same ? held : [...held, { ...input.evidence, at: input.evidence.at || now.toISOString() }]).slice(-40)
     const expectedLeft = (row.expected_evidence ?? []).filter((k) => k !== input.evidence.kind)
     const close = input.terminal === true || (!input.advanceTo && expectedLeft.length === 0)
     const patch: Record<string, unknown> = { evidence, updated_at: now.toISOString() }
@@ -378,6 +445,10 @@ async function verifyCompletionEvidence(svc: Svc, c: CompletionRow, now: Date): 
   const ctx = (c.context ?? {}) as Record<string, unknown>
   const recordId = typeof ctx.record_id === "string" ? ctx.record_id : null
   if (c.stage === "awaiting_decision") {
+    // Wave 147 (147Z): a manager decision tracked by trackManagerDecision HOLDS its decision from the open — if the move to its
+    // next stage was lost, the decision still closes it (never a false "stalled decision" for a decision that was made).
+    const heldDecision = c.kind === "follow_up" ? (Array.isArray(c.evidence) ? c.evidence : []).find((e) => e?.kind === "decision") : undefined
+    if (heldDecision) return { found: true, evidence: { ...heldDecision, at: now.toISOString() }, terminal: true }
     if (!recordId) return { found: false, detection: "stalled_decision", detail: "no inbound record id on the completion" }
     const { data, error } = await svc.from("agent_action_ledger").select("id, status, outcome, idempotency_key, created_at, updated_at")
       .eq("brokerage_id", c.brokerage_id).eq("action", "inbound.message.respond").eq("detail->>record_id", recordId).limit(1).maybeSingle()
@@ -426,6 +497,17 @@ async function verifyCompletionEvidence(svc: Svc, c: CompletionRow, now: Date): 
       const { data: tasks, error } = await svc.from("activities").select("id, completed_at").eq("brokerage_id", c.brokerage_id).eq("contact_id", contactId).eq("activity_type", "followup_moment_due").gte("created_at", c.created_at).not("completed_at", "is", null).limit(1)
       const done = !error && Array.isArray(tasks) ? (tasks[0] as { id: string; completed_at: string | null } | undefined) : undefined
       if (done) return { found: true, evidence: { kind: "human_action", at: now.toISOString(), source: "activities", ref: done.id, outcome: `completed ${done.completed_at}` } }
+    }
+    // Wave 147 (147Z — lane 147G Outside-lane 3): a STAGED VIDEO waiting on its assigned approver (lib/video/video-staging.ts) —
+    // the approver's decision on the asset itself (approval_status) is the person's answer.
+    const videoId = typeof ctx.video_id === "string" ? ctx.video_id : null
+    if (videoId) {
+      const { data: v, error: vErr } = await svc.from("ai_video_projects").select("id, approval_status").eq("id", videoId).eq("brokerage_id", c.brokerage_id).maybeSingle()
+      if (vErr) return { found: false, detection: null, detail: `staged video unreadable (${vErr.message}) — not counted as missing` }
+      const st = (v as { approval_status?: string | null } | null)?.approval_status ?? null
+      if (!v) return { found: true, evidence: { kind: "human_action", at: now.toISOString(), source: "ai_video_projects", ref: videoId, outcome: "the video no longer exists in this tenant" }, terminal: true }
+      if (st === "approved" || st === "published" || st === "rejected") return { found: true, evidence: { kind: "human_action", at: now.toISOString(), source: "ai_video_projects.approval_status", ref: videoId, outcome: st } }
+      return { found: false, detection: "incomplete_follow_up", detail: `the staged video is still ${st ?? "unreviewed"} — the assigned approver has not acted` }
     }
     const conversationId = typeof ctx.conversation_id === "string" ? ctx.conversation_id : null
     if (conversationId) {
@@ -608,7 +690,7 @@ async function ledgered<T>(svc: Svc, deps: SupervisionDeps, c: CompletionRow, ac
       policyKey: "self_healing", detail: { completion_id: c.id, kind: c.kind, stage: c.stage, ...detail },
     },
     run,
-    { settle: (r) => { const s = settle(r as T); return { status: s.ok ? "executed" : "failed", outcome: s.note.slice(0, 300), error: s.ok ? null : s.note.slice(0, 300), costUsd: s.costUsd ?? 0 } }, replay: () => null },
+    { settle: (r) => { const s = settle(r as T); return { status: s.ok ? "executed" : "failed", outcome: s.note.slice(0, 300), error: s.ok ? null : s.note.slice(0, 300), costUsd: s.costUsd ?? 0 } }, replay: (claim) => { if (claim.kind === "refused") console.error(`[completion-tracking] ${action} not run — the action ledger refused: ${claim.error}`); return null } },
     { client: svc as never },
   )
 }
@@ -687,15 +769,24 @@ export async function watchUnresolvedTickets(svc: Svc, brokerageId: string, opts
   const { data, error } = await svc.from("support_tickets").select("id, brokerage_id, priority, status, created_at, first_response_at, resolved_at, lane, category, subject")
     .eq("brokerage_id", brokerageId).in("status", ["open", "in_progress"]).limit(500)
   if (error) return { opened: 0, error: `support_tickets unreadable: ${error.message}` }
-  const { evaluateTicketSla } = await import("@/lib/support/support-sla")
+  const { evaluateTicketSla, supportTicketCompletion } = await import("@/lib/support/support-sla")
+  // WAVE 147 (lane 147Z — lane 147H Outside-lane 2): the per-ticket OWNER MANAGER is lane H's triage owner by category
+  // (lib/support/ticket-triage.ts TRIAGE_OWNER_BY_CATEGORY — billing → finance_manager, compliance → compliance_officer, the
+  // rest → data_steward), through H's own completion spec (lib/support/support-sla.ts supportTicketCompletion — what, due,
+  // the evidence that closes it, and the STALL RULE: page the answering side once, second tier at 2×). An unknown category
+  // reads as general (never a guess); an explicit ownerFor still wins.
+  const { TRIAGE_OWNER_BY_CATEGORY } = await import("@/lib/support/ticket-triage")
   let opened = 0
   for (const t of (data ?? []) as Array<{ id: string; priority: string | null; status: string; created_at: string; first_response_at: string | null; resolved_at: string | null; lane: string | null; category: string | null; subject: string | null }>) {
     const sla = evaluateTicketSla(t as never, now)
     if (sla.breaches.length === 0) continue
+    const plan = supportTicketCompletion(t as never, TRIAGE_OWNER_BY_CATEGORY, now)
+    const owner: CompletionOwner = opts.ownerFor ? opts.ownerFor(t) : isOwner(plan?.ownerManager) ? plan!.ownerManager as CompletionOwner : "data_steward"
     const r = await openCompletion(svc, {
-      brokerageId, kind: "support_ticket", ownerManager: opts.ownerFor ? opts.ownerFor(t) : "data_steward",
+      brokerageId, kind: "support_ticket", ownerManager: owner,
       subject: { type: "support_ticket", id: t.id }, sourceRef: `ticket:${t.id}`, what: `Resolve support ticket "${(t.subject ?? "untitled").slice(0, 80)}"`,
-      stage: "awaiting_resolution", expectedEvidence: ["ticket_resolution"], dueAt: sla.resolutionDueAt, context: { ticket_id: t.id, breaches: sla.breaches },
+      stage: "awaiting_resolution", expectedEvidence: ["ticket_resolution"], dueAt: sla.resolutionDueAt,
+      context: { ticket_id: t.id, breaches: sla.breaches, owed: plan?.what ?? null, evidence_expected: plan?.evidenceExpected ?? [], stall_rule: plan?.stallRule ?? null },
     }, deps)
     if (r.ok && !r.duplicate) opened++
   }

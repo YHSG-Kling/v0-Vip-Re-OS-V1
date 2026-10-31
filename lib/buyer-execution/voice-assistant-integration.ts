@@ -180,13 +180,29 @@ async function searchPropertiesVoice(
     }
   }
   
-  // 2. Execute search
+  // 2. Execute search — WAVE 147 (lane 147Z — lane 147C Outside-lane 4, contract C10): over the buyer's SAVED criteria, the
+  // ONE store the portal, email, SMS and phone turns write, so "find me something" by voice searches what they already told us.
+  // The tenant bound is the contact's own row (the same person the search is for); an unreadable store searches the words alone.
+  let storedCriteria: Awaited<ReturnType<typeof import('@/lib/buyer-search/buyer-criteria').loadBuyerCriteria>> = null
+  try {
+    const { createServiceClient } = await import('@/lib/supabase/service')
+    const svc = createServiceClient()
+    const { data: who, error: whoError } = await svc.from('contacts').select('brokerage_id').eq('id', context.contactId).maybeSingle()
+    if (whoError) console.error('[voice-assistant] contact read refused — searching the spoken words alone:', whoError.message)
+    else if ((who as { brokerage_id?: string | null } | null)?.brokerage_id) {
+      const { loadBuyerCriteria } = await import('@/lib/buyer-search/buyer-criteria')
+      storedCriteria = await loadBuyerCriteria(svc, context.contactId, { brokerageId: (who as { brokerage_id: string }).brokerage_id })
+    }
+  } catch (e) {
+    console.error('[voice-assistant] saved criteria not read — searching the spoken words alone:', e instanceof Error ? e.message : String(e))
+  }
   const searchResult = await searchPropertiesWithNaturalLanguage({
     contactId: context.contactId,
     naturalLanguageQuery: transcript,
     options: {
       limit: 5, // Voice should return fewer results
       logSignals: true,
+      criteria: storedCriteria,
     }
   })
   

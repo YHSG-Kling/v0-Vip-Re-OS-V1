@@ -22,10 +22,11 @@
  *
  *   send_newsletter          → lib/content/newsletter-enrollment.ts
  *                               (enrollContactInNewsletter / enrollLeadInNewsletter)
- *   send_market_report       → lib/market-intelligence/report-builder.ts
- *                               (buildMarketReportAnalysis — the SAME analysis
+ *   send_market_report       → lib/market-reports/producer.ts
+ *                               (produceMarketReport — the SAME producer
  *                               app/actions/ai-market-intelligence.ts's staff
- *                               action builds)
+ *                               action rides; wave 147 lane 147Z retired the
+ *                               model-authored report-builder onto it)
  *   send_explainer_video     → lib/video/avatar-explainer.ts
  *                               (commissionAvatarExplainer — the SAME Director
  *                               pipeline every other avatar/explainer video rides)
@@ -242,7 +243,7 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
     costRank: 0,
     signalType: "qualification_market_report_sent",
     requiresIdentity: true,
-    survivor: "lib/market-intelligence/report-builder.ts::buildMarketReportAnalysis",
+    survivor: "lib/market-reports/producer.ts::produceMarketReport",
   },
   {
     id: "send_explainer_video",
@@ -483,17 +484,42 @@ function buildSendNewsletterTool(ctx: CustomerCapabilityContext) {
 
 function buildSendMarketReportTool(ctx: CustomerCapabilityContext) {
   return tool({
-    description: "Prepare and send a market report/update for the person's area — overall condition, price trend direction, and inventory level. Use when they ask about the market, pricing trends, or whether now is a good time. Speak only the CONDITION and TREND back to them (e.g. \"a balanced market, prices holding steady\") — never quote a specific dollar figure from the report.",
+    // WAVE 147 (lane 147Z — lane 147E Outside-lane 1; owner ruling 6): THE MARKET-REPORT PRODUCER, not the model-authored analysis
+    // (lib/market-intelligence/report-builder.ts, tombstoned). The tool used to say "send" and send NOTHING; now it PRODUCES the
+    // verified, dated, sourced, tenant-branded report for the person and puts it in front of the people the authority hierarchy
+    // names (C5 approverFor — who may approve it before anyone outside the brokerage receives it) with a one-tap task. It is
+    // never delivered unreviewed, so the model is told it is PREPARED, never SENT.
+    description: "Prepare a verified market report for the person's area (dated, sourced local data — never estimates). Their agent reviews it and sends it; never say it has already been sent. Use when they ask about the market, pricing trends, or whether now is a good time. Say only which area it covers and that their agent will send it — never quote a dollar figure.",
     inputSchema: z.object({
       city: z.string().nullable().describe("City for the report, or null"),
       state: z.string().nullable().describe("Two-letter state code, or null"),
       zip: z.string().nullable().describe("ZIP code, or null"),
     }),
-    execute: async ({ city, zip }: { city: string | null; state: string | null; zip: string | null }) => {
+    execute: async ({ city, state, zip }: { city: string | null; state: string | null; zip: string | null }) => {
       if (!ctx.contactId && !ctx.leadId) return { success: false, error: "No contact or lead is linked to this conversation yet" }
-      const { buildMarketReportAnalysis } = await import("@/lib/market-intelligence/report-builder")
-      const result = await buildMarketReportAnalysis({ brokerageId: ctx.brokerageId, city: city ?? undefined, zipCode: zip ?? undefined })
-      if (!result.success) return { success: false, error: result.error }
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { produceMarketReport } = await import("@/lib/market-reports/producer")
+      const produced = await produceMarketReport(svc, {
+        brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? null, actor: { type: "manager", managerKey: "ai_isa" },
+        territoryHint: { zip, city, state }, contactId: ctx.contactId ?? null, reasonCode: "CONVERSATION_RESPONSE", purpose: "ai_isa_send_market_report",
+      })
+      // A refused report returns its REASON (never a summary the model could pass off as the market).
+      if (!produced.ok) return { success: false, error: `No market report could be prepared (${produced.stage}): ${produced.reason}` }
+      // The people the authority hierarchy named are told at once — the report waits on them, never on a clock.
+      let reviewersTold = 0
+      const reviewers = produced.approver.ok ? (produced.approver.primaryUserIds.length ? produced.approver.primaryUserIds : produced.approver.permittedUserIds) : []
+      if (reviewers.length > 0) {
+        const { error: bellErr } = await svc.from("notifications").insert(reviewers.slice(0, 5).map((user_id) => ({
+          user_id, brokerage_id: ctx.brokerageId, type: "market_report_ready_to_send", priority: "medium", channel: "in_app", is_read: false,
+          title: `Market report ready to review: ${produced.report.territory.label}`.slice(0, 200),
+          body: `${produced.report.narrative.headline} — prepared for a ${ctx.contactId ? "contact" : "lead"} who asked about the market. Review it in the document library and send it if it is right.`.slice(0, 500),
+          entity_type: ctx.contactId ? "contact" : "lead", entity_id: ctx.contactId ?? ctx.leadId ?? null,
+        })))
+        if (bellErr) console.error(`[capability-catalogue] market report reviewers not told: ${bellErr.message}`)
+        else reviewersTold = Math.min(5, reviewers.length)
+      }
+      const result = { territory: produced.report.territory.label, headline: produced.report.narrative.headline, counts: produced.validation.counts, documentId: produced.documentId, reviewersTold }
 
       // Also enrols the standing newsletter channel (send_newsletter's own
       // survivor, reused rather than a second enrollment write, §6) so
@@ -507,21 +533,21 @@ function buildSendMarketReportTool(ctx: CustomerCapabilityContext) {
         brokerageId: ctx.brokerageId,
         toManager: "campaign_orchestrator",
         signalType: "qualification_market_report_sent",
-        message: `AI qualification sent a market report for ${city ?? zip ?? "the area"}`,
+        message: `AI qualification prepared a verified market report for ${result.territory} — awaiting the agent's review before it is sent`,
         contactId: ctx.contactId ?? null,
         leadId: ctx.leadId ?? null,
-        payload: { city, zip, marketCondition: result.report.marketCondition, trendDirection: result.report.trendDirection },
+        payload: { city, zip, territory: result.territory, document_id: result.documentId, status: "prepared_awaiting_review", reviewers_told: result.reviewersTold },
       })
 
-      // Only the CONDITION/TREND/INVENTORY fields — never a dollar figure
-      // (avgPriceChange, hotNeighborhoods[].avgPrice, competitorAnalysis
-      // prices) reaches the model's return value here.
+      // Only the territory and the data COUNTS reach the model — never a dollar figure (the report's headline leads with a
+      // formatted datum, so it stays on the reviewers' bell, never in the model's hands), never the asset URL.
       return {
         success: true,
-        marketCondition: result.report.marketCondition,
-        trendDirection: result.report.trendDirection,
-        inventoryLevel: result.report.inventoryLevel,
-        summary: result.report.summary,
+        prepared: true,
+        sent: false,
+        territory: result.territory,
+        dataPoints: result.counts,
+        delivery: result.reviewersTold > 0 ? "their agent reviews it and sends it" : "it is filed for the agent; nobody could be told yet, so do not promise a time",
       }
     },
   })

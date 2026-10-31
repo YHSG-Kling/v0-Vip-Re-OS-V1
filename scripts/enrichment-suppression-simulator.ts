@@ -81,6 +81,21 @@ const check = (n: string, c: boolean) => {
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 /** Strip comments so no assertion can be satisfied by prose describing the fix. */
 const code = (p: string) => stripComments(src(p))
+/** WAVE 147 (lane 147Z): the C8 survivor's enrichment hook, read in its OWN function bodies (stripped source):
+ *  captureConsentedContact calls captureContact, captureContact calls queueContactEnrichmentAndScore, and that calls the one
+ *  queue writer queueContactEnrichment. */
+function c8QueuesEnrichment(stripped: string): boolean {
+  const body = (name: string) => {
+    const m = new RegExp(`export async function ${name}\\s*[(<]`).exec(stripped)
+    if (!m) return ""
+    const rest = stripped.slice(m.index + m[0].length)
+    const next = /\nexport (?:async )?function\s/.exec(rest)
+    return stripped.slice(m.index, m.index + m[0].length + (next ? next.index : rest.length))
+  }
+  return /\bcaptureContact\s*\(/.test(body("captureConsentedContact"))
+    && /\bqueueContactEnrichmentAndScore\s*\(/.test(body("captureContact"))
+    && /\.queueContactEnrichment\s*\(/.test(body("queueContactEnrichmentAndScore"))
+}
 
 const SUPPRESSION = "lib/enrichment/deal-suppression.ts"
 const CORE        = "lib/enrichment/contact-enrichment-core.ts"
@@ -340,9 +355,17 @@ function sourceLayer() {
     // enrichContactAfterIntake → queueContactEnrichment in this file.
     "lib/kernel/crm.ts",                         // CRM manual add (survivor)
   ]) {
+    // WAVE 147 (lane 147Z): a door MERGED onto contract C8 (captureConsentedContact → captureContact) queues through the
+    // survivor's own queueContactEnrichmentAndScore — pinned right below, so the door is credited only while that holds.
     check(`direct door still queues enrichment: ${door}`,
-      /queueContactEnrichment\s*\(/.test(code(door)))
+      /queueContactEnrichment\s*\(/.test(code(door)) || (/captureConsentedContact\s*\(\{/.test(code(door)) && c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts"))))
   }
+  // The C8 survivor's enrichment hook, followed: captureContact calls queueContactEnrichmentAndScore, which calls the one
+  // queue writer (lib/enrichment/contact-enrichment-core.ts queueContactEnrichment) — and captureConsentedContact is ON captureContact.
+  check("the C8 survivor queues enrichment itself (captureConsentedContact → captureContact → queueContactEnrichmentAndScore → queueContactEnrichment)",
+    c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts")))
+  check("POSITIVE CONTROL: a C8 survivor whose captureContact no longer queues is not credited",
+    !c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts").replace(/await queueContactEnrichmentAndScore\(/g, "await noop(")))
 
   console.log("\n[source · one queue writer, not four]")
   // Each of these used to hold its own private copy with a different set of guards.

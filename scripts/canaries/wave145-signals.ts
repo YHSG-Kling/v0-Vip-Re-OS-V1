@@ -130,12 +130,39 @@ export async function run() {
   c.rule("145F", "PROTECTED ATTRIBUTES NEVER BLOCK ENRICHMENT SYNCING — THEY ARE STORED, SEGREGATED, FOR AUTHORIZED RESEARCH (ruling 12: 'Do not block import; do not expose'): a Versium row carrying ethnicity, religion, children, veteran and language lands its allow-listed facts unchanged (the sync proceeds), and the protected fields leave ONLY in a segregated research field, are written to the research store with provenance (purpose research, the provider, when retrieved), NOTHING protected reaches the contact row, and another tenant cannot write research onto this contact", !!appended.indicators?.onlinePresenceRealEstate && !/Ethnicity|Religion|Children|Veteran|"Ex"|"Rx"|"Lx"/.test(exposed) && research.length >= 5 && wrote.ok && held.length >= 5 && held.every((h) => h.brokerage_id === B && h.purpose === "research" && !!h.provider) && contactClean && !foreignWrite.ok, `sync proceeds ${!!appended.indicators?.onlinePresenceRealEstate}; protected in the exposed indicators ${/Ethnicity|Religion|"Ex"|"Rx"/.test(exposed)}; segregated research fields ${research.length}; store rows ${held.length} (purpose research ${held.every((h) => h.purpose === "research")}); contact row clean ${contactClean}; foreign tenant write → ${foreignWrite.ok ? "ACCEPTED" : "refused"}`)
 
   // …and the store is FIREWALLED: only the store and its one writer name it (stripped source; real string literals).
+  // WAVE 147 (lane 147Z — lane 147I Outside-lane 6): OWNER RULING 2 (2026-10-31) — "release all of the protected class blocking
+  // so that the data is added to the lead or contact fields so they can be read for researching" — overrules wave 145's
+  // "no reader at all". THE RULE THAT STILL HOLDS, re-asserted (not deleted): (a) only the store and its one writer name the
+  // TABLE; (b) a module outside them may import the store ONLY as a NAMED, purpose-gated reader door that calls
+  // readProtectedAttributes with a declared purpose — exactly RESEARCH_READER_DOORS below (lane 147A's right-to-know export) —
+  // and imports nothing else from it; (c) no ads / audience / dispatch / steering / eligibility module imports it at all.
   const { stringLiterals, stripComments } = await import("../strip-comments")
-  const namesIt = (text: string) => stringLiterals(text).some((l) => l.text === RESEARCH_TABLE || /protected-research-store$/.test(l.text))
-  const leaks = [...listFiles("lib", (f) => /\.tsx?$/.test(f)), ...listFiles("app", (f) => /\.tsx?$/.test(f))].filter((f) => !RESEARCH_ALLOWED.has(f) && /protected_research_attributes|protected-research-store/.test(readRepo(f) ?? "") && namesIt(stripComments(readRepo(f) ?? "")))
+  const RESEARCH_READER_DOORS: ReadonlyMap<string, string> = new Map([["app/actions/privacy/data-subject-requests.ts", "data_subject_request"]])
+  const namesTable = (text: string) => stringLiterals(text).some((l) => l.text === RESEARCH_TABLE)
+  const importsStore = (text: string) => stringLiterals(text).some((l) => /protected-research-store$/.test(l.text))
+  const TARGETING_ZONE = /^lib\/(ads|audiences|providers|campaigns|marketing)\/|^app\/actions\/(ads|audience|campaign)|steering|eligib/i
+  const corpus = [...listFiles("lib", (f) => /\.tsx?$/.test(f)), ...listFiles("app", (f) => /\.tsx?$/.test(f))].filter((f) => !RESEARCH_ALLOWED.has(f) && /protected_research_attributes|protected-research-store/.test(readRepo(f) ?? ""))
+  const tableLeaks = corpus.filter((f) => namesTable(stripComments(readRepo(f) ?? "")))
+  const importers = corpus.filter((f) => importsStore(stripComments(readRepo(f) ?? "")))
+  // A permitted door: on the named list, inside no targeting zone, destructures ONLY readProtectedAttributes from the store and
+  // passes the purpose its row declares.
+  const doorOk = (f: string, text: string) => {
+    const purpose = RESEARCH_READER_DOORS.get(f)
+    if (!purpose || TARGETING_ZONE.test(f)) return false
+    const pulls = [...text.matchAll(/\{\s*([^{}]*)\s*\}\s*=\s*await import\(\s*["']@\/lib\/enrichment\/protected-research-store["']\s*\)/g)].map((m) => m[1].split(",").map((s) => s.trim()).filter(Boolean))
+    const staticImport = /from\s*["']@\/lib\/enrichment\/protected-research-store["']/.test(text)
+    return !staticImport && pulls.length > 0 && pulls.every((names) => names.length === 1 && names[0] === "readProtectedAttributes") && new RegExp(`purpose:\\s*["']${purpose}["']`).test(text) && /readProtectedAttributes\(/.test(text)
+  }
+  const importLeaks = importers.filter((f) => !doorOk(f, stripComments(readRepo(f) ?? "")))
+  const targetingReach = importers.filter((f) => TARGETING_ZONE.test(f))
   const storeLanded = !!readRepo("lib/enrichment/protected-research-store.ts")
-  const fwControl = namesIt(`await svc.from("protected_research_attributes").select("*")`) && !namesIt(stripComments(`// protected_research_attributes is the research store\nconst x = 1`))
-  c.rule("145F", "THE RESEARCH STORE NEVER REACHES ADS, TARGETING, DISPATCH OR ELIGIBILITY (ruling 12: 'never exposed to ads/steering/eligibility'): no lib/ or app/ module other than the store and its one writer names the research table or imports the store (stripped source, real string literals; positive control: a .from(…) of the table IS caught, a comment is not)", storeLanded && fwControl && leaks.length === 0, `${storeLanded ? "store landed" : "lib/enrichment/protected-research-store.ts not landed (lane 145F)"}; modules naming it outside the store: ${leaks.join(", ") || "none"}; control ${fwControl}`)
+  const fwControl = namesTable(`await svc.from("protected_research_attributes").select("*")`) && !namesTable(stripComments(`// protected_research_attributes is the research store\nconst x = 1`))
+    && !doorOk("lib/ads/audience-builder.ts", `const { readProtectedAttributes } = await import("@/lib/enrichment/protected-research-store"); await readProtectedAttributes(svc, { purpose: "data_subject_request" })`)
+    && !doorOk("app/actions/privacy/data-subject-requests.ts", `const { readProtectedAttributes, PROTECTED_RESEARCH_TRANSFER_CLASS } = await import("@/lib/enrichment/protected-research-store"); await readProtectedAttributes(svc, { purpose: "data_subject_request" })`)
+    && doorOk("app/actions/privacy/data-subject-requests.ts", `if (ids.length > 0) {\n  const { readProtectedAttributes } = await import("@/lib/enrichment/protected-research-store"); await readProtectedAttributes(svc, { purpose: "data_subject_request" })\n}`)
+  c.rule("145F", "THE RESEARCH STORE NEVER REACHES ADS, TARGETING, DISPATCH OR ELIGIBILITY (ruling 12; owner ruling 2, 2026-10-31: readable for RESEARCH under purpose control): no lib/ or app/ module other than the store and its one writer names the research TABLE; the only importer outside them is a NAMED purpose-gated reader door (readProtectedAttributes with its declared purpose — lane 147A's right-to-know export) and no ads / audience / dispatch / steering / eligibility module imports the store (stripped source, real string literals; positive controls: a .from(…) of the table IS caught, a comment is not; an ads-module import and a door pulling a second export are refused, the named door is admitted)",
+    storeLanded && fwControl && tableLeaks.length === 0 && importLeaks.length === 0 && targetingReach.length === 0 && importers.length <= RESEARCH_READER_DOORS.size,
+    `${storeLanded ? "store landed" : "lib/enrichment/protected-research-store.ts not landed (lane 145F)"}; modules naming the table outside the store: ${tableLeaks.join(", ") || "none"}; importers ${importers.join(", ") || "none"} (named doors ${[...RESEARCH_READER_DOORS.keys()].join(", ")}); refused importers ${importLeaks.join(", ") || "none"}; targeting-zone reach ${targetingReach.join(", ") || "none"}; control ${fwControl}`)
   c.pendingOwner("145F", "THE RESEARCH STORE'S READERS AND RETENTION ARE THE OWNER'S (ruling 12: 'under access control + provenance'): which role may READ protected research and for how long it is kept", false, "Data governance (carried from wave 144 — 144Z owner item 2; lane 145F built the segregated store): name the role(s) that may read protected_research_attributes (compliance_officer only? platform research staff?) and the retention period — the store's RLS / purge is then written to that answer", storeLanded ? "store built; readers / retention undecided" : "store not landed yet")
 
   // ── 6 · RULING 14: the lifetime change JOINS the signal-reactivation intelligence (green — preserve the 144Z routing) ──

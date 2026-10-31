@@ -30,18 +30,9 @@ import { draftSphereTouchpoint } from "@/lib/sphere-resonance/touchpoint-draft"
 // (owner ruling: "ai customizations are also per user").
 import { isIsaCapabilityEnabledForScope } from "@/lib/ai-isa/resolve-isa-settings"
 
-type LifeEventType =
-  | "job_change"
-  | "job_change_to_non_local"
-  | "marriage"
-  | "new_baby"
-  | "kids_graduated"
-  | "empty_nester"
-  | "retirement"
-  | "divorce_filing"
-  | "foreclosure_filing"
-  | "death_in_household"
-  | "inheritance"
+// §6 (wave 147, lane 147Z): the local LifeEventType restatement is retired onto THE one vocabulary
+// (lib/enrichment/life-event-vocabulary.ts LIFE_EVENT_TYPES — the survivor spellings this scan already used).
+import { lifeEventTypeOf, type LifeEventType } from "@/lib/enrichment/life-event-vocabulary"
 
 // TouchpointType — the local restatement is retired onto the drafter's own
 // vocabulary (§6: one spelling), lib/sphere-resonance/touchpoint-draft.ts.
@@ -175,7 +166,10 @@ async function processBrokerageResonance(
 
     // Find recent events not yet resonated
     for (const evt of events) {
-      const eventTypeKey = evt.event as LifeEventType
+      // §6 (147Z): through the one reader rule — a stored `{ type }` (the life-change check) or a retired spelling
+      // (`divorce` / `death_in_family`, the old OSINT / web-mention writes) now reaches the careful-timing rule.
+      const eventTypeKey = lifeEventTypeOf(evt as { type?: unknown; event?: unknown })
+      if (!eventTypeKey) continue
       const eventDate = evt.date ? new Date(evt.date) : null
       if (eventDate && eventDate.getTime() < Date.now() - 30 * 24 * 60 * 60 * 1000) continue
 

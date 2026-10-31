@@ -42,6 +42,7 @@ import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lif
 // THE MLS LIVE DATE, ONE READER (wave 143, lane 143A): planned vs verified is decided in compute-dom, never re-derived here.
 import { resolveMlsLiveDates, resolveComingSoonWindow } from "@/lib/listings/compute-dom"
 import { isListingPubliclyVisible } from "@/lib/listings/listing-status-sync"
+import { ArchiveListingControl } from "@/app/components/dashboard/listings/lifecycle/archive-listing-control"
 // THE LISTING AGREEMENT'S GOVERNING TERMS + THE COMING SOON ADDRESS RULE (wave 145, lane 145B — owner rulings 1 + 2).
 import { governingListingAgreementTerms } from "@/lib/listings/listing-agreement-terms"
 import { resolveComingSoonCreativeAddress } from "@/lib/marketing/listing-public-address"
@@ -682,6 +683,14 @@ const { data: listingVendorBookings } = await supabase
                 the storefront, feeds and search show this record at all. */}
             {" · "}Public pages: <span className="font-medium text-foreground">{isListingPubliclyVisible(listing as { status?: string | null; deleted_at?: string | null }) ? "shown" : "hidden"}</span>
           </p>
+          {/* ARCHIVE / RESTORE (wave 147, lane 147Z — lane 147F "Still open": the archive action had no UI caller). Under the
+              record page's EXISTING override authority (canOverride — the brokerage's admin roster); the actions re-check the
+              session tenant. Nothing is deleted; the way back is the same control. */}
+          {canOverride && (
+            <div className="mt-2">
+              <ArchiveListingControl listingId={listing.id} archived={!!(listing as { deleted_at?: string | null }).deleted_at} />
+            </div>
+          )}
         </div>
 
         {/* ── LISTING SUB-ROUTE BAR (orphan-route sweep, lane G) ───────────────

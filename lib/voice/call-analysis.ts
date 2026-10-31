@@ -272,8 +272,31 @@ async function proposeSpokenCriteriaAlert(svc: any, call: {
 }): Promise<boolean> {
   if (!call.contact_id) return false // criteria without a buyer to alert are just chatter
   try {
-    const { extractCriteriaFromTranscript, criteriaToAlertRow, describeCriteria, spokenAlertCallMarker, VOICE_PROPOSAL_MARKER } =
+    const { extractCriteriaFromTranscript, criteriaToAlertRow, describeCriteria, spokenAlertCallMarker, VOICE_PROPOSAL_MARKER, buyerUtterances } =
       await import("@/lib/buyer-search/conversation-criteria")
+
+    // WAVE 147 (lane 147Z — lane 147C Outside-lane 3, contract C10): WHAT THE BUYER SAID ON THE PHONE LANDS IN THE ONE STORE.
+    // Beside the alert proposal below, the buyer's own lines (buyerUtterances — never the agent's / the AI's side of the call)
+    // update their saved criteria with per-field provenance (said, channel voice) through the ONE ledgered writer the portal,
+    // email and SMS turns use. BUYER SIDE ONLY (a seller's "we'd list at 600k" is not a buyer budget — the wave-108 sides
+    // ruling, as written-criteria-alert.ts applies it). Rules only (no model spend per call); keyed on the call, so a
+    // re-analysis replays instead of applying twice. Best-effort: never blocks the alert or the analysis.
+    try {
+      const { data: who, error: whoError } = await svc.from("contacts").select("contact_type").eq("id", call.contact_id).eq("brokerage_id", call.brokerage_id).maybeSingle()
+      const { isBuyerSideContactType } = await import("@/lib/contact-types")
+      const spoken = buyerUtterances(call.transcription).join(". ").trim()
+      if (whoError) console.error("[call-analysis] contact side read refused — spoken criteria not saved:", whoError.message)
+      else if (spoken && who && isBuyerSideContactType((who as { contact_type: string | null }).contact_type)) {
+        const { recordStatedCriteriaTurn } = await import("@/lib/buyer-search/criteria-turn")
+        const turn = await recordStatedCriteriaTurn(svc, {
+          brokerageId: call.brokerage_id, contactId: call.contact_id, text: spoken, channel: "voice", actor: { type: "system" },
+          idempotencyKey: `buyer_search.criteria.update:${call.contact_id}:call:${call.id}`, allowModelAssist: false, ledgerClient: svc,
+        })
+        if (turn.error) console.error("[call-analysis] spoken criteria not saved to the buyer's search:", turn.error)
+      }
+    } catch (err) {
+      console.error("[call-analysis] spoken-criteria persistence failed (non-blocking):", err)
+    }
 
     const extraction = extractCriteriaFromTranscript(call.transcription)
     if (extraction.confidence !== "high" || extraction.signalCount < SPOKEN_ALERT_MIN_SIGNALS) return false
