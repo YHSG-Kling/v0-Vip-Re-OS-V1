@@ -40,38 +40,55 @@ export interface InstantGreetingResult {
   reason?:    string
 }
 
+/**
+ * PERSON IDENTITY AT A CHECK-IN (wave 102, lane 102A; m697 — shared by EVERY check-in door since wave 147, lane 147F,
+ * ruling 7: "make sure that we didn't lose check-in writers for any event like open houses"). A check-in is an identity
+ * event whether or not a greeting goes out: the contact AND the attendee row become capture_match evidence on THE person
+ * row (lib/kernel/person-identity.ts), tenant from the event's brokerage the caller already proved. The caller's own
+ * listing.open_house.attendee_captured event carries the contact, so no second event. Best-effort: a refusal (or an
+ * unapplied m697) is logged and returned, never blocks the check-in. It lived inline in the greeting below; the kiosk was
+ * the only door that reached it, so the event-day door and the agent walk-in recorded attendees with NO identity match.
+ */
+export async function linkOpenHouseCheckInIdentity(
+  svc: { from: (t: string) => any },
+  input: { brokerageId: string; contactId: string; attendeeId: string; eventId: string; firstName: string; lastName?: string | null; email?: string | null; phone?: string | null; source: string },
+): Promise<{ linked: boolean; personId: string | null; reason?: string }> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const person = await resolvePerson(svc as never, {
+      brokerageId: input.brokerageId, firstName: input.firstName, lastName: input.lastName ?? null,
+      email: input.email ?? null, phone: input.phone ?? null,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn(`[check-in identity] person identity not resolved (${input.source}):`, person.reason)
+      return { linked: false, personId: null, reason: person.reason }
+    }
+    const common = {
+      brokerageId: input.brokerageId, personId: person.personId, source: input.source, matchScore: 1,
+      actor: { type: "system" as const, userId: null }, identity: person.identity,
+      existingEvent: "listing.open_house.attendee_captured",
+    }
+    const a = await linkPersonEvidence(svc as never, { ...common, entityType: "contact", entityId: input.contactId, matchMethod: "capture_match", detail: { event_id: input.eventId, attendee_id: input.attendeeId } })
+    const b = await linkPersonEvidence(svc as never, { ...common, entityType: "open_house_attendee", entityId: input.attendeeId, matchMethod: "capture_match", detail: { event_id: input.eventId, contact_id: input.contactId } })
+    const failed = [a, b].filter((r) => !r.ok)
+    for (const r of failed) console.warn(`[check-in identity] person evidence not recorded (${input.source}):`, (r as { reason?: string }).reason)
+    return { linked: failed.length === 0, personId: person.personId, reason: failed.length ? String((failed[0] as { reason?: string }).reason) : undefined }
+  } catch (err) {
+    console.warn(`[check-in identity] person identity threw (${input.source}; check-in unaffected):`, err instanceof Error ? err.message : String(err))
+    return { linked: false, personId: null, reason: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 export async function sendInstantOpenHouseGreeting(
   input: InstantGreetingInput,
 ): Promise<InstantGreetingResult> {
   const svc = createServiceClient()
 
-  // PERSON IDENTITY (wave 102, lane 102A; m697). The kiosk check-in is an identity event whether or
-  // not the greeting goes out: the attendee's name + email resolved (or created) the contact by email
-  // in the attend route, so the contact AND the attendee row become capture_match evidence on THE
-  // person row (lib/kernel/person-identity.ts), tenant from the event's brokerage the route already
-  // resolved. The route's own listing.open_house.attendee_captured event carries the contact, so no
-  // second event. Best-effort: a refusal (or an unapplied m697) is logged, never blocks the greeting.
-  try {
-    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
-    const person = await resolvePerson(svc, {
-      brokerageId: input.brokerageId, firstName: input.firstName, lastName: input.lastName ?? null,
-      email: input.email, phone: input.phone ?? null,
-    })
-    if (!person.ok) {
-      if (person.reason !== "no_identity_anchor") console.warn("[instant-greeting] person identity not resolved:", person.reason)
-    } else {
-      const common = {
-        brokerageId: input.brokerageId, personId: person.personId, source: "open_house_kiosk", matchScore: 1,
-        actor: { type: "system" as const, userId: null }, identity: person.identity,
-        existingEvent: "listing.open_house.attendee_captured",
-      }
-      const a = await linkPersonEvidence(svc, { ...common, entityType: "contact", entityId: input.contactId, matchMethod: "capture_match", detail: { event_id: input.eventId, attendee_id: input.attendeeId } })
-      const b = await linkPersonEvidence(svc, { ...common, entityType: "open_house_attendee", entityId: input.attendeeId, matchMethod: "capture_match", detail: { event_id: input.eventId, contact_id: input.contactId } })
-      for (const r of [a, b]) if (!r.ok) console.warn("[instant-greeting] person evidence not recorded:", r.reason)
-    }
-  } catch (err) {
-    console.warn("[instant-greeting] person identity threw (greeting unaffected):", err instanceof Error ? err.message : String(err))
-  }
+  // PERSON IDENTITY — the kiosk check-in's identity event, through the ONE check-in identity helper above.
+  await linkOpenHouseCheckInIdentity(svc, {
+    brokerageId: input.brokerageId, contactId: input.contactId, attendeeId: input.attendeeId, eventId: input.eventId,
+    firstName: input.firstName, lastName: input.lastName ?? null, email: input.email, phone: input.phone ?? null, source: "open_house_kiosk",
+  })
 
   // Resolve agent name + brand voice context
   const { data: agentUser } = await svc

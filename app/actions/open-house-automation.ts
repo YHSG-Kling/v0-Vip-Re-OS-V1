@@ -165,6 +165,12 @@ export async function recordVisitor(params: {
       if (event.brokerage_id !== userRow.brokerage_id) {
         return { success: false, error: "Forbidden: this open house belongs to another brokerage" }
       }
+      // The CONTACT is the body's (wave 147, lane 147F — CLAUDE.md §4): proved to be in the event's brokerage before it is
+      // filed against the attendee row — another tenant's contact id must not become this tenant's attendee.
+      const { data: knownContact, error: knownErr } = await supabase
+        .from("contacts").select("id").eq("id", params.contactId).eq("brokerage_id", event.brokerage_id).maybeSingle()
+      if (knownErr) return { success: false, error: `Could not verify the contact: ${knownErr.message}` }
+      if (!knownContact) return { success: false, error: "That contact is not in this open house's brokerage." }
 
       const { data, error } = await supabase
         .from("open_house_attendees")
@@ -184,6 +190,28 @@ export async function recordVisitor(params: {
 
       if (error) throw error
       if (!data) throw new Error("Failed to record visitor")
+
+      // IDENTITY + EVENT EVIDENCE + THE ARBITER (wave 147, lane 147F — ruling 7). This known-contact branch filed the
+      // attendee and stopped: no person-identity evidence and no OPEN_HOUSE_ATTENDEE_CAPTURED, so the AI ISA and the
+      // welcome never heard of the visit. Now the ONE check-in identity helper and the same fanned-out event every
+      // other check-in door emits. Best-effort: the check-in already landed.
+      const service = createServiceClient()
+      const { linkOpenHouseCheckInIdentity } = await import("@/lib/open-house/instant-greeting")
+      await linkOpenHouseCheckInIdentity(service, {
+        brokerageId: event.brokerage_id, contactId: params.contactId, attendeeId: String((data as { id: string }).id), eventId: params.openHouseId,
+        firstName: params.firstName, lastName: params.lastName ?? null, email: params.email ?? null, phone: params.phone ?? null, source: "open_house_mobile",
+      })
+      const k = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      const { data: ev } = await service.from("open_house_events").select("listing_id").eq("id", params.openHouseId).eq("brokerage_id", event.brokerage_id).maybeSingle()
+      const listingId = (ev as { listing_id?: string | null } | null)?.listing_id ?? null
+      if (listingId) {
+        await sentinelWrite(service, k.emitKernelEvent({
+          brokerageId: event.brokerage_id, entityType: "listing", entityId: listingId, event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
+          actorUserId: user.id, contactId: params.contactId,
+          metadata: { attendeeId: (data as { id: string }).id, eventId: params.openHouseId, contactId: params.contactId, via: "mobile_known_contact" },
+        }).then(k.asWriteResult), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "the mobile check-in's lifecycle event (fanned out); the attendee row already landed" })
+      }
 
       revalidatePath("/dashboard")
       return { success: true, visitor: data, contactId: params.contactId }

@@ -17,6 +17,7 @@ import { revalidatePath } from "next/cache"
 import type { MlsVerification } from "@/lib/listings/mls-verification"
 import { createClient } from "@/lib/supabase/server"
 import { LISTING_STATUSES, isListingStatus } from "@/lib/constants"
+import { isManuallySettableListingStatus } from "@/lib/listings/listing-status-sync"
 import {
   createListingRecord,
   createOrAttachSellerContact,
@@ -921,6 +922,19 @@ export async function updateListingStatus(listingId: string, status: string) {
         error: `'${status}' is not a listing phase. Valid: ${LISTING_STATUSES.join(", ")}`,
       }
     }
+    // C12 — THE GATED STATUSES ARE NOT A PICKER'S (wave 147, lane 147F; owner ruling 10 + the 2026-09-05 two-senses ruling).
+    // This door could set `active` (live on the MLS) with nothing checked — no compliance gate, no MLS evidence — and
+    // `coming_soon` / `listing_signed` without the agreement or its gate. Those three are reached ONLY through their gated
+    // doors (lib/listings/listing-status-sync.ts GATED_LISTING_STATUSES): the agreement execution, the compliance-gate
+    // pass, and the MLS-live event (the launch / activateMLS doors behind the activation gate, or the feed verification).
+    if (!isManuallySettableListingStatus(status)) {
+      return {
+        success: false,
+        error: status === "active"
+          ? "A listing becomes Active only when it is live on the MLS — launch it from the listing (the compliance gate runs), or it moves on its own once the MLS feed verifies it live."
+          : `'${status}' is set by the listing agreement and its compliance gate, not by hand.`,
+      }
+    }
 
     // Auth + ownership check — was previously open IDOR.
     // Every read destructures `error`: an authorisation gate that reads "clean"
@@ -939,7 +953,7 @@ export async function updateListingStatus(listingId: string, status: string) {
 
     const { data: listingRow, error: listingRowError } = await supabase
       .from("listings")
-      .select("brokerage_id")
+      .select("brokerage_id, status, updated_at")
       .eq("id", listingId)
       .maybeSingle()
     if (listingRowError) return { success: false, error: `Could not verify the listing: ${listingRowError.message}` }
@@ -952,19 +966,47 @@ export async function updateListingStatus(listingId: string, status: string) {
     // CHECK requires the uppercase enum (CLOSED / LISTING_CANCELLED), so the
     // old { current_stage: "closed" | "cancelled" } update threw on both the
     // column and the value.
-    const { data, error } = await supabase
-      .from("listings")
-      .update({
-        status,
-        lifecycle_stage:
-          status === "sold" ? "CLOSED" : status === "withdrawn" ? "LISTING_CANCELLED" : undefined,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", listingId)
-      // tenant anchor (scope burn-down)
-      .eq("brokerage_id", callerRow.brokerage_id)
-      .select()
-      .single()
+    // LAW 5 (wave 147, lane 147F — test:action-evidence-census): a status change is a consequential act on the record, so it
+    // runs under the action ledger. The cycle is the ROW VERSION it read (updated_at): the same click twice replays; a later
+    // change of the same listing is a new action. A refused claim changes nothing.
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    type StatusWrite = { data: any; error: { message: string } | null; notRun?: string }
+    const written = await withActionLedger<StatusWrite>(
+      {
+        brokerageId: callerRow.brokerage_id,
+        action: "listing.status.set",
+        actor: { type: "user", userId: user.id },
+        subject: { type: "listing", id: listingId },
+        reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: `status ${String(listingRow.status ?? "none")} → ${status} from the listings board`,
+        idempotencyKey: `listing_status:${listingId}:${String(listingRow.updated_at ?? "")}:${status}`,
+        riskClass: "LOW_RISK_WRITE",
+        systemSource: "listings-kernel",
+        detail: { from: listingRow.status ?? null, to: status },
+      },
+      async () => {
+        const { data, error } = await supabase
+          .from("listings")
+          .update({
+            status,
+            lifecycle_stage:
+              status === "sold" ? "CLOSED" : status === "withdrawn" ? "LISTING_CANCELLED" : undefined,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", listingId)
+          // tenant anchor (scope burn-down)
+          .eq("brokerage_id", callerRow.brokerage_id)
+          .select()
+          .single()
+        return { data, error: error ? { message: error.message } : null }
+      },
+      {
+        settle: (r) => (r.error ? { status: "failed", outcome: "refused", error: r.error.message } : { status: "executed", outcome: `status:${status}` }),
+        replay: (claim) => ({ data: null, error: null, notRun: claim.kind === "replay" ? "This status change was already recorded." : claim.kind === "refused" ? `The status change could not be recorded, so nothing was changed (${claim.error}).` : "This status change is already being recorded — refresh in a moment." }),
+      },
+    )
+    if (written.notRun) return { success: false, error: written.notRun }
+    const { data, error } = written
 
     if (error) throw error
 

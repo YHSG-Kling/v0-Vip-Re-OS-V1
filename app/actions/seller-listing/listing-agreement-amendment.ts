@@ -96,7 +96,10 @@ export async function recordListingAgreementAmendmentAction(params: ListingAgree
     }),
     {
       settle: (r) => (r.ok ? { status: "executed", outcome: `amendment ${r.versionNo} recorded` } : { status: "failed", outcome: "refused", error: r.reason }),
-      replay: (claim) => ({ ok: false, reason: claim.kind === "replay" ? "this amendment document was already recorded" : claim.kind === "in_flight" ? "this amendment is being recorded right now" : `the action ledger refused: ${"error" in claim ? claim.error : claim.kind}` }),
+      // Every non-acting claim fails closed. WAVE 147 (lane 147F): `unknown` (an earlier attempt whose outcome is not
+      // known) used to read "the action ledger refused: unknown" — it is not a refusal, and the agent must check before
+      // retrying, so it now says that.
+      replay: (claim) => ({ ok: false, reason: claim.kind === "replay" ? "this amendment document was already recorded" : claim.kind === "in_flight" ? "this amendment is being recorded right now" : claim.kind === "unknown" ? "an earlier attempt to record this amendment ended in an unknown state — check the listing agreement's versions before trying again" : `the action ledger refused: ${claim.error}` }),
     },
   )
   if (!rec.ok) return { success: false, error: rec.reason }

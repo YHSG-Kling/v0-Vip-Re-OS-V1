@@ -31,6 +31,9 @@ export interface ListingAgreementTermsPanelProps {
   addressInstruction: { value: boolean | null; source: "listing_agreement" | "amendment" | null; versionNo: number | null }
   supersededCount: number
   mls: { planned: string | null; verified: boolean; actual: string | null; verifiedSource: string | null }
+  /** C12 (wave 147, lane 147F — owner ruling 10): Coming Soon starts the day the agreement was EXECUTED; the feed-verified
+   *  MLS live day ends it (lib/listings/compute-dom.ts resolveComingSoonWindow). Optional so older callers still render. */
+  comingSoonWindow?: { start: string | null; days: number | null; open: boolean; verifiedLive: string | null }
   comingSoon: { disclose: boolean; addressLine: string; withheldBecause: string[] } | null
   amendmentDocuments: Array<{ id: string; label: string }>
   canAmend: boolean
@@ -82,6 +85,14 @@ export function ListingAgreementTermsPanel(p: ListingAgreementTermsPanelProps) {
           <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
             <dt className="text-muted-foreground">MLS live date the seller requested</dt>
             <dd>{p.agreedDate.value ? <>{p.agreedDate.value} <span className="text-muted-foreground">({agreedFrom})</span></> : <span className="text-muted-foreground">{p.termsRecordable ? "not stated on the agreement" : "not recordable until migration m856 is applied"}</span>}</dd>
+            {p.comingSoonWindow && (
+              <>
+                <dt className="text-muted-foreground">Coming Soon window</dt>
+                <dd>{p.comingSoonWindow.start
+                  ? <>from {p.comingSoonWindow.start} <span className="text-muted-foreground">(the day the agreement was executed)</span>{p.comingSoonWindow.open ? <> — open, day {p.comingSoonWindow.days ?? 0}; ends when the MLS feed verifies the listing live</> : <> — ended {p.comingSoonWindow.verifiedLive} (verified live on the MLS, now Active)</>}</>
+                  : <span className="text-muted-foreground">no execution date on the agreement — the start is unknown</span>}</dd>
+              </>
+            )}
             <dt className="text-muted-foreground">Planned date the listing follows</dt>
             <dd>{p.mls.planned ?? <span className="text-muted-foreground">none</span>}</dd>
             <dt className="text-muted-foreground">Live on the MLS</dt>

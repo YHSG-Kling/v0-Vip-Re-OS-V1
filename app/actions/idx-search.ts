@@ -10,6 +10,7 @@ import { parseBuyerCriteria } from "@/lib/buyer-search/parse-buyer-criteria"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { PUBLICLY_VISIBLE_LISTING_STATUSES } from "@/lib/listings/listing-status-sync"
 
 const IDX_API_BASE = process.env.IDXBROKER_API_URL || "https://api.idxbroker.com"
 const IDX_API_KEY = process.env.IDXBROKER_API_KEY
@@ -599,8 +600,11 @@ export interface PublicPropertyFacts {
   listingAgentEmail: string | null
 }
 
-/** Statuses that mean the home is publicly marketed and may be shown to anyone. */
-const PUBLICLY_MARKETED_STATUSES = ["active", "coming_soon", "pending"] as const
+/** Statuses that mean the home is publicly marketed and may be shown to anyone. WAVE 147 (lane 147F, C12 — §6 merge): this
+ *  was a second spelling of the public set (without `sold`, where app/listings/[listingId]/page.tsx had it). Both now read
+ *  the ONE predicate, lib/listings/listing-status-sync.ts PUBLICLY_VISIBLE_LISTING_STATUSES (which keeps `sold` — a sold
+ *  listing's shared link reads Sold instead of not-found). The archive filter below is unchanged. */
+const PUBLICLY_MARKETED_STATUSES = PUBLICLY_VISIBLE_LISTING_STATUSES
 
 /**
  * Resolve a property page from the MLS number in the URL.

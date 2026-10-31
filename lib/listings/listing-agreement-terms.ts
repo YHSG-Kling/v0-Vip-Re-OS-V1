@@ -127,6 +127,14 @@ export type GoverningListingTermsResult =
       ok: true
       /** The executed listing agreement the terms come from; null when the listing has none (nothing governs). */
       agreementId: string | null
+      /**
+       * WHEN THE AGREEMENT WAS EXECUTED (wave 147, lane 147F — owner ruling 10: "coming soon start date is the day the
+       * listing agreement was executed"): the LAST party's signature (seller_signed_at / agent_signed_at), else
+       * fully_executed_at. NOT `fully_executed_at` first: that stamp lands on the e-sign ladder's fully_executed hop AFTER
+       * compliance approval (wave 143, lane 143A), which can be days after the contract was signed. Never created_at (a
+       * draft row is not an execution). null when there is no executed agreement.
+       */
+      agreementExecutedAt: string | null
       /** false when m856 is not applied: the terms cannot be recorded yet, so nothing governs (legacy behaviour). */
       termsRecordable: boolean
       resolved: ResolvedListingTerms
@@ -144,8 +152,8 @@ export type GoverningListingTermsResult =
  */
 export async function governingListingAgreementTerms(svc: Svc, input: { brokerageId: string; listingId: string }): Promise<GoverningListingTermsResult> {
   if (!input.brokerageId || !input.listingId) return { ok: false, reason: "no tenant or listing" }
-  const empty = (agreementId: string | null, recordable: boolean): GoverningListingTermsResult => ({
-    ok: true, agreementId, termsRecordable: recordable, resolved: { terms: {}, conflicts: [], versions: [] }, sellerRequestedMlsLiveDate: null, comingSoonStreetAddressAuthorized: null,
+  const empty = (agreementId: string | null, recordable: boolean, agreementExecutedAt: string | null = null): GoverningListingTermsResult => ({
+    ok: true, agreementId, agreementExecutedAt, termsRecordable: recordable, resolved: { terms: {}, conflicts: [], versions: [] }, sellerRequestedMlsLiveDate: null, comingSoonStreetAddressAuthorized: null,
   })
   const base = "id, esign_status, seller_signed_at, agent_signed_at, fully_executed_at, created_at"
   let recordable = true
@@ -159,7 +167,10 @@ export async function governingListingAgreementTerms(svc: Svc, input: { brokerag
   if (res.error) return { ok: false, reason: `the listing agreement could not be read: ${res.error.message}` }
   const executed = ((res.data ?? []) as Array<Record<string, any>>).find((r) => isAtOrPastAllSigned(r.esign_status))
   if (!executed) return empty(null, recordable)
-  if (!recordable) return empty(String(executed.id), false)
+  const signatures = [executed.seller_signed_at, executed.agent_signed_at].filter((v): v is string => typeof v === "string" && !Number.isNaN(Date.parse(v)))
+  const lastSignature = signatures.length ? signatures.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a)) : null
+  const agreementExecutedAt = (lastSignature ?? (executed.fully_executed_at as string | null) ?? null) as string | null
+  if (!recordable) return empty(String(executed.id), false, agreementExecutedAt)
 
   const original: ListingTermVersion = {
     id: String(executed.id), versionNo: 0, source: "listing_agreement", documentId: null,
@@ -177,7 +188,7 @@ export async function governingListingAgreementTerms(svc: Svc, input: { brokerag
   const date = resolved.terms.seller_requested_mls_live_date?.value
   const auth = resolved.terms.coming_soon_street_address_authorized?.value
   return {
-    ok: true, agreementId: String(executed.id), termsRecordable: !am.error, resolved,
+    ok: true, agreementId: String(executed.id), agreementExecutedAt, termsRecordable: !am.error, resolved,
     sellerRequestedMlsLiveDate: typeof date === "string" ? ymdOf(date) : null,
     comingSoonStreetAddressAuthorized: typeof auth === "boolean" ? auth : null,
   }

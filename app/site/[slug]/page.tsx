@@ -22,6 +22,7 @@ import { notFound, permanentRedirect } from "next/navigation"
 import Link from "next/link"
 import { createServiceClient } from "@/lib/supabase/service"
 import { siteUrl } from "@/lib/platform/site-url"
+import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 import { serializeJsonLd } from "@/lib/geo/video-landing"
 import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
 import { LandingVideo } from "@/app/components/public-site/LandingVideo"
@@ -68,9 +69,14 @@ async function loadSite(slug: string) {
       .select("slug, name, magnet_type")
       .eq("brokerage_id", (b as any).id).eq("is_active", true)
       .order("submission_count", { ascending: false }).limit(4),
+    // C12 (wave 147, lane 147F — ruling 8): the UPCOMING OPEN HOUSES block had no status and no archive filter, so a
+    // withdrawn or ARCHIVED listing with a future open-house date was advertised on the public site. Now the shared public
+    // predicate + the archive filter, like every public reader.
     svc.from("listings")
       .select("slug, address, city, list_price, open_house_event_date, primary_photo_url")
       .eq("brokerage_id", (b as any).id)
+      .in("status", publiclyVisibleListingStatuses())
+      .is("deleted_at", null)
       .gte("open_house_event_date", todayIso)
       .order("open_house_event_date", { ascending: true }).limit(6),
   ])

@@ -285,6 +285,8 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
     .select("address, city, state, status, current_stage:lifecycle_stage, list_price")
     .eq("contact_id", contactId)
     .in("status", ["active", "coming_soon", "pending"])
+    // C12 (wave 147, lane 147F — ruling 8): the avatar never presents an ARCHIVED listing as the person's current one.
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()

@@ -426,6 +426,15 @@ export async function createOpenHouseAttendeeFromContact(input: {
     console.log(
       `[Kernel] Created attendee ${attendee.id} for contact ${contact_id} in open_house ${open_house_id}`
     )
+    // IDENTITY AT CHECK-IN (wave 147, lane 147F — ruling 7). Every agent-side check-in reaches this ONE writer (the walk-in
+    // completeOpenHouseCheckInAction, the /dashboard/open-houses step flow, the mobile walk-in) — and none of them linked
+    // the contact + attendee to the person record the kiosk links. Through the ONE check-in identity helper; best-effort.
+    const { linkOpenHouseCheckInIdentity } = await import("@/lib/open-house/instant-greeting")
+    await linkOpenHouseCheckInIdentity(supabase, {
+      brokerageId: brokerage_id, contactId: contact_id, attendeeId: attendee.id as string, eventId: open_house_id,
+      firstName: first_name, lastName: last_name ?? null, email: email ?? null, phone: tcpa_consent ? phone ?? null : null,
+      source: "open_house_walk_in",
+    })
     return {
       success: true,
       attendee_id: attendee.id,

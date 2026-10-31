@@ -727,7 +727,7 @@ async function checkComingSoonPolicy(
 ): Promise<ReadinessCheckResult> {
   const { data: listing, error: listingError } = await supabase
     .from("listings")
-    .select("brokerage_id, state, lifecycle_stage, stage_entered_at")
+    .select("brokerage_id, state, lifecycle_stage, stage_entered_at, mls_live_timezone")
     .eq("id", listingId)
     .maybeSingle()
   if (listingError) {
@@ -754,7 +754,25 @@ async function checkComingSoonPolicy(
 
   const enteredAt = listing.lifecycle_stage === "COMING_SOON_ACTIVE" && listing.stage_entered_at
     ? Date.parse(listing.stage_entered_at as string) : NaN
-  const daysInComingSoon = Number.isFinite(enteredAt) ? Math.max(0, Math.floor((Date.now() - enteredAt) / 86_400_000)) : 0
+  // C12 (wave 147, lane 147F — owner ruling 10, verbatim: "coming soon start date is the day the listing agreement was
+  // executed"). The MLS's max-days limit therefore counts from the EXECUTION day (the ONE agreement reader + the ONE window
+  // resolver), not from the COMING_SOON_ACTIVE stage entry — which can only block EARLIER (the closed side). Fallback, named
+  // in details.daysInComingSoonBasis: no executed agreement on file / an unreadable one → the stage entry, as before.
+  let daysInComingSoon = Number.isFinite(enteredAt) ? Math.max(0, Math.floor((Date.now() - enteredAt) / 86_400_000)) : 0
+  let daysInComingSoonBasis: "agreement_executed" | "stage_entered" = "stage_entered"
+  try {
+    const termsClient = deps?.comingSoonPolicyClient ?? (await import("@/lib/supabase/service")).createServiceClient()
+    const [{ governingListingAgreementTerms }, { resolveComingSoonWindow }] = await Promise.all([
+      import("@/lib/listings/listing-agreement-terms"), import("@/lib/listings/compute-dom"),
+    ])
+    const terms = await governingListingAgreementTerms(termsClient as never, { brokerageId: listing.brokerage_id as string, listingId })
+    if (terms.ok && terms.agreementExecutedAt) {
+      const w = resolveComingSoonWindow({ agreementExecutedAt: terms.agreementExecutedAt, listing: { mls_live_timezone: (listing as { mls_live_timezone?: string | null }).mls_live_timezone ?? null } })
+      if (w.days !== null) { daysInComingSoon = w.days; daysInComingSoonBasis = "agreement_executed" }
+    }
+  } catch {
+    /* the stage-entry count above stands, and the basis says so */
+  }
 
   const { loadComingSoonPolicy, evaluateComingSoonReadiness } = await import("@/lib/compliance/coming-soon-policy")
   let loaded: Awaited<ReturnType<typeof loadComingSoonPolicy>>
@@ -781,7 +799,7 @@ async function checkComingSoonPolicy(
     check: "coming_soon_policy",
     passed: verdict.ready,
     reason: verdict.ready ? undefined : [loaded.ok ? null : loaded.error, ...verdict.blockers].filter(Boolean).join("; "),
-    details: { status: verdict.status, blockers: verdict.blockers, source: verdict.source, showingsScheduled, daysInComingSoon, businessDaysSincePublicMarketing },
+    details: { status: verdict.status, blockers: verdict.blockers, source: verdict.source, showingsScheduled, daysInComingSoon, daysInComingSoonBasis, businessDaysSincePublicMarketing },
   }
 }
 

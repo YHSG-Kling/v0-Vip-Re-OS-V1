@@ -1,5 +1,6 @@
 "use server"
 
+import { createHash } from "node:crypto"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
@@ -735,7 +736,14 @@ async function crosswalkBusinessIdentity(args: {
       },
       {
         settle: (r) => r ? { status: "executed", outcome: r.matched_contact_id ? "matched" : r.skipped ? "skipped" : "no_match", provider: r.skipped ? null : "versium" } : { status: "failed", outcome: "refused", error: "no identity" },
-        replay: () => null,
+        // WAVE 147 (lane 147F, ruling 11): the hook used to answer EVERY non-acting claim with `null`, so a ledger
+        // REFUSAL (no paid lookup ran, nothing was recorded) left the scan with no trace — the header's "a refusal is
+        // recorded by name" was not true for the ledger's own refusal. A refusal now rides the scan as evidence that
+        // names it (no provider was called, cost 0); a replay / in-flight / unknown claim still adds nothing (the
+        // first run's evidence is the record).
+        replay: (claim) => claim.kind === "refused"
+          ? { via: "versium_b2b2c", matched_contact_id: null, consumer_emails_found: 0, cost_usd: 0, skipped: `ledger_refused: ${claim.error}`.slice(0, 300), at: new Date().toISOString() }
+          : null,
       },
       { client: supabase },
     )
@@ -834,6 +842,16 @@ export async function confirmBusinessCardScan(params: {
   const now = new Date().toISOString()
   const corrected = CARD_FIELDS.filter((f) => extraction.fields[f] !== ((row.extracted_data?.[f] as string | undefined) ?? ""))
   const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  // WAVE 147 (lane 147F, ruling 11): the key used to end in `${now}` (a millisecond timestamp), so every call minted a
+  // fresh key and a retried / double-submitted confirmation RAN TWICE — the ledger's at-most-once never engaged. The
+  // cycle is now WHAT was confirmed: the scan, the mode, the fields, the chosen type and the notes. The same
+  // confirmation submitted twice replays; a genuinely different correction later is a new action.
+  const confirmationKey = confirmationFingerprint({
+    mode: row.contact_id ? "corrected" : "routed",
+    fields: extraction.fields as Record<string, unknown>,
+    subjectType: subjectType ?? null,
+    notes: params.notes === undefined ? null : params.notes ?? null,
+  })
 
   return withActionLedger<ConfirmBusinessCardResult>(
     {
@@ -843,7 +861,7 @@ export async function confirmBusinessCardScan(params: {
       subject: { type: "business_card_scan", id: row.id },
       reasonCode: "HUMAN_REQUESTED",
       reasonDetail: row.contact_id ? "the scanning agent corrected a card reading on an existing contact" : "the scanning agent confirmed a card reading the reader was unsure of",
-      idempotencyKey: `business_card_confirm:${row.id}:${now}`,
+      idempotencyKey: `business_card_confirm:${row.id}:${confirmationKey}`,
       riskClass: "LOW_RISK_WRITE",
       systemSource: "business-card-actions",
       detail: { mode: row.contact_id ? "corrected" : "routed", corrected_fields: corrected, previous_status: row.review_status },
@@ -924,10 +942,25 @@ export async function confirmBusinessCardScan(params: {
       settle: (r) => r.ok
         ? { status: "executed", outcome: r.mode, provider: null }
         : { status: "failed", outcome: "refused", error: r.error },
-      replay: () => ({ ok: false, error: "This confirmation was already recorded." }),
+      // WAVE 147 (lane 147F): one message used to cover every non-acting claim — "This confirmation was already
+      // recorded." — which was FALSE for a refused claim (nothing was recorded and nothing ran). Each kind now says
+      // what actually happened; none of them acts (fail closed).
+      replay: (claim) => claim.kind === "replay"
+        ? { ok: false, error: "This exact confirmation was already recorded — nothing was changed a second time." }
+        : claim.kind === "in_flight"
+          ? { ok: false, error: "This confirmation is being recorded right now — refresh in a moment." }
+          : claim.kind === "unknown"
+            ? { ok: false, error: "An earlier attempt at this confirmation ended in an unknown state — check the scan before trying again." }
+            : { ok: false, error: `The confirmation could not be recorded, so nothing was changed (${claim.error}).` },
     },
     { client: supabase },
   )
+}
+
+/** The idempotency cycle of one confirmation: a short stable digest of what was confirmed (key order is fixed). */
+function confirmationFingerprint(c: { mode: string; fields: Record<string, unknown>; subjectType: string | null; notes: string | null }): string {
+  const fields = Object.keys(c.fields).sort().map((k) => [k, c.fields[k] ?? ""])
+  return createHash("sha256").update(JSON.stringify([c.mode, fields, c.subjectType, c.notes])).digest("hex").slice(0, 24)
 }
 
 /**

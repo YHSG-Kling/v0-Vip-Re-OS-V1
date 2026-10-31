@@ -169,3 +169,56 @@ export function computeDaysOnMarketForListing(
   const days = calendarDaysBetween(r.date, todayInTimeZone(r.timezone, now))
   return { days: Math.max(0, days), basis: r.basis }
 }
+
+// ─── THE COMING SOON WINDOW (wave 147, lane 147F — owner ruling 10, contract C12) ────────────────────────────────────
+
+/**
+ * Owner, verbatim (2026-10-31): "coming soon start date is the day the listing agreement was executed and once the listing
+ * is live on mls, the listing becomes active not coming soon."
+ *
+ *   start   = the calendar day the listing agreement was EXECUTED (the last party's signature — the ONE reader,
+ *             lib/listings/listing-agreement-terms.ts governingListingAgreementTerms → agreementExecutedAt), in the
+ *             listing's market zone. NOT the day a status changed and NOT the COMING_SOON_ACTIVE stage entry.
+ *   planned = the seller-agreed / planned MLS live day (listings.go_live_date) — PRESERVED, shown as planned, never as live.
+ *   end     = the FEED-VERIFIED MLS live day (resolveMlsLiveDates().actual) — an EVENT, never the planned date arriving.
+ *
+ * The window is OPEN until the verified end exists; `days` counts calendar days from start to (end ?? today). Without an
+ * executed agreement there is no start (`startBasis: "unknown"`) — a Coming Soon listing in that state is a FINDING
+ * (lib/listings/listing-status-sync.ts listingLifecycleFindings), never a guessed date.
+ */
+export interface ComingSoonWindow {
+  start: string | null
+  startBasis: "agreement_executed" | "unknown"
+  plannedLive: string | null
+  verifiedLive: string | null
+  open: boolean
+  days: number | null
+  timezone: string | null
+}
+
+/** PURE — the Coming Soon window of one listing (see ComingSoonWindow). */
+export function resolveComingSoonWindow(
+  input: { agreementExecutedAt: string | Date | null | undefined; listing: MlsLiveDateColumns | null | undefined },
+  now: Date = new Date(),
+): ComingSoonWindow {
+  const live = resolveMlsLiveDates(input.listing, now)
+  const tz = live.timezone
+  let start: string | null = null
+  const raw = input.agreementExecutedAt
+  if (raw) {
+    const t = raw instanceof Date ? raw : new Date(raw)
+    // A bare yyyy-mm-dd is already a calendar day; a timestamp is read as a day in the listing's market zone.
+    start = typeof raw === "string" && YMD.test(raw.trim()) ? raw.trim() : Number.isNaN(t.getTime()) ? null : todayInTimeZone(tz, t)
+  }
+  const end = live.actual
+  const through = end ?? todayInTimeZone(tz, now)
+  return {
+    start,
+    startBasis: start ? "agreement_executed" : "unknown",
+    plannedLive: live.planned,
+    verifiedLive: end,
+    open: !end,
+    days: start ? Math.max(0, calendarDaysBetween(start, through)) : null,
+    timezone: tz,
+  }
+}

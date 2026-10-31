@@ -722,25 +722,71 @@ export async function checkInAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
+  // THE CONTACT AND THE IDENTITY AT CHECK-IN (wave 147, lane 147F — owner rulings 1 + 7: "make sure that we didn't lose
+  // check-in writers for any event like open houses"; a consent box ⇒ a CONTACT). This door recorded a CONSENTED sign-in as
+  // an attendee with no contact and no identity match — the contact waited for a human "convert" click, and the consent row
+  // below was written with NO contact_id (consent nobody could ever be found by). A consented, identifiable sign-in now
+  // resolves (dedupes) onto the open-house Contact through the open-house kernel's ONE resolver
+  // (lib/kernel/open-house.ts resolveOrCreateOpenHouseContact), the attendee row is stamped with it (COUNTED — an update
+  // that matches nothing resolves too, §3), and the contact + attendee become person-identity evidence through the ONE
+  // check-in identity helper (lib/open-house/instant-greeting.ts linkOpenHouseCheckInIdentity). A failure here never undoes
+  // the check-in; it is logged by name and the human convert path (convertAttendeeToContact) still exists.
+  // HANDOFF (lane 147A, C8): when lane A names the ONE consented-intake survivor, this resolve is the call to re-point.
+  let checkedInContactId: string | null = null
+  if (attendee?.id && (params.email || safePhone) && event.agent_id) {
+    const parts = String(params.name ?? "").trim().split(/\s+/).filter(Boolean)
+    const firstName = parts[0] ?? ""
+    const lastName = parts.slice(1).join(" ")
+    if (firstName) {
+      const { resolveOrCreateOpenHouseContact } = await import("@/lib/kernel/open-house")
+      const resolved = await resolveOrCreateOpenHouseContact({
+        brokerage_id: event.brokerage_id, agent_id: event.agent_id, first_name: firstName, last_name: lastName || undefined,
+        email: params.email ?? undefined, phone: safePhone ?? undefined, open_house_id: params.eventId,
+      })
+      if (!resolved.success || !resolved.contact_id) {
+        console.error(`[seller-open-house] consented check-in ${attendee.id} kept WITHOUT a contact — the resolve was refused: ${resolved.error ?? "no contact id"}`)
+      } else {
+        checkedInContactId = resolved.contact_id
+        const { data: stamped, error: stampErr } = await serviceClient.from("open_house_attendees")
+          .update({ contact_id: checkedInContactId }).eq("id", attendee.id).eq("brokerage_id", event.brokerage_id).select("id")
+        if (stampErr || !stamped?.length) console.error(`[seller-open-house] attendee ${attendee.id} not linked to contact ${checkedInContactId}: ${stampErr?.message ?? "matched no row"}`)
+        const { linkOpenHouseCheckInIdentity } = await import("@/lib/open-house/instant-greeting")
+        await linkOpenHouseCheckInIdentity(serviceClient, {
+          brokerageId: event.brokerage_id, contactId: checkedInContactId, attendeeId: attendee.id, eventId: params.eventId,
+          firstName, lastName: lastName || null, email: params.email ?? null, phone: safePhone, source: "open_house_event_day",
+        })
+      }
+    }
+  }
+
+  // EVENT EVIDENCE + THE ARBITER (wave 147, lane 147F — ruling 7). The capture used to be emitted `auditOnly` BEFORE any
+  // contact existed, so the reactor's OPEN_HOUSE_ATTENDEE_CAPTURED reader (lib/kernel/event-reactor.ts — the AI ISA signal
+  // and the conversion welcome for metadata.contactId) never saw an event-day check-in. It now fans out, after the contact
+  // resolved, carrying contactId + eventId exactly as the kiosk door does.
   await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: event.brokerage_id,
     entityType: "listing",
     entityId: event.listing_id,
     event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
     actorUserId: event.agent_id,
+    contactId: checkedInContactId ?? undefined,
     metadata: {
       attendee_id: attendee?.id,
+      attendeeId: attendee?.id,
       event_id: params.eventId,
+      eventId: params.eventId,
+      contactId: checkedInContactId,
       has_email: !!params.email,
       working_with_agent: params.workingWithAgent,
     },
-    auditOnly: true,
-  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "the check-in's lifecycle event (fanned out to the reactor); a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   if (params.email || safePhone) {
     const { error: kioskConsentErr } = await serviceClient.from("contact_consent_events").insert({
       brokerage_id: event.brokerage_id,
       agent_id: event.agent_id,
+      // wave 147F: the consent is anchored to the person it belongs to (was always null here)
+      contact_id: checkedInContactId,
       consent_type: "tcpa",
       consent_text: "By submitting this form, you consent to be contacted about real estate services.",
       consent_source: "open_house_kiosk",
@@ -749,7 +795,7 @@ export async function checkInAttendee(params: {
     if (kioskConsentErr) console.error(`[seller-open-house] TCPA consent from the open-house kiosk NOT recorded on the consent ledger: ${kioskConsentErr.message}`)
   }
 
-  return { success: true, attendeeId: attendee?.id, duplicate: false }
+  return { success: true, attendeeId: attendee?.id, contactId: checkedInContactId, duplicate: false }
 }
 
 // ─── POST-EVENT: CONVERT ATTENDEE TO CONTACT ─────────────────────────────────

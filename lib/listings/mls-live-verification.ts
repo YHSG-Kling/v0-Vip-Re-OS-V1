@@ -30,6 +30,15 @@ import {
   type MlsVerification,
 } from "./mls-verification"
 import { recordVerifiedMlsLive, bellListingAgent, type VerifiedLiveResult } from "./mls-live-date"
+import { resolveComingSoonWindow, todayInTimeZone } from "./compute-dom"
+import {
+  listingLifecycleFindings,
+  statusForStage,
+  STATUS_AFTER_LISTING_AGREEMENT_GATE,
+  STATUS_AT_LISTING_AGREEMENT_SIGNED,
+  type ListingLifecycleFinding,
+  type ListingLifecycleFindingCode,
+} from "./listing-status-sync"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -123,8 +132,141 @@ async function consultMlsFeeds(
 }
 
 export type VerifyAndRecordResult =
-  | { ok: true; verification: MlsVerification; recorded: VerifiedLiveResult | null }
+  | { ok: true; verification: MlsVerification; recorded: VerifiedLiveResult | null; lifecycle?: ReconcileLifecycleResult }
   | { ok: false; error: string }
+
+// ─── C12 — THE MLS-LIVE EVENT MAKES THE LISTING ACTIVE; DISCREPANCIES REACH THE LISTING CONCIERGE (wave 147, lane 147F) ──
+//
+// Owner, verbatim (2026-10-31): "coming soon start date is the day the listing agreement was executed and once the listing
+// is live on mls, the listing becomes active not coming soon."
+//
+// BEFORE: the feeds were only ever asked about listings ALREADY claiming `active` (the sweep filtered status = 'active'), so
+// a Coming Soon listing that the admin put live on the MLS stayed Coming Soon until somebody pressed a button. NOW the sweep
+// also asks about listings still pre-active WITH an MLS number, and a feed CONFIRMATION (an event — never a date arriving)
+// moves the listing to MLS_ACTIVE through the SAME activation gate every door runs (lib/listings/listing-activation-gate.ts
+// assertListingActivationAllowed) and the kernel transition (status syncs to `active` through the shared map). A refused gate
+// changes nothing and is told to the listing concierge with the gate's reason. Each discrepancy is published ONCE per open
+// finding (signal `listing_lifecycle_finding`, data_steward → listing_concierge, lib/kernel/signal-registry.ts).
+
+/** Statuses the feeds are asked about: the pre-active ones (did it go live?) and `active` (is the claim true?). */
+const MLS_CHECKABLE_STATUSES: readonly string[] = [STATUS_AT_LISTING_AGREEMENT_SIGNED, STATUS_AFTER_LISTING_AGREEMENT_GATE, statusForStage("MLS_ACTIVE") ?? "active"]
+const PRE_ACTIVE: readonly string[] = [STATUS_AT_LISTING_AGREEMENT_SIGNED, STATUS_AFTER_LISTING_AGREEMENT_GATE]
+export const LISTING_LIFECYCLE_FINDING_SIGNAL = "listing_lifecycle_finding"
+
+export interface ReconcileLifecycleDeps {
+  gate?: (svc: Svc, p: { brokerageId: string; listingId: string; door: string }) => Promise<{ allowed: boolean; reason: string }>
+  transition?: (p: { brokerageId: string; listingId: string; fromState: string; verifiedLive: string }, svc: Svc) => Promise<{ success: boolean; error?: string }>
+  publish?: (p: { brokerageId: string; fromManager: "data_steward"; toManager: "listing_concierge"; signalType: string; message: string; entityType: string; entityId: string; payload: Record<string, unknown>; dedupe: false }, svc: Svc) => Promise<{ ok: boolean; reason?: string }>
+  now?: Date
+}
+export type ReconcileLifecycleResult =
+  | { ok: true; activated: boolean; activationRefusal: string | null; findings: ListingLifecycleFinding[]; published: ListingLifecycleFindingCode[] }
+  | { ok: false; error: string }
+
+/**
+ * ONE listing's C12 reconciliation: Coming Soon window (start = the agreement's execution day), the MLS-live event → Active,
+ * and the discrepancies → the listing concierge. Tenant-pinned; every read's error is read; never throws. Module-private:
+ * its one door is verifyAndRecordMlsLive below (every feed check — the session button and the sweep); the proof drives it
+ * through that door (scripts/listing-lifecycle-guard.ts §C).
+ */
+async function reconcileListingLifecycle(svc: Svc, input: { brokerageId: string; listingId: string }, deps: ReconcileLifecycleDeps = {}): Promise<ReconcileLifecycleResult> {
+  try {
+    const now = deps.now ?? new Date()
+    const { data, error } = await svc
+      .from("listings")
+      .select("id, status, lifecycle_stage, deleted_at, go_live_date, mls_live_date_actual, go_live_confirmed_at, go_live_confirmed_source, mls_live_date_basis, mls_live_timezone")
+      .eq("id", input.listingId)
+      .eq("brokerage_id", input.brokerageId)
+      .maybeSingle()
+    if (error) return { ok: false, error: `listing could not be read: ${error.message}` }
+    if (!data) return { ok: false, error: "listing not found in this brokerage" }
+    const row = data as Record<string, any>
+    const { governingListingAgreementTerms } = await import("./listing-agreement-terms")
+    const terms = await governingListingAgreementTerms(svc, input)
+    const window = resolveComingSoonWindow({ agreementExecutedAt: terms.ok ? terms.agreementExecutedAt : null, listing: row }, now)
+    let status = (row.status as string | null) ?? null
+    let activated = false
+    let activationRefusal: string | null = null
+
+    if (!row.deleted_at && window.verifiedLive && PRE_ACTIVE.includes(String(status))) {
+      const verdict = await (deps.gate ?? defaultActivationGate)(svc, { ...input, door: "MLS feed verification" })
+      if (!verdict.allowed) activationRefusal = verdict.reason
+      else {
+        const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+        const fromState = String(row.lifecycle_stage ?? "")
+        const res = await withActionLedger<{ success: boolean; error?: string; replayed?: boolean }>(
+          {
+            brokerageId: input.brokerageId,
+            action: "listing.mls_activation.record",
+            actor: { type: "system" },
+            subject: { type: "listing", id: input.listingId },
+            reasonCode: "TRANSACTION_MILESTONE",
+            reasonDetail: `the MLS feed verified the listing live on ${window.verifiedLive} and the activation gate passed`,
+            idempotencyKey: `listing_mls_activation:${input.listingId}:${window.verifiedLive}`,
+            riskClass: "LOW_RISK_WRITE",
+            systemSource: "mls-live-verification",
+            detail: { from_status: status, from_stage: fromState, verified_live: window.verifiedLive },
+          },
+          () => (deps.transition ?? defaultActivationTransition)({ ...input, fromState, verifiedLive: window.verifiedLive as string }, svc),
+          {
+            settle: (r) => (r.success ? { status: "executed", outcome: "activated" } : { status: "failed", outcome: "transition_refused", error: r.error ?? null }),
+            replay: (claim) => (claim.kind === "replay"
+              ? { success: true, replayed: true }
+              : { success: false, error: claim.kind === "refused" ? `the action ledger refused the activation (${claim.error}) — nothing changed` : `an earlier activation attempt is ${claim.kind === "in_flight" ? "still in flight" : "in an unknown state"}` }),
+          },
+          { client: svc },
+        )
+        if (res.success && !res.replayed) { activated = true; status = statusForStage("MLS_ACTIVE") ?? status }
+        else if (!res.success) activationRefusal = res.error ?? "the stage transition was refused"
+      }
+    }
+
+    const findings = listingLifecycleFindings({
+      status, deletedAt: row.deleted_at ?? null, window, agreementKnown: terms.ok,
+      agreedMlsLiveDate: terms.ok ? terms.sellerRequestedMlsLiveDate : null, today: todayInTimeZone(window.timezone, now),
+    }).map((f) => (f.code === "live_on_mls_not_active" && activationRefusal
+      ? { ...f, message: `${f.message} The activation gate refused: ${activationRefusal}`, evidence: { ...f.evidence, activation_refusal: activationRefusal } }
+      : f))
+    const published: ListingLifecycleFindingCode[] = []
+    for (const f of findings) if (await publishLifecycleFinding(svc, input, f, deps.publish)) published.push(f.code)
+    return { ok: true, activated, activationRefusal, findings, published }
+  } catch (e) {
+    return { ok: false, error: `reconcile threw: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+/** One open finding per (listing, code): an unchanged discrepancy is not re-published on every sweep. */
+async function publishLifecycleFinding(svc: Svc, input: { brokerageId: string; listingId: string }, f: ListingLifecycleFinding, publish?: ReconcileLifecycleDeps["publish"]): Promise<boolean> {
+  // `status` is read and judged here (absent = the column DEFAULT 'open'): publishManagerSignal inserts no status of its own.
+  const { data: same, error } = await svc.from("manager_signals").select("id, status")
+    .eq("brokerage_id", input.brokerageId).eq("to_manager", "listing_concierge").eq("signal_type", LISTING_LIFECYCLE_FINDING_SIGNAL)
+    .eq("entity_id", input.listingId).eq("payload->>code", f.code).limit(50)
+  if (error) { console.error(`[mls-live-verification] finding ${f.code} not published — the open-signal check was refused: ${error.message}`); return false }
+  if (((same ?? []) as Array<{ status?: string | null }>).some((s) => (s.status ?? "open") === "open")) return false
+  const pub = publish ?? (async (p: Parameters<NonNullable<ReconcileLifecycleDeps["publish"]>>[0], s: Svc) => (await import("@/lib/kernel/manager-signals")).publishManagerSignal(p, s as never))
+  const r = await pub({
+    brokerageId: input.brokerageId, fromManager: "data_steward", toManager: "listing_concierge", signalType: LISTING_LIFECYCLE_FINDING_SIGNAL,
+    message: f.message, entityType: "listing", entityId: input.listingId, payload: { code: f.code, ...f.evidence }, dedupe: false,
+  }, svc)
+  if (!r.ok) console.error(`[mls-live-verification] finding ${f.code} for listing ${input.listingId} not published: ${r.reason ?? "unknown"}`)
+  return r.ok
+}
+
+async function defaultActivationGate(svc: Svc, p: { brokerageId: string; listingId: string; door: string }): Promise<{ allowed: boolean; reason: string }> {
+  const { assertListingActivationAllowed } = await import("./listing-activation-gate")
+  const v = await assertListingActivationAllowed(svc as never, p)
+  return { allowed: v.allowed, reason: v.reason }
+}
+
+async function defaultActivationTransition(p: { brokerageId: string; listingId: string; fromState: string; verifiedLive: string }, svc: Svc): Promise<{ success: boolean; error?: string }> {
+  const [{ transitionLifecycle }, { KernelEvent }] = await Promise.all([import("@/lib/kernel/lifecycle"), import("@/lib/kernel/events")])
+  const r = await transitionLifecycle({
+    brokerageId: p.brokerageId, entityType: "listing_stage_machine", entityId: p.listingId,
+    fromState: p.fromState, toState: "MLS_ACTIVE", actorUserId: null, eventType: KernelEvent.LISTING_PUBLISHED,
+    metadata: { activated_by: "mls_feed_verified", verified_live: p.verifiedLive },
+  }, svc as never)
+  return { success: r.success, error: r.error }
+}
 
 /**
  * The ONE verification: read the listing (tenant-pinned), consult the feeds, reconcile, and on `confirmed` record
@@ -134,11 +276,11 @@ export async function verifyAndRecordMlsLive(
   svc: Svc,
   ctx: VerifyListingContext & { actorUserId?: string | null },
   listingId: string,
-  opts: { feeds?: MlsFeedsFn; now?: Date } = {},
+  opts: { feeds?: MlsFeedsFn; now?: Date; lifecycle?: ReconcileLifecycleDeps } = {},
 ): Promise<VerifyAndRecordResult> {
   const { data: listing, error } = await svc
     .from("listings")
-    .select("id, address, city, state, zip, brokerage_id, mls_number, listing_date, updated_at, agent_id, metadata, go_live_confirmed_at")
+    .select("id, address, city, state, zip, brokerage_id, mls_number, listing_date, updated_at, agent_id, metadata, go_live_confirmed_at, status")
     .eq("id", listingId)
     .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
@@ -163,7 +305,9 @@ export async function verifyAndRecordMlsLive(
       actorUserId: ctx.actorUserId ?? null, now: opts.now,
     })
     if (!recorded.ok) console.error(`[mls-live-verification] listing ${listingId} confirmed by ${source} but the date was NOT recorded: ${recorded.reason}`)
-  } else if (verification.needsAttention) {
+  } else if (verification.needsAttention && (verification.verdict === "contradicted" || !PRE_ACTIVE.includes(String(row.status)))) {
+    // A PRE-ACTIVE listing that is not on the feed yet is EXPECTED (it is Coming Soon) — "not showing on the MLS yet" is
+    // not a finding for it (wave 147F); only a contradicted MLS number is. An `active` claim keeps the overdue bell.
     await bellListingAgent(svc, {
       brokerageId: ctx.brokerageId, listingId, agentId: (row.agent_id as string | null) ?? null,
       type: verification.verdict === "contradicted" ? "listing.mls_contradicted" : "listing.mls_not_syndicated",
@@ -182,7 +326,11 @@ export async function verifyAndRecordMlsLive(
     .eq("brokerage_id", ctx.brokerageId)
     .select("id")
   if (metaErr) console.error(`[mls-live-verification] last-check stamp refused for listing ${listingId}: ${metaErr.message}`)
-  return { ok: true, verification, recorded }
+  // C12: after every check, the lifecycle follows the evidence — a confirmed live listing becomes Active (gated, ledgered),
+  // and any discrepancy reaches the listing concierge once. Best-effort: the verification above stands either way.
+  const lifecycle = await reconcileListingLifecycle(svc, { brokerageId: ctx.brokerageId, listingId }, { now: opts.now, ...(opts.lifecycle ?? {}) })
+  if (!lifecycle.ok) console.error(`[mls-live-verification] lifecycle reconcile for listing ${listingId} did not run: ${lifecycle.error}`)
+  return { ok: true, verification, recorded, lifecycle }
 }
 
 export interface MlsLiveSweepResult {
@@ -204,13 +352,16 @@ function dueForMlsLiveCheck(metadata: unknown, now: Date = new Date(), hours: nu
 }
 
 /**
- * THE AUTONOMOUS SWEEP — live listings with an MLS number that no feed has confirmed yet. Per brokerage, bounded.
- * "Live" is the status the OS asserts (`active`): the claim the feeds are asked to prove.
+ * THE AUTONOMOUS SWEEP — listings with an MLS number that no feed has confirmed yet. Per brokerage, bounded.
+ * WAVE 147 (lane 147F, C12): not only `active` (is the OS's claim true?) but the PRE-ACTIVE statuses too (did the listing
+ * the admin put on the MLS actually go live?) — a confirmation is the EVENT that makes it Active (reconcileListingLifecycle).
+ * The MLS has no push to us; this poll is the fallback, at most once per listing per SWEEP_RECHECK_HOURS (the freshness it
+ * can promise).
  */
 export async function runMlsLiveVerificationSweep(
   svc: Svc,
   brokerageId: string,
-  opts: { limit?: number; now?: Date; feeds?: MlsFeedsFn } = {},
+  opts: { limit?: number; now?: Date; feeds?: MlsFeedsFn; lifecycle?: ReconcileLifecycleDeps } = {},
 ): Promise<MlsLiveSweepResult> {
   const out: MlsLiveSweepResult = { scanned: 0, skippedRecent: 0, confirmed: 0, contradicted: 0, pending: 0, unverifiable: 0, errors: 0 }
   if (!brokerageId) return out
@@ -218,7 +369,7 @@ export async function runMlsLiveVerificationSweep(
     .from("listings")
     .select("id, metadata")
     .eq("brokerage_id", brokerageId)
-    .eq("status", "active")
+    .in("status", [...MLS_CHECKABLE_STATUSES])
     .not("mls_number", "is", null)
     .is("go_live_confirmed_at", null)
     .is("deleted_at", null)
@@ -232,7 +383,7 @@ export async function runMlsLiveVerificationSweep(
   for (const l of (data ?? []) as Array<{ id: string; metadata: unknown }>) {
     if (!dueForMlsLiveCheck(l.metadata, opts.now)) { out.skippedRecent++; continue }
     out.scanned++
-    const r = await verifyAndRecordMlsLive(svc, { brokerageId, userId: null, teamId: null, actorUserId: null }, l.id, { feeds: opts.feeds, now: opts.now })
+    const r = await verifyAndRecordMlsLive(svc, { brokerageId, userId: null, teamId: null, actorUserId: null }, l.id, { feeds: opts.feeds, now: opts.now, lifecycle: opts.lifecycle })
     if (!r.ok) { out.errors++; continue }
     out[r.verification.verdict]++
   }

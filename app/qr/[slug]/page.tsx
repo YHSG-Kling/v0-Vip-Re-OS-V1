@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { createServiceClient } from '@/lib/supabase/service'
+import { publiclyVisibleListingStatuses } from '@/lib/listings/listing-status-sync'
 import { resolveQrScanDestination, qrContinueLabel } from '@/lib/marketing/qr-contract'
 import QRLandingClient from './QRLandingClient'
 
@@ -90,10 +91,14 @@ export default async function QRLandingPage({ params }: PageProps) {
   // Fetch listing info if linked
   let listingAddress: string | null = null
   if (qr.listing_id) {
+    // C12 (wave 147, lane 147F — owner ruling 8): a public QR landing names only a PUBLICLY VISIBLE listing — never an
+    // archived or off-market one (the shared predicate + the archive filter; the code's form still works without it).
     const { data: listing } = await supabase
       .from('listings')
       .select('address')
       .eq('id', qr.listing_id)
+      .in('status', publiclyVisibleListingStatuses())
+      .is('deleted_at', null)
       .maybeSingle()
 
     listingAddress = listing?.address ?? null

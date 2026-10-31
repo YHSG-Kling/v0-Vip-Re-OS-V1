@@ -49,7 +49,7 @@ import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platfo
 import { isCanonicalTier, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { mayUseAndAfford } from "@/lib/billing/billing-access"
-import { withActionLedger, type Settlement } from "@/lib/kernel/action-ledger"
+import { withActionLedger, type Settlement, type NonActingClaim } from "@/lib/kernel/action-ledger"
 import {
   validateCustomDomain,
   platformReservedHosts,
@@ -170,20 +170,29 @@ async function audit(svc: any, userId: string, action: string, entityId: string,
 
 // ── LAW 5 — every routing-layer call leaves a ledger row ─────────────────────
 
-type RoutingCall = { value: VercelDomainResult | null; ok: boolean; outcome: string; error?: string | null }
+type RoutingCall = { value: VercelDomainResult | null; ok: boolean; outcome: string; error?: string | null; notRun?: RoutingNotRun }
+
+/** Why the routing layer was NOT asked: the ledger answered with a non-acting claim (wave 147, lane 147F). */
+type RoutingNotRun = { kind: NonActingClaim["kind"]; error: string | null }
 
 /**
  * The attach / verify / detach calls to the routing layer are consequential (they change
  * what the platform serves on a host the tenant owns) — claim → act → settle on
  * agent_action_ledger with the human who clicked, the row, the reason and the outcome.
  * Provider cost is the platform's (an internal ledger fact; the tenant is never told the
- * provider). A replayed claim returns `null` — the caller then learns nothing new and
- * leaves the row where it is.
+ * provider).
+ *
+ * WAVE 147 (lane 147F, ruling 11) — THE REFUSAL USED TO READ AS "ROUTING UNAVAILABLE". The
+ * replay hook answered every non-acting claim with `{ value: null, ok: true }`, and the caller
+ * turned `null` into the `routing_unavailable` signal: a REFUSED claim (the routing layer was
+ * never asked) then stored `registered_with_vercel: true` and returned success. The result now
+ * carries `notRun` (replay | in_flight | unknown | refused, with the ledger's error) and every
+ * caller decides on it explicitly — a refusal is reported, never dressed up as a run.
  */
 async function ledgeredRoutingCall(
   ctx: { brokerageId: string; userId: string; action: "tenant.custom_domain.attach" | "tenant.custom_domain.verify" | "tenant.custom_domain.detach"; rowId: string; idempotencyKey: string; detail: Record<string, unknown> },
   run: () => Promise<RoutingCall>,
-): Promise<VercelDomainResult | null> {
+): Promise<{ value: VercelDomainResult | null; notRun: RoutingNotRun | null }> {
   const res = await withActionLedger<RoutingCall>(
     {
       brokerageId: ctx.brokerageId,
@@ -202,10 +211,19 @@ async function ledgeredRoutingCall(
       settle: (r): Settlement => r.ok
         ? { status: "executed", outcome: r.outcome, provider: "vercel", costUsd: 0 }
         : { status: "failed", outcome: r.outcome, provider: "vercel", costUsd: 0, error: r.error ?? null },
-      replay: () => ({ value: null, ok: true, outcome: "replayed" }),
+      replay: (claim) => ({ value: null, ok: false, outcome: claim.kind, notRun: { kind: claim.kind, error: claim.kind === "refused" ? claim.error : null } }),
     },
   )
-  return res.value
+  return { value: res.value, notRun: res.notRun ?? null }
+}
+
+/** The tenant-facing sentence for a routing step the ledger did not let run. Never claims the step happened. */
+function routingNotRunMessage(step: "connect" | "check", n: RoutingNotRun): string {
+  if (n.kind === "in_flight") return `This domain's ${step === "connect" ? "connection" : "check"} is already running — refresh in a moment.`
+  if (n.kind === "unknown") return `An earlier ${step === "connect" ? "connection" : "check"} attempt ended in an unknown state — run Check status before trying again.`
+  return step === "connect"
+    ? "The domain was saved, but its routing step could not be recorded, so it was not attempted — run Check status to finish connecting it."
+    : "The check could not be recorded, so it was not run — nothing changed. Try again."
 }
 
 /** The routing layer's answer → the state-machine signal + what to store. */
@@ -435,13 +453,23 @@ export async function addCustomDomainAction(rawDomain: string): Promise<
   const routing = getVercelDomainsConfig().configured
   let attach: VercelDomainResult | null = null
   if (routing) {
-    attach = await ledgeredRoutingCall(
+    const call = await ledgeredRoutingCall(
       { brokerageId: gate.brokerageId, userId: gate.userId, action: "tenant.custom_domain.attach", rowId, idempotencyKey: `custom_domain.attach:${rowId}:${nowIso}`, detail: { domain, dns_checked: probe.checked, dns_matches: probe.matches } },
       async () => {
         const r = await addDomainToProject(domain)
         return { value: r, ok: r.configured && r.ok, outcome: !r.configured ? "routing_unavailable" : r.ok ? (r.verified ? "attached_verified" : "attached") : (r.errorCode ?? "refused"), error: r.configured && !r.ok ? r.error : null }
       },
     )
+    if (call.notRun) {
+      // THIS connect cycle was already attached (a duplicate of the same request): the row is left exactly as the
+      // first run wrote it and re-read under its tenant. Anything else (refused / in flight / unknown) did NOT ask
+      // the routing layer — the row stays pending_dns with nothing claimed about the routing layer (wave 147F).
+      if (call.notRun.kind !== "replay") return { ok: false, error: routingNotRunMessage("connect", call.notRun) }
+      const replayed = await confirmDomainRowPostCondition(svc, gate.brokerageId, rowId, CONNECT_POST_CONDITION_STATUSES)
+      if (!replayed.ok) return replayed
+      return { ok: true, domain: rowToView(replayed.row) }
+    }
+    attach = call.value
   }
   const s = signalFor("attach", attach)
   const nextStatus = nextCustomDomainStatus("pending_dns", s.signal)
@@ -524,7 +552,9 @@ export async function checkCustomDomainStatusAction(id: string): Promise<
   const routing = getVercelDomainsConfig().configured
   let result: VercelDomainResult | null = null
   if (routing) {
-    result = await ledgeredRoutingCall(
+    // The cycle is ONE check (nowIso): a later "Check status" is a new, legitimate read of the routing layer, so it
+    // must run — only the same request arriving twice in the same instant replays. Deliberate, not an oversight.
+    const call = await ledgeredRoutingCall(
       { brokerageId: gate.brokerageId, userId: gate.userId, action: "tenant.custom_domain.verify", rowId: id, idempotencyKey: `custom_domain.verify:${id}:${nowIso}`, detail: { domain, from_status: current, dns_checked: probe.checked, dns_matches: probe.matches } },
       async () => {
         let r = await getDomainStatus(domain)
@@ -534,6 +564,13 @@ export async function checkCustomDomainStatusAction(id: string): Promise<
         return { value: r, ok: r.configured && r.ok, outcome: !r.configured ? "routing_unavailable" : r.ok ? (r.verified ? "verified" : "unverified") : (r.errorCode ?? "refused"), error: r.configured && !r.ok ? r.error : null }
       },
     )
+    if (call.notRun) {
+      // Nothing was asked of the routing layer, so nothing is learned and the row is NOT patched (the previous code
+      // patched it as "routing unavailable" and claimed registered_with_vercel) — wave 147F.
+      if (call.notRun.kind !== "replay") return { ok: false, error: routingNotRunMessage("check", call.notRun) }
+      return { ok: true, domain: rowToView(existing), routingAvailable: routing }
+    }
+    result = call.value
   }
   const s = signalFor("check", result)
   const nextStatus = nextCustomDomainStatus(current, s.signal)
@@ -615,7 +652,16 @@ export async function removeCustomDomainAction(id: string): Promise<
       settle: (r): Settlement => r.ok
         ? { status: "executed", outcome: r.configured ? "detached" : "routing_unavailable", provider: "vercel", costUsd: 0 }
         : { status: "failed", outcome: "detach_refused", provider: "vercel", costUsd: 0, error: r.error },
-      replay: () => ({ configured: true, ok: true, error: null }),
+      // WAVE 147 (lane 147F): every non-acting claim used to answer `{ ok: true }`, so a REFUSED detach (the routing
+      // layer never asked) was audited `routing_detached: true` and the row carried no error — while the host stayed
+      // attached to the routing project. Only a genuine replay (this connect cycle was already detached) is a success;
+      // the row still goes to 'removed' in every case (the middleware stops serving the host), and a not-run detach is
+      // recorded as one: `error_detail` names it and the error outcome is reported.
+      replay: (claim) => claim.kind === "replay"
+        ? { configured: true, ok: true, error: null }
+        : { configured: true, ok: false, error: claim.kind === "refused"
+            ? `the action ledger refused the detach, so the routing layer was not asked (${claim.error})`
+            : `an earlier detach attempt is ${claim.kind === "in_flight" ? "still in flight" : "in an unknown state"} — the routing layer was not asked again` },
     },
   )
   if (detach.configured && !detach.ok) {

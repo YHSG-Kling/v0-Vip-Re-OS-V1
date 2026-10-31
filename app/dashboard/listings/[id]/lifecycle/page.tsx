@@ -40,7 +40,8 @@ import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle
 import { resolveTransactionFormsProvider } from "@/lib/kernel/forms"
 import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lifecycle/completed-documents-panel"
 // THE MLS LIVE DATE, ONE READER (wave 143, lane 143A): planned vs verified is decided in compute-dom, never re-derived here.
-import { resolveMlsLiveDates } from "@/lib/listings/compute-dom"
+import { resolveMlsLiveDates, resolveComingSoonWindow } from "@/lib/listings/compute-dom"
+import { isListingPubliclyVisible } from "@/lib/listings/listing-status-sync"
 // THE LISTING AGREEMENT'S GOVERNING TERMS + THE COMING SOON ADDRESS RULE (wave 145, lane 145B — owner rulings 1 + 2).
 import { governingListingAgreementTerms } from "@/lib/listings/listing-agreement-terms"
 import { resolveComingSoonCreativeAddress } from "@/lib/marketing/listing-public-address"
@@ -86,7 +87,9 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     // the copy the Fair Housing / MLS review reads, the property facts are what
     // the pricing model prices, and dotloop_loop_id is written by two paths and
     // was read by NOTHING for document status.
-    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, mls_live_date_actual, go_live_confirmed_at, go_live_confirmed_source, mls_live_date_basis, mls_live_timezone, metadata, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link, public_remarks, property_type, bedrooms, bathrooms, sqft, year_built, lot_size, has_pool, dotloop_loop_id")
+    // deleted_at (wave 147, lane 147F — ruling 8): this is the AUTHORIZED internal record page, so an archived listing
+    // still opens here (history, transactions, reporting) — and it must SAY it is archived (the banner below).
+    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, mls_live_date_actual, go_live_confirmed_at, go_live_confirmed_source, mls_live_date_basis, mls_live_timezone, metadata, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link, public_remarks, property_type, bedrooms, bathrooms, sqft, year_built, lot_size, has_pool, dotloop_loop_id, deleted_at")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
@@ -614,6 +617,9 @@ const { data: listingVendorBookings } = await supabase
   // THE PLANNED MLS LIVE DATE (wave 143, lane 143A): the same rule validateListingLaunchReadiness enforces at the door —
   // a listing whose planned go-live date has not arrived is coming soon, not active; a VERIFIED live date lifts it.
   const mlsLive = resolveMlsLiveDates(listing as any)
+  // C12 (wave 147, lane 147F — owner ruling 10): Coming Soon starts on the day the listing agreement was EXECUTED and ends
+  // on the FEED-VERIFIED MLS live day — never on a date arriving.
+  const comingSoonWindow = resolveComingSoonWindow({ agreementExecutedAt: agreementTerms.ok ? agreementTerms.agreementExecutedAt : null, listing: listing as any })
   const plannedDateBlocked = mlsLive.basis === "planned" && mlsLive.plannedInFuture
   if (plannedDateBlocked) blockers.push(`The planned MLS live date (${mlsLive.planned}) has not arrived — coming soon until then`)
   // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
@@ -657,11 +663,24 @@ const { data: listingVendorBookings } = await supabase
       {/* CENTER — Tasks (flex) */}
       <main className="flex-1 overflow-y-auto p-6">
         <div className="mb-4">
+          {/* THE HISTORICAL PAGE SAYS ARCHIVED (wave 147, lane 147F — owner ruling 8: "archived listings should still show"
+              internally; "no archived listing should still be seen publicly"). Public surfaces exclude it entirely
+              (lib/listings/listing-status-sync.ts isListingPubliclyVisible); this authorized page keeps the record and
+              labels it. */}
+          {(listing as { deleted_at?: string | null }).deleted_at && (
+            <div role="status" className="mb-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
+              <span className="mr-2 rounded border border-border bg-background px-1.5 py-0.5 text-xs font-semibold tracking-wide">ARCHIVED</span>
+              Archived {String((listing as { deleted_at?: string | null }).deleted_at).slice(0, 10)} — kept for history, transactions and reporting; hidden from every public page, feed and search. Its status still reads <span className="font-medium">{String(listing.status ?? "unknown")}</span>.
+            </div>
+          )}
           <h1 className="text-xl font-semibold text-foreground">
             {listing.address}, {listing.city} {listing.state}
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Stage: <span className="font-medium text-foreground">{currentStageDef?.label ?? currentStage}</span>
+            {/* C12 (wave 147, lane 147F): the ONE public predicate, read for the agent — whether the public listing page,
+                the storefront, feeds and search show this record at all. */}
+            {" · "}Public pages: <span className="font-medium text-foreground">{isListingPubliclyVisible(listing as { status?: string | null; deleted_at?: string | null }) ? "shown" : "hidden"}</span>
           </p>
         </div>
 
@@ -826,6 +845,7 @@ const { data: listingVendorBookings } = await supabase
           }}
           supersededCount={agreementTerms.ok ? agreementTerms.resolved.conflicts.length : 0}
           mls={{ planned: mlsLive.planned ?? null, verified: mlsLive.basis === "verified", actual: mlsLive.actual ?? null, verifiedSource: mlsLive.verifiedSource ?? null }}
+          comingSoonWindow={{ start: comingSoonWindow.start, days: comingSoonWindow.days, open: comingSoonWindow.open, verifiedLive: comingSoonWindow.verifiedLive }}
           comingSoon={{ disclose: comingSoonCreative.decision.disclose, addressLine: comingSoonCreative.addressLine, withheldBecause: comingSoonCreative.decision.withheldBecause }}
           amendmentDocuments={amendmentDocuments}
           canAmend={isAdminOrBroker({ user_type: userRow.user_type }) || (userRow.user_type ?? "agent") === "agent"}

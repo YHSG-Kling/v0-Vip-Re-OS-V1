@@ -25,6 +25,7 @@
  */
 
 import { getAgentContext } from "@/lib/identity"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import {
@@ -286,8 +287,18 @@ export async function completeOpenHouseCheckInAction(input: OpenHouseCheckInInpu
     if (!input.brokerage_id) {
       return { success: false, error: "brokerage_id is required — an untenanted check-in is a cross-tenant leak." }
     }
+    // TENANT FROM THE SESSION (wave 147, lane 147F — CLAUDE.md §4). This is a "use server" export, so it is a public
+    // endpoint — and it trusted the body's brokerage_id + agent_id on a service client (the IDOR shape: anyone could file
+    // contacts and attendees into any tenant's open house). It now runs the SAME gate as its five sibling actions
+    // (resolveOpenHouseScope: signed-in agent + the open house belongs to their brokerage); a body brokerage that disagrees
+    // is refused, never used.
+    const scoped = await resolveOpenHouseScope(input.open_house_id)
+    if (!scoped.ok) return { success: false, error: scoped.error }
+    // The ONE claimed-tenant decision (lib/platform/acting-context.ts decideClaimedTenant — CLAUDE.md §6), never a copy.
+    const claim = decideClaimedTenant({ actingBrokerageId: scoped.scope.brokerageId, claimedBrokerageId: input.brokerage_id })
+    if (!claim.ok) return { success: false, error: "This open house belongs to another brokerage." }
 
-    const normalised = await normaliseAgentId(input.agent_id, input.brokerage_id)
+    const normalised = await normaliseAgentId(input.agent_id, claim.brokerageId)
     if (!normalised.ok) return { success: false, error: normalised.error }
     const agentId = normalised.agentId
 
@@ -334,6 +345,9 @@ export async function completeOpenHouseCheckInAction(input: OpenHouseCheckInInpu
     }
 
     const attendeeId = attendeeResult.attendee_id
+
+    // (Step 2's writer, lib/kernel/open-house.ts createOpenHouseAttendeeFromContact, links the contact + attendee to the
+    //  person record — wave 147, lane 147F.)
 
     // Step 3: Attach source attribution
     const attributionResult = await attachOpenHouseSourceAttribution({

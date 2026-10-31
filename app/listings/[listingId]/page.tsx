@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
+import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 import type { Metadata } from "next"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
@@ -48,8 +49,10 @@ async function publicAddressDisplay(listing: { id?: string | null; brokerage_id?
   }
 }
 
-/** The statuses a public visitor may see (the listing row is the gate on this anonymous page). */
-const PUBLIC_LISTING_STATUSES = ["active", "pending", "coming_soon", "sold"]
+/** The statuses a public visitor may see (the listing row is the gate on this anonymous page). WAVE 147 (lane 147F, C12):
+ *  the ONE shared predicate (lib/listings/listing-status-sync.ts publiclyVisibleListingStatuses) — this page's own literal
+ *  list is gone; both reads below still pair it with `deleted_at IS NULL` (an archived listing is never public). */
+const PUBLIC_LISTING_STATUSES = publiclyVisibleListingStatuses()
 
 // ─── Metadata ────────────────────────────────────────────────────────────────
 

@@ -99,7 +99,10 @@ async function loadProfile(slug: string): Promise<{
         .from("listings")
         .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status")
         .eq("agent_id", agent.id)
+        // C12 (wave 147, lane 147F — owner ruling 8): the public profile NARROWS the shared public set to `active` and,
+        // like every public reader, never shows an ARCHIVED listing (`deleted_at` — it was missing here).
         .eq("status", "active")
+        .is("deleted_at", null)
         .order("listing_date", { ascending: false })
         .limit(6),
       svc

@@ -36,6 +36,7 @@
 // market-state line. No I/O — unit-testable.
 
 import { LISTING_STATUSES, type ListingStatus } from "@/lib/constants"
+import type { ComingSoonWindow } from "./compute-dom"
 
 // TOMBSTONE (2026-09-05). The hand-typed vocabulary that used to live here —
 //   `type ListingStatus = "draft" | "coming_soon" | "active" | "pending" | "sold" | "expired" | "withdrawn"`
@@ -242,6 +243,125 @@ export function statusForStage(stage: string, gate?: ListingStatusGate): Listing
  *  ungated transition costs exactly what it always did. */
 export function isGatedStage(stage: string): boolean {
   return Object.prototype.hasOwnProperty.call(STATUS_FOR_GATED_STAGE, stage)
+}
+
+// ══ C12 — THE LISTING LIFECYCLE (wave 147, lane 147F; owner rulings 8 + 10, 2026-10-31) ═════════════════════════════
+//
+//   agreement_executed(at) → coming_soon(start = executed_at, planned_mls_live_at) → active(on the MLS-live EVENT, never
+//   on a date) → pending / sold / withdrawn / expired → archived (internal only).
+//
+// Owner, verbatim: "coming soon start date is the day the listing agreement was executed and once the listing is live on
+// mls, the listing becomes active not coming soon"; "no archived listing should still be seen publicly" AND "archived
+// listings should still show" — internal history yes, public surfaces no.
+//
+// ONE VOCABULARY: every value below is a member of the live listings_status_check (scripts/check-vocabularies.ts), and
+// ARCHIVED IS NOT A STATUS — it is `listings.deleted_at` (lib/kernel/listing-archive.ts explains why, with the live probe:
+// status='archived' is refused 23514 and would erase the record's own outcome). So "publicly visible" is TWO facts, always
+// asked together: a public status AND not archived.
+
+/**
+ * THE STATUSES ONLY A GATED DOOR MAY WRITE — never a picker, never a date. Derived from the map above, not typed:
+ *   · STATUS_AT_LISTING_AGREEMENT_SIGNED  — the agreement was executed (the kernel's LISTING_AGREEMENT_SIGNED hop);
+ *   · STATUS_AFTER_LISTING_AGREEMENT_GATE — the listing-agreement compliance gate passed (the gated COMING_SOON_PREP hop);
+ *   · the MLS_ACTIVE status (`active`)     — live on the MLS: the activation gate behind the launch / activateMLS doors, or
+ *                                           the feed-verified event (lib/listings/mls-live-verification.ts).
+ * app/actions/listings-kernel.ts updateListingStatus refuses these (the board's status picker could set `active` with
+ * nothing checked — the two senses of "active" re-merged through a dropdown).
+ */
+export const GATED_LISTING_STATUSES: readonly ListingStatus[] = [
+  STATUS_AT_LISTING_AGREEMENT_SIGNED,
+  STATUS_AFTER_LISTING_AGREEMENT_GATE,
+  STATUS_FOR_STAGE.MLS_ACTIVE,
+]
+
+/** PURE. May a person set this status by hand (a picker), or does only a gated door reach it? */
+export function isManuallySettableListingStatus(status: string | null | undefined): boolean {
+  return (LISTING_STATUSES as readonly string[]).includes(String(status)) && !(GATED_LISTING_STATUSES as readonly string[]).includes(String(status))
+}
+
+/**
+ * C12 `publiclyVisibleListingStatuses` — the ONE public sense of listings.status: the statuses an ANONYMOUS visitor may
+ * see on any public surface (the listing page, the agent profile, the tenant site, the team page, the sitemap, llms.txt,
+ * the QR landing, the video landing, the IDX property page). A surface may NARROW it (the storefront shows `active`
+ * only); none may widen it. Every public read ALSO filters `deleted_at IS NULL` — an archived listing is never public.
+ *
+ * MERGED (§6): two spellings existed and disagreed on `sold` — app/listings/[listingId]/page.tsx PUBLIC_LISTING_STATUSES
+ * (with `sold`) and app/actions/idx-search.ts PUBLICLY_MARKETED_STATUSES (without). The survivor keeps `sold`: a sold
+ * listing is history the listing brokerage may show ("sold" is the record's own outcome, not an archive), and the QR on a
+ * yard sign must not 404 the day the house sells. Both now read this list.
+ * `coming_soon` is in it; WHETHER this MLS permits public Coming Soon marketing, and whether the street may print, are
+ * decided where they always were (lib/compliance/coming-soon-policy.ts, lib/marketing/listing-public-address.ts).
+ */
+export const PUBLICLY_VISIBLE_LISTING_STATUSES = ["coming_soon", "active", "pending", "sold"] as const satisfies readonly ListingStatus[]
+/** @proofSeam the named complement of PUBLICLY_VISIBLE_LISTING_STATUSES — scripts/listing-lifecycle-guard.ts asserts the two partition the live listings_status_check EXACTLY (a status added to the CHECK cannot land in neither bucket and read as handled). */
+export const NOT_PUBLICLY_VISIBLE_LISTING_STATUSES = ["draft", "listing_signed", "withdrawn", "cancelled", "off_market", "expired"] as const satisfies readonly ListingStatus[]
+
+/** PURE. A fresh array for a `.in("status", …)` filter (the readonly constant is never handed to a mutable API). */
+export function publiclyVisibleListingStatuses(): ListingStatus[] {
+  return [...PUBLICLY_VISIBLE_LISTING_STATUSES]
+}
+
+/**
+ * C12 DISCREPANCIES — what the responsible manager (listing_concierge) is told, each with the evidence behind it. PURE; the
+ * publisher is lib/listings/mls-live-verification.ts reconcileListingLifecycle. An ARCHIVED listing raises nothing (it is
+ * a record, not a working listing), and an UNKNOWN agreement read accuses nothing ("unknown is not failure", CLAUDE.md §4).
+ *   coming_soon_without_executed_agreement — Coming Soon with no execution date to start from (the ruling's anchor is gone);
+ *   live_on_mls_not_active                 — the feed VERIFIED the listing live, the OS still says pre-active (ruling 10:
+ *                                            "once the listing is live on mls, the listing becomes active not coming soon");
+ *   planned_live_date_passed_unverified    — the seller-agreed / planned day has passed and no feed shows it live (the plan
+ *                                            is PRESERVED — the date never flips the status; a person must look);
+ *   verified_live_differs_from_agreed_date — the verified live day is not the day the executed agreement states;
+ *   coming_soon_beyond_mls_limit           — counted from the EXECUTION day, the window passed the MLS's attested limit.
+ */
+export type ListingLifecycleFindingCode =
+  | "coming_soon_without_executed_agreement"
+  | "live_on_mls_not_active"
+  | "planned_live_date_passed_unverified"
+  | "verified_live_differs_from_agreed_date"
+  | "coming_soon_beyond_mls_limit"
+export interface ListingLifecycleFinding { code: ListingLifecycleFindingCode; message: string; evidence: Record<string, unknown> }
+
+export function listingLifecycleFindings(f: {
+  status: string | null
+  deletedAt?: string | null
+  window: ComingSoonWindow
+  /** false when the agreement read was REFUSED — nothing about the agreement is asserted then. */
+  agreementKnown: boolean
+  /** The seller-agreed MLS live day the executed agreement (or an amendment) states, yyyy-mm-dd. */
+  agreedMlsLiveDate: string | null
+  /** The MLS's attested Coming Soon limit in days (lib/compliance/coming-soon-policy.ts), null when none is attested. */
+  mlsMaxComingSoonDays?: number | null
+  /** Today in the listing's market zone, yyyy-mm-dd. */
+  today: string
+}): ListingLifecycleFinding[] {
+  if (f.deletedAt) return []
+  const out: ListingLifecycleFinding[] = []
+  const w = f.window
+  const preActive = f.status === STATUS_AT_LISTING_AGREEMENT_SIGNED || f.status === STATUS_AFTER_LISTING_AGREEMENT_GATE
+  if (f.status === STATUS_AFTER_LISTING_AGREEMENT_GATE && f.agreementKnown && w.startBasis === "unknown") {
+    out.push({ code: "coming_soon_without_executed_agreement", message: "This listing reads Coming Soon, but no executed listing agreement dates it — Coming Soon starts on the day the agreement was executed, so that agreement must be on file.", evidence: { status: f.status } })
+  }
+  if (w.verifiedLive && preActive) {
+    out.push({ code: "live_on_mls_not_active", message: `The MLS feed verified this listing live on ${w.verifiedLive}, but it still reads ${f.status} — once it is live on the MLS it is Active, not Coming Soon.`, evidence: { status: f.status, verified_live: w.verifiedLive } })
+  }
+  if (f.status === STATUS_AFTER_LISTING_AGREEMENT_GATE && w.plannedLive && !w.verifiedLive && w.plannedLive < f.today) {
+    out.push({ code: "planned_live_date_passed_unverified", message: `The planned MLS live date (${w.plannedLive}) has passed and no MLS feed shows the listing live — check the MLS entry; the listing stays Coming Soon until the feed verifies it.`, evidence: { planned_live: w.plannedLive, today: f.today } })
+  }
+  if (w.verifiedLive && f.agreedMlsLiveDate && w.verifiedLive !== f.agreedMlsLiveDate) {
+    out.push({ code: "verified_live_differs_from_agreed_date", message: `The listing went live on the MLS on ${w.verifiedLive}; the executed agreement states ${f.agreedMlsLiveDate}.`, evidence: { verified_live: w.verifiedLive, agreed: f.agreedMlsLiveDate } })
+  }
+  if (f.status === STATUS_AFTER_LISTING_AGREEMENT_GATE && w.open && w.days !== null && typeof f.mlsMaxComingSoonDays === "number" && w.days > f.mlsMaxComingSoonDays) {
+    out.push({ code: "coming_soon_beyond_mls_limit", message: `Coming Soon since ${w.start} (the execution day) is ${w.days} days — past this MLS's attested ${f.mlsMaxComingSoonDays}-day limit.`, evidence: { start: w.start, days: w.days, limit: f.mlsMaxComingSoonDays } })
+  }
+  return out
+}
+
+/** PURE. May an anonymous visitor see this listing row? A public status AND not archived — both, always. The row form of
+ *  the predicate (the authorized lifecycle page tells the agent "Public pages: shown / hidden"); SQL readers spell the same
+ *  rule as `.in("status", publiclyVisibleListingStatuses()).is("deleted_at", null)`. */
+export function isListingPubliclyVisible(row: { status?: string | null; deleted_at?: string | null } | null | undefined): boolean {
+  if (!row) return false
+  return !row.deleted_at && (PUBLICLY_VISIBLE_LISTING_STATUSES as readonly string[]).includes(String(row.status))
 }
 
 /** PURE. Every lifecycle_stage this module maps at all, gated or not — so a guard can enumerate the

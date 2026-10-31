@@ -1021,6 +1021,17 @@ async function main() {
     check("the ledger REFUSES a malformed name (returns refused; withActionLedger then replays without acting) — never 'unledgered'",
       /ACTION_NAME_PATTERN\.test\(ctx\.action\)\)\s*\{[\s\S]{0,600}?kind:\s*"refused"/.test(ledgerSrc) && !/invalid action name/.test(ledgerSrc))
     const DOORS = /\b(?:withActionLedger|ledgeredRoutingCall|defaultLedger)\s*(?:<[^>]*>)?\s*\(|deps\.ledger \?\? defaultLedger\)\(/g
+    // ALIASED DOORS (wave 147, lane 147F — ruling 11): a door bound to a LOCAL name and called by that name —
+    // lib/ai-isa/followup-arbiter.ts `const ledger = deps.ledger ?? (await import(…)).withActionLedger` then
+    // `await ledger<LifeChangeResponse>({ action: "life_change.signal.respond", … })`. DOORS cannot see `ledger<…>(`, so the
+    // one name wave 146 renamed for being refused was never read by this section. Each file's aliases are added to its
+    // door pattern. A destructured import (`const { withActionLedger } = …`) and a direct call are NOT aliases.
+    const ALIAS_DOOR = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*[^\n;]*\bwithActionLedger\b(?!\s*(?:<[^>]*>)?\s*\()/g
+    const doorsFor = (src: string): RegExp => {
+      const aliases = [...src.matchAll(ALIAS_DOOR)].map((m) => m[1])
+      return aliases.length ? new RegExp(`${DOORS.source}|${aliases.map((a) => `\\b${a}\\s*(?:<[^>]*>)?\\s*\\(`).join("|")}`, "g") : new RegExp(DOORS.source, "g")
+    }
+    let aliasDoorFiles = 0
     const nameOk = (raw: string, template: boolean): boolean =>
       NAME.test(template ? raw.replace(/\$\{[^}]*\}/g, "x") : raw)
     const walk = (dir: string, out: string[] = []): string[] => {
@@ -1034,9 +1045,11 @@ async function main() {
     const bad: string[] = []; let seen = 0
     for (const rel of [...walk("lib"), ...walk("app")]) {
       const src = stripComments(read(rel))
-      if (!DOORS.test(src)) continue
-      DOORS.lastIndex = 0
-      for (const m of src.matchAll(DOORS)) {
+      const doors = doorsFor(src)
+      if (!doors.test(src)) continue
+      doors.lastIndex = 0
+      if (doors.source !== DOORS.source) aliasDoorFiles++
+      for (const m of src.matchAll(doors)) {
         const window = src.slice(m.index!, m.index! + 1500)
         // The VALUE after `action:` only — a literal, a template, or a typed union of literals — never the
         // actor type / idempotency key that share the line (the first draft read those and accused "system").
@@ -1047,7 +1060,14 @@ async function main() {
         }
       }
     }
-    console.log(`  · ${seen} action name(s) read at ledger doors under lib/ + app/`)
+    console.log(`  · ${seen} action name(s) read at ledger doors under lib/ + app/ (${aliasDoorFiles} file(s) call a door through a local alias)`)
+    {
+      const spec = `const ledger = deps.ledger ?? (await import("x")).withActionLedger\nawait ledger<R>({ action: "life_change.respond" }, run, hooks)`
+      const found = [...spec.matchAll(doorsFor(spec))].map((m) => spec.slice(m.index!, m.index! + 60).match(/action:\s*"([^"]+)"/)?.[1])
+      const destructured = `const { withActionLedger } = await import("x")\nconst res = await withActionLedger<T>({ action: "a.b.c" })`
+      check("POSITIVE CONTROL: an ALIASED door (`const ledger = … withActionLedger` → `ledger<T>(`) is read; a destructured import and a direct call are not aliases",
+        found.includes("life_change.respond") && doorsFor(destructured).source === DOORS.source)
+    }
     check(`every action name at a ledger door is domain.entity.action (${bad.length ? bad.join("; ") : "0 malformed"})`, bad.length === 0)
     check("POSITIVE CONTROL: the finder rejects a two-segment literal and a template with one static dot, and accepts three segments and a three-segment template",
       !nameOk("strategy.activate", false) && !nameOk("compliance.${x}", true) && nameOk("strategy.mission.activate", false) && nameOk("compliance.${ledger.subject}.attest", true))

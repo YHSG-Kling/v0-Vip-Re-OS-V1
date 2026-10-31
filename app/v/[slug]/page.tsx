@@ -15,6 +15,7 @@ import type { Metadata } from "next"
 import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
+import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 import { assembleSocialDisclosures } from "@/lib/social/assemble-disclosures"
 import {
   buildVideoObjectJsonLd,
@@ -51,8 +52,10 @@ async function loadLandingExtras(svc: ReturnType<typeof createServiceClient>, da
   const [{ data: qr }, { data: b }, listingRow] = await Promise.all([
     svc.from("qr_codes").select("slug").eq("brokerage_id", data.render.brokerage_id).eq("label", videoLandingQrLabel(rail, data.render.id)).eq("is_active", true).maybeSingle(),
     svc.from("brokerages").select("slug, phone").eq("id", data.render.brokerage_id).maybeSingle(),
+    // C12 (wave 147, lane 147F — ruling 8): the CTA links a listing page only while that listing is publicly visible; an
+    // archived / off-market listing's reel falls back to the brokerage storefront.
     data.render.entity_type === "listing" && data.render.entity_id
-      ? svc.from("listings").select("slug").eq("id", data.render.entity_id).eq("brokerage_id", data.render.brokerage_id).maybeSingle()
+      ? svc.from("listings").select("slug").eq("id", data.render.entity_id).eq("brokerage_id", data.render.brokerage_id).in("status", publiclyVisibleListingStatuses()).is("deleted_at", null).maybeSingle()
       : Promise.resolve({ data: null }),
   ])
   const slug = (qr as { slug?: string } | null)?.slug ?? null
@@ -148,13 +151,16 @@ async function loadPage(slug: string): Promise<PageData | null> {
   const { data: b } = await svc.from("brokerages").select("name").eq("id", render.brokerage_id).maybeSingle()
   const brokerageName = (b as { name: string | null } | null)?.name ?? null
 
-  // Listing facts (when the render is for a listing entity).
+  // Listing facts (when the render is for a listing entity). C12 (wave 147, lane 147F — ruling 8): only a PUBLICLY VISIBLE
+  // listing's facts print on this public page — an archived or off-market listing's reel shows no listing facts.
   let listing: PageData["listing"] = null
   if (render.entity_type === "listing" && render.entity_id) {
     const { data: l } = await svc.from("listings")
       .select("address, city, state, list_price, bedrooms, bathrooms, sqft")
       .eq("id", render.entity_id)
       .eq("brokerage_id", render.brokerage_id)
+      .in("status", publiclyVisibleListingStatuses())
+      .is("deleted_at", null)
       .maybeSingle()
     const lr = l as { address: string | null; city: string | null; state: string | null; list_price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null } | null
     if (lr) listing = { address: lr.address, city: lr.city, state: lr.state, price: lr.list_price, bedrooms: lr.bedrooms, bathrooms: lr.bathrooms, sqft: lr.sqft }
@@ -236,13 +242,15 @@ async function loadProjectPage(
   const { data: b } = await svc.from("brokerages").select("name").eq("id", proj.brokerage_id).maybeSingle()
   const brokerageName = (b as { name: string | null } | null)?.name ?? null
 
-  // Listing facts (every promo / listing-tour reel is listing-tied).
+  // Listing facts (every promo / listing-tour reel is listing-tied). C12 (wave 147F): publicly visible listings only.
   let listing: PageData["listing"] = null
   if (proj.listing_id) {
     const { data: l } = await svc.from("listings")
       .select("address, city, state, list_price, bedrooms, bathrooms, sqft")
       .eq("id", proj.listing_id)
       .eq("brokerage_id", proj.brokerage_id)
+      .in("status", publiclyVisibleListingStatuses())
+      .is("deleted_at", null)
       .maybeSingle()
     const lr = l as { address: string | null; city: string | null; state: string | null; list_price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null } | null
     if (lr) listing = { address: lr.address, city: lr.city, state: lr.state, price: lr.list_price, bedrooms: lr.bedrooms, bathrooms: lr.bathrooms, sqft: lr.sqft }

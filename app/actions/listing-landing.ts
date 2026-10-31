@@ -9,6 +9,7 @@ import { emitKernelEvent } from "@/lib/kernel/emit"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { captureConsentedContact } from "@/lib/contact-pipeline/contact-capture"
 import { tenantScope, applyTenantScope } from "@/lib/kernel/tenant-scope"
+import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 
 // ============================================================================
 // Types
@@ -161,7 +162,10 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
       agent_id,
       brokerage_id
     `)
+    // C12 (wave 147, lane 147F — ruling 8): the public landing narrows the shared public set to `active` and never shows
+    // an ARCHIVED listing (the archive filter was missing).
     .eq("status", "active")
+    .is("deleted_at", null)
     .or(`mls_number.eq.${slug},id.eq.${slug}`)
     .single()
 
@@ -406,6 +410,7 @@ export async function getSimilarListings(listingId: string, zip: string, brokera
       mls_number
     `)
     .eq("status", "active")
+    .is("deleted_at", null) // C12 (wave 147F): an archived listing is never a public "similar home"
     .eq("zip", zip)
     .neq("id", listingId)
     .limit(3)
@@ -729,10 +734,14 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
 
   // 1. Resolve the listing (brokerage + agent) once — needed for capture routing,
   //    the lifecycle event, and the confirmation message.
+  // C12 (wave 147, lane 147F — ruling 8): a PUBLIC showing request reaches only a publicly visible listing — an archived
+  // or off-market listing answers "not found" here exactly as its page does.
   const { data: listing } = await supabase
     .from("listings")
     .select("brokerage_id, agent_id")
     .eq("id", input.listingId)
+    .in("status", publiclyVisibleListingStatuses())
+    .is("deleted_at", null)
     .single()
 
   if (!listing?.brokerage_id) {
