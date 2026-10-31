@@ -175,7 +175,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
       if (!res.ok || !data.success) {
         setVoiceError(
           res.status === 503
-            ? "Voice cloning isn't available yet (ElevenLabs isn't configured for the platform)."
+            ? "Voice cloning is not switched on yet — ElevenLabs isn't configured for the platform; platform staff can turn it on, and no voice was cloned."
             : data?.capExceeded
             ? (data.error ?? "Voice clone limit reached for your plan.")
             : (data?.error ?? "Voice clone failed"),

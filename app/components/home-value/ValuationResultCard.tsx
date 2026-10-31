@@ -124,7 +124,7 @@ export function ValuationResultCard({
                 }`}
               >
                 {marketTrend === "unknown" || !marketTrend
-                  ? "Not yet available"
+                  ? "No market data for this area yet"
                   : marketTrend.charAt(0).toUpperCase() + marketTrend.slice(1)}
               </span>
             </div>

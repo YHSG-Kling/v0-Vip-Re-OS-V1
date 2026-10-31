@@ -472,6 +472,35 @@ SELECT policyname, cmd FROM pg_policies WHERE schemaname = 'storage' AND tablena
 
 None needed: deleting the bucket is the only undo, and it would delete every personal video in it. A wrong policy is undone with `DROP POLICY IF EXISTS "<name>" ON storage.objects;`.
 
+## I. The four unlinked portal-contact seed accounts (RELEASE-BLOCKING owner data step; wave 146 §19.2, carried by wave 147, lane 147H)
+
+**Status (measured 2026-10-31, project `hrvaqgvukzxfskkcrwbt`, read-only):** `public.users` holds **4** rows with `user_type = 'contact'` and **all 4** have no `public.contacts` row pointing at them by `contact_user_id`. They are seed rows. Under the m874 / m875 per-party storage rules a portal contact is admitted to a document only through `contacts.contact_user_id = auth.uid()`, so after §G these four accounts can sign in and see **nothing** — and a real client invited later must not inherit a seed identity. This is a data decision only you can make: link each account to the real contact it belongs to, or delete the seed account.
+
+```sql
+-- 1. the census (expect 0 rows when this section is done)
+SELECT u.id, u.email, u.brokerage_id, u.created_at
+FROM public.users u
+WHERE u.user_type = 'contact'
+  AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id);
+
+-- 2a. LINK — one statement per account, the contact chosen by you (same brokerage; check the email matches)
+-- UPDATE public.contacts SET contact_user_id = '<users.id>' WHERE id = '<contacts.id>' AND brokerage_id = '<users.brokerage_id>' AND contact_user_id IS NULL RETURNING id;
+
+-- 2b. or REMOVE — a seed account with no real client behind it (delete the auth user in Authentication → Users; the
+--     public.users row follows its FK). Never delete a contacts row to make the census read zero.
+```
+
+### Verify afterwards
+
+```sql
+SELECT count(*) AS unlinked_contact_users FROM public.users u
+WHERE u.user_type = 'contact' AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id);  -- expect 0
+```
+
+When the census reads 0, record it on the line below (the readiness guard reads it — `scripts/production-readiness-guard.ts` owner obligation O2 stays RELEASE-BLOCKING until this line says RESOLVED with the date and the zero):
+
+- Status: OPEN — 4 unlinked (measured 2026-10-31)
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

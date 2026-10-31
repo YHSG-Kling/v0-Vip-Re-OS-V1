@@ -81,7 +81,9 @@ export default async function CommissionAgreementsPage() {
         <>
           {!result.historyAvailable && (
             <Card><CardContent className="py-4 text-sm text-muted-foreground">
-              The terms history is not available yet — deals are priced on each agent&apos;s current profile until it is switched on.
+              {/* Wave 147 (lane 147H): historyAvailable=false only when agent_commission_profile_versions is absent; m812 is
+                  APPLIED LIVE, so this is the missing-store fallback — said as such (it read "not available yet"). */}
+              The terms history (agent_commission_profile_versions) is missing from this database — deals are priced on each agent&apos;s current profile until platform staff apply migration m812.
             </CardContent></Card>
           )}
 

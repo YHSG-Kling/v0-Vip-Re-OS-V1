@@ -50,7 +50,10 @@ export async function ImprovementProposalsPanel() {
         values — each scored by replay or experiment results, never by a model. A manager promotes only what its
         autonomy gate and authority rung allow; owner-level and inconclusive proposals wait here for you. Every
         promotion writes a policy version and a ledger row; roll back restores the previous value as a new version.
-        {!res.available && " The proposal store is not available yet (pending migration m709)."}
+        {/* Wave 147 (lane 147H, ruling 9): this read "not available yet (pending migration m709)" — but m709 is APPLIED
+            LIVE and improvement_proposals is a live table, so the branch only fires on a deployment whose database is
+            missing the store. It now says exactly that, and who fixes it, instead of calling a built capability unbuilt. */}
+        {!res.available && " The proposal store (improvement_proposals) is missing from this database — platform staff apply migration m709 to restore it."}
       </p>
       {res.rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No proposals yet.</p>

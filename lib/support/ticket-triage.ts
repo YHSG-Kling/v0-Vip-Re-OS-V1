@@ -160,7 +160,7 @@ export function tenantFacingGate(text: string | null | undefined): { ok: true } 
 
 // ── 3. The help base: candidates the ANSWER must be grounded in ───────────────────────────────
 
-interface HelpCandidate { id: string; source: "article" | "kb"; title: string; excerpt: string; score: number }
+export interface HelpCandidate { id: string; source: "article" | "kb"; title: string; excerpt: string; score: number }
 
 const STOP = new Set(["the", "and", "for", "with", "that", "this", "from", "have", "what", "when", "where", "does", "doesn", "into", "your", "about", "there", "their", "they", "them", "then", "than", "will", "would", "could", "should", "cant", "cannot", "wont", "dont", "didnt", "isnt", "please", "help", "need", "want", "trying", "tried", "still", "just", "very", "some", "more", "also"])
 function tokens(text: string): string[] {
@@ -217,7 +217,7 @@ const TriageSchema = z.object({
 })
 export type TriageModelOutput = z.infer<typeof TriageSchema>
 
-interface TriageInput {
+export interface TriageInput {
   ticketId: string
   brokerageId: string
   lane: TicketLane
@@ -288,15 +288,33 @@ const defaultAfford: NonNullable<TriageDeps["afford"]> = async (p) => {
   return { allowed: d.allowed, reason: d.reason }
 }
 
-function buildPrompt(input: TriageInput, candidates: HelpCandidate[]): { system: string; prompt: string } {
+/**
+ * THE TRIAGE PROMPT — expert and structured (wave 147, lane 147H; preamble "prompt quality is a deliverable"): role,
+ * business context, the facts it may rely on and must not invent, the decision it owns, the typed output contract,
+ * the compliance boundary and the escalation rule. The service consumes the JSON (TriageSchema); the deterministic
+ * apply rule (applyTriageRule) and the tenant-facing gate (tenantFacingGate) still decide what is written and shown.
+ */
+// test:capability-closure asserts every section of this prompt on the stripped source (it is module-private).
+function buildTriagePrompt(input: TriageInput, candidates: HelpCandidate[]): { system: string; prompt: string } {
   const system = [
-    "You are the support triage assistant inside a multi-tenant real-estate operating system.",
-    "Classify ONE support ticket. Output JSON matching the schema and nothing else.",
-    `category ∈ ${TICKET_CATEGORIES.join(" | ")}; priority ∈ ${TICKET_PRIORITIES.join(" | ")} (urgent = money moving today, a closing at risk, an outage or a security concern).`,
-    `operation ∈ ${IMMEDIATE_OPERATIONS.join(" | ")} ONLY when the ticket describes that exact setup step failing (an invite that never arrived, a phone number not registering, a provider that will not connect, billing that did not activate, a website that was not created, a seat that cannot log in); otherwise null.`,
-    "answer: write 2–4 sentences for the submitter ONLY from the help candidates offered (cite them in groundedIn). If no candidate answers the question, answer = null and groundedIn = [].",
-    "needsHuman = true for anything about money, an account, legal or compliance, deleted data, a security concern, or when no candidate answers it.",
-    "NEVER mention internal providers, credentials, prices, what the platform pays for, or stack traces. Never invent a feature or a setting that is not in a candidate. Plain, kind, specific.",
+    "ROLE — You are the senior support lead for VIPAgents, an AI operating system that real-estate brokerages run their business on (agents, transaction coordinators, office staff, vendors, lenders and title partners). You have triaged thousands of brokerage tickets: you know a dead e-sign step two days before closing is not the same as a feature wish.",
+    "",
+    "BUSINESS CONTEXT — Two support lanes, never mixed: (1) tenant_to_platform — a brokerage's admin asking the platform; platform support answers. (2) user_to_brokerage — an agent or vendor asking their OWN brokerage office; the brokerage's staff answer and the platform is not a party. Deals have hard dates (inspection, financing, closing); a blocked step near one of those dates is time-critical. Money movement (wires, commission disbursement, refunds) and access (log-in, seats) are always handled by a person.",
+    "",
+    "FACTS YOU MAY RELY ON — only the ticket's subject and description and the help candidates listed in the user message. You may NOT invent a feature, a setting, a menu path, a timeline, a refund, a policy or a promise that is not written in a candidate. If the ticket is ambiguous, say what is unclear in the summary instead of guessing.",
+    "",
+    "THE DECISION YOU OWN — classify, set urgency, name the setup operation if one failed, and draft (never send) a grounded answer:",
+    `  · category ∈ ${TICKET_CATEGORIES.join(" | ")} — billing for charges / invoices / seats / subscriptions; compliance for fair housing, disclosures, licensing, TCPA / CAN-SPAM, audits; onboarding for first-use and setup; technical for errors and broken flows; feature_request for asks to add or change behaviour; general otherwise.`,
+    `  · priority ∈ ${TICKET_PRIORITIES.join(" | ")} — urgent: money moving today, a closing today or tomorrow at risk, a suspected wire-instruction change or account takeover, an outage, data loss or a security concern; high: a blocked workflow with a client waiting or a deadline this week; medium: a defect with a workaround; low: a question or a wish with no deadline.`,
+    `  · operation ∈ ${IMMEDIATE_OPERATIONS.join(" | ")} ONLY when the ticket describes that exact setup step failing (an invite that never arrived, a phone number not registering, a provider that will not connect, billing that did not activate, a website that was not created, a seat that cannot log in); otherwise null.`,
+    "  · summary — one plain sentence for the person who will answer: what is wrong, for whom, and what is at stake.",
+    "  · answer — 2–4 kind, specific sentences for the submitter written ONLY from the offered help candidates (cite their ids in groundedIn). No candidate answers it → answer = null and groundedIn = [].",
+    "",
+    "OUTPUT CONTRACT — a single JSON object matching the schema: { category, priority, operation, summary, answer, groundedIn, needsHuman, confidence (0–1, how sure you are of the category and priority) }. Nothing outside the JSON.",
+    "",
+    "COMPLIANCE BOUNDARY — Never name an internal provider, a credential, a price, an amount, what the platform pays for, an error code or a stack trace in summary or answer. Never give legal, tax or lending advice; never tell anyone to send, change or confirm wiring instructions — a ticket that mentions changed wire instructions is urgent and needs a human. Fair-housing judgement is not yours to make here: route it as compliance with needsHuman = true.",
+    "",
+    "ESCALATION RULE — needsHuman = true for anything about money, an account or access, legal or compliance, deleted or exposed data, a security concern, a closing at risk, or whenever no candidate answers the question. When in doubt, needsHuman = true: a person reading a ticket the AI could have answered costs minutes; an unanswered urgent ticket costs a closing.",
   ].join("\n")
   const cands = candidates.length
     ? candidates.map((c) => `- [${c.id}] ${c.title}: ${c.excerpt.replace(/\s+/g, " ").slice(0, 200)}`).join("\n")
@@ -355,7 +373,7 @@ export async function triageSupportTicket(svc: Svc, input: TriageInput, deps: Tr
         } catch (e) { gateNote = `tenant AI gate threw: ${e instanceof Error ? e.message : String(e)}` }
       }
       if (!gateNote) {
-        const { system, prompt } = buildPrompt(input, candidates)
+        const { system, prompt } = buildTriagePrompt(input, candidates)
         const timeoutMs = deps.timeoutMs ?? 8000
         try {
           const run = (deps.model ?? defaultModel)({ system, prompt, brokerageId: input.brokerageId, userId: input.submitterUserId ?? null, platformPaid: platformLane, manager: out.owner })
@@ -560,4 +578,117 @@ export async function ensureOperationTicket(svc: Svc, p: {
   }).select("id").single()
   if (error || !data) return { ticketId: null, created: false, error: error?.message ?? "insert returned no row" }
   return { ticketId: (data as { id: string }).id, created: true, error: null }
+}
+
+// ── 9. Tell the side that answers (ONE notifier for every intake door — wave 147, lane 147H) ─────────────────────
+
+/**
+ * Alert the side that actually answers this lane: platform staff for tenant_to_platform, the brokerage's own office
+ * for user_to_brokerage (never the platform — it is not a party). Moved here from app/actions/support.ts
+ * createSupportTicket so the inbound door below reuses it rather than copying it. Returns the number told.
+ */
+export async function notifyTicketAnsweringSide(svc: Svc, p: { lane: TicketLane; brokerageId: string; ticketId: string; subject: string; description: string | null; priority: TicketPriority }): Promise<number> {
+  const payload = {
+    type: "support_ticket_new", title: `New support ticket: ${p.subject}`,
+    body: (p.description?.trim() || p.subject).slice(0, 400), entityType: "support_ticket", entityId: p.ticketId,
+    priority: (p.priority === "urgent" || p.priority === "high" ? "high" : "medium") as "high" | "medium",
+  }
+  try {
+    if (ticketAnsweredBy(p.lane) === "platform_support") {
+      const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
+      return await notifyPlatformStaff(svc, payload)
+    }
+    if (ticketAnsweredBy(p.lane) === "brokerage_office") {
+      const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+      return await notifyBrokerageAdmins(svc, p.brokerageId, payload)
+    }
+  } catch (e) { console.error("[ticket-triage] answering-side alert failed:", e instanceof Error ? e.message : String(e)) }
+  return 0
+}
+
+// ── 10. INTAKE FROM EVERY CHANNEL — an inbound email / SMS becomes a ticket (wave 147, lane 147H; ruling 15) ─────
+
+export type InboundSupportChannel = "email" | "sms" | "phone" | "in_person"
+export interface InboundSupportInput {
+  /** The tenant the VERIFIED inbound record resolved (contract C1, lib/communications/inbound-record.ts) — never a
+   *  field read from the message body. */
+  brokerageId: string
+  /** users.id the C1 identity match resolved; must be a member of brokerageId (proved here, not trusted). */
+  senderUserId: string
+  /** email / sms from C1; phone / in_person when the office logs a request it received (app/actions/support.ts). */
+  channel: InboundSupportChannel
+  /** C1's idempotency pair (m876 unique (provider, provider_ref)) — a webhook retry opens no second ticket. */
+  provider: string
+  providerRef: string
+  subject?: string | null
+  body: string
+  /** The platform's own support address / number received it (else the brokerage's office line did). */
+  addressedToPlatform?: boolean
+}
+export interface InboundSupportResult { ok: boolean; ticketId: string | null; created: boolean; lane: TicketLane | null; triaged: boolean; error: string | null }
+
+/**
+ * Open (once) the support ticket an inbound message asks for, then run the SAME in-request triage the session door
+ * runs. Refuses, by name: a sender who is not a member of the resolved tenant (cross-tenant), a contact (a client's
+ * message is a CRM conversation for the arbiter — C1 → inbound-responder — never a support ticket), an empty body.
+ * Lane: a brokerage admin writing to the platform's address raises tenant_to_platform; everyone else (an agent or a
+ * vendor, or anyone writing to the office) raises user_to_brokerage — an agent cannot page the platform by email.
+ * Ledgered (LAW 5) on `support_inbound:<provider>:<ref>`: a replayed delivery returns the first ticket's id.
+ */
+/** Product callers: app/actions/support.ts logSupportRequestOnBehalf (the office logs a request it received by phone /
+ *  email / in person) and — once its support-intent branch lands — the C1 inbound hook in
+ *  lib/communications/inbound-responder.ts (lane 147G's file; lane147H notes, Outside-lane). */
+export async function openInboundSupportTicket(svc: Svc, p: InboundSupportInput, deps: { triage?: typeof triageSupportTicket } = {}): Promise<InboundSupportResult> {
+  const out: InboundSupportResult = { ok: false, ticketId: null, created: false, lane: null, triaged: false, error: null }
+  if (!UUID_RE.test(String(p.brokerageId ?? "")) || !UUID_RE.test(String(p.senderUserId ?? ""))) { out.error = "no verified tenant / sender — refused"; return out }
+  if (!p.provider || !p.providerRef) { out.error = "no provider reference — refused (a retry could open a second ticket)"; return out }
+  const body = (p.body ?? "").trim()
+  if (!body) { out.error = "empty message — nothing to open"; return out }
+
+  const { data: user, error: uErr } = await svc.from("users").select("id, brokerage_id, user_type").eq("id", p.senderUserId).maybeSingle()
+  if (uErr) { out.error = `sender read refused: ${uErr.message}`; return out }
+  const sender = user as { id: string; brokerage_id: string | null; user_type: string | null } | null
+  if (!sender || sender.brokerage_id !== p.brokerageId) { out.error = "sender is not a member of the resolved tenant — refused"; return out }
+  if (sender.user_type === "contact") { out.error = "a client's message is a CRM conversation for the arbiter, not a support ticket — refused"; return out }
+  const { TENANT_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
+  const isAdmin = TENANT_ADMIN_USER_TYPES.has(sender.user_type ?? "")
+  const lane: TicketLane = p.addressedToPlatform && isAdmin ? "tenant_to_platform" : "user_to_brokerage"
+  out.lane = lane
+  const subject = (p.subject?.trim() || body.split(/\n/)[0]).slice(0, 120) || "Support request"
+  const heuristic = classifyTicketHeuristically(subject, body)
+
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  return withActionLedger<InboundSupportResult>(
+    {
+      brokerageId: p.brokerageId, action: "support.ticket.open_inbound",
+      actor: { type: "user", userId: sender.id },
+      subject: { type: "inbound_message", ref: `${p.provider}:${p.providerRef}` },
+      reasonDetail: `support request received by ${p.channel}${p.addressedToPlatform && lane === "user_to_brokerage" ? " at the platform address from a non-admin — routed to their own office" : ""}`,
+      idempotencyKey: `support_inbound:${p.provider}:${p.providerRef}`, riskClass: "LOW_RISK_WRITE", channel: p.channel,
+      detail: { lane, provider: p.provider, addressed_to_platform: !!p.addressedToPlatform },
+    },
+    async () => {
+      const { data: agent, error: aErr } = await svc.from("agents").select("id").eq("user_id", sender.id).maybeSingle()
+      if (aErr) console.error("[ticket-triage] inbound agent read refused:", aErr.message)
+      const { data: row, error } = await svc.from("support_tickets").insert({
+        brokerage_id: p.brokerageId, agent_id: (agent as { id?: string } | null)?.id ?? null, submitted_by_user_id: sender.id, lane, subject,
+        description: `${body}\n\n(received by ${p.channel})`.slice(0, 4000), category: "general", priority: "medium", status: "open",
+      }).select("id").single()
+      if (error || !row) return { ...out, error: `ticket insert refused: ${error?.message ?? "no row"}` }
+      const ticketId = (row as { id: string }).id
+      await notifyTicketAnsweringSide(svc, { lane, brokerageId: p.brokerageId, ticketId, subject, description: body, priority: heuristic.priority })
+      const t = await (deps.triage ?? triageSupportTicket)(svc, {
+        ticketId, brokerageId: p.brokerageId, lane, subject, description: body, category: "general", priority: "medium",
+        submitterUserId: sender.id, actor: { userType: sender.user_type },
+      })
+      return { ok: true, ticketId, created: true, lane, triaged: t.evented, error: t.error }
+    },
+    {
+      settle: (r) => ({ status: r.ok ? "executed" : "failed", outcome: r.ok ? `opened:${r.lane}` : "not_opened", providerRef: r.ticketId, error: r.error }),
+      replay: (claim) => (claim.kind === "refused"
+        ? { ...out, error: `not recorded: ${claim.error}` }
+        : { ok: true, ticketId: claim.entry?.provider_ref ?? null, created: false, lane, triaged: true, error: null }),
+    },
+    { client: svc },
+  )
 }

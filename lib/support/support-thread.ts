@@ -61,6 +61,13 @@ export async function postTicketReply(
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (params.authorKind === "staff" && !(ticket as any).first_response_at) patch.first_response_at = new Date().toISOString()
   if (params.authorKind === "staff" && (ticket as any).status === "open") patch.status = "in_progress"
+  // THE ASKING SIDE REOPENS (wave 147, lane 147H — ruling 15, no stranded ticket): a requester who writes back on a
+  // resolved / closed ticket ("still broken") used to leave it resolved — the SLA sweep reads open / in_progress only,
+  // so the reply was a bell and nothing owned it again. It reopens to in_progress with the resolution cleared.
+  if (params.authorKind === "tenant" && ((ticket as any).status === "resolved" || (ticket as any).status === "closed")) {
+    patch.status = "in_progress"
+    patch.resolved_at = null
+  }
   await sentinelWrite(svc, svc.from("support_tickets").update(patch).eq("id", params.ticketId), { table: "support_tickets", flow: "support_ticket_touch", reason: "first-response/status stamp; the message itself already landed" })
 
   // ── NOTIFY THE OTHER SIDE, AND WHO THAT IS DEPENDS ON THE LANE ─────────────
@@ -127,6 +134,9 @@ export interface TicketThread {
   messages: TicketMessage[]
   /** Wave 142G — what the AI triage decided (lifecycle_events support.ticket_triaged), or null when never triaged. */
   triage: import("@/lib/support/ticket-triage").TicketTriageSummary | null
+  /** Wave 147H — what completing this ticket means right now (owner manager, due, the evidence that closes it); null
+   *  once closed. The same shape lane 147G's C14 completion ledger opens (lib/support/support-sla.ts). */
+  completion: import("@/lib/support/support-sla").SupportTicketCompletion | null
 }
 
 /** Load a ticket with its brokerage identity, requester name, and full message thread. */
@@ -148,6 +158,8 @@ export async function loadTicketThread(svc: Svc, ticketId: string): Promise<Tick
   ])
   const u = (agentRow.data as any)?.users
   const uu = Array.isArray(u) ? u[0] : u
+  const [{ supportTicketCompletion }, { TRIAGE_OWNER_BY_CATEGORY }] = await Promise.all([import("@/lib/support/support-sla"), import("@/lib/support/ticket-triage")])
+  const completion = supportTicketCompletion({ id: tk.id, lane: tk.lane ?? null, brokerage_id: tk.brokerage_id ?? null, created_at: tk.created_at, priority: tk.priority ?? null, status: tk.status ?? null, first_response_at: tk.first_response_at ?? null, resolved_at: tk.resolved_at ?? null, category: (triage?.category as string | null) ?? tk.category ?? null }, TRIAGE_OWNER_BY_CATEGORY)
 
   return {
     id: tk.id, lane: String(tk.lane ?? ""), brokerageId: tk.brokerage_id, brokerageName: (brk as any)?.name ?? null,
@@ -157,5 +169,6 @@ export async function loadTicketThread(svc: Svc, ticketId: string): Promise<Tick
     satisfactionRating: tk.satisfaction_rating ?? null,
     messages: ((msgs ?? []) as any[]).map((m) => ({ id: m.id, ticketId: m.ticket_id, authorUserId: m.author_user_id, authorKind: m.author_kind, body: m.body, createdAt: m.created_at })),
     triage,
+    completion,
   }
 }

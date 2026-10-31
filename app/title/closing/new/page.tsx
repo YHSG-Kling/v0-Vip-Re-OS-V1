@@ -1,32 +1,33 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Calendar, ArrowLeft, Info } from 'lucide-react'
+import { listClosingDealsForTitle, listMyClosingAppointmentProposals } from '@/app/actions/title/closing-appointment'
+import { ClosingAppointmentForm } from './closing-appointment-form'
 
 export const dynamic = 'force-dynamic'
 
 /**
- * /title/closing/new — an HONEST state, not a form (wave 146, lane 146H; owner ruling 16: "no dead
- * controls or misleading statuses").
+ * /title/closing/new — PROPOSE THE CLOSING APPOINTMENT (wave 147, lane 147H; owner ruling 9).
  *
- * WHAT WAS HERE: "Schedule New Closing" — address, client, date, time, location — whose submit handler
- * was `setLoading(true); setTimeout(() => router.push('/title/closing'), 1000)`. The button read
- * "Scheduling…", nothing was written, and the closing never appeared on the schedule, because the
- * schedule (app/title/closing/page.tsx) reads `transactions.close_date` — the DEAL's closing date.
+ * HISTORY: a fake "Schedule New Closing" form once stood here (`setTimeout(() => router.push('/title/closing'), 1000)`,
+ * nothing written); wave 146H replaced it with an honest state that ended "booking an appointment time and place from
+ * here is not available yet" and routed the writer as MISSING.
  *
- * That is also the business rule: the closing date is a term of the executed contract, owned by the
- * brokerage's transaction. A change to it is an amendment / addendum on the deal (owner ruling 1, wave
- * 146: addenda between transaction creation and closing go through the versioned governing-terms path),
- * never a free-standing title-side record. What a title company DOES need — proposing an appointment
- * time and place for an existing closing date — has no writer at HEAD; it is routed as MISSING in lane
- * 146H's notes ("## Outside-lane"). Until it exists, this page says so and sends the user to the deal.
+ * THE BUSINESS RULE (unchanged): a closing DATE is part of the signed contract — set and changed by amendment on the
+ * brokerage's transaction, never a free-standing title-side record. What the title company owns is the settlement
+ * APPOINTMENT on that date — time and place. Lane 147H built that writer: app/actions/title/closing-appointment.ts
+ * proposeClosingAppointment, gated to the deal's title party, lands the proposal as the deal agent's task (the agent
+ * confirms with the clients) under withActionLedger, and refuses a different day as the amendment it is.
  */
 export default async function NewClosingPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
+
+  const [deals, proposals] = await Promise.all([listClosingDealsForTitle(), listMyClosingAppointmentProposals()])
 
   return (
     <div className="p-6 max-w-2xl space-y-6">
@@ -35,34 +36,44 @@ export default async function NewClosingPage() {
           <Link href="/title/closing" aria-label="Back to the closing schedule"><ArrowLeft className="w-4 h-4" /></Link>
         </Button>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Calendar className="w-6 h-6 text-purple-700" />
-          Schedule a Closing
+          <Calendar className="w-6 h-6 text-primary" />
+          Propose a closing appointment
         </h1>
       </div>
       <Card>
         <CardContent className="p-6 space-y-4">
-          <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4" role="status">
-            <Info className="w-5 h-5 text-blue-700 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-blue-900">Closing dates come from the deal</p>
-              <p className="text-sm text-blue-900">
-                A closing date is part of the signed contract, so it is set — and changed, by amendment — on the
-                brokerage&apos;s transaction. Every deal with a closing date already appears on your closing
-                schedule. To move a date, ask the deal&apos;s transaction coordinator; booking an appointment time and
-                place from here is not available yet.
-              </p>
-            </div>
+          <div className="flex items-start gap-3 rounded-lg border bg-muted p-4" role="note">
+            <Info className="w-5 h-5 text-foreground shrink-0 mt-0.5" />
+            <p className="text-sm text-foreground">
+              The closing date is part of the signed contract and stays on the deal. Propose the time and place for that
+              day; the deal&apos;s agent confirms it with the clients. To move the date itself, ask the transaction coordinator —
+              that is an amendment.
+            </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button asChild>
-              <Link href="/title/closing">Open the closing schedule</Link>
-            </Button>
-            <Button variant="outline" asChild>
-              <Link href="/title/orders">My title orders</Link>
-            </Button>
-          </div>
+          {!deals.ok ? (
+            <p className="text-sm text-destructive">{deals.error}</p>
+          ) : deals.deals.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No upcoming closings on deals you are a party to. <Link href="/title/orders" className="font-medium text-primary underline-offset-4 hover:underline">See your title orders</Link>.</p>
+          ) : (
+            <ClosingAppointmentForm deals={deals.deals} />
+          )}
         </CardContent>
       </Card>
+      {proposals.ok && proposals.proposals.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">Your proposals</CardTitle></CardHeader>
+          <CardContent>
+            <ul className="space-y-2">
+              {proposals.proposals.map((p) => (
+                <li key={p.id} className="rounded border p-3 text-sm">
+                  <p className="font-medium text-foreground">{p.title}</p>
+                  <p className="text-muted-foreground">Agent&apos;s status: {p.status === 'completed' ? 'confirmed' : p.status ?? 'pending'}</p>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

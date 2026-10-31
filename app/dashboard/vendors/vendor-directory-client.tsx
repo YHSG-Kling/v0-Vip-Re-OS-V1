@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-select"
+import { VendorPortfolioStrip } from "@/app/components/vendors/vendor-portfolio-strip"
 import { VENDOR_CATEGORY_LABELS, type VendorCategory } from "@/lib/kernel/vendor-categories"
 
 /** Stored token → the words a broker reads. vendors.category is lowercase_snake
@@ -1792,6 +1793,14 @@ export function VendorDirectoryClient({
               {categoryLabel(reviewsVendor?.category)} - {renderStars(reviewsVendor?.rating ?? null)}
             </DialogDescription>
           </DialogHeader>
+
+          {/* Work samples (wave 147, lane 147H) — the staff reader of the vendor's /vendor/portfolio uploads (m906). */}
+          {reviewsVendor && (
+            <div className="space-y-2 border-b pb-3">
+              <p className="text-sm font-medium text-foreground">Work samples</p>
+              <VendorPortfolioStrip vendorId={reviewsVendor.id} />
+            </div>
+          )}
 
           <div className="py-4 max-h-72 overflow-y-auto">
             {vendorReviews.length === 0 ? (

@@ -3,23 +3,20 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Upload, Info } from 'lucide-react'
+import { ArrowLeft, Upload } from 'lucide-react'
+import { PortfolioUploadForm } from './portfolio-upload-form'
 
 export const dynamic = 'force-dynamic'
 
 /**
- * /vendor/portfolio/upload — an HONEST "not available yet" state (wave 146, lane 146H; owner ruling 16:
- * "no dead controls or misleading statuses"; the wave-141 lane rule: a surface that cannot be wired is
- * hidden behind an honest "not available yet" state, never a dead click).
+ * /vendor/portfolio/upload — the real upload (wave 147, lane 147H; owner ruling 9).
  *
- * WHAT WAS HERE: a client form titled "Upload Portfolio Work" whose submit handler was
- * `setLoading(true); setTimeout(() => router.push('/vendor/portfolio'), 1000)` — the button read
- * "Uploading…", the files and the description were discarded, and the vendor was returned to a
- * portfolio that could never show them. MEASURED: no portfolio table exists in the live schema
- * (scripts/live-tables.ts has vendor_marketplace_profiles, vendor_reviews, vendor_jobs … and no
- * portfolio / gallery store) and no action under app/actions writes one, so there was nothing to wire
- * the form TO. The capability is MISSING (storage + a vendor-scoped writer + a reader on the vendor
- * directory) and is routed in lane 146H's notes ("## Outside-lane"); this page no longer pretends.
+ * HISTORY: wave 146H replaced a fake form (its submit was `setTimeout(() => router.push(...), 1000)`; files discarded)
+ * with an honest "Portfolio uploads are not available yet" state, because there was nothing to wire it TO — no store,
+ * no writer, no reader. Lane 147H built the missing half: the m906 store (public.vendor_portfolio_items), the writer
+ * app/actions/vendor-portfolio.ts addVendorPortfolioItem (session-proved vendor via requireVendorActor, a private
+ * `documents` object, withActionLedger vendor.portfolio_item.add) and the readers (/vendor/portfolio and the vendor
+ * directory). The form below posts to that server action — no timer, no discard.
  */
 export default async function VendorPortfolioUploadPage() {
   const supabase = await createClient()
@@ -33,31 +30,13 @@ export default async function VendorPortfolioUploadPage() {
           <Link href="/vendor/portfolio" aria-label="Back to portfolio"><ArrowLeft className="w-4 h-4" /></Link>
         </Button>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Upload className="w-6 h-6 text-purple-700" />
-          Upload Portfolio Work
+          <Upload className="w-6 h-6 text-primary" />
+          Add portfolio work
         </h1>
       </div>
       <Card>
-        <CardContent className="p-6 space-y-4">
-          <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4" role="status">
-            <Info className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-amber-900">Portfolio uploads are not available yet</p>
-              <p className="text-sm text-amber-900">
-                Nothing you upload can be stored or shown to agents yet, so this page does not take files.
-                What agents see today is your profile — your company name, category, website and notes — and
-                your reviews.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button asChild>
-              <Link href="/vendor/settings">Update my profile</Link>
-            </Button>
-            <Button variant="outline" asChild>
-              <Link href="/vendor/reviews">See my reviews</Link>
-            </Button>
-          </div>
+        <CardContent className="p-6">
+          <PortfolioUploadForm />
         </CardContent>
       </Card>
     </div>

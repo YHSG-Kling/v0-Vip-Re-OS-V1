@@ -46,7 +46,7 @@
  *     soon" as a feature state) — a screen that is partial without saying so reads BUILT;
  *   · dynamic hrefs (template literals) are not navigation entries and are not audited.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { stripComments, stringLiterals } from "./strip-comments"
 import { walkTs } from "./runtime-roots"
@@ -203,7 +203,9 @@ export function resolveHref(href: string, depth = 0): { page: Page | null; via?:
 }
 
 // ── reach: the action behind a screen ─────────────────────────────────────────
-type Reach = { actions: Map<string, Set<string>>; apis: Set<string>; serverRead: boolean; dataLibs: Set<string>; interactive: boolean; honestPartial: string | null; redirectTo: string | null; visited: number; links: Set<string> }
+/** `honestAt` (wave 147, lane 147H): the file:line of the honest-state copy that made the screen PARTIAL / MISSING, so the
+ *  classification table (ruling 9) can name the class of the very sentence the verdict rests on. */
+type Reach = { actions: Map<string, Set<string>>; apis: Set<string>; serverRead: boolean; dataLibs: Set<string>; interactive: boolean; honestPartial: string | null; honestAt?: string | null; redirectTo: string | null; visited: number; links: Set<string> }
 const fileCache = new Map<string, string>()
 function readCode(abs: string): string {
   let c = fileCache.get(abs)
@@ -235,8 +237,9 @@ export function reachOf(pageAbs: string, maxDepth = 6): Reach {
         if (m && !hasJsx) r.redirectTo = m[1]
       }
       if (/\bonClick=|\bonSubmit=|<form\b|onValueChange=|onCheckedChange=/.test(code)) r.interactive = true
-      if (!r.honestPartial) for (const l of stringLiterals(code)) { const m = l.text.match(HONEST_PARTIAL); if (m) { r.honestPartial = m[0]; break } }
-      if (!r.honestPartial) { const m = code.match(HONEST_PARTIAL); if (m) r.honestPartial = m[0] }
+      const lineAt = (i: number) => code.slice(0, i).split("\n").length
+      if (!r.honestPartial) for (const l of stringLiterals(code)) { const m = l.text.match(HONEST_PARTIAL); if (m) { r.honestPartial = m[0]; r.honestAt = `${rel(abs)}:${lineAt(l.start)}`; break } }
+      if (!r.honestPartial) { const m = HONEST_PARTIAL.exec(code); if (m) { r.honestPartial = m[0]; r.honestAt = `${rel(abs)}:${lineAt(m.index)}` } }
       // A supabase client used for a read, an auth call, storage or an RPC is a data path (server OR client — RLS governs the client).
       if (/\bcreate(?:Service|Server|Admin|Browser)?Client\(|\buseSupabase\(|\bsupabase\b/.test(code) && /\.(?:from|rpc)\(\s*["'`]|\.auth\.(?:updateUser|signIn\w*|signUp|resetPasswordForEmail|exchangeCodeForSession|verifyOtp)\(|\.storage\.from\(/.test(code)) r.serverRead = true
       for (const m of code.matchAll(/fetch\(\s*["'`](\/api\/[^"'`?$]+)/g)) r.apis.add(m[1])
@@ -305,8 +308,236 @@ function behind(r: Reach): string {
   return parts.join(" · ") || "—"
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// CLASSIFICATION (wave 147, lane 147H — owner ruling 9: "build the missing capabilities and also ones that say 'not
+// available yet' … every exposed function works, gives an honest configuration message, or leaves the advertised
+// launch surface"). EVERY honest-state sentence in the tree — the copy that makes a screen PARTIAL / MISSING above,
+// plus every server refusal of the same family a screen relays — is placed in EXACTLY ONE of the five classes the
+// lane brief names. The class is DERIVED FROM CODE where the code says it (an env var the repo reads, a fail-closed
+// tenant guard, a tenant connection / provider probe, an unapplied migration); otherwise it comes from the published
+// allow-list below, with the reason and the action taken. A sentence with neither FAILS (C1); an allow-list row that
+// contradicts the derivation fails (C2); a row that outlives its sentence fails (C3).
+//
+// BLIND SPOTS (§2): the population is the HONEST_PARTIAL phrase family on STRIPPED source (app/** every line, lib/**
+// the "not available yet" family only) — a dishonest screen that claims nothing is test:ui-wiring-census's; console
+// logs and thrown server errors in app/** are classified with the rest (a relayed error is still copy a person reads);
+// derivation reads a ±3-line window, so an env var checked in a different function reads as allow-listed, never as
+// derived (an under-claim, never an over-claim).
+// ═════════════════════════════════════════════════════════════════════════════
+export const SURFACE_CLASSES = ["implemented-missing-owner-config", "present-but-unwired", "incomplete-code", "missing-reader/writer/evidence", "unsupported/deferred"] as const
+export type SurfaceClass = (typeof SURFACE_CLASSES)[number]
+/** The "not available yet" family — scanned in lib/** too, and never allowed unclassified anywhere (brief, proof). */
+export const NOT_AVAILABLE = /not available yet|isn['’]t available yet|not yet available/i
+export interface HonestSite { file: string; line: number; phrase: string; text: string; scope: "ui" | "server" }
+export interface ClassifiedSite extends HonestSite { cls: SurfaceClass | null; derivedFrom: "code" | "allow-list" | null; basis: string; action: string }
+
+/**
+ * THE ALLOW-LIST — sentences whose class the code cannot state by itself. Keyed by file (+ an optional substring of the
+ * line when one file holds sentences of different classes). `action` says what lane 147H did; every row is re-checked
+ * against the tree (C3: a row whose sentence is gone fails, so the list can never outlive the copy it explains).
+ */
+export const CLASSIFIED_SURFACES: ReadonlyArray<{ file: string; match?: string; cls: SurfaceClass; why: string; action: string }> = [
+  { file: "app/components/settings/BenefitOfferingsCard.tsx", cls: "implemented-missing-owner-config", why: "the brokerage has not described its benefit distribution — a tenant-owner setting on the same card", action: "kept: honest owner-setting copy (the toggle pays nothing until the distribution is described)" },
+  { file: "app/components/portal/DocumentUploadDialog.tsx", cls: "implemented-missing-owner-config", why: "the storage upload refused for a missing bucket configuration — a platform storage setting, not code", action: "kept: honest refusal, the client is told to contact support" },
+  { file: "app/dashboard/admin/onboarding/components/os/setup-blockers-panel.tsx", cls: "implemented-missing-owner-config", why: "the tenant setup board lists each setup item the owner has not configured yet", action: "kept: the setup board IS the configuration surface" },
+  { file: "app/dashboard/admin/phone-settings/phone-settings-client.tsx", match: "Voice cloning", cls: "implemented-missing-owner-config", why: "the platform voice provider key (ELEVENLABS_API_KEY) is unset; the 503 says so — a TENANT is told the capability status and who switches it on, never the variable (readiness V6: platform configuration never reaches a tenant screen)", action: "copy corrected (was \"isn't available yet\")" },
+  { file: "app/dashboard/admin/phone-settings/page.tsx", cls: "implemented-missing-owner-config", why: "phone number / A2P registration not configured for the tenant — a tenant connection (Twilio) set on this page", action: "kept: status label on the page that configures it" },
+  { file: "app/dashboard/superadmin/env-providers/providers-client.tsx", cls: "implemented-missing-owner-config", why: "the platform provider console lists each provider whose env is unset", action: "kept: the console IS the configuration surface" },
+  { file: "app/dashboard/superadmin/ai-ops/rotation-risks-panel.tsx", cls: "implemented-missing-owner-config", why: "a credential-refresh sweep reports providers it skipped because they are not configured", action: "kept: honest sweep summary" },
+  { file: "app/dashboard/superadmin/connectors/go-live-card.tsx", cls: "implemented-missing-owner-config", why: "the go-live board's per-connector state vocabulary (not_configured)", action: "kept: the board IS the readiness surface" },
+  { file: "app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx", cls: "implemented-missing-owner-config", why: "email sending needs the platform SendGrid key (SENDGRID_API_KEY); the draft is kept for copying", action: "kept: honest fallback naming the provider" },
+  { file: "app/dashboard/marketing/podcast/components/distribution-channels-tab.tsx", cls: "implemented-missing-owner-config", why: "a podcast distribution channel the tenant has not connected", action: "kept: status label on the connection tab" },
+  { file: "app/dashboard/settings/podcast-channels/podcast-channels-client.tsx", cls: "implemented-missing-owner-config", why: "a podcast channel the tenant has not connected", action: "kept: status label on the settings page that connects it" },
+  { file: "app/dashboard/onboarding/tech-stack/tech-stack-client.tsx", cls: "implemented-missing-owner-config", why: "a tech-stack integration the tenant has not connected", action: "kept: status label on the page that connects it" },
+  { file: "app/dashboard/team-heatmap/page.tsx", cls: "implemented-missing-owner-config", why: "the platform map provider (Mapbox token) is not configured; the activity list still renders", action: "kept: honest degraded state (WAITING_EXTERNAL Mapbox, readiness B6)" },
+  { file: "app/dashboard/marketing/podcast/components/create-episode-dialog.tsx", cls: "implemented-missing-owner-config", why: "the agent has not set up an ElevenLabs voice clone (an agent-level connection on /dashboard/videos/voice)", action: "kept: honest refusal naming where to set it up" },
+  { file: "app/mobile/voice/page.tsx", cls: "implemented-missing-owner-config", why: "the voice assistant is not set up for this agent (voice settings)", action: "kept: honest empty state" },
+  { file: "app/mobile/voice/voice-session-button.tsx", cls: "implemented-missing-owner-config", why: "the voice assistant session refused because voice is not set up in settings", action: "kept: honest refusal naming settings" },
+  { file: "app/actions/admin/run-scrape-test.ts", cls: "implemented-missing-owner-config", why: "CRON_SECRET (platform env) is unset, so the self-call cannot authenticate", action: "kept: names the variable" },
+  { file: "app/actions/crm-connect.ts", cls: "implemented-missing-owner-config", why: "secret storage (SECRETS_ENCRYPTION_KEY) is not configured, so an API secret cannot be stored safely", action: "kept: honest refusal" },
+  { file: "app/actions/vendor-billing.ts", cls: "implemented-missing-owner-config", why: "the vendor tier price is a brokerage setting; a refused read is logged as unpriced", action: "kept: server log" },
+  { file: "app/actions/superadmin/platform-staff.ts", cls: "implemented-missing-owner-config", why: "email delivery (SendGrid) is not configured, so a staff invite cannot be sent", action: "kept: honest refusal" },
+  { file: "app/actions/video-generation.ts", cls: "implemented-missing-owner-config", why: "the agent has no avatar / voice id set in the Agent Roster, or the D-ID provider is not configured", action: "kept: names where to set it" },
+  { file: "app/actions/superadmin/brokerage-management.ts", cls: "implemented-missing-owner-config", why: "a refund needs Stripe (STRIPE_SECRET_KEY); the skipped path says so", action: "kept: honest refusal" },
+  { file: "app/actions/billing.ts", match: "Payments are not configured", cls: "implemented-missing-owner-config", why: "Stripe (STRIPE_SECRET_KEY) is not configured in this environment — the code could not be applied", action: "kept: honest refusal (owner ruling: no live billing)" },
+  { file: "app/actions/billing.ts", match: "Stripe is not configured", cls: "implemented-missing-owner-config", why: "Stripe (STRIPE_SECRET_KEY) is not configured — seats cannot be sold from this environment", action: "kept: honest refusal (owner ruling: no live billing)" },
+  { file: "app/actions/ai-listing-intake.ts", cls: "implemented-missing-owner-config", why: "Dotloop is a brokerage connection (Settings › Integrations)", action: "kept: names where to connect it" },
+  { file: "app/actions/ai-offer-creation.ts", cls: "implemented-missing-owner-config", why: "Dotloop is a brokerage connection (Settings › Integrations)", action: "kept: names where to connect it" },
+  { file: "app/actions/seller-showings.ts", cls: "implemented-missing-owner-config", why: "ShowingTime credentials are a brokerage connection", action: "kept: honest refusal" },
+  { file: "app/actions/lead-intelligence.ts", cls: "implemented-missing-owner-config", why: "ZenRows / BatchData keys (ZENROWS_API_KEY, BATCHDATA_API_KEY) are platform env; the run says it is dark", action: "kept: names the variable where the line can" },
+  { file: "app/actions/investor-buybox-preview.ts", cls: "implemented-missing-owner-config", why: "the BatchData MCP connector is platform configuration", action: "kept: honest refusal (the card relays it)" },
+  { file: "app/actions/podcast-generation.ts", cls: "implemented-missing-owner-config", why: "the agent's ElevenLabs voice clone (agent connection) or ELEVENLABS_API_KEY (platform env)", action: "kept: names where to set it" },
+  { file: "app/dashboard/campaigns/mail/mail-dashboard.tsx", cls: "implemented-missing-owner-config", why: "fail-closed tenant guard rendered as a heading — the seat has no brokerage (users.brokerage_id)", action: "kept: honest refusal" },
+  { file: "app/api/cron/health-check/route.ts", cls: "implemented-missing-owner-config", why: "a provider with no credentials row reads 'unknown — Not configured' in the health sweep (never 'healthy')", action: "kept: fail-closed health status" },
+  { file: "app/api/integrations/oauth/[provider]/route.ts", cls: "implemented-missing-owner-config", why: "secret storage (SECRETS_ENCRYPTION_KEY) or the provider's OAuth client id/secret (platform env per catalog entry) is unset", action: "kept: the redirect says nothing was stored" },
+  { file: "app/api/social/oauth/[platform]/route.ts", cls: "implemented-missing-owner-config", why: "secret storage or the platform's OAuth client (config.clientIdEnv / clientSecretEnv — the line names them for platform staff) is unset", action: "kept: names the variables on the platform-scope path" },
+  { file: "app/api/sms/inbound-optout/route.ts", cls: "implemented-missing-owner-config", why: "no Twilio auth token resolves for the receiving number (tenant / platform Twilio connection), so the signature cannot be verified — refused 503, fail closed", action: "kept: fail-closed webhook" },
+  { file: "app/api/voice/recording/[callId]/route.ts", cls: "implemented-missing-owner-config", why: "the brokerage's Twilio connection is absent, so a recording cannot be fetched", action: "kept: honest refusal" },
+  { file: "app/api/voice/twilio/inbound/route.ts", cls: "implemented-missing-owner-config", why: "the dialled number is not mapped to a tenant (phone settings) — the caller hears a polite hang-up", action: "kept: fail-closed" },
+  { file: "app/components/ai-image/generate-image-button.tsx", cls: "implemented-missing-owner-config", why: "the image-generation provider returns 503 when its platform key is unset", action: "kept: honest refusal" },
+  { file: "app/dashboard/superadmin/coupons/coupons-manager.tsx", cls: "implemented-missing-owner-config", why: "Stripe (STRIPE_SECRET_KEY) unset — publish records an honest MOCK ledger entry (owner ruling: no Stripe objects)", action: "kept: honest mock label" },
+  { file: "app/dashboard/videos/create/teammate-explainer-card.tsx", cls: "implemented-missing-owner-config", why: "the D-ID avatar provider (DID_API_KEY) / ElevenLabs (ELEVENLABS_API_KEY) are platform env; the video queues and renders when they are set", action: "kept: honest readiness labels" },
+  { file: "app/settings/services/services-content.tsx", cls: "implemented-missing-owner-config", why: "a tenant service connection that is not connected — this page connects it", action: "kept: status label on the configuring page" },
+  { file: "lib/integrations/providers/provider-resolver.ts", cls: "unsupported/deferred", why: "a legal-forms / e-sign provider listed in the catalog with implemented:false — the refusal names the providers that work", action: "kept: honest refusal; the catalog marks it unimplemented (no adapter is claimed)" },
+  { file: "lib/kernel/video.ts", cls: "unsupported/deferred", why: "video repurposing (shorts / clips / thumbnails) has no processing backend; the old code fabricated artifact URLs", action: "kept: honest refusal relayed by the video studio dialog; a processor (worker) is an owner decision — Still open" },
+]
+
+const STAMP_APPLIED = /^--\s*──\s*APPLIED LIVE\b/
+/** The line-1 stamp of supabase/migrations/m<NNN>-*.sql — applied / written / absent (the RULE, both stamps accepted). */
+export function migrationStampOf(n: number): "applied" | "written" | "absent" {
+  const dir = join(ROOT, "supabase", "migrations")
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => new RegExp(`^m${n}(?:[a-z])?-`).test(f)) : []
+  if (!files.length) return "absent"
+  return files.some((f) => STAMP_APPLIED.test(readFileSync(join(dir, f), "utf8").split("\n")[0] ?? "")) ? "applied" : "written"
+}
+
+/** Every env var name the runtime reads (`process.env.NAME`) — the vocabulary an ENV derivation may name. */
+let ENV_NAMES: Set<string> | null = null
+function envNames(): Set<string> {
+  if (ENV_NAMES) return ENV_NAMES
+  ENV_NAMES = new Set<string>()
+  for (const root of ["app", "lib"]) for (const abs of walkTs(join(ROOT, root))) for (const m of readCode(abs).matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)) ENV_NAMES.add(m[1])
+  return ENV_NAMES
+}
+
+/** PURE over a window: the class the CODE states for one honest-state line, or null (→ the allow-list). */
+export function deriveSurfaceClass(lines: string[], idx: number, envVocabulary: Set<string>, fileCode: string): { cls: SurfaceClass; basis: string } | null {
+  const text = lines[idx] ?? ""
+  const win = lines.slice(Math.max(0, idx - 3), idx + 4).join("\n")
+  // 1. MIGRATION-GATED: the sentence names a migration. Unapplied → the reader/writer/evidence is missing until the
+  //    integrator applies it. APPLIED → the sentence is the fallback for a database missing it: dormant on the live
+  //    database, and a deployment step (apply the migration) wherever it fires — configuration, not missing code.
+  const mig = /\bm(\d{3,4})\b/.exec(text)
+  if (mig && /migration|pending|not applied/i.test(text)) {
+    const stamp = migrationStampOf(Number(mig[1]))
+    return stamp === "applied"
+      ? { cls: "implemented-missing-owner-config", basis: `fallback for a database missing APPLIED migration m${mig[1]} (dormant live; the deployment applies it)` }
+      : { cls: "missing-reader/writer/evidence", basis: `migration m${mig[1]} is ${stamp === "absent" ? "not in the tree" : "written, not applied"}` }
+  }
+  // 2. ENV: the window names a variable the runtime reads, or tests an identifier assigned from process.env in the file.
+  const vars = new Set<string>()
+  for (const m of win.matchAll(/\b([A-Z][A-Z0-9]*_[A-Z0-9_]+)\b/g)) if (envVocabulary.has(m[1])) vars.add(m[1])
+  for (const m of fileCode.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*process\.env\.([A-Z][A-Z0-9_]+)/g)) if (new RegExp(`\\b${m[1].replace(/\$/g, "\\$")}\\b`).test(win)) vars.add(m[2])
+  if (vars.size) return { cls: "implemented-missing-owner-config", basis: `platform env ${[...vars].sort().join(", ")}` }
+  // 3. FAIL-CLOSED TENANT GUARD: "Brokerage not configured" behind a falsy brokerage id — the seat has no
+  //    users.brokerage_id; the tenant admin attaches it. The page is built; the identity is not configured.
+  if (/brokerage not configured/i.test(text) && /!\s*[\w?.]*[bB]rokerage_?[iI]d\b|[bB]rokerage_?[iI]d\s*\)\s*return/.test(win)) return { cls: "implemented-missing-owner-config", basis: "fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat)" }
+  // 4. CONNECTION / PROVIDER PROBE: the sentence is the else-branch of a configured-probe the code evaluates.
+  const probe = /\b(is_configured|isConfigured|stripeConfigured|isStripeConfigured|didConfigured|unconfigured|tenantConnections|missingEnv|envPart|skipped|connected(?=\s*\?))/.exec(win)
+  if (probe) return { cls: "implemented-missing-owner-config", basis: `tenant / provider connection probe (${probe[1]})` }
+  return null
+}
+
+/** Every honest-state sentence in the tree, one per line. */
+export function honestSites(): HonestSite[] {
+  const out: HonestSite[] = []
+  for (const root of ["app", "lib"]) for (const abs of walkTs(join(ROOT, root))) {
+    const file = rel(abs)
+    const re = root === "app" ? HONEST_PARTIAL : NOT_AVAILABLE
+    readCode(abs).split("\n").forEach((l, i) => { const m = l.match(re); if (m) out.push({ file, line: i + 1, phrase: m[0], text: l.trim().slice(0, 220), scope: file.endsWith(".tsx") ? "ui" : "server" }) })
+  }
+  return out
+}
+
+/** Every site with its ONE class (derived first, the allow-list otherwise). */
+export function classifySites(sites: HonestSite[] = honestSites()): ClassifiedSite[] {
+  const env = envNames()
+  const linesOf = new Map<string, string[]>()
+  return sites.map((s) => {
+    let lines = linesOf.get(s.file)
+    if (!lines) { lines = readCode(join(ROOT, s.file)).split("\n"); linesOf.set(s.file, lines) }
+    const d = deriveSurfaceClass(lines, s.line - 1, env, readCode(join(ROOT, s.file)))
+    const listed = CLASSIFIED_SURFACES.find((r) => r.file === s.file && (!r.match || s.text.includes(r.match)))
+    if (d) return { ...s, cls: d.cls, derivedFrom: "code" as const, basis: d.basis, action: listed?.action ?? "kept: honest configuration copy (derived)" }
+    if (listed) return { ...s, cls: listed.cls, derivedFrom: "allow-list" as const, basis: listed.why, action: listed.action }
+    return { ...s, cls: null, derivedFrom: null, basis: "UNCLASSIFIED", action: "—" }
+  })
+}
+
+/** Copy that names a migration, with its stamp — an APPLIED migration must never be called pending (C4). */
+export function migrationNamingCopy(): Array<{ at: string; migration: string; stamp: "applied" | "written" | "absent"; claimsPending: boolean }> {
+  const out: Array<{ at: string; migration: string; stamp: "applied" | "written" | "absent"; claimsPending: boolean }> = []
+  for (const abs of walkTs(join(ROOT, "app"))) {
+    const code = readCode(abs)
+    for (const l of stringLiterals(code)) for (const m of l.text.matchAll(/\bmigration\s+m(\d{3,4})\b|\bm(\d{3,4})\b(?=[^"'`]*(?:migration|not applied|pending))/gi)) {
+      const n = Number(m[1] ?? m[2])
+      out.push({ at: `${rel(abs)}:${code.slice(0, l.start).split("\n").length}`, migration: `m${n}`, stamp: migrationStampOf(n), claimsPending: /pending|not applied|not available yet/i.test(l.text) })
+    }
+    // JSX text is not a string literal — read the stripped lines too.
+    code.split("\n").forEach((line, i) => { if (/>[^<{]*\bmigration\s+m\d{3,4}/i.test(line)) { const n = Number(/m(\d{3,4})/.exec(line.slice(line.search(/migration\s+m/i)))![1]); out.push({ at: `${rel(abs)}:${i + 1}`, migration: `m${n}`, stamp: migrationStampOf(n), claimsPending: /pending|not applied|not available yet/i.test(line) }) } })
+  }
+  const seen = new Set<string>()
+  return out.filter((r) => { const k = `${r.at}|${r.migration}`; if (seen.has(k)) return false; seen.add(k); return true })
+}
+
+/**
+ * WHAT LANE 147H CLOSED — the surfaces that sat in the OTHER four classes at 4d527cc3 and were finished, wired, or taken
+ * off the launch surface. Each row is re-proved against the tree (C5): the old sentence is gone from `file` and the
+ * survivor exists (a row can never claim a fix the tree does not carry).
+ */
+/** `oldCopy` empty = a surface that had no copy of its own (a reader added where none existed). */
+export const CLOSED_THIS_WAVE: ReadonlyArray<{ surface: string; file: string; was: SurfaceClass; oldCopy: string; action: string; survivor: string }> = [
+  { surface: "vendor portfolio (list)", file: "app/vendor/portfolio/page.tsx", was: "missing-reader/writer/evidence", oldCopy: "Portfolio uploads are not available yet", action: "BUILT — m906 store + writer + both readers", survivor: "app/actions/vendor-portfolio.ts" },
+  { surface: "vendor portfolio (upload)", file: "app/vendor/portfolio/upload/page.tsx", was: "missing-reader/writer/evidence", oldCopy: "Portfolio uploads are not available yet", action: "BUILT — the form posts to addVendorPortfolioItem (ledgered vendor.portfolio_item.add)", survivor: "app/vendor/portfolio/upload/portfolio-upload-form.tsx" },
+  { surface: "vendor portfolio (agents' view)", file: "app/dashboard/vendors/vendor-directory-client.tsx", was: "missing-reader/writer/evidence", oldCopy: "", action: "BUILT — work samples in the directory's Reviews dialog", survivor: "app/components/vendors/vendor-portfolio-strip.tsx" },
+  { surface: "title closing appointment", file: "app/title/closing/new/page.tsx", was: "missing-reader/writer/evidence", oldCopy: "place from here is not available yet", action: "BUILT — proposeClosingAppointment lands the deal agent's task (ledgered transaction.closing_appointment.propose); a different day is refused as an amendment", survivor: "app/actions/title/closing-appointment.ts" },
+  { surface: "portal: family search visibility", file: "app/components/portal/PortalSettingsPage.tsx", was: "present-but-unwired", oldCopy: "Family search visibility (not available yet)", action: "WIRED — a link to the shared-search member control that already existed", survivor: "app/components/portal/CollaborativeSearchDashboard.tsx" },
+  { surface: "portal: share activity with agent", file: "app/components/portal/PortalSettingsPage.tsx", was: "unsupported/deferred", oldCopy: "Share activity with agent (not available yet)", action: "REMOVED from the launch surface with a tombstone — agents see portal activity by design; the rule is stated and the data-subject exits remain", survivor: "app/actions/portal-settings.ts" },
+  { surface: "manager trust: improvement proposals", file: "app/dashboard/admin/manager-trust/improvement-proposals-panel.tsx", was: "implemented-missing-owner-config", oldCopy: "not available yet (pending migration m709)", action: "COPY CORRECTED — m709 is applied live; the fallback now says the store is missing from this database", survivor: "app/actions/admin/improvement-proposals.ts" },
+  { surface: "manager trust: tenant constitution history", file: "app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx", was: "implemented-missing-owner-config", oldCopy: "not available yet (pending migration m696)", action: "COPY CORRECTED — m696 is applied live", survivor: "lib/kernel/tenant-policy.ts" },
+  { surface: "manager trust: workforce thresholds", file: "app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx", was: "implemented-missing-owner-config", oldCopy: "The proposal store is not available yet", action: "COPY CORRECTED — m709 is applied live", survivor: "app/actions/admin/improvement-proposals.ts" },
+  { surface: "command center: resource allocation", file: "app/dashboard/admin/command-center/allocation-card.tsx", was: "implemented-missing-owner-config", oldCopy: "The proposal store is not available yet", action: "COPY CORRECTED — m709 is applied live", survivor: "lib/kernel/resource-allocation.ts" },
+  { surface: "commission agreements history", file: "app/dashboard/financials/agreements/page.tsx", was: "implemented-missing-owner-config", oldCopy: "The terms history is not available yet", action: "COPY CORRECTED — m812 is applied live", survivor: "app/actions/commission-agreement-history.ts" },
+  { surface: "phone settings: voice cloning", file: "app/dashboard/admin/phone-settings/phone-settings-client.tsx", was: "implemented-missing-owner-config", oldCopy: "Voice cloning isn't available yet", action: "CONFIGURATION MESSAGE — capability status for the tenant; ELEVENLABS_API_KEY named here and in the notes (never on a tenant screen — readiness V6)", survivor: "app/dashboard/admin/phone-settings/phone-settings-client.tsx" },
+  { surface: "collaborative search refusals", file: "app/actions/collaborative-search.ts", was: "implemented-missing-owner-config", oldCopy: "Collaborative search is not yet available.", action: "CONFIGURATION MESSAGE — says the platform switched it off; the kill switch COLLABORATIVE_SEARCH_ENABLED is derived from the code and named here for platform staff, never to a portal contact", survivor: "app/actions/collaborative-search.ts" },
+  { surface: "required-docs: state citations", file: "app/actions/compliance/manage-required-docs.ts", was: "implemented-missing-owner-config", oldCopy: "citations are not available yet", action: "COPY CORRECTED — m847 is applied live", survivor: "app/actions/compliance/manage-required-docs.ts" },
+  { surface: "CRM tours gate", file: "app/crm/contacts/[contactId]/tours/page.tsx", was: "missing-reader/writer/evidence", oldCopy: "Tour Planning Not Yet Available", action: "COPY CORRECTED — a buyer-stage gate, not a missing capability (tour planning is built)", survivor: "app/actions/tour-planner.ts" },
+  { surface: "market trend (3 cards)", file: "app/home-value/result/[requestId]/page.tsx", was: "missing-reader/writer/evidence", oldCopy: "\"Not yet available\"", action: "COPY CORRECTED — a data-coverage state (no market_data row for the area), said as such", survivor: "app/actions/home-value.ts" },
+  { surface: "call transcript", file: "app/components/voice/TranscriptViewer.tsx", was: "missing-reader/writer/evidence", oldCopy: "Transcript not yet available", action: "COPY CORRECTED — an asynchronous processing state, said as such", survivor: "app/components/voice/TranscriptViewer.tsx" },
+]
+
+function renderClassification(lines: string[], sites: ClassifiedSite[]): void {
+  const count = (c: SurfaceClass) => sites.filter((s) => s.cls === c).length
+  const derived = sites.filter((s) => s.derivedFrom === "code").length
+  lines.push("## Classification — every unfinished / not-configured / not-available sentence (ruling 9, lane 147H)")
+  lines.push("")
+  lines.push(`Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that say 'not available yet'. Every exposed function works, gives an honest configuration message, or leaves the advertised launch surface."* Population: every line of STRIPPED source in \`app/**\` carrying the honest-state phrase family (and every "not available yet" line in \`lib/**\`) — ${sites.length} sentences (${sites.filter((s) => s.scope === "ui").length} on screens, ${sites.filter((s) => s.scope === "server").length} server refusals a screen relays). Each sits in exactly one class, **derived from code** for ${derived} (an env var the runtime reads, a fail-closed tenant guard, a connection / provider probe, a migration stamp) and from the published allow-list (\`CLASSIFIED_SURFACES\`) for ${sites.length - derived}. A missing credential is configuration, never an engineering failure.`)
+  lines.push("")
+  lines.push(`| class | sentences |`)
+  lines.push(`|---|---|`)
+  for (const c of SURFACE_CLASSES) lines.push(`| ${c} | ${count(c)} |`)
+  lines.push(`| UNCLASSIFIED (must be 0) | ${sites.filter((s) => !s.cls).length} |`)
+  lines.push("")
+  lines.push("### Closed this wave (were in another class at 4d527cc3)")
+  lines.push("")
+  lines.push("| surface | file | class at 4d527cc3 | action taken | survivor |")
+  lines.push("|---|---|---|---|---|")
+  for (const c of CLOSED_THIS_WAVE) lines.push(`| ${c.surface} | \`${c.file}\` | ${c.was} | ${c.action} | \`${c.survivor}\` |`)
+  lines.push("")
+  lines.push("### Every remaining sentence")
+  lines.push("")
+  lines.push("| file | line(s) | scope | phrase | class | derived from | basis (variable / evidence) | action |")
+  lines.push("|---|---|---|---|---|---|---|---|")
+  const groups = new Map<string, ClassifiedSite[]>()
+  for (const s of sites) { const k = `${s.file}|${s.cls}|${s.derivedFrom}|${s.basis}`; const g = groups.get(k) ?? []; g.push(s); groups.set(k, g) }
+  for (const g of [...groups.values()].sort((a, b) => a[0].file.localeCompare(b[0].file) || a[0].line - b[0].line)) {
+    const s = g[0]
+    lines.push(`| \`${s.file}\` | ${g.map((x) => x.line).join(", ")} | ${s.scope} | ${[...new Set(g.map((x) => x.phrase.toLowerCase()))].join(" / ")} | ${s.cls ?? "**UNCLASSIFIED**"} | ${s.derivedFrom ?? "—"} | ${s.basis.replace(/\|/g, "\\|")} | ${s.action.replace(/\|/g, "\\|")} |`)
+  }
+  lines.push("")
+  const mig = migrationNamingCopy()
+  lines.push("### Migration-gated fallbacks (copy that names a migration, with its stamp)")
+  lines.push("")
+  lines.push("A fallback naming an APPLIED migration fires only on a database missing it — dormant live, a deployment step wherever it fires. One naming a WRITTEN migration is waiting on the integrator.")
+  lines.push("")
+  lines.push("| at | migration | stamp |")
+  lines.push("|---|---|---|")
+  for (const m of mig) lines.push(`| \`${m.at}\` | ${m.migration} | ${m.stamp} |`)
+  lines.push("")
+}
+
 // ── the derivation ────────────────────────────────────────────────────────────
-type Row = { role: string; domain: string; label: string; href: string; page: string | null; via?: string; verdict: Verdict; behind: string; partial?: string; hop: 0 | 1 }
+type Row = { role: string; domain: string; label: string; href: string; page: string | null; via?: string; verdict: Verdict; behind: string; partial?: string; honestAt?: string; hop: 0 | 1 }
 function navItems(role: string): Array<{ label: string; href: string }> {
   const cfg = (NAVIGATION_BY_ROLE as Record<string, { sidebarItems?: any[]; topNavItems?: any[]; mobileBottomNav?: any[]; commandPaletteItems?: any[] }>)[role]
   if (!cfg) return []
@@ -327,7 +558,7 @@ export function derive(): { rows: Row[]; publicPages: string[]; portalPages: str
       const t = resolveHref(r.redirectTo)
       if (t.page && t.page.file !== res.page.file) { const tr = reachForPage(t.page.file); const tv = verdictOf(tr); if (tv !== "REDIRECT") { verdict = tv; r = tr; via = `redirects → ${r === tr ? t.page.file : r.redirectTo}` } }
     }
-    return { role, domain: domainOf(res.page.file), label, href, page: res.page.file, via, verdict, behind: behind(r), partial: r.honestPartial ?? undefined, hop: 0 }
+    return { role, domain: domainOf(res.page.file), label, href, page: res.page.file, via, verdict, behind: behind(r), partial: r.honestPartial ?? undefined, honestAt: r.honestAt ?? undefined, hop: 0 }
   }
   for (const g of ROLE_GROUPS) {
     const seen = new Set<string>()
@@ -376,7 +607,8 @@ function gapsOf(rows: Row[]): string[] {
   return out
 }
 
-function renderDoc(rows: Row[], gaps: string[], meta: { publicPages: number; portalPages: number }): string {
+function renderDoc(rows: Row[], gaps: string[], meta: { publicPages: number; portalPages: number }, sites: ClassifiedSite[] = classifySites()): string {
+  const classAt = (at?: string) => { if (!at) return null; const s = sites.find((x) => `${x.file}:${x.line}` === at); return s?.cls ?? null }
   const verdicts: Verdict[] = ["BUILT", "PARTIAL", "UNWIRED", "STATIC", "REDIRECT", "MISSING"]
   const roles = ROLE_GROUPS.map((g) => g.name)
   const domains = [...DOMAINS.map((d) => d.name), ...[...new Set(rows.map((r) => r.domain))].filter((d) => !DOMAINS.some((x) => x.name === d)).sort()]
@@ -390,7 +622,7 @@ function renderDoc(rows: Row[], gaps: string[], meta: { publicPages: number; por
   const lines: string[] = []
   lines.push("# Capability surface audit — every role's journeys on their real surfaces")
   lines.push("")
-  lines.push("<!-- GENERATED by `npx tsx scripts/ui-capability-surface-audit.ts --write-doc` (wave 146, lane 146H). Do not hand-edit: the guard fails when this file disagrees with the derivation. -->")
+  lines.push("<!-- GENERATED by `npx tsx scripts/ui-capability-surface-audit.ts --write-doc` (wave 146, lane 146H; classification wave 147, lane 147H). Do not hand-edit: the guard fails when this file disagrees with the derivation. -->")
   lines.push("")
   lines.push("Owner ruling 18 (2026-10-29): *\"All capabilities at all levels … Validate each on its real surface.\"* Every row below is DERIVED from the tree: the role's navigation (`app/config/navigation-config.ts` `NAVIGATION_BY_ROLE`), the contact portal's own pages (`app/portal/[contactId]/**`), and every page the proxy does not protect (`app/constants/auth.ts` `classifyProxyPath`) → the page that serves the href → a walk of that page's imports to the server action / API / server read behind it.")
   lines.push("")
@@ -414,7 +646,9 @@ function renderDoc(rows: Row[], gaps: string[], meta: { publicPages: number; por
   const notBuilt = rows.filter((r) => r.verdict === "UNWIRED" || r.verdict === "PARTIAL" || r.verdict === "MISSING")
   if (!notBuilt.length) lines.push("None.")
   else { lines.push("| role | domain | surface | page | verdict | why |"); lines.push("|---|---|---|---|---|---|") }
-  for (const r of notBuilt) lines.push(`| ${r.role} | ${r.domain} | ${r.label} \`${r.href}\` | ${r.page ? `\`${r.page}\`` : "—"} | ${r.verdict} | ${r.verdict === "PARTIAL" ? `says "${r.partial}"` : r.verdict === "MISSING" ? (r.page ? `honest state — says "${r.partial}"; capability routed in lane 146H notes` : "no page serves the href") : "controls without a data path"} |`)
+  for (const r of notBuilt) lines.push(`| ${r.role} | ${r.domain} | ${r.label} \`${r.href}\` | ${r.page ? `\`${r.page}\`` : "—"} | ${r.verdict} | ${r.verdict === "PARTIAL" ? `says "${r.partial}"${r.honestAt ? ` (\`${r.honestAt}\` — ${classAt(r.honestAt) ?? "UNCLASSIFIED"})` : ""}` : r.verdict === "MISSING" ? (r.page ? `honest state — says "${r.partial}"${r.honestAt ? ` (\`${r.honestAt}\` — ${classAt(r.honestAt) ?? "UNCLASSIFIED"})` : ""}` : "no page serves the href") : "controls without a data path"} |`)
+  lines.push("")
+  renderClassification(lines, sites)
   lines.push("")
   lines.push("## Journey table — role × domain × surface × the action behind it × verdict")
   lines.push("")
@@ -497,8 +731,49 @@ async function main() {
   check("G2 no KNOWN_GAPS entry outlives its gap (a closed gap is deleted, never kept as decoration)", stale.length === 0, stale.join("; "))
 
   // ── D · the document ────────────────────────────────────────────────────────
+  // ── C · classification (wave 147, lane 147H — ruling 9) ────────────────────
+  console.log("\n[C · classification — every unfinished / not-configured / not-available sentence in exactly one class]")
+  const sites = classifySites()
+  const byClass = SURFACE_CLASSES.map((c) => `${c} ${sites.filter((s) => s.cls === c).length}`).join(" · ")
+  console.log(`    denominator: ${sites.length} sentences (${sites.filter((s) => s.scope === "ui").length} ui, ${sites.filter((s) => s.scope === "server").length} server) — ${byClass}; derived from code ${sites.filter((s) => s.derivedFrom === "code").length}, allow-list ${sites.filter((s) => s.derivedFrom === "allow-list").length}`)
+  const unclassified = sites.filter((s) => !s.cls)
+  for (const s of unclassified) console.log(`    UNCLASSIFIED ${s.file}:${s.line} ${s.text.slice(0, 120)}`)
+  check("C1 every honest-state sentence sits in exactly one of the five classes (derived from code, else the published allow-list)", unclassified.length === 0, unclassified.map((s) => `${s.file}:${s.line}`).join("; "))
+  const naYet = sites.filter((s) => NOT_AVAILABLE.test(s.text))
+  check(`C1b no "not available yet" sentence exists without a classification row (${naYet.length} in the tree, app/** + lib/**)`, naYet.every((s) => !!s.cls), naYet.filter((s) => !s.cls).map((s) => `${s.file}:${s.line}`).join("; "))
+  const env = envNames()
+  const contradictions = sites.filter((s) => {
+    const listed = CLASSIFIED_SURFACES.find((r) => r.file === s.file && (!r.match || s.text.includes(r.match)))
+    if (!listed) return false
+    const d = deriveSurfaceClass(readCode(join(ROOT, s.file)).split("\n"), s.line - 1, env, readCode(join(ROOT, s.file)))
+    return !!d && d.cls !== listed.cls
+  })
+  check("C2 no allow-list row contradicts what the code derives for the same sentence", contradictions.length === 0, contradictions.map((s) => `${s.file}:${s.line}`).join("; "))
+  const staleRows = CLASSIFIED_SURFACES.filter((r) => !sites.some((s) => s.file === r.file && (!r.match || s.text.includes(r.match))))
+  check("C3 no allow-list row outlives its sentence (a row whose copy is gone is deleted, never kept as decoration)", staleRows.length === 0, staleRows.map((r) => `${r.file}${r.match ? ` "${r.match}"` : ""}`).join("; "))
+  const mig = migrationNamingCopy()
+  check(`C4 every copy that names a migration names one in the tree (${mig.length} sentences; ${mig.filter((m) => m.stamp === "applied").length} dormant fallbacks of applied migrations, ${mig.filter((m) => m.stamp === "written").length} waiting on the integrator)`, mig.every((m) => m.stamp !== "absent"), mig.filter((m) => m.stamp === "absent").map((m) => `${m.at} ${m.migration}`).join("; "))
+  const closedBad = CLOSED_THIS_WAVE.filter((c) => !existsSync(join(ROOT, c.file)) || !existsSync(join(ROOT, c.survivor)) || (!!c.oldCopy && readCode(join(ROOT, c.file)).includes(c.oldCopy)))
+  check(`C5 every surface closed this wave carries its fix in the tree (${CLOSED_THIS_WAVE.length}: the old sentence is gone from the file and the survivor exists)`, closedBad.length === 0, closedBad.map((c) => c.surface).join("; "))
+  const partialRows = rows.filter((r) => (r.verdict === "PARTIAL" || (r.verdict === "MISSING" && r.page)) && r.honestAt)
+  const rowUnclassified = partialRows.filter((r) => !sites.some((s) => `${s.file}:${s.line}` === r.honestAt && s.cls))
+  check(`C6 the sentence behind every PARTIAL / honest-MISSING screen is classified (${partialRows.length} screens)`, rowUnclassified.length === 0, [...new Set(rowUnclassified.map((r) => `${r.page} @ ${r.honestAt}`))].join("; "))
+  {
+    const L = (t: string[]) => t
+    const envCtl = deriveSurfaceClass(L(["const x = 1", "if (!key) return { error: \"FOO_API_KEY not configured\" }"]), 1, new Set(["FOO_API_KEY"]), "")
+    const identCtl = deriveSurfaceClass(L(["if (!ON) return { error: \"Feature is not yet available.\" }"]), 0, new Set(), `const ON = ${"process"}.env.FOO_ENABLED !== 'false'`)
+    const guardCtl = deriveSurfaceClass(L(["if (!profile?.brokerage_id) return <div>Brokerage not configured</div>"]), 0, new Set(), "")
+    const migCtl = deriveSurfaceClass(L(["return \"History is not available yet (pending migration m9998)\""]), 0, new Set(), "")
+    const noneCtl = deriveSurfaceClass(L(["<p>This part is not available yet.</p>"]), 0, new Set(), "")
+    const fakeUnclassified = classifySites([{ file: "app/__no_such_file__.tsx", line: 1, phrase: "not available yet", text: "<p>not available yet</p>", scope: "ui" }])[0]
+    check("CX POSITIVE CONTROLS — an env-named refusal and an env-assigned kill switch derive owner-config; a falsy-brokerage guard derives owner-config; an unapplied migration derives missing-reader/writer/evidence; a bare claim derives nothing and an unlisted sentence reads UNCLASSIFIED",
+      envCtl?.cls === "implemented-missing-owner-config" && /FOO_API_KEY/.test(envCtl.basis) && identCtl?.cls === "implemented-missing-owner-config" && /FOO_ENABLED/.test(identCtl.basis)
+      && guardCtl?.cls === "implemented-missing-owner-config" && migCtl?.cls === "missing-reader/writer/evidence" && noneCtl === null && fakeUnclassified.cls === null,
+      JSON.stringify({ envCtl, identCtl, guardCtl, migCtl, noneCtl, fake: fakeUnclassified.cls }))
+  }
+
   console.log("\n[D · docs/architecture/CAPABILITY-SURFACE-AUDIT.md]")
-  const doc = renderDoc(rows, gaps, { publicPages: publicPages.length, portalPages: portalPages.length })
+  const doc = renderDoc(rows, gaps, { publicPages: publicPages.length, portalPages: portalPages.length }, sites)
   if (WRITE_DOC) { writeFileSync(DOC_PATH, doc); console.log(`    written: ${rel(DOC_PATH)} (${doc.split("\n").length} lines)`) }
   const onDisk = existsSync(DOC_PATH) ? readFileSync(DOC_PATH, "utf8") : ""
   check("D1 the committed audit document agrees with the derivation (regenerate with --write-doc)", onDisk === doc, onDisk ? "drifted — run with --write-doc" : "missing")

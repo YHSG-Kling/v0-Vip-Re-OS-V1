@@ -27,7 +27,8 @@ export async function WorkforceThresholdsEditor() {
         underutilized or in development — and when a territory&apos;s rising seller demand becomes a recruiting need.
         {d.source === "policy" ? ` Brokerage policy v${d.version}${d.changedAt ? ` (changed ${new Date(d.changedAt).toLocaleString()})` : ""}.` : " Running on the platform defaults."}
         {" "}A change is a policy proposal: propose it for review, or apply it now (approved and promoted in one step, versioned and ledgered).
-        {!d.proposalsAvailable && " The proposal store is not available yet — nothing can be proposed."}
+        {/* Wave 147 (lane 147H): a fallback for a database missing the APPLIED m709 store — said as such (was "not available yet"). */}
+        {!d.proposalsAvailable && " The proposal store (improvement_proposals) is missing from this database, so nothing can be proposed — platform staff apply migration m709 to restore it."}
       </p>
       {d.openProposal && (
         <p className="mb-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">

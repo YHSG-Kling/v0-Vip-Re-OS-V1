@@ -306,7 +306,8 @@ export async function addRequiredDocument(
   if (error || !inserted) {
     // PGRST204 on a state-requirement write = the m847 citation columns are not applied yet — say so, never retry it uncited.
     if (Object.keys(basis.columns).length && String((error as { code?: string } | null)?.code ?? "") === "PGRST204") {
-      return { ok: false, error: "State-requirement citations are not available yet (migration m847 is not applied) — nothing was written." }
+      // Wave 147 (lane 147H): m847 is APPLIED LIVE — a PGRST204 here means THIS database is missing its columns, said as such.
+      return { ok: false, error: "State-requirement citation columns are missing from this database (migration m847) — nothing was written; platform staff apply m847 to restore them." }
     }
     return { ok: false, error: error?.message ?? "Insert failed" }
   }

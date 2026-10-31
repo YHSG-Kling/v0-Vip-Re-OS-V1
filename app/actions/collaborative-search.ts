@@ -47,7 +47,7 @@ export async function createCollaborativeSearch(
   description?: string,
   searchCriteria?: Record<string, any>,
 ) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
 
   const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
   const access = await requireContactAccess(contactId)
@@ -186,7 +186,7 @@ export async function closeCollaborativeSearch(
   searchId: string,
   status: "completed" | "archived",
 ): Promise<{ success?: true; error?: string }> {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   if (status !== "completed" && status !== "archived") {
     // Fail closed on a value outside the live CHECK rather than letting the
     // database refuse the whole statement (23514) and reporting success.
@@ -238,7 +238,7 @@ export async function closeCollaborativeSearch(
 }
 
 export async function updateSearchCriteria(searchId: string, criteria: Record<string, any>) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   const { error } = await supabase
@@ -265,7 +265,7 @@ export async function inviteFamilyMember(
   name: string,
   role: "editor" | "viewer" = "viewer",
 ) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   // Check if already invited
@@ -351,7 +351,7 @@ export async function inviteFamilyMember(
 }
 
 export async function acceptInvitation(token: string) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   const { data, error } = await supabase
@@ -377,7 +377,7 @@ export async function acceptInvitation(token: string) {
 }
 
 export async function removeMember(searchId: string, memberId: string) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   const { error } = await supabase
@@ -404,7 +404,7 @@ export async function addPropertyToSearch(
   addedByEmail: string,
   notes?: string,
 ) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   // Check if already added
@@ -440,7 +440,7 @@ export async function addPropertyToSearch(
 }
 
 export async function removePropertyFromSearch(searchId: string, propertyId: string) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   const { error } = await supabase
@@ -492,7 +492,7 @@ export async function rateProperty(
   cons?: string[],
   comments?: string,
 ) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   const { data, error } = await supabase
@@ -568,7 +568,7 @@ export async function getConsensus(searchId: string) {
 }
 
 export async function markAsFinalist(searchId: string, propertyId: string, isFinalist: boolean) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const supabase = await createClient()
 
   const { error } = await supabase

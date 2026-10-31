@@ -216,24 +216,13 @@ export async function createSupportTicket(input: {
 
   // Alert the side that actually answers this lane. Before the lane existed BOTH
   // lanes alerted platform staff, so a brokerage-internal ticket paged the platform
-  // and the brokerage's own office was never told.
-  try {
-    if (ticketAnsweredBy(lane) === "platform_support") {
-      const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
-      await notifyPlatformStaff(svc as any, {
-        type: "support_ticket_new", title: `New support ticket: ${subject}`,
-        body: (input.description?.trim() || subject).slice(0, 400), entityType: "support_ticket", entityId: data.id as string,
-        priority: priority === "urgent" || priority === "high" ? "high" : "medium",
-      })
-    } else if (ticketAnsweredBy(lane) === "brokerage_office") {
-      const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
-      await notifyBrokerageAdmins(svc as any, brokerageId, {
-        type: "support_ticket_new", title: `New support ticket: ${subject}`,
-        body: (input.description?.trim() || subject).slice(0, 400), entityType: "support_ticket", entityId: data.id as string,
-        priority: priority === "urgent" || priority === "high" ? "high" : "medium",
-      })
-    }
-  } catch { /* best-effort */ }
+  // and the brokerage's own office was never told. ONE notifier since wave 147 (lane
+  // 147H): lib/support/ticket-triage.ts notifyTicketAnsweringSide — the inbound door
+  // (openInboundSupportTicket) uses the same one. Best-effort; it never throws.
+  {
+    const { notifyTicketAnsweringSide } = await import("@/lib/support/ticket-triage")
+    await notifyTicketAnsweringSide(svc, { lane, brokerageId, ticketId: data.id as string, subject, description: input.description?.trim() || null, priority })
+  }
 
   // AI TRIAGE (wave 142, lane 142G — owner: TICKET → AI TRIAGE → registered owner → safe repair or answer →
   // human where required). In-request, so nobody waits for a tick to learn the ticket was read; best-effort,
@@ -413,21 +402,107 @@ export async function updateTicketStatus(
   if (scope.kind === "refused") return { ok: false, error: "Forbidden" }
 
   const svc = createServiceClient()
-  const update: Record<string, unknown> = { status, updated_at: new Date().toISOString() }
+  const nowIso = new Date().toISOString()
+  const update: Record<string, unknown> = { status, updated_at: nowIso }
   if (priority && (TICKET_PRIORITIES as readonly string[]).includes(priority)) update.priority = priority
+  // CLOSURE WITH EVIDENCE (wave 147, lane 147H — ruling 15). This door never stamped resolved_at (the platform
+  // console's setTicketStatusAction always did), so an office-resolved ticket had no resolution time: the close
+  // clock could not start and resolution metrics read it as unresolved. Same rule as the console now.
+  if (status === "resolved" || status === "closed") update.resolved_at = nowIso
+  else update.resolved_at = null
 
-  // A tenant scope pins the write to the session tenant; only platform support is unpinned.
-  // PROVE the write. A brokerage-scoped update that matches no row returns
-  // error:null with zero rows — indistinguishable from success unless the rows
-  // are counted, which is how the optimistic status flip in the queue UI could
-  // report "Ticket marked resolved" for a ticket in another tenant. The write and
-  // its { error } read are ONE statement (swallowed-refusal-census reads per statement).
-  const { data: updated, error } = await scopeTicketQuery(svc.from("support_tickets").update(update).eq("id", ticketId), scope).select("id")
-  if (error) return { ok: false, error: error.message }
-  if ((updated?.length ?? 0) === 0) return { ok: false, error: "Ticket not found" }
+  // The prior state, read through the SAME pinned scope — it keys the ledger (a double-click replays; a later
+  // reopen-and-resolve is a new cycle) and names the submitter the closure is reported to.
+  const { data: prior, error: priorErr } = await scopeTicketQuery(svc.from("support_tickets").select("id, brokerage_id, lane, status, updated_at, subject, submitted_by_user_id").eq("id", ticketId), scope).maybeSingle()
+  if (priorErr) return { ok: false, error: priorErr.message }
+  if (!prior) return { ok: false, error: "Ticket not found" }
+  const before = prior as { id: string; brokerage_id: string | null; lane: string | null; status: string | null; updated_at: string | null; subject: string | null; submitted_by_user_id: string | null }
+  if (!before.brokerage_id) return { ok: false, error: "Ticket has no tenant" }
+
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const result = await withActionLedger<{ ok: true } | { ok: false; error: string }>(
+    {
+      brokerageId: before.brokerage_id, action: "support.ticket.status_change",
+      actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+      subject: { type: "support_ticket", id: ticketId },
+      reasonDetail: `${before.status ?? "?"} → ${status} from the support desk`,
+      idempotencyKey: `support_status:${ticketId}:${before.status ?? "?"}->${status}:${before.updated_at ?? "never"}`,
+      riskClass: "LOW_RISK_WRITE", channel: "support", detail: { lane: before.lane, from: before.status, to: status, priority: update.priority ?? null },
+    },
+    async () => {
+      // A tenant scope pins the write to the session tenant; only platform support is unpinned.
+      // PROVE the write. A brokerage-scoped update that matches no row returns
+      // error:null with zero rows — indistinguishable from success unless the rows
+      // are counted, which is how the optimistic status flip in the queue UI could
+      // report "Ticket marked resolved" for a ticket in another tenant. The write and
+      // its { error } read are ONE statement (swallowed-refusal-census reads per statement).
+      const { data: updated, error } = await scopeTicketQuery(svc.from("support_tickets").update(update).eq("id", ticketId), scope).select("id")
+      if (error) return { ok: false, error: error.message }
+      if ((updated?.length ?? 0) === 0) return { ok: false, error: "Ticket not found" }
+      // The requester learns the outcome (a resolved ticket invites a reply, which reopens it — support-thread.ts).
+      if ((status === "resolved" || status === "closed") && before.submitted_by_user_id && before.submitted_by_user_id !== ctx.userId) {
+        const { error: nErr } = await svc.from("notifications").insert({
+          user_id: before.submitted_by_user_id, brokerage_id: before.brokerage_id, type: status === "resolved" ? "support_ticket_resolved" : "support_ticket_closed",
+          title: `${status === "resolved" ? "Resolved" : "Closed"}: ${(before.subject ?? "your support ticket").slice(0, 80)}`,
+          body: status === "resolved" ? "Your office marked this ticket resolved. If it is not fixed, reply on the ticket and it reopens." : "Your office closed this ticket. Reply on the ticket any time to reopen it.",
+          entity_type: "support_ticket", entity_id: ticketId, priority: "medium", is_read: false,
+        })
+        if (nErr) console.error("[support] closure bell refused:", nErr.message)
+      }
+      return { ok: true }
+    },
+    {
+      settle: (r) => ({ status: r.ok ? "executed" : "failed", outcome: r.ok ? `status:${status}` : "not_changed", error: r.ok ? null : r.error }),
+      // A replay means this exact transition already ran from this exact prior state — report it done, never re-write.
+      replay: (claim) => (claim.kind === "refused" ? { ok: false, error: `Not recorded: ${claim.error}` } : { ok: true }),
+    },
+    { client: svc },
+  )
+  if (!result.ok) return result
 
   revalidatePath("/dashboard/admin/support-tickets")
   return { ok: true }
+}
+
+// ─── Office intake from every channel (wave 147, lane 147H — ruling 15) ───────
+/**
+ * The office LOGS a support request it received by phone, email, text or in person, on the requester's behalf — the
+ * same ticket, AI triage, SLA clock and closure as one raised in the app (lib/support/ticket-triage.ts
+ * openInboundSupportTicket, the one non-session intake door). Gate first: the caller must hold the office desk scope
+ * of their OWN tenant (resolveQueueScope → kind "tenant"; platform support is not a party to this lane). The requester
+ * is resolved by email INSIDE the session tenant and must be a member of it (proved again in the door). A double
+ * submit of the same request replays to the same ticket (the ledger key is the request's own fingerprint).
+ */
+export async function logSupportRequestOnBehalf(input: {
+  submitterEmail: string
+  channel: "phone" | "email" | "sms" | "in_person"
+  subject: string
+  body: string
+}): Promise<{ ok: true; ticketId: string; created: boolean } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const scope = await resolveQueueScope(ctx)
+  if (scope.kind !== "tenant") return { ok: false, error: scope.kind === "platform" ? "Platform support does not log tickets into a brokerage's office queue" : "Forbidden" }
+  const channel = (["phone", "email", "sms", "in_person"] as const).includes(input.channel) ? input.channel : null
+  if (!channel) return { ok: false, error: "Say how the request was received" }
+  const email = String(input.submitterEmail ?? "").trim().toLowerCase()
+  const body = String(input.body ?? "").trim()
+  if (!email || !body) return { ok: false, error: "The requester's email and what they asked are required" }
+
+  const svc = createServiceClient()
+  const { data: requester, error: rErr } = await svc.from("users").select("id").eq("brokerage_id", scope.brokerageId).ilike("email", email).limit(1).maybeSingle()
+  if (rErr) return { ok: false, error: `Could not look up the requester: ${rErr.message}` }
+  if (!requester) return { ok: false, error: "No one with that email works with this office" }
+  const { createHash } = await import("node:crypto")
+  const fingerprint = createHash("sha256").update(`${(requester as { id: string }).id}|${channel}|${input.subject ?? ""}|${body}`).digest("hex").slice(0, 24)
+  const { openInboundSupportTicket } = await import("@/lib/support/ticket-triage")
+  const r = await openInboundSupportTicket(svc, {
+    brokerageId: scope.brokerageId, senderUserId: (requester as { id: string }).id, channel,
+    provider: "office_log", providerRef: `${ctx.userId}:${fingerprint}`, subject: input.subject ?? null, body,
+  })
+  if (!r.ok || !r.ticketId) return { ok: false, error: r.error ?? "The request could not be logged" }
+  revalidatePath("/dashboard/admin/support-tickets")
+  return { ok: true, ticketId: r.ticketId, created: r.created }
 }
 
 // ─── Admin/support: brokerage ticket thread (view + reply) ───────────────────

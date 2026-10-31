@@ -59,7 +59,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments, blankStrings, blankComments, stringLiterals } from "./strip-comments"
-import { runtimeFiles } from "./runtime-roots"
+import { runtimeFiles, walkTs } from "./runtime-roots"
 import { LIVE_TABLES } from "./live-tables"
 import { CANARY_KEYS, WAVE141_HOOKS, hookCensus } from "./canaries/_registry"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
@@ -1427,13 +1427,61 @@ console.log(`    reading: READINESS-MATRIX.md "Wave 146 release gate" section ${
 check("G21 when the matrix carries a wave-146 release-gate section, it has a row per wave-146 gate (the rule applies the moment the section lands)",
   !gateDoc146 || WAVE146_GATES.every((g) => gateRows146.includes(g.gate.toLowerCase())), WAVE146_GATES.filter((g) => !gateRows146.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 147 (lane 147H) — O · THE OWNER OBLIGATIONS STAY RELEASE-BLOCKING IN THE OUTPUT. Two obligations no code can
+// discharge (wave 146 report §18–19): (O1) the storage.objects policies — m855 (OWNER-SQL §F) and m875 (§G) — read
+// from the migration stamps through the ONE classifier (the go-live board reads the LIVE state); (O2) the four unlinked
+// portal-contact seed accounts — read from OWNER-SQL §I's status line, which the owner flips to RESOLVED with the date
+// and the zero census. Each blocks the RELEASE line until discharged; licensing / provider configuration is printed
+// as WAITING_EXTERNAL by variable name (never a value), each name proven to be one the runtime actually reads.
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[O · owner obligations — release-blocking until the owner discharges them (wave 146 §18–19, lane 147H)]")
+const ownerSqlDoc = existsSync(join(ROOT, "docs/operations/OWNER-SQL.md")) ? read("docs/operations/OWNER-SQL.md") : ""
+/** PURE — §I's status line: RESOLVED only when the owner wrote it (with a date); anything else is open. */
+const seedAccountsResolved = (doc: string): boolean => {
+  const sec = doc.split(/^## /m).find((s) => /^I\.\s/.test(s)) ?? ""
+  return /^- Status:\s*RESOLVED\b.*\d{4}-\d{2}-\d{2}.*\b0\b/m.test(sec)
+}
+interface OwnerObligation { id: string; what: string; blocking: boolean; where: string }
+const OWNER_OBLIGATIONS: OwnerObligation[] = [
+  { id: "O1", what: "storage.objects policies on the five document buckets — m855 (brokerage-forms) and m875 (client / transaction / agent / offer documents)", blocking: !storageApplied146, where: `docs/operations/OWNER-SQL.md §F / §G — stamps: ${STORAGE_POLICY_MIGRATIONS_146.map((f) => `${f} (${stampOf(f)})`).join(", ") || "none in the tree"}; LIVE truth: public.storage_bucket_policy_readiness()` },
+  { id: "O2", what: "the four unlinked portal-contact seed accounts (users.user_type='contact' with no contacts.contact_user_id) — link each or remove it", blocking: !seedAccountsResolved(ownerSqlDoc), where: "docs/operations/OWNER-SQL.md §I (census query + status line)" },
+]
+for (const o of OWNER_OBLIGATIONS) console.log(`    ${o.blocking ? "RELEASE-BLOCKING" : "discharged      "} ${o.id} ${o.what} — ${o.where}`)
+check("O1 the storage-policy obligation (m855 §F / m875 §G) is RELEASE-BLOCKING while any storage.objects policy migration lacks the applied stamp (same classifier as the wave-146 access-control gate)",
+  OWNER_OBLIGATIONS[0].blocking === !storageApplied146 && STORAGE_POLICY_MIGRATIONS_146.length > 0)
+check("O2 the seed-account obligation is RELEASE-BLOCKING until OWNER-SQL §I's status line reads RESOLVED with a date and the zero census (the section exists and carries its census query)",
+  /^## I\. /m.test(ownerSqlDoc) && /contact_user_id = u\.id/.test(ownerSqlDoc) && OWNER_OBLIGATIONS[1].blocking === !seedAccountsResolved(ownerSqlDoc))
+check("O POSITIVE CONTROL — an OPEN status line blocks; a RESOLVED line with a date and the zero lifts it; a RESOLVED line with no date does not",
+  !seedAccountsResolved("## I. x\n- Status: OPEN — 4 unlinked (measured 2026-10-31)\n") && seedAccountsResolved("## I. x\n- Status: RESOLVED 2026-11-02 — census 0\n") && !seedAccountsResolved("## I. x\n- Status: RESOLVED — census 0\n"))
+/** WAITING_EXTERNAL by NAME (never a value): the configuration the owner obtains outside the repo (wave 146 §19.5 +
+ *  the variables lane 147H's configuration messages name). Each must be a variable the runtime reads. */
+const WAITING_EXTERNAL_147H: ReadonlyArray<{ env: string; provider: string; where: string }> = [
+  { env: "NEXT_PUBLIC_APP_URL", provider: "the deployment's public URL", where: "Vercel project env (owner)" },
+  { env: "ELEVENLABS_API_KEY", provider: "ElevenLabs (voice cloning, narration)", where: "elevenlabs.io account → API keys" },
+  { env: "DID_API_KEY", provider: "D-ID (avatar video)", where: "studio.d-id.com → API" },
+  { env: "SENDGRID_API_KEY", provider: "SendGrid (email)", where: "app.sendgrid.com → API keys" },
+  { env: "TWILIO_ACCOUNT_SID", provider: "Twilio (SMS / voice master account)", where: "console.twilio.com" },
+  { env: "STRIPE_SECRET_KEY", provider: "Stripe (owner ruling: no live billing this wave)", where: "dashboard.stripe.com → developers" },
+  { env: "META_APP_SECRET", provider: "Meta (app review + webhook signature)", where: "developers.facebook.com → app settings" },
+  { env: "COLLABORATIVE_SEARCH_ENABLED", provider: "platform kill switch (default on; 'false' switches family search off)", where: "Vercel project env (owner)" },
+]
+const runtimeEnv = new Set<string>()
+for (const root of ["app", "lib"]) for (const f of walkTs(join(ROOT, root))) for (const m of stripComments(readFileSync(f, "utf8")).matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)) runtimeEnv.add(m[1])
+for (const w of WAITING_EXTERNAL_147H) console.log(`    WAITING_EXTERNAL ${w.env} — ${w.provider} — ${w.where}`)
+check(`O3 every WAITING_EXTERNAL configuration is named by a variable the runtime reads (${WAITING_EXTERNAL_147H.length}; never a value)`, WAITING_EXTERNAL_147H.every((w) => runtimeEnv.has(w.env)), WAITING_EXTERNAL_147H.filter((w) => !runtimeEnv.has(w.env)).map((w) => w.env).join(", "))
+const ownerBlocking = OWNER_OBLIGATIONS.filter((o) => o.blocking)
+
 console.log(`\nRELEASE GATE: ${certified.length}/${RELEASE_GATES.length} certified, ${external.length} external-verdict, ${notCertified.length} not certified${notCertified.length ? ` — ${notCertified.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 142 GATE: ${certified142.length}/${WAVE142_GATES.length} certified, ${notCertified142.length} not certified${notCertified142.length ? ` — ${notCertified142.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 145 GATE: ${certified145.length}/${WAVE145_GATES.length} certified, ${external145.length} external-verdict, ${notCertified145.length} not certified${notCertified145.length ? ` — ${notCertified145.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 146 GATE: ${certified146.length}/${WAVE146_GATES.length} certified, ${external146.length} external-verdict, ${notCertified146.length} not certified${notCertified146.length ? ` — ${notCertified146.map((v) => v.gate).join(", ")}` : ""}`)
 const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length
 const externalAll = [...external, ...external145, ...external146]
-console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 ? "READY — every owner gate (wave 141 + wave 142 + wave 145 + wave 146) certified in-repo" : "NOT READY — " + (openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length})` : "") + (externalAll.length ? `${openGates ? "; " : ""}${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "")}`)
+console.log(`OWNER OBLIGATIONS: ${ownerBlocking.length}/${OWNER_OBLIGATIONS.length} RELEASE-BLOCKING${ownerBlocking.length ? ` — ${ownerBlocking.map((o) => o.id).join(", ")}` : ""}`)
+// The owner obligations (lane 147H) join the verdict: a release with an undischarged obligation is NOT READY even when
+// every gate certifies in-repo.
+console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + wave 142 + wave 145 + wave 146) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

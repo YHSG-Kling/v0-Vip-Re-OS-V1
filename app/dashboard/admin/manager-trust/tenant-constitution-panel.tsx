@@ -65,7 +65,9 @@ export async function TenantConstitutionPanel({ historyKey }: { historyKey: stri
         Every operating policy this brokerage runs on, where it lives, and who last changed it. Read-only here —
         each policy is changed on its own settings screen; every change is kept as a version. The two kill
         switches (experiments, direct-mail exploration) toggle in place.
-        {!res.versionsAvailable && " Version history is not available yet (pending migration m696) — values shown are live."}
+        {/* Wave 147 (lane 147H): m696 is APPLIED LIVE (tenant_policy_versions is live) — this is the fallback for a database
+            missing it, said as such (it read "not available yet (pending migration m696)"). */}
+        {!res.versionsAvailable && " Version history (tenant_policy_versions) is missing from this database — values shown are live; platform staff apply migration m696 to restore history."}
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -110,7 +112,7 @@ export async function TenantConstitutionPanel({ historyKey }: { historyKey: stri
             <p className="text-sm text-red-700">{history.error}</p>
           ) : history.rows.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {history.available ? "No versions yet — this policy has not been changed since history began." : "History is not available yet (pending migration m696)."}
+              {history.available ? "No versions yet — this policy has not been changed since history began." : "History (tenant_policy_versions) is missing from this database — platform staff apply migration m696 to restore it."}
             </p>
           ) : (
             <ul className="space-y-2 text-sm">

@@ -253,12 +253,18 @@ export async function run() {
 
   // ── 6b · RULING 16 honesty at the screens lane 146H fixed (its published requirements): no dead control, no misleading status ──
   const deadPages = ["app/vendor/portfolio/upload/page.tsx", "app/title/closing/new/page.tsx"].map((f) => ({ f, s: strippedRepo(f) }))
-  const dead = deadPages.filter((p) => p.s !== null && (/\bsetTimeout\s*\(/.test(p.s) || /<form\b/.test(p.s))).map((p) => p.f)
+  // RE-ASSERTED ON THE RULE (wave 147, lane 147H built both writers — ruling 9): "no bare <form>" was the waypoint while
+  // nothing existed to submit TO. The rule is no FAKE submit: no setTimeout anywhere on the screen, and any <form> on it
+  // (the page or the form component it mounts) is bound to a server action imported from app/actions — never a timer.
+  const formFiles: Record<string, string> = { "app/vendor/portfolio/upload/page.tsx": "app/vendor/portfolio/upload/portfolio-upload-form.tsx", "app/title/closing/new/page.tsx": "app/title/closing/new/closing-appointment-form.tsx" }
+  const fakeSubmit = (src: string) => /\bsetTimeout\s*\(/.test(src) || (/<form\b/.test(src) && !(/<form\b[^>]*\baction=\{/.test(src) && /from\s+["']@\/app\/actions\//.test(src)))
+  const dead = deadPages.filter((p) => p.s !== null && (fakeSubmit(p.s) || fakeSubmit(strippedRepo(formFiles[p.f]) ?? ""))).map((p) => p.f)
   const policies = strippedRepo("app/compliance/policies/page.tsx")
   const fakeActive = policies !== null && /["'>]\s*Active\s*["'<]/.test(policies)
   const approvals = strippedRepo("app/dashboard/content/approvals/page.tsx")
   const hardBroker = approvals !== null && /approver_role\s*:\s*["']broker["']/.test(approvals)
   const deadControl = /\bsetTimeout\s*\(/.test(stripComments("onClick={() => setTimeout(() => setDone(true), 800)}")) && !/\bsetTimeout\s*\(/.test(stripComments("// setTimeout( was the fake submit"))
+    && fakeSubmit(`<form onSubmit={(e) => { e.preventDefault(); go() }}>`) && !fakeSubmit(`import { act } from "@/app/actions/x"\n<form action={act}>`)
   c.rule("146H", "NO DEAD CONTROL, NO MISLEADING STATUS ON THE SCREENS THE AUDIT FOUND (ruling 16: 'no dead controls or misleading statuses'; ruling 9: the approver is never a hard-coded brokerage): the vendor portfolio upload and the title closing intake no longer fake a submit (no setTimeout / bare <form>), the compliance policies page renders no unbacked 'Active' badge, and the content approvals page hard-codes no approver_role 'broker' (stripped source; positive control: a timed fake submit is caught, a comment naming it is not)",
     dead.length === 0 && !fakeActive && !hardBroker && deadControl && deadPages.some((p) => p.s !== null), `fake submits ${dead.join(", ") || "none"}; 'Active' badge ${fakeActive}; hard-coded broker approver ${hardBroker}; control ${deadControl}`)
 

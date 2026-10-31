@@ -132,7 +132,7 @@ export async function HomeValueReportCard({ contactId }: Props) {
               <span className="flex items-center gap-1">
                 {trendIcon}
                 {!trend || trend === "unknown"
-                  ? "Trend not yet available"
+                  ? "No market data for this area yet"
                   : trend.charAt(0).toUpperCase() + trend.slice(1)}
               </span>
             </Badge>

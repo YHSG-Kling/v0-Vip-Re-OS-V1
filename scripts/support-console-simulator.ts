@@ -45,7 +45,13 @@ function sourceLayer() {
   check("the queue carries brokerage name + first-response flag + counts", /brokerageName/.test(con) && /awaitingFirstResponse/.test(con))
   check("reply / assign / status actions exist", /export async function replyToTicketAction/.test(con) && /export async function assignTicketAction/.test(con) && /export async function setTicketStatusAction/.test(con))
   const sup = src("app/actions/support.ts")
-  check("createSupportTicket now alerts platform staff (nobody was notified before)", /notifyPlatformStaff[\s\S]*?support_ticket_new/.test(sup))
+  // RE-ASSERTED ON THE RULE (wave 147, lane 147H): the alert moved into ONE notifier both intake doors share
+  // (lib/support/ticket-triage.ts notifyTicketAnsweringSide — the inbound-email/SMS door reuses it). The rule is that
+  // createSupportTicket reaches a platform-staff alert of type support_ticket_new, inline or through that notifier.
+  const triageSrc = stripComments(src("lib/support/ticket-triage.ts"))
+  const notifierAlertsStaff = /export async function notifyTicketAnsweringSide[\s\S]*?support_ticket_new[\s\S]*?notifyPlatformStaff\(/.test(triageSrc)
+  check("createSupportTicket now alerts platform staff (nobody was notified before)", /notifyPlatformStaff[\s\S]*?support_ticket_new/.test(sup) || (/notifyTicketAnsweringSide\(/.test(stripComments(sup)) && notifierAlertsStaff))
+  check("  control: the notifier finder rejects a notifier that never reaches notifyPlatformStaff", !/export async function notifyTicketAnsweringSide[\s\S]*?support_ticket_new[\s\S]*?notifyPlatformStaff\(/.test(`export async function notifyTicketAnsweringSide() { const t = "support_ticket_new"; return 0 }`))
   check("tenant can reply + read the thread (two-way)", /export async function replyToMyTicket/.test(sup) && /export async function getMyTicketThread/.test(sup))
   check("the god console: queue + ticket detail + reply composer", /listAllTicketsAction/.test(src("app/dashboard/superadmin/support/page.tsx")) && /SupportReplyBox/.test(src("app/dashboard/superadmin/support/[id]/page.tsx")))
   check("the platform console links to Support", /\/dashboard\/superadmin\/support/.test(src("app/dashboard/superadmin/platform/page.tsx")))

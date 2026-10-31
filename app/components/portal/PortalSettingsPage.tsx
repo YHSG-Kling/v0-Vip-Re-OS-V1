@@ -585,34 +585,41 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
               <CardDescription>Control your data and privacy preferences</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* HONEST STATE, not a dead toggle (wave 141, lane 141I ui-wiring census): these two
-                  switches were `<Switch defaultChecked />` with no handler and no reader anywhere —
-                  a client flipped them and nothing changed. No preference column or enforcing
-                  reader exists for either (the agent sees portal activity by design, CLAUDE.md §5),
-                  so the control is shown disabled with the truth beside it rather than pretending
-                  to save. Wiring it is an OWNER call (a privacy rule across every agent surface),
-                  recorded in the lane notes. */}
-              <div className="flex items-center justify-between gap-4">
-                <div className="space-y-0.5">
-                  <Label className="text-base">Share Activity with Agent</Label>
-                  <p className="text-sm text-muted-foreground">Your agent can see your property search activity so they can help with your search.</p>
-                  <p className="text-xs text-muted-foreground">Not available yet — this preference can&apos;t be changed from the portal.</p>
-                </div>
-                <Switch defaultChecked disabled aria-label="Share activity with agent (not available yet)" />
+              {/* TOMBSTONE (wave 147, lane 147H — owner ruling 9: "every exposed function works, gives an honest
+                  configuration message, or leaves the advertised launch surface"). Two DISABLED switches stood here
+                  (wave 141I made them honest: they had no handler, column or reader), each captioned "Not available yet".
+                  · "Share Activity with Agent" was never a preference this product offers: the agent sees the client's
+                    portal activity BY DESIGN (it is how the agent helps — lib/portal-stream/**). A switch that can never
+                    work left the launch surface; what stands now is the rule itself, stated, and the real exits (the
+                    data-subject requests below — fileDataSubjectRequestFromPortal).
+                  · "Family Search Visibility" was a toggle for a control that ALREADY EXISTS one screen away: who sees
+                    your ratings and comments is exactly who is on your shared search, managed (invite / remove) on the
+                    portal search page (CollaborativeSearchDashboard → app/actions/collaborative-search.ts inviteFamilyMember
+                    / removeMember). It is now a link to that control — present-but-unwired, wired. */}
+              <div className="space-y-0.5">
+                <Label className="text-base">Activity your agent sees</Label>
+                <p className="text-sm text-muted-foreground">
+                  Your agent sees what you do on this portal — saved homes, searches and the listings you open — so they can
+                  help with your search. That is part of how the portal works rather than a setting. If you want it to stop,
+                  ask your agent to close your portal access, or use Delete Account below.
+                </p>
               </div>
 
               <Separator />
 
-              {/* Family Search Visibility - Only for family-oriented personas */}
-              {["first_time_buyer", "military_buyer", "upsizing", "relocating"].includes(contact.contact_persona || "") && (
+              {/* Family search visibility — the family-oriented personas the portal search page offers a shared search to */}
+              {["first_time_buyer", "military_buyer", "upsizing", "relocating", "repeat_buyer"].includes(contact.contact_persona || "") && (
                 <>
                   <div className="flex items-center justify-between gap-4">
                     <div className="space-y-0.5">
-                      <Label className="text-base">Family Search Visibility</Label>
-                      <p className="text-sm text-muted-foreground">Family members you invite can see your ratings and comments.</p>
-                      <p className="text-xs text-muted-foreground">Not available yet — this preference can&apos;t be changed from the portal.</p>
+                      <Label className="text-base">Who sees your ratings and comments</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Only the family members on your shared search. Invite or remove them on your search page.
+                      </p>
                     </div>
-                    <Switch defaultChecked disabled aria-label="Family search visibility (not available yet)" />
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href={`/portal/${contactId}/search`}>Manage shared search</Link>
+                    </Button>
                   </div>
 
                   <Separator />

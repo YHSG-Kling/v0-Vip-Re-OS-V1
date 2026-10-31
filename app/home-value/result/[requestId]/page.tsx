@@ -106,7 +106,7 @@ export default async function HomeValueResultPage({ params }: PageProps) {
                 <span className="flex items-center gap-1">
                   {marketTrendIcon}
                   {estimate.marketTrend === "unknown" || !estimate.marketTrend
-                    ? "Not yet available"
+                    ? "No market data for this area yet"
                     : estimate.marketTrend.charAt(0).toUpperCase() + estimate.marketTrend.slice(1)}
                 </span>
               </Badge>

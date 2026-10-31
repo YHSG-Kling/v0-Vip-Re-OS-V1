@@ -616,7 +616,16 @@ async function main() {
   const play = read("app/portal/[contactId]/components/seller-mode/agent-update-video-card.tsx")
   check("C1 the seller-portal play control is a <button> with a handler that mounts the ONE portal player (CardVideoPlayer)", /<button[^>]*onClick=\{[^}]*setPlaying\(true\)/.test(play) && /<CardVideoPlayer\b/.test(play) && /from\s+["']\.\.\/CardVideoPlayer["']/.test(play))
   const portalSettings = read("app/components/portal/PortalSettingsPage.tsx")
-  check("C2 the portal privacy switches are disabled with the honest 'Not available yet' sentence beside them (never a dead toggle)", (portalSettings.match(/<Switch[^>]*\bdisabled\b/g) ?? []).length >= 2 && (portalSettings.match(/Not available yet/g) ?? []).length >= 2)
+  // RE-ASSERTED ON THE RULE (wave 147, lane 147H — ruling 9): the C2 waypoint pinned two DISABLED switches captioned
+  // "Not available yet". Lane 147H finished them: the activity switch left the launch surface (agents see portal
+  // activity by design — stated as the rule) and the family switch became a link to the control that already existed
+  // (the shared-search member list). The rule C2 guarded: no portal privacy control is a dead toggle — every <Switch>
+  // binds onCheckedChange or is disabled with the truth beside it, and the family visibility control reaches the
+  // shared-search page where members are managed.
+  const deadPortalSwitch = (src: string) => [...src.matchAll(/<Switch\b([^>]*)\/?>/g)].filter((m) => !/\bonCheckedChange\b/.test(m[1]) && !/\bdisabled\b/.test(m[1])).length
+  const disabledWithoutTruth = (portalSettings.match(/<Switch[^>]*\bdisabled\b/g) ?? []).length > (portalSettings.match(/Not available yet|isn['’]t (?:available|configured)|not configured/gi) ?? []).length
+  check("C2 no portal privacy control is a dead toggle (every <Switch> is bound or disabled with the truth beside it) and family visibility reaches the shared-search member control", deadPortalSwitch(portalSettings) === 0 && !disabledWithoutTruth && /href=\{`\/portal\/\$\{contactId\}\/search`\}/.test(portalSettings))
+  check("C2 POSITIVE CONTROL — an enabled handler-less switch is dead; a bound one is not", deadPortalSwitch(`<Switch defaultChecked />`) === 1 && deadPortalSwitch(`<Switch checked={v} onCheckedChange={set} />`) === 0)
   const providersPage = read("app/dashboard/admin/system/providers/page.tsx")
   // Integration (2026-10-14): the refusal is IN PLACE (RoleGateNotice — page-role-gate-roster P5: a
   // redirect("/dashboard") on a role refusal is "a click that appeared to do nothing"); the gate still

@@ -28,7 +28,9 @@ export function AllocationCard({ board }: { board: AllocationBoard }) {
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         {board.degraded ? (
-          <p className="text-muted-foreground">The proposal store is not available yet — recommendations are not being recorded.</p>
+          // Wave 147 (lane 147H): `degraded` = improvement_proposals absent; m709 is APPLIED LIVE, so this is the fallback
+          // for a database missing the store — said as such (it read "not available yet").
+          <p className="text-muted-foreground">The proposal store (improvement_proposals) is missing from this database, so recommendations are not being recorded — platform staff apply migration m709 to restore it.</p>
         ) : board.open === 0 ? (
           <p className="text-muted-foreground">No open recommendations. The chain runs on every routed lead and records only a held lead or a pick that differs from your rules.</p>
         ) : (
