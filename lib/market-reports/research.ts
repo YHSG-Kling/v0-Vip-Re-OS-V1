@@ -88,7 +88,7 @@ export async function resolveReportTerritory(svc: Db, input: { brokerageId: stri
 
 // ── RESEARCH ─────────────────────────────────────────────────────────────────
 
-export interface MarketDataRow {
+interface MarketDataRow {
   id?: string
   data_date: string
   source_type: string | null

@@ -69,11 +69,11 @@ export interface DeliverableRow {
   id: string; brokerage_id: string; form_id: string; version: number; kind: PromiseAssetKind; fulfilment: "asset" | "human"
   status: DeliverableStatus; title: string | null; asset_url: string | null; document_id: string | null
   cover_note: { subject: string; title: string; body: string } | null; payload: Record<string, unknown> | null
-  validation: Record<string, unknown> | null; approver: Record<string, unknown> | null; approved_by: string | null; approved_at: string | null
+  validation: Record<string, unknown> | null; approver: Record<string, unknown> | null; approved_by: string | null; approved_at: string | null; produced_by: string | null
   error: string | null; produced_at: string | null; created_at: string | null
 }
 
-const DELIVERABLE_COLUMNS = "id, brokerage_id, form_id, version, kind, fulfilment, status, title, asset_url, document_id, cover_note, payload, validation, approver, approved_by, approved_at, error, produced_at, created_at"
+const DELIVERABLE_COLUMNS = "id, brokerage_id, form_id, version, kind, fulfilment, status, title, asset_url, document_id, cover_note, payload, validation, approver, approved_by, approved_at, produced_by, error, produced_at, created_at"
 
 /** What one production attempt produced (the seams return this). */
 export interface ProducedDeliverable {

@@ -45,7 +45,7 @@ import { canonicalLifeEventType, type LifeEventType } from "@/lib/enrichment/lif
 import {
   CONTEXT_RELEVANCE, COST_CLASSES, EPISTEMIC_RANK, INTIMATE_RELEVANCE, MOVEMENT_RELEVANCE, NEIGHBOURLY_HELPERS, RESEARCH_STRATEGIES,
   movementSource, movementSourceKeyForIntentSource,
-  type EpistemicClass, type MovementRelevance, type MovementSignalSource, type MovementSourceKind, type NeighbourlyHelper, type ResearchStrategy,
+  type EpistemicClass, type MovementRelevance, type MovementSourceKind, type NeighbourlyHelper, type ResearchStrategy,
 } from "@/lib/intent/movement-source-registry"
 
 export * from "@/lib/intent/movement-source-registry"
@@ -60,7 +60,7 @@ export type MovementNextAction = (typeof MOVEMENT_NEXT_ACTIONS)[number]
 
 export const MOVEMENT_OUTCOMES = Object.freeze(["listed", "purchased", "moved", "appointment", "engaged", "declined", "no_change", "false_positive", "opted_out"] as const)
 export type MovementOutcome = (typeof MOVEMENT_OUTCOMES)[number]
-export const MOVEMENT_POSITIVE_OUTCOMES: ReadonlySet<MovementOutcome> = new Set(["listed", "purchased", "moved", "appointment", "engaged"])
+const MOVEMENT_POSITIVE_OUTCOMES: ReadonlySet<MovementOutcome> = new Set(["listed", "purchased", "moved", "appointment", "engaged"])
 
 export type MovementSide = "buyer" | "seller" | "both" | "unknown"
 
@@ -431,21 +431,21 @@ export function movementSignalFromPublicPost(a: {
 // ── COMBINATION — scored combinations, never a single keyword; the score explains itself (requirement 4) ──────────────────────
 
 /** Prior points per source strength tier — PRIORS, labelled as such; outcomes re-weight them (movementSourceWeights). */
-export const STRENGTH_POINTS = Object.freeze({ strong: 40, moderate: 25, weak: 12, context: 6 })
-export const CONFIDENCE_FACTOR: Readonly<Record<EpistemicClass, number>> = Object.freeze({ verified: 1, reported: 0.75, inferred: 0.4, unknown: 0 })
-export const IDENTITY_FACTOR: Readonly<Record<IdentityMatch, number>> = Object.freeze({ record_key: 1, verified_match: 1, name_only: 0.4, none: 0.6 })
+const STRENGTH_POINTS = Object.freeze({ strong: 40, moderate: 25, weak: 12, context: 6 })
+const CONFIDENCE_FACTOR: Readonly<Record<EpistemicClass, number>> = Object.freeze({ verified: 1, reported: 0.75, inferred: 0.4, unknown: 0 })
+const IDENTITY_FACTOR: Readonly<Record<IdentityMatch, number>> = Object.freeze({ record_key: 1, verified_match: 1, name_only: 0.4, none: 0.6 })
 /** One source kind alone stays under the "warm" line … */
 export const SINGLE_KIND_CAP = 44
 /** … inferences alone stay "watch" … */
 export const INFERRED_ONLY_CAP = 40
 /** … and market / community context adds at most this much, and never scores alone. */
-export const CONTEXT_CAP = 10
-export const CORROBORATION_BONUS = 8
+const CONTEXT_CAP = 10
+const CORROBORATION_BONUS = 8
 export const MOVEMENT_BANDS = Object.freeze([{ band: "act", min: 65 }, { band: "warm", min: 45 }, { band: "watch", min: 20 }, { band: "none", min: 0 }] as const)
 export type MovementBand = (typeof MOVEMENT_BANDS)[number]["band"]
 
 /** The fields a stored row / a built record share (the scorer reads either). */
-export interface ScorableMovement {
+interface ScorableMovement {
   id: string
   sourceKey: string
   eventRelevance: MovementRelevance
@@ -539,9 +539,9 @@ function scoreMovementCombination(records: readonly ScorableMovement[], opts: { 
 
 /** A source's weight moves only once it has this many closed outcomes (a statistical floor, not a business rule). */
 export const LEARNING_MIN_SAMPLE = 20
-export const LEARNING_WEIGHT_BOUNDS = Object.freeze({ min: 0.5, max: 1.5 })
+const LEARNING_WEIGHT_BOUNDS = Object.freeze({ min: 0.5, max: 1.5 })
 
-export interface MovementSourceLearning { n: number; positives: number; precision: number; weight: number }
+interface MovementSourceLearning { n: number; positives: number; precision: number; weight: number }
 
 /** PURE. Closed outcomes → per-source weights (Laplace-smoothed precision relative to the tenant's own baseline, bounded). */
 function movementSourceWeights(rows: ReadonlyArray<{ source_key: string; outcome: string | null }>): Record<string, MovementSourceLearning> {
@@ -563,9 +563,9 @@ const weightsOf = (l: Record<string, MovementSourceLearning>): Record<string, nu
 
 // ── THE DECISION — the manager / arbiter chooses; the source never does (requirement 6) ──────────────────────────────────────
 
-export type MovementSubjectClass = "raw_lead" | "lead" | "contact" | "lifetime" | "property" | "territory"
+type MovementSubjectClass = "raw_lead" | "lead" | "contact" | "lifetime" | "property" | "territory"
 
-export interface MovementAllowed { allowed: MovementNextAction[]; why: Partial<Record<MovementNextAction, string>>; helpers: NeighbourlyHelper[]; research: ResearchStrategy[] }
+interface MovementAllowed { allowed: MovementNextAction[]; why: Partial<Record<MovementNextAction, string>>; helpers: NeighbourlyHelper[]; research: ResearchStrategy[] }
 
 /** PURE. The CLOSED menu the policy permits for this subject and this evidence — the model only ever chooses inside it. */
 function allowedMovementActions(
@@ -711,7 +711,7 @@ function lifeChangeTypeFor(r: { relevance: MovementRelevance; side?: MovementSid
 
 // ── persistence + routing (m892 movement_signals) ────────────────────────────────────────────────────────────────────────────
 
-export interface MovementRow {
+interface MovementRow {
   id: string; brokerage_id: string; subject_type: string; contact_id: string | null; lead_id: string | null; raw_lead_id: string | null
   property_address_key: string | null; territory_key: string | null; source_key: string; source_kind: string; confidence: EpistemicClass
   identity_match: IdentityMatch; event_relevance: MovementRelevance; intents: string[]; side: MovementSide; evidence: MovementEvidence

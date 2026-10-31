@@ -152,8 +152,16 @@ async function main(): Promise<void> {
     check("...a move names the contact AND releases the lead in ONE statement —\n    setting both would violate motivated_seller_signals_one_entity and be refused whole",
       movedCalls.every((c) => c.payload?.contact_id === "contact-1" && c.payload?.lead_id === null),
       JSON.stringify(movedCalls[0]?.payload))
-    check("...and rewrites nothing else — the signal keeps its type, strength and detected_at",
-      movedCalls.every((c) => Object.keys(c.payload ?? {}).length === 2))
+    // THE RULE, not the key count: a move writes the two identity keys and, where the table's exactly-one CHECK ties a
+    // discriminator to the key that is set (movement_signals.subject_type — m892 movement_signals_subject_shape), that
+    // discriminator flipped to the contact side. It never touches a signal fact (type, strength, detected_at…).
+    check("...and rewrites nothing else — the signal keeps its type, strength and detected_at (identity keys + the CHECK's discriminator only)",
+      movedCalls.every((c) => {
+        const keys = Object.keys(c.payload ?? {})
+        const extra = keys.filter((k) => k !== "contact_id" && k !== "lead_id")
+        return extra.every((k) => k === "subject_type" && c.payload?.subject_type === "contact")
+      }),
+      JSON.stringify(movedCalls.map((c) => [c.table, Object.keys(c.payload ?? {})])))
     check("...tenant-pinned, so a move can never cross a brokerage boundary",
       movedCalls.every((c) => c.filters.some(([k, col, v]) => k === "eq" && col === "brokerage_id" && v === "brok-1")))
     check("...and the move counts are reported separately from the re-point counts",

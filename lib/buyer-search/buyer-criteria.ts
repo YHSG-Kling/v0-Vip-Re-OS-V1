@@ -302,6 +302,10 @@ export interface CriteriaChangeDraft {
 }
 
 export interface CriteriaChangeRow extends CriteriaChangeDraft {
+  /** Who proposed (created) and who decided the change, and when it was decided — read back for the agent's change history. */
+  proposedByUserId?: string | null
+  decidedByUserId?: string | null
+  decidedAt?: string | null
   id: string
   created_at?: string
 }
@@ -340,7 +344,7 @@ export async function loadCriteriaChanges(
   input: { brokerageId: string; contactId: string; statuses?: CriteriaChangeStatus[]; limit?: number },
 ): Promise<{ rows: CriteriaChangeRow[]; note: string | null }> {
   const { data, error } = await svc.from("buyer_criteria_changes")
-    .select("id, field, previous_value, proposed_value, provenance, trigger, reason, evidence, status, channel, created_at")
+    .select("id, field, previous_value, proposed_value, provenance, trigger, reason, evidence, status, channel, created_at, created_by_user_id, decided_by_user_id, decided_at")
     .eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId)
     .in("status", input.statuses ?? ["proposed", "applied"])
     .order("created_at", { ascending: false }).limit(input.limit ?? 20)
@@ -351,6 +355,8 @@ export async function loadCriteriaChanges(
     rows: ((data ?? []) as Array<Record<string, any>>).map((r) => ({
       id: r.id, field: r.field, previous: r.previous_value, proposed: r.proposed_value, provenance: r.provenance,
       trigger: r.trigger, reason: r.reason, evidence: r.evidence ?? {}, status: r.status, channel: r.channel, created_at: r.created_at,
+      // Who proposed and who decided (the agent sees whether a change came from the buyer, the system or a colleague).
+      proposedByUserId: r.created_by_user_id ?? null, decidedByUserId: r.decided_by_user_id ?? null, decidedAt: r.decided_at ?? null,
     })),
     note: null,
   }
@@ -369,14 +375,14 @@ export async function settleCriteriaChange(
     .update({ status: input.status, decided_by_user_id: input.decidedByUserId, decided_at: new Date().toISOString() })
     .eq("id", input.changeId).eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId)
     .in("status", ["proposed", "applied"])
-    .select("id, field, previous_value, proposed_value, provenance, trigger, reason, evidence, status, channel")
+    .select("id, field, previous_value, proposed_value, provenance, trigger, reason, evidence, status, channel, created_by_user_id, decided_by_user_id, decided_at")
   if (error) return { ok: false, row: null, error: isSchemaAbsentError(error) ? "Change history is not available yet (m896 not applied)" : error.message }
   const rows = (data ?? []) as Array<Record<string, any>>
   if (rows.length !== 1) return { ok: false, row: null, error: "That change is not open for this buyer (already decided, or not theirs)" }
   const r = rows[0]
   return {
     ok: true,
-    row: { id: r.id, field: r.field, previous: r.previous_value, proposed: r.proposed_value, provenance: r.provenance, trigger: r.trigger, reason: r.reason, evidence: r.evidence ?? {}, status: r.status, channel: r.channel },
+    row: { id: r.id, field: r.field, previous: r.previous_value, proposed: r.proposed_value, provenance: r.provenance, trigger: r.trigger, reason: r.reason, evidence: r.evidence ?? {}, proposedByUserId: r.created_by_user_id ?? null, decidedByUserId: r.decided_by_user_id ?? null, decidedAt: r.decided_at ?? null, status: r.status, channel: r.channel },
     error: null,
   }
 }

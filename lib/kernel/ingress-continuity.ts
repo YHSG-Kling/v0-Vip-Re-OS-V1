@@ -26,7 +26,6 @@
 // that import pulled the whole e-sign finalizer subtree into every page that only
 // needed the pull-drift sentinel below — proxy-graph budget).
 
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 type Svc = SupabaseClient<any, any, any>

@@ -38,7 +38,7 @@ type Svc = { from: (t: string) => any }
 const MIN_MS = 60_000
 const DAY_MS = 86_400_000
 
-export interface PolledItem {
+interface PolledItem {
   itemKey: string
   /** The fields whose change is MATERIAL (anything else may change without raising). */
   material: Record<string, unknown>
@@ -114,7 +114,7 @@ function pollFreshnessPromise(src: Pick<MovementPollSource, "registryKeys" | "ca
   return src.cadenceMinutes + lag
 }
 
-export interface SourceWatchResult {
+interface SourceWatchResult {
   key: string
   status: "polled" | "not_due" | "fetch_failed" | "state_unread" | "not_live"
   items: number
@@ -284,7 +284,7 @@ export const STORED_CALCULATOR_SOURCE: MovementPollSource = {
 }
 
 /** The acquisition SourceKeys whose POSTS bear on a move → their registry rows. */
-export const POST_SOURCE_REGISTRY: Readonly<Record<string, string>> = Object.freeze({
+const POST_SOURCE_REGISTRY: Readonly<Record<string, string>> = Object.freeze({
   agent_seeking_phrase_intent: "pp_agent_seeking_phrase", facebook_recommend_realtor: "pp_facebook_recommend_realtor",
   reddit_relocation: "pp_reddit_relocation", linkedin_relocation: "pp_linkedin_relocation", review_acquisition_intent: "pp_tenant_own_pages",
 })

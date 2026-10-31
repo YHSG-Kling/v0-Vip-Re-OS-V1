@@ -191,7 +191,7 @@ const PUBLIC_POSTS: readonly MovementSignalSource[] = [
 type ProviderOverlay = Pick<MovementSignalSource, "relevance" | "maxConfidence" | "halfLifeDays" | "strength" | "protectedProxy"> & { howObtained: string }
 
 /** Every provider fact the census names, with its movement reading. A key absent here AND absent from the exclusions is a guard red. */
-export const PROVIDER_MOVEMENT_OVERLAY: Readonly<Record<string, ProviderOverlay>> = Object.freeze({
+const PROVIDER_MOVEMENT_OVERLAY: Readonly<Record<string, ProviderOverlay>> = Object.freeze({
   online_real_estate_activity: { relevance: ["property_event"], maxConfidence: "inferred", halfLifeDays: 60, strength: "moderate", protectedProxy: false, howObtained: "Versium's modeled 'Online Presence Indicator – Real Estate' — a vendor MODEL of online real-estate activity, so `inferred`, never a fact about this person" },
   refinance_date: { relevance: ["property_event"], maxConfidence: "reported", halfLifeDays: 365, strength: "weak", protectedProxy: false, howObtained: "Versium's refinance date (vendor-compiled recorder data) — tenure / equity context" },
   mortgage_purchase_date: { relevance: ["property_event"], maxConfidence: "reported", halfLifeDays: 365, strength: "weak", protectedProxy: false, howObtained: "Versium's mortgage purchase date — tenure context (the equity trigger owns the threshold)" },

@@ -357,7 +357,7 @@ async function main() {
 
   console.log("\n  BLIND SPOTS (published, not hidden):")
   console.log("  · the Workflow DevKit runtime (sleep / step retry) is not executed here — the timer is a seam; its body is read from stripped source and the supervisor it calls is driven directly;")
-  console.log("  · m904 is WRITTEN, NOT APPLIED — the table is modelled in memory; test:schema-drift lists manager_completions as unguarded and test:manager-governance-change E1 waits for TABLE_MANAGER + LIVE_TABLES until the integrator applies it and lane 147I registers it;")
+  console.log("  · m904 is APPLIED LIVE (2026-10-31, wave 147 integrator) — this proof still models the table in memory; test:schema-drift lists manager_completions as unguarded and test:manager-governance-change E1 waits for TABLE_MANAGER + LIVE_TABLES until the integrator applies it and lane 147I registers it;")
   console.log("  · inbound responses, support tickets past SLA, speed-to-lead, life-change and promised-deliverable decisions, the consented-intake hand-off and staged-video approvals OPEN completions (K drives the shared call; the decision sites are proven by stripped-source count, their own proofs drive them); the platform prospect ladder and engageContact's other callers do not yet;")
   console.log("  · check-vocabulary reads status literals per table it can see; COMPLETION_EXCEPTION_STATUSES is a Set (membership, not a literal comparison) until the vocabulary cache carries manager_completions;")
   console.log("  · the self-healing policy and the healing-proposal writer are the defaults / a stub here (test:healing-policy and test:self-healing own them).")

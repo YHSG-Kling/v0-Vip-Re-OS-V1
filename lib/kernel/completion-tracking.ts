@@ -643,8 +643,11 @@ async function remediate(svc: Svc, row: CompletionRow, detection: CompletionDete
   const handedOff = playbook === "notify_owner_manager" || !result || result.kind !== "playbook"
   const retryLater = !handedOff && !exhausted
   const nextDue = new Date(now.getTime() + (detection === "missing_provider_ack" ? 60 : 30) * 60_000).toISOString()
-  const { data: moved } = await svc.from("manager_completions").update(retryLater ? { status: "stalled", due_at: nextDue, updated_at: now.toISOString() } : { status: "escalated", updated_at: now.toISOString() })
+  const { data: moved, error: moveErr } = await svc.from("manager_completions").update(retryLater ? { status: "stalled", due_at: nextDue, updated_at: now.toISOString() } : { status: "escalated", updated_at: now.toISOString() })
     .eq("id", row.id).eq("brokerage_id", row.brokerage_id).eq("status", "stalled").select(COLS)
+  // supabase-js RESOLVES a refusal (CLAUDE.md §3): read it. A refused transition leaves the row as the cycle found it — the
+  // in-memory `stalled` snapshot below is what the caller hears, and the next tick (timer or cron net) re-reads the truth.
+  if (moveErr) console.error(`[completion-tracking] ${row.id}: ${retryLater ? "stalled re-check" : "escalation"} transition REFUSED — ${moveErr.message}`)
   const final = (Array.isArray(moved) && moved[0] ? moved[0] : stalled) as CompletionRow
   if (retryLater) { await scheduleCheck(final, deps); return { verdict: "waiting", completion: final, detection, nextCheckAt: nextDue, reason: `${playbook} did not recover it yet — re-checked at ${nextDue}` } }
   return { verdict: "escalated", completion: final, detection, reason: `${handedOff ? "a person was told" : "the remediation did not recover it"}: ${sentence}` }
