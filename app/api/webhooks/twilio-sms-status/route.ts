@@ -95,6 +95,21 @@ export async function POST(request: NextRequest) {
     console.error("[twilio-sms-status] provider log stamp refused:", logged.refusal)
   }
 
+  // 1c. WAVE 147 (lane 147G, contract C14 / C13 stage 7): the delivery report is EVIDENCE for the completion an
+  //     authorized reply opened — the owning manager's check runs NOW on this event (confirmed → closed; contradicted →
+  //     a failed delivery the agent hears about at once, never a re-send). Tenant from the reconciliation row above.
+  let completion: string | null = null
+  if (recon.brokerageId && recon.verdict) {
+    try {
+      const { onProviderTruth } = await import("@/lib/kernel/completion-tracking")
+      const sup = await onProviderTruth(createServiceClient(), { brokerageId: recon.brokerageId, providerRef: sid, verdict: recon.verdict })
+      completion = sup?.verdict ?? null
+    } catch (e) {
+      // The reconciliation already landed; a completion check that could not run must not un-ACK (the timer / cron net re-check it).
+      console.error("[twilio-sms-status] completion check failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+
   // 2. Mirror onto the inbox thread, so the agent sees the truth where they work.
   //    Correlated by the same sid the send stored in metadata.
   // SCOPED BY TENANT, from the ledger row rather than trusted from the provider.
@@ -141,5 +156,6 @@ export async function POST(request: NextRequest) {
     verdict: recon.verdict,
     escalated: recon.escalated,
     inboxUpdated,
+    completion,
   })
 }

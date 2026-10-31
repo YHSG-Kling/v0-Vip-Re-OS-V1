@@ -653,6 +653,26 @@ export const ARBITER_SYSTEM = [
   "Reply with JSON only: {optionId, channel|null, format|null, waitHours|null, rationale (1-3 sentences, plain words), evidence (the fact keys you used), confidence 0..1}.",
 ].join(" ")
 
+/**
+ * WAVE 147 (lane 147G, owner rulings 12 + 18 — "sms needs to reach the arbiter's responder"; "prompts are detailed, expert,
+ * creative and structured"): THE INBOUND RESPONDER'S DECISION PROMPT. The general ARBITER_SYSTEM above stays the follow-up
+ * judgment for planned touches; a person who just WROTE TO US is a different moment (they are waiting, the thread is live,
+ * and the reply is a conversation, not a campaign), so the responder decides under this expert brief — passed through
+ * arbitrateFollowUp's `system`, validated by the SAME closed-menu validator (an option off the menu, an uncited reason or a
+ * confidence below the tenant's floor still falls back to a person). Business voice from
+ * .claude/skills/real-estate-client-communication (trusted advisor, emotionally aware, action-oriented, never pushy).
+ */
+export const ARBITER_INBOUND_SYSTEM = [
+  "ROLE. You are the response judgment of a licensed real-estate brokerage's AI team — the colleague who reads every message a client, prospect or neighbour sends the moment it arrives and decides how the team answers. You are a trusted advisor, not a salesperson: calm, specific, emotionally aware, and you never let a person who wrote to us go unanswered.",
+  "BUSINESS CONTEXT. The message arrived on a channel the brokerage owns (a text to its number, an email, a DM or a comment on its page). The person may be a client in a live transaction, a past client, a prospect, or someone we have never spoken to. A text is answered in minutes; a public comment is read by everyone. The brokerage's licensed agents own every judgment call; the AI team answers routine questions and hands the rest to the agent who owns the relationship.",
+  "FACTS YOU MAY RELY ON — ONLY the JSON you are given: moment (the channel, surface and how the message was read), evidence.intent (the per-message classifier's reading and its confidence), evidence.relationship (whether this is a known contact, a first-time texter we just met, or an unidentified public sender, and whether an agent owns them), evidence.history (the last channel), evidence.preferences (channel / time / language the person told us), evidence.blindSpots (what could NOT be read — treat each as unknown, never as 'fine'), the options menu with the planner's reasons, and tenant_guidance.",
+  "WHAT YOU MUST NOT INVENT. Never assume a price, an availability, a showing time, a contract term, a commission, a lender figure or a legal answer — none of them are in your evidence. Never infer anything about who the person is (family, origin, religion, disability, age, income) and never let such a guess shape the choice. If the answer depends on a fact you were not given, the right choice is a person.",
+  "THE DECISION YOU OWN. Choose exactly ONE option id from the menu: 'reply' (the team answers in the thread it came in — routine questions, thanks, scheduling interest, 'is it still available' where the reply can promise a follow-up without stating facts), 'notify_human' (the agent answers personally), or 'audience_reengagement' when offered (a consented 1:1 follow-up to a person who answered an ad). You do NOT write the reply and you do NOT decide whether it is sent unattended — the tenant's autonomy grant, consent, do-not-contact, quiet hours, the content-safety screen and the provider's own gates decide that after you, and anything they refuse goes to a person with the draft.",
+  "ESCALATION RULE (choose notify_human). A complaint, distress, anger or grief; anything legal, a dispute or a threat of one; a fair-housing or discrimination question; money, an offer, a counter, a negotiation, a contract term or a deadline; a lender, title or appraisal question; a request to speak to a person; a message you could not read confidently (intent confidence under 60 or a blind spot on the person); a first message from a texter we have never met that asks for anything beyond a hello or general interest; and every case where you are unsure. When in doubt, a person — a slow human answer beats a confident wrong one.",
+  "COMPLIANCE BOUNDARY. Consent, opt-out and do-not-contact are enforced before and after you; an opt-out never reaches you. A PUBLIC comment's reply stays general and invites a private conversation — never a personal detail in public. Fair-housing screening applies to any public reply's copy; your decision itself must rest only on the evidence keys supplied.",
+  "OUTPUT CONTRACT. Reply with JSON only: {\"optionId\": one menu id, \"channel\": one of that option's channels or null, \"format\": null, \"waitHours\": null, \"rationale\": 1-3 plain sentences a broker would accept as the reason, \"evidence\": [the top-level evidence keys you relied on, e.g. \"intent\", \"relationship\", \"moment\"], \"confidence\": 0..1}. An answer off the menu, without evidence, or under the tenant's confidence floor is refused and a person answers instead.",
+].join("\n")
+
 function buildArbiterPrompt(a: { facts: ArbiterFacts; menu: ArbiterOption[]; policy: FollowupPolicy }): string {
   return JSON.stringify({
     tenant_guidance: a.policy.guidance || "(none set — use judgment)",
@@ -727,7 +747,11 @@ async function defaultDecide(a: { brokerageId: string; system: string; prompt: s
  * `planned` is the planner's own verdict (the thing that happens if the model does not answer).
  */
 export async function arbitrateFollowUp(
-  a: { brokerageId: string; facts: ArbiterFacts; menu: ArbiterMenu; planned: ArbiterOption; policy: FollowupPolicy; budget?: ArbiterBudget; priority?: ArbiterPriority | null },
+  a: {
+    brokerageId: string; facts: ArbiterFacts; menu: ArbiterMenu; planned: ArbiterOption; policy: FollowupPolicy; budget?: ArbiterBudget; priority?: ArbiterPriority | null
+    /** Wave 147 (147G): the expert brief for this moment (ARBITER_INBOUND_SYSTEM for a person who wrote in); default ARBITER_SYSTEM. The validator is the same either way. */
+    system?: string | null
+  },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbiterDecision> {
   const withStance = (d: Omit<ArbiterDecision, "stance">): ArbiterDecision => ({ ...d, stance: arbiterStance(d, a.facts.history.lastChannel) })
@@ -746,7 +770,7 @@ export async function arbitrateFollowUp(
     if (a.budget) a.budget.remaining -= 1
     let raw: ArbiterRaw
     try {
-      raw = await (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts, menu, policy: a.policy }) })
+      raw = await (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: a.system?.trim() ? a.system : ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts, menu, policy: a.policy }) })
     } catch (e) {
       return fallback(`the model was unavailable (${e instanceof Error ? e.message : String(e)})`)
     }
@@ -1210,7 +1234,38 @@ async function loadLifeChangeSignals(
       blind.push(`signals: stored provider facts not read (${(e as Error)?.message ?? String(e)})`)
     }
   }
+  // Wave 147 — lane 147B's C9 movement signals (verified / reported / inferred), through the named seam below.
+  const moved = await movementSignalsForArbiter(svc, { brokerageId: a.brokerageId, contactId: a.contactId, now: a.now, sinceIso: since })
+  for (const s of moved.signals) if (!seen.has(s.type)) { seen.add(s.type); signals.push(s) }
+  if (moved.blindSpot) blind.push(moved.blindSpot)
   return { signals, blindSpot: blind.length ? blind.join("; ") : null }
+}
+
+/**
+ * SEAM — MOVEMENT_SIGNAL_CONSUMER (wave 147: lane 147G leaves it, lane 147B fills it; owner ruling 3 — "life changes …
+ * it is also a real estate event … signalled to the manager/arbiter"). Lane B's contract C9 records (lib/intent/movement-signals.ts,
+ * lane B's module) reach the arbiter as LifeChangeSignals here and nowhere else. The ONE-LINE wiring lane B hands over replaces
+ * the `null` below with `async (svc, a) => (await import("@/lib/intent/movement-signals")).arbiterMovementSignals(svc, a)`.
+ * The consumer must return ONLY records whose epistemic class is verified or reported (an `inferred` record is never read as
+ * a life change — C9's own rule), already licence / consent / outreach-checked at the record. Until it is wired, the arbiter
+ * says so as a blind spot — an unread source is never "no signal".
+ */
+type MovementSignalConsumer = (svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string; now: Date; sinceIso: string }) => Promise<LifeChangeSignal[]>
+const MOVEMENT_SIGNAL_CONSUMER: MovementSignalConsumer | null = null
+
+/** Read the movement signals through the seam (or an injected consumer — the proofs). Evidence, never a gate. */
+async function movementSignalsForArbiter(
+  svc: { from: (t: string) => any },
+  a: { brokerageId: string; contactId: string; now: Date; sinceIso: string },
+  consumer: MovementSignalConsumer | null = MOVEMENT_SIGNAL_CONSUMER,
+): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null }> {
+  if (!consumer) return { signals: [], blindSpot: "signals: movement signals (contract C9, lane 147B) are not wired into the arbiter yet" }
+  try {
+    const got = await consumer(svc, a)
+    return { signals: (Array.isArray(got) ? got : []).filter((s) => !!s && typeof s.type === "string" && s.type.length > 0), blindSpot: null }
+  } catch (e) {
+    return { signals: [], blindSpot: `signals: movement signals not read (${(e as Error)?.message ?? String(e)})` }
+  }
 }
 
 const STORED_SIGNAL_CONTACT_COLUMNS = "id, enrichment_profile, life_events, last_life_event_detected, home_anniversary"

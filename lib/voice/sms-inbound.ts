@@ -57,16 +57,18 @@ export async function recordInboundMessage(svc: any, input: {
   messageSid: string | null
   fromPhone: string | null
   toPhone: string | null
-}): Promise<{ recorded: boolean; messageId?: string; conversationId?: string; agentUserId?: string | null }> {
+}, chainDeps: import("@/lib/communications/inbound-record").InboundProcessDeps = {}): Promise<{ recorded: boolean; messageId?: string; conversationId?: string; agentUserId?: string | null; chain?: import("@/lib/communications/inbound-record").InboundProcessResult }> {
   // A row written BEFORE wave 146 carries only metadata.message_sid (no provider / provider_ref) — the C1 record's own
   // dedup cannot see it, so this legacy check stays in front of it (read errors are read: a refused check is not "new").
   if (input.messageSid) {
-    const { data: dup, error: dupErr } = await svc.from("messages").select("id")
+    const { data: dup, error: dupErr } = await svc.from("messages").select("id, metadata")
       .eq("contact_id", input.contactId).eq("brokerage_id", input.brokerageId)
       .contains("metadata", { message_sid: input.messageSid })
       .limit(1).maybeSingle()
     if (dupErr) console.warn("[sms-inbound] legacy MessageSid check refused — the C1 record's (provider, provider_ref) dedup still holds:", dupErr.message)
-    else if (dup) return { recorded: false }
+    // Wave 147: only a PRE-146 row (no provider_ref) stops here. A C1 row goes on into the chain, which reports the retry as a
+    // duplicate itself — and is the only place that can re-drive a decision the first delivery never finished (C14).
+    else if (dup && !((dup as { metadata?: Record<string, unknown> | null }).metadata ?? {}).provider_ref) return { recorded: false }
   }
 
   let agentRowId: string | null = null
@@ -81,8 +83,14 @@ export async function recordInboundMessage(svc: any, input: {
   // lib/communications/inbound-record.ts:177 recordInboundCommunication (tenant-pinned contact, the one thread resolver,
   // idempotent on (provider 'twilio', provider_ref = MessageSid) backed by m876's unique index, and it still writes
   // metadata.message_sid for back-compat). The SMS-only side effects below (the agent's bell, the draft owner) stay here.
-  const { recordInboundCommunication } = await import("@/lib/communications/inbound-record")
-  const rec = await recordInboundCommunication({
+  // WAVE 147 (lane 147G, owner ruling 12 — "sms needs to reach the arbiter's responder"; contract C13): the text rides the
+  // WHOLE C1 chain, not just the record — processInboundCommunication = the record (recordInboundCommunication, idempotent on
+  // (twilio, MessageSid), m876) → the completion it owes (C14) → opt-out → the response-driven sequence stop → the kernel
+  // event → intent (classifyIntent) → the owed promise → the arbiter's responder (lib/communications/inbound-responder.ts —
+  // an authorized reply through dispatchSms, or a person with the draft) → the decision as completion evidence. A Twilio
+  // retry is a duplicate: nothing runs twice (a stranded decision is re-driven once, at-most-once by the responder's ledger).
+  const { processInboundCommunication } = await import("@/lib/communications/inbound-record")
+  const chain = await processInboundCommunication({
     brokerageId: input.brokerageId,
     channel: input.channel,
     provider: "twilio",
@@ -92,10 +100,11 @@ export async function recordInboundMessage(svc: any, input: {
     body: input.body,
     surface: input.channel,
     threadRef: { from: input.fromPhone, to: input.toPhone },
-  }, { client: svc })
+  }, { client: svc, ...chainDeps })
+  const rec = chain.record
   if (!rec.recorded) {
     if (rec.error) console.error("[sms-inbound] the inbound record refused:", rec.error)
-    return { recorded: false }
+    return { recorded: false, chain }
   }
   const conversationId = rec.conversationId ?? undefined
   const inserted = { id: rec.recordId }
@@ -126,43 +135,15 @@ export async function recordInboundMessage(svc: any, input: {
     }).then(undefined, () => {})
     if (notifyError) console.warn("[sms-inbound.ts] notifications insert refused — the bell will not ring:", notifyError.message)
   }
-  return { recorded: true, messageId: (inserted as any)?.id, conversationId, agentUserId: draftAgentUserId }
+  return { recorded: true, messageId: (inserted as any)?.id, conversationId, agentUserId: draftAgentUserId, chain }
 }
 
-/**
- * PROACTIVE AI REPLY DRAFT — the inbound text arrives WITH the reply already
- * drafted (one tap to accept/edit/send). Consolidation: rides the EXISTING
- * reply-coach rail (ai_message_drafts + accept/edit/reject lifecycle + the
- * inbox's draft panel + smart-assistant suggestion) — the same generator the
- * `A` keyboard verb calls, fired by the webhook instead of a keystroke. The
- * generator itself enforces DNC/TCPA and brand voice; NOTHING auto-sends.
- */
-export async function draftProactiveReply(input: {
-  brokerageId: string
-  contactId: string
-  conversationId: string
-  messageId: string
-  agentUserId: string
-  body: string
-}): Promise<void> {
-  // Lane 92A: the generator CORE — this is the sessionless webhook path (the tenant is
-  // the number's routing), and the public "use server" door now gates on a session.
-  const { generateAIReplyDraftForTenant } = await import("@/lib/ai-reply-coach/reply-draft-core")
-  const drafted = await generateAIReplyDraftForTenant({
-    brokerageId: input.brokerageId,
-    agentUserId: input.agentUserId,
-    conversationId: input.conversationId,
-    contactId: input.contactId,
-    inboundMessageId: input.messageId,
-    inboundBody: input.body,
-    channel: "sms",
-  })
-  // The draft is a convenience (nothing auto-sends), so a refusal must not fail the
-  // inbound webhook — but it is no longer discarded unread either.
-  if (!drafted.success) {
-    console.error(`[sms-inbound] proactive reply draft refused for conversation ${input.conversationId}: ${drafted.error ?? "unknown"}`)
-  }
-}
+// TOMBSTONE (orphan doctrine §1.3, wave 147 lane 147G) — MOVED: draftProactiveReply now lives at
+// lib/communications/inbound-reply-executors.ts:22 (the arbiter's responder's default `replyCoach`). It used to fire the
+// reply-coach generator on EVERY inbound text; the responder now DECIDES first and drafts only when a reply is the right
+// answer and a person sends it — calling both would have written two drafts per text. Nothing auto-sends without the
+// tenant's explicit autonomy grant (inboundReplyAutonomy there), so the build-1 rule "the agent accepts / edits / sends"
+// still holds by default.
 
 /**
  * Unknown sender texting OUR line → a consented contact assigned to the

@@ -39,6 +39,11 @@
 //   sequence_send_failures   sequence_step_executions (status failed, 24h, per provider — a send never re-sent blind)
 //   transaction_deadlines    transaction_deadlines (status pending past deadline_date — contract exposure → Compliance)
 //   payments_sync            accounting_sync_log (failed, or running > 2h — books; Finance reviews, nothing halted)
+// Wave 147G (owner ruling 14 — "self healing should handle the os not just the connections"):
+//   stalled_completions      manager_completions (m904, contract C14) — an ORPHANED completion (open / stalled past its due
+//                            time + grace: no event, no durable timer and no cron reconcile closed it) or a DEAD LOOP
+//                            (attempts at the supervision cap, still stalled). Its retry belongs to the completion
+//                            supervisor's own rail (lib/kernel/completion-tracking.ts reconcileOpenCompletions on this tick).
 //
 // NEVER: auto-correct money (a financial discrepancy HALTS the affected writer and hands Finance the
 // evidence); retry a non-idempotent action (an in-flight step, a handler, a send — those escalate);
@@ -68,6 +73,8 @@ export const HEALTH_DETECTORS = [
   // one transient + idempotent incident per REPAIRABLE check, repaired on the retry rail through
   // lib/kernel/self-healing.ts runDeclaredPlaybook (hard gate → healing policy → owning service → verify).
   "tenant_readiness",
+  // wave 147G — the OS's own obligations (contract C14): an orphaned completion / a dead supervision loop.
+  "stalled_completions",
 ] as const
 export type HealthDetector = (typeof HEALTH_DETECTORS)[number]
 
@@ -696,6 +703,21 @@ export const DETECTORS: Record<HealthDetector, Detector> = {
     const { evaluateTenantReadiness, readinessIncident } = await import("@/lib/kernel/tenant-readiness")
     const report = await evaluateTenantReadiness(svc, b, { repair: false, deps: { now: () => deps.now } })
     return report.checks.filter((c) => c.status === "REPAIRABLE" && !!c.remediation).map((c) => readinessIncident(b, c))
+  },
+  // 147G — contract C14's OS faults. Read here (never imported: the supervisor module is reached only from webhook and
+  // cron routes). An ORPHANED completion is past due + 30 min with no supervisor attempt in that time; a DEAD LOOP is at
+  // the supervision cap (3) and still stalled. Retry is delegated to the completion supervisor's rail (retryOwner) — the
+  // same tick's reconcileOpenCompletions; after the retry bound a human decides. Never re-sends anything.
+  stalled_completions: async (svc, b, deps) => {
+    const graceIso = iso(new Date(deps.now.getTime() - 30 * 60_000))
+    const rows = must(await svc.from("manager_completions").select("id, kind, owner_manager, stage, status, due_at, attempts, last_attempt_at, detection, what")
+      .eq("brokerage_id", b).in("status", ["open", "stalled"]).lt("due_at", graceIso).limit(200), "manager_completions") as Array<{ id: string; kind: string; owner_manager: string; stage: string; status: string; due_at: string; attempts: number | null; last_attempt_at: string | null; detection: string | null; what: string }>
+    return rows.filter((r) => (r.attempts ?? 0) >= 3 || !r.last_attempt_at || r.last_attempt_at < graceIso).map((r) => incident(b, "stalled_completions", "transient", {
+      subjectKey: `completion:${r.id}`, subjectId: uuidOr(r.id), subjectType: "manager_completion",
+      summary: `${(r.attempts ?? 0) >= 3 ? "dead loop" : "orphaned"} ${r.kind} completion (${r.stage}, owner ${r.owner_manager}) past due since ${r.due_at}: ${String(r.what).slice(0, 120)}`,
+      idempotent: true, retryOwner: "lib/kernel/completion-tracking.ts reconcileOpenCompletions (manager-signals tick)",
+      evidence: { completion_id: r.id, kind: r.kind, owner_manager: r.owner_manager, stage: r.stage, status: r.status, due_at: r.due_at, attempts: r.attempts ?? 0, detection: r.detection, fault: (r.attempts ?? 0) >= 3 ? "dead_loop" : "orphaned_completion" },
+    }))
   },
 }
 

@@ -117,7 +117,22 @@ export async function GET(req: NextRequest) {
       const { data: tenants, error: tenantsErr } = await supabase.from("brokerages").select("id").limit(2000)
       if (tenantsErr) errors.push(`os-health tenants: ${tenantsErr.message}`)
       const { runReaperNet } = await import("@/lib/intelligence/reaper-net")
+      // WAVE 147 (lane 147G, contract C14 — owner: "not relying on crons"): completions are watched by their EVENTS and the
+      // durable timer (workflows/completion-watch-workflow.ts). This is the NET for what both missed — run BEFORE the health
+      // sweep so its stalled_completions detector sees only what the net could not close; everything it recovers is stamped
+      // recovered_by = "cron" on the row and in the ledger. Also opens a completion for a support ticket past its SLA (read only).
+      const { reconcileOpenCompletions, watchUnresolvedTickets } = await import("@/lib/kernel/completion-tracking")
       for (const t of (tenants ?? []) as Array<{ id: string }>) {
+        try {
+          const tk = await watchUnresolvedTickets(supabase, t.id)
+          if (tk.error) errors.push(`completions ${t.id}: ${tk.error}`)
+          const rc = await reconcileOpenCompletions(supabase, t.id)
+          healthRecovered += rc.recovered
+          healthEscalated += rc.escalated
+          for (const err of rc.errors.slice(0, 3)) errors.push(`completions ${t.id}: ${err}`)
+        } catch (e: any) {
+          errors.push(`completions ${t.id}: ${e?.message ?? String(e)}`)
+        }
         try {
           const h = await runReaperNet(t.id, supabase, { lane: "health" })
           healthRecovered += h.totals.reaped

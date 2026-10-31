@@ -85,6 +85,11 @@ export const SELF_HEAL_PLAYBOOKS = {
   tenant_operating_baseline: { label: "Initialize / re-verify the tenant operating baseline (website slug, tier snapshot, evidence, ISA actor, assistant, education, reactivation) — absent keys only", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-operating-baseline.ts initializeTenantOperatingBaseline → lib/platform/config-snapshots.ts applySnapshotPayload({ mode: \"fill_absent\" }) (the ONE snapshot writer; absentKeys is the rule) + lib/kernel/tenant-creation.ts resolveUniqueTenantSlug (written only where slug IS NULL, counted)", params: {} },
   repair_user_records:       { label: "Repair tier-required domain records for the owner (userId) or a list of this tenant's seat users (userIds)", acts: true, runner: "owning_rail", rail: "lib/kernel/users.ts repairIncompleteAccountSetup → createOrRepairUserDomainRecords (the one provisioning brain)", params: { userId: { type: "string", max: 36 }, userIds: { type: "string", max: 1850 } } },
   sync_carrier_registration: { label: "Advance carrier registration through its own loop", acts: true, runner: "owning_rail", rail: "lib/voice/carrier-registration-loop.ts advanceTenantCarrier (never claims approval before the carrier confirms)", params: {} },
+  // 147G (owner ruling 14 — "self healing should handle the os not just the connections"): the OS's OWN obligations
+  // (contract C14, manager_completions). Both executors are HANDED to the engine by lib/kernel/completion-tracking.ts
+  // (this module never imports it — the page graph stays a leaf); each re-reads the survivor and verifies.
+  redrive_completion:   { label: "Re-run a stalled decision the action ledger proves never left the building", acts: true, runner: "owning_rail", rail: "lib/kernel/completion-tracking.ts superviseCompletion → the completion kind's redriver (inbound: lib/communications/inbound-record.ts redriveInboundResponse — at-most-once per inbound through the responder's ledger cycle)", params: {} },
+  close_on_evidence:    { label: "Close an orphaned completion on the evidence its survivor already holds", acts: true, runner: "owning_rail", rail: "lib/kernel/completion-tracking.ts verifyCompletionEvidence → recordCompletionEvidence (outcome_reconciliations / agent_action_ledger / ai_message_drafts / support_tickets, re-read)", params: {} },
   notify_owner_manager: { label: "Hand the diagnosis to the owning manager's humans", acts: false, runner: "self", rail: "notifications (org recipients)", params: { message: { type: "string", max: 280 } } },
   read_only_diagnosis:  { label: "Attach a read-only diagnosis (no action)", acts: false, runner: "self", rail: "the Exception Center (self_heal_events)", params: {} },
 } as const satisfies Record<string, PlaybookSpec>
@@ -95,6 +100,7 @@ export const PLAYBOOK_DOMAINS = [
   "provider", "sequences", "portal", "esign", "video_render", "direct_mail", "webhooks", "crons",
   "transactions", "accounting_sync", "enrichment", "scraping", "events", "ai", "workflows", "data",
   "provisioning", // 140K — the tenant readiness contract's reconciliation domain
+  "completions",  // 147G — contract C14: an orphaned completion / a stalled decision / a dead supervision loop
 ] as const
 type PlaybookDomain = (typeof PLAYBOOK_DOMAINS)[number]
 
@@ -121,6 +127,8 @@ export const DOMAIN_PLAYBOOKS: Readonly<Record<PlaybookDomain, readonly Playbook
   // money (subscription / plan / billing / seats), security and cross-tenant findings never reach this domain:
   // the contract marks them BLOCKED with an owner; only ABSENT-DEFAULT fills are declared here.
   provisioning:    ["tenant_operating_baseline", "repair_user_records", "sync_carrier_registration", "notify_owner_manager", "read_only_diagnosis"],
+  // 147G: never a re-send (an external action that could repeat is a hard stop) and nothing consequential.
+  completions:     ["redrive_completion", "close_on_evidence", "notify_owner_manager", "read_only_diagnosis"],
 }
 
 /** Every os-health detector's domain (typed over HEALTH_DETECTORS — a new detector must declare one). */
@@ -132,6 +140,7 @@ export const DETECTOR_DOMAIN: Readonly<Record<HealthDetector, PlaybookDomain>> =
   portal_invites: "portal", esign_requests: "esign", direct_mail_returns: "direct_mail", sequence_send_failures: "sequences",
   transaction_deadlines: "transactions", payments_sync: "accounting_sync",
   tenant_readiness: "provisioning",
+  stalled_completions: "completions",
 }
 
 /**
@@ -162,6 +171,9 @@ export const DETECTOR_OWNER: Readonly<Record<HealthDetector, { table: string; ma
   transaction_deadlines: { table: "transaction_deadlines", manager: "deal_coordinator" },
   payments_sync: { table: "accounting_sync_log", manager: "finance_manager" },
   tenant_readiness: { table: "brokerage_settings", manager: "data_steward" },
+  // 147G — the Cron Manager (the operational-health coordinator) stewards the completion ledger; each row's own
+  // owner_manager stays accountable for its obligation (registry entry needed: TABLE_MANAGER.manager_completions).
+  stalled_completions: { table: "manager_completions", manager: "cron_manager" },
 }
 
 /**

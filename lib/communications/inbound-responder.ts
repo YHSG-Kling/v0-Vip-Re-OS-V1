@@ -16,6 +16,7 @@
 // ./inbound-record.ts processInboundCommunication calls this (lazily), so the pages never compile it.
 
 import {
+  ARBITER_INBOUND_SYSTEM,
   ARBITER_MEMORY_KEYS,
   arbitrateFollowUp,
   arbitrationLedgerDetail,
@@ -47,7 +48,16 @@ export interface InboundResponse {
   proposedText?: string | null
   safety?: string[]
   autonomy?: { allowed: boolean; reason: string | null }
+  /** Wave 147 (C13/C14): what the completion is closed by — the provider's reference for a sent text (the status callback
+   *  reconciles it), the outbound messages row, the reply-coach draft a person acts on, and the person it waits for. */
+  providerRef?: string | null
+  outboundMessageId?: string | null
+  draftId?: string | null
+  agentUserId?: string | null
 }
+
+/** The ledger cycle of the ONE decision per inbound record (the completion's decision evidence names it). */
+export const inboundDecisionCycle = (recordId: string) => `inbound:${recordId}`
 
 /** Words that mean a PERSON must answer, whatever the model would choose (complaint, legal, fair housing, distress). */
 const INBOUND_RISK_RE = /\b(attorney|lawyer|lawsuit|sue|suing|legal action|discriminat\w*|fair housing|harass\w*|scam|fraud|complain\w*|report (you|this)|cease and desist)\b/i
@@ -75,7 +85,9 @@ export interface InboundResponderDeps {
   send?: (p: { brokerageId: string; conversationId: string | null; contactId: string | null; agentId: string | null; surface: string; accountId: string; recipientId: string; text: string; inReplyTo: string }) => Promise<{ sent: boolean; providerMessageId?: string | null; error?: string }>
   propose?: (p: { brokerageId: string; agentId: string | null; contactId: string | null; conversationId: string | null; recordId: string; surface: string; isPublic: boolean; proposedText: string | null; why: string; safety: string[]; priority: "low" | "medium" | "high" }) => Promise<{ proposed: boolean; reason?: string }>
   /** The existing reply-coach rail for email / text / portal (lib/ai-reply-coach/reply-draft-core.ts — drafts, a person sends). */
-  replyCoach?: (p: { brokerageId: string; agentUserId: string; conversationId: string; contactId: string; inboundMessageId: string; inboundBody: string; channel: "email" | "sms" | "in_app" }) => Promise<{ success: boolean; error?: string }>
+  replyCoach?: (p: { brokerageId: string; agentUserId: string; conversationId: string; contactId: string; inboundMessageId: string; inboundBody: string; channel: "email" | "sms" | "in_app" }) => Promise<{ success: boolean; error?: string; draftId?: string }>
+  /** Wave 147 — the unattended SMS reply executor (default: ./inbound-reply-executors.ts sendInboundSmsReply → lib/providers/dispatch.ts dispatchSms). */
+  sendSms?: (p: { brokerageId: string; contactId: string; conversationId: string; agentId: string | null; recordId: string; text: string }) => Promise<{ sent: boolean; providerRef?: string | null; messageId?: string | null; error?: string }>
   /** Contract C2 — 1:1 ad follow-up (default: lib/ads/audience-reengagement.ts requestAudienceReengagement). */
   reengage?: (p: { brokerageId: string; partyIds: string[]; basis: string; creativeHint?: string }) => Promise<unknown>
   safety?: (text: string) => string[]
@@ -97,6 +109,10 @@ export interface InboundResponderDeps {
  *            (lib/compliance/content-safety-checks.ts). It is SENT only when every one holds: a private DM on a surface with a
  *            send path, the person's thread ids known, a clean screen, and ai_isa EXPLICITLY granted autonomy (posture
  *            "autonomous" + authority ≥ COMMUNICATION + no halt). Otherwise a PERSON approves it (a public comment always).
+ *   text   → wave 147 (owner ruling 12): a TEXT from a known person may be answered unattended under the SAME explicit grant
+ *            and screen, through lib/providers/dispatch.ts dispatchSms (./inbound-reply-executors.ts sendInboundSmsReply); a first-time texter, a refused
+ *            gate or no grant → the reply-coach draft for a person, with the reason. The decision runs under the expert
+ *            brief ARBITER_INBOUND_SYSTEM (lib/ai-isa/followup-arbiter.ts).
  */
 export async function respondToInboundCommunication(svc: { from: (t: string) => any }, req: InboundRespondRequest, deps: InboundResponderDeps = {}): Promise<InboundResponse> {
   const now = deps.now ?? new Date()
@@ -110,11 +126,17 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
     // ── who, tenant-pinned ──
     let contactAgentId: string | null = null
     let locked: { action: "human_task" | "no_response"; reason: string } | null = null
+    // Wave 147: a texter the SMS door captured in THIS message (source inbound_sms, created within the half hour before it
+    // arrived) is a stranger to us — identification first; nothing about the tenant is sent to them unattended.
+    let firstTimeTexter = false
     if (req.contactId) {
-      const { data: c, error } = await svc.from("contacts").select("id, agent_id, dnc_status, ai_outreach_paused, first_name").eq("id", req.contactId).eq("brokerage_id", req.brokerageId).maybeSingle()
+      const { data: c, error } = await svc.from("contacts").select("id, agent_id, dnc_status, ai_outreach_paused, first_name, source, created_at").eq("id", req.contactId).eq("brokerage_id", req.brokerageId).maybeSingle()
       if (error) return { action: "refused", reason: `contact read refused: ${error.message}`, decision: null }
       if (!c) return { action: "refused", reason: "contact not in this brokerage", decision: null }
       contactAgentId = (c as { agent_id?: string | null }).agent_id ?? null
+      const createdAt = Date.parse(String((c as { created_at?: string | null }).created_at ?? ""))
+      const receivedAt = Date.parse(req.receivedAt)
+      firstTimeTexter = (c as { source?: string | null }).source === "inbound_sms" && Number.isFinite(createdAt) && Number.isFinite(receivedAt) && receivedAt - createdAt <= 30 * 60_000 && receivedAt - createdAt >= -5 * 60_000
       if ((c as { dnc_status?: boolean | null }).dnc_status) locked = { action: "human_task", reason: "the person is on do-not-contact — they wrote in, so a PERSON decides whether and how to answer" }
       else if ((c as { ai_outreach_paused?: boolean | null }).ai_outreach_paused) locked = { action: "human_task", reason: "AI outreach is paused for this person — a person answers" }
     }
@@ -151,7 +173,7 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
     }
     const facts: ArbiterFacts = {
       subject: "contact",
-      relationship: { type: req.contactId ? "contact" : "unidentified_public_sender", persona: null, hasAssignedAgent: !!threadAgentId },
+      relationship: { type: req.contactId ? (firstTimeTexter ? "first_time_texter_just_met" : "contact") : "unidentified_public_sender", persona: null, hasAssignedAgent: !!threadAgentId },
       intent: req.intent ? { score: req.intent.confidence, trend: req.intent.primary } : null,
       history: { hoursSinceAnyTouch: null, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: req.channel, portalEducationViews: null },
       journey: { transactionStage: null, nextMilestone: null, openLessons: null, nextLesson: null },
@@ -166,7 +188,7 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
     const policy = deps.policy ?? (await (await import("@/lib/ai-isa/followup-policy")).loadFollowupPolicy(svc, req.brokerageId)).policy
     const decision: ArbiterDecision | null = locked
       ? null
-      : await arbitrateFollowUp({ brokerageId: req.brokerageId, facts, menu, planned: replyOpt, policy }, { decide: deps.decide })
+      : await arbitrateFollowUp({ brokerageId: req.brokerageId, facts, menu, planned: replyOpt, policy, system: ARBITER_INBOUND_SYSTEM }, { decide: deps.decide })
     const chosen = locked ? (locked.action === "human_task" ? "notify_human" : "none") : decision!.optionId
 
     const autonomyPolicyKey = "autonomy_tier:ai_isa"
@@ -177,7 +199,7 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
         brokerageId: req.brokerageId, action: "inbound.message.respond", actor: { type: "manager", managerKey: "ai_isa" },
         subject: req.contactId ? { type: "contact", id: req.contactId } : { type: "conversation", id: req.conversationId ?? req.recordId },
         reasonCode: "CONVERSATION_RESPONSE", reasonDetail: (locked?.reason ?? decision?.rationale ?? "").slice(0, 500),
-        cycle: `inbound:${req.recordId}`, channel: req.channel, riskClass: "COMMUNICATION", systemSource: "inbound_responder",
+        cycle: inboundDecisionCycle(req.recordId), channel: req.channel, riskClass: "COMMUNICATION", systemSource: "inbound_responder",
         policyKey: chosen === "reply" ? autonomyPolicyKey : "followup_policy",
         detail: {
           record_id: req.recordId, conversation_id: req.conversationId, surface: req.surface, public: req.isPublic, provider: req.provider,
@@ -211,6 +233,35 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
             return (out = { action: "refused", reason: `contract C2 unavailable (${e instanceof Error ? e.message : String(e)})`, decision })
           }
         }
+        // ── reply: a TEXT may be answered unattended — wave 147 (147G, owner ruling 12: "verified webhook → … → arbiter
+        //    decision → AUTHORIZED response or human escalation → delivery outcome → action evidence"). Authorized means the
+        //    EXISTING policy, all of it: an EXPLICIT ai_isa autonomy grant (posture autonomous + authority ≥ COMMUNICATION + no
+        //    halt), a known person (never a texter we met in this very message — nothing about the tenant is said to a stranger
+        //    unattended), a clean content-safety screen, and then the ONE SMS chokepoint (lib/providers/dispatch.ts dispatchSms:
+        //    the autonomy gate again, suppression, TCPA consent, de-confliction, quiet hours, content backstop, budget, the
+        //    ledger at-most-once per inbound, the delivery claim the status callback reconciles). Anything any of them refuses
+        //    falls through to the reply-coach draft below — a PERSON with the draft, and the reason recorded. ──
+        let smsWhyNot: string | null = null
+        if (replyCh === "sms" && req.contactId && req.conversationId && !req.isPublic) {
+          if (firstTimeTexter) smsWhyNot = "a first message from a texter we just met — a person answers (nothing about the tenant is sent to a stranger unattended)"
+          else {
+            const drafted = await (deps.compose ?? (async (p) => (await import("@/lib/social/inbound-social")).composeInboundReply(svc, p)))({ brokerageId: req.brokerageId, agentId: threadAgentId, contactId: req.contactId, conversationId: req.conversationId, surface: "sms", isPublic: false, inboundBody: body })
+            let screen: (t: string) => string[]
+            if (deps.safety) screen = deps.safety
+            else {
+              const { evaluateContentSafety } = await import("@/lib/compliance/content-safety-checks")
+              screen = (t: string) => evaluateContentSafety(t).map((v) => `${v.category}: ${v.phrase}`)
+            }
+            const safety = drafted ? screen(drafted.text) : []
+            const autonomy = drafted && safety.length === 0 ? await (deps.autonomy ?? ((b) => inboundReplyAutonomy(svc, b)))(req.brokerageId) : { allowed: false, reason: drafted ? `the draft did not pass the content-safety screen (${safety.join("; ").slice(0, 200)})` : "no reply could be composed" }
+            if (drafted && safety.length === 0 && autonomy.allowed) {
+              const sendSms = deps.sendSms ?? (async (p) => (await import("./inbound-reply-executors")).sendInboundSmsReply(svc, p))
+              const s = await sendSms({ brokerageId: req.brokerageId, contactId: req.contactId, conversationId: req.conversationId, agentId: threadAgentId, recordId: req.recordId, text: drafted.text })
+              if (s.sent) return (out = { action: "reply_sent", reason: decision?.rationale ?? "answered in the thread within the tenant's autonomy grant", decision, proposedText: drafted.text, safety, autonomy, providerRef: s.providerRef ?? null, outboundMessageId: s.messageId ?? null })
+              smsWhyNot = `the text did not go (${s.error ?? "refused"}) — a person answers with the draft`
+            } else smsWhyNot = autonomy.reason ?? "the tenant has not granted autonomous replies — a person approves"
+          }
+        }
         // ── reply: email / text / portal ride the EXISTING reply-coach rail (a draft a person sends) ──
         if (replyCh !== "social") {
           if (!req.contactId || !req.conversationId) return (out = { action: "refused", reason: "a private reply needs the person and the thread", decision })
@@ -218,10 +269,14 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
           const owner = threadAgentId ? await (await import("@/lib/kernel/relationship-graph")).agentUserIdFor(svc, req.brokerageId, threadAgentId) : { userId: null, error: null }
           const agentUserId = owner.userId
           if (!agentUserId) return (out = { action: "refused", reason: owner.error ? `the thread's agent could not be read (${owner.error})` : "no agent owns this thread — nobody to draft the reply for", decision })
-          const coach = deps.replyCoach ?? (async (p) => (await import("@/lib/ai-reply-coach/reply-draft-core")).generateAIReplyDraftForTenant(p))
+          const coach = deps.replyCoach ?? (async (p) => (await import("./inbound-reply-executors")).draftProactiveReply({ brokerageId: p.brokerageId, agentUserId: p.agentUserId, conversationId: p.conversationId, contactId: p.contactId, messageId: p.inboundMessageId, body: p.inboundBody, channel: p.channel }))
           const coachChannel: "email" | "sms" | "in_app" = replyCh === "email" ? "email" : replyCh === "sms" ? "sms" : "in_app"
           const d = await coach({ brokerageId: req.brokerageId, agentUserId, conversationId: req.conversationId, contactId: req.contactId, inboundMessageId: req.recordId, inboundBody: body, channel: coachChannel })
-          return (out = { action: d.success ? "reply_proposed" : "refused", reason: d.success ? "a reply draft waits in the thread for the agent (the reply-coach rail — nothing auto-sends)" : `the reply draft was refused (${d.error ?? "no reason"})`, decision })
+          if (d.success) return (out = { action: "reply_proposed", reason: smsWhyNot ? `a reply draft waits for the agent — ${smsWhyNot}` : "a reply draft waits in the thread for the agent (the reply-coach rail — nothing auto-sends)", decision, draftId: d.draftId ?? null, agentUserId })
+          // The coach refused (e.g. no TCPA consent on file for an SMS draft): the agent is still TOLD, with the reason — a
+          // person who wrote in is never left with nobody aware of them.
+          const tasked = await routeAgent(svc, { brokerageId: req.brokerageId, contactId: req.contactId, agentId: threadAgentId, now, title: `Answer ${req.channel} message personally`, description: `Why: the reply draft was refused (${d.error ?? "no reason"})${smsWhyNot ? `; ${smsWhyNot}` : ""}\n"${body.slice(0, 300)}"` })
+          return (out = { action: tasked ? "human_task" : "refused", reason: tasked ? `the reply draft was refused (${d.error ?? "no reason"}) — the agent was handed it` : `the reply draft was refused (${d.error ?? "no reason"}) and the agent task was NOT written`, decision, agentUserId })
         }
         // ── reply: social ──
         const compose = deps.compose ?? (async (p) => (await import("@/lib/social/inbound-social")).composeInboundReply(svc, p))
@@ -250,7 +305,7 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
         return (out = { action: card.proposed ? "reply_proposed" : "refused", reason: card.proposed ? (autonomy.reason ?? "a person approves this reply") : `the proposal could not be shown (${card.reason ?? "no card"})`, decision, proposedText: drafted?.text ?? null, safety, autonomy })
       },
       {
-        settle: (r) => ({ status: r.action === "refused" ? "failed" : r.action === "reply_sent" || r.action === "audience_reengagement" ? "executed" : "skipped", outcome: r.action, error: r.action === "refused" ? r.reason : null }),
+        settle: (r) => ({ status: r.action === "refused" ? "failed" : r.action === "reply_sent" || r.action === "audience_reengagement" ? "executed" : "skipped", outcome: r.action, error: r.action === "refused" ? r.reason : null, ...(r.providerRef ? { providerRef: r.providerRef } : {}) }),
         replay: () => out,
       },
       { client: svc as never },

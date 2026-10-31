@@ -456,7 +456,17 @@ async function main() {
     check("the record never INSERTS a contact or a lead (no person is fabricated from an inbound)", !/from\("contacts"\)\s*\.insert/.test(ir) && !/from\("leads"\)\s*\.insert/.test(ir))
     check("POSITIVE CONTROL: the insert finder sees the record's messages insert", /from\("messages"\)\.insert/.test(ir.replace(/\s+/g, "")))
     const chain = ir.slice(ir.indexOf("export async function processInboundCommunication"))
-    check("ORDER: the chain returns on a non-recorded (duplicate / refused) record BEFORE any reaction", chain.indexOf("if (!record.recorded) return") > 0 && chain.indexOf("if (!record.recorded) return") < chain.indexOf("detectOptOutIntent"))
+    // RE-ASSERTED (wave 147, lane 147G — contract C14): the pin was the literal `if (!record.recorded) return`, a SHAPE. The
+    // RULE is that a non-recorded (duplicate / refused) record runs NONE of the reactions (opt-out, sequence stop, kernel
+    // event, intent, owed promise) — its branch ends before the first of them — and the ONE thing a provider retry may do is
+    // re-drive a decision the completion proves was never made (stage awaiting_decision), at-most-once by the responder's
+    // ledger cycle. Read on stripped source; the positive control is the reaction finder seeing the reactions AFTER it.
+    const dupAt = chain.indexOf("if (!record.recorded)")
+    const dupBranch = dupAt > 0 ? chain.slice(dupAt, chain.indexOf("const contactId =", dupAt)) : ""
+    check("ORDER: the chain's non-recorded branch ends BEFORE any reaction and runs none of them (a retry may only re-drive a decision the completion shows was never made)",
+      dupAt > 0 && dupAt < chain.indexOf("detectOptOutIntent") && dupBranch.length > 0 && !/detectOptOutIntent|stopSequences|emit\(|classify\(|owed\(|deps\.promise/.test(dupBranch)
+        && (!/redriveInboundResponse\(/.test(dupBranch) || /awaiting_decision/.test(dupBranch)))
+    check("POSITIVE CONTROL: the reaction finder sees the reactions in the recorded path", /detectOptOutIntent/.test(chain.slice(chain.indexOf("const contactId ="))) && /emit\(/.test(chain.slice(chain.indexOf("const contactId ="))))
     check("ORDER: the chain answers an owed promise (respondToPromisedDeliverable) BEFORE the inbound responder (respondToInboundCommunication)", chain.indexOf("respondToPromisedDeliverable(") > 0 && chain.indexOf("respondToPromisedDeliverable(") < chain.indexOf("respondToInboundCommunication("))
     const fa = code("lib/ai-isa/followup-arbiter.ts") + "\n" + code("lib/communications/inbound-responder.ts")
     check("the arbiter's ledger actions are domain.entity.action (a two-part name is never ledgered — lib/kernel/action-ledger.ts ACTION_NAME_PATTERN)",

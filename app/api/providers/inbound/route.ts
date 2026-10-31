@@ -253,8 +253,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // ── Step 5b: Land the text in the UNIFIED INBOX (the messages row the
   // universal inbox reads — previously inbound texts were invisible there).
   // Idempotent by MessageSid; the owning agent gets a high-priority heads-up. ──
+  // WAVE 147 (lane 147G, owner ruling 12 / contract C13): the text now rides the WHOLE C1 chain inside recordInboundMessage —
+  // record → completion (C14) → opt-out → sequence stop → kernel event → intent → the arbiter's responder (an authorized reply
+  // through dispatchSms within the tenant's explicit autonomy grant, or a person with the reply-coach draft) → the decision as
+  // evidence. The old proactive draft call is gone (tombstone in lib/voice/sms-inbound.ts): the responder drafts when a reply
+  // is the right answer, so a text no longer gets two drafts.
+  let smsChainOptOut = false
   if (inbound.providerType === "twilio" && entityType === "contact" && (inbound.text ?? "").trim()) {
-    const { recordInboundMessage, draftProactiveReply } = await import("@/lib/voice/sms-inbound")
+    const { recordInboundMessage } = await import("@/lib/voice/sms-inbound")
     try {
       const rec = await recordInboundMessage(supabase, {
         brokerageId: inbound.brokerageId,
@@ -266,19 +272,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         fromPhone: inbound.fromPhone,
         toPhone: inbound.toPhone,
       })
-      // PROACTIVE DRAFT: the text arrives with the reply already prepared —
-      // gated on the reply-coach rail (agent accepts/edits/sends; the
-      // generator enforces DNC/TCPA + brand voice). Best-effort.
-      if (rec.recorded && rec.messageId && rec.conversationId && rec.agentUserId) {
-        await draftProactiveReply({
-          brokerageId: inbound.brokerageId,
-          contactId: entityId,
-          conversationId: rec.conversationId,
-          messageId: rec.messageId,
-          agentUserId: rec.agentUserId,
-          body: inbound.text ?? "",
-        }).catch((err) => console.error("[InboundRouter] proactive draft failed (non-blocking):", err))
-      }
+      // The chain already honoured a high-confidence STOP for this contact (the verified-inbound writer) — Step 7b must not
+      // write the same suppression twice. A duplicate (retry) evaluated nothing, so 7b's own check stays the backstop there.
+      smsChainOptOut = !!rec.chain?.optOut?.detected && rec.chain.optOut.applied
+      for (const b of rec.chain?.blindSpots ?? []) console.warn(`[InboundRouter] SMS chain blind spot: ${b}`)
     } catch (err) {
       console.error("[InboundRouter] inbox record failed (non-blocking):", err)
     }
@@ -429,12 +426,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (messageText) {
     const optOutCheck = detectOptOutIntent(messageText)
 
-    if (optOutCheck.isOptOut && optOutCheck.confidence === "high") {
+    if (optOutCheck.isOptOut && optOutCheck.confidence === "high" && !smsChainOptOut) {
       await processOptOutFromVerifiedInbound({
         entityType,
         entityId,
         channel: optOutCheck.channel,
-        source: inbound.providerType === "sms" ? "inbound_sms" : "inbound_email",
+        // DEFECT FIX (wave 147, 147G): the provider type of a text is "twilio", never "sms" — every SMS STOP through this
+        // door was recorded with inbound_EMAIL provenance. A Twilio message (SMS or WhatsApp) is inbound_sms.
+        source: inbound.providerType === "twilio" ? "inbound_sms" : "inbound_email",
         rawMessage: messageText,
         brokerageId: inbound.brokerageId,
       }).catch((err) => {

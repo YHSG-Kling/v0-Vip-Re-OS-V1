@@ -375,8 +375,13 @@ console.log("\n── SOURCE: wiring ──")
   // rule: the text is recorded through recordInboundCommunication keyed on (twilio, MessageSid), and THAT record writes the
   // unread messages row and keeps message_sid; the agent's heads-up stays here. Code tokens read on stripped source.
   const smsCode = stripSms(smsLib), c1Code = stripSms(src("lib/communications/inbound-record.ts"))
+  // RE-ASSERTED again (wave 147, lane 147G — owner ruling 12, contract C13): the text now rides the WHOLE C1 chain
+  // (processInboundCommunication — whose first step IS recordInboundCommunication) so it reaches the arbiter's responder; the
+  // rule is unchanged: recorded through the ONE inbound record keyed on (twilio, MessageSid), the unread row + message_sid
+  // written there, the heads-up here.
+  const c1Chain = c1Code.slice(c1Code.indexOf("export async function processInboundCommunication"))
   check("SMS: lands in the UNIFIED INBOX messages row (unread) + agent heads-up; idempotent by MessageSid — through the ONE inbound record (C1)",
-    /recordInboundCommunication\(/.test(smsCode) && /provider:\s*"twilio"/.test(smsCode) && /providerRef:\s*input\.messageSid/.test(smsCode) && smsCode.includes('"inbound_text_received"')
+    /processInboundCommunication\(/.test(smsCode) && /recordInboundCommunication\(/.test(c1Chain) && /provider:\s*"twilio"/.test(smsCode) && /providerRef:\s*input\.messageSid/.test(smsCode) && smsCode.includes('"inbound_text_received"')
     && /from\("messages"\)\.insert\(/.test(c1Code.replace(/\s+/g, "")) && c1Code.includes('status: "unread"') && c1Code.includes("message_sid"))
   check("SMS: the recorder writes NO messages row of its own (one recorder per key — the C1 record is the writer)", !/from\("messages"\)\s*\.insert\(/.test(smsCode))
   check("SMS: unknown texter → consented contact assigned to the number's agent (texting in IS consent)",
@@ -394,8 +399,15 @@ console.log("\n── SOURCE: wiring ──")
       .every((f) => src(f).includes("ensureConversationForContact")))
 
   // ── Approved build 1: proactive reply drafts ──
-  check("PROACTIVE DRAFTS: inbound text fires the EXISTING reply-coach rail (ai_message_drafts lifecycle — no parallel draft store); nothing auto-sends",
-    src("lib/voice/sms-inbound.ts").includes("generateAIReplyDraft") && inboundProviders.includes("draftProactiveReply"))
+  // RE-ASSERTED (wave 147, lane 147G): the pin was "sms-inbound names generateAIReplyDraft and the route calls
+  // draftProactiveReply" — a waypoint. draftProactiveReply is tombstoned (its job moved into the arbiter's responder, which
+  // drafts when a reply is the right answer). The RULE: an inbound text reaches the EXISTING reply-coach rail
+  // (generateAIReplyDraftForTenant — no parallel draft store) through the responder, and nothing is sent unattended unless the
+  // tenant EXPLICITLY granted the AI ISA autonomy (inboundReplyAutonomy) — read on stripped source.
+  const responderCode = stripSms(src("lib/communications/inbound-responder.ts")) + stripSms(src("lib/communications/inbound-reply-executors.ts"))
+  check("PROACTIVE DRAFTS: inbound text reaches the EXISTING reply-coach rail (ai_message_drafts lifecycle — no parallel draft store) through the arbiter's responder; nothing auto-sends without an explicit autonomy grant",
+    responderCode.includes("generateAIReplyDraftForTenant") && /inboundReplyAutonomy\(/.test(responderCode) && /autonomy\.allowed/.test(responderCode)
+    && /processInboundCommunication\(/.test(smsCode) && inboundProviders.includes("recordInboundMessage") && !/draftProactiveReply\(/.test(stripSms(inboundProviders)))
 
   // ── Approved build 4: ConversationRelay ──
   check("RELAY: inbound answers via the transport switch (relayConfigured → ConversationRelay; else Gather) at BOTH scopes",

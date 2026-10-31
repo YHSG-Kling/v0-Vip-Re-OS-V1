@@ -381,10 +381,12 @@ export interface InboundProcessDeps extends InboundRecordDeps {
   /** THE lead door (default: lib/lead-intent/inbound-lead-intent.ts evaluateInboundLeadSignal). */
   leadDoor?: (p: { brokerageId: string; leadId: string; channel: "email" | "sms" | "voice"; body: string; providerRef: string; occurredAt: string; context: Record<string, unknown> }) => Promise<{ outcome: string; contactId?: string; reason?: string; error?: string }>
   /** the arbiter's inbound responder (default: lib/communications/inbound-responder.ts respondToInboundCommunication). */
-  respond?: (p: InboundRespondRequest) => Promise<{ action: string; reason: string }>
+  respond?: (p: InboundRespondRequest) => Promise<{ action: string; reason: string; providerRef?: string | null; outboundMessageId?: string | null; draftId?: string | null; agentUserId?: string | null }>
   /** ruling 10 — what this person was promised and has not received (default: lib/ai-isa/followup-arbiter.ts
    *  respondToPromisedDeliverable with contract C4 from lib/lead-magnets/promised-deliverables.ts). */
   promise?: (p: { brokerageId: string; contactId: string; now: Date }) => Promise<{ action: string; reason: string }>
+  /** Wave 147 (contract C14): the completion ledger's seams (the durable timer, the clock); `false` = not tracked (a proof's choice). */
+  completions?: false | import("@/lib/kernel/completion-tracking").CompletionDeps
 }
 
 /** What the chain hands the arbiter's inbound responder. */
@@ -415,6 +417,8 @@ export interface InboundProcessResult {
   response: { action: string; reason: string } | null
   /** Ruling 10: the owed-promise moment (delivered / a person told / nothing owed), when it ran. */
   promise: { action: string; reason: string } | null
+  /** Wave 147 (C14): the completion this inbound opened (what is owed, by when, closed by evidence) — null when not tracked. */
+  completion: { id: string; status: string; stage: string; redriven?: boolean } | null
   blindSpots: string[]
 }
 
@@ -428,7 +432,7 @@ export async function processInboundCommunication(
 ): Promise<InboundProcessResult> {
   const blindSpots: string[] = []
   const out = (record: InboundCommunicationResult, over: Partial<InboundProcessResult> = {}): InboundProcessResult =>
-    ({ record, optOut: null, sequencesStopped: null, intent: null, lead: null, response: null, promise: null, blindSpots, ...over })
+    ({ record, optOut: null, sequencesStopped: null, intent: null, lead: null, response: null, promise: null, completion: null, blindSpots, ...over })
 
   // ── a LEAD's reply on a lead-door transport: THE lead door records (same table, same key) and interprets it ──
   if (input.party?.kind === "lead" && LEAD_DOOR_CHANNELS.has(input.channel) && input.brokerageId && !input.platform) {
@@ -450,13 +454,61 @@ export async function processInboundCommunication(
   }
 
   const record = await recordInboundCommunication(input, deps)
-  if (!record.recorded) return out(record)
-  const contactId = record.party?.kind === "contact" ? record.party.id : null
   const brokerageId = input.brokerageId ?? null
+  // ── wave 147 (C13 + C14): a provider RETRY is also an EVENT the managers use. It never records, bells, classifies or
+  //    answers twice — but if the first delivery recorded the message and died before the arbiter decided (a timeout, a
+  //    killed function), the completion is still awaiting its decision: the retry re-drives the RESPONSE stage once. The
+  //    responder's own ledger cycle (inbound:<record id>) makes that at-most-once: a decision already made replays. ──
+  if (!record.recorded) {
+    if (record.duplicate && record.recordId && record.store === "messages" && brokerageId && !input.platform && deps.completions !== false) {
+      const svcR = deps.client ?? await defaultClient()
+      const ct = await import("@/lib/kernel/completion-tracking")
+      const { row, error } = await ct.completionForSource(svcR, brokerageId, "inbound_response", inboundSourceRef(record.recordId))
+      if (error) blindSpots.push(`completion unreadable on the retry (${error}) — nothing re-driven`)
+      const lastTouch = row ? Date.parse(row.last_attempt_at ?? row.updated_at ?? row.created_at) : NaN
+      const quiet = !Number.isFinite(lastTouch) || Date.now() - lastTouch > RETRY_REDRIVE_QUIET_MS
+      if (row && row.stage === "awaiting_decision" && ct.COMPLETION_OPEN_STATUSES.has(row.status) && quiet) {
+        const r = await redriveInboundResponse(svcR, row, deps, "retry")
+        const { row: after } = await ct.completionForSource(svcR, brokerageId, "inbound_response", inboundSourceRef(record.recordId))
+        return out(record, { response: r, completion: after ? { id: after.id, status: after.status, stage: after.stage, redriven: true } : null })
+      }
+      if (row) return out(record, { completion: { id: row.id, status: row.status, stage: row.stage, redriven: false } })
+    }
+    return out(record)
+  }
+  const contactId = record.party?.kind === "contact" ? record.party.id : null
   if (!brokerageId) return out(record) // the platform funnel: recorded; its own sweep reads details.last_inbound_at
   const isPublic = PUBLIC_INBOUND_CHANNELS.has(input.channel)
   const body = (input.body ?? "").trim()
   const svc = deps.client ?? await defaultClient()
+
+  // ── 0. C14 — the obligation opens WITH the record: the arbiter owes this person a decision by its due time. ──
+  let completion: InboundProcessResult["completion"] = null
+  if (deps.completions !== false && record.recordId) {
+    try {
+      const ct = await import("@/lib/kernel/completion-tracking")
+      const receivedAt = iso(input.receivedAt)
+      const due = new Date(Date.parse(receivedAt) + (ct.DECISION_DUE_MINUTES[input.channel] ?? 60) * 60_000)
+      const opened = await ct.openCompletion(svc, {
+        brokerageId, kind: "inbound_response", ownerManager: "ai_isa",
+        subject: contactId ? { type: "contact", id: contactId } : { type: "conversation", id: record.conversationId, ref: record.recordId },
+        sourceRef: inboundSourceRef(record.recordId),
+        what: `Answer the ${input.channel.replace(/_/g, " ")} that arrived ${receivedAt.slice(0, 16).replace("T", " ")} UTC`,
+        stage: "awaiting_decision", expectedEvidence: ["decision"], dueAt: due,
+        // Ids and channel keys only — the body stays on the messages row it was recorded on.
+        context: { record_id: record.recordId, channel: input.channel, provider: (input.provider ?? "").trim().toLowerCase(), surface: input.surface ?? null, conversation_id: record.conversationId, contact_id: contactId, public: isPublic, received_at: receivedAt },
+      }, deps.completions ?? {})
+      if (opened.ok) completion = { id: opened.completion.id, status: opened.completion.status, stage: opened.completion.stage }
+      else blindSpots.push(`completion not opened (${opened.reason}) — the cron net cannot see this inbound`)
+    } catch (e) {
+      blindSpots.push(`completion not opened (${e instanceof Error ? e.message : String(e)})`)
+    }
+  }
+  const settleDecision = async (response: { action: string; reason: string; providerRef?: string | null; outboundMessageId?: string | null; draftId?: string | null; agentUserId?: string | null } | null) => {
+    if (!completion || !record.recordId || !response) return
+    const r = await recordDecisionEvidence(svc, brokerageId, record.recordId, input.channel, response, deps, null)
+    if (r) completion = r
+  }
 
   // ── 1. opt-out — a person who says stop is honoured before anything else, and nothing answers them ──
   let optOut: InboundProcessResult["optOut"] = null
@@ -477,7 +529,9 @@ export async function processInboundCommunication(
       }
       // FAIL CLOSED: an opt-out that could not be written is not answered either — and it is said.
       if (!optOut.applied) blindSpots.push(`opt-out detected but NOT applied (${optOut.error ?? "refused"}) — no automated response`)
-      return out(record, { optOut, response: { action: "no_response", reason: "the person asked to stop — suppression is the response" } })
+      const stopped = { action: "no_response", reason: optOut.applied ? "the person asked to stop — suppression is the response" : `the person asked to stop — the suppression was NOT written (${optOut.error ?? "refused"}); nothing answers them` }
+      await settleDecision(stopped)
+      return out(record, { optOut, response: stopped, completion })
     }
     optOut = { detected: d.isOptOut, applied: false }
   }
@@ -547,23 +601,112 @@ export async function processInboundCommunication(
 
   // ── 6. the arbiter decides the governed response (propose / execute within authority / a person / no response) ──
   let response: InboundProcessResult["response"] = null
+  let settled: Parameters<typeof settleDecision>[0] = null
   try {
-    const respond = deps.respond ?? (async (p) => {
-      const { respondToInboundCommunication } = await import("./inbound-responder")
-      const r = await respondToInboundCommunication(svc, p)
-      return { action: r.action, reason: r.reason }
-    })
-    response = await respond({
+    const respond = deps.respond ?? defaultRespond(svc)
+    const r = await respond({
       brokerageId, contactId, conversationId: record.conversationId, recordId: record.recordId!, channel: input.channel, provider: input.provider,
       surface: input.surface ?? null, body, isPublic,
       threadRef: input.threadRef ? Object.fromEntries(Object.entries(input.threadRef).filter((e): e is [string, string] => typeof e[1] === "string" && !!e[1])) : null,
       intent, receivedAt: iso(input.receivedAt),
     })
+    response = { action: r.action, reason: r.reason }
+    settled = r
   } catch (e) {
     blindSpots.push(`arbiter responder threw (${e instanceof Error ? e.message : String(e)}) — the message is recorded and unread for a person`)
   }
+  // ── 7. C14 — the decision is EVIDENCE: it closes the obligation, or moves it to what closes it next (the provider's
+  //       delivery report for a sent text; a person acting on the draft / task). A refused decision leaves it awaiting a
+  //       decision — the supervisor re-drives it at due. ──
+  await settleDecision(settled)
 
-  return out(record, { optOut, sequencesStopped, intent, response, promise })
+  return out(record, { optOut, sequencesStopped, intent, response, promise, completion })
+}
+
+/** The completion's source key for an inbound record (one obligation per messages row). */
+const inboundSourceRef = (recordId: string) => `inbound:${recordId}`
+
+/** A retry inside this window of the last supervisor touch is the SAME delivery still running — never re-driven. */
+const RETRY_REDRIVE_QUIET_MS = 2 * 60_000
+
+type RespondResult = { action: string; reason: string; providerRef?: string | null; outboundMessageId?: string | null; draftId?: string | null; agentUserId?: string | null }
+
+function defaultRespond(svc: Client): (p: InboundRespondRequest) => Promise<RespondResult> {
+  return async (p) => {
+    const { respondToInboundCommunication } = await import("./inbound-responder")
+    const r = await respondToInboundCommunication(svc, p)
+    return { action: r.action, reason: r.reason, providerRef: r.providerRef ?? null, outboundMessageId: r.outboundMessageId ?? null, draftId: r.draftId ?? null, agentUserId: r.agentUserId ?? null }
+  }
+}
+
+/**
+ * C14 — turn the arbiter's governed outcome into completion evidence. reply_sent on a text → awaiting the provider's delivery
+ * report (the Twilio status callback closes it); a reply proposed / a task for a person → awaiting their action; no answer
+ * (an opt-out, a lock) / a 1:1 ad request handed to C2 / a reply on a lane with no delivery truth → closed on the decision.
+ * `replayed` and `refused` are not evidence (the decision was not made here).
+ */
+async function recordDecisionEvidence(
+  svc: Client, brokerageId: string, recordId: string, channel: InboundChannel, r: RespondResult, deps: InboundProcessDeps, recoveredBy: "retry" | "workflow" | "cron" | null,
+): Promise<InboundProcessResult["completion"]> {
+  if (deps.completions === false || r.action === "replayed" || r.action === "refused") return null
+  const ct = await import("@/lib/kernel/completion-tracking")
+  const cdeps = deps.completions ?? {}
+  const now = (cdeps.now ?? (() => new Date()))()
+  // The decision's ledger cycle has ONE spelling — the responder's (it writes the row this evidence points at).
+  const { inboundDecisionCycle } = await import("./inbound-responder")
+  const evidence = { kind: "decision" as const, at: now.toISOString(), source: "agent_action_ledger:inbound.message.respond", ref: `inbound.message.respond:${inboundDecisionCycle(recordId)}`, outcome: r.action, detail: { reason: r.reason.slice(0, 300) }, recoveredBy }
+  let advanceTo: Parameters<typeof ct.recordCompletionEvidence>[1]["advanceTo"] = null
+  if (r.action === "reply_sent" && channel === "sms" && r.providerRef) {
+    const { OVERDUE_HOURS } = await import("@/lib/outcomes/reconciliation")
+    advanceTo = { stage: "awaiting_delivery", expected: ["delivery_outcome"], dueAt: new Date(now.getTime() + OVERDUE_HOURS.sms * 3_600_000), providerRef: r.providerRef }
+  } else if (r.action === "reply_proposed" || r.action === "human_task") {
+    advanceTo = { stage: "awaiting_human", expected: ["human_action"], dueAt: new Date(now.getTime() + ct.HUMAN_DUE_MINUTES * 60_000) }
+  }
+  const w = await ct.recordCompletionEvidence(svc, { brokerageId, source: { kind: "inbound_response", sourceRef: inboundSourceRef(recordId) }, evidence, advanceTo, terminal: !advanceTo }, cdeps)
+  if (!w.ok) return null
+  // The person the obligation now waits on (the supervisor bells them first): stored as an id, never a name.
+  if (advanceTo?.stage === "awaiting_human" && r.agentUserId) {
+    const { error: ctxErr } = await svc.from("manager_completions").update({ context: { ...(w.completion.context ?? {}), agent_user_id: r.agentUserId, draft_id: r.draftId ?? null } }).eq("id", w.completion.id).eq("brokerage_id", brokerageId).select("id")
+    if (ctxErr) console.warn(`[inbound-record] completion owner not stamped (${ctxErr.message}) — the supervisor bells the brokerage's admins instead`)
+  }
+  return { id: w.completion.id, status: w.completion.status, stage: w.completion.stage }
+}
+
+/**
+ * C14's redriver for an inbound response (the completion supervisor's `redrive_completion` playbook and the provider-retry
+ * path call it): re-read the recorded message (tenant-pinned — the body never left the messages row), hand it to the arbiter's
+ * responder again and record the decision as evidence. At-most-once by the responder's ledger cycle: a decision already made
+ * replays, an in-flight one is refused by the supervisor before this runs. Never throws.
+ */
+export async function redriveInboundResponse(
+  svc: Client,
+  c: { brokerage_id: string; context: Record<string, unknown> },
+  deps: InboundProcessDeps = {},
+  recoveredBy: "retry" | "workflow" | "cron" | null = null,
+): Promise<{ action: string; reason: string }> {
+  try {
+    const recordId = typeof c.context?.record_id === "string" ? c.context.record_id : null
+    if (!recordId) return { action: "refused", reason: "the completion carries no inbound record id" }
+    const { data: m, error } = await svc.from("messages").select("id, brokerage_id, conversation_id, contact_id, body, metadata, created_at")
+      .eq("id", recordId).eq("brokerage_id", c.brokerage_id).eq("direction", "inbound").maybeSingle()
+    if (error) return { action: "refused", reason: `the inbound record could not be read (${error.message})` }
+    if (!m) return { action: "refused", reason: "the inbound record is not in this brokerage" }
+    const row = m as { id: string; conversation_id: string | null; contact_id: string | null; body: string | null; metadata: Record<string, unknown> | null; created_at: string | null }
+    const meta = row.metadata ?? {}
+    const channel = (typeof meta.channel === "string" ? meta.channel : typeof c.context.channel === "string" ? c.context.channel : "sms") as InboundChannel
+    const thread = meta.thread && typeof meta.thread === "object" ? Object.fromEntries(Object.entries(meta.thread as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string" && !!e[1])) : null
+    const respond = deps.respond ?? defaultRespond(svc)
+    const r = await respond({
+      brokerageId: c.brokerage_id, contactId: row.contact_id, conversationId: row.conversation_id, recordId: row.id, channel,
+      provider: typeof meta.provider === "string" ? meta.provider : String(c.context.provider ?? ""), surface: typeof meta.surface === "string" ? meta.surface : null,
+      body: (row.body ?? "").trim(), isPublic: PUBLIC_INBOUND_CHANNELS.has(channel), threadRef: thread,
+      intent: null, receivedAt: typeof meta.received_at === "string" ? meta.received_at : row.created_at ?? new Date().toISOString(),
+    })
+    await recordDecisionEvidence(svc, c.brokerage_id, row.id, channel, r, deps, recoveredBy)
+    return { action: r.action, reason: r.reason }
+  } catch (e) {
+    return { action: "refused", reason: `threw: ${e instanceof Error ? e.message : String(e)}` }
+  }
 }
 
 /**
