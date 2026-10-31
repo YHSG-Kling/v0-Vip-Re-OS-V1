@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147B) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147B ──
 --
 -- m892 — movement_signals: THE C9 MOVEMENT SIGNAL RECORD (wave 147, lane 147B — owner rulings 3 + 4, 2026-10-31: "Life changes
 -- include divorce, probate, relocation, posts about looking for an agent — it is also a real estate event. There has to be a way to

@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147G) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147G ──
 --
 -- m904 — manager_completions: THE COMPLETION LEDGER (contract C14; owner rulings 13 + 14, 2026-10-31 — "the managers need
 -- to make sure that arbiter completes not relying on crons to do so"; "self healing should handle the os not just the

@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147A ──
 --
 -- m889 — THE CONSENT RECORD CARRIES ITS SCOPE (wave 147, lane 147A; owner ruling 1, 2026-10-31, contract C8).
 --

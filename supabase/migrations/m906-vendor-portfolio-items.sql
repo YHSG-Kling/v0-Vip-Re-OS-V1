@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147H) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147H ──
 --
 -- m906 — vendor_portfolio_items: the store behind /vendor/portfolio (owner ruling 9, wave 147: "build the missing
 -- capabilities and also ones that say 'not available yet'").

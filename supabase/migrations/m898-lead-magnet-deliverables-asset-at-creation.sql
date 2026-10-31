@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147E) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147E ──
 --
 -- m898 — lead_magnet_deliverables: THE ASSET IS CREATED WITH THE LEAD MAGNET (wave 147, lane 147E — owner ruling 5,
 -- 2026-10-31: "when lead magnets are created, the asset for delivery is always created at the same time"; contract C11).

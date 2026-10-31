@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147B) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147B ──
 --
 -- m893 — movement_source_polls: the POLL-AND-DIFF WATCHER'S FRESHNESS, published per tenant × source (wave 147, lane 147B — owner
 -- ruling 3: "including providers that have no push signal (poll-and-diff is the fallback, with its freshness published)").

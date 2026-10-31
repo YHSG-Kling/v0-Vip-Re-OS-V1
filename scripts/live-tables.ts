@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 790 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 797 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-29
+ * generated: 2026-10-31
  * source: public.live_schema_json()
- * body-sha256: fb5944daf3090fa2ef10c16db988c109ca94fe8d410961e44b1cbc41a5bfeee3
+ * body-sha256: e8192311adbe817ca80a4fbbbdb931419025fdea60d1c0f27ebc385376e26552
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -176,6 +176,7 @@ export const LIVE_TABLES: readonly string[] = [
   "buyer_behavior_log",
   "buyer_behavior_predictions",
   "buyer_broker_agreements",
+  "buyer_criteria_changes",
   "buyer_fatigue_scores",
   "buyer_financial_profiles",
   "buyer_intake_tokens",
@@ -395,6 +396,7 @@ export const LIVE_TABLES: readonly string[] = [
   "lead_idx_property_interactions",
   "lead_imports",
   "lead_intelligence",
+  "lead_magnet_deliverables",
   "lead_magnet_promises",
   "lead_magnet_submissions",
   "lead_magnets",
@@ -450,6 +452,7 @@ export const LIVE_TABLES: readonly string[] = [
   "mail_tracking",
   "managed_agent_sessions",
   "managed_agents",
+  "manager_completions",
   "manager_delegation_events",
   "manager_delegations",
   "manager_signals",
@@ -483,6 +486,9 @@ export const LIVE_TABLES: readonly string[] = [
   "missions",
   "model_retraining_log",
   "motivated_seller_signals",
+  "movement_signals",
+  "movement_source_items",
+  "movement_source_polls",
   "narration_cache",
   "negotiation_strategies",
   "neighbor_notification_campaigns",
@@ -787,6 +793,7 @@ export const LIVE_TABLES: readonly string[] = [
   "vendor_messages",
   "vendor_payouts",
   "vendor_plans",
+  "vendor_portfolio_items",
   "vendor_ratings",
   "vendor_review_flags",
   "vendor_reviews",

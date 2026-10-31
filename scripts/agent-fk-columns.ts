@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 241 agents(id) columns across 230 tables, 38 agent-ish users(id) columns across 36 tables, 174 contact_id tables.
+ * MEASURED AT GENERATION: 241 agents(id) columns across 230 tables, 38 agent-ish users(id) columns across 36 tables, 176 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-29
+ * generated: 2026-10-31
  * source: public.live_foreign_keys_json()
- * body-sha256: 9bb8d420be77eec42410f5da990aabe3b2f882338b7de9d465af432e1678f929
+ * body-sha256: a5b737a895c8eba618a7aa2f28e3b77250eb9e612bd86474f85370d20275ac00
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -339,6 +339,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "business_card_scans",
   "buyer_behavior_log",
   "buyer_behavior_predictions",
+  "buyer_criteria_changes",
   "buyer_fatigue_scores",
   "buyer_financial_profiles",
   "buyer_intake_tokens",
@@ -422,6 +423,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "marketing_campaign_touchpoints",
   "messages",
   "motivated_seller_signals",
+  "movement_signals",
   "negotiation_strategies",
   "net_sheet_calculations",
   "newsletter_sends",

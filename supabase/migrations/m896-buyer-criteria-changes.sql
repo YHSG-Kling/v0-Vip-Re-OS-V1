@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147C) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147C ──
 --
 -- m896 — buyer_criteria_changes: EVERY CHANGE TO A BUYER'S SEARCH, WITH THE REASON THEY CAN ACCEPT OR UNDO
 -- (wave 147, lane 147C — owner ruling 16, contract C10: "feedback (saved / dismissed / toured / corrected) updates the

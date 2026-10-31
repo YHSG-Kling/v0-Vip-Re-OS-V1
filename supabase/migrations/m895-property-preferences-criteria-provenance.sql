@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147C) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147C ──
 --
 -- m895 — property_preferences: PER-FIELD PROVENANCE, LIFESTYLE ASKS, LISTING TYPE on THE ONE buyer criteria store
 -- (wave 147, lane 147C — owner ruling 16, contract C10: "Natural language / voice → structured, editable criteria with

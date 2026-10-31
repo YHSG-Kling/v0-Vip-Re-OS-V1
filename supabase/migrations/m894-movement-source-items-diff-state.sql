@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 147, lane 147B) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-31 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 147, lane 147B ──
 --
 -- m894 — movement_source_items: the POLL-AND-DIFF WATCHER'S LAST-SEEN DIGEST per watched item (wave 147, lane 147B — owner
 -- ruling 3; requirement 3: "raises publishSignal on a material change … exactly once per change").

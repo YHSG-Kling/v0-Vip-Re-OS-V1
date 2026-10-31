@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 466 tables, 871 columns.
+ * MEASURED AT GENERATION: 472 tables, 899 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-29
+ * generated: 2026-10-31
  * source: public.live_check_constraints_json()
- * body-sha256: c399b8d8d7d8aee192b3318ee0656b31abdaa81ae1ec5279d75b2991e7cd7416
+ * body-sha256: c5afde709ad65475f7880943486915349098308ea71ad2046a6a7b0697d5eee2
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -390,6 +390,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     commission_payer: ["buyer", "either", "seller", "split"],
     signed_method: ["authentisign", "click_through", "docusign", "dotloop", "skyslope", "wet_signature"],
     status: ["active", "cancelled", "draft", "expired", "pending_signature", "superseded"],
+  },
+  buyer_criteria_changes: {
+    channel: ["agent", "ai_chat", "email", "mobile", "portal", "sms", "system", "voice"],
+    field: ["cities", "dealBreakers", "lifestyle", "listingType", "maxPrice", "minBaths", "minBeds", "minPrice", "mustHaveFeatures", "propertyTypes", "zipCodes"],
+    provenance: ["default", "inferred", "said"],
+    status: ["accepted", "applied", "proposed", "rejected", "superseded"],
+    trigger: ["corrected", "dismissed", "feedback", "priority_change", "saved", "stated", "toured"],
   },
   buyer_fatigue_scores: {
     engagement_trend: ["declining", "increasing", "stable", "stopped"],
@@ -851,6 +858,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   lead_intelligence: {
     timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
   },
+  lead_magnet_deliverables: {
+    fulfilment: ["asset", "human"],
+    kind: ["book", "checklist", "guide", "report", "valuation", "video"],
+    status: ["failed", "producing", "ready", "staged", "superseded"],
+  },
   lead_magnet_promises: {
     asset_kind: ["book", "checklist", "guide", "report", "valuation", "video"],
     consent_basis: ["requested_by_form", "requested_with_tcpa_consent"],
@@ -987,6 +999,14 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   managed_agents: {
     agent_kind: ["ads_manager", "ai_isa", "asset_manager", "campaign_orchestrator", "compliance_officer", "cron_manager", "data_steward", "deal_coordinator", "finance_manager", "listing_concierge", "marketing_agent", "recruiting_manager", "shopping_agent", "sphere_of_influence"],
   },
+  manager_completions: {
+    detection: ["broken_integration", "failed_delivery", "incomplete_follow_up", "missing_provider_ack", "stalled_decision", "unresolved_ticket"],
+    kind: ["follow_up", "human_handoff", "inbound_response", "outbound_delivery", "support_ticket"],
+    owner_manager: ["ads_manager", "ai_isa", "asset_manager", "campaign_orchestrator", "compliance_officer", "cron_manager", "data_steward", "deal_coordinator", "finance_manager", "listing_concierge", "recruiting_manager", "shopping_agent", "sphere_of_influence"],
+    recovered_by: ["cron", "event", "retry", "workflow"],
+    stage: ["awaiting_decision", "awaiting_delivery", "awaiting_human", "awaiting_resolution", "done"],
+    status: ["cancelled", "closed", "escalated", "open", "stalled"],
+  },
   manager_delegation_events: {
     actor_type: ["agent", "manager", "system", "user"],
     event_kind: ["evidence", "refused", "requested", "review", "transition"],
@@ -1073,6 +1093,19 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   motivated_seller_signals: {
     signal_strength: ["moderate", "strong", "urgent", "weak"],
+  },
+  movement_signals: {
+    captured_by: ["automation", "person", "staff"],
+    confidence: ["inferred", "reported", "unknown", "verified"],
+    event_relevance: ["community_change", "divorce", "life_stage", "market_event", "probate_estate", "property_event", "relocation", "seeking_agent"],
+    identity_match: ["name_only", "none", "record_key", "verified_match"],
+    next_action: ["human", "offer_help", "research", "wait"],
+    outcome: ["appointment", "declined", "engaged", "false_positive", "listed", "moved", "no_change", "opted_out", "purchased"],
+    outreach: ["address_correction_only", "consent_gated", "email_mail_only", "none"],
+    sensitivity: ["behaviour", "intimate_service_topic", "market_context", "property_fact", "protected_proxy"],
+    side: ["both", "buyer", "seller", "unknown"],
+    source_kind: ["community_market_event", "first_party_behaviour", "property_public_record", "provider_observation", "public_post"],
+    subject_type: ["contact", "lead", "property", "raw_lead", "territory"],
   },
   negotiation_strategies: {
     agent_disposition: ["did_already", "did_now", "dismissed", "let_ai_do_it"],
@@ -1377,6 +1410,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   property_interests: {
     alert_frequency: ["daily", "instant", "paused", "twice_daily", "weekly"],
+  },
+  property_preferences: {
+    listing_type: ["rent", "sale"],
   },
   property_smart_insights: {
     market_position: ["above_average", "average", "below_average", "hot", "slow"],
@@ -1764,6 +1800,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   vendor_plans: {
     billing_cycle: ["annual", "monthly"],
     status: ["active", "archived"],
+  },
+  vendor_portfolio_items: {
+    media_kind: ["image", "pdf"],
+    status: ["published", "removed"],
   },
   vendor_service_areas: {
     status: ["active", "suspended", "withdrawn"],
