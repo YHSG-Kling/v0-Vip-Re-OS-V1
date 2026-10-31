@@ -29,6 +29,11 @@
 // HONEST FRESHNESS: the rows are written in REAL TIME at the person's action; this sweep reads them on the 15-minute
 // enrichment-processor tick (app/api/cron/enrichment-processor) with a 6-hour overlapping cursor — so a change reaches the arbiter
 // within one tick, not "instantly". No provider is called; nothing is bought.
+//
+// WAVE 147 (lane 147B, contract C9): each routed change's `customer360.first_party_action.observed` ledger event is read back by the
+// movement watcher (lib/intent/movement-source-watcher.ts) as a RECORD-ONLY C9 movement signal (verified — the person's own rows), so
+// the combination and the outcome loop see it beside the other traces; the calculator family (calculator_history: seller net, moving
+// cost, neighbourhood compare …), which had no intent reader, is that watcher's own stored-row poll — not a third family here.
 
 import { customer360For, CUSTOMER_360_SOURCES } from "@/lib/enrichment/customer-360"
 import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"

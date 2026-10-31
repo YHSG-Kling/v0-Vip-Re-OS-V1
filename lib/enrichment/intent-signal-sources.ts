@@ -21,6 +21,11 @@
 //
 // Respect source terms, privacy, consent, communication rules: a signal TRIGGERS an evaluation; it does not authorise a send.
 // Consent, DNC/TCPA, frequency and the channel are the consumer's gates (lane F: followup-arbiter / contact-channel-policy).
+//
+// WAVE 147 (lane 147B, contract C9): every census row here is also a row of the movement source registry
+// (lib/intent/movement-source-registry.ts PROVIDER_MOVEMENT_OVERLAY — kind, licence, ceiling, freshness, cost), and each fact this
+// module ROUTES is read back from its `enrichment.intent_fact.observed` ledger event by the movement watcher
+// (lib/intent/movement-source-watcher.ts) as a RECORD-ONLY C9 movement signal — combined with the other traces, never routed twice.
 
 import { realEstateIndicatorsFromProfile } from "@/lib/enrichment/online-presence-store"
 import { onlineAudienceSummary } from "@/lib/enrichment/online-audience-store"
