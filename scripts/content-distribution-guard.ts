@@ -458,7 +458,10 @@ async function main() {
       /assetKind: "blog_post", html: draft\.content/.test(cc) && /recordFinal\(supabase, ctx, \{ assetTable: "blog_posts"/.test(cc) && /finalPhase\(supabase, ctx, \{ assetKind: "newsletter", html: flatContent \}\)/.test(cc) && /recordFinal\(supabase, ctx, \{ assetTable: "newsletter_campaigns"/.test(cc) && /finalPhase\(supabase, ctx, \{ assetKind: "podcast_script", text: script \}\)/.test(cc) && /recordFinal\(supabase, ctx, \{ assetTable: "podcast_episodes"/.test(cc))
     const draft = code("lib/lead-magnets/ai-draft.ts"), yt = code("lib/video/youtube-publish.ts")
     check("the lead-magnet AI draft and the YouTube rail (queue + write-back) run the final phase / record what went out", /finalizeForDistribution\(\{ assetKind: "lead_magnet"/.test(draft) && /stageDistributionFinal\(client/.test(draft) && /finalizeForDistribution\(\{ assetKind: "video_description"/.test(yt) && /stageDistributionFinal\(svc/.test(yt) && /recordDistributionPublication\(svc/.test(yt))
-    const kernelLm = blankStrings(code("lib/kernel/lead-magnets.ts"))
+    // Wave 147 (147E): scoped to the PUBLISH door's own body — the file now has a second ledgered activation (the C11 live create,
+    // activateWithReadyDeliverable) ABOVE it, and the first `withActionLedger<` in the file is no longer the publish door's. Same rule.
+    const kernelLmAll = blankStrings(code("lib/kernel/lead-magnets.ts"))
+    const kernelLm = kernelLmAll.slice(Math.max(0, kernelLmAll.indexOf("export async function publishLeadMagnet(")))
     check("the lead-magnet PUBLISH door checks the version BEFORE activation and records it AFTER, over the ONE page-text composition (leadMagnetPublicText)",
       /leadMagnetPublicText\(pageRow/.test(kernelLm) && kernelLm.indexOf("checkDistributionPublication(") > 0 && kernelLm.indexOf("checkDistributionPublication(") < kernelLm.indexOf("withActionLedger<") && kernelLm.indexOf("recordDistributionPublication(") > kernelLm.indexOf("if (!activation.ok)"))
     // WAVE 145 (lane 145Z — lane G Outside-lane items): the four publication doors OUTSIDE lane G record the version that

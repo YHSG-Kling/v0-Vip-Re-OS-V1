@@ -53,7 +53,8 @@ export interface MarketDataRow {
   avg_days_on_market: number
   list_to_sale_ratio: number
   months_of_inventory: number
-  market_type: 'seller' | 'buyer' | 'balanced'
+  /** The live CHECK's vocabulary (market_data_market_type_check); null when supply is unknown (wave 147, lane 147E). */
+  market_type: 'sellers' | 'buyers' | 'balanced' | null
   price_trend_pct_30d: number
   price_trend_pct_1yr: number
   source_type: string
@@ -222,16 +223,28 @@ export async function refreshMarketData(
     return { source: 'none', success: false }
   }
 
-  // Determine market type
+  // Determine market type.
+  // WAVE 147 (lane 147E — the market-report producer's data source, measured live 2026-10-31: market_data had 0 rows). Two
+  // defects made this writer land NOTHING, ever: (1) it wrote 'seller' / 'buyer', but the live CHECK
+  // market_data_market_type_check admits only 'sellers' / 'balanced' / 'buyers' — and because months_of_inventory is 0 (unknown)
+  // on every tier, every row was 'seller' and refused; (2) the upsert's onConflict 'brokerage_id,market_area,data_date' names
+  // no unique constraint on market_data (pg_constraint lists none), which PostgreSQL refuses outright (42P10). Both refusals were
+  // logged and the function still returned success. Now: the CHECK's own vocabulary, NULL when supply is unknown (a 0 is not
+  // "a seller's market"), a read-then-update-or-insert on the same key, and a refused write returns success: false.
   const monthsSupply = stats.months_of_inventory || 0
-  const marketType: 'seller' | 'buyer' | 'balanced' =
-    monthsSupply < 3 ? 'seller' : monthsSupply > 6 ? 'buyer' : 'balanced'
+  const marketType: 'sellers' | 'buyers' | 'balanced' | null =
+    monthsSupply <= 0 ? null : monthsSupply < 3 ? 'sellers' : monthsSupply > 6 ? 'buyers' : 'balanced'
 
   const today = new Date().toISOString().split('T')[0]
 
-  // UPSERT market_data
-  const { error: mdError } = await supabase.from('market_data').upsert(
-    {
+  const { data: existingRow, error: existingErr } = await supabase.from('market_data').select('id')
+    .eq('brokerage_id', brokerageId).eq('market_area', marketArea).eq('data_date', today).limit(1)
+  if (existingErr) {
+    console.error('[MarketData] read before write refused:', existingErr.message)
+    return { source, success: false }
+  }
+  const existingId = ((existingRow ?? []) as Array<{ id: string }>)[0]?.id ?? null
+  const marketRow = {
       brokerage_id: brokerageId,
       market_area: marketArea,
       city: city || null,
@@ -250,12 +263,14 @@ export async function refreshMarketData(
       price_trend_pct_1yr: stats.price_trend_pct_1yr,
       source_type: source,
       updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'brokerage_id,market_area,data_date' }
-  )
+  }
+  const { data: written, error: mdError } = existingId
+    ? await supabase.from('market_data').update(marketRow).eq('id', existingId).eq('brokerage_id', brokerageId).select('id')
+    : await supabase.from('market_data').insert(marketRow).select('id')
 
-  if (mdError) {
-    console.error('[MarketData] Upsert error:', mdError.message)
+  if (mdError || (written ?? []).length !== 1) {
+    console.error('[MarketData] write refused:', mdError?.message ?? 'matched no row')
+    return { source, success: false }
   }
 
   // UPSERT market_trends

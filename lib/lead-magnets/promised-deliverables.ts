@@ -101,7 +101,8 @@ export interface PreparedAsset {
   deliverable: { subject: string; title: string; body: string } | null
   pdfUrl: string | null
   documentId: string | null
-  deliverableKind: "book" | "booklet" | "copy"
+  /** "report" (wave 147, lane 147E): the market-report producer's hosted report (lib/lead-magnets/deliverable-asset.ts). */
+  deliverableKind: "book" | "booklet" | "copy" | "report"
   heldReason?: string
 }
 
@@ -124,7 +125,9 @@ function preparedAssetVerdict(kind: PromiseAssetKind, prepared: PreparedAsset | 
       if ((prepared.deliverableKind !== "booklet" && prepared.deliverableKind !== "book") || !url) return { ok: false, reason: "the promised guide (the designed PDF) did not render — the cover note alone is not the guide" }
       break
     case "report":
-      if (!url || prepared.deliverableKind === "copy") return { ok: false, reason: "no market-report document exists for this request (the OS has no report producer for this magnet yet — the cover note is not the report)" }
+      // Wave 147 (147E): the producer exists (lib/market-reports/producer.ts) and runs when the magnet is CREATED (C11) — a report
+      // promise is fulfilled by that validated, hosted report; a cover note is still not the report.
+      if (!url || prepared.deliverableKind !== "report") return { ok: false, reason: "no validated market-report document exists for this request — the cover note is not the report" }
       break
     default:
       return { ok: false, reason: `a ${kind} is fulfilled by a person, not by the system rail` }
@@ -208,6 +211,17 @@ export async function recordPromisedDeliverable(svc: Db, input: RecordPromiseInp
     if (twin) return { ok: true, promised: true, promiseId: twin.id, reused: true, status: twin.status }
 
     const status: PromiseStatus = asset.fulfilment === "human" ? "awaiting_human" : "promised"
+    // WAVE 147 (lane 147E — contract C11): the promise is made against the magnet's READY deliverable — the asset produced when
+    // the magnet was created. Its id + version ride asset_ref (jsonb: no schema dependency, so a promise is never lost to a
+    // not-yet-applied column). A legacy magnet (no deliverable) or an unreadable deliverable read keeps C4's recovery path
+    // (the runner prepares at delivery) — and says which, on the row.
+    let deliverableRef: Record<string, unknown> = {}
+    {
+      const { readyDeliverableFor } = await import("./deliverable-asset")
+      const d = await readyDeliverableFor(svc, { brokerageId: input.brokerageId, formId: input.formId })
+      if (d.error) deliverableRef = { deliverable_lookup_error: d.error.slice(0, 300) }
+      else if (d.deliverable) deliverableRef = { table: "lead_magnet_deliverables", deliverable_id: d.deliverable.id, deliverable_version: d.deliverable.version, url: d.deliverable.asset_url, document_id: d.deliverable.document_id }
+    }
     const row = {
       brokerage_id: input.brokerageId,
       form_id: input.formId,
@@ -219,7 +233,7 @@ export async function recordPromisedDeliverable(svc: Db, input: RecordPromiseInp
       magnet_type: input.magnetType,
       asset_kind: asset.kind,
       asset_title: asset.title,
-      asset_ref: input.book ? { table: "book_projects", url: input.book.pdfUrl, document_id: input.book.documentId } : {},
+      asset_ref: { ...(input.book ? { table: "book_projects", url: input.book.pdfUrl, document_id: input.book.documentId } : {}), ...deliverableRef },
       fulfilment: asset.fulfilment,
       consent_basis: input.tcpaConsentGiven === true ? "requested_with_tcpa_consent" : "requested_by_form",
       status,
@@ -434,9 +448,30 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
       agentUserId = (a.data as { user_id?: string | null } | null)?.user_id ?? null
     }
 
-    // THE ASSET — prepared by the runner; the book a magnet distributes read through the ONE entity reader.
+    // THE ASSET — WAVE 147 (lane 147E, contract C11): a promise made against the magnet's deliverable delivers THAT asset (the one
+    // produced and validated when the magnet was created) — the version promised while it is still ready, else the magnet's
+    // current ready version; nothing is rendered per person. A deliverable that is no longer ready (and no current one) is
+    // MISSING — retried and escalated like any missing asset. Promises with no deliverable (legacy magnets) keep the runner.
+    const promisedDeliverableId = typeof row.asset_ref?.deliverable_id === "string" ? row.asset_ref.deliverable_id : null
+    let fromDeliverable: { prepared: PreparedAsset; id: string; version: number; approvedBy: string | null; approvedAt: string | null } | null = null
+    if (promisedDeliverableId) {
+      const da = await import("./deliverable-asset")
+      const promisedVersion = await da.deliverableById(svc, { brokerageId: row.brokerage_id, deliverableId: promisedDeliverableId })
+      if (promisedVersion.error) return failAttempt(svc, claimed, "asset_missing", promisedVersion.error, now, deps)
+      let d = promisedVersion.deliverable?.status === "ready" && promisedVersion.deliverable.form_id === f.id ? promisedVersion.deliverable : null
+      if (!d) {
+        const current = await da.readyDeliverableFor(svc, { brokerageId: row.brokerage_id, formId: f.id })
+        if (current.error) return failAttempt(svc, claimed, "asset_missing", current.error, now, deps)
+        d = current.deliverable
+      }
+      const asPrepared = da.deliverableAsPreparedAsset(d)
+      if (!d || !asPrepared) return failAttempt(svc, claimed, "asset_missing", "the magnet's deliverable is no longer ready (superseded or failed) and no ready version exists — nothing to deliver", now, deps)
+      fromDeliverable = { prepared: asPrepared, id: d.id, version: d.version, approvedBy: d.approved_by, approvedAt: d.approved_at }
+    }
+
+    // LEGACY (no deliverable) — prepared by the runner; the book a magnet distributes read through the ONE entity reader.
     let book: PromiseBookRef | null = deps.book ?? null
-    if (deps.book === undefined && row.asset_kind === "book") {
+    if (!fromDeliverable && deps.book === undefined && row.asset_kind === "book") {
       const { loadDistributedBook } = await import("@/lib/lead-magnets/book-entity")
       const { leadMagnetBookRefOf } = await import("@/lib/kernel/lead-magnets")
       const distributed = await loadDistributedBook(svc as never, row.brokerage_id, f.id, f.settings ?? null)
@@ -451,7 +486,7 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
         magnetId: a.magnetId, book: a.book, ctx: { area: a.area },
       }, client as never)
     })
-    const prepared = await prepare({ brokerageId: row.brokerage_id, contactId: c.id, agentUserId, magnetType: row.magnet_type, magnetId: f.id, book, area: c.city ?? null }, svc)
+    const prepared: PreparedAsset = fromDeliverable ? fromDeliverable.prepared : await prepare({ brokerageId: row.brokerage_id, contactId: c.id, agentUserId, magnetType: row.magnet_type, magnetId: f.id, book, area: c.city ?? null }, svc)
       .catch((e: unknown) => ({ deliverable: null, pdfUrl: null, documentId: null, deliverableKind: "copy" as const, heldReason: `preparation threw: ${e instanceof Error ? e.message : String(e)}` }))
     const verdict = preparedAssetVerdict(row.asset_kind, prepared)
     if (!verdict.ok) return failAttempt(svc, claimed, "asset_missing", verdict.reason, now, deps)
@@ -464,13 +499,17 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
     // APPROVED: the magnet that made the promise was published by a person (lifecycle.approved_by — the human publish gate in
     // lib/kernel/lead-magnets.ts publishLeadMagnet); the deliverable cleared the compliance gate inside the runner.
     const lifecycle = ((f.settings ?? {}) as { lifecycle?: { approved_by?: string | null; state?: string } }).lifecycle
-    const approvalBasis = lifecycle?.approved_by ? "magnet_published_by_a_person" : "live_magnet_without_recorded_publisher"
+    // Wave 147 (C11 + C5): a deliverable approved by its C5-permitted publisher is the stronger basis, recorded on its own row.
+    const approvalBasis = fromDeliverable?.approvedBy ? "deliverable_approved_by_c5_approver" : lifecycle?.approved_by ? "magnet_published_by_a_person" : "live_magnet_without_recorded_publisher"
 
     // DELIVER — every permitted channel; at least one must accept.
     const channels: string[] = []
     const evidence: Record<string, unknown> = {
       asset_url: verdict.assetUrl, document_id: verdict.documentId, asset_kind: row.asset_kind, deliverable_kind: prepared.deliverableKind,
-      approval_basis: approvalBasis, approved_by: lifecycle?.approved_by ?? null, attempt: attempts, source: promiseSource(row),
+      approval_basis: approvalBasis, approved_by: fromDeliverable?.approvedBy ?? lifecycle?.approved_by ?? null, attempt: attempts, source: promiseSource(row),
+      // THE CHAIN (lane brief requirement 2): campaign + form + attribution (source) ↔ deliverable + version + approval ↔ recipient ↔ promise ↔ delivery.
+      deliverable: fromDeliverable ? { id: fromDeliverable.id, version: fromDeliverable.version, approved_by: fromDeliverable.approvedBy, approved_at: fromDeliverable.approvedAt, produced_at_creation: true } : null,
+      recipient: { contact_id: row.contact_id, person_id: row.person_id },
     }
     const errors: string[] = []
     if (c.email) {
@@ -530,7 +569,7 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
     const done = await updatePromise(svc, claimed, {
       status: "delivered", delivered_at: now.toISOString(), delivered_via: via, channels, evidence, last_error: null, next_attempt_at: null,
       asset_ref: { ...(row.asset_ref ?? {}), url: verdict.assetUrl, document_id: verdict.documentId },
-      asset_version: verdict.documentId ?? verdict.assetUrl, updated_at: now.toISOString(),
+      asset_version: fromDeliverable ? `lead_magnet_deliverables:${fromDeliverable.id}:v${fromDeliverable.version}` : (verdict.documentId ?? verdict.assetUrl), updated_at: now.toISOString(),
     }, { status: "delivering", attempts })
     if (!done.ok) return { ok: false, error: `the asset went out but promise ${row.id} was not marked delivered: ${done.error}` }
 

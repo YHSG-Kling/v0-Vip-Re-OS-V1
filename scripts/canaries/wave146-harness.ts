@@ -41,7 +41,10 @@ export type Ruling146Owner = Wave146Lane | "integrator" | "defect"
 /** Each lane's migration numbers (WAVE146_SPEC "Migration numbers" — never another lane's). */
 export const WAVE146_MIGRATION_RANGES: Readonly<Record<Wave146Lane, readonly [number, number]>> = Object.freeze({
   "146A": [874, 875], "146B": [876, 877], "146C": [878, 878], "146D": [879, 880], "146E": [881, 882],
-  "146F": [883, 884], "146G": [885, 885], "146H": [886, 886], "146I": [887, 887], "146Z": [888, 899],
+  // 146Z wrote m888 only. Wave 147 (WAVE147_SPEC.md "Migration numbers") assigns m889–m907 to its lanes; the old reservation
+  // [888, 899] judged every wave-147 migration against a wave-146 stamp (re-asserted by lane 147E — the rule: a wave's migrations
+  // are the numbers that wave wrote).
+  "146F": [883, 884], "146G": [885, 885], "146H": [886, 886], "146I": [887, 887], "146Z": [888, 888],
 })
 
 /** The lane whose range holds migration number `n`, or null (pure). */

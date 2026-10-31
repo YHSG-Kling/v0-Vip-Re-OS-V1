@@ -360,7 +360,7 @@ async function main() {
   console.log("\nBLIND SPOTS (published):")
   for (const b of [
     "the dispatcher, the portal writer, the signal bus and the runner's preparation are SEAMS here — their own gates are proven by their own proofs (egress, portal-value, signal-integrity, autonomous-marketing); this proof proves the ledger's decisions over them",
-    "a market-report promise is MISSING until a market-report producer exists — every such request escalates to the arbiter / a person (Still open in the lane notes)",
+    "wave 147 (147E): the market-report producer exists (lib/market-reports/producer.ts) and runs when the magnet is CREATED (C11) — a report promise made against a ready deliverable delivers that report (proven by test:lead-magnet-asset-invariant / test:market-report-producer); THIS proof still drives the legacy runner path, where a report with no document stays MISSING",
     "'verified' means the provider ACCEPTED the email (message id) or the portal card row exists; a bounce later is reconciled on outcome_reconciliations by the SendGrid events webhook (lane 145D), not on this row",
     "the signal name is registered by lane 146D (lib/kernel/signal-registry.ts); until it lands test:signal-integrity reports the published type as uncatalogued",
   ]) console.log(`   · ${b}`)

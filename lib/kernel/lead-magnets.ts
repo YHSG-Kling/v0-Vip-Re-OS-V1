@@ -18,6 +18,9 @@ import { humanizedReviewState, humanizedReviewRefusal, type HumanizedReviewRecor
 // carries settings.book_id only. The publish gate and the delivery read the distributed book through this ONE reader.
 import { loadDistributedBook, saveBookRow } from "@/lib/lead-magnets/book-entity"
 import { leadMagnetPublicText } from "@/lib/lead-magnets/public-text"
+// Wave 147 (lane 147E — owner ruling 5, contract C11): THE ASSET IS CREATED WITH THE MAGNET. createLeadMagnet writes the magnet
+// and its deliverable as one unit; publishLeadMagnet publishes only with a READY deliverable approved by a C5-permitted person.
+import { produceLeadMagnetDeliverable, ensureDeliverableForPublish, recordDeliverableApproval, deliverableSpecFor, type DeliverableDeps, type DeliverableRow } from "@/lib/lead-magnets/deliverable-asset"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -47,6 +50,19 @@ interface LeadMagnetClientOpts {
    * client to prove the publish → QR hook. Production never passes it (the real minter is imported).
    */
   mintTrackedQr?: LeadMagnetQrMinter
+  /**
+   * @proofSeam wave 147 (C11): the deliverable producers (the guide booklet render, the market-report producer) need the AI
+   * gateway, storage and providers; scripts/lead-magnet-asset-invariant-guard.ts and the publish proofs inject fakes. Production
+   * never passes it (the real producers run).
+   */
+  deliverable?: DeliverableDeps
+}
+
+/** The deliverable a create / publish reports (C11). */
+export interface LeadMagnetDeliverableSummary { id: string; status: string; kind: string; version: number; reason: string | null }
+
+function deliverableSummary(d: DeliverableRow | null | undefined, reason?: string | null): LeadMagnetDeliverableSummary | null {
+  return d ? { id: d.id, status: d.status, kind: d.kind, version: d.version, reason: reason ?? d.error ?? null } : null
 }
 
 /** The slice of mintTrackedQr's contract the lead-magnet paths use (structural — no import of the server-only module). */
@@ -95,6 +111,8 @@ export interface CreateLeadMagnetOutput {
   slug?: string
   formId?: string
   lifecycleState?: "draft" | "published"
+  /** Wave 147 (C11): the delivery asset created with the magnet — null for a magnet that promises no asset. */
+  deliverable?: LeadMagnetDeliverableSummary | null
   error?: string
 }
 
@@ -385,9 +403,13 @@ export async function createLeadMagnet(
   const fields = input.fields?.length ? input.fields : defaultFieldsForType(input.magnetType)
   const isDraft = input.publishState === "draft"
   const nowIso = new Date().toISOString()
+  // C11 (wave 147): a magnet that PROMISES an asset is never inserted live — it activates only once its deliverable is ready
+  // (below, and m898's trigger refuses any other way). A magnet that promises nothing keeps the old live insert byte-for-byte.
+  const spec = deliverableSpecFor(input.magnetType, input.settings ?? null)
+  const liveAtInsert = !isDraft && !spec
   // ONE lifecycle record (settings.lifecycle) — the draft/published fact a paused (is_active=false)
   // published magnet and a never-published draft would otherwise share.
-  const lifecycle: LeadMagnetLifecycle = { state: isDraft ? "draft" : "published", created_at: nowIso, published_at: isDraft ? null : nowIso, approved_by: isDraft ? null : input.createdBy }
+  const lifecycle: LeadMagnetLifecycle = { state: liveAtInsert ? "published" : "draft", created_at: nowIso, published_at: liveAtInsert ? nowIso : null, approved_by: liveAtInsert ? input.createdBy : null }
   const settings: Record<string, unknown> = { ...(input.settings ?? {}), lifecycle }
   const authoredBy = (settings.authoring as { by?: string } | undefined)?.by === "ai" ? "ai" : "human"
 
@@ -406,7 +428,7 @@ export async function createLeadMagnet(
       magnet_type: input.magnetType,
       landing_content: input.landingContent ?? null,
       settings,
-      is_active: !isDraft,
+      is_active: liveAtInsert,
       submission_count: 0,
     })
     .select("id, slug")
@@ -416,6 +438,32 @@ export async function createLeadMagnet(
     return { success: false, error: formError?.message ?? "Failed to create form" }
   }
 
+  // 1b. THE DELIVERY ASSET, CREATED WITH THE MAGNET (wave 147, lane 147E — owner ruling 5, contract C11). One unit: if not even
+  // the deliverable RECORD can be written, the magnet is deleted again (counted) — a magnet never exists without its record. A
+  // produced-and-validated asset is `ready`; an async render is `staged`; a failed one is recorded with its reason (the magnet
+  // stays an unpublishable draft — the publish re-produces it). A "live" create activates only on a ready asset whose publisher
+  // the C5 authority permits.
+  let deliverable: DeliverableRow | null = null
+  let deliverableReason: string | null = null
+  if (spec) {
+    const d = await produceLeadMagnetDeliverable(supabase as never, {
+      brokerageId: input.brokerageId, formId: form.id, magnetType: input.magnetType, title: input.title,
+      agentId: input.agentId, settings: input.settings ?? null, actorUserId: input.createdBy,
+    }, opts.deliverable)
+    if (!d.ok && !d.recorded) {
+      const { data: gone, error: delErr } = await supabase.from("lead_capture_forms").delete().eq("id", form.id).eq("brokerage_id", input.brokerageId).select("id")
+      const removed = !delErr && (gone ?? []).length === 1
+      return { success: false, error: `${d.error} — ${removed ? "the lead magnet was not kept (a magnet never exists without its delivery asset)" : `the lead magnet is left as an unpublishable draft (cleanup refused: ${delErr?.message ?? "matched no row"})`}` }
+    }
+    deliverable = d.ok ? (d.required ? d.deliverable : null) : (d.deliverable ?? null)
+    deliverableReason = d.ok ? null : d.error
+    if (!isDraft && deliverable?.status === "ready") {
+      const activated = await activateWithReadyDeliverable(supabase, { brokerageId: input.brokerageId, formId: form.id, agentId: input.agentId, approverUserId: input.createdBy, deliverable, settings, lifecycle, at: new Date().toISOString() })
+      if (activated.ok) { lifecycle.state = "published"; lifecycle.published_at = activated.at; lifecycle.approved_by = input.createdBy }
+      else deliverableReason = activated.error
+    } else if (!isDraft) deliverableReason = deliverableReason ?? `the delivery asset is ${deliverable?.status ?? "missing"} — the magnet stays unpublished until it is ready`
+  }
+
   // 2. Log lifecycle event (on the SAME client the row landed on — the 101C seam)
   await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "lead_capture_form",
@@ -423,7 +471,7 @@ export async function createLeadMagnet(
     event: "lead_magnet_created",
     actorUserId: input.createdBy,
     brokerageId: input.brokerageId,
-    metadata: { magnetType: input.magnetType, title: input.title, lifecycleState: lifecycle.state, authoredBy, clonedFromId: (settings.provenance as { cloned_from_id?: string } | undefined)?.cloned_from_id ?? null },
+    metadata: { magnetType: input.magnetType, title: input.title, lifecycleState: lifecycle.state, authoredBy, clonedFromId: (settings.provenance as { cloned_from_id?: string } | undefined)?.cloned_from_id ?? null, deliverableId: deliverable?.id ?? null, deliverableStatus: deliverable?.status ?? null },
     client: supabase,
   }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
@@ -433,7 +481,55 @@ export async function createLeadMagnet(
     slug: form.slug,
     formId: form.id,
     lifecycleState: lifecycle.state,
+    deliverable: spec ? deliverableSummary(deliverable, deliverableReason) : null,
   }
+}
+
+/**
+ * C11 + C5 (wave 147): activate a magnet whose deliverable is READY, by a person the C5 authority permits to approve the asset
+ * (lib/kernel/approval-authority.ts approverFor, assetKind "asset", scope = the magnet's agent). The approval lands on the
+ * deliverable's own row first (counted), then the magnet activates (counted) — m898's trigger re-checks the ready deliverable.
+ */
+async function activateWithReadyDeliverable(supabase: Svc, a: { brokerageId: string; formId: string; agentId: string | null; approverUserId: string; deliverable: DeliverableRow; settings: Record<string, unknown>; lifecycle: LeadMagnetLifecycle; at: string }): Promise<{ ok: true; at: string } | { ok: false; error: string }> {
+  const gate = await deliverableApprover(supabase, { brokerageId: a.brokerageId, agentId: a.agentId, approverUserId: a.approverUserId })
+  if (!gate.ok) return gate
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  return withActionLedger<{ ok: true; at: string } | { ok: false; error: string }>(
+    {
+      brokerageId: a.brokerageId,
+      action: "marketing.lead_magnet.publish",
+      actor: { type: "user", userId: a.approverUserId },
+      subject: { type: "lead_capture_form", id: a.formId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `live create: lead magnet activated with its ready delivery asset (deliverable v${a.deliverable.version})`,
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "lead_magnets",
+      detail: { deliverable_id: a.deliverable.id, deliverable_version: a.deliverable.version, deliverable_kind: a.deliverable.kind, approver_basis: gate.decision.basis },
+    },
+    async () => {
+      const rec = await recordDeliverableApproval(supabase as never, { brokerageId: a.brokerageId, deliverableId: a.deliverable.id, approverUserId: a.approverUserId, decision: gate.decision, at: a.at })
+      if (!rec.ok) return { ok: false as const, error: `the asset's approval was not recorded — not activated: ${rec.error}` }
+      const lifecycle: LeadMagnetLifecycle = { ...a.lifecycle, state: "published", published_at: a.at, approved_by: a.approverUserId }
+      const { data, error } = await supabase.from("lead_capture_forms").update({ is_active: true, settings: { ...a.settings, lifecycle }, updated_at: a.at }).eq("brokerage_id", a.brokerageId).eq("id", a.formId).select("id")
+      if (error) return { ok: false as const, error: `Could not activate the lead magnet: ${error.message}` }
+      if ((data ?? []).length !== 1) return { ok: false as const, error: "Could not activate the lead magnet: no row matched this brokerage + id" }
+      return { ok: true as const, at: a.at }
+    },
+    {
+      settle: (r) => r.ok ? { status: "executed", outcome: "published", providerRef: a.deliverable.id } : { status: "failed", outcome: "activate_refused", error: r.error },
+      replay: (claim) => ({ ok: false as const, error: `ledger refused the activation: ${claim.kind}` }),
+    },
+    { client: supabase as never },
+  )
+}
+
+/** C5: may THIS person approve the asset this magnet delivers? Fails closed on an undecidable authority. */
+async function deliverableApprover(supabase: Svc, a: { brokerageId: string; agentId: string | null; approverUserId: string }): Promise<{ ok: true; decision: { basis: string; tier: string | null; reason: string; permittedUserIds: string[] } } | { ok: false; error: string }> {
+  const { approverFor } = await import("@/lib/kernel/approval-authority")
+  const decision = await approverFor({ brokerageId: a.brokerageId, assetKind: "asset", scope: { agentId: a.agentId }, client: supabase as never })
+  if (!decision.ok) return { ok: false, error: `nobody can approve this page's delivery asset yet: ${decision.reason}` }
+  if (!decision.permittedUserIds.includes(a.approverUserId)) return { ok: false, error: `you are not an approver of this page's delivery asset — ${decision.reason}` }
+  return { ok: true, decision: { basis: decision.basis, tier: decision.tier, reason: decision.reason, permittedUserIds: decision.permittedUserIds } }
 }
 
 // ============================================================================
@@ -528,7 +624,7 @@ export async function publishLeadMagnet(
   // Fetch the form to get slug
   const { data: form, error: fetchError } = await supabase
     .from("lead_capture_forms")
-    .select("id, slug, agent_id, settings")
+    .select("id, slug, agent_id, settings, magnet_type, name")
     .eq("id", input.magnetId)
     .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
@@ -604,6 +700,22 @@ export async function publishLeadMagnet(
       bookSignOff = { by: input.actorUserId, at: publishedAt, basis: "lead_magnet_publish", chapters_human_revised: review.humanRevised, ai_tells_open: 0 }
     }
   }
+  // NO OFFER WITHOUT ITS ASSET (wave 147, lane 147E — owner ruling 5, contract C11). A page that promises a guide / book / report /
+  // agent-prepared value publishes only with its deliverable READY (produced and validated). A magnet drafted before the ruling,
+  // or whose production failed, gets its asset produced now; a staged asset (a book still being written) refuses with the
+  // reason. And the person publishing must be one the C5 authority permits to approve that asset (contract C5).
+  const formRow = form as { agent_id: string | null; magnet_type?: string | null; name?: string | null }
+  const deliverableGate = await ensureDeliverableForPublish(supabase as never, {
+    brokerageId: input.brokerageId, formId: input.magnetId, magnetType: formRow.magnet_type ?? "generic_form", title: formRow.name ?? form.slug,
+    agentId: formRow.agent_id ?? null, settings: curSettings, actorUserId: input.actorUserId,
+  }, opts.deliverable)
+  if (!deliverableGate.ok) return { success: false, error: `Not published — the asset this page promises is not ready: ${deliverableGate.error}` }
+  let deliverableApproval: { deliverable: DeliverableRow; decision: { basis: string; tier: string | null; reason: string; permittedUserIds: string[] } } | null = null
+  if (deliverableGate.required) {
+    const gate = await deliverableApprover(supabase, { brokerageId: input.brokerageId, agentId: formRow.agent_id ?? null, approverUserId: input.actorUserId })
+    if (!gate.ok) return { success: false, error: `Not published — ${gate.error}` }
+    deliverableApproval = { deliverable: deliverableGate.deliverable, decision: gate.decision }
+  }
   // THE VERSION THAT GOES OUT (wave 145, lane 145G — owner ruling 20 / contract C4): the page about to go live is checked
   // against the humanized final the AI draft recorded (distribution_finals, lib/marketing/humanize-final.ts): byte-for-byte the
   // staged final, or the reviewer's OWN edit — which must keep every disclosure the final carried and no word the brand
@@ -637,9 +749,15 @@ export async function publishLeadMagnet(
       reasonDetail: `human approval: publish lead magnet ${form.slug} to ${input.channels.join(", ")}`,
       riskClass: "LOW_RISK_WRITE",
       systemSource: "lead_magnets",
-      detail: { channels: input.channels, landingUrl, authoring: curSettings.authoring ?? null, provenance: curSettings.provenance ?? null },
+      detail: { channels: input.channels, landingUrl, authoring: curSettings.authoring ?? null, provenance: curSettings.provenance ?? null, deliverable: deliverableApproval ? { id: deliverableApproval.deliverable.id, version: deliverableApproval.deliverable.version, kind: deliverableApproval.deliverable.kind, approver_basis: deliverableApproval.decision.basis } : null },
     },
     async () => {
+      // C11 + C5: the approval of the delivery asset lands on ITS row first (counted, ready-fenced) — never an activation on an
+      // unrecorded approval, and never on a deliverable that stopped being ready since the gate read it.
+      if (deliverableApproval) {
+        const rec = await recordDeliverableApproval(supabase as never, { brokerageId: input.brokerageId, deliverableId: deliverableApproval.deliverable.id, approverUserId: input.actorUserId, decision: deliverableApproval.decision, at: publishedAt })
+        if (!rec.ok) return { ok: false as const, error: `The delivery asset's approval was not recorded — not published: ${rec.error}` }
+      }
       // The humanized-review sign-off lands on the BOOK first (counted): a page never activates on an unrecorded sign-off.
       if (bookSignOff && distributed.book) {
         const signed = await saveBookRow(supabase as never, input.brokerageId, distributed.book.id, { project: { ...distributed.book.project, humanized_review: bookSignOff }, updatedAt: publishedAt })

@@ -79,6 +79,8 @@ const raw = (rel: string) => readFileSync(join(root, rel), "utf8")
 const code = (rel: string) => blankComments(raw(rel))
 
 const ORIGIN = "https://proof.autonomous-marketing.test"
+/** Wave 147 (lane 147E — C11 deliverable seam): a ready guide asset; the real producer renders + hosts a PDF (server-only). */
+const READY_GUIDE_147E = { produceGuide: async () => ({ status: "ready" as const, assetUrl: "https://cdn.example.com/guides/proof.pdf", documentId: null, title: "Guide", coverNote: { subject: "Your guide", title: "Guide", body: "Here is your guide." }, validation: { ok: true } }) }
 process.env.NEXT_PUBLIC_APP_URL = ORIGIN
 
 const A = "aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa"
@@ -265,7 +267,9 @@ async function main() {
   const flaggedDraft = await createLeadMagnet({ title: "Edited into trouble", description: "", magnetType: "seller_guide", brokerageId: A, agentId: AGENT_A, createdBy: USER_A, publishState: "draft", landingContent: landing("An adult community, great for retirees") }, { client: c })
   const pubFlagged = await publishLeadMagnet({ magnetId: flaggedDraft.magnetId!, brokerageId: A, channels: ["landing_page"], actorUserId: USER_A, baseUrl: ORIGIN }, { client: c })
   const cleanDraft = await createLeadMagnet({ title: "Edited well", description: "", magnetType: "seller_guide", brokerageId: A, agentId: AGENT_A, createdBy: USER_A, publishState: "draft", landingContent: landing("Single-level living with accessible features") }, { client: c })
-  const pubClean = await publishLeadMagnet({ magnetId: cleanDraft.magnetId!, brokerageId: A, channels: ["landing_page"], actorUserId: USER_A, baseUrl: ORIGIN }, { client: c })
+  // WAVE 147 (147E, ruling 5 / C11): a guide publishes only with its delivery asset ready — the real booklet render is server-only,
+  // so the clean control carries a ready one through the deliverable seam. The B10 rule (the publish re-scans the copy) is unchanged.
+  const pubClean = await publishLeadMagnet({ magnetId: cleanDraft.magnetId!, brokerageId: A, channels: ["landing_page"], actorUserId: USER_A, baseUrl: ORIGIN }, { client: c, deliverable: READY_GUIDE_147E })
   check("B10 the HUMAN'S PUBLISH is the last gate: the copy the reviewer edited is re-scanned — a hard flag is REFUSED naming the phrases and fixes, the row stays a draft; clean copy publishes (control)",
     !pubFlagged.success && /Fair-housing review/.test(pubFlagged.error ?? "") && /great for retirees/.test(pubFlagged.error ?? "") && /Single-level living/.test(pubFlagged.error ?? "") && formRow(c, flaggedDraft.magnetId).is_active === false
     && pubClean.success && formRow(c, cleanDraft.magnetId).is_active === true, JSON.stringify({ pubFlagged, pubClean }))
@@ -478,7 +482,8 @@ async function main() {
     FORM_DECLARABLE_CONTACT_TYPES.every((t) => CHECK_VOCABULARIES.contacts.contact_type.includes(t)) && declarableContactType(" Seller ") === "seller" && declarableContactType("lead") === null && declarableContactType(null) === null)
   const g1 = await createLeadMagnet({ title: "Ask us anything", description: "", magnetType: "generic_form", brokerageId: A, agentId: AGENT_A, createdBy: USER_A, settings: { default_contact_type: "seller" } }, { client: c })
   const g2 = await createLeadMagnet({ title: "Ask us anything, unspecified", description: "", magnetType: "generic_form", brokerageId: A, agentId: AGENT_A, createdBy: USER_A }, { client: c })
-  const g3 = await createLeadMagnet({ title: "Buyer guide declared seller", description: "", magnetType: "buyer_guide", brokerageId: A, agentId: AGENT_A, createdBy: USER_A, settings: { default_contact_type: "seller" } }, { client: c })
+  // Wave 147 (147E, C11): a LIVE buyer guide goes live only with its asset ready — the seam supplies it (F2's rule is the capture's persona).
+  const g3 = await createLeadMagnet({ title: "Buyer guide declared seller", description: "", magnetType: "buyer_guide", brokerageId: A, agentId: AGENT_A, createdBy: USER_A, settings: { default_contact_type: "seller" } }, { client: c, deliverable: READY_GUIDE_147E })
   await captureFormSubmission({ formId: g1.magnetId!, brokerageId: A, submissionData: { first_name: "Sal", last_name: "Seller", email: "sal@seller.test" }, tcpaConsentGiven: true, language: "es" }, { client: c })
   await captureFormSubmission({ formId: g2.magnetId!, brokerageId: A, submissionData: { first_name: "Una", last_name: "Unknown", email: "una@unknown.test" }, tcpaConsentGiven: true }, { client: c })
   await captureFormSubmission({ formId: g3.magnetId!, brokerageId: A, submissionData: { first_name: "Bo", last_name: "Buyer", email: "bo@buyer.test" }, tcpaConsentGiven: true }, { client: c })

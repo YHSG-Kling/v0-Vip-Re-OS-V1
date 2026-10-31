@@ -610,6 +610,20 @@ export async function updateMagnetSettingsAction(magnetId: string, settings: Rec
       updatePayload.settings = (FORM_DECLARABLE_CONTACT_TYPES as readonly string[]).includes(v) ? { ...rest, default_contact_type: v } : rest
     }
     if (Object.keys(updatePayload).length === 1) return { success: false as const, error: "No recognized settings to update" }
+    // WAVE 147 (lane 147E — owner ruling 5 / C11). Turning a page ON here is only a RESUME of a page a person already published:
+    // a never-published draft goes live only through the publish door (fair-housing scan, version check, C5 approver, ledger) —
+    // this action used to activate a draft past all of them — and a resumed page must still have its delivery asset READY.
+    if (updatePayload.is_active === true) {
+      const { data: cur, error: curErr } = await supabase.from("lead_capture_forms").select("id, name, slug, agent_id, magnet_type, settings").eq("id", magnetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      if (curErr) return { success: false as const, error: `lead magnet unreadable: ${curErr.message}` }
+      if (!cur) return { success: false as const, error: "Lead magnet not found in this brokerage" }
+      const row = cur as { name: string | null; slug: string; agent_id: string | null; magnet_type: string | null; settings: Record<string, unknown> | null }
+      const state = ((row.settings ?? {}) as { lifecycle?: { state?: string } }).lifecycle?.state
+      if (state !== "published") return { success: false as const, error: "This page has never been published — publish it (the review and approval door) instead of switching it on." }
+      const { ensureDeliverableForPublish } = await import("@/lib/lead-magnets/deliverable-asset")
+      const gate = await ensureDeliverableForPublish(supabase as never, { brokerageId: ctx.brokerageId, formId: magnetId, magnetType: row.magnet_type ?? "generic_form", title: row.name ?? row.slug, agentId: row.agent_id, settings: row.settings, actorUserId: ctx.userId ?? null })
+      if (!gate.ok) return { success: false as const, error: `Not resumed — the asset this page promises is not ready: ${gate.error}` }
+    }
     const { error } = await supabase
       .from("lead_capture_forms")
       .update(updatePayload)

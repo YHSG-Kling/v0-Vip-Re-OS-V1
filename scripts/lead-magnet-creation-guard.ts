@@ -229,8 +229,13 @@ async function main() {
     if (error || !data) return null
     return { qrCodeId: data.id, slug, scanUrl: `${ORIGIN}/api/qr/scan?slug=${slug}`, targetUrl: args.targetUrl, qrCodeDataUrl: "data:image/png;base64,AAAA" }
   }
-  const pub = await publishLeadMagnet({ magnetId: drafted.magnetId!, brokerageId: A, channels: ["landing_page", "qr_code"], actorUserId: USER_A, baseUrl: ORIGIN }, { client: c, mintTrackedQr: fakeMinter })
+  // WAVE 147 (lane 147E — owner ruling 5 / C11): a guide publishes only with its delivery asset READY. The real booklet producer
+  // is server-only (it renders + hosts a PDF); this proof injects a ready one through the deliverable seam — the C11 rule itself
+  // is proven by scripts/lead-magnet-asset-invariant-guard.ts. The rule asserted here (the human publish activates + records) is unchanged.
+  const readyGuide = { produceGuide: async () => ({ status: "ready" as const, assetUrl: "https://cdn.example.com/guides/seller.pdf", documentId: null, title: "Sell for More", coverNote: { subject: "Your guide", title: "Sell for More", body: "Here is your guide." }, validation: { ok: true } }) }
+  const pub = await publishLeadMagnet({ magnetId: drafted.magnetId!, brokerageId: A, channels: ["landing_page", "qr_code"], actorUserId: USER_A, baseUrl: ORIGIN }, { client: c, mintTrackedQr: fakeMinter, deliverable: readyGuide })
   const pubRow = rows(c, "lead_capture_forms").find((r) => r.id === drafted.magnetId)!
+  check("C3b C11: the published guide's delivery asset is READY and approved by the publisher (C5 owner)", rows(c, "lead_magnet_deliverables").some((d) => d.form_id === drafted.magnetId && d.status === "ready" && d.approved_by === USER_A))
   check("C3 the human publish activates the row and records lifecycle published / approved_by / channels",
     pub.success && pubRow.is_active === true && pubRow.settings.lifecycle.state === "published" && pubRow.settings.lifecycle.approved_by === USER_A && pubRow.settings.lifecycle.channels.includes("qr_code")
     && pubRow.settings.authoring?.by === "ai", JSON.stringify(pub))

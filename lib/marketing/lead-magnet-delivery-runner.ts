@@ -75,7 +75,9 @@ export interface PreparedMagnetDelivery {
  *  compliance-gated. Records nothing and sends nothing (the promise ledger does both). Best-effort; never throws. */
 export async function prepareMagnetDelivery(
   args: {
-    brokerageId: string; contactId: string; agentUserId?: string | null; magnetType: MagnetType; ctx?: CopyContext
+    // WAVE 147 (lane 147E — owner ruling 5 / contract C11): null = the magnet's MASTER asset, produced when the magnet is
+    // created (lib/lead-magnets/deliverable-asset.ts) — the booklet is filed to the brokerage's library, not to one person.
+    brokerageId: string; contactId: string | null; agentUserId?: string | null; magnetType: MagnetType; ctx?: CopyContext
     /** Wave 142: the magnet row, so the delivery activity names it. */
     magnetId?: string | null
     /** Wave 142: a FINISHED book on the magnet (lib/kernel/lead-magnets.ts leadMagnetBookRefOf) — delivered
