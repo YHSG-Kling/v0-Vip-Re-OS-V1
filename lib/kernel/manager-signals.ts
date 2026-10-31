@@ -2081,7 +2081,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const actions: string[] = []
 
     // (1) GATED "thinking of selling?" prospecting brief — audience 'agent'.
-    const { composeProspectingBriefFallback } = await import("@/lib/kernel/listing-inventory-radar")
+    const { composeProspectingBriefFallback } = await import("@/lib/kernel/prospecting-brief-fallback")
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const briefBody = composeProspectingBriefFallback({
       rawLeadId: signal.entityId,

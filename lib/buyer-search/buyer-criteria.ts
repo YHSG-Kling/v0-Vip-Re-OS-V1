@@ -162,13 +162,20 @@ export async function loadBuyerCriteria(
   supabase: ReturnType<typeof createServiceClient>, contactId: string,
   opts: { brokerageId?: string | null } = {},
 ): Promise<BuyerCriteria | null> {
-  // One round trip once m895 is applied; the legacy list again only when the new columns are absent.
-  const run = (cols: string) => {
-    let q = supabase.from("property_preferences").select(cols).eq("contact_id", contactId)
-    // The service client bypasses RLS — a caller that knows the tenant writes the bound down.
-    if (opts.brokerageId) q = q.eq("brokerage_id", opts.brokerageId)
-    return q.maybeSingle()
+  // The tenant bound is UNCONDITIONAL (CLAUDE.md §4; wave 147 integrator — conditional-tenant-predicate): the service client
+  // bypasses RLS, so a caller that does not know the tenant has it resolved from the contact's own row, and a contact whose
+  // tenant cannot be resolved gets "unknown" (null) — never a read across every tenant.
+  let tenant = opts.brokerageId ?? null
+  if (!tenant) {
+    const { data: owner, error: ownerErr } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+    if (ownerErr) { console.error("[buyer-criteria] contact tenant read refused:", ownerErr.message); return null }
+    tenant = (owner as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
   }
+  if (!tenant) { console.error(`[buyer-criteria] no tenant resolvable for contact ${contactId} — refusing an unbounded read`); return null }
+  const brokerageId: string = tenant
+  // One round trip once m895 is applied; the legacy list again only when the new columns are absent.
+  const run = (cols: string) =>
+    supabase.from("property_preferences").select(cols).eq("contact_id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
   const full = await run(`${BUYER_CRITERIA_SELECT}, ${BUYER_CRITERIA_STATE_SELECT}`)
   if (!full.error) return full.data ? normalizeCriteriaRow(full.data as Record<string, any>) : null
   if (!isSchemaAbsentError(full.error)) {

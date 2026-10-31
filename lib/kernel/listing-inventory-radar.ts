@@ -376,17 +376,9 @@ function composeSellerIntentLeadNote(lead: ScoredSellerLead): string {
   return `[Listing Inventory Radar] Seller-intent ${(lead.intentScore * 100).toFixed(0)}/100 for ${addr}. Why now: ${why}. Prioritize for AI-ISA qualification — NOT yet a contact (no portal, no client message until qualified + converted).`
 }
 
-/** Deterministic FALLBACK body for the CONTACT-BACKED seller brief (audience 'agent') — only
- *  ever composed when the owner is already a CRM contact (post-conversion, portal-eligible).
- *  Internal agent brief; the client-facing follow-up is the agent's gated next step. */
-export function composeProspectingBriefFallback(lead: ScoredSellerLead): string {
-  const addr = lead.propertyAddress ?? "a property we surfaced"
-  return [
-    `Seller-intent radar flagged ${addr} as a high-intent listing-inventory candidate (existing CRM contact).`,
-    `Why now: ${lead.reasons.slice(0, 4).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join("; ") || "scored seller intent"}.`,
-    `Suggested play: a "thinking of selling?" touch — open with the home's current market position. A gated CMA + a short listing/explainer reel are queued for your approval. Nothing sends until you approve it.`,
-  ].join(" ")
-}
+// TOMBSTONE (wave 147, integrator, 2026-10-31): composeProspectingBriefFallback MOVED to lib/kernel/prospecting-brief-fallback.ts
+// (its one external importer, lib/kernel/manager-signals.ts, now imports the light module; the radar itself never called it).
+// Reason: proxy-graph budget — composing one string pulled this whole module into every page that reaches the manager-signals hub.
 
 // ─── Live runner ──────────────────────────────────────────────────────────────
 

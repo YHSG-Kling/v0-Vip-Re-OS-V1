@@ -199,7 +199,7 @@ The closure report names each table and its count. For each one, the Data Stewar
 ## Generated classification (do not edit by hand — `tsx --conditions=react-server scripts/transfer-classification-guard.ts --write`)
 
 <!-- BEGIN GENERATED: fk-child-classification (scripts/transfer-classification-guard.ts --write) -->
-Census: 437 FKs from 309 child tables into the 34 moved families (288 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 64 further FKs run between families (follows_parent by construction).
+Census: 437 FKs from 309 child tables into the 38 moved families (288 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 69 further FKs run between families (follows_parent by construction).
 
 | Class | Tables | FKs |
 |---|---|---|

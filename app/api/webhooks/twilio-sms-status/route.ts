@@ -102,7 +102,9 @@ export async function POST(request: NextRequest) {
   if (recon.brokerageId && recon.verdict) {
     try {
       const { onProviderTruth } = await import("@/lib/kernel/completion-tracking")
-      const sup = await onProviderTruth(createServiceClient(), { brokerageId: recon.brokerageId, providerRef: sid, verdict: recon.verdict })
+      // The composition root hands the inbound chain's redriver in (wave 147 integrator — the supervisor no longer imports the chain).
+      const { inboundCompletionRedrivers } = await import("@/lib/communications/inbound-record")
+      const sup = await onProviderTruth(createServiceClient(), { brokerageId: recon.brokerageId, providerRef: sid, verdict: recon.verdict }, { redrivers: inboundCompletionRedrivers() })
       completion = sup?.verdict ?? null
     } catch (e) {
       // The reconciliation already landed; a completion check that could not run must not un-ACK (the timer / cron net re-check it).

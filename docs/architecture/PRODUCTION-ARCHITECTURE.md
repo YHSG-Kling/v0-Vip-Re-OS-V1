@@ -218,7 +218,7 @@ The wave-141 final report closed with nine owner blockers (fifteen items). `scri
 | Lockfile policy | `--no-frozen-lockfile` in BOTH install and build: **a deployment may resolve different dependency versions than CI tested** (finding F-1) | vercel.json:3 |
 | Type-checking at build | `typescript.ignoreBuildErrors: true` — type safety is the CI `type-check` gate, NOT the Vercel build | next.config.ts:29 |
 | Runtime pin | no `engines`, no .nvmrc — the Node version is the Vercel project setting (finding F-2); package manager unpinned (pnpm used by vercel.json, npm lockfile also present) | package.json |
-| Route handlers / pages | 418 `route.ts` handlers · 550 `page.tsx` pages under app/ | app/ |
+| Route handlers / pages | 419 `route.ts` handlers · 551 `page.tsx` pages under app/ | app/ |
 | Function overrides | 6 routes with explicit memory/duration: `cron/podcast-weekly-auto` 3008 MB · 300 s; `cron/poll-did-videos` 3008 MB · 300 s; `internal/remotion/render-just-listed` 3008 MB · 300 s; `cron/listing-promo-hybrid-composite` 3008 MB · 300 s; `internal/remotion/render-newsletter-video` 3008 MB · 300 s; `internal/remotion/render-composition` 3008 MB · 300 s | vercel.json:4 |
 | Per-route `maxDuration` | 120 routes declare one: 30s ×1 · 60s ×8 · 120s ×11 · 300s ×97 · 600s ×3. **Above 300 s: app/api/cron/predictive-listing-scoring/route.ts (600s), app/api/cron/wealth-opportunity-scan/route.ts (600s), app/api/cron/weekly-income-digest/route.ts (600s)** — a duration above the plan's default needs Fluid compute / Pro limits (verify in the project; ACTIVATION-CHECKLIST §1) | app/**/route.ts |
 | Platform crons | `/api/cron/dispatch` `* * * * *` — ONE per-minute cron (a per-minute schedule needs a plan that allows it) | vercel.json:36 |
@@ -226,7 +226,7 @@ The wave-141 final report closed with nine owner blockers (fifteen items). `scri
 | Cron fan-out timeout | each target fetch aborts after **55 s**, but 119 routes declare `maxDuration` above that: a long-running target is reported as a dispatch FAILURE ("timeout") while it keeps running (log noise, not lost work; finding F-3) | lib/kernel/cron-dispatch.ts:400 |
 | Cron self-call origin | `CRON_DISPATCH_BASE_URL` → `VERCEL_PROJECT_PRODUCTION_URL` → `VERCEL_URL`; Deployment Protection on the chosen host would answer the dispatcher with a Vercel page, not the route (verify `dispatched = due`) | lib/kernel/cron-dispatch.ts:420 |
 | Webhook doors | 33 contracted; 13 with no declared failure visibility | lib/providers/webhook-contract.ts:101 |
-| Background work | Vercel Workflow (`withWorkflow` wraps the Next config; `workflows/` holds 1 file(s)); durable queues live in Postgres and are drained by the cron registry | next.config.ts:169 |
+| Background work | Vercel Workflow (`withWorkflow` wraps the Next config; `workflows/` holds 2 file(s)); durable queues live in Postgres and are drained by the cron registry | next.config.ts:169 |
 | Media storage | Supabase Storage, 12 live buckets — public: `agent-media`, `brokerage-assets`, `business-cards`, `listing-media`, `media`, `video-assets`; private: `agent-documents`, `brokerage-forms`, `client-documents`, `documents`, `offer-documents`, `transaction-documents`. No Vercel Blob. Remotion output is hosted via `hostRenderedMedia` | lib/storage/bucket-limits.ts:46 |
 | Tenant routing | `proxy.ts` (edge middleware) classifies public/protected paths, rewrites white-label custom domains and sets per-tenant `frame-ancestors`; baseline tenant site = path `/site/<slug>` (present); no wildcard subdomain (readiness B9b UNSUPPORTED) | proxy.ts, lib/platform/custom-domains.ts |
 | Domains / SSL | Custom domains attach through the Vercel domains API (needs `VERCEL_TOKEN` + `VERCEL_PROJECT_ID`); certificates are issued by Vercel once DNS verifies; the app only records `pending_dns → verifying → active` | lib/platform/custom-domains.ts:437 |
@@ -234,8 +234,8 @@ The wave-141 final report closed with nine owner blockers (fifteen items). `scri
 | Observability | `@vercel/analytics` mounted · `collectError` → `automation_errors` · connector health from `api_response_logs` · root `app/error.tsx` present · app/global-error.tsx ABSENT · instrumentation.ts ABSENT (R-5 stays open) | app/layout.tsx, lib/errors/collect-error.ts:115 |
 | Liveness endpoint | **none** — no unauthenticated health route exists for an external uptime monitor (finding F-4); `/api/admin/health-status` is gated | app/api/ |
 | Database access | PostgREST only (supabase-js over HTTPS; no `DATABASE_URL`, no pooled connection string in code) — no connection-pool exhaustion mode from serverless fan-out | lib/supabase/service.ts:4 |
-| Migrations | 654 files, highest m906; **6** headers claim WRITTEN, NOT APPLIED (m739, m771, m795, m855, m875, m906). Applied by the integrator through the Supabase MCP, never by CI or Vercel | supabase/migrations/ |
-| Live schema cache | 790 relations in `scripts/live-tables.ts` (a cache of the live database; regenerate, never hand-edit) | scripts/live-tables.ts:33 |
+| Migrations | 663 files, highest m906; **5** headers claim WRITTEN, NOT APPLIED (m739, m771, m795, m855, m875). Applied by the integrator through the Supabase MCP, never by CI or Vercel | supabase/migrations/ |
+| Live schema cache | 797 relations in `scripts/live-tables.ts` (a cache of the live database; regenerate, never hand-edit) | scripts/live-tables.ts:33 |
 <!-- GENERATED:hosting-facts:END -->
 
 ### 15.2 Supabase — live read, 2026-10-23 (no change made)

@@ -122,11 +122,15 @@ export async function GET(req: NextRequest) {
       // sweep so its stalled_completions detector sees only what the net could not close; everything it recovers is stamped
       // recovered_by = "cron" on the row and in the ledger. Also opens a completion for a support ticket past its SLA (read only).
       const { reconcileOpenCompletions, watchUnresolvedTickets } = await import("@/lib/kernel/completion-tracking")
+      // The inbound chain's redriver is handed in HERE, at the composition root (wave 147 integrator): the supervisor no
+      // longer imports the chain itself.
+      const { inboundCompletionRedrivers } = await import("@/lib/communications/inbound-record")
+      const supervision = { redrivers: inboundCompletionRedrivers() }
       for (const t of (tenants ?? []) as Array<{ id: string }>) {
         try {
           const tk = await watchUnresolvedTickets(supabase, t.id)
           if (tk.error) errors.push(`completions ${t.id}: ${tk.error}`)
-          const rc = await reconcileOpenCompletions(supabase, t.id)
+          const rc = await reconcileOpenCompletions(supabase, t.id, {}, supervision)
           healthRecovered += rc.recovered
           healthEscalated += rc.escalated
           for (const err of rc.errors.slice(0, 3)) errors.push(`completions ${t.id}: ${err}`)

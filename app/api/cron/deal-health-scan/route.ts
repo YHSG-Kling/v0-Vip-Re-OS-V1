@@ -173,7 +173,7 @@ export async function GET(request: NextRequest) {
     // belongs finally flows); abandon + escalate what never matches. Best-effort.
     let ingressReplayed = 0, ingressAbandoned = 0
     try {
-      const { runIngressReconciliation } = await import("@/lib/kernel/ingress-continuity")
+      const { runIngressReconciliation } = await import("@/lib/kernel/ingress-reconciliation")
       const ir = await runIngressReconciliation(supabase)
       ingressReplayed = ir.replayed; ingressAbandoned = ir.abandoned
     } catch (e) { console.error("[deal-health-scan] ingress reconciliation failed (non-blocking)", e) }

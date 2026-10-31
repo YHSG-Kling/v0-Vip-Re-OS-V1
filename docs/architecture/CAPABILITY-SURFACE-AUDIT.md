@@ -6,7 +6,7 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 812 role-surfaces — BUILT 739 · PARTIAL 58 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 37; contact-portal pages: 30. Expected-coverage gaps: 0.
+**Totals:** 814 role-surfaces — BUILT 741 · PARTIAL 58 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 37; contact-portal pages: 30. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 
@@ -14,7 +14,7 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 |---|---|---|---|---|---|---|---|---|---|---|
 | **website · landing pages · lead magnets** | B1 | B17 | B9 | B5 | B10 | · | B5 | B5 | · | · |
 | **lead acquisition** | B5 | B8 | B12 | B4 | B6 | B9 | B1 | B1 | · | · |
-| **dedup · enrichment · behavioural intent** | B3 | · | B6 P1 | B2 | B4 | · | · | · | · | · |
+| **dedup · enrichment · behavioural intent** | B3 | · | B7 P1 | B2 | B4 | B1 | · | · | · | · |
 | **listings** | B1 | B1 | B2 P1 S1 | B3 P1 S1 | B8 P1 S1 | S1 | · | · | · | · |
 | **properties** | · | B1 | B2 | B2 | B2 | · | · | · | B3 | · |
 | **forms** | · | B1 | B8 | B1 | B8 | · | B1 | B1 | B2 | B3 |
@@ -103,11 +103,11 @@ None — every level the ruling names reaches every domain it should, on a real 
 
 ## Classification — every unfinished / not-configured / not-available sentence (ruling 9, lane 147H)
 
-Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that say 'not available yet'. Every exposed function works, gives an honest configuration message, or leaves the advertised launch surface."* Population: every line of STRIPPED source in `app/**` carrying the honest-state phrase family (and every "not available yet" line in `lib/**`) — 179 sentences (42 on screens, 137 server refusals a screen relays). Each sits in exactly one class, **derived from code** for 130 (an env var the runtime reads, a fail-closed tenant guard, a connection / provider probe, a migration stamp) and from the published allow-list (`CLASSIFIED_SURFACES`) for 49. A missing credential is configuration, never an engineering failure.
+Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that say 'not available yet'. Every exposed function works, gives an honest configuration message, or leaves the advertised launch surface."* Population: every line of STRIPPED source in `app/**` carrying the honest-state phrase family (and every "not available yet" line in `lib/**`) — 182 sentences (42 on screens, 140 server refusals a screen relays). Each sits in exactly one class, **derived from code** for 131 (an env var the runtime reads, a fail-closed tenant guard, a connection / provider probe, a migration stamp) and from the published allow-list (`CLASSIFIED_SURFACES`) for 51. A missing credential is configuration, never an engineering failure.
 
 | class | sentences |
 |---|---|
-| implemented-missing-owner-config | 177 |
+| implemented-missing-owner-config | 180 |
 | present-but-unwired | 0 |
 | incomplete-code | 0 |
 | missing-reader/writer/evidence | 0 |
@@ -161,7 +161,7 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/actions/external-services.ts` | 63 | server | not configured | implemented-missing-owner-config | code | platform env DID_API_KEY, ELEVENLABS_API_KEY | kept: honest configuration copy (derived) |
 | `app/actions/external-services.ts` | 99 | server | not configured | implemented-missing-owner-config | code | platform env DID_API_KEY | kept: honest configuration copy (derived) |
 | `app/actions/home-value.ts` | 804 | server | not configured | implemented-missing-owner-config | code | platform env NEXT_PUBLIC_APP_URL | kept: honest configuration copy (derived) |
-| `app/actions/idx-search.ts` | 34, 37 | server | not configured | implemented-missing-owner-config | code | platform env IDXBROKER_API_KEY, IDXBROKER_API_URL | kept: honest configuration copy (derived) |
+| `app/actions/idx-search.ts` | 35, 38 | server | not configured | implemented-missing-owner-config | code | platform env IDXBROKER_API_KEY, IDXBROKER_API_URL | kept: honest configuration copy (derived) |
 | `app/actions/income-engine.ts` | 39 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
 | `app/actions/investor-buybox-preview.ts` | 83 | server | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (unconfigured) | kept: honest refusal (the card relays it) |
 | `app/actions/lead-intelligence.ts` | 659, 660, 2209 | server | not configured | implemented-missing-owner-config | code | platform env ZENROWS_API_KEY | kept: names the variable where the line can |
@@ -207,7 +207,7 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/api/cron/stripe-drift/route.ts` | 54, 56 | server | not configured | implemented-missing-owner-config | code | platform env STRIPE_SECRET_KEY | kept: honest configuration copy (derived) |
 | `app/api/did/agents/session/route.ts` | 254 | server | not configured | implemented-missing-owner-config | code | platform env NEXT_PUBLIC_APP_URL | kept: honest configuration copy (derived) |
 | `app/api/did/create-avatar/route.ts` | 39 | server | not configured | implemented-missing-owner-config | code | platform env DID_API_KEY | kept: honest configuration copy (derived) |
-| `app/api/did/custom-llm/route.ts` | 444 | server | not configured | implemented-missing-owner-config | code | platform env AI_GATEWAY_API_KEY | kept: honest configuration copy (derived) |
+| `app/api/did/custom-llm/route.ts` | 446 | server | not configured | implemented-missing-owner-config | code | platform env AI_GATEWAY_API_KEY | kept: honest configuration copy (derived) |
 | `app/api/did/generate-video/route.ts` | 68 | server | not configured | implemented-missing-owner-config | code | platform env DID_API_KEY, ELEVENLABS_API_KEY | kept: honest configuration copy (derived) |
 | `app/api/elevenlabs/voice-clone/route.ts` | 32 | server | not configured | implemented-missing-owner-config | code | platform env ELEVENLABS_API_KEY | kept: honest configuration copy (derived) |
 | `app/api/embed/session/route.ts` | 262 | server | not configured | implemented-missing-owner-config | code | platform env NEXT_PUBLIC_APP_URL | kept: honest configuration copy (derived) |
@@ -264,10 +264,13 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/mobile/voice/voice-session-button.tsx` | 75 | ui | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (isConfigured) | kept: honest refusal naming settings |
 | `app/settings/services/services-content.tsx` | 268 | ui | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (connected) | kept: status label on the configuring page |
 | `app/settings/services/services-content.tsx` | 304 | ui | not configured | implemented-missing-owner-config | allow-list | a tenant service connection that is not connected — this page connects it | kept: status label on the configuring page |
+| `lib/buyer-search/buyer-criteria.ts` | 373 | server | not available yet | implemented-missing-owner-config | code | fallback for a database missing APPLIED migration m896 (dormant live; the deployment applies it) | kept: honest configuration copy (derived) |
 | `lib/contacts/accessibility-preferences.ts` | 283 | server | not available yet | implemented-missing-owner-config | code | fallback for a database missing APPLIED migration m868 (dormant live; the deployment applies it) | kept: honest configuration copy (derived) |
 | `lib/integrations/providers/provider-resolver.ts` | 32 | server | not yet available | unsupported/deferred | allow-list | a legal-forms / e-sign provider listed in the catalog with implemented:false — the refusal names the providers that work | kept: honest refusal; the catalog marks it unimplemented (no adapter is claimed) |
 | `lib/kernel/manager-registry.ts` | 1882 | server | not available yet | implemented-missing-owner-config | code | platform env DID_API_KEY, ELEVENLABS_API_KEY, ZOOM_SDK_KEY, ZOOM_SDK_SECRET | kept: honest configuration copy (derived) |
 | `lib/kernel/video.ts` | 647 | server | not yet available | unsupported/deferred | allow-list | video repurposing (shorts / clips / thumbnails) has no processing backend; the old code fabricated artifact URLs | kept: honest refusal relayed by the video studio dialog; a processor (worker) is an owner decision — Still open |
+| `lib/market-reports/producer.ts` | 193 | server | not available yet | implemented-missing-owner-config | allow-list | a market datum the licensed data sources (RentCast — RENTCAST_API_KEY, the tenant's MLS / IDX feed connection) did not return for this territory; the report labels it instead of estimating it (owner ruling 6) | kept: the honest section heading the producer's validator requires |
+| `lib/market-reports/prompts.ts` | 64 | server | not available yet | implemented-missing-owner-config | allow-list | the writing prompt's rule that a fact the data sources did not return is said to be not available, never estimated (owner ruling 6; the producer validator refuses an invented figure) | kept: an instruction to the model, not user copy |
 
 ### Migration-gated fallbacks (copy that names a migration, with its stamp)
 
@@ -282,7 +285,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | `app/actions/lead-intelligence.ts:1012` | m629 | written |
 | `app/actions/seller-listing/execution-engine.ts:1086` | m856 | applied |
 | `app/actions/transactions/tax-proration.ts:78` | m873 | applied |
-| `app/actions/vendor-portfolio.ts:35` | m906 | written |
+| `app/actions/vendor-portfolio.ts:35` | m906 | applied |
 | `app/actions/vendor-w9.ts:172` | m275 | written |
 | `app/api/cron/review-response-auto-publish/route.ts:92` | m625 | written |
 | `app/crm/contacts/[contactId]/page.tsx:394` | m868 | applied |
@@ -291,7 +294,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | `app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx:70` | m696 | applied |
 | `app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx:115` | m696 | applied |
 | `app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx:31` | m709 | applied |
-| `app/dashboard/listings/[id]/lifecycle/listing-agreement-terms-panel.tsx:84` | m856 | applied |
+| `app/dashboard/listings/[id]/lifecycle/listing-agreement-terms-panel.tsx:87` | m856 | applied |
 | `app/dashboard/superadmin/form-packets/page.tsx:41` | m807 | applied |
 | `app/dashboard/superadmin/plans/ai-overage-terms-card.tsx:40` | m669 | applied |
 | `app/dashboard/transactions/[id]/tax-proration-card.tsx:105` | m873 | applied |
@@ -412,7 +415,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | /widget/[brokerageSlug] `/widget/[brokerageSlug]` | `app/widget/[brokerageSlug]/page.tsx` | fetch /api/widget/session · fetch /api/track/visitor | BUILT |
 | website · landing pages · lead magnets | /widget/chat `/widget/chat` | `app/widget/chat/page.tsx` | fetch /api/widget/session · fetch /api/widget/intake | BUILT |
 
-### tenant admins (219)
+### tenant admins (220)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -451,6 +454,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | dedup · enrichment · behavioural intent | ↳ from Admin Dashboard `/dashboard/admin/intelligence-mesh` | `app/dashboard/admin/intelligence-mesh/page.tsx` | app/actions/brokerage-intelligence.ts (getBrokerageInsights, adoptInsightAction, dismissInsightAction, …) · lib/auth/resolve-user-role.ts | BUILT |
 | dedup · enrichment · behavioural intent | Lead Lineage `/dashboard/admin/lead-lineage` | `app/dashboard/admin/lead-lineage/page.tsx` | app/actions/lead-governance/govern-lead.ts (governLead) · app/actions/lead-acquisition.ts (handleLeadAssigned) | BUILT |
 | dedup · enrichment · behavioural intent | Transaction Propensity `/dashboard/admin/transaction-propensity` | `app/dashboard/admin/transaction-propensity/page.tsx` | lib/ai-isa/transaction-propensity.ts · lib/auth/resolve-user-role.ts | PARTIAL |
+| dedup · enrichment · behavioural intent | Movement Signals `/dashboard/intelligence/movement-signals` | `app/dashboard/intelligence/movement-signals/page.tsx` | app/actions/movement-signals.ts (listMovementSignalsAction, markMovementSignalOutcomeAction) | BUILT |
 | dedup · enrichment · behavioural intent | Behavioral Patterns `/dashboard/patterns` | `app/dashboard/patterns/page.tsx` | app/actions/pattern-actions.ts (getActivePatterns, getPatternAccuracyStats, updatePatternStatus, …) · app/actions/tasks.ts (createTask) | BUILT |
 | dedup · enrichment · behavioural intent | Resonance — Life Events `/dashboard/sphere` | `app/dashboard/sphere/page.tsx` | app/dashboard/sphere/actions.ts (loadSphereResonance, approveSphereTouch, updateSphereMessage, …) | BUILT |
 | dedup · enrichment · behavioural intent | Stale Queue `/dashboard/stale` | `app/dashboard/stale/page.tsx` | app/dashboard/stale/actions.ts (loadStaleQueue, claimStaleLead, reengageStaleContact, …) | BUILT |
@@ -942,13 +946,14 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### ISA (31)
+### ISA (32)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
 | CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | BUILT |
 | CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
+| dedup · enrichment · behavioural intent | Movement Signals `/dashboard/intelligence/movement-signals` | `app/dashboard/intelligence/movement-signals/page.tsx` | app/actions/movement-signals.ts (listMovementSignalsAction, markMovementSignalOutcomeAction) | BUILT |
 | education | ↳ from Scripts `/dashboard/coaching/practice` | `app/dashboard/coaching/practice/page.tsx` | app/actions/objection-training.ts (listPracticeSessions, startObjectionPracticeSession, submitPracticeTurn, …) · fetch /api/internal/voice-tts | BUILT |
 | lead acquisition | ISA Settings `/dashboard/ai-isa/settings` | `app/dashboard/ai-isa/settings/page.tsx` | app/actions/ai-isa-settings.ts (getAIISASettingsResolution, saveAIISASettingsForOwner, getAIISAStats) | BUILT |
 | lead acquisition | AI-ISA Console `/dashboard/isa` | `app/dashboard/isa/page.tsx` | app/actions/leads.ts (resumeAIISA, getISAQueueLeads, getLeadStats, …) · app/actions/ai-isa.ts (listISACampaigns, getQualificationOutcomes, getGhostRecoveryQueue, …) | BUILT |
@@ -1112,7 +1117,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | portals · dashboards · login · onboarding | portal ·/team `/portal/[contactId]/team` | `app/portal/[contactId]/team/page.tsx` | app/actions/multi-persona.ts (getAgentReviews) · lib/kernel/portal.ts | BUILT |
 | properties | portal ·/properties `/portal/[contactId]/properties` | `app/portal/[contactId]/properties/page.tsx` | app/actions/idx-search.ts (smartSearch, saveProperty, unsaveProperty) · app/actions/calculators.ts (analyzeInvestmentProperty, compareMortgageScenarios) | BUILT |
 | properties | portal ·/properties/[propertyId] `/portal/[contactId]/properties/[propertyId]` | `app/portal/[contactId]/properties/[propertyId]/page.tsx` | app/actions/smart-insights.ts (getSmartInsights, isPropertySaved, getCommuteDestinations, …) · app/actions/buyer-offer-tools.ts (signalAffordabilityChecked, requestOfferHelp, requestPreApprovalRefresh) | BUILT |
-| properties | portal ·/search `/portal/[contactId]/search` | `app/portal/[contactId]/search/page.tsx` | app/actions/portal-nl-search.ts (portalNaturalSearchAction, PortalSearchResult) · app/actions/forms-kernel.ts (recordPropertyActionAction, loadBuyerPropertiesAction) | BUILT |
+| properties | portal ·/search `/portal/[contactId]/search` | `app/portal/[contactId]/search/page.tsx` | app/actions/buyer-search/conversational-search.ts (buyerConversationTurnAction, buyerHomeFeedbackAction, decideCriteriaChangeAction, …) · app/actions/portal-nl-search.ts (portalNaturalSearchAction, PortalSearchResult) | BUILT |
 | settings · people · support | portal ·/help `/portal/[contactId]/help` | `app/portal/[contactId]/help/page.tsx` | server-side read in the page tree | BUILT |
 | settings · people · support | portal ·/settings `/portal/[contactId]/settings` | `app/portal/[contactId]/settings/page.tsx` | lib/video/multilingual-reel.ts · lib/contacts/accessibility-preferences.ts | BUILT |
 | transactions | portal ·/my-offer `/portal/[contactId]/my-offer` | `app/portal/[contactId]/my-offer/page.tsx` | server-side read in the page tree | BUILT |

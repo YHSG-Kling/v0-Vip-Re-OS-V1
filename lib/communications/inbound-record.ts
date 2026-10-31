@@ -678,6 +678,26 @@ async function recordDecisionEvidence(
  * responder again and record the decision as evidence. At-most-once by the responder's ledger cycle: a decision already made
  * replays, an in-flight one is refused by the supervisor before this runs. Never throws.
  */
+/** The redrivers the completion supervisor's COMPOSITION ROOTS hand in (wave 147, integrator — moved here from
+ *  lib/kernel/completion-tracking.ts `inboundRedriverWith`, so the chain knows the supervisor and never the reverse; the
+ *  supervisor's default import of this module pulled 21 modules into every page reaching the manager-signals hub).
+ *  Roots: app/api/cron/manager-signals/route.ts (the net), workflows/completion-watch-workflow.ts (the timer),
+ *  app/api/webhooks/twilio-sms-status/route.ts (provider truth). `cdeps` carries the supervisor's clock and timer into
+ *  the evidence the redrive records, exactly as the old default did. */
+export function inboundCompletionRedrivers(
+  cdeps: import("@/lib/kernel/completion-tracking").CompletionDeps = {},
+): NonNullable<import("@/lib/kernel/completion-tracking").SupervisionDeps["redrivers"]> {
+  return {
+    inbound_response: async (svc, c, trigger) =>
+      redriveInboundResponse(
+        svc as unknown as Client,
+        c,
+        { completions: { schedule: cdeps.schedule, now: cdeps.now } },
+        trigger === "event" ? null : (trigger as "retry" | "workflow" | "cron"),
+      ),
+  }
+}
+
 export async function redriveInboundResponse(
   svc: Client,
   c: { brokerage_id: string; context: Record<string, unknown> },

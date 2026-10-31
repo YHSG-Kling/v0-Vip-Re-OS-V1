@@ -35,8 +35,11 @@ export interface CompletionWatchResult {
 
 async function superviseStep(brokerageId: string, completionId: string): Promise<{ verdict: string; nextCheckAt: string | null; reason: string }> {
   "use step"
-  const [{ superviseCompletion }, { createServiceClient }] = await Promise.all([import("@/lib/kernel/completion-tracking"), import("@/lib/supabase/service")])
-  const r = await superviseCompletion(createServiceClient() as never, { brokerageId, completionId, trigger: "workflow" })
+  const [{ superviseCompletion }, { createServiceClient }, { inboundCompletionRedrivers }] = await Promise.all([
+    import("@/lib/kernel/completion-tracking"), import("@/lib/supabase/service"), import("@/lib/communications/inbound-record"),
+  ])
+  // The composition root hands the inbound chain's redriver in (wave 147 integrator — the supervisor no longer imports the chain).
+  const r = await superviseCompletion(createServiceClient() as never, { brokerageId, completionId, trigger: "workflow" }, { redrivers: inboundCompletionRedrivers() })
   return { verdict: r.verdict, nextCheckAt: r.nextCheckAt ?? null, reason: r.reason.slice(0, 300) }
 }
 

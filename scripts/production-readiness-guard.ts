@@ -502,12 +502,12 @@ function doorOf(users: string[], ui: Set<string>, edges: (f: string) => string[]
 }
 /** Window tables with NO user door BY DESIGN — platform/cron-internal evidence or caches, each with its reason. */
 const DOORLESS_BY_DESIGN: Record<string, string> = {
-  // wave 147 (lane 147I) — the migration author's own ruling (m894 header, lane 147B: "Service-role only — no tenant read (an
-  // item digest means nothing to a person; the evidence lives on movement_signals)"). Only the watcher's per-item digest is
-  // classified: movement_signals (the C9 record a person disposes) and movement_source_polls (whose freshness owner ruling 3
-  // says is PUBLISHED — m893 names the lead desk as its reader) are NOT doorless by design, so U1 keeps naming them until
-  // their doors exist.
-  movement_source_items: "the poll-and-diff watcher's last-seen digest per watched item (m894, wave 147B): written and read only by lib/intent/movement-source-watcher.ts on the enrichment tick; service-role only — the person-facing evidence is the movement_signals record it produces",
+  // TOMBSTONE (wave 147, integrator, 2026-10-31): the `movement_source_items` row lane 147I added here (m894: "service-role
+  // only — an item digest means nothing to a person") was REMOVED the same wave. Lane 147Z gave the table a transfer class in
+  // lib/kernel/brokerage-transfer.ts (a tenant's watcher state moves with the brokerage), so the transfer rail now WRITES it —
+  // U2's staleness rule then read the row as a door-less claim about a table with a door, and the rule, not the row, wins.
+  // movement_signals and movement_source_polls have their doors (lane 147Z's movement-signals screen + outcome action).
+  // The map stays so the next genuinely doorless table has a place to be ruled on: <table>: "<reason, migration, writer>".
 }
 /** Wave 145 (lane 145I, the one editor of this census this wave): doorless-by-design rulings for tables ANOTHER wave-145
  *  lane's migration adds. While that migration is not in the tree the table is not in the window, so the entry is

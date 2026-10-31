@@ -134,7 +134,19 @@ export const MOVED_HISTORY_TABLES = [
   // (lib/lead-intelligence/behavioral-summary.ts).
   "lead_idx_property_interactions",
   "motivated_seller_signals",
+  // WAVE 147 (m892 applied live 2026-10-31, lane 147B's C9 record): movement_signals is dual-keyed with an exactly-one CHECK
+  // (movement_signals_subject_shape — a row names a contact XOR a lead XOR a property/territory), so a converted lead's
+  // movement traces MOVE onto the contact. The same CHECK ties subject_type to the key that is set, so the move also flips
+  // subject_type 'lead' → 'contact' IN THE SAME STATEMENT (MOVE_EXTRA_PATCH below) — setting contact_id alone would be
+  // refused whole and the trace left behind the retired lead (orphaned-children OC3, wave 147 integrator). Writer:
+  // lib/intent/movement-signals.ts; readers: the movement-signals screen and the arbiter's MOVEMENT_SIGNAL_CONSUMER.
+  "movement_signals",
 ] as const
+
+/** Columns a MOVE must set alongside contact_id / lead_id so the table's own CHECK admits the moved row. */
+const MOVE_EXTRA_PATCH: Partial<Record<(typeof MOVED_HISTORY_TABLES)[number], Record<string, string>>> = {
+  movement_signals: { subject_type: "contact" },
+}
 
 /**
  * DUAL-KEYED TABLES DELIBERATELY NOT CARRIED, each with the reason on the record.
@@ -364,7 +376,7 @@ export async function carryLeadHistoryToContact(
     MOVED_HISTORY_TABLES.map(async (table) => {
       let q = supabase
         .from(table)
-        .update({ contact_id: contactId, lead_id: null }, { count: "exact" })
+        .update({ contact_id: contactId, lead_id: null, ...(MOVE_EXTRA_PATCH[table] ?? {}) }, { count: "exact" })
         .eq("lead_id", leadId)
         .is("contact_id", null)
       if (brokerageId) q = q.eq("brokerage_id", brokerageId)

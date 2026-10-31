@@ -658,8 +658,12 @@ function completionExecutors(c: CompletionRow, deps: SupervisionDeps, trigger: R
       const v = await verifyCompletionEvidence(svc, c, new Date())
       if (v.found) return { ok: true, outcome: "the evidence already exists — nothing to re-run", verification: { verified: true, detail: v.evidence.source } }
       if (v.hardStop) return { ok: false, outcome: v.detail, hardStop: "external_duplicate" as const }
-      const redrive = deps.redrivers?.[c.kind] ?? (c.kind === "inbound_response" ? inboundRedriverWith(deps) : null)
-      if (!redrive) return { ok: false, outcome: `no redriver for ${c.kind}` }
+      // The redriver is HANDED IN by the composition root (cron net, workflow step, provider-truth webhook — each passes
+      // lib/communications/inbound-record.ts inboundCompletionRedrivers()). This module no longer defaults to importing the
+      // inbound chain (wave 147, integrator — proxy-graph budget: that default pulled 21 modules into every page reaching the
+      // manager-signals hub). A missing redriver is said out loud, never silently skipped.
+      const redrive = deps.redrivers?.[c.kind] ?? null
+      if (!redrive) return { ok: false, outcome: `no redriver handed in for ${c.kind} — the composition root must pass deps.redrivers.${c.kind}` }
       const r = await redrive(svc, c, trigger)
       const after = await getCompletion(svc, c.brokerage_id, c.id)
       const moved = !!after.row && (after.row.stage !== c.stage || !COMPLETION_OPEN_STATUSES.has(after.row.status))
@@ -675,9 +679,11 @@ function completionExecutors(c: CompletionRow, deps: SupervisionDeps, trigger: R
   }
 }
 
-/** The inbound chain's redriver, carrying this supervisor's clock and timer into the evidence it records. */
-const inboundRedriverWith = (deps: CompletionDeps): Redriver => async (svc, c, trigger) =>
-  (await import("@/lib/communications/inbound-record")).redriveInboundResponse(svc, c, { completions: { schedule: deps.schedule, now: deps.now } }, trigger === "event" ? null : trigger)
+// TOMBSTONE (wave 147, integrator): `inboundRedriverWith` — the default that imported lib/communications/inbound-record.ts
+// from here — MOVED to lib/communications/inbound-record.ts `inboundCompletionRedrivers(deps)`, which every composition root
+// (app/api/cron/manager-signals/route.ts, workflows/completion-watch-workflow.ts, app/api/webhooks/twilio-sms-status/route.ts)
+// hands in through SupervisionDeps.redrivers. Same behaviour, one direction of dependency: the chain knows the supervisor, the
+// supervisor never knows the chain.
 
 /** withActionLedger around a supervisor step (LAW 5): who (the owner manager), why, what evidence, which policy, cost. */
 async function ledgered<T>(svc: Svc, deps: SupervisionDeps, c: CompletionRow, action: string, cycle: string, detail: Record<string, unknown>, run: () => Promise<T>, settle: (r: T) => { ok: boolean; note: string; costUsd?: number }): Promise<T | null> {

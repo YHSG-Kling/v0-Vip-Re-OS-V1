@@ -1469,8 +1469,11 @@ async function main() {
       && src("app/api/webhooks/authentisign/route.ts").includes("ensureEsignIngressContinuity")
       && src("app/api/cron/deal-health-scan/route.ts").includes("runIngressReconciliation")
       && src("app/api/cron/lead-scraping/route.ts").includes("reenrich_promote")
-      && src("lib/kernel/ingress-continuity.ts").includes("finalizeVoiceCockpitPacket")
-      && src("lib/kernel/ingress-continuity.ts").includes("notifyPlatformStaff")
+      // The REPLAY side moved to lib/kernel/ingress-reconciliation.ts (wave 147, integrator — proxy-graph budget); the rule is
+      // unchanged: the module that replays a dead letter reuses the live webhook's finalizers verbatim and escalates
+      // abandonment to platform staff. (Asserted on the replay module, wherever it lives, not on the old file name.)
+      && src("lib/kernel/ingress-reconciliation.ts").includes("finalizeVoiceCockpitPacket")
+      && src("lib/kernel/ingress-reconciliation.ts").includes("notifyPlatformStaff")
       && src("scripts/l58-s01-ingress-dead-letters.sql").includes("ingress_dead_letters")
       && src("lib/kernel/manager-registry.ts").includes("ingress_continuity:")
       && src("lib/kernel/manager-registry.ts").includes('ingress_dead_letters: "cron_manager"'))
@@ -1520,7 +1523,7 @@ async function main() {
       && src("app/api/webhooks/meta-leadgen/route.ts").includes("ingestMetaLeadByRef")
       && src("app/api/webhooks/meta-leadgen/route.ts").includes("parkIngressEvent")
       && src("app/api/webhooks/meta-leadgen/route.ts").includes('res.stage !== "rejected"')
-      && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "meta_lead_received"')
+      && src("lib/kernel/ingress-reconciliation.ts").includes('event_kind === "meta_lead_received"')
       && src("lib/kernel/ingress-continuity.ts").includes("attemptReplay")
       && src("lib/ads/ad-lead-intake.ts").includes('"no_credential"')
       && src("lib/ads/ad-lead-intake.ts").includes('"graph_error"'))
@@ -1536,7 +1539,7 @@ async function main() {
       && src("app/api/showings/showingtime-webhook/route.ts").includes("ingestShowingTimeRequest")
       && src("app/api/showings/showingtime-webhook/route.ts").includes("parkIngressEvent")
       && src("app/api/showings/showingtime-webhook/route.ts").includes('payload.event_type === "appointment.requested"')
-      && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "showingtime_appointment_requested"')
+      && src("lib/kernel/ingress-reconciliation.ts").includes('event_kind === "showingtime_appointment_requested"')
       && src("lib/showings/showingtime-ingest.ts").includes("deduped: true")
       && src("lib/kernel/manager-registry.ts").includes("showingtime"))
     // ── SCHEMA ADAPTATION LAYER (owner doc: self-heal when a provider sends a different data structure) ──
@@ -1571,7 +1574,7 @@ async function main() {
       && shl.FLOW_CONTRACTS["schema_drift"].tier === "probation" && shl.FLOW_CONTRACTS["schema_drift"].action === "adapt_payload"
       && src("app/api/showings/showingtime-webhook/route.ts").includes("adaptPayload")
       && src("lib/kernel/ingress-continuity.ts").includes("quarantineDriftedPayload") // ONE shared quarantine writer (routes consolidated onto it)
-      && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "schema_drift_quarantine"')
+      && src("lib/kernel/ingress-reconciliation.ts").includes('event_kind === "schema_drift_quarantine"')
       && src("lib/kernel/manager-registry.ts").includes("schema_adaptation:"))
     // ── ADAPTATION ACROSS ALL E-SIGN + DOTLOOP INGRESS (owner: "add all from this OS to be considered complete") ──
     const dsSecondForm = sa.adaptPayload(sa.ESIGN_COMPLETION_CONTRACTS.docusign, { event: "envelope-completed", envelopeId: "ENV-DS-2" })          // documented 2nd form
@@ -1600,8 +1603,8 @@ async function main() {
       && src("app/api/webhooks/docusign/route.ts").includes("quarantineDriftedPayload")
       && src("app/api/webhooks/dotloop/route.ts").includes("quarantineDriftedPayload")
       && src("app/api/showings/showingtime-webhook/route.ts").includes("quarantineDriftedPayload")
-      && src("lib/kernel/ingress-continuity.ts").includes('p.source === "esign_completion"')
-      && src("lib/kernel/ingress-continuity.ts").includes('p.source === "dotloop_event"'))
+      && src("lib/kernel/ingress-reconciliation.ts").includes('p.source === "esign_completion"')
+      && src("lib/kernel/ingress-reconciliation.ts").includes('p.source === "dotloop_event"'))
     // ── PULL-DRIFT SENTINELS + EGRESS GATE (owner: scrapers/enrichment/rentcast pulls + good data pushing out) ──
     const driftHit   = sa.detectPullDrift({ received: 12, kept: 0 })   // provider drifted — every row silently dropped
     const driftClean = sa.detectPullDrift({ received: 12, kept: 9 })   // normal quality attrition, not drift

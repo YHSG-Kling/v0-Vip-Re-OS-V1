@@ -59,6 +59,7 @@
     "lib/ai-isa/callback-task.ts": 2,
     "lib/ai-isa/contact-reel-situation.ts": 1,
     "lib/ai-isa/customer-context-tools.ts": 6,
+    "lib/ai-isa/followup-arbiter.ts": 1,
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
@@ -94,7 +95,7 @@
     "lib/brokerage-intelligence/miners.ts": 1,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
     "lib/buyer-search/external-match.ts": 2,
-    "lib/buyer-search/fair-housing.ts": 3,
+    "lib/buyer-search/fair-housing.ts": 2,
     "lib/buyer-search/investor-facing.ts": 1,
     "lib/buyer-search/investor-offmarket-match.ts": 2,
     "lib/campaign-sequences/copy-learning-conductor.ts": 1,
@@ -110,6 +111,7 @@
     "lib/commission/payment-tracker.ts": 1,
     "lib/commission/reconcile-tracking.ts": 2,
     "lib/communication/tcpa-gate.ts": 2,
+    "lib/communications/inbound-record.ts": 1,
     "lib/competitive-intel/brand-listening.ts": 1,
     "lib/compliance/federal-holidays.ts": 1,
     "lib/compliance/phone-scrub-runner.ts": 1,
@@ -271,13 +273,13 @@
     "lib/kernel/idle-hands.ts": 2,
     "lib/kernel/immediate-operations.ts": 1,
     "lib/kernel/improvement-proposals.ts": 3,
-    "lib/kernel/ingress-continuity.ts": 2,
+    "lib/kernel/ingress-continuity.ts": 1,
     "lib/kernel/intelligence-report.ts": 4,
     "lib/kernel/intent-campaign.ts": 4,
     "lib/kernel/launch-war-room.ts": 2,
     "lib/kernel/lead-intake-cockpit.ts": 2,
     "lib/kernel/lead-magnets.ts": 1,
-    "lib/kernel/lender-linkage.ts": 2,
+    "lib/kernel/lender-linkage.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 3,
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/listings-batchdata-feed.ts": 1,
@@ -285,7 +287,7 @@
     "lib/kernel/manager-delegation.ts": 3,
     "lib/kernel/manager-dissent.ts": 2,
     "lib/kernel/manager-registry.ts": 1,
-    "lib/kernel/manager-signals.ts": 1,
+    "lib/kernel/manager-signals.ts": 2,
     "lib/kernel/marketing/public-copy-rewrite.ts": 1,
     "lib/kernel/media-intelligence.ts": 11,
     "lib/kernel/mission-context.ts": 2,
@@ -578,7 +580,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 11994,
+  "census": 12123,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -741,6 +743,7 @@
     "app/actions/buyer-offers.ts": 10,
     "app/actions/buyer-portal-matches.ts": 1,
     "app/actions/buyer-property-search.ts": 3,
+    "app/actions/buyer-search/conversational-search.ts": 7,
     "app/actions/calculators.ts": 15,
     "app/actions/calendar/calendar-sync-actions.ts": 6,
     "app/actions/call-review-actions.ts": 2,
@@ -930,6 +933,7 @@
     "app/actions/marketing-studio.ts": 18,
     "app/actions/missions.ts": 7,
     "app/actions/mls-check.ts": 1,
+    "app/actions/movement-signals.ts": 2,
     "app/actions/multi-persona.ts": 27,
     "app/actions/negotiation-copilot.ts": 2,
     "app/actions/negotiation-strategy.ts": 6,
@@ -1128,7 +1132,7 @@
     "app/actions/superadmin/tenant-setup.ts": 1,
     "app/actions/superadmin/tenant-transition-log.ts": 1,
     "app/actions/superadmin/tenant-users.ts": 6,
-    "app/actions/support.ts": 13,
+    "app/actions/support.ts": 14,
     "app/actions/system-health.ts": 10,
     "app/actions/tasks.ts": 6,
     "app/actions/tax-planning.ts": 3,
@@ -1140,6 +1144,7 @@
     "app/actions/tenant-sso.ts": 5,
     "app/actions/tenant-webhooks.ts": 13,
     "app/actions/time-to-value.ts": 1,
+    "app/actions/title/closing-appointment.ts": 3,
     "app/actions/title-portal.ts": 9,
     "app/actions/tour-planner.ts": 13,
     "app/actions/transaction-compliance.ts": 6,
@@ -1168,6 +1173,7 @@
     "app/actions/vendor-messages.ts": 3,
     "app/actions/vendor-payments.ts": 14,
     "app/actions/vendor-portal.ts": 10,
+    "app/actions/vendor-portfolio.ts": 4,
     "app/actions/vendor-premium-placement.ts": 2,
     "app/actions/vendor-requests.ts": 1,
     "app/actions/vendor-respa.ts": 1,
@@ -1675,6 +1681,7 @@
     "app/components/coordinator/milestone-queue.tsx": 1,
     "app/components/coordinator/transaction-list.tsx": 1,
     "app/components/dashboard/listings/cma-history-sheet.tsx": 1,
+    "app/components/dashboard/listings/lifecycle/archive-listing-control.tsx": 1,
     "app/components/dashboard/listings/lifecycle/coming-soon-command-card.tsx": 1,
     "app/components/dashboard/listings/lifecycle/completed-documents-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/decision-history-panel.tsx": 1,
@@ -1905,6 +1912,7 @@
     "app/components/vendor/job-detail.tsx": 1,
     "app/components/vendor/jobs-list.tsx": 1,
     "app/components/vendors/vendor-category-select.tsx": 1,
+    "app/components/vendors/vendor-portfolio-strip.tsx": 1,
     "app/components/video/VideoGenerationButtons.tsx": 1,
     "app/components/voice/CallRecordingPlayer.tsx": 1,
     "app/components/voice/CoachingInsightCard.tsx": 1,
@@ -2290,6 +2298,7 @@
     "app/dashboard/intelligence/components/os/pattern-radar.tsx": 1,
     "app/dashboard/intelligence/components/os/team-heatmap-panel.tsx": 1,
     "app/dashboard/intelligence/intelligence-os-client.tsx": 1,
+    "app/dashboard/intelligence/movement-signals/movement-signals-client.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
     "app/dashboard/isa/ai-isa-console-client.tsx": 1,
     "app/dashboard/isa/campaigns/components/AuthorityBanner.tsx": 1,
@@ -2697,6 +2706,7 @@
     "app/newsletters/newsletters-client.tsx": 1,
     "app/newsletters/personalize-preview-panel.tsx": 1,
     "app/newsletters/subscribers-panel.tsx": 1,
+    "app/open-house/[eventId]/join/route.ts": 1,
     "app/open-house/[eventId]/rsvp/[invitationId]/rsvp-buttons.tsx": 1,
     "app/open-house/[eventId]/signin/sign-in-kiosk.tsx": 1,
     "app/open-house/feedback/[attendeeId]/feedback-form.tsx": 1,
@@ -2804,6 +2814,7 @@
     "app/site/[slug]/lm/[formSlug]/page.tsx": 1,
     "app/site/[slug]/page.tsx": 1,
     "app/team/[slug]/page.tsx": 1,
+    "app/title/closing/new/closing-appointment-form.tsx": 1,
     "app/title/components/os/title-command-strip.tsx": 1,
     "app/title/components/os/title-operations-panel.tsx": 1,
     "app/title/orders/title-order-row.tsx": 1,
@@ -2824,6 +2835,8 @@
     "app/vendor/jobs/jobs-client.tsx": 1,
     "app/vendor/jobs/vendor-request-dialog.tsx": 1,
     "app/vendor/plans/plans-client.tsx": 1,
+    "app/vendor/portfolio/remove-portfolio-item-button.tsx": 1,
+    "app/vendor/portfolio/upload/portfolio-upload-form.tsx": 1,
     "app/vendor/reviews/reviews-client.tsx": 1,
     "app/vendor-invite/[token]/accept-form.tsx": 1,
     "app/widget/[brokerageSlug]/widget-chat-client.tsx": 1,
@@ -2987,7 +3000,7 @@
     "lib/ai-isa/direct-mail-trigger.ts": 2,
     "lib/ai-isa/email-generator.ts": 2,
     "lib/ai-isa/first-touch-copy.ts": 1,
-    "lib/ai-isa/followup-arbiter.ts": 13,
+    "lib/ai-isa/followup-arbiter.ts": 14,
     "lib/ai-isa/followup-policy.ts": 4,
     "lib/ai-isa/generate-handoff-brief.ts": 1,
     "lib/ai-isa/ghost-escalation.ts": 1,
@@ -3146,9 +3159,11 @@
     "lib/buyer-offers/address-analysis.ts": 1,
     "lib/buyer-offers/affordability.ts": 4,
     "lib/buyer-offers/home-comparison.ts": 1,
-    "lib/buyer-search/buyer-criteria.ts": 1,
-    "lib/buyer-search/conversation-criteria.ts": 14,
-    "lib/buyer-search/explanation-generator.ts": 1,
+    "lib/buyer-search/buyer-criteria.ts": 6,
+    "lib/buyer-search/conversation-criteria.ts": 18,
+    "lib/buyer-search/conversational-search.ts": 13,
+    "lib/buyer-search/criteria-turn.ts": 2,
+    "lib/buyer-search/explanation-generator.ts": 5,
     "lib/buyer-search/external-match.ts": 4,
     "lib/buyer-search/fair-housing.ts": 4,
     "lib/buyer-search/intent-parser.ts": 3,
@@ -3160,8 +3175,9 @@
     "lib/buyer-search/parse-buyer-criteria.ts": 1,
     "lib/buyer-search/persona-inference.ts": 2,
     "lib/buyer-search/portal-cards.ts": 2,
-    "lib/buyer-search/search-engine.ts": 2,
+    "lib/buyer-search/search-engine.ts": 3,
     "lib/buyer-search/search-logger.ts": 4,
+    "lib/buyer-search/voice-turn.ts": 2,
     "lib/buyer-search/written-criteria-alert.ts": 1,
     "lib/campaign-readiness/content-type-vocabulary.ts": 2,
     "lib/campaign-readiness/readiness-evaluator.ts": 5,
@@ -3243,8 +3259,9 @@
     "lib/communication-spine/message-normalizer.ts": 2,
     "lib/communication-spine/message-persister.ts": 1,
     "lib/communication-spine/role-validator.ts": 1,
-    "lib/communications/inbound-record.ts": 2,
-    "lib/communications/inbound-responder.ts": 1,
+    "lib/communications/inbound-record.ts": 4,
+    "lib/communications/inbound-reply-executors.ts": 2,
+    "lib/communications/inbound-responder.ts": 2,
     "lib/communications/send-invitation.ts": 3,
     "lib/communications/vendor-communications.tsx": 2,
     "lib/communications/vendor-follow-up-cadence.ts": 1,
@@ -3301,7 +3318,7 @@
     "lib/connections/zoom.ts": 22,
     "lib/constants/index.ts": 3,
     "lib/constants/us-states.ts": 1,
-    "lib/contact-pipeline/contact-capture.ts": 3,
+    "lib/contact-pipeline/contact-capture.ts": 5,
     "lib/contact-promotion/acquisition-cost.ts": 1,
     "lib/contact-promotion/contact-creator.ts": 3,
     "lib/contact-promotion/conversion-finality.ts": 5,
@@ -3451,9 +3468,10 @@
     "lib/enrichment/intent-signal-sources.ts": 4,
     "lib/enrichment/lead-enrichment-core.ts": 3,
     "lib/enrichment/lead-freshness.ts": 2,
+    "lib/enrichment/life-event-vocabulary.ts": 2,
     "lib/enrichment/online-audience-store.ts": 3,
     "lib/enrichment/online-presence-store.ts": 2,
-    "lib/enrichment/protected-research-store.ts": 1,
+    "lib/enrichment/protected-research-store.ts": 2,
     "lib/enrichment/provider-dedup.ts": 5,
     "lib/enrichment/reverse-skip-trace.ts": 2,
     "lib/enrichment/web-mention-search.ts": 3,
@@ -3708,6 +3726,9 @@
     "lib/intelligence/user-type-briefs/types.ts": 1,
     "lib/intelligence/winback-personalization.ts": 1,
     "lib/intelligence/winback-video.ts": 1,
+    "lib/intent/movement-signals.ts": 14,
+    "lib/intent/movement-source-registry.ts": 2,
+    "lib/intent/movement-source-watcher.ts": 1,
     "lib/journey-conformance/conformance-checker.ts": 1,
     "lib/journey-conformance/conformance-runner.ts": 1,
     "lib/kernel/0.1-feature-access.ts": 5,
@@ -3774,10 +3795,11 @@
     "lib/kernel/communication-compliance.ts": 1,
     "lib/kernel/communications/assemble-email.ts": 1,
     "lib/kernel/communications.ts": 3,
+    "lib/kernel/completion-tracking.ts": 8,
     "lib/kernel/compliance/active-representation.ts": 1,
     "lib/kernel/compliance/check-suppression.ts": 2,
     "lib/kernel/compliance/outbound-predicates.ts": 4,
-    "lib/kernel/compliance/require-contact-consent.ts": 2,
+    "lib/kernel/compliance/require-contact-consent.ts": 8,
     "lib/kernel/compliance-ledger.ts": 5,
     "lib/kernel/compliance-redraft.ts": 1,
     "lib/kernel/compliance.ts": 1,
@@ -3839,6 +3861,7 @@
     "lib/kernel/immediate-operations.ts": 7,
     "lib/kernel/improvement-proposals.ts": 14,
     "lib/kernel/ingress-continuity.ts": 7,
+    "lib/kernel/ingress-reconciliation.ts": 1,
     "lib/kernel/intelligence-report.ts": 8,
     "lib/kernel/intent-campaign.ts": 6,
     "lib/kernel/jobs.ts": 1,
@@ -3853,7 +3876,7 @@
     "lib/kernel/lifecycle.ts": 1,
     "lib/kernel/lifetime-conversion.ts": 6,
     "lib/kernel/listing-archive.ts": 2,
-    "lib/kernel/listing-inventory-radar.ts": 5,
+    "lib/kernel/listing-inventory-radar.ts": 4,
     "lib/kernel/listing-marketing-week.ts": 1,
     "lib/kernel/listing-price-advisor.ts": 1,
     "lib/kernel/listing-propensity.ts": 3,
@@ -3866,7 +3889,7 @@
     "lib/kernel/manager-delegation.ts": 17,
     "lib/kernel/manager-dissent.ts": 6,
     "lib/kernel/manager-registry.ts": 7,
-    "lib/kernel/manager-signals.ts": 6,
+    "lib/kernel/manager-signals.ts": 7,
     "lib/kernel/managing-broker.ts": 3,
     "lib/kernel/marketing/public-copy-rewrite.ts": 4,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 2,
@@ -3914,6 +3937,7 @@
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
     "lib/kernel/procurement.ts": 9,
+    "lib/kernel/prospecting-brief-fallback.ts": 1,
     "lib/kernel/provider-adapters.ts": 9,
     "lib/kernel/providers.ts": 2,
     "lib/kernel/referral-appreciation.ts": 8,
@@ -4043,6 +4067,7 @@
     "lib/lead-magnets/book-entity.ts": 7,
     "lib/lead-magnets/book-publishing-produce.ts": 5,
     "lib/lead-magnets/book-publishing.ts": 8,
+    "lib/lead-magnets/deliverable-asset.ts": 7,
     "lib/lead-magnets/embed-snippet.ts": 2,
     "lib/lead-magnets/form-contact-types.ts": 1,
     "lib/lead-magnets/kdp-print-math.ts": 3,
@@ -4149,7 +4174,7 @@
     "lib/listing-presentation/section-render.ts": 1,
     "lib/listings/attribution.ts": 2,
     "lib/listings/back-on-market.ts": 1,
-    "lib/listings/compute-dom.ts": 7,
+    "lib/listings/compute-dom.ts": 8,
     "lib/listings/expiry-decision.ts": 2,
     "lib/listings/listing-activation-gate.ts": 2,
     "lib/listings/listing-agreement-terms.ts": 3,
@@ -4160,7 +4185,7 @@
     "lib/listings/listing-metrics-rollup.ts": 1,
     "lib/listings/listing-metrics-shape.ts": 2,
     "lib/listings/listing-slug.ts": 3,
-    "lib/listings/listing-status-sync.ts": 3,
+    "lib/listings/listing-status-sync.ts": 7,
     "lib/listings/market-pulse-runner.ts": 1,
     "lib/listings/market-pulse.ts": 3,
     "lib/listings/marketing-channels.ts": 1,
@@ -4190,7 +4215,12 @@
     "lib/managers/regional-convention-review.ts": 1,
     "lib/managers/team-argument-map.ts": 1,
     "lib/managers/teamwork-metrics.ts": 3,
-    "lib/market-intelligence/report-builder.ts": 1,
+    "lib/market-reports/contract.ts": 8,
+    "lib/market-reports/producer.ts": 1,
+    "lib/market-reports/prompts.ts": 2,
+    "lib/market-reports/research.ts": 3,
+    "lib/market-reports/topics.ts": 1,
+    "lib/market-reports/validator.ts": 1,
     "lib/marketing/annual-home-value-report.ts": 2,
     "lib/marketing/attribution.ts": 2,
     "lib/marketing/audience-resolver.ts": 1,
@@ -4301,7 +4331,7 @@
     "lib/onboarding/state-machine.ts": 2,
     "lib/onboarding/step-categories.ts": 4,
     "lib/onboarding/subscriber-stall.ts": 4,
-    "lib/open-house/instant-greeting.ts": 1,
+    "lib/open-house/instant-greeting.ts": 2,
     "lib/orchestrator/internal.ts": 2,
     "lib/osint-client.ts": 3,
     "lib/outcomes/provider-event-fanout.ts": 3,
@@ -4597,11 +4627,11 @@
     "lib/supabase/client.ts": 1,
     "lib/supabase/server.ts": 1,
     "lib/supabase/service.ts": 1,
-    "lib/support/support-sla.ts": 4,
+    "lib/support/support-sla.ts": 6,
     "lib/support/support-thread.ts": 3,
     "lib/support/ticket-constants.ts": 3,
     "lib/support/ticket-scope.ts": 3,
-    "lib/support/ticket-triage.ts": 9,
+    "lib/support/ticket-triage.ts": 11,
     "lib/tasks/task-presentation.ts": 3,
     "lib/teams/membership.ts": 4,
     "lib/teams/team-scope.ts": 1,
@@ -4806,7 +4836,7 @@
     "lib/voice/recording-playback-path.ts": 1,
     "lib/voice/render-voice-drop.ts": 1,
     "lib/voice/showing-request.ts": 1,
-    "lib/voice/sms-inbound.ts": 5,
+    "lib/voice/sms-inbound.ts": 4,
     "lib/voice/spoken-values.ts": 3,
     "lib/voice/studio-session.ts": 9,
     "lib/voice/sync-voice-id.ts": 1,
@@ -4916,6 +4946,7 @@
     "remotion/components/SegmentBackdrop.tsx": 2,
     "services/goHighLevelService.ts": 3,
     "services/supabase.ts": 3,
+    "workflows/completion-watch-workflow.ts": 1,
     "workflows/market-insight-workflow.ts": 1
   },
   "fileExports": {
@@ -5955,6 +5986,15 @@
       "searchPropertiesWithNaturalLanguage",
       "explainPropertyMatchForBuyer",
       "previewSearchIntent"
+    ],
+    "app/actions/buyer-search/conversational-search.ts": [
+      "buyerConversationTurnAction",
+      "buyerHomeFeedbackAction",
+      "decideCriteriaChangeAction",
+      "editBuyerCriteriaAction",
+      "loadBuyerCriteriaStateAction",
+      "buyerKeepWatchingAction",
+      "explainHomeForBuyerAction"
     ],
     "app/actions/calculators.ts": [
       "calculateSellerNet",
@@ -7221,6 +7261,10 @@
     "app/actions/mls-check.ts": [
       "runMlsRuleCheck"
     ],
+    "app/actions/movement-signals.ts": [
+      "listMovementSignalsAction",
+      "markMovementSignalOutcomeAction"
+    ],
     "app/actions/multi-persona.ts": [
       "getBrokerageDashboard",
       "assignTransactionCoordinator",
@@ -8463,6 +8507,7 @@
       "listMyTickets",
       "listBrokerageTickets",
       "updateTicketStatus",
+      "logSupportRequestOnBehalf",
       "getBrokerageTicketThread",
       "replyToBrokerageTicket",
       "searchHelp",
@@ -8547,6 +8592,11 @@
     ],
     "app/actions/time-to-value.ts": [
       "getMyTimeToValue"
+    ],
+    "app/actions/title/closing-appointment.ts": [
+      "listClosingDealsForTitle",
+      "listMyClosingAppointmentProposals",
+      "proposeClosingAppointment"
     ],
     "app/actions/title-portal.ts": [
       "getTitleDashboard",
@@ -8817,6 +8867,12 @@
       "updateVendorJobCost",
       "uploadVendorJobDocument",
       "sendVendorMessageToAgent"
+    ],
+    "app/actions/vendor-portfolio.ts": [
+      "listMyVendorPortfolio",
+      "listVendorPortfolioForStaff",
+      "addVendorPortfolioItem",
+      "removeVendorPortfolioItem"
     ],
     "app/actions/vendor-premium-placement.ts": [
       "offerPremiumPlacementAction",
@@ -10486,6 +10542,9 @@
     "app/components/dashboard/listings/cma-history-sheet.tsx": [
       "CmaHistorySheet"
     ],
+    "app/components/dashboard/listings/lifecycle/archive-listing-control.tsx": [
+      "ArchiveListingControl"
+    ],
     "app/components/dashboard/listings/lifecycle/coming-soon-command-card.tsx": [
       "ComingSoonCommandCard"
     ],
@@ -11185,6 +11244,9 @@
     ],
     "app/components/vendors/vendor-category-select.tsx": [
       "VendorCategorySelect"
+    ],
+    "app/components/vendors/vendor-portfolio-strip.tsx": [
+      "VendorPortfolioStrip"
     ],
     "app/components/video/VideoGenerationButtons.tsx": [
       "VideoGenerationButtons"
@@ -12347,6 +12409,9 @@
     ],
     "app/dashboard/intelligence/intelligence-os-client.tsx": [
       "IntelligenceOSClient"
+    ],
+    "app/dashboard/intelligence/movement-signals/movement-signals-client.tsx": [
+      "MovementSignalsClient"
     ],
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": [
       "TrustReceiptsCard"
@@ -13637,6 +13702,9 @@
     "app/newsletters/subscribers-panel.tsx": [
       "SubscribersPanel"
     ],
+    "app/open-house/[eventId]/join/route.ts": [
+      "GET"
+    ],
     "app/open-house/[eventId]/rsvp/[invitationId]/rsvp-buttons.tsx": [
       "RsvpButtons"
     ],
@@ -13958,6 +14026,9 @@
     "app/team/[slug]/page.tsx": [
       "generateMetadata"
     ],
+    "app/title/closing/new/closing-appointment-form.tsx": [
+      "ClosingAppointmentForm"
+    ],
     "app/title/components/os/title-command-strip.tsx": [
       "TitleCommandStrip"
     ],
@@ -14017,6 +14088,12 @@
     ],
     "app/vendor/plans/plans-client.tsx": [
       "VendorPackageChargesClient"
+    ],
+    "app/vendor/portfolio/remove-portfolio-item-button.tsx": [
+      "RemovePortfolioItemButton"
+    ],
+    "app/vendor/portfolio/upload/portfolio-upload-form.tsx": [
+      "PortfolioUploadForm"
     ],
     "app/vendor/reviews/reviews-client.tsx": [
       "VendorReviewsClient"
@@ -14781,6 +14858,7 @@
     "lib/ai-isa/followup-arbiter.ts": [
       "touchChannelForDecision",
       "intentFactSignalType",
+      "decisiveLifeChangeSignal",
       "arbitrateFollowUp",
       "arbitrationLedgerDetail",
       "arbitrateCadence",
@@ -15881,7 +15959,12 @@
       "compareHomes"
     ],
     "lib/buyer-search/buyer-criteria.ts": [
-      "loadBuyerCriteria"
+      "provenanceOf",
+      "loadBuyerCriteria",
+      "saveBuyerCriteria",
+      "recordCriteriaChanges",
+      "loadCriteriaChanges",
+      "settleCriteriaChange"
     ],
     "lib/buyer-search/conversation-criteria.ts": [
       "buyerUtterances",
@@ -15893,14 +15976,41 @@
       "criteriaGaps",
       "mergeModelCriteria",
       "unsearchableAsks",
+      "extractLifestyleAsks",
+      "detectStatedDealBreakers",
+      "detectPriorityShift",
+      "clarifyingQuestions",
       "spokenAlertCallMarker",
       "writtenAlertMessageMarker",
       "hashConversationText",
       "describeCriteria",
       "criteriaToAlertRow"
     ],
+    "lib/buyer-search/conversational-search.ts": [
+      "intentWithStoredCriteria",
+      "fitCriteriaFor",
+      "emptyCriteria",
+      "applyConversationTurn",
+      "learnFromBehaviour",
+      "applyAcceptedChange",
+      "revertChange",
+      "shouldNotifyAgent",
+      "criteriaChips",
+      "nextBestExperiences",
+      "applyCorrection",
+      "applyLearnedChanges",
+      "narrateFitExplanation"
+    ],
+    "lib/buyer-search/criteria-turn.ts": [
+      "persistCriteriaChanges",
+      "recordStatedCriteriaTurn"
+    ],
     "lib/buyer-search/explanation-generator.ts": [
-      "generateMatchExplanation"
+      "generateMatchExplanation",
+      "explainCriteriaFit",
+      "numbersAreGrounded",
+      "restatesUnknown",
+      "composeNeighbourlyExplanation"
     ],
     "lib/buyer-search/external-match.ts": [
       "buildExternalReferenceRow",
@@ -15957,6 +16067,7 @@
       "savedRowToInterest"
     ],
     "lib/buyer-search/search-engine.ts": [
+      "buyerShoppableListingStatuses",
       "searchPropertiesCore",
       "explainPropertyMatchCore"
     ],
@@ -15965,6 +16076,10 @@
       "logBatchBuyerSearchMatches",
       "appendBuyerSearchPreferences",
       "getBuyerSearchHistory"
+    ],
+    "lib/buyer-search/voice-turn.ts": [
+      "spokenPrice",
+      "voiceTurnPlan"
     ],
     "lib/buyer-search/written-criteria-alert.ts": [
       "proposeWrittenCriteriaAlert"
@@ -16368,10 +16483,17 @@
     ],
     "lib/communications/inbound-record.ts": [
       "recordInboundCommunication",
-      "processInboundCommunication"
+      "processInboundCommunication",
+      "inboundCompletionRedrivers",
+      "redriveInboundResponse"
+    ],
+    "lib/communications/inbound-reply-executors.ts": [
+      "draftProactiveReply",
+      "sendInboundSmsReply"
     ],
     "lib/communications/inbound-responder.ts": [
-      "respondToInboundCommunication"
+      "respondToInboundCommunication",
+      "inboundDecisionCycle"
     ],
     "lib/communications/send-invitation.ts": [
       "sendOpenHouseInvitation",
@@ -16695,6 +16817,8 @@
     "lib/contact-pipeline/contact-capture.ts": [
       "resolveCapturedLanguage",
       "captureContact",
+      "captureConsentedContact",
+      "completeConsentedIntake",
       "queueContactEnrichmentAndScore"
     ],
     "lib/contact-promotion/acquisition-cost.ts": [
@@ -17407,6 +17531,10 @@
       "leadHasEnrichmentEvidence",
       "leadEnrichmentIsFresh"
     ],
+    "lib/enrichment/life-event-vocabulary.ts": [
+      "canonicalLifeEventType",
+      "lifeEventTypeOf"
+    ],
     "lib/enrichment/online-audience-store.ts": [
       "onlineAudienceSummary",
       "onlineAudienceMatchKeysFor",
@@ -17417,7 +17545,8 @@
       "persistRealEstateIndicators"
     ],
     "lib/enrichment/protected-research-store.ts": [
-      "persistProtectedResearch"
+      "persistProtectedResearch",
+      "readProtectedAttributes"
     ],
     "lib/enrichment/provider-dedup.ts": [
       "isFresh",
@@ -18691,6 +18820,29 @@
     "lib/intelligence/winback-video.ts": [
       "winbackVideoPlan"
     ],
+    "lib/intent/movement-signals.ts": [
+      "movementDigest",
+      "movementSignalFromIntentFact",
+      "movementSignalFromFirstPartyChange",
+      "movementSignalFromCalculatorRow",
+      "movementSignalFromLifeEvent",
+      "movementSignalFromSellerSignalRow",
+      "classifyPublicMovementText",
+      "movementSignalFromPublicPost",
+      "recordMovementSignal",
+      "recordMovementOutcome",
+      "reconcileMovementOutcomes",
+      "movementSignalsForArbiter",
+      "listMovementRecordsForLeadDesk",
+      "movementSourceFreshness"
+    ],
+    "lib/intent/movement-source-registry.ts": [
+      "movementSource",
+      "movementSourceKeyForIntentSource"
+    ],
+    "lib/intent/movement-source-watcher.ts": [
+      "runMovementTick"
+    ],
     "lib/journey-conformance/conformance-checker.ts": [
       "checkJourneyConformance"
     ],
@@ -19106,6 +19258,16 @@
       "loadUniversalInbox",
       "sendInboxReply"
     ],
+    "lib/kernel/completion-tracking.ts": [
+      "openCompletion",
+      "trackManagerDecision",
+      "completionForSource",
+      "recordCompletionEvidence",
+      "superviseCompletion",
+      "onProviderTruth",
+      "reconcileOpenCompletions",
+      "watchUnresolvedTickets"
+    ],
     "lib/kernel/compliance/active-representation.ts": [
       "hasActiveRepresentation"
     ],
@@ -19120,8 +19282,14 @@
       "getSuppressionReasons"
     ],
     "lib/kernel/compliance/require-contact-consent.ts": [
+      "canonicalConsentPurposes",
+      "consentTextHash",
+      "channelsNamedInConsentText",
+      "purposesNamedInConsentText",
       "buildConsentText",
-      "persistContactConsent"
+      "persistContactConsent",
+      "answerConsentQuestion",
+      "consentScopeFor"
     ],
     "lib/kernel/compliance-ledger.ts": [
       "buildComplianceEvent",
@@ -19549,11 +19717,14 @@
     ],
     "lib/kernel/ingress-continuity.ts": [
       "decideIngressAction",
+      "envelopeHasAnyArtifact",
       "parkIngressEvent",
       "payloadHash",
       "quarantineDriftedPayload",
       "reportPullDrift",
-      "ensureEsignIngressContinuity",
+      "ensureEsignIngressContinuity"
+    ],
+    "lib/kernel/ingress-reconciliation.ts": [
       "runIngressReconciliation"
     ],
     "lib/kernel/intelligence-report.ts": [
@@ -19655,7 +19826,6 @@
       "scoreSellerIntent",
       "rankSellerLeads",
       "candidateFromRawRow",
-      "composeProspectingBriefFallback",
       "runListingInventoryRadar"
     ],
     "lib/kernel/listing-marketing-week.ts": [
@@ -19742,6 +19912,7 @@
       "publishManagerSignal",
       "routeSavedHomeNudge",
       "nudgeSaversOfListing",
+      "answerConsentedIntake",
       "consumeManagerSignals",
       "loadRecentManagerTalk"
     ],
@@ -20074,6 +20245,9 @@
       "declineProcurementRequest",
       "submitProcurementQuote",
       "vendorProcurementView"
+    ],
+    "lib/kernel/prospecting-brief-fallback.ts": [
+      "composeProspectingBriefFallback"
     ],
     "lib/kernel/provider-adapters.ts": [
       "routedProviders",
@@ -21000,6 +21174,15 @@
       "buildEpub",
       "validateEbookCover"
     ],
+    "lib/lead-magnets/deliverable-asset.ts": [
+      "deliverableSpecFor",
+      "readyDeliverableFor",
+      "deliverableById",
+      "deliverableAsPreparedAsset",
+      "produceLeadMagnetDeliverable",
+      "ensureDeliverableForPublish",
+      "recordDeliverableApproval"
+    ],
     "lib/lead-magnets/embed-snippet.ts": [
       "leadMagnetEmbedEndpoint",
       "buildLeadMagnetEmbedSnippet"
@@ -21571,7 +21754,8 @@
       "todayInTimeZone",
       "calendarDaysBetween",
       "resolveMlsLiveDates",
-      "computeDaysOnMarketForListing"
+      "computeDaysOnMarketForListing",
+      "resolveComingSoonWindow"
     ],
     "lib/listings/expiry-decision.ts": [
       "composeExpiryDecision",
@@ -21616,6 +21800,10 @@
     "lib/listings/listing-status-sync.ts": [
       "statusForStage",
       "isGatedStage",
+      "isManuallySettableListingStatus",
+      "publiclyVisibleListingStatuses",
+      "listingLifecycleFindings",
+      "isListingPubliclyVisible",
       "mappedStages"
     ],
     "lib/listings/market-pulse-runner.ts": [
@@ -21787,8 +21975,33 @@
       "composeTeamworkLines",
       "loadTeamworkMetrics"
     ],
-    "lib/market-intelligence/report-builder.ts": [
-      "buildMarketReportAnalysis"
+    "lib/market-reports/contract.ts": [
+      "isIsoDay",
+      "isoDay",
+      "unavailableLabel",
+      "unavailable",
+      "formatDatumValue",
+      "sourceLine",
+      "territoryKey",
+      "renderDatumTokens"
+    ],
+    "lib/market-reports/producer.ts": [
+      "produceMarketReport"
+    ],
+    "lib/market-reports/prompts.ts": [
+      "buildMarketReportWriterPrompt",
+      "buildMarketReportTopicPrompt"
+    ],
+    "lib/market-reports/research.ts": [
+      "chooseTerritoryGrain",
+      "resolveReportTerritory",
+      "researchMarket"
+    ],
+    "lib/market-reports/topics.ts": [
+      "suggestMarketReportTopics"
+    ],
+    "lib/market-reports/validator.ts": [
+      "validateMarketReport"
     ],
     "lib/marketing/annual-home-value-report.ts": [
       "generateAnnualHomeValueReportsCronTick",
@@ -22365,6 +22578,7 @@
       "runSubscriberStallSweep"
     ],
     "lib/open-house/instant-greeting.ts": [
+      "linkOpenHouseCheckInIdentity",
       "sendInstantOpenHouseGreeting"
     ],
     "lib/orchestrator/internal.ts": [
@@ -23939,7 +24153,9 @@
       "evaluateTicketSla",
       "canRateTicket",
       "rollupCsat",
-      "runSupportSlaSweep"
+      "runSupportSlaSweep",
+      "supportTicketCompletion",
+      "runSupportLoopSweep"
     ],
     "lib/support/support-thread.ts": [
       "awaitingFirstResponse",
@@ -23965,7 +24181,9 @@
       "triageSupportTicket",
       "handleSupportTicketTriaged",
       "loadTicketTriage",
-      "ensureOperationTicket"
+      "ensureOperationTicket",
+      "notifyTicketAnsweringSide",
+      "openInboundSupportTicket"
     ],
     "lib/tasks/task-presentation.ts": [
       "isTaskOverdue",
@@ -25144,7 +25362,6 @@
       "resolveTenantByOwnNumber",
       "twilioTokenCandidates",
       "recordInboundMessage",
-      "draftProactiveReply",
       "captureTextingContact"
     ],
     "lib/voice/spoken-values.ts": [
@@ -25581,6 +25798,9 @@
       "getSupabase",
       "createBrowserClient",
       "isSupabaseConfigured"
+    ],
+    "workflows/completion-watch-workflow.ts": [
+      "completionWatchWorkflow"
     ],
     "workflows/market-insight-workflow.ts": [
       "marketInsightWorkflow"
