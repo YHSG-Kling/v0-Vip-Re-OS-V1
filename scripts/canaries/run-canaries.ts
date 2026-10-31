@@ -40,6 +40,16 @@
  * harness. Their steps are RULING steps (c.rule — owner lane named): never pending, red where HEAD does not yet behave as the
  * owner ruled, and the runner prints a VERDICT TABLE (green / red-awaiting-lane-X / red-defect) beside the RESULT line. The
  * default roster is untouched.
+ *
+ * WAVES 145 / 146 / 147 (lanes 145J / 146J / 147J; recorded here by lane 147I): each later owner-ruling roster runs from its OWN
+ * entry on THIS harness (./_harness canary() / landedModule, ./_registry rulingVerdict) — scripts/wave145-canaries.ts
+ * (test:wave145-canaries, WAVE145_CANARY_KEYS in ./wave145-harness), scripts/wave146-canaries.ts (test:wave146-canaries,
+ * WAVE146_CANARY_KEYS in ./wave146-harness) and scripts/wave147-canaries.ts (test:wave147-canaries, lane 147J). That is the fold:
+ * the guard chain runs them back to back (test:canaries → test:wave144-canaries → test:wave145-canaries → test:wave146-canaries →
+ * test:wave147-canaries), MAINTENANCE_DOMAINS owns each (wave145_canaries / wave146_canaries / wave147_canaries, all
+ * data_steward) and scripts/production-readiness-guard.ts certifies each as its wave's "canaries" gate (145J / 146J / 147J).
+ * This runner's roster selection (CANARY_WAVE=144 only) is deliberately unchanged: a static import of a later wave's harness
+ * would break test:canaries whenever that lane's harness is not yet on disk.
  */
 import "./_harness"
 import type { CanaryReport } from "./_harness"

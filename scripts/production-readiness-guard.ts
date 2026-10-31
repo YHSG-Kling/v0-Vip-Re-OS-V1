@@ -52,6 +52,9 @@
  *   G′ WAVE 142 GATES (lane 142I) — the thirteen wave-142 ruling areas mapped to
  *      the proof keys lanes 142A–G register BY CONTRACT, hookLanes naming the lane;
  *      canaries are lane 142J's (the integrator fills the column from its notes).
+ *   G⁗ WAVE 147 GATES (lane 147I) — one gate per wave-147 lane brief (147A–J): the chained survivors + the lane's
+ *      published proof keys, every key registered, chained and owned by a MAINTENANCE_DOMAINS manager (G25); a runner
+ *      not yet on disk holds its gate NOT CERTIFIED. (G″ / G‴ are waves 145 / 146; O is lane 147H's owner obligations.)
  *
  * Measurement (CLAUDE.md §2): code tokens are read from stripComments +
  * blankStrings source; every absence assertion has a positive control.
@@ -498,13 +501,24 @@ function doorOf(users: string[], ui: Set<string>, edges: (f: string) => string[]
   return null
 }
 /** Window tables with NO user door BY DESIGN — platform/cron-internal evidence or caches, each with its reason. */
-const DOORLESS_BY_DESIGN: Record<string, string> = {}
+const DOORLESS_BY_DESIGN: Record<string, string> = {
+  // wave 147 (lane 147I) — the migration author's own ruling (m894 header, lane 147B: "Service-role only — no tenant read (an
+  // item digest means nothing to a person; the evidence lives on movement_signals)"). Only the watcher's per-item digest is
+  // classified: movement_signals (the C9 record a person disposes) and movement_source_polls (whose freshness owner ruling 3
+  // says is PUBLISHED — m893 names the lead desk as its reader) are NOT doorless by design, so U1 keeps naming them until
+  // their doors exist.
+  movement_source_items: "the poll-and-diff watcher's last-seen digest per watched item (m894, wave 147B): written and read only by lib/intent/movement-source-watcher.ts on the enrichment tick; service-role only — the person-facing evidence is the movement_signals record it produces",
+}
 /** Wave 145 (lane 145I, the one editor of this census this wave): doorless-by-design rulings for tables ANOTHER wave-145
  *  lane's migration adds. While that migration is not in the tree the table is not in the window, so the entry is
  *  PENDING (printed, never stale); the moment the table enters the window the entry becomes an ordinary
  *  DOORLESS_BY_DESIGN row and U2's staleness rule applies to it unchanged (the rule, not the waypoint). */
 const DOORLESS_BY_DESIGN_PENDING_LANE: Record<string, { lane: string; reason: string }> = {
-  protected_research_attributes: { lane: "145F (m864)", reason: "research-only store (owner ruling 12, wave 145F): service-role writes, RLS SELECT for platform staff / same-tenant compliance_officer; no user door by design until the owner decides the research roles and surface" },
+  // protected_research_attributes (145F, m864) — REMOVED by lane 147I (wave 147): the exception went stale because the table
+  // now HAS its user door — the right-to-know export app/actions/privacy/data-subject-requests.ts:451 through the
+  // purpose-gated, ledgered reader lib/enrichment/protected-research-store.ts:246 readProtectedAttributes (lane 147A; owner
+  // ruling 2, 2026-10-31, is the research-access decision the entry waited for). U1 now reads that door; U2 failed on the
+  // stale row, which is the rule working.
 }
 /** Landed = the lane's migration put the table in the window AND its runtime code uses it (a migration without its code is
  *  M1's finding, not this ruling's). */
@@ -1428,6 +1442,91 @@ check("G21 when the matrix carries a wave-146 release-gate section, it has a row
   !gateDoc146 || WAVE146_GATES.every((g) => gateRows146.includes(g.gate.toLowerCase())), WAVE146_GATES.filter((g) => !gateRows146.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
 
 // ═════════════════════════════════════════════════════════════════════════════
+// WAVE 147 (lane 147I) — G⁗ · THE WAVE-147 GATES. The owner's 2026-10-31 rulings (1–18) and contracts C8–C14, one gate per
+// lane brief (147A–J). Each names the CHAINED survivors that already certify its area and the NEW proof keys its lane
+// published ("## package.json keys to add" in $S/lane147X-notes.md, collected by lane 147I — the one editor of package.json and
+// the registry this wave). Lane 147D published none (the DealMachine evaluation built no adapter, so no proof — its gate
+// stands on the provider-fabric survivors that would have to admit one). Lane 147J's runner is written in parallel: while
+// scripts/wave147-canaries.ts is not on disk its key reads "script file missing" and the canaries gate NOT CERTIFIED — never
+// green. Same certify145 rule as waves 145/146. No storage.objects policy is added this wave, so no wave-147 gate is EXTERNAL;
+// the storage-policy and seed-account obligations stay block O's, RELEASE-BLOCKING.
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[G⁗ · wave 147 gates — the owner's 2026-10-31 rulings → the lane contracts (147A–J) + chained survivors]")
+const WAVE147_LANE_IDS = ["147A", "147B", "147C", "147D", "147E", "147F", "147G", "147H", "147I", "147J"] as const
+/** NEW proof keys per wave-147 lane (null = the lane had not published its notes when lane 147I closed). */
+const WAVE147_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE147_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
+  "147A": ["test:consented-intake"], "147B": ["test:movement-signals"], "147C": ["test:conversational-buyer"], "147D": [],
+  "147E": ["test:market-report-producer", "test:lead-magnet-asset-invariant"],
+  "147F": ["test:action-evidence-census", "test:listing-lifecycle", "test:event-checkin-writers"],
+  "147G": ["test:inbound-sms-arbiter", "test:completion-tracking"], "147H": ["test:capability-closure"], "147I": [], "147J": ["test:wave147-canaries"],
+})
+const contract147 = (lane: (typeof WAVE147_LANE_IDS)[number]) => WAVE147_CONTRACT_PROOFS[lane] ?? []
+interface Wave147Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE147_LANE_IDS)[number]> }
+const WAVE147_GATES: Wave147Gate[] = [
+  { gate: "consented intake", rulings: "1, 2 (C8)", lanes: ["147A"], hookLanes: ["147A"], canaries: [],
+    proofs: ["test:customer-360", "test:person-identity", "test:immediate-enrichment", "test:lead-magnet-embed", ...contract147("147A")] },
+  { gate: "movement signals", rulings: "3, 4 (C9)", lanes: ["147B"], hookLanes: ["147B"], canaries: [],
+    proofs: ["test:signal-integrity", "test:lifetime-signals", "test:local-intel", "test:enrichment-one-rail", ...contract147("147B")] },
+  { gate: "conversational buyer", rulings: "16 (C10)", lanes: ["147C"], hookLanes: ["147C"], canaries: [],
+    proofs: ["test:buyer-nl-search", "test:voice-buyer-search", "test:buyer-matching-rails", "test:portal-nl-search-gate", ...contract147("147C")] },
+  { gate: "acquisition evaluation", rulings: "17", lanes: ["147D"], hookLanes: ["147D"], canaries: [],
+    proofs: ["test:provider-readiness", "test:provider-adapter", "test:provider-cost-routing", "test:egress-coverage", ...contract147("147D")] },
+  { gate: "lead-magnet assets", rulings: "5, 6 (C11)", lanes: ["147E"], hookLanes: ["147E"], canaries: [],
+    proofs: ["test:lead-magnet-creation", "test:lead-magnet-promise", "test:lead-magnet-flow", "test:content-distribution", ...contract147("147E")] },
+  { gate: "listings/check-in/evidence", rulings: "7, 8, 10, 11 (C12)", lanes: ["147F"], hookLanes: ["147F"], canaries: [],
+    proofs: ["test:listing-coming-soon-live-date", "test:listing-activation-gate", "test:open-house-consolidation", "test:action-ledger", "test:tour-checkin", ...contract147("147F")] },
+  { gate: "SMS/completion/healing", rulings: "12, 13, 14 (C13, C14)", lanes: ["147G"], hookLanes: ["147G"], canaries: [],
+    proofs: ["test:inbound-communication", "test:self-healing", "test:healing-policy", "test:os-health", "test:exceptions-first", ...contract147("147G")] },
+  { gate: "capability closure", rulings: "9, 15", lanes: ["147H"], hookLanes: ["147H"], canaries: [],
+    proofs: ["test:ui-capability-surface", "test:support-isolation", "test:ui-wiring-census", "test:rendered-empty-states", ...contract147("147H")] },
+  { gate: "chains/registry", rulings: "18 + brief 147I (chains, manager registry, proof ownership)", lanes: ["147I"], hookLanes: ["147I"], canaries: [],
+    proofs: ["test:proof-ownership", "test:manager-ownership", "test:manager-cross-cooperation", "test:manager-governance-change", "test:simulator-wiring", "test:production-readiness", ...contract147("147I")] },
+  { gate: "canaries", rulings: "every ruling + contracts C8–C14", lanes: ["147J"], hookLanes: ["147J"], canaries: [],
+    proofs: [...contract147("147J")] },
+]
+const verdicts147 = WAVE147_GATES.map((g) => {
+  const v = certify145(g, gateEnv, WAVE147_CONTRACT_PROOFS)
+  // certify145's unpublished reason names lane 145I; the same rule here names 147I.
+  return { ...v, reasons: v.reasons.map((r) => r.replace("when lane 145I closed", "when lane 147I closed")) }
+})
+const certified147 = verdicts147.filter((v) => v.state === "CERTIFIED"), external147 = verdicts147.filter((v) => v.state === "EXTERNAL"), notCertified147 = verdicts147.filter((v) => v.state === "NOT CERTIFIED")
+for (const v of verdicts147) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(26)} owner ${v.owner.padEnd(22)} lanes ${(WAVE147_GATES.find((g) => g.gate === v.gate)!.lanes ?? []).join("+").padEnd(6)} proofs ${v.proofs.map((p) => `${p.key.replace(/^test:/, "")}${mark(p.state)}`).join(" ")}${v.reasons.length ? `\n                  · ${v.reasons.join("\n                  · ")}` : ""}`)
+const contractKeys147 = WAVE147_LANE_IDS.flatMap((l) => contract147(l))
+const unpublished147 = WAVE147_LANE_IDS.filter((l) => WAVE147_CONTRACT_PROOFS[l] === null)
+/** PURE — the wave-147 chain rule lane 147I owns: a published contract key that is not registered, or registered but in no
+ *  guard chain, certifies nothing in CI (a landed runner still being written — "no-file" — is the gate's NOT CERTIFIED, not this). */
+const unwiredContractKeys = (keys: readonly string[], state: (k: string) => ProofState) => keys.filter((k) => state(k) === "absent" || state(k) === "unchained")
+const unownedContractKeys = (keys: readonly string[], owner: (k: string) => string | null) => keys.filter((k) => !owner(k))
+console.log(`    census: ${WAVE147_GATES.length} wave-147 gates; ${contractKeys147.length} lane contract keys (${contractKeys147.filter((k) => proofState(k) === "ok").length} landed+chained, ${contractKeys147.filter((k) => proofState(k) === "unchained").length} registered but unchained, ${contractKeys147.filter((k) => proofState(k) === "no-file").length} registered+chained with the script not yet on disk (${contractKeys147.filter((k) => proofState(k) === "no-file").join(", ") || "none"}), ${contractKeys147.filter((k) => proofState(k) === "absent").length} pending); lanes unpublished at 147I close: ${unpublished147.join(", ") || "none"}; every contract key's owner: ${contractKeys147.map((k) => `${k.replace(/^test:/, "")}→${proofOwner.get(k) ?? "NONE"}`).join(", ")}`)
+check("G23 every wave-147 gate names ≥1 proof or waits on an unpublished lane, waits only on wave-147 lanes, and every published contract key is named by ≥1 wave-147 gate",
+  WAVE147_GATES.every((g) => (g.proofs.length > 0 || g.lanes.some((l) => WAVE147_CONTRACT_PROOFS[l] === null)) && g.lanes.length > 0 && g.lanes.every((l) => (WAVE147_LANE_IDS as readonly string[]).includes(l)))
+  && contractKeys147.every((k) => WAVE147_GATES.some((g) => g.proofs.includes(k))),
+  contractKeys147.filter((k) => !WAVE147_GATES.some((g) => g.proofs.includes(k))).join(", "))
+check("G24 no wave-147 contract key is claimed by two lanes, and every SURVIVOR a wave-147 gate names is registered + chained TODAY",
+  new Set(contractKeys147).size === contractKeys147.length && WAVE147_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys147.includes(k)).every((k) => proofState(k) === "ok"),
+  WAVE147_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys147.includes(k) && proofState(k) !== "ok").join(", "))
+check("G25 every published wave-147 contract key is registered in package.json AND in a guard chain, and has an accountable manager (a MAINTENANCE_DOMAINS proof owner) — the chain and the registry lane 147I owns",
+  unwiredContractKeys(contractKeys147, proofState).length === 0 && unownedContractKeys(contractKeys147, (k) => proofOwner.get(k) ?? null).length === 0,
+  [...unwiredContractKeys(contractKeys147, proofState).map((k) => `${k} ${proofState(k)}`), ...unownedContractKeys(contractKeys147, (k) => proofOwner.get(k) ?? null).map((k) => `${k} has no owner`)].join(", "))
+check("G26 POSITIVE CONTROL — an unpublished lane holds its gate NOT CERTIFIED; a chained key whose script is not on disk holds the canaries gate NOT CERTIFIED (never green); the G25 finders catch an unchained, an unregistered and an unowned key and pass a wired, owned one",
+  (() => {
+    const env147: GateEnv = { ...gateEnv, scripts: { "test:spec": "tsx scripts/spec.ts", "test:loose": "tsx scripts/loose.ts" }, chain: "npm run test:spec", fileExists: (rel) => rel !== "scripts/spec.ts", roster: [], pending: new Map(), ownerOf: () => "data_steward" }
+    const waiting = certify145({ gate: "x", rulings: "", lanes: ["147B"], proofs: ["test:spec"], canaries: [] }, { ...env147, fileExists: () => true }, { "147B": null })
+    const noFile = certify145({ gate: "canaries", rulings: "", lanes: ["147J"], proofs: ["test:spec"], canaries: [] }, env147, { "147J": ["test:spec"] })
+    const ok = certify145({ gate: "y", rulings: "", lanes: ["147A"], proofs: ["test:spec"], canaries: [] }, { ...env147, fileExists: () => true }, { "147A": ["test:spec"] })
+    const st = (k: string) => proofStateFor(k, env147.scripts, env147.chain, () => true)
+    const unwired = unwiredContractKeys(["test:spec", "test:loose", "test:ghost"], st)
+    const unowned = unownedContractKeys(["test:spec", "test:orphan"], (k) => (k === "test:spec" ? "data_steward" : null))
+    return waiting.state === "NOT CERTIFIED" && noFile.state === "NOT CERTIFIED" && noFile.reasons.some((r) => /script file missing/.test(r)) && ok.state === "CERTIFIED"
+      && unwired.join() === "test:loose,test:ghost" && unowned.join() === "test:orphan"
+  })())
+const gateDoc147 = matrix.split(/^## /m).find((s) => /^Wave 147 release gate/i.test(s)) ?? ""
+const gateRows147 = parseGateRows(gateDoc147)
+console.log(`    reading: READINESS-MATRIX.md "Wave 147 release gate" section ${gateDoc147 ? `present — ${gateRows147.length} gate row(s)` : "absent"}`)
+check("G27 when the matrix carries a wave-147 release-gate section, it has a row per wave-147 gate (the rule applies the moment the section lands)",
+  !gateDoc147 || WAVE147_GATES.every((g) => gateRows147.includes(g.gate.toLowerCase())), WAVE147_GATES.filter((g) => !gateRows147.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WAVE 147 (lane 147H) — O · THE OWNER OBLIGATIONS STAY RELEASE-BLOCKING IN THE OUTPUT. Two obligations no code can
 // discharge (wave 146 report §18–19): (O1) the storage.objects policies — m855 (OWNER-SQL §F) and m875 (§G) — read
 // from the migration stamps through the ONE classifier (the go-live board reads the LIVE state); (O2) the four unlinked
@@ -1476,12 +1575,13 @@ console.log(`\nRELEASE GATE: ${certified.length}/${RELEASE_GATES.length} certifi
 console.log(`WAVE 142 GATE: ${certified142.length}/${WAVE142_GATES.length} certified, ${notCertified142.length} not certified${notCertified142.length ? ` — ${notCertified142.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 145 GATE: ${certified145.length}/${WAVE145_GATES.length} certified, ${external145.length} external-verdict, ${notCertified145.length} not certified${notCertified145.length ? ` — ${notCertified145.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 146 GATE: ${certified146.length}/${WAVE146_GATES.length} certified, ${external146.length} external-verdict, ${notCertified146.length} not certified${notCertified146.length ? ` — ${notCertified146.map((v) => v.gate).join(", ")}` : ""}`)
-const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length
-const externalAll = [...external, ...external145, ...external146]
+console.log(`WAVE 147 GATE: ${certified147.length}/${WAVE147_GATES.length} certified, ${external147.length} external-verdict, ${notCertified147.length} not certified${notCertified147.length ? ` — ${notCertified147.map((v) => v.gate).join(", ")}` : ""}`)
+const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length
+const externalAll = [...external, ...external145, ...external146, ...external147]
 console.log(`OWNER OBLIGATIONS: ${ownerBlocking.length}/${OWNER_OBLIGATIONS.length} RELEASE-BLOCKING${ownerBlocking.length ? ` — ${ownerBlocking.map((o) => o.id).join(", ")}` : ""}`)
 // The owner obligations (lane 147H) join the verdict: a release with an undischarged obligation is NOT READY even when
 // every gate certifies in-repo.
-console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + wave 142 + wave 145 + wave 146) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
+console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + wave 142 + wave 145 + wave 146 + wave 147) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length}, wave 147 ${notCertified147.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }
