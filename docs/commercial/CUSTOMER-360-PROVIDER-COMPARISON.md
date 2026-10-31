@@ -34,20 +34,23 @@ secondary source it used.
 
 ## 2. Requirements, and which source meets each
 
-| Requirement (ruling 11 / 12) | Met by | Verified how |
-|---|---|---|
-| Identity resolution | First-party: `lib/kernel/person-identity.ts` (m697 evidence). Vendor: PDL person match, Versium contact append | code; §3.2 / §3.3 |
-| Property / homeowner records | RentCast AVM + property facts; BatchData property search / quickLists | `docs/commercial/PROVIDER-COST-REPORT.md` §3.3 |
-| First-party behaviour (portal, search / view, site, forms, tours, communications) | **our own tables, written in real time** + the first-party watcher | code; `scripts/customer-360-guard.ts` |
-| Third-party intent / life-event signals | Versium Online Presence Indicator – Real Estate, refinance / mortgage dates; PDL job / location history; OSINT life events; BatchData distress quickLists | `lib/enrichment/intent-signal-sources.ts` (wave 144E census) |
-| Real-estate applicability | Versium real-estate indicators; BatchData; RentCast | §3.3 |
-| Update frequency | declared per source, honestly (§5) | §5 |
-| Read API | all four current vendors | — |
-| Write-back / export / storage rights | **not on standard terms from any evaluated vendor** — contract | §4 |
-| Provenance | `enrichment_profile.field_provenance` (one writer) → the 360's field-level source / basis / ownership | code |
-| Licensing / consent / privacy (FCRA, fair housing) | vendor AUPs forbid FCRA purposes. We do no tenant screening. Protected attributes are labelled and withheld from outreach | §4; ruling 13 |
-| Tenant isolation | our code (every 360 / watcher read is brokerage-pinned) | `scripts/customer-360-guard.ts` |
-| Pay-per-use vs subscription; cost per useful update | §6 | §6 |
+The DealMachine column was added in wave 147 (lane 147D, owner ruling 17). It was read from DealMachine's own pages on
+2026-10-31. The full capability-by-capability evaluation, with the quoted terms, is `docs/commercial/DEALMACHINE-EVALUATION.md`.
+
+| Requirement (ruling 11 / 12) | Met by | Verified how | DealMachine (wave 147D, read 2026-10-31) |
+|---|---|---|---|
+| Identity resolution | First-party: `lib/kernel/person-identity.ts` (m697 evidence). Vendor: PDL person match, Versium contact append | code; §3.2 / §3.3 | Enrich by name, email or phone, at 1 people credit per matched person. Tenant data sent for enrichment falls under ToS §5(b), a perpetual, sublicensable licence to DealMachine |
+| Property / homeowner records | RentCast AVM + property facts; BatchData property search / quickLists | `docs/commercial/PROVIDER-COST-REPORT.md` §3.3 | Yes: 150M+ properties with owner, mailing address, four mortgage slots, tax, liens and MLS status. **Already covered** by RentCast and BatchData |
+| First-party behaviour (portal, search / view, site, forms, tours, communications) | **our own tables, written in real time** + the first-party watcher | code; `scripts/customer-360-guard.ts` | None |
+| Third-party intent / life-event signals | Versium Online Presence Indicator – Real Estate, refinance / mortgage dates; PDL job / location history; OSINT life events; BatchData distress quickLists | `lib/enrichment/intent-signal-sources.ts` (wave 144E census) | **Modeled** flags only: likely to move, new mover and month, lease-ending window, potential first-time buyer, likely mortgage applicant. Source and accuracy not published. `marital_status = Divorced` is a modeled demographic, not a filing |
+| Real-estate applicability | Versium real-estate indicators; BatchData; RentCast | §3.3 | Yes. An investor product ("For solo investors and small teams hunting off-market deals") |
+| Update frequency | declared per source, honestly (§5) | §5 | Property data refreshed daily; owner and contact data monthly; DNC flag monthly ("not a live registry check") |
+| Read API | all four current vendors | — | REST, 60 / min and 5,000 / day, **no sandbox** ("All API keys are live") |
+| Write-back / export / storage rights | **not on standard terms from any evaluated vendor** — contract | §4 | Not on standard terms: internal use only, non-sublicensable, no making the Services available to any other party, one account per customer. No destroy-on-termination clause was found |
+| Provenance | `enrichment_profile.field_provenance` (one writer) → the 360's field-level source / basis / ownership | code | No per-field source or date in the documented response. Only a `credits` object and an organization activity log (12 months) |
+| Licensing / consent / privacy (FCRA, fair housing) | vendor AUPs forbid FCRA purposes. We do no tenant screening. Protected attributes are labelled and withheld from outreach | §4; ruling 13 | Owners "have not been asked for consent". Registered data broker (CA, TX). People filters expose gender, marital status, household composition, language and age as **audience selectors**. Credit-behaviour fields have no stated FCRA status |
+| Tenant isolation | our code (every 360 / watcher read is brokerage-pinned) | `scripts/customer-360-guard.ts` | Cannot be isolated inside one account: dedupe, `exclude_previously_exported`, the activity log and export concurrency are organization-wide |
+| Pay-per-use vs subscription; cost per useful update | §6 | §6 | Per-seat subscription. $0.0060 – $0.0099 per credit at full use. Monthly credits reset, with "no automatic per-credit overages" |
 
 ## 3. Providers evaluated
 
@@ -111,6 +114,26 @@ skip trace). It offers no behavioural intent and no life events. On its standard
 fit a platform serving many tenant brokerages. **Not recommended** unless the owner negotiates a platform agreement and it beats
 BatchData's per-record rate (and that rate is itself UNKNOWN, per `PROVIDER-COST-REPORT.md` §8).
 
+**Re-evaluated in wave 147** (lane 147D, owner ruling 17). Read on 2026-10-31 from the full API documentation
+(<https://api.docs.dealmachine.com/llms-full.txt>), the Terms of Service, the Privacy Policy (effective 2026-08-26) and the
+guides. The detail is in `docs/commercial/DEALMACHINE-EVALUATION.md`. **The verdict holds, and no adapter is built.** Five facts
+change or add to the rows above:
+
+1. Overage. <https://www.dealmachine.com/guides/data-credits> now reads "Do not expect automatic per-credit overages. A chargeable
+   request can stop at your remaining balance."
+2. Freshness is published. Property data is refreshed daily, and owner and contact data monthly
+   (<https://www.dealmachine.com/privacy-policy> §8). The DNC flag is refreshed monthly and is "not a live registry check".
+3. Webhooks carry `prospect.*` / `list.*` workspace CRM events only, never property or owner data changes
+   (<https://api.docs.dealmachine.com/webhooks/events>).
+4. Two more clauses bear on a platform. ToS §2(a) allows one account per customer without written authorization. §5(b) grants
+   DealMachine a "perpetual, irrevocable, transferrable, sublicensable license" over any Customer Data we submit.
+5. "No behavioural intent" is narrowed. DealMachine sells **modeled** mover and renter flags (lease-ending window, new mover,
+   likely to move, first-time buyer). Those are a real gap against the current stack, but the licence blocks them and their
+   source and accuracy are unpublished.
+
+At full plan use, DealMachine's per-credit price ($0.0060 – $0.0099) undercuts the booked BatchData skip trace ($0.07, UNVERIFIED).
+That benefit is measurable but blocked by the licence.
+
 ### 3.5 Real-estate predictive / engagement products found by research
 
 | Provider | What it is | Price | Source |
@@ -149,7 +172,7 @@ person, but must never seed a new-movers list. **Owner / counsel decision before
 | Versium ("Versar") | §3.3: may not "(b) redistribute, sublicense, transfer, sell … or disclose any of the Licensed Materials to any third party; (c) incorporate any of the Licensed Materials into your own products or services; … (g) … operate any timesharing, service bureau, or similar business; … (j) cache any data from Licensed Materials and/or build a database from the Licensed Materials". §7.3: on termination, "destroy any and all copies of Licensed Materials and any information you have obtained from the Licensed Materials". An Ordering Document may override these only where it is "expressly intended to modify these terms". Last updated **June 2026**. | <https://versium.com/terms-conditions/> |
 | People Data Labs | "Data returned in API endpoints may not be saved in Customer databases ('Cached Data') for longer than necessary to perform actions permitted via Service License … Cached Data may not be provided or displayed to more than one End User … Upon termination … Customer must delete all Data". The licence covers "internal business purposes" and lets the customer display data to its "own clients … on Customer's platform". **Secondary source:** the primary SSA (<https://privacy.peopledatalabs.com/policies?name=services-subscription-agreement>) is client-rendered and could not be read by machine. This needs a human read before signing. | <https://datacircle.dev/cached-people-search-apis/people-data-labs/free> |
 | FullContact | Delete on termination, except derived Data Output (2019 agreement; current terms by quote) | §3.2 |
-| DealMachine | Internal use only, non-sublicensable, no making the Services available to any other party (2026-07-14) | §3.4 |
+| DealMachine | Internal use only, non-sublicensable, no making the Services available to any other party (2026-07-14). Also (read 2026-10-31): one account per customer unless authorized in writing (§2(a)); a perpetual, sublicensable licence to DealMachine over Customer Data we submit (§5(b)); no destroy-on-termination clause found; an Order Form overrides the ToS only where it says so expressly (§11(j)) | §3.4; `DEALMACHINE-EVALUATION.md` §4 |
 | Celebrus | First-party data: "you own and control the data" (vendor statement) | §3.1 annual report |
 
 **What this means in code today.** The enrichment rail persists Versium and PDL answers on `contacts.enrichment_profile` with a
@@ -195,7 +218,7 @@ rate. This report does not invent the denominator.
 | BatchData Property Subscription | push. Subscription price is on the BatchData page; the per-record API rate is UNKNOWN | webhook once provisioned | UNKNOWN (contract) |
 | NCOA (optional) | $20 per file (TrueNCOA) | quarterly per tenant list | $20 ÷ movers found (UNKNOWN) |
 | FullContact / Celebrus / Revaluate / Likely / Offrs / SmartZip | not published | — | not computable |
-| DealMachine | $99 – $149 / seat / mo or $599 / 100k records | — | ≥ $0.006 / record on Scale, before overage |
+| DealMachine | $99 – $149 / seat / mo or $599 / 100k records. $0.0060 – $0.0099 per credit at full use; credits reset monthly; no automatic overage (read 2026-10-31) | — (no adapter: licence) | credit price ÷ contact fill rate (UNKNOWN). Below break-even (Basic 1,415 / Scale 8,558 records a month against BatchData's booked $0.07) the seat fee costs more than today's stack (`DEALMACHINE-EVALUATION.md` §5) |
 
 The cheapest lever available without a new vendor is the PDL Person Changelog: free flat files that name which persistent IDs
 changed, and which fields. A monthly diff against `contacts.peopledata_id` would let the rail re-buy only profiles whose job or
@@ -215,7 +238,9 @@ for a worker, not a Vercel cron. **Proposal only — not built.** It needs an ow
    relationships, processed per tenant.
 5. **Do not add:** Celebrus, FullContact, DealMachine, Revaluate, Likely.ai, Offrs / SmartZip, Homebot or ATTOM. Each either
    duplicates a capability we hold, publishes no price, conflicts with a ruling (duplicate sender, protected-class segments), or
-   licenses its data for internal use only.
+   licenses its data for internal use only. DealMachine was re-evaluated in wave 147 (`DEALMACHINE-EVALUATION.md`, read
+   2026-10-31) and is still not added. The blocker is the licence, not capability or price. It reopens only on a signed Order Form
+   that expressly grants multi-tenant use (WAITING_EXTERNAL, owner and counsel).
 
 ## 8. Blind spots
 
