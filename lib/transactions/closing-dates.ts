@@ -28,6 +28,9 @@
 // transaction's closing-dates panel imports the constants on the client; the server door hands the action ledger in.
 
 import { OVERRIDE_REASON_MIN_CHARS } from "@/lib/kernel/status-override"
+// TYPE-ONLY (see lib/kernel/status-override.ts LedgerFn): an `import type` is erased and ignored by scripts/client-server-only-guard.ts;
+// a `typeof import()` is followed as a real edge and pulled the closing-dates panel into the server bundle.
+import type { withActionLedger } from "@/lib/kernel/action-ledger"
 
 type Svc = { from: (t: string) => any }
 
@@ -216,7 +219,7 @@ const FACT_COLS = "id, status, close_date, estimated_close_date, contract_closin
  *   contract_wording    → contract_closing_terms read off the executed contract — PROOF required.
  * Reason ≥ 10 characters always (the C23 floor). Never throws.
  */
-export async function applyClosingDateChange(svc: Svc, input: ClosingDateChangeInput, deps: { ledger: typeof import("@/lib/kernel/action-ledger").withActionLedger }): Promise<ClosingDateChangeResult> {
+export async function applyClosingDateChange(svc: Svc, input: ClosingDateChangeInput, deps: { ledger: typeof withActionLedger }): Promise<ClosingDateChangeResult> {
   try {
     if ((input.reason ?? "").trim().length < OVERRIDE_REASON_MIN_CHARS) return { ok: false, error: `Tell us why (at least ${OVERRIDE_REASON_MIN_CHARS} characters) — a closing-date change is recorded with its reason.` }
     const needsProof = input.kind !== "anticipated"
