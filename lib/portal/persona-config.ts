@@ -2236,6 +2236,29 @@ export function getPersonaConfig(persona: string): PersonaConfig {
   return PERSONA_CONFIGS[persona] || PERSONA_CONFIGS.first_time_buyer
 }
 
+/**
+ * The portal's default persona when a contact has none — the same fallback getPersonaConfig applies.
+ * WAVE 148 (lane 148K, closing lane 147H Outside-lane 5 — one persona vocabulary, CLAUDE.md §6): the family /
+ * collaborative-search persona list lived twice, a const in app/portal/[contactId]/search/page.tsx and an inline
+ * array in app/components/portal/PortalSettingsPage.tsx, and the two read a missing persona differently (the search
+ * page defaulted it and OFFERED shared search; settings did not and hid its visibility control). Both now ask this.
+ */
+export const DEFAULT_PORTAL_PERSONA = "first_time_buyer"
+
+/** Personas the portal offers a family / collaborative search to (search page) and whose visibility control the
+ *  portal settings page shows — one list, one reading of a missing persona. */
+const FAMILY_SEARCH_PERSONAS: readonly string[] = [
+  "first_time_buyer",
+  "military_buyer",
+  "upsizing",
+  "relocating",
+  "repeat_buyer",
+]
+
+export function offersFamilySearch(persona: string | null | undefined): boolean {
+  return FAMILY_SEARCH_PERSONAS.includes(persona || DEFAULT_PORTAL_PERSONA)
+}
+
 export function getPersonaWidgets(persona: string, customFields?: Record<string, any>): PersonaWidget[] {
   const config = getPersonaConfig(persona)
   return config.widgets.map((widget) => ({

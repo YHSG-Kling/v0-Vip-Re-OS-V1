@@ -17,6 +17,7 @@ import Link from "next/link"
 import { uploadProfilePhoto, updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
 import { AccessibilityPreferencesCard } from "@/components/contact/AccessibilityPreferencesCard"
 import type { AccessibilityOptionLists, AccessibilityPreferences } from "@/lib/contacts/accessibility-preferences"
+import { offersFamilySearch } from "@/lib/portal/persona-config"
 
 interface Contact {
   id: string
@@ -608,7 +609,7 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
               <Separator />
 
               {/* Family search visibility — the family-oriented personas the portal search page offers a shared search to */}
-              {["first_time_buyer", "military_buyer", "upsizing", "relocating", "repeat_buyer"].includes(contact.contact_persona || "") && (
+              {offersFamilySearch(contact.contact_persona) && (
                 <>
                   <div className="flex items-center justify-between gap-4">
                     <div className="space-y-0.5">

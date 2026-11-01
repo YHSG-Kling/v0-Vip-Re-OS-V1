@@ -12,15 +12,9 @@ import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
 import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
 import { FitBadge } from "@/app/components/portal/FitBadge"
 import { SavedSearchControls } from "./SavedSearchControls"
-
-// Personas that support family/collaborative search
-const FAMILY_SEARCH_PERSONAS = [
-  "first_time_buyer",
-  "military_buyer",
-  "upsizing",
-  "relocating",
-  "repeat_buyer",
-]
+// Personas that support family/collaborative search: ONE list, lib/portal/persona-config.ts offersFamilySearch
+// (wave 148, lane 148K — the local const that lived here merged onto it; the settings page asks the same predicate).
+import { DEFAULT_PORTAL_PERSONA, offersFamilySearch } from "@/lib/portal/persona-config"
 
 export default async function SearchPage({
   params,
@@ -81,8 +75,8 @@ export default async function SearchPage({
   const savedProperties     = savedRows.filter((s: any) => !s.dismissed)
   const dismissedProperties = savedRows.filter((s: any) => s.dismissed)
 
-  const persona = contact.contact_persona || "first_time_buyer"
-  const showCollaborativeSearch = FAMILY_SEARCH_PERSONAS.includes(persona)
+  const persona = contact.contact_persona || DEFAULT_PORTAL_PERSONA
+  const showCollaborativeSearch = offersFamilySearch(persona)
 
   return (
     <div className="space-y-6">
