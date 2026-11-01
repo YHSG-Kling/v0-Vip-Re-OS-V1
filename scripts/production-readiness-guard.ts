@@ -1527,6 +1527,90 @@ check("G27 when the matrix carries a wave-147 release-gate section, it has a row
   !gateDoc147 || WAVE147_GATES.every((g) => gateRows147.includes(g.gate.toLowerCase())), WAVE147_GATES.filter((g) => !gateRows147.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
 
 // ═════════════════════════════════════════════════════════════════════════════
+// WAVE 148 (lane 148I2) — G⁗⁗ · THE WAVE-148 GATES. The owner's 2026-11-01 rulings (1–23) and contracts C15–C25, one gate per
+// lane brief (148A–K) plus the two closing lanes (148I2 chains/registry, 148J2 canaries). Each names the CHAINED survivors that
+// already certify its area and the NEW proof keys its lane published ("## package.json keys to add" in $S/lane148X-notes.md,
+// collected by lane 148I2 — the one editor of package.json and the registry this wave). Lane 148J published none (the
+// DealMachine / AMcards evaluation built no adapter — WAITING_EXTERNAL by name — so its gate stands on the provider-fabric
+// survivors that would have to admit one). Lane 148J2's runner is written in parallel: while scripts/wave148-canaries.ts is not
+// on disk its key reads "script file missing" and the canaries gate NOT CERTIFIED — never green. Same certify145 rule as
+// waves 145–147. No storage.objects policy is added this wave, so no wave-148 gate is EXTERNAL; block O's obligations stay
+// RELEASE-BLOCKING and lane 148A's release-blockers guard derives them (never pins them).
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[G⁗⁗ · wave 148 gates — the owner's 2026-11-01 rulings → the lane contracts (148A–K, I2, J2) + chained survivors]")
+const WAVE148_LANE_IDS = ["148A", "148B", "148C", "148D", "148E", "148F", "148G", "148H", "148I", "148J", "148K", "148I2", "148J2"] as const
+/** NEW proof keys per wave-148 lane (null = the lane had not published its notes when lane 148I2 closed). */
+const WAVE148_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE148_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
+  "148A": ["test:release-blockers", "test:subscriber-provisioning"], "148B": ["test:one-door-consent"], "148C": ["test:persona-compliance"],
+  "148D": ["test:intent-interface"], "148E": ["test:buyer-explanation"], "148F": ["test:life-event-engagement"], "148G": ["test:magnet-funnel"],
+  "148H": ["test:event-producer-registry"], "148I": ["test:status-override", "test:unattended-answer"], "148J": [], "148K": ["test:open-loop-ledger"],
+  "148I2": [], "148J2": ["test:wave148-canaries"],
+})
+const contract148 = (lane: (typeof WAVE148_LANE_IDS)[number]) => WAVE148_CONTRACT_PROOFS[lane] ?? []
+interface Wave148Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE148_LANE_IDS)[number]> }
+const WAVE148_GATES: Wave148Gate[] = [
+  { gate: "release path", rulings: "21, 23 (build gate, blockers, subscriber journey)", lanes: ["148A"], hookLanes: ["148A"], canaries: [],
+    proofs: ["test:production-readiness", "test:subscriber-convergence", "test:tenant-provisioning-loops", "test:cron-auth-fail-closed", ...contract148("148A")] },
+  { gate: "one door + consent", rulings: "3, 4, 12 (C15, C16)", lanes: ["148B"], hookLanes: ["148B"], canaries: [],
+    proofs: ["test:consented-intake", "test:mail-unsubscribe", "test:inbound-suppression-lead-identity", "test:enrichment-suppression", ...contract148("148B")] },
+  { gate: "persona compliance", rulings: "1 (protected reads → persona)", lanes: ["148C"], hookLanes: ["148C"], canaries: [],
+    proofs: ["test:audience-persona-basis", "test:audience-eligibility", "test:fair-housing-phrase-gate", "test:lead-demographics", ...contract148("148C")] },
+  { gate: "intent interface", rulings: "2 (C17)", lanes: ["148D"], hookLanes: ["148D"], canaries: [],
+    proofs: ["test:voice-kernel-surface", "test:voice-command-coverage", "test:command-bar", "test:text-command-door", ...contract148("148D")] },
+  { gate: "buyer explanations", rulings: "7, 8, 9 (C18)", lanes: ["148E"], hookLanes: ["148E"], canaries: [],
+    proofs: ["test:conversational-buyer", "test:buyer-nl-search", "test:rentcast-eligibility", "test:portal-nl-search-gate", ...contract148("148E")] },
+  { gate: "market registry + life events", rulings: "5, 6, 17 (C19, C20)", lanes: ["148F"], hookLanes: ["148F"], canaries: [],
+    proofs: ["test:movement-signals", "test:local-intel", "test:intent-driven-followup", "test:lifetime-signals", ...contract148("148F")] },
+  { gate: "lead-magnet funnel", rulings: "10, 11 (C21)", lanes: ["148G"], hookLanes: ["148G"], canaries: [],
+    proofs: ["test:lead-magnet-creation", "test:lead-magnet-promise", "test:market-report-producer", "test:lead-magnet-asset-invariant", ...contract148("148G")] },
+  { gate: "event producer registry", rulings: "12, 14, 20 (C22)", lanes: ["148H"], hookLanes: ["148H"], canaries: [],
+    proofs: ["test:event-checkin-writers", "test:open-house-consolidation", "test:tour-checkin", "test:provider-cost-routing", ...contract148("148H")] },
+  { gate: "status/closing/autonomy", rulings: "13, 15, 16, 22 (C23, C24, C25)", lanes: ["148I"], hookLanes: ["148I"], canaries: [],
+    proofs: ["test:listing-lifecycle", "test:completion-tracking", "test:self-healing", "test:healing-policy", "test:inbound-sms-arbiter", ...contract148("148I")] },
+  { gate: "provider evaluation", rulings: "19 (DealMachine, AMcards vs Lob)", lanes: ["148J"], hookLanes: ["148J"], canaries: [],
+    proofs: ["test:provider-readiness", "test:provider-adapter", "test:direct-mail-copy", "test:mail-address-suppression", ...contract148("148J")] },
+  { gate: "open-loop ledger", rulings: "18, 23 (all blind spots of all waves)", lanes: ["148K"], hookLanes: ["148K"], canaries: [],
+    proofs: ["test:operations-docs", "test:feature-certification", "test:migration-ledger", ...contract148("148K")] },
+  { gate: "chains/registry", rulings: "brief 148I2 (chains, manager registry, proof ownership)", lanes: ["148I2"], hookLanes: ["148I2"], canaries: [],
+    proofs: ["test:proof-ownership", "test:manager-ownership", "test:manager-cross-cooperation", "test:manager-governance-change", "test:simulator-wiring", "test:production-readiness", ...contract148("148I2")] },
+  { gate: "canaries", rulings: "every ruling + contracts C15–C25", lanes: ["148J2"], hookLanes: ["148J2"], canaries: [],
+    proofs: [...contract148("148J2")] },
+]
+const verdicts148 = WAVE148_GATES.map((g) => {
+  const v = certify145(g, gateEnv, WAVE148_CONTRACT_PROOFS)
+  return { ...v, reasons: v.reasons.map((r) => r.replace("when lane 145I closed", "when lane 148I2 closed")) }
+})
+const certified148 = verdicts148.filter((v) => v.state === "CERTIFIED"), external148 = verdicts148.filter((v) => v.state === "EXTERNAL"), notCertified148 = verdicts148.filter((v) => v.state === "NOT CERTIFIED")
+for (const v of verdicts148) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(30)} owner ${v.owner.padEnd(22)} lanes ${(WAVE148_GATES.find((g) => g.gate === v.gate)!.lanes ?? []).join("+").padEnd(6)} proofs ${v.proofs.length}${v.reasons.length ? ` — ${v.reasons.join("; ")}` : ""}`)
+const contractKeys148 = WAVE148_LANE_IDS.flatMap((l) => contract148(l))
+const unpublished148 = WAVE148_LANE_IDS.filter((l) => WAVE148_CONTRACT_PROOFS[l] === null)
+console.log(`    census: ${WAVE148_GATES.length} wave-148 gates; ${contractKeys148.length} lane contract keys (${contractKeys148.filter((k) => proofState(k) === "ok").length} landed+chained, ${contractKeys148.filter((k) => proofState(k) === "unchained").length} unchained, ${contractKeys148.filter((k) => proofState(k) === "no-file").length} script-missing, ${contractKeys148.filter((k) => proofState(k) === "absent").length} absent); ${unpublished148.length} lane(s) unpublished; ${certified148.length} CERTIFIED · ${external148.length} EXTERNAL · ${notCertified148.length} NOT CERTIFIED`)
+check("G28 every wave-148 gate names ≥1 proof or waits on an unpublished lane, waits only on wave-148 lanes, and every published contract key is named by ≥1 wave-148 gate",
+  WAVE148_GATES.every((g) => (g.proofs.length > 0 || g.lanes.some((l) => WAVE148_CONTRACT_PROOFS[l] === null)) && g.lanes.length > 0 && g.lanes.every((l) => (WAVE148_LANE_IDS as readonly string[]).includes(l)))
+  && contractKeys148.every((k) => WAVE148_GATES.some((g) => g.proofs.includes(k))),
+  contractKeys148.filter((k) => !WAVE148_GATES.some((g) => g.proofs.includes(k))).join(", "))
+check("G29 no wave-148 contract key is claimed by two lanes, and every SURVIVOR a wave-148 gate names is registered + chained TODAY",
+  new Set(contractKeys148).size === contractKeys148.length && WAVE148_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys148.includes(k)).every((k) => proofState(k) === "ok"),
+  WAVE148_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys148.includes(k) && proofState(k) !== "ok").join(", "))
+check("G30 every published wave-148 contract key is registered in package.json AND in a guard chain, and has an accountable manager (a MAINTENANCE_DOMAINS proof owner) — the chain and the registry lane 148I2 owns",
+  unwiredContractKeys(contractKeys148, proofState).length === 0 && unownedContractKeys(contractKeys148, (k) => proofOwner.get(k) ?? null).length === 0,
+  [...unwiredContractKeys(contractKeys148, proofState).map((k) => `${k} ${proofState(k)}`), ...unownedContractKeys(contractKeys148, (k) => proofOwner.get(k) ?? null).map((k) => `${k} has no owner`)].join(", "))
+check("G31 POSITIVE CONTROL — an unpublished wave-148 lane holds its gate NOT CERTIFIED; a chained key whose script is not on disk holds the canaries gate NOT CERTIFIED (never green); a published, chained, owned key certifies",
+  (() => {
+    const env148: GateEnv = { ...gateEnv, scripts: { "test:spec": "tsx scripts/spec.ts" }, chain: "npm run test:spec", fileExists: (rel) => rel !== "scripts/spec.ts", roster: [], pending: new Map(), ownerOf: () => "data_steward" }
+    const waiting = certify145({ gate: "x", rulings: "", lanes: ["148F"], proofs: ["test:spec"], canaries: [] }, { ...env148, fileExists: () => true }, { "148F": null })
+    const noFile = certify145({ gate: "canaries", rulings: "", lanes: ["148J2"], proofs: ["test:spec"], canaries: [] }, env148, { "148J2": ["test:spec"] })
+    const ok = certify145({ gate: "y", rulings: "", lanes: ["148A"], proofs: ["test:spec"], canaries: [] }, { ...env148, fileExists: () => true }, { "148A": ["test:spec"] })
+    return waiting.state === "NOT CERTIFIED" && waiting.reasons.some((r) => /148F had not published/.test(r.replace("when lane 145I closed", "when lane 148I2 closed")) || /had not published/.test(r))
+      && noFile.state === "NOT CERTIFIED" && noFile.reasons.some((r) => /script file missing/.test(r)) && ok.state === "CERTIFIED"
+  })())
+const gateDoc148 = matrix.split(/^## /m).find((s) => /^Wave 148 release gate/i.test(s)) ?? ""
+const gateRows148 = parseGateRows(gateDoc148)
+console.log(`    reading: READINESS-MATRIX.md "Wave 148 release gate" section ${gateDoc148 ? `present — ${gateRows148.length} gate row(s)` : "absent"}`)
+check("G32 when the matrix carries a wave-148 release-gate section, it has a row per wave-148 gate (the rule applies the moment the section lands)",
+  !gateDoc148 || WAVE148_GATES.every((g) => gateRows148.includes(g.gate.toLowerCase())), WAVE148_GATES.filter((g) => !gateRows148.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WAVE 147 (lane 147H) — O · THE OWNER OBLIGATIONS STAY RELEASE-BLOCKING IN THE OUTPUT. Two obligations no code can
 // discharge (wave 146 report §18–19): (O1) the storage.objects policies — m855 (OWNER-SQL §F) and m875 (§G) — read
 // from the migration stamps through the ONE classifier (the go-live board reads the LIVE state); (O2) the four unlinked
