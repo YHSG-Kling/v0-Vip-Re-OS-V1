@@ -73,7 +73,8 @@ export async function createSocialPostDraft(
   if (!gate.passed) {
     const { data: draftPost, error: draftPostErr } = await supabase
       .from("social_posts")
-      .insert({ ...row, status: "draft", brand_compliance_passed: false, approval_status: "pending" })
+      // brokerage_id at the TOP LEVEL of the literal (scripts/ai-insight-tenant-guard.ts D1 proves the stamp on the literal, not through a spread).
+      .insert({ ...row, brokerage_id: actor.brokerageId, status: "draft", brand_compliance_passed: false, approval_status: "pending" })
       .select("id")
       .maybeSingle()
     if (draftPostErr) console.error(`[social-publishing] held draft post NOT saved: ${draftPostErr.message}`)
@@ -90,6 +91,7 @@ export async function createSocialPostDraft(
     .from("social_posts")
     .insert({
       ...row,
+      brokerage_id: actor.brokerageId,
       status: "scheduled",
       brand_compliance_passed: true,
       approval_status: params.forceApprovalPending || gate.requiresHumanReview ? "pending" : "approved",

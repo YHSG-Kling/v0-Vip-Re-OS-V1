@@ -1578,7 +1578,10 @@ const W24_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   // CRON_FAILED, neither of which the deleted inserts did.
   { file: "app/api/cron/contact-enrichment/route.ts", table: "cron_execution_logs", floor: 1 },
   { file: "lib/social/orchestrate-social-preset-publish.ts", table: "social_posts", floor: 1 },
-  { file: "app/actions/social-publishing.ts", table: "social_posts", floor: 2 },
+  // MOVED, not lost (wave 148 integrator): createSocialPost's two social_posts writers (the held draft and the scheduled row) now live in
+  // lib/social/create-social-post-draft.ts createSocialPostDraft — the writer with an explicit actor the orchestrator can call without a
+  // session; app/actions/social-publishing.ts is its session door and writes no social_posts row of its own. The floor follows the survivor.
+  { file: "lib/social/create-social-post-draft.ts", table: "social_posts", floor: 2 },
   { file: "app/api/cron/health-check/route.ts", table: "system_health_checks", floor: 1 },
 ]
 

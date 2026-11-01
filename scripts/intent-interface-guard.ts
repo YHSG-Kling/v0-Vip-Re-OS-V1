@@ -403,7 +403,9 @@ async function main() {
     interestStem("acreage") === "acre" && criteriaMentions({ features: ["2 acres"] }, "acre") === "2 acres" && criteriaMentions({ features: ["acreage"], dealBreakers: ["acreage"] }, "acre") === null)
 
   console.log(`\n RESULT: ${pass} passed, ${fail} failed${fail ? ` — ${failures.join(" | ")}` : ""}`)
-  console.log(` GUARD_EXIT=${fail ? 1 : 0}`)
+  // Never the chain's own signal token: `GUARD_EXIT=` belongs to the chain runner (CLAUDE.md §7 — grepped from the log as the one
+  // trustworthy line). A proof printing it poisoned that grep once (2026-11-01: a push went out on this line while the chain was red).
+  console.log(` INTENT_INTERFACE_EXIT=${fail ? 1 : 0}`)
   process.exit(fail ? 1 : 0)
 }
 
