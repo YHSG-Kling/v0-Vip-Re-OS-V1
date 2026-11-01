@@ -322,10 +322,10 @@ async function main() {
   {
     const m927 = raw("supabase/migrations/m927-transaction-closing-date-terms.sql")
     const line1 = m927.split("\n")[0] ?? ""
-    check("m927 is stamped (lane stamp or APPLIED LIVE — the rule, not the waypoint)", /^-- WRITTEN, NOT APPLIED \(wave 148, lane 148I\)/.test(line1) || /^-- ── APPLIED LIVE /.test(line1))
+    check("m927 carries the integrator's line-1 APPLIED LIVE stamp (the closing-date model needs the five columns live — the rule, not a waypoint)", /^-- ── APPLIED LIVE /.test(line1))
     check("m927 adds the five columns and both CHECKs (+ the amendment-reference rule)", ["contract_closing_date", "contract_closing_terms", "contract_closing_source", "contract_closing_amendment_ref", "actual_close_date"].every((c) => m927.includes(`ADD COLUMN IF NOT EXISTS ${c}`)) && /'on'::text, 'on_or_before'::text/.test(m927) && /'executed_contract'::text, 'executed_amendment'::text/.test(m927) && /contract_closing_amendment_ref_required/.test(m927))
     const live = CHECK_VOCABULARIES.transactions?.contract_closing_terms
-    check("once applied, the cache's CHECK equals the code vocabulary (absent until regenerated — said)", !live || sameSet(live, CLOSING_DATE_TERMS), live ? live.join(",") : "not in the cache yet (m927 unapplied)")
+    check("once applied, the cache's CHECK equals the code vocabulary (absent until regenerated — said)", !live || sameSet(live, CLOSING_DATE_TERMS), live ? live.join(",") : "not in the cache yet (regenerate check-vocabularies after the m927 stamp)")
   }
   check("the writers: the offer bridge seeds the deadline; the gated close, the close command and the override stamp the actual day", /seedContractClosing\(/.test(tokens("lib/transactions/offer-bridge.ts")) && /recordActualClosing\(/.test(tokens("lib/transactions/stage-progression.ts")) && /recordActualClosing\(/.test(fnBody(tokens("lib/kernel/transactions.ts"), "closeTransactionCommand")) && /recordActualClosing\(/.test(tokens("app/actions/transaction-stage-machine.ts")))
   check("the deal page renders the closing-date panel, and its door is session-gated (requireTransactionActor)", /<ClosingDatesPanel\b/.test(code("app/dashboard/transactions/[id]/transaction-detail-client.tsx")) && /requireTransactionActor\(params\.transactionId\)/.test(fnBody(code("app/actions/transactions.ts"), "recordClosingDateChange")))

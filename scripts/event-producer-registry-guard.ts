@@ -369,7 +369,7 @@ async function main(): Promise<void> {
   }
 
   console.log("\n[blind spots]")
-  console.log("  · the runtime runs on memSupabase (no RLS, CHECK, FK or trigger) — m924 / m925 are WRITTEN, NOT APPLIED; the CHECK lists above are parsed from the migration text and the generated cache, and the live database is unchanged until the integrator applies them")
+  console.log("  · the runtime runs on memSupabase (no RLS, CHECK, FK or trigger) — whether m924 / m925 are live is read from each file's line-1 stamp (the ledger, never this prose); the CHECK lists above are parsed from the migration text and the generated cache, which the integrator regenerates after the apply")
   console.log("  · Zoom is never called: the registrant add and the meeting create are seams here; their HTTP shapes are read from Zoom's documentation (2026-11-01), and 'registration_enabled' is taken from Zoom's ANSWERED approval_type — a real account may still behave differently")
   console.log("  · Zoom returns a participant's e-mail only for signed-in users; a registrant who joins on the SHARED link, signed out, with no registrant id is unmatched by design (an under-count, never a false attendance)")
   console.log("  · YouTube Live and external meeting links cannot verify attendance at all — their outcome says 'unverifiable' rather than a number")
