@@ -27,12 +27,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  next-build:
+  next-build-full:
     # OWNER RULING 2026-10-03 ("Both"): a LARGER runner unblocks the compile ceiling recorded at
     # 08282ad6c, and a graph cut follows. GitHub larger runners are created by an org/repo admin
     # (Settings → Actions → Runners → New runner → GitHub-hosted, e.g. 8-core / 32 GB) under a label
     # of the admin's choosing; set repo variable BUILD_RUNNER to that label and BUILD_HEAP_MB to the
     # matching heap (e.g. 24576). Unset → today's runner and cap, unchanged.
+    # WAVE 148 (lane 148A): this full single pass runs ONLY on the owner's larger runner — see the 2026-11-01
+    # entry at the end of the bracket below. While BUILD_RUNNER is empty, lever (d) (next-build-half) is the
+    # build gate on ubuntu-latest, and the `next-build` job at the bottom gives the one verdict.
+    if: ${{ vars.BUILD_RUNNER != '' }}
     runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 40
     env:
@@ -545,6 +549,57 @@ jobs:
       #   and this workflow picks them up with no code change. Lever (d), the two-half compile
       #   matrix, stays proposed with the numbers above it; it is the engineering fallback if the
       #   owner declines the runner.
+      #
+      # ── 2026-11-01, wave 148 lane 148A: LEVER (d) IMPLEMENTED — THE TWO-HALF COMPILE MATRIX, AND THE
+      # FULL PASS MOVED TO THE RUNNER IT NEEDS. Nothing above is re-tuned and the unchanged full pass is NOT
+      # re-run on ubuntu-latest: three deterministic aborts at one commit (2026-10-31) are the measurement.
+      # THE SHAPE (three jobs, one verdict):
+      #   next-build-full  — this job, the whole tree in one pass. Runs ONLY when the owner's larger runner is
+      #                      configured (repo variable BUILD_RUNNER non-empty); a preflight refuses, in seconds,
+      #                      a BUILD_HEAP_MB at or below the cap that aborted three times (14336) — on a larger
+      #                      runner the heap must rise with it (16384 on 32 GB, the 2026-10-03 "Both" ruling).
+      #   next-build-half  — lever (d), on ubuntu-latest while BUILD_RUNNER is empty: a matrix of two halves,
+      #                      each `next build --webpack --experimental-build-mode compile --debug-build-paths
+      #                      <globs>` then generate with the SAME globs (.github/actions/next-build-phases).
+      #   next-build       — the GATE (the check name this workflow always had): green only when the full pass
+      #                      succeeded, or the full pass was not attempted AND every half succeeded. Both
+      #                      skipped / either failed / cancelled = red. A skipped job never reads as certified.
+      # VERIFIED AGAINST THE PINNED next@16.2.7 (package-lock.json node_modules/next "16.2.7", installed 16.2.7):
+      #   dist/bin/next registers `--debug-build-paths <patterns>` ("Comma-separated glob patterns … Use "!"
+      #   prefix to exclude"); dist/cli/next-build.js parses it with dist/lib/resolve-build-paths.js
+      #   (resolveBuildPaths: only app/**/page.* and app/**/route.* become entries; dynamic [segments] are
+      #   bracket-escaped; "!" globs are glob `ignore`), and dist/build/route-discovery.js applyDebugFilter
+      #   intersects the discovered app paths with that set. Layouts are NOT filtered (they ride in through
+      #   each kept page's loader tree); proxy.ts is a root entry and is compiled by every half.
+      # THE HALVES, measured with the ONE walker (scripts/app-import-graph.ts, the proxy/app budget's code)
+      # over next's OWN resolver — scripts/release-blockers-guard.ts re-derives these every run:
+      #                      routes  entries*  first-party modules   first-party source
+      #   whole tree           970     1006        5116                  66.2 MB
+      #   dashboard            325      337        3468 (67.8%)          51.1 MB (77.1%)
+      #   rest                 645      672        3430 (67.0%)          48.1 MB (72.7%)
+      #   * entries = the kept page/route files + every layout/template/loading/error/not-found/default in a
+      #     kept page's ancestor segments + the root global-error/not-found.
+      #   The halves PARTITION the routes (325 + 645 = 970, no route in both, none in neither — the guard
+      #   asserts it with next's resolver, positive-controlled). 1782 modules are shared, so each half
+      #   compiles ~68% of the graph, not 50%: the largest server compile drops from 5116 to 3468 modules.
+      # WHAT THIS PREDICTS AND DOES NOT: if committed heap tracked first-party modules, the larger half would sit
+      #   near 12.9 GB × 0.68 ≈ 8.7 GB (~61% of the 14336 cap); if it tracked source bytes, near 12.9 × 0.77 ≈
+      #   9.9 GB (~69%) — under the ~90% give-up line either way. It is NOT known to track either — across this
+      #   bracket heap grew 8.5 → 12.9 GB while modules grew 4333 → 5116 (+18%), so source size per module
+      #   and fixed overhead (packages, runtime, both rsc + ssr layers) matter too. The first CI run of the
+      #   matrix IS the measurement: append each half's last GC line here. If a half aborts, add a third
+      #   matrix entry (the guard's partition rule takes N parts) — still not a cap step.
+      # WHAT A PARTIAL GENERATE CAN AND CANNOT DO (said here so a green half is never read as more):
+      #   CAN — collect page data and prerender every route of its half under the same next.config, so the
+      #   two halves together exercise every route's compile AND static generation.
+      #   CANNOT — produce a deployable .next (each half's output is discarded; nothing is uploaded or
+      #   deployed), prove the WHOLE graph fits one compile (that is what Vercel runs — vercel.json builds the
+      #   single pass at 10240, below today's measured ~12.9 GB demand, so a Vercel deployment needs the
+      #   owner's larger build machine regardless of this gate), check cross-half manifests (one merged
+      #   routes/prerender manifest, rewrites into the other half), or trace the whole app's server files.
+      #   UNVERIFIED IN CI until the first matrix run: partial manifests under `generate`. A generate failure
+      #   that names a route of the OTHER half (ENOENT under .next/server/app/<other half>) is the partial
+      #   build's limit, not a code defect — record it here and keep the compile half of the gate.
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '14336' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
@@ -568,76 +623,107 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiJ9.placeholder.placeholder' }}
       NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL || 'https://app.example.com' }}
       CRON_SECRET: ${{ secrets.CRON_SECRET || 'placeholder-cron-secret' }}
+      # The compile worker prints "starting/finished <name> compiler" with this (read by the next abort's
+      # attribution — see the 2026-10-06 entry); the build phases action inherits it.
+      DEBUG: "next:build:webpack-build*"
     steps:
       - uses: actions/checkout@v4
       # Node + `npm ci` live in ONE composite action for all four workflows —
       # see .github/actions/node-deps/action.yml.
       - uses: ./.github/actions/node-deps
-      # ── 2026-08-26, run 33021558019 (commit 67fc1b05): THE FAILURE MODE MOVED,
-      # exactly as the bracket above predicted. With webpackBuildWorker on, the
-      # compile FINISHED for the first time on CI — "Compiled with warnings in
-      # 8.0min", where every prior run aborted with exit 134 mid-compile around
-      # 8m10s. ~21 seconds later the RUNNER was shut down and the build worker
-      # SIGKILLed: no V8 abort, no exit 134 — the machine itself ran out. That is
-      # the "RSS is NOT clearly improved — only the heap is" reading coming true
-      # (13.9 GB worker RSS measured locally against a 16 GB machine).
-      #
-      # The bracket's conclusion — "the answer is the runner, not another knob" —
-      # missed one free knob: SWAP. The post-compile spike is TRANSIENT and its
-      # pages are COLD (pack-file-cache buffers being serialized to disk, the
-      # parent's retained compile results) — the exact working-set shape swap
-      # absorbs without thrashing the hot path. The runner has ~14 GB of free SSD
-      # doing nothing during that window. This does not raise any V8 cap (12288
-      # stays fatal for the reason recorded above); it gives the KERNEL somewhere
-      # to put cold pages so the OOM killer does not shoot the runner service.
-      #
-      # BEST-EFFORT BY DESIGN: if no swapfile can be created, the step says so
-      # and the build still runs — the build is the test, and a failed swap step
-      # masking a green build would invert the point. `free -h` prints before and
-      # after so the next reading of this bracket has numbers, not adjectives.
-      - name: Add swap headroom for the post-compile RSS spike
+      # FAIL CLOSED IN SECONDS: on the larger runner the compile cap must rise with the machine. 14336 aborted
+      # three times at one commit (2026-10-31, committed 12.90–12.95 GB = the ~90% give-up threshold), so a
+      # full pass configured with BUILD_RUNNER but not BUILD_HEAP_MB would spend ten minutes re-measuring a
+      # known abort. Refuse it with the remedy instead.
+      - name: Preflight — BUILD_HEAP_MB matches the larger runner
         run: |
-          echo "── memory before ──"; free -h; swapon --show || true
-          TARGET=/mnt/swapfile-ci
-          sudo test -d /mnt || TARGET=/swapfile-ci
-          if sudo fallocate -l 8G "$TARGET" 2>/dev/null || sudo fallocate -l 4G "$TARGET" 2>/dev/null; then
-            sudo chmod 600 "$TARGET" && sudo mkswap "$TARGET" && sudo swapon "$TARGET" \
-              && echo "swap added at $TARGET" \
-              || echo "swapfile created but could not be enabled — building without it"
-          else
-            echo "no space for a swapfile — building without it"
+          HEAP="${{ vars.BUILD_HEAP_MB || '14336' }}"
+          TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+          echo "runner '${{ vars.BUILD_RUNNER }}': ${TOTAL_MB} MB RAM; compile heap ${HEAP} MB; generate heap ${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }} MB"
+          if [ "$HEAP" -le 14336 ]; then
+            echo "::error::BUILD_RUNNER is set but the compile heap is ${HEAP} MB — 14336 aborted deterministically (run 41220735364 x3, 2026-10-31). Set repo variable BUILD_HEAP_MB (16384 on a 32 GB runner)."
+            exit 1
           fi
-          echo "── memory after ──"; free -h; swapon --show || true
-      # Two steps, one .next (see the 2026-10-06 wave-105F entry beside
-      # NODE_OPTIONS above). `npm run build` (= `next build --webpack`, the single
-      # pass Vercel and local builds still run) is deliberately NOT used here: the
-      # gate's point is that compile and generate get DIFFERENT heaps.
-      - name: Production build — compile (webpack only, one compiler per worker)
-        env:
-          # The worker inherits NODE_OPTIONS (job env above); DEBUG makes the
-          # worker print "starting <name> compiler" / "<name> compiler finished"
-          # so an abort names its compiler. A few lines, no measurable cost.
-          DEBUG: "next:build:webpack-build*"
-        run: npx next build --webpack --experimental-build-mode compile
-      # MEASURED 2026-10-06 (run 37420587555, commit 7e6e412a3): the FIRST two-phase run cleared the
-      # heap wall — compile finished, 411 static pages generated in 3.2 min — and then died in
-      # "Finalizing page optimization" with ENOENT rename .next/server/proxy.js → middleware.js.
-      # Next 16.2.7's compile phase already performs that rename; the generate phase repeats it.
-      # Restore the source name (a copy — the rename then overwrites middleware.js with the same
-      # bytes), so both phases see the file layout they expect. No-op when compile left proxy.js.
-      - name: Bridge the proxy bundle between phases (proxy.js ↔ middleware.js)
+          if [ "$TOTAL_MB" -lt $((HEAP + 4096)) ]; then
+            echo "::error::compile heap ${HEAP} MB + ~4-5 GB measured off-heap does not fit this runner's ${TOTAL_MB} MB — pick a larger BUILD_RUNNER or a smaller BUILD_HEAP_MB."
+            exit 1
+          fi
+      # Swap → compile → proxy bridge → generate, one spelling for both build jobs (the measurement comments that
+      # sat beside the swap and bridge steps moved there verbatim). `npm run build` (= `next build --webpack`,
+      # the single pass Vercel and local builds still run) is deliberately NOT used here: the gate's point is
+      # that compile and generate get DIFFERENT heaps (the 2026-10-06 wave-105F entry beside NODE_OPTIONS).
+      - uses: ./.github/actions/next-build-phases
+        with:
+          generate-heap-mb: ${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }}
+
+  # ── LEVER (d): THE TWO-HALF COMPILE MATRIX (wave 148, lane 148A) — read the 2026-11-01 entry in the
+  # bracket above. A CI-ONLY gate: each half's .next is thrown away with its runner. The globs are the ONE
+  # source scripts/release-blockers-guard.ts reads (it asserts, with next's own resolver, that the halves
+  # partition every app/ page and route, and re-measures each half's entries/modules every run).
+  next-build-half:
+    if: ${{ vars.BUILD_RUNNER == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - half: dashboard
+            paths: "app/dashboard/**"
+          - half: rest
+            paths: "app/**,!app/dashboard/**"
+    name: next-build-half (${{ matrix.half }})
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      # The same cap as the full pass on this runner (14336, the bracket's last measured step); a half compiles
+      # ~68% of the first-party graph, so it is expected to sit well under the ~90% give-up line. BUILD_HALF_HEAP_MB
+      # may LOWER it; the preflight refuses raising it on a 16 GB runner (page-data / off-heap RSS, above).
+      NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HALF_HEAP_MB || '14336' }}"
+      DEBUG: "next:build:webpack-build*"
+      # Placeholder build-time env — presence, not real secrets. Overridden by
+      # repository/environment secrets when those are configured.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiJ9.placeholder.placeholder' }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://placeholder.supabase.co' }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiJ9.placeholder.placeholder' }}
+      NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL || 'https://app.example.com' }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET || 'placeholder-cron-secret' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/node-deps
+      - name: Preflight — the half heap fits ubuntu-latest
         run: |
-          # MEASURED 2026-10-06 (run 37530795472, commit 5488c160d): restoring proxy.js + .map moved the
-          # abort one file later — generate also renames proxy.js.nft.json. Restore EVERY companion the
-          # compile phase renamed (middleware.js, .map, .nft.json, …), each only where proxy.* is absent.
-          n=0
-          for f in .next/server/middleware.js*; do
-            [ -e "$f" ] || continue
-            t=".next/server/proxy.js${f#.next/server/middleware.js}"
-            if [ ! -e "$t" ]; then cp "$f" "$t"; echo "restored $t"; n=$((n+1)); fi
-          done
-          echo "bridge restored $n file(s)"
-      - name: Production build — generate (page data + prerender, no webpack)
-        env:
-          NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }}"
-        run: npx next build --webpack --experimental-build-mode generate
+          HEAP="${{ vars.BUILD_HALF_HEAP_MB || '14336' }}"
+          echo "half '${{ matrix.half }}' — globs: ${{ matrix.paths }} — compile heap ${HEAP} MB, generate heap ${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }} MB"
+          if [ "$HEAP" -gt 14336 ]; then
+            echo "::error::BUILD_HALF_HEAP_MB=${HEAP} exceeds 14336 on a 16 GB runner — the off-heap RSS that made 12288 fatal before the split would kill the machine. Configure BUILD_RUNNER for a larger runner instead."
+            exit 1
+          fi
+      - uses: ./.github/actions/next-build-phases
+        with:
+          debug-build-paths: ${{ matrix.paths }}
+          generate-heap-mb: ${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }}
+
+  # ── THE ONE VERDICT. Fail closed: certified only by a path that actually ran and succeeded.
+  next-build:
+    needs: [next-build-full, next-build-half]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verdict — the full pass, or every half, succeeded
+        run: |
+          FULL_RESULT="${{ needs.next-build-full.result }}"
+          HALF_RESULT="${{ needs.next-build-half.result }}"
+          echo "full single pass: ${FULL_RESULT} · two-half matrix: ${HALF_RESULT}"
+          if [ "$FULL_RESULT" = "success" ]; then
+            echo "CERTIFIED — the full single pass compiled and generated the whole tree on runner '${{ vars.BUILD_RUNNER }}'."
+            exit 0
+          fi
+          if [ "$FULL_RESULT" = "skipped" ] && [ "$HALF_RESULT" = "success" ]; then
+            echo "CERTIFIED (lever d) — every app/ page and route compiled and generated in exactly one of two halves on ubuntu-latest."
+            echo "NOT PROVEN by this path: a deployable .next, the whole graph fitting one compile (Vercel's single pass — needs the owner's build machine), cross-half manifests. See build.yml's 2026-11-01 entry."
+            exit 0
+          fi
+          echo "::error::NOT CERTIFIED — full=${FULL_RESULT}, halves=${HALF_RESULT}. A skipped or cancelled build is never a green build."
+          exit 1

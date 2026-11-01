@@ -161,7 +161,19 @@ export type ActivationCheckoutResult =
    *  session exists, `error` names why in the tenant's words. */
   | { ok: false; error: string; notConfigured?: boolean; customPricing?: boolean; priceNotConfigured?: boolean; discountRefused?: boolean }
 
+/** PURE (wave 148, lane 148A) — Stripe refuses a relative success_url / cancel_url, and the door that built one had
+ *  no public origin (lib/platform/site-url.ts siteUrl() returned ""). Refused here, BEFORE any Stripe call, with the
+ *  configuration named — so the subscriber journey reports "set NEXT_PUBLIC_APP_URL", never an opaque provider error.
+ *  scripts/subscriber-provisioning-guard.ts drives both outcomes through createActivationCheckout itself. */
+function checkoutReturnUrlRefusal(input: Pick<ActivationCheckoutInput, "successUrl" | "cancelUrl">): string | null {
+  const absolute = (u: string) => /^https?:\/\/[^/\s]+/i.test(u ?? "")
+  if (absolute(input.successUrl) && absolute(input.cancelUrl)) return null
+  return "The checkout return URLs have no public origin — set NEXT_PUBLIC_APP_URL on the deployment (Vercel provides VERCEL_URL on its own deployments). The hosted checkout was NOT created; the in-app paywall collects after sign-in."
+}
+
 export async function createActivationCheckout(svc: any, input: ActivationCheckoutInput): Promise<ActivationCheckoutResult> {
+  const urlRefusal = checkoutReturnUrlRefusal(input)
+  if (urlRefusal) return { ok: false, error: urlRefusal, notConfigured: true }
   const { data: tier, error: tierErr } = await svc
     .from("subscription_tiers")
     .select("id, tier_name, display_name, monthly_price_cents, annual_price_cents, setup_fee_cents, is_active")

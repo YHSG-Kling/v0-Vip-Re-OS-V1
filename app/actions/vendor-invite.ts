@@ -36,6 +36,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { siteUrl } from "@/lib/platform/site-url"
 import { randomBytes } from "node:crypto"
 import { canInviteVendors, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -205,7 +206,8 @@ export async function inviteVendorToPlatformAction(
     invitedByTeamId: actorScope.ledTeamId ?? actorScope.membershipTeamId,
   })
 
-  const appUrl    = process.env.NEXT_PUBLIC_APP_URL ?? ""
+  // THE ONE PUBLIC-ORIGIN RESOLVER (wave 148, lane 148A) — NEXT_PUBLIC_APP_URL, else the deployment's VERCEL_URL.
+  const appUrl    = siteUrl()
   const inviteUrl = `${appUrl}/vendor-invite/${token}`
 
   // Send Supabase auth invite. The magic link drops them at /auth/callback;
@@ -228,7 +230,8 @@ export async function inviteVendorToPlatformAction(
           invitation_id:  invitationId,
           custom_message: input.customMessage ?? null,
         },
-        redirectTo: `${appUrl}/auth/callback?next=${encodeURIComponent(`/vendor-invite/${token}`)}`,
+        // No origin → no redirect (the auth provider's Site URL), never a relative one.
+        redirectTo: appUrl ? `${appUrl}/auth/callback?next=${encodeURIComponent(`/vendor-invite/${token}`)}` : undefined,
       },
     )
     if (sendErr) emailError = sendErr.message

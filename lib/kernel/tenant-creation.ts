@@ -703,7 +703,13 @@ async function runProvisioningSteps(ctx: ProvisioningCtx): Promise<StepOutputs> 
       // ONE spelling of the landing (lane 79D): the success URL, the checkout
       // email and lane 79A's /login?activated=1 notice all read it.
       const { SUBSCRIBER_ACTIVATED_PATH, SUBSCRIBER_ACTIVATION_CANCELLED_PATH } = await import("@/lib/platform/subscriber-door")
-      const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+      // THE ONE PUBLIC-ORIGIN RESOLVER (wave 148, lane 148A): this read a bare NEXT_PUBLIC_APP_URL, so every
+      // deployment without it (each preview; production before the owner sets it) built a RELATIVE success_url.
+      // siteUrl() falls back to the deployment's own VERCEL_URL; with no origin at all the URLs stay relative
+      // and createActivationCheckout (the Stripe-facing survivor) refuses them BEFORE Stripe with the variable
+      // named — reported on the step, never an opaque provider error.
+      const { siteUrl } = await import("@/lib/platform/site-url")
+      const appUrl = siteUrl()
       const checkout = await createActivationCheckout(service, {
         brokerageId, tierId, billingCycle: input.billing.billingCycle,
         customerEmail: adminEmail,

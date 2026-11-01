@@ -499,7 +499,108 @@ WHERE u.user_type = 'contact' AND NOT EXISTS (SELECT 1 FROM public.contacts c WH
 
 When the census reads 0, record it on the line below (the readiness guard reads it — `scripts/production-readiness-guard.ts` owner obligation O2 stays RELEASE-BLOCKING until this line says RESOLVED with the date and the zero):
 
-- Status: OPEN — 4 unlinked (measured 2026-10-31)
+- Status: OPEN — 4 unlinked (re-measured 2026-11-01 by lane 148A; each pairs with exactly one same-email contact in its own tenant — the scoped LINK script below is ready)
+
+### Inventory (wave 148, lane 148A — measured 2026-11-01, project `hrvaqgvukzxfskkcrwbt`, READ-ONLY)
+
+All four are rows of the seeded showcase tenant **VIP Premier Realty** (`b0000000-0000-0000-0000-000000000001`, slug `vip-premier-realty-b000`), created together on 2026-03-31 with `@vip.demo` addresses, `status = 'active'`, each with its `auth.users` row (one has signed in once, 2026-04-02). No `user_invitations` row names any of them. For each, exactly **one** `public.contacts` row in the SAME tenant carries the SAME email (case-insensitive) and the SAME name, with `contact_user_id` NULL — and no contact in any other tenant carries those emails. Emails are masked here on purpose.
+
+| users.id (seed account) | who | contacts.id (the pairing) | contact_type | agent |
+|---|---|---|---|---|
+| `a0000000-0000-0000-0000-000000000013` | Sarah M · `bu***@vip.demo` | `50000000-0000-0000-0000-000000000001` | buyer | `c0000000-0000-0000-0000-000000000005` |
+| `a0000000-0000-0000-0000-000000000014` | Robert C · `se***@vip.demo` | `50000000-0000-0000-0000-000000000002` | seller | `c0000000-0000-0000-0000-000000000005` |
+| `a0000000-0000-0000-0000-000000000015` | Maria G · `un***@vip.demo` | `50000000-0000-0000-0000-000000000003` | buyer | `c0000000-0000-0000-0000-000000000005` |
+| `a0000000-0000-0000-0000-000000000016` | James R · `pa***@vip.demo` | `50000000-0000-0000-0000-000000000004` | lifetime_customer | `c0000000-0000-0000-0000-000000000005` |
+
+What a link changes and does not: `contacts.contact_user_id` only (FK → `auth.users`, ON DELETE SET NULL; plain index, no unique constraint). The one trigger on `contacts` (`trg_contacts_emit_agent_assigned`) fires only when `agent_id` changes, so a link emits nothing. No row is deleted, no account is disabled.
+
+### Remediation A — LINK (recommended: every pairing above is exact). One transaction; scoped to the four ids; refuses to change anything if any pairing has drifted since the inventory; reversible below.
+
+```sql
+-- §I REMEDIATION A — LINK THE FOUR SEED ACCOUNTS TO THEIR OWN CONTACT (owner SQL editor or the integrator's MCP, after the owner says "link")
+BEGIN;
+CREATE TEMP TABLE seed_link (user_id uuid PRIMARY KEY, contact_id uuid NOT NULL UNIQUE) ON COMMIT DROP;
+INSERT INTO seed_link (user_id, contact_id) VALUES
+  ('a0000000-0000-0000-0000-000000000013', '50000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000014', '50000000-0000-0000-0000-000000000002'),
+  ('a0000000-0000-0000-0000-000000000015', '50000000-0000-0000-0000-000000000003'),
+  ('a0000000-0000-0000-0000-000000000016', '50000000-0000-0000-0000-000000000004');
+DO $$
+DECLARE ok_pairs int;
+BEGIN
+  SELECT count(*) INTO ok_pairs
+  FROM seed_link l
+  JOIN public.users u    ON u.id = l.user_id AND u.user_type = 'contact'
+  JOIN public.contacts c ON c.id = l.contact_id AND c.brokerage_id = u.brokerage_id
+                        AND lower(c.email) = lower(u.email) AND c.contact_user_id IS NULL
+  WHERE NOT EXISTS (SELECT 1 FROM public.contacts x WHERE x.contact_user_id = u.id);
+  IF ok_pairs <> 4 THEN
+    RAISE EXCEPTION 'seed link refused: % of 4 pairings still match the 2026-11-01 inventory — re-run the census and re-decide', ok_pairs;
+  END IF;
+END $$;
+UPDATE public.contacts c
+   SET contact_user_id = l.user_id, updated_at = now()
+  FROM seed_link l
+ WHERE c.id = l.contact_id AND c.contact_user_id IS NULL
+RETURNING c.id AS contact_id, c.contact_user_id;   -- expect exactly 4 rows
+COMMIT;
+```
+
+**Rollback of A** (restores exactly what A changed — only where the link is still the seed account):
+
+```sql
+-- §I ROLLBACK A
+UPDATE public.contacts
+   SET contact_user_id = NULL, updated_at = now()
+ WHERE (id, contact_user_id) IN (
+   ('50000000-0000-0000-0000-000000000001'::uuid, 'a0000000-0000-0000-0000-000000000013'::uuid),
+   ('50000000-0000-0000-0000-000000000002'::uuid, 'a0000000-0000-0000-0000-000000000014'::uuid),
+   ('50000000-0000-0000-0000-000000000003'::uuid, 'a0000000-0000-0000-0000-000000000015'::uuid),
+   ('50000000-0000-0000-0000-000000000004'::uuid, 'a0000000-0000-0000-0000-000000000016'::uuid))
+RETURNING id;   -- expect the rows A linked
+```
+
+### Remediation B — ARCHIVE (only if you decide these seed identities must never sign in). Same four ids, no deletion: `users.status = 'inactive'` (the deactivation spelling `app/actions/superadmin/platform-staff.ts` already writes). Then, in **Authentication → Users**, ban each of the four auth users so a live session cannot be minted. B removes the exposure but does NOT make the census read zero (the census counts contact users with no contact link), so O2 stays RELEASE-BLOCKING after B by design — prefer A.
+
+```sql
+-- §I REMEDIATION B — ARCHIVE (reversible: set status back to 'active' and lift the ban)
+UPDATE public.users SET status = 'inactive', updated_at = now()
+ WHERE id IN ('a0000000-0000-0000-0000-000000000013','a0000000-0000-0000-0000-000000000014','a0000000-0000-0000-0000-000000000015','a0000000-0000-0000-0000-000000000016')
+   AND user_type = 'contact' AND status = 'active'
+RETURNING id;   -- expect 4 rows
+-- ROLLBACK B: UPDATE public.users SET status = 'active', updated_at = now() WHERE id IN (<the same four ids>) AND status = 'inactive' RETURNING id;
+```
+
+Neither remediation deletes anything. Deleting a seed account (Authentication → Users → delete; the `public.users` row follows, `contacts.contact_user_id` would go NULL by its FK) needs your explicit authorization and is not scripted here.
+
+## J. Release-blocker close-out — run in this order once §F, §G and §I are done (wave 148, lane 148A)
+
+Nothing is LIVE or production-safe until every step below reads its expected value. Each one is a READ — run them after the policies are applied (§F route A/B, §G route A/B) and the seed accounts are remediated (§I).
+
+1. **The live storage verdict** (the one answer; a migration header is only a claim):
+   ```sql
+   SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness() ORDER BY bucket_id;
+   -- expect: agent-documents owner_scoped · brokerage-forms owner_scoped · client-documents owner_scoped · documents service_only · offer-documents service_only · transaction-documents owner_scoped — every missing_policies and unscoped_policies EMPTY
+   ```
+2. **No bucket-wide rule left anywhere on the five buckets** (expect 0 rows):
+   ```sql
+   SELECT policyname, cmd FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
+     AND (qual ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$'
+       OR with_check ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$');
+   ```
+3. **Exactly eleven owner policies** — the four of §F and the seven of §G (expect 11):
+   ```sql
+   SELECT count(*) AS owner_policies FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
+     AND policyname ~ '^(brokerage-forms|client-documents|transaction-documents|agent-documents) owner ';
+   ```
+4. **The impersonation checks** in §F "Verify afterwards" and §G "Verify afterwards" — every expected `true` / `false` exactly as written there (a contact and a vendor seat refused; the deal's agent and TC admitted).
+5. **The seed census** (expect 0 after §I remediation A):
+   ```sql
+   SELECT count(*) AS unlinked_contact_users FROM public.users u
+   WHERE u.user_type = 'contact' AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id);
+   ```
+6. **In the repository** (or ask the integrator), in one commit: flip line 1 of `supabase/migrations/m854-…`, `m855-…`, `m874-…` and `m875-…` to `-- ── APPLIED LIVE <date> …`; lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file flipped; flip §I's status line to `- Status: RESOLVED <date> — census 0`.
+7. **The proofs that read those stamps go green on the rule, not on a waypoint:** `npm run test:release-blockers` (prints `RELEASE BLOCKERS: 0 owner obligation(s) open` for the storage and seed items), `npm run test:production-readiness` (O1 and O2 `discharged`), `npm run test:transfer-classification`, `npm run test:migration-claim`.
 
 ## After you run anything on this page
 

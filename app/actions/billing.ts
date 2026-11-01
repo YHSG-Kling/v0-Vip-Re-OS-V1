@@ -2,6 +2,7 @@
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
+import { siteUrl } from "@/lib/platform/site-url"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { toPlanTier } from "@/lib/billing/plan-tier"
@@ -27,7 +28,9 @@ export async function createBrokerageBillingPortalAction(returnUrl?: string): Pr
   if (!BILLING_ADMIN_ROLES.has((u as any).user_type ?? "")) return { ok: false, error: "Only an admin/broker can manage billing" }
 
   const { data: sub } = await supabase.from("subscriptions").select("stripe_customer_id").eq("brokerage_id", u.brokerage_id).not("stripe_customer_id", "is", null).order("created_at", { ascending: false }).limit(1).maybeSingle()
-  const base = returnUrl ?? process.env.NEXT_PUBLIC_APP_URL ?? ""
+  // THE ONE PUBLIC-ORIGIN RESOLVER (wave 148, lane 148A): a bare NEXT_PUBLIC_APP_URL handed Stripe a relative return_url when unset.
+  const base = returnUrl ?? siteUrl()
+  if (!/^https?:\/\//i.test(base)) return { ok: false, error: "The billing portal needs the app's public address — set NEXT_PUBLIC_APP_URL on the deployment." }
   try {
     const { createBillingPortalUrl } = await import("@/lib/billing/stripe-portal")
     return { ok: true, url: await createBillingPortalUrl((sub as any)?.stripe_customer_id, `${base}/dashboard/admin/billing`) }

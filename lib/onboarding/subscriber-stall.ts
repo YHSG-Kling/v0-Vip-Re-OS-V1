@@ -36,6 +36,7 @@ import { STALL_AFTER_DAYS } from "@/lib/onboarding/onboarding-roster"
 // `["broker", "broker_owner", "admin"]` and so skipped a broker_admin / team_lead /
 // compliance_officer owner silently (lane 140O).
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { siteUrl } from "@/lib/platform/site-url"
 
 /** Days after creation before the first nudge. */
 export const NUDGE_AFTER_DAYS = 3
@@ -156,7 +157,8 @@ export async function runSubscriberStallSweep(svc: any, now: Date = new Date(), 
     subByBrokerage.set(s.brokerage_id, { status: s.status, stripe_subscription_id: s.stripe_subscription_id, trial_end: s.trial_end })
   }
 
-  const appUrl = (deps.appUrl ?? process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+  // THE ONE PUBLIC-ORIGIN RESOLVER (wave 148, lane 148A) — NEXT_PUBLIC_APP_URL, else the deployment's VERCEL_URL.
+  const appUrl = (deps.appUrl ?? siteUrl()).replace(/\/$/, "")
   let rep: { userId: string; brokerageId: string } | null | undefined
   let brandName: string | undefined = deps.brandName
 

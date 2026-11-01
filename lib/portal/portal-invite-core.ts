@@ -1,6 +1,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { siteUrl } from "@/lib/platform/site-url"
 import { CONVERSION_MARKER_COLUMN } from "@/lib/contact-promotion/conversion-finality"
 import {
   QUALIFIED_CONTACT_STATUS,
@@ -249,10 +250,13 @@ export async function issuePortalInvite(
   let emailSent = false
   const canEmail = !!contact.email && !contact.email_opt_out && !contact.email_unsubscribed
   if (sendMagicLink && canEmail) {
-    const redirectTo = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/portal/${contactId}`
+    // THE ONE PUBLIC-ORIGIN RESOLVER (wave 148, lane 148A): a bare `${NEXT_PUBLIC_APP_URL ?? ""}` sent a RELATIVE
+    // redirect when the variable was unset. siteUrl() falls back to VERCEL_URL; with no origin the redirect is
+    // omitted and the auth provider uses the project's Site URL — never a relative or invented host.
+    const origin = siteUrl()
     const { error: otpErr } = await supabase.auth.signInWithOtp({
       email: contact.email as string,
-      options: { emailRedirectTo: redirectTo },
+      options: origin ? { emailRedirectTo: `${origin}/portal/${contactId}` } : {},
     })
     if (!otpErr) {
       emailSent = true

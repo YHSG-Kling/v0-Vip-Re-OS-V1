@@ -49,7 +49,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { blankComments } from "./strip-comments"
+import { tryFile, makeWalker, appEntries } from "./app-import-graph"
 
 const PROXY_GRAPH_BUDGET = 40
 // wave 105F: measured 1155 (app/dashboard/agent/page.tsx) and 4841 (union of 992 entries) at 0865cda9b.
@@ -63,56 +63,9 @@ function check(name: string, ok: boolean, detail = "") {
   else { fail++; console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 
-const EXT = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"]
-function tryFile(p: string): string | null {
-  if (fs.existsSync(p) && fs.statSync(p).isFile()) return p
-  for (const e of EXT) if (fs.existsSync(p + e)) return p + e
-  for (const e of EXT) if (fs.existsSync(path.join(p, "index" + e))) return path.join(p, "index" + e)
-  return null
-}
-
-/** The first-party import graph of one tree. */
-function makeWalker(root: string) {
-  function resolve(spec: string, from: string): string | null {
-    if (spec.startsWith("./") || spec.startsWith("../")) return tryFile(path.resolve(path.dirname(from), spec))
-    if (spec.startsWith("@/components/")) return tryFile(path.join(root, "app/components", spec.slice(13))) ?? tryFile(path.join(root, spec.slice(2)))
-    if (spec.startsWith("@/")) return tryFile(path.join(root, spec.slice(2)))
-    return null
-  }
-  const cache = new Map<string, string[]>()
-  function edges(file: string): string[] {
-    const hit = cache.get(file); if (hit) return hit
-    const src = file.endsWith(".json") ? "" : blankComments(fs.readFileSync(file, "utf8"))
-    const out: string[] = []
-    const reStatic = /(?:^|[;\n}])\s*(import|export)\s+(type\s+)?([^'"`;]*?\bfrom\s*)?["']([^"']+)["']/g
-    let m: RegExpExecArray | null
-    while ((m = reStatic.exec(src))) {
-      if (m[2]) continue
-      // Anchored at ^ (wave 105F): `import Default, { type A } from "x"` is a VALUE import and must be
-      // followed; unanchored, the brace test alone skipped it and the app union read 6 modules short
-      // of the lane100D measurement tool that the proxy numbers were calibrated against.
-      if (m[3] && /^\{[^}]*\}\s*from\s*$/.test(m[3].trim())) {
-        const inner = m[3].slice(m[3].indexOf("{") + 1, m[3].lastIndexOf("}"))
-        const parts = inner.split(",").map((s) => s.trim()).filter(Boolean)
-        if (parts.length && parts.every((p) => p.startsWith("type "))) continue
-      }
-      const r = resolve(m[4], file); if (r) out.push(r)
-    }
-    const reDyn = /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g
-    while ((m = reDyn.exec(src))) { const r = resolve(m[1], file); if (r) out.push(r) }
-    cache.set(file, out)
-    return out
-  }
-  function reach(entry: string): { seen: Set<string>; parent: Map<string, string> } {
-    const seen = new Set<string>([entry]); const parent = new Map<string, string>(); const q = [entry]
-    while (q.length) {
-      const f = q.pop()!
-      for (const t of edges(f)) if (!seen.has(t)) { seen.add(t); parent.set(t, f); q.push(t) }
-    }
-    return { seen, parent }
-  }
-  return { reach, rel: (p: string) => path.relative(root, p) }
-}
+// THE WALKER (tryFile / makeWalker / appEntries) moved VERBATIM to scripts/app-import-graph.ts (wave 148, lane 148A) so
+// scripts/release-blockers-guard.ts measures the two halves of the lever-(d) compile matrix with the SAME code this budget is
+// calibrated on — one walker, two readers (CLAUDE.md §1).
 
 /** The rule as one function (the fixture and the real tree are judged by the same code). */
 function judge(root: string, entryRel: string, budget: number) {
@@ -127,22 +80,6 @@ function judge(root: string, entryRel: string, budget: number) {
     return out.reverse().join(" → ")
   }
   return { ok: seen.size <= budget, count: seen.size, modules, chain, error: null as string | null }
-}
-
-/** Every webpack entry under app/ — the file names Next turns into routes. */
-function appEntries(root: string): string[] {
-  const out: string[] = []
-  const walk = (dir: string) => {
-    if (!fs.existsSync(dir)) return
-    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (d.name === "node_modules" || d.name.startsWith(".")) continue
-      const p = path.join(dir, d.name)
-      if (d.isDirectory()) walk(p)
-      else if (/^(page|layout|route|template|loading|error|not-found|default|global-error)\.(tsx?|jsx?)$/.test(d.name)) out.push(p)
-    }
-  }
-  walk(path.join(root, "app"))
-  return out
 }
 
 /** The app-side rule (wave 105F): heaviest single entry ≤ entryBudget AND union of entries ≤ unionBudget. */

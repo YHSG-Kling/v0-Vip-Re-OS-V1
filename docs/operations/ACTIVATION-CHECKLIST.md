@@ -40,6 +40,10 @@ Conventions. **Owner action** = what you do. **Verify** = how you know. A verifi
 - **Owner action:** After steps 2.x, run the post-deploy smoke ritual once (`PRODUCTION-READINESS.md` § "The post-deploy smoke ritual").
 - **Verify:** `npm run test:production-smoke` (live-fires a fresh tenant through provision → market → lead → portal and cleans up after itself — run it only against the production database **after** the Supabase steps, and expect it to create and remove one tenant).
 
+### 1.9 The deployment build machine (wave 148, lane 148A — RELEASE-BLOCKING O3)
+- **Owner action:** Vercel builds the **single pass** (`vercel.json` `buildCommand`: `next build --webpack` at `--max-old-space-size=10240`). CI measured that pass's compile demand at ~12.9 GB committed heap and recorded three deterministic aborts at a 14336 cap (`.github/workflows/build.yml`, 2026-10-31 entry) — so a Vercel deployment of today's tree needs a **larger build machine** (Vercel → Project → Settings → Build & Development → Build Machine) **and** a heap raised to match in `vercel.json` (a one-line code change made after you pick the machine; the CI gate's two-half matrix cannot be deployed — its output is discarded). The CI-side twin of this decision is the repo variables `BUILD_RUNNER` (a GitHub larger-runner label, e.g. 8-core / 32 GB) and `BUILD_HEAP_MB` (16384) — your "Both" ruling of 2026-10-03.
+- **Verify:** the first Vercel production build log shows "Compiled" and "Generating static pages" with no `Ineffective mark-compacts near heap limit`; `npm run test:release-blockers` prints O3 `discharged` once `vercel.json`'s heap is above the CI compile cap.
+
 ## 2. Supabase privileged migrations
 
 ### 2.1 Backups before the first real tenant
@@ -73,6 +77,10 @@ Conventions. **Owner action** = what you do. **Verify** = how you know. A verifi
 ### 2.8 Live cache verification
 - **Owner action:** From a shell holding the service key: run the guards that CI cannot (CI has no database credential).
 - **Verify:** `NODE_OPTIONS=--max-old-space-size=6000 npm run test:schema-cache-drift` and `npx tsx scripts/migration-ledger-guard.ts` print no failure (a stated SKIP means credentials were absent — that is not a pass).
+
+### 2.9 The release-blocking storage policies and seed accounts (wave 148, lane 148A — O1 and O2)
+- **Owner action:** In the Supabase SQL editor (or Dashboard → Storage → Policies when the editor is refused `42501`): apply m855 (`docs/operations/OWNER-SQL.md` §F) and m875 (§G); then decide the four portal seed accounts — §I carries the inventory (all four are VIP Premier Realty seed users, each with exactly one same-email contact in that tenant) and the scoped, guarded, reversible **LINK** script (recommended) or the reversible **ARCHIVE** script; nothing is deleted.
+- **Verify:** run OWNER-SQL §J top to bottom — `public.storage_bucket_policy_readiness()` reads `owner_scoped` / `service_only` for all six buckets with empty `missing_policies` / `unscoped_policies`, 0 bucket-wide rules, 11 owner policies, the §F/§G impersonation checks as written, the seed census `0` — then flip the stamps and the §I status line, and `npm run test:release-blockers` prints `RELEASE BLOCKERS: 0 owner obligation(s) open` for O1/O2 (and `npm run test:production-readiness` shows O1/O2 `discharged`).
 
 ## 3. Stripe products and prices
 
@@ -149,8 +157,8 @@ Conventions. **Owner action** = what you do. **Verify** = how you know. A verifi
 - **Verify:** `NODE_OPTIONS="--max-old-space-size=10000" npm run guard > guard.log 2>&1; echo "GUARD_EXIT=$?" >> guard.log` then `grep GUARD_EXIT guard.log` prints `GUARD_EXIT=0` (the log contains the word "fail" hundreds of times in prose — CLAUDE.md §7).
 
 ### 6.2 The CI build verdict
-- **Owner action:** Confirm the `next-build` job on the release commit. Exit 134 ("Ineffective mark-compacts") is re-run unchanged; escalate after three consecutive failures at the same commit (CLAUDE.md §8).
-- **Verify:** green `build.yml` run URL recorded in the launch note.
+- **Owner action:** Confirm the `next-build` job on the release commit — since wave 148 it is the ONE verdict over two paths: the full single pass (`next-build-full`, runs only when the repo variable `BUILD_RUNNER` names your larger runner, with `BUILD_HEAP_MB` raised to match) or, while `BUILD_RUNNER` is empty, lever (d) — the two-half compile matrix (`next-build-half`, `app/dashboard/**` and everything else, each compiled and generated on ubuntu-latest). A skipped or cancelled path is red, never green. Make `next-build` the required check in branch protection. Exit 134 on a path is re-run unchanged once; after three at one commit the answer is the runner (`.github/workflows/build.yml` bracket), not the number.
+- **Verify:** green `build.yml` run URL recorded in the launch note, with the verdict line it printed (`CERTIFIED — the full single pass …` or `CERTIFIED (lever d) …`); a lever-(d) verdict is NOT a deployable artefact — the deployment build is step 1.9.
 
 ### 6.3 The readiness gate
 - **Owner action:** Clear or accept every BLOCKED / WAITING_EXTERNAL row of the blocker table (B1 key, B2 lanes, B3 prices, B4 snapshots, B5 owner DDL, B6 keys, B11 UI smoke).

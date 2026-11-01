@@ -64,14 +64,19 @@ export async function GET(request: NextRequest) {
         .select('brokerage_id')
         .eq('id', user.id)
         .maybeSingle()
-      await acceptUserInvitationOnFirstLogin({
+      // A failed acceptance post-condition is REPORTED by the state machine itself (wave 148, lane 148A —
+      // reportOperationOutcome `invitation`); the result is logged here so the request log carries it too.
+      const accepted = await acceptUserInvitationOnFirstLogin({
         userId:      user.id,
         email:       user.email,
         brokerageId: profile?.brokerage_id ?? null,
       })
+      if (accepted.error) console.error(`[auth/callback] invitation acceptance failed for ${user.id}: ${accepted.error}`)
     }
-  } catch {
-    // Non-fatal — onboarding state machine is advisory.
+  } catch (err) {
+    // Non-fatal for the redirect (the session already exists) — but never SILENT: an empty catch here hid every
+    // first-login acceptance failure (wave 148, lane 148A). The state machine reports its own post-condition.
+    console.error("[auth/callback] invitation acceptance hook threw:", (err as Error)?.message ?? String(err))
   }
 
   // ── First-login onboarding redirect ────────────────────────────────────────
@@ -110,8 +115,10 @@ export async function GET(request: NextRequest) {
         }
       }
     }
-  } catch {
-    // Non-fatal — fall through to default dashboard route
+  } catch (err) {
+    // Non-fatal — fall through to default dashboard route (which DETECTS an incomplete account and routes a visible
+    // setup state). Logged, not silent (wave 148, lane 148A).
+    console.warn("[auth/callback] onboarding redirect check failed — routing to /dashboard:", (err as Error)?.message ?? String(err))
   }
 
   // Default: role-based routing happens at /dashboard

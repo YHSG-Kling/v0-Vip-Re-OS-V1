@@ -1,0 +1,117 @@
+# THE BUILD PHASES — one spelling for every build job in .github/workflows/build.yml (wave 148, lane 148A).
+#
+# Before wave 148 these four steps lived inline in build.yml's single `next-build` job. Lever (d) — the
+# two-half compile matrix — needs the SAME steps on a second job, so they live here once and both jobs call
+# them (CLAUDE.md §1: one canonical path; build.yml's bracket says why each step exists, and the two
+# measurement comments that sat beside the swap and bridge steps moved here VERBATIM).
+#
+#   swap      → best-effort swapfile for the post-compile RSS spike
+#   compile   → `next build --webpack --experimental-build-mode compile` (the job's NODE_OPTIONS, inherited
+#               by the webpack build worker — see build.yml's 2026-10-06 entry)
+#   bridge    → restore proxy.js* companions the compile phase renamed to middleware.js*
+#   generate  → `next build --webpack --experimental-build-mode generate` under its OWN heap
+#
+# `debug-build-paths` empty = the whole tree (the full single pass). Non-empty = the SAME comma-separated
+# globs are handed to BOTH compile and generate: Next 16.2.7 re-runs route discovery in generate mode
+# (build/index.js discoverRoutes is not gated by the build mode), so a generate without the filter would
+# look for the other half's compiled entries. What a partial generate can and cannot prove is written beside
+# the matrix in build.yml — it is never a deployable artefact.
+name: next-build-phases
+description: Swap, webpack compile, proxy bridge and generate — the build phases every build.yml job runs.
+
+inputs:
+  debug-build-paths:
+    description: Comma-separated globs for `next build --debug-build-paths` (empty = the whole tree).
+    required: false
+    default: ""
+  generate-heap-mb:
+    description: max-old-space-size for the generate phase (page data + prerender).
+    required: false
+    default: "10240"
+
+runs:
+  using: composite
+  steps:
+    # ── 2026-08-26, run 33021558019 (commit 67fc1b05): THE FAILURE MODE MOVED,
+    # exactly as the bracket above predicted. With webpackBuildWorker on, the
+    # compile FINISHED for the first time on CI — "Compiled with warnings in
+    # 8.0min", where every prior run aborted with exit 134 mid-compile around
+    # 8m10s. ~21 seconds later the RUNNER was shut down and the build worker
+    # SIGKILLed: no V8 abort, no exit 134 — the machine itself ran out. That is
+    # the "RSS is NOT clearly improved — only the heap is" reading coming true
+    # (13.9 GB worker RSS measured locally against a 16 GB machine).
+    #
+    # The bracket's conclusion — "the answer is the runner, not another knob" —
+    # missed one free knob: SWAP. The post-compile spike is TRANSIENT and its
+    # pages are COLD (pack-file-cache buffers being serialized to disk, the
+    # parent's retained compile results) — the exact working-set shape swap
+    # absorbs without thrashing the hot path. The runner has ~14 GB of free SSD
+    # doing nothing during that window. This does not raise any V8 cap (12288
+    # stays fatal for the reason recorded above); it gives the KERNEL somewhere
+    # to put cold pages so the OOM killer does not shoot the runner service.
+    #
+    # BEST-EFFORT BY DESIGN: if no swapfile can be created, the step says so
+    # and the build still runs — the build is the test, and a failed swap step
+    # masking a green build would invert the point. `free -h` prints before and
+    # after so the next reading of this bracket has numbers, not adjectives.
+    - name: Add swap headroom for the post-compile RSS spike
+      shell: bash
+      run: |
+        echo "── memory before ──"; free -h; swapon --show || true
+        TARGET=/mnt/swapfile-ci
+        sudo test -d /mnt || TARGET=/swapfile-ci
+        if sudo fallocate -l 8G "$TARGET" 2>/dev/null || sudo fallocate -l 4G "$TARGET" 2>/dev/null; then
+          sudo chmod 600 "$TARGET" && sudo mkswap "$TARGET" && sudo swapon "$TARGET" \
+            && echo "swap added at $TARGET" \
+            || echo "swapfile created but could not be enabled — building without it"
+        else
+          echo "no space for a swapfile — building without it"
+        fi
+        echo "── memory after ──"; free -h; swapon --show || true
+    # The worker inherits NODE_OPTIONS and DEBUG from the calling job's env (build.yml sets both on each
+    # build job): DEBUG makes the worker print "starting <name> compiler" / "<name> compiler finished"
+    # so an abort names its compiler. A few lines, no measurable cost.
+    - name: Production build — compile (webpack only, one compiler per worker)
+      shell: bash
+      env:
+        BUILD_PATHS: ${{ inputs.debug-build-paths }}
+      run: |
+        if [ -n "$BUILD_PATHS" ]; then
+          echo "compile scope (--debug-build-paths): $BUILD_PATHS"
+          npx next build --webpack --experimental-build-mode compile --debug-build-paths "$BUILD_PATHS"
+        else
+          echo "compile scope: the whole tree"
+          npx next build --webpack --experimental-build-mode compile
+        fi
+    # MEASURED 2026-10-06 (run 37420587555, commit 7e6e412a3): the FIRST two-phase run cleared the
+    # heap wall — compile finished, 411 static pages generated in 3.2 min — and then died in
+    # "Finalizing page optimization" with ENOENT rename .next/server/proxy.js → middleware.js.
+    # Next 16.2.7's compile phase already performs that rename; the generate phase repeats it.
+    # Restore the source name (a copy — the rename then overwrites middleware.js with the same
+    # bytes), so both phases see the file layout they expect. No-op when compile left proxy.js.
+    - name: Bridge the proxy bundle between phases (proxy.js ↔ middleware.js)
+      shell: bash
+      run: |
+        # MEASURED 2026-10-06 (run 37530795472, commit 5488c160d): restoring proxy.js + .map moved the
+        # abort one file later — generate also renames proxy.js.nft.json. Restore EVERY companion the
+        # compile phase renamed (middleware.js, .map, .nft.json, …), each only where proxy.* is absent.
+        n=0
+        for f in .next/server/middleware.js*; do
+          [ -e "$f" ] || continue
+          t=".next/server/proxy.js${f#.next/server/middleware.js}"
+          if [ ! -e "$t" ]; then cp "$f" "$t"; echo "restored $t"; n=$((n+1)); fi
+        done
+        echo "bridge restored $n file(s)"
+    - name: Production build — generate (page data + prerender, no webpack)
+      shell: bash
+      env:
+        NODE_OPTIONS: "--max-old-space-size=${{ inputs.generate-heap-mb }}"
+        BUILD_PATHS: ${{ inputs.debug-build-paths }}
+      run: |
+        if [ -n "$BUILD_PATHS" ]; then
+          echo "generate scope (--debug-build-paths, the SAME globs as compile): $BUILD_PATHS"
+          npx next build --webpack --experimental-build-mode generate --debug-build-paths "$BUILD_PATHS"
+        else
+          echo "generate scope: the whole tree"
+          npx next build --webpack --experimental-build-mode generate
+        fi
