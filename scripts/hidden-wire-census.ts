@@ -942,19 +942,48 @@ const definedFnFiles = new Map<string, string[]>()
 for (const rel of migrationFiles()) {
   const raw2 = readFileSync(join(root, rel), "utf8")
   const sql = raw2.replace(/--[^\n]*/g, "")
-  const re = /create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?"?([a-zA-Z0-9_]+)"?/gi
-  let m: RegExpExecArray | null
-  while ((m = re.exec(sql))) {
-    definedFns.add(m[1])
-    const arr = definedFnFiles.get(m[1]) ?? []
+  for (const name of rpcDefinedFunctionNames(sql)) {
+    definedFns.add(name)
+    const arr = definedFnFiles.get(name) ?? []
     if (!arr.includes(rel)) arr.push(rel)
-    definedFnFiles.set(m[1], arr)
+    definedFnFiles.set(name, arr)
   }
+}
+/**
+ * PURE — the function names ONE migration file defines that an `.rpc()` could ever reach. The schema is read, not skipped over:
+ * `pg_temp.name` is a session-scoped scratch function (m920's backfill element function), gone at session end and never
+ * callable by name through PostgREST, and a function the SAME file DROPs again is scratch too. Before 2026-11-01 the regex
+ * read `FUNCTION pg_temp.m920_…` as a function named `pg_temp` and accused the backfill of defining an RPC nothing calls.
+ */
+function rpcDefinedFunctionNames(sqlNoComments: string): string[] {
+  const re = /create\s+(?:or\s+replace\s+)?function\s+(?:"?([a-zA-Z0-9_]+)"?\.)?"?([a-zA-Z0-9_]+)"?/gi
+  const dropped = new Set<string>()
+  const dropRe = /drop\s+function\s+(?:if\s+exists\s+)?(?:"?[a-zA-Z0-9_]+"?\.)?"?([a-zA-Z0-9_]+)"?/gi
+  let d: RegExpExecArray | null
+  while ((d = dropRe.exec(sqlNoComments))) dropped.add(d[1])
+  const out: string[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(sqlNoComments))) {
+    const schema = (m[1] ?? "public").toLowerCase(), name = m[2]
+    if (schema === "pg_temp" || dropped.has(name)) continue
+    if (!out.includes(name)) out.push(name)
+  }
+  return out
 }
 const categoryDMissing: string[] = [] // called, no migration defines it
 const categoryDUnused: string[] = []  // defined in migrations, never called
 for (const [name] of rpcCalls) if (!definedFns.has(name)) categoryDMissing.push(name)
 for (const name of definedFns) if (!rpcCalls.has(name)) categoryDUnused.push(name)
+// POSITIVE CONTROL for the (d) reader (CLAUDE.md §2): a public function counts; a pg_temp scratch function and a function the
+// same file drops do not; a schema-qualified public function is read by its NAME, not its schema.
+{
+  const fixture = 'CREATE OR REPLACE FUNCTION pg_temp.scratch_fn(x int) RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;\n'
+    + 'CREATE FUNCTION public.real_rpc() RETURNS void AS $$ $$ LANGUAGE sql;\nCREATE FUNCTION "quoted_rpc"() RETURNS void AS $$ $$ LANGUAGE sql;\n'
+    + 'CREATE FUNCTION public.dropped_here() RETURNS void AS $$ $$ LANGUAGE sql;\nDROP FUNCTION IF EXISTS public.dropped_here();\nDROP FUNCTION IF EXISTS pg_temp.scratch_fn(int);'
+  const got = rpcDefinedFunctionNames(fixture).sort().join()
+  if (got !== "quoted_rpc,real_rpc") { console.log(`  ✗ (d) reader control: expected quoted_rpc,real_rpc — got ${got || "(nothing)"}`); process.exitCode = 1 }
+  else console.log("  ✓ (d) reader control: a pg_temp scratch function and a same-file-dropped function are not RPCs; public ones are read by name")
+}
 
 // ── (d) RATCHET SPLIT — blind-spot burn-down, lane 74C, 2026-09-18 ──────────
 // "migration-defined-never-called" conflates two very different things: a
