@@ -30,7 +30,6 @@ import {
   type BuyerCriteria,
   type CriteriaChangeDraft,
   type CriteriaChannel,
-  type ConsentBasis,
   type UtteranceSourceKind,
 } from "./buyer-criteria"
 import { applyConversationTurn, type CriteriaStatement } from "./conversational-search"

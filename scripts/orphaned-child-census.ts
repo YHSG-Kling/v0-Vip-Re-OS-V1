@@ -355,11 +355,28 @@ const COMPOSITE_KEY_NOT_A_PARENT_ID = new Set<string>([
   "journey_states.user_id",
 ])
 
+// ── ATTRIBUTION_LABEL_NOT_A_PARENT_ID (wave 148 integrator, 2026-11-01; lane 148F's m918) ──
+//
+// market_dataset_verifications.verified_by STAYS TEXT, ON PURPOSE. It is not a user id: the C19 dataset-verification log is
+// PLATFORM public-data metadata (no brokerage_id, no seat) and the column names WHO/WHAT vouched for the observation as a
+// label — "manager:data_steward (permit sweep observation)", "registry seed (lib/external/socrata-market-registry.ts, dated)",
+// "catalog probe" (lib/intent/dataset-verification.ts recordDatasetObservations / verificationFromRow). A manager key or a
+// code-contract citation is not uuid-shaped, so a FK to users(id) is not merely wrong but impossible to declare; wiring one to
+// move this number would be the wrong-parent schema defect §1 forbids. The §6 end state is a rename the next migration that
+// touches the table owes (`verified_by` → `attribution`), after which this declaration is dead weight the cache outranks.
+//
+// A SEPARATE set with its OWN verdict (§6: one vocabulary per idea): the composite-key set above holds an app-minted KEY the
+// app re-reads; this one holds a human-readable LABEL nobody joins on.
+const ATTRIBUTION_LABEL_NOT_A_PARENT_ID = new Set<string>([
+  "market_dataset_verifications.verified_by",
+])
+
 const POLY_BASES_SEEN = new Set<string>()
 let oc1Views = 0
 let oc1CrossSchema = 0
 let oc1ExternalProviderId = 0
 let oc1CompositeKey = 0
+let oc1AttributionLabel = 0
 let oc1SelfRef = 0
 let oc1Poly = 0
 let oc1Protected = 0
@@ -383,7 +400,7 @@ let oc1Examined = 0
  * the same function, there is no second spelling to drift (§6).
  */
 export type Oc1Verdict =
-  | "protected" | "cross_schema_fk" | "external_provider_id_collision" | "composite_key_not_a_parent" | "self_ref" | "polymorphic" | "view" | "unprotected"
+  | "protected" | "cross_schema_fk" | "external_provider_id_collision" | "composite_key_not_a_parent" | "attribution_label_not_a_parent" | "self_ref" | "polymorphic" | "view" | "unprotected"
 export function oc1Verdict(
   table: string,
   col: string,
@@ -398,6 +415,8 @@ export function oc1Verdict(
   externalProviderIdCollision: Set<string> = EXTERNAL_PROVIDER_ID_COLLISION,
   /** COMPOSITE_KEY_NOT_A_PARENT_ID by default; a parameter for the same reason. */
   compositeKeyNotAParentId: Set<string> = COMPOSITE_KEY_NOT_A_PARENT_ID,
+  /** ATTRIBUTION_LABEL_NOT_A_PARENT_ID by default; a parameter for the same reason. */
+  attributionLabelNotAParentId: Set<string> = ATTRIBUTION_LABEL_NOT_A_PARENT_ID,
 ): Oc1Verdict | null {
   if (!consensusParent) return null
   if (fks[col]) return "protected"
@@ -424,6 +443,9 @@ export function oc1Verdict(
   // discipline as the line above, ordered the same way, and the cache still
   // wins: a real FK on it (after the §6 rename) reads as "protected" above.
   if (compositeKeyNotAParentId.has(`${table}.${col}`)) return "composite_key_not_a_parent"
+  // NOT AN ID OF ANY TABLE — the column holds a human-readable attribution LABEL (wave 148, m918; see
+  // ATTRIBUTION_LABEL_NOT_A_PARENT_ID). Same per-column override discipline, same order, and the cache still wins.
+  if (attributionLabelNotAParentId.has(`${table}.${col}`)) return "attribution_label_not_a_parent"
   if (consensusParent === table) return "self_ref"
   if (colSet.has(`${col.replace(/_id$/, "")}_type`)) return "polymorphic"
   // A VIEW HOLDS NO ROWS. Ordered AFTER "protected" deliberately: if a relation
@@ -451,6 +473,7 @@ for (const table of snapshotTables) {
     if (verdict === "cross_schema_fk") { oc1CrossSchema++; continue }
     if (verdict === "external_provider_id_collision") { oc1ExternalProviderId++; continue }
     if (verdict === "composite_key_not_a_parent") { oc1CompositeKey++; continue }
+    if (verdict === "attribution_label_not_a_parent") { oc1AttributionLabel++; continue }
     add(
       "oc1",
       `${table}.${col}`,
@@ -806,6 +829,22 @@ for (const dir of appDirs) {
   control("oc1 CONTROL: the composite-key declaration names a column the live cache still carries\n            (a dropped or renamed column would leave a stale declaration reading as enforced)",
     [...COMPOSITE_KEY_NOT_A_PARENT_ID].every((k) => { const [t, c] = k.split("."); return (SCHEMA_SNAPSHOT[t] ?? []).includes(c) }))
 
+  // ── OC1, the ATTRIBUTION-LABEL-NOT-A-PARENT-ID rule (wave 148 integrator, m918). Same three-arm discipline.
+  control("oc1 NEGATIVE: does NOT flag market_dataset_verifications.verified_by — a human-readable attribution label\n            ('manager:data_steward (permit sweep observation)'), not a users.id (m918: platform metadata, no seat)",
+    !oc1Keys.has("market_dataset_verifications.verified_by"))
+  control("oc1 POSITIVE: the attribution-label rule is a rule, not a blanket — the same synthetic child is\n            'unprotected' undeclared and 'attribution_label_not_a_parent' declared",
+    oc1Verdict("zz_synthetic_child", "verified_by", new Set(["id", "verified_by"]), {}, "users",
+      new Set<string>(), new Set<string>(), new Set<string>(), new Set<string>(), new Set<string>()) === "unprotected"
+      && oc1Verdict("zz_synthetic_child", "verified_by", new Set(["id", "verified_by"]), {}, "users",
+        new Set<string>(), new Set<string>(), new Set<string>(), new Set<string>(), new Set(["zz_synthetic_child.verified_by"])) === "attribution_label_not_a_parent")
+  control("oc1 POSITIVE: the attribution-label exclusion matched a real column",
+    oc1AttributionLabel > 0, `${oc1AttributionLabel} attribution-label column(s) excluded`)
+  control("oc1 NEGATIVE: a declared attribution-label column whose FK exists reads as 'protected' —\n            the cache outranks this declaration too (the §6 rename would land here)",
+    oc1Verdict("zz_synthetic_child", "verified_by", new Set(["id", "verified_by"]), { verified_by: "users" }, "users",
+      new Set<string>(), new Set<string>(), new Set<string>(), new Set<string>(), new Set(["zz_synthetic_child.verified_by"])) === "protected")
+  control("oc1 CONTROL: the attribution-label declaration names a column the live cache still carries",
+    [...ATTRIBUTION_LABEL_NOT_A_PARENT_ID].every((k) => { const [t, c] = k.split("."); return (SCHEMA_SNAPSHOT[t] ?? []).includes(c) }))
+
   // ── OC3, both arms ────────────────────────────────────────────────────────
   control("oc3 POSITIVE: the dual-keyed finder still sees the tables it counts",
     DUAL_KEYED.length >= 25 && DUAL_KEYED.includes("motivated_seller_signals"),
@@ -877,6 +916,8 @@ console.log(`      · ${oc1ExternalProviderId} column(s) excluded as an EXTERNAL
 console.log(`        parent is provably wrong for that specific column — see EXTERNAL_PROVIDER_ID_COLLISION, lane 74C 2026-09-18)`)
 console.log(`      · ${oc1CompositeKey} column(s) excluded as a COMPOSITE KEY, NOT A PARENT ID (an app-minted \`\${contactId}:side\``)
 console.log(`        key m610 rules is not a users.id — see COMPOSITE_KEY_NOT_A_PARENT_ID, lane 77C 2026-09-21)`)
+console.log(`      · ${oc1AttributionLabel} column(s) excluded as an ATTRIBUTION LABEL, NOT A PARENT ID (a who/what-vouched text label on`)
+console.log(`        platform metadata, m918 — see ATTRIBUTION_LABEL_NOT_A_PARENT_ID, wave 148 integrator 2026-11-01)`)
 console.log(`      · PUBLIC_VIEWS declares ${PUBLIC_VIEWS.size} view(s), measured live 2026-08-23 (relkind is in NO schema cache —`)
 console.log(`        the same gap OC2 records for confdeltype). BLIND SPOT: a view created since is not in it and WILL be accused.`)
 console.log(`      · ${CONSENSUS.size} column names have a consensus parent (≥${MIN_VOTES} votes, ≥${CONSENSUS_RATIO * 100}% agreement)`)

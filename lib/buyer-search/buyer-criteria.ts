@@ -482,6 +482,10 @@ export interface BuyerUtteranceRow {
   consentBasis: string | null
   appliedChangeCount: number
   createdAt: string | null
+  /** The consent record / recording / message the basis points at — the provenance the "what you told us" view shows beside the basis. */
+  consentRef: string | null
+  /** The staff user who entered the words on the person's behalf (agent_entry); null when the person spoke for themselves. */
+  createdByUserId: string | null
 }
 
 /**
@@ -530,15 +534,15 @@ export async function loadBuyerUtterances(
   input: { brokerageId: string; contactId: string; limit?: number },
 ): Promise<{ rows: BuyerUtteranceRow[]; note: string | null }> {
   const { data, error } = await svc.from("buyer_criteria_utterances")
-    .select("id, channel, source_kind, source_ref, literal_text, interpretation, confidence, consent_basis, applied_change_count, created_at")
+    .select("id, channel, source_kind, source_ref, literal_text, interpretation, confidence, consent_basis, consent_ref, applied_change_count, created_by_user_id, created_at")
     .eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId)
     .order("created_at", { ascending: false }).limit(input.limit ?? 10)
   if (error) return { rows: [], note: isSchemaAbsentError(error) ? "What you've told us is kept once m916 is applied." : `Utterance read refused: ${error.message}` }
   return {
     rows: ((data ?? []) as Array<Record<string, any>>).map((r) => ({
       id: r.id, channel: r.channel, sourceKind: r.source_kind, sourceRef: r.source_ref ?? null, literal: r.literal_text,
-      interpretation: r.interpretation ?? {}, confidence: r.confidence, consentBasis: r.consent_basis ?? null,
-      appliedChangeCount: Number(r.applied_change_count ?? 0), createdAt: r.created_at ?? null,
+      interpretation: r.interpretation ?? {}, confidence: r.confidence, consentBasis: r.consent_basis ?? null, consentRef: r.consent_ref ?? null,
+      appliedChangeCount: Number(r.applied_change_count ?? 0), createdByUserId: r.created_by_user_id ?? null, createdAt: r.created_at ?? null,
     })),
     note: null,
   }

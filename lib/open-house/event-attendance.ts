@@ -392,8 +392,10 @@ async function recomputeAttendance(
 ): Promise<{ attended: boolean; seconds: number; reason: string; agentNotified?: boolean }> {
   const rsvp = regs.byContact.get(contactId)
   if (!rsvp) return { attended: false, seconds: 0, reason: "no registration row" }
+  // Only the verifiable host's evidence pairs into presence: provider = zoom. A YouTube watch_link_opened row for the same
+  // person is evidence of a click, never of attendance (the census reads the provider column for exactly this filter).
   const { data: evs, error } = await svc.from("event_attendance_evidence").select("provider_event, occurred_at, participant_key, provider_meeting_uuid, leave_reason")
-    .eq("event_id", ev.id).eq("contact_id", contactId)
+    .eq("event_id", ev.id).eq("contact_id", contactId).eq("provider", "zoom")
   if (error) return { attended: false, seconds: 0, reason: `evidence read refused: ${error.message}` }
   const rows = (evs ?? []) as Array<Record<string, any>>
   // A join is closed only by a leave from the SAME meeting instance: a re-started or recurring Zoom meeting keeps its meeting id
@@ -520,10 +522,14 @@ export async function finalizeEventAttendance(svc: Db, eventId: string, deps: At
   const { data: fresh } = await svc.from("open_house_rsvp_tracking").select("rsvp_status, attendance_verified_by, registered_at").eq("event_id", ev.id).eq("brokerage_id", ev.brokerage_id)
   // Unmatched joins are read WITH their normalised e-mail: an e-mail Zoom reported that matched no registrant is the one fact an
   // agent can reconcile by hand (a registrant who joined under another address) — the outcome carries the count, never the addresses.
-  const { data: anon } = await svc.from("event_attendance_evidence").select("participant_key, email_normalized").eq("event_id", ev.id).eq("identity_match", "unmatched").eq("provider_event", "participant_joined")
+  const { data: anon } = await svc.from("event_attendance_evidence").select("participant_key, email_normalized, registrant_id").eq("event_id", ev.id).eq("identity_match", "unmatched").eq("provider_event", "participant_joined")
   const outcome = eventOutcome({ kind: ev.event_type, provider: ev.virtual_provider, rsvps: (fresh ?? []) as never[], unmatchedJoins: new Set(((anon ?? []) as Array<{ participant_key?: string | null }>).map((a, i) => a.participant_key ?? `anon-${i}`)).size })
-  const unmatchedWithEmail = new Set(((anon ?? []) as Array<{ email_normalized?: string | null }>).map((a) => a.email_normalized).filter((e): e is string => !!e)).size
-  const meta = { ...((ev.provider_meta ?? {}) as Record<string, unknown>), attendance_outcome: { ...outcome, unmatched_with_email: unmatchedWithEmail, computed_at: new Date().toISOString() } }
+  const anonRows = (anon ?? []) as Array<{ email_normalized?: string | null; registrant_id?: string | null }>
+  const unmatchedWithEmail = new Set(anonRows.map((a) => a.email_normalized).filter((e): e is string => !!e)).size
+  // A registrant id our registration form never minted (a Zoom-side registration outside the OS) is its own count: the agent
+  // reconciles those against the Zoom registrant list, not against the CRM.
+  const unmatchedWithForeignRegistrantId = new Set(anonRows.map((a) => a.registrant_id).filter((r): r is string => !!r)).size
+  const meta = { ...((ev.provider_meta ?? {}) as Record<string, unknown>), attendance_outcome: { ...outcome, unmatched_with_email: unmatchedWithEmail, unmatched_with_foreign_registrant_id: unmatchedWithForeignRegistrantId, computed_at: new Date().toISOString() } }
   const { error: oErr } = await svc.from("open_house_events").update({ provider_meta: meta }).eq("id", ev.id).eq("brokerage_id", ev.brokerage_id)
   if (oErr) console.warn("[event-attendance] outcome not stored on the event:", oErr.message)
   return { finalized: true, reason: verifiability === "verified" ? "verifiable host — no-shows marked" : `${ev.virtual_provider ?? "this host"} cannot verify attendance — no one is marked a no-show`, outcome, noShowsMarked, verifiedNow }
