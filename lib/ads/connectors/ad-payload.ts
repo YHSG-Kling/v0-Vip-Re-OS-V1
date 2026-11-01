@@ -14,6 +14,9 @@
  * forbidden narrowing. Pure + fully unit-tested.
  */
 
+import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
+import { audienceProxyReasonFor } from "@/lib/compliance-rules/audience-compliance"
+
 export type AdObjective = "leads" | "traffic" | "awareness" | "conversions"
 
 export interface AdCreativeSpec {
@@ -59,6 +62,14 @@ export interface AdTargetingSpec {
    * checked" must never render as "checked and fine" (CLAUDE.md §4).
    */
   exclusionGovernance?: "gated"
+  /**
+   * WAVE 148 (lane 148C, owner ruling 1 — compliance checks audience SELECTION and DELIVERY). Set to `"gated"` ONLY by
+   * lib/ads/launch-assembler.ts after every TARGETED audience (the singular and plural ids) was re-gated at the delivery door —
+   * resolved to a governed audience row of this tenant, its source rule re-checked by the selection gates, and no platform
+   * look-alike under HOUSING. `validateAdReadiness` turns targeted audiences without it into a VIOLATION, exactly as it does for
+   * the exclusion slot: "nobody checked" must never render as "checked and fine".
+   */
+  inclusionGovernance?: "gated"
 }
 
 export interface AdBuildInput {
@@ -112,6 +123,26 @@ export function validateAdReadiness(input: AdBuildInput): ValidationResult {
     )
   }
 
+  // ── WAVE 148 (lane 148C): FAIR HOUSING ON DELIVERY, every platform — not only the wording ───────────────────────────────
+  // Every audience this product runs is a HOUSING audience (protected-class-signals.ts header: there is no "is this housing?"
+  // branch to get wrong), so these hold on Meta AND Google:
+  //   · targeted audiences must have been re-gated at the delivery door (inclusionGovernance — set only by launch-assembler);
+  //   · an interest that names a protected class or a proxy for one is refused (the field-token classifier + the audience proxy
+  //     vocabulary, lib/compliance-rules/audience-compliance.ts) — an interest the payload builder would drop silently is still
+  //     the operator's intent, so it is refused in words rather than quietly ignored.
+  const targeted = !!input.targeting.audienceExternalId || (input.targeting.audienceExternalIds ?? []).length > 0
+  if (targeted && input.targeting.inclusionGovernance !== "gated") {
+    violations.push(
+      "targeted audiences are present but were never gated at delivery — every targeted audience must resolve to a governed " +
+      "audience of this tenant whose source rule passes the selection gates (no protected characteristic or proxy, no platform " +
+      "look-alike under HOUSING). Assemble through lib/ads/launch-assembler.ts, which runs that gate.",
+    )
+  }
+  for (const interest of input.targeting.interests ?? []) {
+    const why = protectedClassReasonFor(interest) ?? audienceProxyReasonFor(interest)
+    if (why) violations.push(`HOUSING ads cannot target the interest "${interest}" — ${why}`)
+  }
+
   if (isMeta) {
     // Lead ads need a page + a lead form; everything else needs a destination url.
     if (input.objective === "leads") {
@@ -128,10 +159,19 @@ export function validateAdReadiness(input: AdBuildInput): ValidationResult {
       if (input.targeting.ageMax != null && input.targeting.ageMax < 65) violations.push("HOUSING ads cannot narrow by age (ageMax must be 65+)")
       if ((input.targeting.genders ?? []).length > 0) violations.push("HOUSING ads cannot target by gender")
       if (input.targeting.locations.some((l) => (l.radiusMiles ?? 0) > 0 && (l.radiusMiles ?? 0) < 15)) violations.push("HOUSING ads cannot use a radius under 15 miles")
+      // WAVE 148 (148C): the header always said the category disables ZIP targeting; the validator never checked it. A ZIP list
+      // is the classic redlining proxy — refused, not silently dropped by the payload builder.
+      if (input.targeting.locations.some((l) => !!l.zip?.trim())) violations.push("HOUSING ads cannot target by ZIP code — use a city / region with a radius of 15 miles or more")
     }
   } else {
     // Google: every ad needs a final URL; responsive ads need real copy.
     if (!input.creative.destinationUrl?.trim()) missing.push("creative.destinationUrl")
+    // WAVE 148 (148C): Google's housing personalized-advertising policy (US / Canada) restricts the same narrowing Meta's HOUSING
+    // category does — age, gender, ZIP code (parental / marital status have no field here). The Google branch checked NONE of it.
+    if (input.targeting.ageMin != null && input.targeting.ageMin > 18) violations.push("housing ads on Google cannot narrow by age (ageMin must be 18)")
+    if (input.targeting.ageMax != null && input.targeting.ageMax < 65) violations.push("housing ads on Google cannot narrow by age (ageMax must be 65+)")
+    if ((input.targeting.genders ?? []).length > 0) violations.push("housing ads on Google cannot target by gender")
+    if (input.targeting.locations.some((l) => !!l.zip?.trim())) violations.push("housing ads on Google cannot target by ZIP code")
   }
 
   return { ready: missing.length === 0 && violations.length === 0, missing, violations }

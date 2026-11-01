@@ -137,7 +137,15 @@ export async function run() {
   // readProtectedAttributes with a declared purpose — exactly RESEARCH_READER_DOORS below (lane 147A's right-to-know export) —
   // and imports nothing else from it; (c) no ads / audience / dispatch / steering / eligibility module imports it at all.
   const { stringLiterals, stripComments } = await import("../strip-comments")
-  const RESEARCH_READER_DOORS: ReadonlyMap<string, string> = new Map([["app/actions/privacy/data-subject-requests.ts", "data_subject_request"]])
+  // WAVE 148 (lane 148C, owner ruling 1, 2026-11-01 — "the admin, platform, agent, team lead, broker, compliance, support, etc.
+  // should be able to read" + the persona study): the door LIST grew by two named doors; the RULE is unchanged — named, outside
+  // every targeting zone, imports ONLY readProtectedAttributes (dynamically), and states its purpose in source (the card door
+  // offers a fixed purpose list the reader still adjudicates per seat and ledgers).
+  const RESEARCH_READER_DOORS: ReadonlyMap<string, RegExp> = new Map([
+    ["app/actions/privacy/data-subject-requests.ts", /purpose:\s*["']data_subject_request["']/],
+    ["lib/contacts/persona-builder.ts", /purpose:\s*["']persona_derivation["']/],
+    ["app/actions/contact-persona.ts", /["']customer_service["'],\s*["']persona_derivation["']/],
+  ])
   const namesTable = (text: string) => stringLiterals(text).some((l) => l.text === RESEARCH_TABLE)
   const importsStore = (text: string) => stringLiterals(text).some((l) => /protected-research-store$/.test(l.text))
   const TARGETING_ZONE = /^lib\/(ads|audiences|providers|campaigns|marketing)\/|^app\/actions\/(ads|audience|campaign)|steering|eligib/i
@@ -151,7 +159,7 @@ export async function run() {
     if (!purpose || TARGETING_ZONE.test(f)) return false
     const pulls = [...text.matchAll(/\{\s*([^{}]*)\s*\}\s*=\s*await import\(\s*["']@\/lib\/enrichment\/protected-research-store["']\s*\)/g)].map((m) => m[1].split(",").map((s) => s.trim()).filter(Boolean))
     const staticImport = /from\s*["']@\/lib\/enrichment\/protected-research-store["']/.test(text)
-    return !staticImport && pulls.length > 0 && pulls.every((names) => names.length === 1 && names[0] === "readProtectedAttributes") && new RegExp(`purpose:\\s*["']${purpose}["']`).test(text) && /readProtectedAttributes\(/.test(text)
+    return !staticImport && pulls.length > 0 && pulls.every((names) => names.length === 1 && names[0] === "readProtectedAttributes") && purpose.test(text) && /readProtectedAttributes\(/.test(text)
   }
   const importLeaks = importers.filter((f) => !doorOk(f, stripComments(readRepo(f) ?? "")))
   const targetingReach = importers.filter((f) => TARGETING_ZONE.test(f))

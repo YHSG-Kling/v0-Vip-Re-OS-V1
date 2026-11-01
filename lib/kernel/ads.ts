@@ -163,6 +163,12 @@ export interface SourceRule {
    * be segmented on persona") and is narrowed by that lane's gate, not re-derived.
    */
   type: SourceRuleType
+  /**
+   * WAVE 148 (lane 148C, owner ruling 1): `"derived_persona"` declares that the persona basis comes from the DERIVED,
+   * marketing-safe persona layer (lib/contacts/persona-builder.ts derivePersona → contacts.contact_persona). Such an audience is
+   * needs-based by rule: lib/ads/audience-persona-basis.ts refuses a protected-characteristic persona on it at define AND populate.
+   */
+  basis?: "derived_persona"
   filters: {
     days_lookback?: number
     contact_tags?: string[]
@@ -177,9 +183,10 @@ export interface SourceRule {
      * check is `resolveAudiencePersonaBasis`, which runs at DEFINE time and again
      * at POPULATE time and refuses anything it cannot resolve.
      *
-     * Personas that are a PROTECTED CHARACTERISTIC rather than a transaction
-     * situation (senior, probate, divorce, military) are REFUSED here and remain
-     * fully valid on the data/education lanes — see lib/ads/audience-persona-basis.ts.
+     * Personas that are a PROTECTED CHARACTERISTIC (senior, probate, divorce, military) are admitted
+     * as an INCLUSION basis by the owner's 2026-08-23 situation-persona ruling, REFUSED on an
+     * exclusion slot, and REFUSED whenever `basis` is "derived_persona" (wave 148, lane 148C — a
+     * derived persona is needs-based by rule) — see lib/ads/audience-persona-basis.ts.
      */
     personas?: string[]
     engagement_type?: string

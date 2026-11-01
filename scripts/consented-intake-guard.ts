@@ -225,10 +225,12 @@ async function main() {
   }, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]] } })
   G.__147A.svc = rs
   const now = new Date("2026-10-31T00:00:00Z")
-  const adRead = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "ad_audience", actor: { userId: "u-broker", userType: "broker" } }, { now })
+  // wave 148 (lane 148C): the reader re-binds the tenant itself — every tenant seat now carries its SESSION brokerage (a seat
+  // without one is refused `tenant_unverified`; a seat of another tenant `not_in_tenant`). The rule below is unchanged.
+  const adRead = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "ad_audience", actor: { userId: "u-broker", userType: "broker", brokerageId: A } }, { now })
   const refLed = rows(rs, "agent_action_ledger").find((l) => l.action === "research.protected_attribute.refuse")
   check("an AD-AUDIENCE reader is REFUSED (prohibited_purpose) even as a broker — and the refusal is EVIDENCED on the ledger", !adRead.ok && adRead.refused === "prohibited_purpose" && adRead.evidenced && !!refLed && refLed.status === "skipped" && /prohibited_purpose/.test(refLed.outcome ?? ""), JSON.stringify({ adRead, refLed }))
-  const resRead = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "research", actor: { userId: "u-co", userType: "compliance_officer" } }, { now })
+  const resRead = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "research", actor: { userId: "u-co", userType: "compliance_officer", brokerageId: A } }, { now })
   const readLed = rows(rs, "agent_action_ledger").find((l) => l.action === "research.protected_attribute.read")
   check("a RESEARCH reader (compliance_officer) SUCCEEDS — and the read is EVIDENCED (executed)", resRead.ok && resRead.evidenced && !!readLed && readLed.status === "executed", JSON.stringify({ resRead: resRead.ok ? "ok" : resRead, readLed }))
   if (resRead.ok) {
@@ -240,15 +242,15 @@ async function main() {
       !!rel && rel.basis === "vendor_modeled" && rel.protectedClass === "religion" && rel.dataRights === "provider_licensed:versium" && rel.freshness.fresh === true && !resRead.attributes.some((a) => a.field === "city"))
   }
   check("the ledger carries field NAMES / purposes only — never a value", !JSON.stringify(rows(rs, "agent_action_ledger")).includes("female") && !JSON.stringify(rows(rs, "agent_action_ledger")).includes("\"R1\""))
-  const tl = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "research", actor: { userId: "u-tl", userType: "team_lead" } })
-  const ag = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "research", actor: { userId: "u-ag", userType: "agent" } })
-  const unk = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "curiosity", actor: { userId: "u-co", userType: "compliance_officer" } })
+  const tl = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "research", actor: { userId: "u-tl", userType: "team_lead", brokerageId: A } })
+  const ag = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "research", actor: { userId: "u-ag", userType: "agent", brokerageId: A } })
+  const unk = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "curiosity", actor: { userId: "u-co", userType: "compliance_officer", brokerageId: A } })
   const steer = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "steering", actor: { userId: null, userType: null, platformRole: "platform_owner" } })
   check("roles and purposes fail closed: team_lead / agent → role_not_admitted; an unknown purpose → unknown_purpose; steering → prohibited even for platform staff",
     !tl.ok && tl.refused === "role_not_admitted" && !ag.ok && ag.refused === "role_not_admitted" && !unk.ok && unk.refused === "unknown_purpose" && !steer.ok && steer.refused === "prohibited_purpose")
-  const dsr = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "data_subject_request", actor: { userId: "u-ad", userType: "admin" } })
+  const dsr = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "data_subject_request", actor: { userId: "u-ad", userType: "admin", brokerageId: A } })
   check("the subject's right-to-know export (data_subject_request) is admitted for the tenant-admin roster", dsr.ok)
-  const foreign = await store.readProtectedAttributes(rs, { brokerageId: B, contactId: "c-r", purpose: "research", actor: { userId: "u-co", userType: "compliance_officer" } })
+  const foreign = await store.readProtectedAttributes(rs, { brokerageId: B, contactId: "c-r", purpose: "research", actor: { userId: "u-co", userType: "compliance_officer", brokerageId: A } })
   check("another tenant reads nothing (not_in_tenant)", !foreign.ok && foreign.refused === "not_in_tenant")
   check("the research-reader roster is DERIVED by named subtraction from TENANT_ADMIN_USER_TYPES (minus team_lead, admin)",
     /\[\.\.\.TENANT_ADMIN_USER_TYPES\]\.filter\(\(t\) => !ROLES_HELD_OUT_OF_PROTECTED_RESEARCH\.has\(t\)\)/.test(src("lib/enrichment/protected-research-store.ts")) && store.PROTECTED_RESEARCH_READER_USER_TYPES.has("compliance_officer") && !store.PROTECTED_RESEARCH_READER_USER_TYPES.has("team_lead"))

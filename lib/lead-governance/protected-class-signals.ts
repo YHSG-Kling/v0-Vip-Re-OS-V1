@@ -166,6 +166,7 @@
 
 import { isCampaignPersona } from "@/lib/campaigns/contact-sources"
 import { audienceUseOf } from "@/lib/ads/audience-source-rules"
+import { audienceProxyReasonFor } from "@/lib/compliance-rules/audience-compliance"
 
 /**
  * The provider dataset namespaces classified protected WHOLE. The
@@ -859,7 +860,11 @@ export function protectedClassSegmentationIn(rule: unknown, path = ""): string[]
   const walk = (node: unknown, prefix: string): void => {
     if (typeof node === "string") {
       if (isCanonicalPersonaBasisValue(prefix, node) && !suppresses) return
-      if (isProtectedClassSource(node)) hits.push(`${prefix}=${node}`)
+      // WAVE 148 (lane 148C, owner ruling 1 — "compliance checks audience SELECTION and DELIVERY, not only wording, and refuses
+      // protected characteristics AND PROXIES"): a value that selects people by a PROXY word ("young-families",
+      // "spanish-speakers", "church-goers", "near-good-schools") is refused beside the field-token classifier. The proxy
+      // vocabulary is its own function (lib/compliance-rules/audience-compliance.ts header says why it is not more tokens).
+      if (isProtectedClassSource(node) || audienceProxyReasonFor(node)) hits.push(`${prefix}=${node}`)
       return
     }
     if (Array.isArray(node)) { node.forEach((item, i) => walk(item, `${prefix}[${i}]`)); return }

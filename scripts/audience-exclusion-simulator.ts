@@ -342,6 +342,9 @@ async function main() {
     targeting: {
       locations: [{ city: "Austin" }],
       audienceExternalIds: ["fb-8"],
+      // wave 148 (148C): the targeted slot is gated at delivery too — the fixture carries the flag launch-assembler sets, so
+      // this section keeps isolating the EXCLUSION governance it was written for (test:persona-compliance owns the inclusion half).
+      inclusionGovernance: "gated" as const,
       excludedAudienceExternalIds: exclusion,
       ...(governed ? { exclusionGovernance: "gated" as const } : {}),
     },

@@ -14,7 +14,7 @@ import { createServiceClient }      from "@/lib/supabase/service"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { BuyerBrokerAgreementPanel } from "@/components/contact/buyer-broker-agreement-panel"
 import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
-import { EnrichmentPanel }          from "./components/enrichment-panel"
+import { EnrichmentPanel }          from "./components/enrichment-panel"; import { PersonaPanel } from "./components/persona-panel" // wave 148C: same line on purpose — keeps the generated capability-surface audit's file:line references (lane H's doc) stable
 import { FollowupCard }            from "./components/followup-card"
 import { SmartDripCard }           from "./components/smart-drip-card"
 import { LeadHistoryCard }        from "./components/lead-history-card"
@@ -549,6 +549,12 @@ export default async function ContactDetailPage({ params }: PageProps) {
           acknowledgement that stops a change re-surfacing forever. */}
       <div className="px-4 pt-3">
         <EnrichmentPanel contactId={contactId} />
+      </div>
+
+      {/* PERSONA (wave 148, lane 148C — owner ruling 1): the five layers kept apart — what they said, did, and what is inferred —
+          the marketing-safe persona that ads / posts / custom audiences read, and the purpose-gated, ledgered research read. */}
+      <div className="px-4 pt-3">
+        <PersonaPanel contactId={contactId} />
       </div>
 
       {/* Buyer broker agreement — the NAR 2024 gate that blocks showings and offers

@@ -22,6 +22,30 @@ import {
   includedAudienceIdsIn,
   type ExclusionAudienceRow,
 } from "./audience-exclusion"
+// WAVE 148 (lane 148C — owner ruling 1: compliance checks audience SELECTION and DELIVERY). The TARGETED slot is re-gated here
+// too, with the SAME selection gates the define / populate doors run (no second gate — CLAUDE.md §6), plus the platform policy
+// the look-alike lane recorded as data (housing has no platform look-alike model).
+import { assertAudienceSegmentationAllowed } from "@/lib/lead-governance/protected-class-signals"
+import { assertAudiencePersonaBasis } from "./audience-persona-basis"
+import { LOOKALIKE_AD_POLICY } from "@/lib/kernel/lookalike-research"
+
+type DeliveryAudienceRow = ExclusionAudienceRow & { audience_type?: string | null }
+
+/** PURE. Why one TARGETED audience may not be delivered to in a housing ad, or null. */
+function deliveryRefusalFor(row: DeliveryAudienceRow, campaignLabel: string): string | null {
+  const name = (row.audience_name ?? row.id).toString()
+  const rule = row.source_rule as { type?: unknown } | null | undefined
+  if (!LOOKALIKE_AD_POLICY.lookalike_model_available_for_housing && (row.audience_type === "lookalike" || rule?.type === "lookalike_seed")) {
+    return `campaign "${campaignLabel}" targets the look-alike audience "${name}" — housing is a special ad category with no platform look-alike model (${LOOKALIKE_AD_POLICY.summary}); a similarity model can reproduce a protected-class skew the seed carried. Target a governed CRM audience or a location instead.`
+  }
+  try {
+    assertAudienceSegmentationAllowed(rule, name)
+    assertAudiencePersonaBasis(rule, name)
+  } catch (e) {
+    return `campaign "${campaignLabel}" cannot deliver to audience "${name}" — ${(e as Error).message}`
+  }
+  return null
+}
 
 export interface AssembleResult { ok: boolean; input?: AdBuildInput; error?: string }
 
@@ -84,11 +108,37 @@ export async function assembleAdFromCampaign(
     // of the audiences the operator chose (CLAUDE.md §3).
     const { data: auds, error: audErr } = await supabase
       .from("facebook_custom_audiences")
-      .select("id, audience_name, external_audience_id, status")
+      .select("id, audience_name, external_audience_id, status, audience_type, source_rule")
       .eq("brokerage_id", campaign.brokerage_id)
       .in("id", [...includedIds, ...excludedIds])
     if (audErr) return { ok: false, error: `could not read this campaign's audiences: ${audErr.message}` }
     audienceRows = (auds ?? []) as ExclusionAudienceRow[]
+  }
+
+  // ── THE RAW PLATFORM AUDIENCE ID (148C) ─────────────────────────────────────
+  // `targeting_config.audience_external_id` had a reader (below) and NO writer anywhere — a raw platform id that only a hand edit
+  // could fill, and the one path onto the platform that no selection gate had ever seen (a Meta audience built in Ads Manager on
+  // age or interests would ship through it). It is KEPT, and now it must resolve to a governed audience of THIS brokerage.
+  const rawExternalId = typeof tc.audience_external_id === "string" && tc.audience_external_id.trim() ? tc.audience_external_id.trim() : null
+  let rawAudienceRow: DeliveryAudienceRow | null = null
+  if (rawExternalId) {
+    const { data: hit, error: hitErr } = await supabase
+      .from("facebook_custom_audiences")
+      .select("id, audience_name, external_audience_id, status, audience_type, source_rule")
+      .eq("brokerage_id", campaign.brokerage_id)
+      .eq("external_audience_id", rawExternalId)
+      .maybeSingle()
+    if (hitErr) return { ok: false, error: `could not verify targeting_config.audience_external_id: ${hitErr.message}` }
+    if (!hit) {
+      return {
+        ok: false,
+        error:
+          `targeting_config.audience_external_id "${rawExternalId}" is not a governed audience of this brokerage — a raw platform ` +
+          `audience id is never delivered to, because nothing here checked who it selects (protected characteristics, proxies, ` +
+          `look-alike models). Build or sync the audience in this product and target it by id.`,
+      }
+    }
+    rawAudienceRow = hit as DeliveryAudienceRow
   }
 
   const externalOf = new Map<string, string | null>()
@@ -133,6 +183,15 @@ export async function assembleAdFromCampaign(
   const excludedExternal = resolveSlot(excludedIds, "excluded_audience_ids")
   if (!excludedExternal.ok) return { ok: false, error: excludedExternal.error }
 
+  // ── THE TARGETED SLOT IS GATED ON THE WAY OUT (148C) — selection re-checked at delivery ───────────────────────────────
+  const rowById = new Map(audienceRows.map((r) => [r.id, r as DeliveryAudienceRow]))
+  const targetedRows = [...includedIds.map((id) => rowById.get(id)).filter((r): r is DeliveryAudienceRow => !!r), ...(rawAudienceRow ? [rawAudienceRow] : [])]
+  for (const row of targetedRows) {
+    const refusal = deliveryRefusalFor(row, campaign.campaign_name)
+    if (refusal) return { ok: false, error: refusal }
+  }
+  const inclusionGated = true
+
   const input: AdBuildInput = {
     platform:       campaign.platform as AdBuildInput["platform"],
     objective:      (campaign.objective as AdObjective) ?? "leads",
@@ -159,6 +218,15 @@ export async function assembleAdFromCampaign(
       // publish an ungoverned suppression — it makes the ad unlaunchable. The
       // simulator mutation-tests exactly that.
       exclusionGovernance: exclusionVerdict.ok ? "gated" : undefined,
+      // Set from the delivery gate above (every targeted audience passed it) — validateAdReadiness refuses targeted audiences
+      // without it, so removing the gate makes the ad unlaunchable rather than quietly ungoverned.
+      inclusionGovernance: inclusionGated ? "gated" : undefined,
+      // The operator's interests reach the validator so a protected-class / proxy interest (an automation's free-text
+      // `ad_audience_prompt` lands here) is REFUSED in words instead of silently dropped by the payload builder. age_min /
+      // age_max / income_percentile are NOT carried: the Meta builder delivers 18-65 and no income field regardless, and two
+      // writers still default age 25 / top_50 (lane notes, Outside-lane) — carrying them would block launches over values that
+      // never reach the platform. Their writers are the fix.
+      interests: Array.isArray(tc.interests) ? (tc.interests as unknown[]).filter((x): x is string => typeof x === "string") : undefined,
     },
     specialAdCategory: "HOUSING",
   }

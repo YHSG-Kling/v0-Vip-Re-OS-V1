@@ -115,8 +115,17 @@ import {
   type AudienceUse,
 } from "@/lib/ads/audience-source-rules"
 import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
+import { PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS } from "@/lib/contacts/persona-layers"
 
 export type { AudienceUse }
+
+/** The `SourceRule.basis` that declares the audience is built from DERIVED (marketing-safe, needs-based) personas. */
+export const DERIVED_PERSONA_BASIS = "derived_persona"
+
+/** PURE. True when an audience rule declares a derived-persona basis (wave 148, lane 148C — owner ruling 1). */
+function isDerivedPersonaBasis(rule: unknown): boolean {
+  return !!rule && typeof rule === "object" && (rule as { basis?: unknown }).basis === DERIVED_PERSONA_BASIS
+}
 
 /** The `SourceRule.type` and `audience_type` that declare a persona basis. */
 export const PERSONA_SEGMENT_TYPE = "persona_segment"
@@ -400,6 +409,21 @@ export function resolveAudiencePersonaBasis(
           `${CAMPAIGN_PERSONAS.join(", ")} (lib/campaigns/contact-sources.ts, mirroring the ` +
           `Persona union at lib/kernel/types.ts and the live campaign_sequences_persona_check).`,
         refusalKind: "unresolvable",
+      }
+    }
+    // WAVE 148 (lane 148C, owner ruling 1): an audience whose basis is a DERIVED persona (`basis: "derived_persona"` — the
+    // marketing-safe layer lib/contacts/persona-builder.ts derivePersona writes) is NEEDS-BASED by definition, so a
+    // protected-characteristic persona is refused on it even for inclusion: "the persona handed to marketing is marketing-safe —
+    // needs-based, never a protected characteristic or its proxy". The 2026-08-23 situation-persona ruling (a staff-chosen
+    // persona_segment) is NOT reversed here — it is recorded for the owner in the lane notes.
+    if (isDerivedPersonaBasis(rule) && PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS.includes(candidate)) {
+      return {
+        ok: false,
+        refusal:
+          `persona "${candidate}" names a PROTECTED CHARACTERISTIC and this audience's basis is a DERIVED persona, which is ` +
+          `needs-based by rule (owner ruling 1, 2026-11-01): a derived persona never selects people by a protected characteristic ` +
+          `or its proxy. Build it on a need-based persona instead (${ADS_ELIGIBLE_PERSONAS.filter((p) => !PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS.includes(p)).join(", ")}).`,
+        refusalKind: "protected_characteristic",
       }
     }
     const verdict = personaAdsEligibility(candidate, use)

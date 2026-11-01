@@ -288,12 +288,19 @@ async function main() {
     // Wave 147 (lane 147A, owner ruling 2): the subject's RIGHT-TO-KNOW export is the one PURPOSE-GATED reader outside the store.
     // It may import the store ONLY to call readProtectedAttributes (purpose data_subject_request — ledgered both ways) and may
     // NEVER name the table: the reader is its only path. Every other lib/ or app/ module stays behind the firewall.
-    const gatedReaders = new Set(["app/actions/privacy/data-subject-requests.ts"])
-    for (const g of gatedReaders) {
+    // Wave 148 (lane 148C, owner ruling 1 — the reader's roles widen and the persona study reads it): the DOOR LIST grew, the RULE
+    // did not move — every door is NAMED, calls readProtectedAttributes, never names the table, and states its purpose (a
+    // literal the reader admits; the card door offers a fixed list the reader still adjudicates per seat).
+    const gatedReaders = new Map<string, RegExp>([
+      ["app/actions/privacy/data-subject-requests.ts", /purpose:\s*"data_subject_request"/],
+      ["lib/contacts/persona-builder.ts", /purpose:\s*"persona_derivation"/],
+      ["app/actions/contact-persona.ts", /"customer_service",\s*"persona_derivation"/],
+    ])
+    for (const [g, purposeRe] of gatedReaders) {
       const gText = readFileSync(join(process.cwd(), g), "utf8")
       const lits = stringLiterals(gText)
-      ok(!lits.some((l) => l.text === "protected_research_attributes") && /readProtectedAttributes\(/.test(stripComments(gText)) && /purpose:\s*"data_subject_request"/.test(stripComments(gText)),
-        `${g} reaches the research store ONLY through the purpose-gated reader (readProtectedAttributes, purpose data_subject_request) and never names the table`)
+      ok(!lits.some((l) => l.text === "protected_research_attributes") && /readProtectedAttributes\(/.test(stripComments(gText)) && purposeRe.test(stripComments(gText)),
+        `${g} reaches the research store ONLY through the purpose-gated reader (readProtectedAttributes, its declared purpose) and never names the table`)
       allowed.add(g)
     }
     const hits: string[] = []

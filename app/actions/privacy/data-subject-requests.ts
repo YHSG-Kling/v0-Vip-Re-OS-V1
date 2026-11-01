@@ -452,7 +452,8 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     for (const contactId of subjectContactIds) {
       const read = await readProtectedAttributes(svc, {
         brokerageId: req.brokerage_id, contactId, purpose: "data_subject_request",
-        actor: { userId: auth.userId, userType: auth.userType },
+        // wave 148 (148C): the reader re-binds the tenant itself — the SESSION brokerage travels with the seat.
+        actor: { userId: auth.userId, userType: auth.userType, brokerageId: auth.brokerageId },
       })
       if (!read.ok) { failedSources.push(`protected attributes (${contactId}): ${read.reason}`); continue }
       for (const a of read.attributes) {
