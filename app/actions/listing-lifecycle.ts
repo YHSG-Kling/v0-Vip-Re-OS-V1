@@ -107,6 +107,8 @@ export async function advanceListingStage(
    *  + min 10-char reason. Bypasses stage prerequisite checks; writes audit
    *  row with the override reason + actor for compliance. */
   overrideReason?: string,
+  /** C23 (wave 148, lane 148I) — PROOF where the stage's status demands it (a stage that marks the listing Sold). */
+  overrideEvidence?: import("@/lib/kernel/status-override").StatusEvidence | null,
 ) {
   if (!listingId || !toStage || !agentId) throw new Error("listingId, toStage, and agentId are required")
 
@@ -128,21 +130,51 @@ export async function advanceListingStage(
     const svc = createServiceClient()
 
     // Verify listing scope
-    const { data: listing } = await svc
+    const { data: listing, error: listingErr } = await svc
       .from("listings")
-      .select("id, brokerage_id, lifecycle_stage")
+      .select("id, brokerage_id, lifecycle_stage, status, updated_at")
       .eq("id", listingId)
       .eq("brokerage_id", overrideCtx.brokerageId)
       .maybeSingle()
+    if (listingErr) throw new Error(`Could not read the listing: ${listingErr.message}`)
     if (!listing) throw new Error("Listing not found in your brokerage")
 
-    // Force stage transition
-    const { error: updateErr } = await svc
-      .from("listings")
-      .update({ lifecycle_stage: toStage, updated_at: new Date().toISOString() })
-      .eq("id", listingId)
-      .eq("brokerage_id", overrideCtx.brokerageId)
-    if (updateErr) throw updateErr
+    // C23 (wave 148, lane 148I — owner ruling 13: "never bypassing compliance, signatures, tenant authority or transaction
+    // gates"). This override could force MLS_ACTIVE (live on the MLS) past the activation gate, LISTING_AGREEMENT_SIGNED
+    // without a signature and COMING_SOON_PREP / COMING_SOON_ACTIVE without the compliance gate — and it wrote the stage
+    // only, leaving listings.status stale. A stage reached only through a gated door is refused (named); every other stage
+    // keeps status in lockstep (statusForStage, the ungated map) and the change is the ONE C23 decision, ledgered.
+    const { listingStageOverrideRefusal, overrideStatus } = await import("@/lib/kernel/status-override")
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const refusal = listingStageOverrideRefusal(toStage)
+    if (refusal) return { success: false, error: refusal }
+    const { statusForStage } = await import("@/lib/listings/listing-status-sync")
+    const fromStatus = (listing.status as string | null) ?? null
+    const toStatus = statusForStage(toStage) ?? fromStatus ?? "draft"
+    const overridden = await overrideStatus(
+      {
+        entity: "listing", from: fromStatus, to: toStatus, stage: { from: (listing.lifecycle_stage as string | null) ?? null, to: toStage },
+        reason: overrideCtx.reason, evidence: overrideEvidence ?? null, actor: { userId: overrideCtx.userId, userType: overrideCtx.userType },
+      },
+      {
+        brokerageId: overrideCtx.brokerageId, subject: { type: "listing", id: listingId }, rowVersion: (listing.updated_at as string | null) ?? null,
+        systemSource: "listing-lifecycle", action: "listing.stage.override",
+        apply: async () => {
+          // Force stage transition (status in lockstep where the stage implies one)
+          const { data: moved, error: updateErr } = await svc
+            .from("listings")
+            .update({ lifecycle_stage: toStage, ...(toStatus !== fromStatus ? { status: toStatus } : {}), updated_at: new Date().toISOString() })
+            .eq("id", listingId)
+            .eq("brokerage_id", overrideCtx.brokerageId)
+            .select("id")
+          if (updateErr) return { ok: false, error: updateErr.message }
+          if ((moved?.length ?? 0) !== 1) return { ok: false, error: "the listing did not move (not found in your brokerage)" }
+          return { ok: true }
+        },
+      },
+      { ledger: withActionLedger, client: svc },
+    )
+    if (!overridden.ok) return { success: false, error: overridden.message }
 
     // Audit trail
     await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({

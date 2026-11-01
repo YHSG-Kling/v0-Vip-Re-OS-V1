@@ -35,11 +35,13 @@ export interface CompletionWatchResult {
 
 async function superviseStep(brokerageId: string, completionId: string): Promise<{ verdict: string; nextCheckAt: string | null; reason: string }> {
   "use step"
-  const [{ superviseCompletion }, { createServiceClient }, { inboundCompletionRedrivers }] = await Promise.all([
+  const [{ superviseCompletion }, { createServiceClient }, { inboundCompletionRedrivers }, { unattendedAnswerers }] = await Promise.all([
     import("@/lib/kernel/completion-tracking"), import("@/lib/supabase/service"), import("@/lib/communications/inbound-record"),
+    import("@/lib/communications/unattended-answer"),
   ])
-  // The composition root hands the inbound chain's redriver in (wave 147 integrator — the supervisor no longer imports the chain).
-  const r = await superviseCompletion(createServiceClient() as never, { brokerageId, completionId, trigger: "workflow" }, { redrivers: inboundCompletionRedrivers() })
+  // The composition root hands the inbound chain's redriver in (wave 147 integrator — the supervisor no longer imports the chain),
+  // and the C24 answerer (wave 148, lane 148I — owner ruling 16: after the person's window, the AI answers within authority).
+  const r = await superviseCompletion(createServiceClient() as never, { brokerageId, completionId, trigger: "workflow" }, { redrivers: inboundCompletionRedrivers(), silentAnswerers: unattendedAnswerers() })
   return { verdict: r.verdict, nextCheckAt: r.nextCheckAt ?? null, reason: r.reason.slice(0, 300) }
 }
 

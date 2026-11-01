@@ -18,6 +18,7 @@ import type { MlsVerification } from "@/lib/listings/mls-verification"
 import { createClient } from "@/lib/supabase/server"
 import { LISTING_STATUSES, isListingStatus } from "@/lib/constants"
 import { isManuallySettableListingStatus } from "@/lib/listings/listing-status-sync"
+import { decideStatusOverride, statusOverrideDetail, type StatusEvidence } from "@/lib/kernel/status-override"
 import {
   createListingRecord,
   createOrAttachSellerContact,
@@ -907,7 +908,12 @@ export async function prefillListingFormAction(listingId: string) {
 
 // ─── Action: updateListingStatus (migrated from listings.ts) ─────────────────
 
-export async function updateListingStatus(listingId: string, status: string) {
+export async function updateListingStatus(
+  listingId: string,
+  status: string,
+  /** C23 (wave 148, lane 148I — owner ruling 13): the person's REASON, and PROOF where the value demands it (Sold). */
+  change?: { reason?: string | null; evidence?: StatusEvidence | null },
+) {
   const supabase = await createClient()
   try {
     // VOCABULARY GATE. `status` arrives as free text from a client picker, and
@@ -962,6 +968,15 @@ export async function updateListingStatus(listingId: string, status: string) {
       return { success: false, error: "Forbidden" }
     }
 
+    // C23 — A MANUAL STATUS PICK IS ALWAYS A CHOICE, WITH ITS REASON (and proof where the value needs it). The ONE decision
+    // (lib/kernel/status-override.ts decideStatusOverride): no reason → refused; Sold without the settlement statement /
+    // recorded deed / MLS sold record → refused; a gated value was already refused above and is refused again there.
+    const decision = decideStatusOverride({
+      entity: "listing", from: (listingRow.status as string | null) ?? null, to: status,
+      reason: change?.reason ?? null, evidence: change?.evidence ?? null, actor: { userId: user.id },
+    })
+    if (!decision.ok) return { success: false, error: decision.message }
+
     // current_stage was renamed to lifecycle_stage (migration 1014) and the
     // CHECK requires the uppercase enum (CLOSED / LISTING_CANCELLED), so the
     // old { current_stage: "closed" | "cancelled" } update threw on both the
@@ -978,11 +993,11 @@ export async function updateListingStatus(listingId: string, status: string) {
         actor: { type: "user", userId: user.id },
         subject: { type: "listing", id: listingId },
         reasonCode: "HUMAN_REQUESTED",
-        reasonDetail: `status ${String(listingRow.status ?? "none")} → ${status} from the listings board`,
+        reasonDetail: `status ${String(listingRow.status ?? "none")} → ${status} from the listings board: ${decision.reason}`.slice(0, 500),
         idempotencyKey: `listing_status:${listingId}:${String(listingRow.updated_at ?? "")}:${status}`,
         riskClass: "LOW_RISK_WRITE",
         systemSource: "listings-kernel",
-        detail: { from: listingRow.status ?? null, to: status },
+        detail: { from: listingRow.status ?? null, to: status, ...statusOverrideDetail(decision, { userId: user.id }) },
       },
       async () => {
         const { data, error } = await supabase

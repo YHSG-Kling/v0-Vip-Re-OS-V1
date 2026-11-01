@@ -276,6 +276,14 @@ export async function advanceStage(params: {
   if (updateError) {
     return { success: false, error: updateError.message }
   }
+  // THE ACTUAL CLOSING DAY (wave 148, lane 148I — owner ruling 21, m927): the verified close stamps actual_close_date beside
+  // the effective close_date, so the contract's deadline (contract_closing_date) and the real day stay distinguishable. A
+  // separate best-effort write — a database without m927 still closes the deal (logged).
+  if (closesDeal) {
+    const { recordActualClosing } = await import("./closing-dates")
+    const stamped = await recordActualClosing(supabase, { brokerageId: params.brokerageId, transactionId: params.transactionId, closedOn: closedOn, source: "stage_machine" })
+    if (!stamped.ok) console.warn(`[stage-progression] actual closing day not stamped for ${params.transactionId}: ${stamped.error}`)
+  }
 
   // 4. Emit lifecycle event via kernel
   await transitionLifecycle({

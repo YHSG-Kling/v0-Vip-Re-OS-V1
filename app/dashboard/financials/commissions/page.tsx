@@ -89,7 +89,10 @@ export default async function CommissionsPage() {
     pending: pendingCount,
     approved: commissionsData.filter((c: any) => c.status === 'approved').length,
     paid: paidCount,
-    held: commissionsData.filter((c: any) => c.status === 'held').length,
+    // C23 census (wave 148, lane 148I): `held` is NOT an agent_commissions.status (the live CHECK: pending / approved / paid /
+    // disputed) — the tile counted a value no row can hold and read 0 forever. A commission is held while DISPUTED
+    // (CommissionPaymentStateCell: "held (disputed)"), so the tile counts that, and every CHECK value now has a tile.
+    held: commissionsData.filter((c: any) => c.status === 'disputed').length,
     totalPending,
     totalApproved: sumBy('approved'),
     totalPaid: sumBy('paid'),

@@ -19,7 +19,9 @@ import {
   listRecentProposalsAction,
 } from "@/app/actions/superadmin/connector-healing"
 import { getConnectorSpec } from "@/lib/agentic-os/connector-registry"
-import { ProposalActions } from "./proposal-actions"
+import { ProposalActions, RevertProposal, ApplyConfigAlternate } from "./proposal-actions"
+import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
+import { HEALING_PROPOSAL_STATUSES, type HealingProposalStatus } from "@/lib/kernel/provider-config-healing"
 import { redirect } from "next/navigation"
 import { AlertTriangle, CheckCircle2, XCircle, ExternalLink } from "lucide-react"
 import { agoOrDash } from "@/lib/format/dates"
@@ -40,12 +42,16 @@ function safeHref(url: unknown): string | null {
 // `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
 // byte-identical to lib/format/dates.ts `agoOrDash` (imported above).
 
-const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+// ONE VOCABULARY, EVERY VALUE SHOWN (wave 148, lane 148I — CLAUDE.md §6 + owner ruling 14). Typed over
+// lib/kernel/provider-config-healing.ts HEALING_PROPOSAL_STATUSES (the m928 CHECK). TOMBSTONE: `superseded` stood here — no
+// writer ever produced it; C25's `reverted` (a configuration version taken back) had no badge.
+const STATUS_BADGE: Record<HealingProposalStatus, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   pending:    { label: "Pending review",  variant: "secondary"   },
   applied:    { label: "Applied",         variant: "default"     },
   rejected:   { label: "Rejected",        variant: "outline"     },
-  superseded: { label: "Superseded",      variant: "outline"     },
+  reverted:   { label: "Reverted",        variant: "outline"     },
 }
+const HEALING_STATUS_BADGES = HEALING_PROPOSAL_STATUSES.map((s) => ({ value: s, ...STATUS_BADGE[s] }))
 
 const KIND_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   endpoint_change:   { label: "Endpoint change",   variant: "destructive" },
@@ -71,6 +77,8 @@ export default async function ConnectorHealingPage() {
   ])
   const pending = (pendingRes.proposals ?? []) as any[]
   const recent = (recentRes.proposals ?? []) as any[]
+  // C25 — every CONFIG-level alternate a connector declares in code (the registry is the declaration survivor).
+  const configAlternates = Object.values(CONNECTOR_REGISTRY).flatMap((spec) => (spec.alternates ?? []).filter((a) => a.level === "config").map((a) => ({ connector: spec.connector, id: a.id, version: a.version ?? null, reason: a.reason })))
 
   return (
     <div className="space-y-6 p-6">
@@ -172,6 +180,33 @@ export default async function ConnectorHealingPage() {
         )}
       </section>
 
+      {/* ── C25 — DECLARED CONFIGURATION ALTERNATES (wave 148, lane 148I) ─────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-lg font-medium">Declared configuration alternates</h2>
+        <p className="text-sm text-muted-foreground">A connection-method change the adapter already declares in code (an API version, a declared endpoint). Applying one is versioned, tested by the connector&apos;s live probe and reverted at once if the probe fails; anything not declared here is a code change (a change request).</p>
+        {configAlternates.length === 0 ? (
+          <Card><CardContent className="p-6 text-sm text-muted-foreground">No configuration alternates are declared right now — every connector speaks its declared version.</CardContent></Card>
+        ) : (
+          <Card>
+            <CardContent className="p-0 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-muted-foreground border-b"><tr><th className="text-left p-3">Connector</th><th className="text-left p-3">Alternate</th><th className="text-left p-3">Why it exists</th><th className="text-left p-3">Apply</th></tr></thead>
+                <tbody>
+                  {configAlternates.map((a) => (
+                    <tr key={`${a.connector}:${a.id}`} className="border-b last:border-0">
+                      <td className="p-3">{a.connector}</td>
+                      <td className="p-3">{a.id}{a.version ? ` (${a.version})` : ""}</td>
+                      <td className="p-3 text-muted-foreground">{a.reason}</td>
+                      <td className="p-3"><ApplyConfigAlternate connector={a.connector} alternateId={a.id} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        )}
+      </section>
+
       {/* ── RECENT HISTORY ────────────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Recent (last 25)</h2>
@@ -186,7 +221,7 @@ export default async function ConnectorHealingPage() {
                 </thead>
                 <tbody>
                   {recent.map((r: any) => {
-                    const s = STATUS_BADGE[r.status] ?? { label: r.status, variant: "outline" as const }
+                    const s = HEALING_STATUS_BADGES.find((b) => b.value === r.status) ?? { label: r.status, variant: "outline" as const }
                     const k = KIND_BADGE[r.proposal_kind] ?? { label: r.proposal_kind, variant: "outline" as const }
                     return (
                       <tr key={r.id} className="border-b last:border-0">
@@ -199,6 +234,8 @@ export default async function ConnectorHealingPage() {
                             {r.status === "rejected" && <XCircle      className="h-3 w-3 text-red-600" />}
                             <Badge variant={s.variant}>{s.label}</Badge>
                           </span>
+                          {/* C25 — an applied configuration version is reversible by a person too (reason required). */}
+                          {r.status === "applied" && <RevertProposal proposalId={r.id} />}
                         </td>
                         <td className="p-3 text-xs text-muted-foreground">{agoOrDash(r.applied_at ?? r.detected_at)}</td>
                       </tr>

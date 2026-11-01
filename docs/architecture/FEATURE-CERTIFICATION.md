@@ -87,7 +87,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | ai_campaign_automation | R19 | CERTIFIED | 0 |
 | ai_compliance_checking | R22 | CERTIFIED | 0 |
 | ai_conversation_analysis | R07 | CERTIFIED | 0 |
-| ai_isa | R07 | CERTIFIED | 109 |
+| ai_isa | R07 | CERTIFIED | 110 |
 | ai_lead_prediction | R07 | CERTIFIED | 0 |
 | ai_video_generation | R15 | NOT CONFIGURED | 1 |
 | agent_dashboard | R20 | CERTIFIED | 3 |

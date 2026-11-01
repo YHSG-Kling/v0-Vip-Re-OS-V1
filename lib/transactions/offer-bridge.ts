@@ -437,6 +437,17 @@ export async function createTransactionFromOffer(params: {
     } else if (!fromOffer.ok) console.error(`[offer-bridge] transaction ${transaction.id}: the offer's financing term could not be read — ${fromOffer.error}`)
   }
 
+  // THE CONTRACT'S CLOSING DEADLINE IS ITS OWN FACT (wave 148, lane 148I — owner ruling 21, m927): close_date above is the
+  // EFFECTIVE date and is overwritten by the close; the executed contract's deadline is kept on contract_closing_date (source
+  // executed_contract). Its WORDING (on / on or before) is not on the offer row — it stays NULL (unknown, never assumed)
+  // until it is read off the executed contract (app/actions/transactions.ts recordClosingDateChange, kind contract_wording).
+  // A separate statement, so a database without m927 still creates the deal; a refusal is logged with its reason.
+  {
+    const { seedContractClosing } = await import("@/lib/transactions/closing-dates")
+    const seeded = await seedContractClosing(supabase as any, { brokerageId: params.brokerageId, transactionId: transaction.id, date: contractDeadlines.closingDate ?? null })
+    if (!seeded.ok) console.warn(`[offer-bridge] transaction ${transaction.id}: the contract's closing deadline was not recorded — ${seeded.error}`)
+  }
+
   // Log contract date set event via kernel
   await transitionLifecycle({
     brokerageId: params.brokerageId,

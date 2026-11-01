@@ -114,8 +114,10 @@ export const COMPLETION_DETECTIONS = {
   incomplete_follow_up: {
     label: "Incomplete follow-up", watches: "a reply or task handed to a person that nobody acted on by its due time",
     owner: "ai_isa", ownerFrom: { registry: "MAINTENANCE_DOMAINS", key: "followup_arbiter" }, playbook: "notify_owner_manager",
-    withinAuthority: "remind the person it was handed to, once; a second stall goes to the brokerage's admins",
-    humanBoundary: "the AI never answers in the person's place once it was handed to them",
+    // Wave 148 (lane 148I — owner ruling 16 REVERSES the 147G boundary "the AI never answers in the person's place"): after the
+    // person's window the owning manager answers within delegated authority (contract C24, SupervisionDeps.silentAnswerers).
+    withinAuthority: "after the person's window, answer a status / verified-information / common / next-steps question for them within delegated authority (C24 — the autonomy gate, the SMS chokepoint, verified facts only) and tell them what was said; otherwise remind the person it was handed to, once; a second stall goes to the brokerage's admins",
+    humanBoundary: "never approval, a signature, money or a legal question — those wait for the person (and the admins are told)",
   },
 } as const satisfies Record<string, DetectionSpec>
 export type CompletionDetection = keyof typeof COMPLETION_DETECTIONS
@@ -435,7 +437,16 @@ export interface SupervisionDeps extends CompletionDeps {
   /** Bell a person (default: the thread's agent, else the brokerage's admins via org recipients). */
   notify?: (svc: Svc, c: CompletionRow, sentence: string) => Promise<{ notified: number }>
   ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
+  /**
+   * Contract C24 (wave 148, lane 148I — owner ruling 16): the answerers the composition roots HAND IN (the durable timer, the
+   * cron net pass lib/communications/unattended-answer.ts unattendedAnswerers()). When a reply handed to a PERSON stalls past
+   * their window, the owning manager answers within delegated authority before it reminds anyone. Absent = remind (147G).
+   */
+  silentAnswerers?: Partial<Record<CompletionKind, SilentAnswerer>>
 }
+
+/** C24 — the answer a manager gives for a person whose window passed (never approval / signature / money / legal). */
+type SilentAnswerer = (svc: Svc, c: CompletionRow, trigger: RecoverySource) => Promise<{ answered: boolean; reason: string; topic?: string; providerRef?: string | null; channel?: string; outboundMessageId?: string | null; deliveryDueAt?: string | null }>
 
 /**
  * PURE-ish: re-read the survivor that holds the evidence this stage waits for. Never writes.
@@ -597,12 +608,37 @@ async function remediate(svc: Svc, row: CompletionRow, detection: CompletionDete
   const exhausted = attempt > SUPERVISION_ATTEMPT_CAP
   // The playbook: the detection's own, unless the decision is in flight (never re-run blind) or the bound is spent → a person.
   const playbook: CompletionPlaybook = hardStop || exhausted ? "notify_owner_manager" : spec.playbook
-  const sentence = explainStall(row, detection, detail, now)
-  const claimed = await svc.from("manager_completions").update({ status: "stalled", detection, attempts: attempt, last_attempt_at: now.toISOString(), updated_at: now.toISOString() })
+  let sentence = explainStall(row, detection, detail, now)
+  const claimed =await svc.from("manager_completions").update({ status: "stalled", detection, attempts: attempt, last_attempt_at: now.toISOString(), updated_at: now.toISOString() })
     .eq("id", row.id).eq("brokerage_id", row.brokerage_id).eq("attempts", row.attempts ?? 0).select("id")
   if (claimed.error) return { verdict: "refused", completion: row, detection, reason: `stall claim refused: ${claimed.error.message}` }
   if (!Array.isArray(claimed.data) || claimed.data.length !== 1) return { verdict: "waiting", completion: row, detection, nextCheckAt: row.due_at, reason: "another supervisor took this attempt" }
   const stalled: CompletionRow = { ...row, status: "stalled", detection, attempts: attempt, last_attempt_at: now.toISOString() }
+
+  // C24 (wave 148, lane 148I — owner ruling 16: "if the human hasn't responded and too much time has elapsed, then AI can
+  // answer for them"). The FIRST stall of a reply handed to a person: the owning manager answers within delegated authority
+  // (status, verified information, common questions, next steps — never approval, signature, money or law), and the answer
+  // is the evidence that moves the obligation to the provider's delivery report. Anything the answerer declines (a forbidden
+  // topic, no authority, no facts, a refused screen or send) falls through to the reminder below, with its reason attached.
+  let silentReason: string | null = null
+  const answerer = detection === "incomplete_follow_up" && !hardStop && attempt === 1 ? deps.silentAnswerers?.[row.kind] : undefined
+  if (answerer) {
+    const a = await answerer(svc, stalled, trigger).catch((e: unknown) => ({ answered: false, reason: `the answerer threw: ${errMsg(e)}` }) as Awaited<ReturnType<SilentAnswerer>>)
+    if (a.answered) {
+      const ev: CompletionEvidence = { kind: "decision", at: now.toISOString(), source: "agent_action_ledger:inbound.unattended.answer", ref: `inbound.unattended.answer:unattended:${row.id}`, outcome: `answered for the person after their window (${a.topic ?? "question"})`, recoveredBy: trigger === "event" ? null : trigger }
+      // The delivery window comes from the answerer (lib/outcomes/reconciliation.ts OVERDUE_HOURS for its channel) — this
+      // module stays a leaf; absent, the SMS window (6h).
+      const deliveryDue = a.deliveryDueAt && !Number.isNaN(Date.parse(a.deliveryDueAt)) ? a.deliveryDueAt : new Date(now.getTime() + 6 * 3_600_000).toISOString()
+      const moved = await recordCompletionEvidence(svc, {
+        brokerageId: row.brokerage_id, completionId: row.id, evidence: ev,
+        advanceTo: a.providerRef ? { stage: "awaiting_delivery", expected: ["delivery_outcome"], dueAt: deliveryDue, providerRef: a.providerRef } : null,
+        terminal: !a.providerRef,
+      }, deps)
+      if (moved.ok) return { verdict: "remediated", completion: moved.completion, detection, nextCheckAt: moved.closed ? null : moved.completion.due_at, reason: `answered for the person after their window (C24): ${a.reason}` }
+      silentReason = `the answer went out but the completion did not move (${(moved as { reason?: string }).reason ?? "unknown"})`
+    } else silentReason = a.reason
+  }
+  if (silentReason) sentence = `${sentence} (We did not answer for them: ${silentReason}.)`.slice(0, 600)
 
   const incident = {
     detector: "stalled_completions", class: "transient", brokerageId: row.brokerage_id, subjectKey: `completion:${row.id}`, subjectId: row.id, subjectType: "manager_completion",

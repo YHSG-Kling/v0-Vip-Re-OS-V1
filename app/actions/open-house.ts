@@ -838,35 +838,56 @@ export async function getAgentListings(): Promise<{
 // CANCEL OPEN HOUSE
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function cancelOpenHouse(openHouseId: string): Promise<{
+export async function cancelOpenHouse(
+  openHouseId: string,
+  /** C23 (wave 148, lane 148I — owner ruling 13): cancelling is a manual status change — the person says why. */
+  change?: { reason?: string | null },
+): Promise<{
   success: boolean
   error?: string
 }> {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+    const brokerageId = ctx.brokerageId
 
     const service = createServiceClient()
 
     // Scope update to the user's brokerage; non-broker agents are further
     // scoped to only their own events so they cannot cancel others' events.
     const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"
+    if (!isBrokerOrAdmin && !ctx.agentId) return { success: false, error: "Unauthorized" }
 
-    let query = service
-      .from("open_house_events")
-      .update({ status: "cancelled" })
-      .eq("id", openHouseId)
-      .eq("brokerage_id", ctx.brokerageId)
+    // The event as it stands, through the SAME scope the write uses — its status is the C23 `from`, its updated_at the
+    // ledger's row version (the same click twice replays; a later cancel of a re-scheduled event is a new action).
+    let read = service.from("open_house_events").select("id, status, updated_at").eq("id", openHouseId).eq("brokerage_id", brokerageId)
+    if (!isBrokerOrAdmin) read = read.eq("agent_id", ctx.agentId as string)
+    const { data: current, error: readErr } = await read.maybeSingle()
+    if (readErr) return { success: false, error: readErr.message }
+    if (!current) return { success: false, error: "Event not found or not cancellable" }
 
-    if (!isBrokerOrAdmin) {
-      if (!ctx.agentId) return { success: false, error: "Unauthorized" }
-      query = query.eq("agent_id", ctx.agentId)
-    }
-
-    const { data: updated, error } = await query.select("id")
-
-    if (error) return { success: false, error: error.message }
-    if (!updated?.length) return { success: false, error: "Event not found or not cancellable" }
+    const [{ overrideStatus }, { withActionLedger }] = await Promise.all([import("@/lib/kernel/status-override"), import("@/lib/kernel/action-ledger")])
+    const r = await overrideStatus(
+      { entity: "open_house_event", from: (current as { status: string | null }).status, to: "cancelled", reason: change?.reason ?? null, actor: { userId: ctx.userId ?? null, userType: ctx.userType ?? null } },
+      {
+        brokerageId, subject: { type: "open_house_event", id: openHouseId }, rowVersion: (current as { updated_at?: string | null }).updated_at ?? null,
+        systemSource: "open-house", action: "open_house.event.cancel",
+        apply: async () => {
+          let query = service
+            .from("open_house_events")
+            .update({ status: "cancelled", cancelled_at: new Date().toISOString(), cancellation_reason: (change?.reason ?? "").trim().slice(0, 500) })
+            .eq("id", openHouseId)
+            .eq("brokerage_id", brokerageId)
+          if (!isBrokerOrAdmin) query = query.eq("agent_id", ctx.agentId as string)
+          const { data: updated, error } = await query.select("id")
+          if (error) return { ok: false, error: error.message }
+          if (!updated?.length) return { ok: false, error: "Event not found or not cancellable" }
+          return { ok: true }
+        },
+      },
+      { ledger: withActionLedger, client: service },
+    )
+    if (!r.ok) return { success: false, error: r.message }
 
     revalidatePath("/dashboard/open-houses")
     return { success: true }

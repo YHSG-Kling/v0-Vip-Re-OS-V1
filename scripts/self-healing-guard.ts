@@ -28,6 +28,11 @@
  *      table; 6 repeated failure escalates at SELF_HEAL_PLAYBOOK_ATTEMPT_CAP (imported, one source);
  *      7 money, 8 credential, 9 cross-tenant never auto-heal; 11 success records its verification;
  *      12 a failed remediation keeps its evidence and escalates; + reroute hands off and verifies.
+ *   J. (wave 148, lane 148I — C25, owner ruling 15) GOVERNED PROVIDER-CONFIGURATION SELF-HEAL: classified by ruling 14's
+ *      classes (a declared config alternate is safe; undeclared / credential / code-level / a persisted vendor switch are
+ *      consequential → a change request, never applied), under the platform healing policy (unreadable → nothing), VERSIONED
+ *      (the version before is recorded), TESTED (verified, or REVERTED at once — egress falls back), REVERSIBLE by a person,
+ *      LEDGERED per step; the provider healer's failed retry reverts; m928's CHECK = the code vocabulary.
  * BLIND SPOTS (published): the model and the web are stubbed (the live Gateway / Exa are proven by
  * their own rails); the gate is a keyword + flag classifier (fail-closed — a false positive costs a
  * human glance); the sync core, the twin builder and the provider healer are SPIES here (they reach
@@ -50,6 +55,8 @@ import { LIVE_TABLES } from "./live-tables"
 import { healProviderFailure, matchDeclaredConfigAlternate, providerResearchQueries } from "../lib/agentic-os/connector-healer"
 import { adapterFor, type ProviderAdapter } from "../lib/kernel/provider-adapters"
 import { z } from "zod"
+import { memSupabase } from "./in-memory-supabase"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let pass = 0, fail = 0
 const ok = (c: unknown, m: string) => { if (c) { pass++; console.log(`  ✓ ${m}`) } else { fail++; console.log(`  ✗ ${m}`) } }
@@ -523,6 +530,117 @@ async function main() {
   const decls = capFiles.filter((f) => CAP_DECL.test(stripComments(read(f))))
   ok(CAP_DECL.test("export const SELF_HEAL_PLAYBOOK_ATTEMPT_CAP = 2") && CAP_LITERAL.test("if (playbookAttempts24h >= 2)") && decls.length === 1 && decls[0] === "lib/kernel/self-healing.ts" && !capFiles.some((f) => CAP_LITERAL.test(stripComments(read(f)))),
     `the attempt ceiling is declared ONCE (${decls.join(", ")}) across ${capFiles.length} kernel/agentic-os files and never restated as a literal (POSITIVE CONTROL: both finders match their specimens)`)
+
+  // ── J. C25 — governed provider-configuration self-heal (wave 148, lane 148I; owner ruling 15) ─────────────
+  console.log("\nJ. C25 — a provider configuration change: classified, under policy, versioned, TESTED, reversible, ledgered")
+  {
+    const pc = await import("../lib/kernel/provider-config-healing")
+    const B = "11111111-1111-4111-8111-111111111111"
+    const world = () => memSupabase({
+      agent_action_ledger: [], brokerages: [{ id: B, ai_isa_system_user_id: null }], brokerage_settings: [], platform_settings: [],
+      connector_healing_proposals: [{ id: "v-old", connector: "acme", proposal_kind: "declared_alternate", status: "applied", applied_at: "2026-10-01T00:00:00.000Z", proposal_payload: { alternate_id: "acme_v2" } }],
+    }, { uuidIds: true, unique: { agent_action_ledger: [["idempotency_key"]] } })
+    const OPEN = async () => ({ readable: true, allowedRemediationClasses: null, autoFixMinConfidence: 0.5, note: null })
+    const change = (over: Partial<Parameters<typeof pc.healProviderConfiguration>[1]> = {}) => ({ kind: "declared_config_alternate" as const, connector: "acme", alternateId: "acme_v3", summary: "acme moved its API to v3 (the v2 path answers 410)", confidence: 0.9, ...over })
+    const applyInto = (db: ReturnType<typeof world>, calls: unknown[]) => async (_s: unknown, p: { connector: string; alternateId: string }) => {
+      calls.push(p)
+      const id = `v-${p.alternateId}`
+      db.tables.connector_healing_proposals.push({ id, connector: p.connector, proposal_kind: "declared_alternate", status: "applied", applied_at: new Date().toISOString(), proposal_payload: { alternate_id: p.alternateId } })
+      return { applied: true, proposalId: id, reason: `applied ${p.alternateId}` }
+    }
+    const newestApplied = (db: ReturnType<typeof world>) => [...db.tables.connector_healing_proposals].filter((r) => r.connector === "acme" && r.proposal_kind === "declared_alternate" && r.status === "applied").sort((a, b) => String(b.applied_at).localeCompare(String(a.applied_at)))[0]?.proposal_payload?.alternate_id ?? null
+
+    // classification (ruling 14's classes — derived from the change)
+    const cls = (k: Parameters<typeof pc.classifyProviderConfigChange>[0]["kind"], declared = true) => pc.classifyProviderConfigChange(change({ kind: k }), { declaredConfigAlternate: declared })
+    ok(cls("declared_config_alternate").class === "self_healing_repair" && cls("declared_config_alternate").verdict === "safe", "a DECLARED config-level alternate is a safe self_healing_repair (the config is reviewed, tested code — the runtime only selects it)")
+    ok(cls("declared_config_alternate", false).class === "production_source_edit" && cls("declared_config_alternate", false).verdict === "consequential", "POSITIVE CONTROL: an UNdeclared alternate is a production source edit (consequential)")
+    ok(cls("credential").class === "credentials" && cls("auth_scheme").class === "credentials" && cls("code_level").class === "production_source_edit" && cls("persisted_mapping").class === "tenant_authority", "credential / auth scheme → credentials; code-level → production_source_edit; a persisted vendor switch → tenant_authority (all consequential)")
+    ok(cls("runtime_failover").class === "provider_failover" && cls("runtime_failover").verdict === "safe", "a runtime route-around is provider_failover (safe, never persisted)")
+
+    // safe + verified → kept, versioned
+    {
+      const db = world(); const calls: unknown[] = []
+      const r = await pc.healProviderConfiguration(db as never, change(), { brokerageId: B, cycle: "j1", policy: OPEN, isDeclaredConfigAlternate: () => true, apply: applyInto(db, calls), verify: async () => ({ ok: true, detail: "probe 200 under acme_v3" }) })
+      ok(r.outcome === "applied_and_verified" && calls.length === 1 && r.versionBefore?.alternateId === "acme_v2" && r.versionAfter?.alternateId === "acme_v3" && newestApplied(db) === "acme_v3", `VERSIONED + TESTED: applied, verified and kept; the version before (acme_v2) is on the record (${r.outcome})`)
+      const acts = db.tables.agent_action_ledger.map((x) => `${x.action}:${x.status}`)
+      ok(["provider.config_heal.classify:executed", "provider.config_heal.apply:executed", "provider.config_heal.verify:executed"].every((a) => acts.includes(a)), `AUDITABLE: every step ledgered (${acts.join(", ")})`)
+    }
+    // safe + FAILED test → reverted, egress falls back
+    {
+      const db = world(); const calls: unknown[] = []
+      const r = await pc.healProviderConfiguration(db as never, change(), { brokerageId: B, cycle: "j2", policy: OPEN, isDeclaredConfigAlternate: () => true, apply: applyInto(db, calls), verify: async () => ({ ok: false, detail: "still 410 under acme_v3" }) })
+      const v3 = db.tables.connector_healing_proposals.find((x) => x.id === "v-acme_v3")
+      ok(r.outcome === "applied_then_reverted" && v3?.status === "reverted" && newestApplied(db) === "acme_v2", `REVERSIBLE: a configuration that FAILED its test is taken back at once; egress is back on acme_v2 (${r.outcome}, newest applied ${newestApplied(db)})`)
+      ok(db.tables.agent_action_ledger.some((x) => x.action === "provider.config_heal.revert" && x.status === "executed") && /verification failed/.test(String(v3?.notes ?? "")), "…the reversal is ledgered and the row keeps WHY it was taken back (append-only evidence)")
+      const db2 = world()
+      const r2 = await pc.healProviderConfiguration(db2 as never, change(), { brokerageId: B, cycle: "j3", policy: OPEN, isDeclaredConfigAlternate: () => true, apply: applyInto(db2, []) })
+      ok(r2.outcome === "applied_then_reverted" && newestApplied(db2) === "acme_v2", "an UNTESTED change (no verification supplied) is never kept (fail closed)")
+    }
+    // policy + confidence + consequential
+    {
+      const db = world(); const calls: unknown[] = []; const proposed: Array<Record<string, unknown>> = []
+      const unreadable = await pc.healProviderConfiguration(db as never, change(), { brokerageId: B, cycle: "j4", policy: async () => ({ readable: false, allowedRemediationClasses: [], autoFixMinConfidence: 1, note: "ceiling unreadable" }), isDeclaredConfigAlternate: () => true, apply: applyInto(db, calls), verify: async () => ({ ok: true, detail: "" }) })
+      const closedClass = await pc.healProviderConfiguration(db as never, change(), { brokerageId: B, cycle: "j5", policy: async () => ({ readable: true, allowedRemediationClasses: ["retry"], autoFixMinConfidence: 0.5, note: null }), isDeclaredConfigAlternate: () => true, apply: applyInto(db, calls), verify: async () => ({ ok: true, detail: "" }) })
+      const lowConf = await pc.healProviderConfiguration(db as never, change({ confidence: 0.2 }), { brokerageId: B, cycle: "j6", policy: OPEN, isDeclaredConfigAlternate: () => true, apply: applyInto(db, calls), verify: async () => ({ ok: true, detail: "" }) })
+      ok(unreadable.outcome === "refused" && closedClass.outcome === "refused" && lowConf.outcome === "refused" && calls.length === 0, "UNDER POLICY: an unreadable ceiling, a policy without provider remediation, or confidence below the auto-fix floor → nothing applied")
+      const code = await pc.healProviderConfiguration(db as never, change({ kind: "code_level", proposalKind: "shape_update", summary: "acme renamed `zip` to `postal_code`" }), { brokerageId: B, cycle: "j7", policy: OPEN, apply: applyInto(db, calls), propose: async (_s, row) => { proposed.push(row); return { id: "cr-1", error: null } } })
+      ok(code.outcome === "change_request" && calls.length === 0 && proposed.length === 1 && proposed[0].proposal_kind === "change_request" && JSON.stringify(proposed[0].proposal_payload).includes("deployment_authorization"), "a CODE change is never applied: one change request carrying the change-control requirements (approval, versioned change, tests, deployment authorization)")
+      const cred = await pc.healProviderConfiguration(db as never, change({ kind: "credential", summary: "acme rotated its key format" }), { brokerageId: B, cycle: "j8", policy: OPEN, apply: applyInto(db, calls), propose: async (_s, row) => { proposed.push(row); return { id: "cr-2", error: null } } })
+      ok(cred.outcome === "change_request" && calls.length === 0, "a credential change is never applied by a healer (the account owner reconnects)")
+    }
+    // the reversal itself (counted) + a person's revert
+    {
+      const db = world()
+      const bad = await pc.revertProviderConfiguration(db as never, { proposalId: "v-old", actor: "u-staff", reason: "short" })
+      const okr = await pc.revertProviderConfiguration(db as never, { proposalId: "v-old", actor: "u-staff", reason: "Vendor confirmed v2 is the supported path again" })
+      const twice = await pc.revertProviderConfiguration(db as never, { proposalId: "v-old", actor: "u-staff", reason: "Vendor confirmed v2 is the supported path again" })
+      ok(!bad.ok && okr.ok && !twice.ok && db.tables.connector_healing_proposals[0].status === "reverted", "a reversal carries its reason, flips applied → reverted, and a second reversal matches nothing (COUNTED — never a false success)")
+    }
+    // healProviderFailure: the retry is the test
+    {
+      const reverted: unknown[] = []
+      const qboLive2 = adapterFor("quickbooks")!
+      // The provider-adapter guard's own fixture shape: a pre-75 declaration whose minor version is deprecated, with ONE
+      // superseding config-level alternate — the healer's decision is apply_declared.
+      const FIX = { id: "fixture_minor_next", level: "config" as const, version: "v3 minorversion=75", query: { minorversion: "75" }, supersedesCurrent: true, reason: "fixture" }
+      const qbo2 = { ...qboLive2, api: { ...qboLive2.api, version: "v3 minorversion=73", deprecatedAfter: "2025-08-01", alternates: [FIX] } } as ProviderAdapter
+      const repFail = await healProviderFailure({ connector: "quickbooks", brokerageId: B, failures: [{ status: 400, path: "companyinfo", error: "unsupported minor version" }], cycle: "j9", retry: async () => ({ ok: false }) }, {
+        client: fakeClient() as never, now: NOW, probe: async () => "ok", derivedHealth: async () => ({ state: "healthy", routeAround: false, reason: "" }), appliedAlternateId: async () => null,
+        resolveAdapter: () => qbo2, propose: async () => { throw new Error("must not propose") },
+        apply: async () => ({ applied: true, proposalId: "pX", reason: "applied" }), meter: async () => true,
+        revert: async (_c, p) => { reverted.push(p); return { ok: true } },
+      })
+      ok(!repFail.applied || (reverted.length === 1 && repFail.reverted === true && repFail.retryOk === false), `the provider healer TAKES BACK an applied alternate whose retry failed (applied=${repFail.applied}, reverted=${repFail.reverted}, decision=${repFail.decision.step})`)
+      const reverted2: unknown[] = []
+      const repOk = await healProviderFailure({ connector: "quickbooks", brokerageId: B, failures: [{ status: 400, path: "companyinfo", error: "unsupported minor version" }], cycle: "j10", retry: async () => ({ ok: true }) }, {
+        client: fakeClient() as never, now: NOW, probe: async () => "ok", derivedHealth: async () => ({ state: "healthy", routeAround: false, reason: "" }), appliedAlternateId: async () => null,
+        resolveAdapter: () => qbo2, propose: async () => { throw new Error("must not propose") },
+        apply: async () => ({ applied: true, proposalId: "pY", reason: "applied" }), meter: async () => true,
+        revert: async (_c, p) => { reverted2.push(p); return { ok: true } },
+      })
+      ok(repFail.applied && repOk.applied && repOk.retryOk === true && reverted2.length === 0, "POSITIVE CONTROL: a retry that PASSES keeps the configuration (nothing reverted) — and both runs applied (the arm was reached)")
+    }
+    // the vocabulary + the migration + the console door
+    {
+      const m928 = read("supabase/migrations/m928-connector-healing-proposal-status-vocabulary.sql")
+      const inList = [...(/connector_healing_proposals_status_check\s+CHECK \(status = ANY \(ARRAY\[([^\]]+)\]/.exec(m928)?.[1] ?? "").matchAll(/'([^']+)'/g)].map((m) => m[1]).sort()
+      ok(/^-- (WRITTEN, NOT APPLIED \(wave 148, lane 148I\)|── APPLIED LIVE )/.test(m928) && JSON.stringify(inList) === JSON.stringify([...pc.HEALING_PROPOSAL_STATUSES].sort()), `m928's CHECK equals HEALING_PROPOSAL_STATUSES (${inList.join(",")}) — the stamp is the lane's or APPLIED (the rule, not the waypoint)`)
+      const live = (CHECK_VOCABULARIES as Record<string, Record<string, string[]>>).connector_healing_proposals?.status
+      ok(!live || JSON.stringify([...live].sort()) === JSON.stringify([...pc.HEALING_PROPOSAL_STATUSES].sort()), `once applied, the cache equals the code vocabulary (${live ? live.join(",") : "not in the cache yet — m928 unapplied"})`)
+      const writers = ["lib/agentic-os/connector-auto-applier.ts", "app/actions/superadmin/connector-healing.ts", "lib/kernel/provider-config-healing.ts", "lib/agentic-os/connector-healer.ts"].map((f) => stripComments(read(f))).join("\n")
+      // Only the statuses written INTO connector_healing_proposals (the statement that names the table), never a ledger
+      // settlement's `status: "executed"` beside it.
+      const tableWrites = (src: string) => [...src.matchAll(/from\(\s*"connector_healing_proposals"\s*\)[\s\S]{0,40}?\.(?:update|insert)\(\s*\{([\s\S]{0,700}?)\}\s*\)/g)].map((m) => m[1])
+      const written = [...new Set(tableWrites(writers).flatMap((p) => [...p.matchAll(/\bstatus:\s*"([a-z_]+)"/g)].map((m) => m[1])))]
+      ok(written.length >= 3 && written.every((s) => (pc.HEALING_PROPOSAL_STATUSES as readonly string[]).includes(s)), `every status written into connector_healing_proposals is in the vocabulary (${written.join(", ")})`)
+      ok(tableWrites(`svc.from("connector_healing_proposals").update({ status: "superseded" })`).flatMap((p) => [...p.matchAll(/\bstatus:\s*"([a-z_]+)"/g)].map((m) => m[1])).some((s) => !(pc.HEALING_PROPOSAL_STATUSES as readonly string[]).includes(s)), "POSITIVE CONTROL: a writer spelling a phantom status (superseded) is caught")
+      const act = stripComments(read("app/actions/superadmin/connector-healing.ts"))
+      const body = act.slice(act.indexOf("export async function revertProposalAction"))
+      ok(body.indexOf("assertProvidersCapability(") >= 0 && body.indexOf("assertProvidersCapability(") < body.indexOf("revertProviderConfiguration("), "a person's revert is gated by the providers write capability BEFORE the one reversal runs")
+      const healer = stripComments(read("lib/agentic-os/connector-healer.ts"))
+      ok(/!report\.retryOk && report\.proposalId/.test(healer) && /revertProviderConfiguration/.test(healer), "the provider healer's retry is the change's TEST — a failure reverts through the one reversal")
+    }
+  }
 
   console.log(`\n${fail === 0 ? "RESULT: SELF_HEALING_PASS" : "RESULT: SELF_HEALING_FAIL"} — ${pass} passed, ${fail} failed`)
   process.exit(fail === 0 ? 0 : 1)

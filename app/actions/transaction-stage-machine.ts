@@ -11,6 +11,7 @@ import { closeNegotiationStrategyForOffer } from "@/lib/strategy-learning/close-
 import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { revalidatePath } from "next/cache"
 import { isTransactionStatus } from "@/lib/transactions/transaction-status"
+import { GATED_TRANSACTION_STAGES, overrideStatus, partitionStageBlockers, type StatusEvidence } from "@/lib/kernel/status-override"
 
 // TOMBSTONE (lane 93A, §1/§6): requireCallerForBrokerage — DELETED, MERGED ONTO
 // THE SURVIVOR lib/auth/require-caller.ts requireCallerTenant (the body-tenant
@@ -55,11 +56,13 @@ export async function checkStageAdvancement(params: {
  * Advance a transaction to the target stage.
  * Validates permissions and blockers before advancing.
  *
- * If `overrideReason` is provided, the action bypasses blocker checks but
- * requires a broker / admin / superadmin / compliance role and writes a
- * full audit trail (lifecycle_events row with override metadata). Use only
- * when the agent is unblocked by external context the system can't verify
- * (e.g. lender confirmed CTC by phone before uploading the doc).
+ * If `overrideReason` is provided, the action passes the gate's SOFT process
+ * blockers only (C23 — compliance, signatures, TRID, the CDA and the role gate
+ * are never passed) and requires a broker / admin / compliance role, a reason
+ * (and proof for CLOSED), and writes a full audit trail (the action ledger row
+ * + the lifecycle_events override event). Use only when the agent is unblocked
+ * by external context the system can't verify (e.g. lender confirmed CTC by
+ * phone before uploading the doc).
  */
 export async function advanceTransactionStage(params: {
   transactionId: string
@@ -68,10 +71,17 @@ export async function advanceTransactionStage(params: {
   reason?: string
   /** Manual override — requires elevated role + min 10-char reason */
   overrideReason?: string
+  /** C23 (wave 148, lane 148I) — PROOF where the target demands it (a deal CLOSED by hand: the settlement statement / closing file). */
+  overrideEvidence?: StatusEvidence | null
 }): Promise<{ success: boolean; newStage?: TransactionStage; blockers?: string[]; error?: string }> {
   // ── Override path ──────────────────────────────────────────────────────────
-  // Authorize the override, then force the transition + audit. We skip
-  // canAdvanceStage entirely; the override is the explicit human decision.
+  // Authorize the override, then force the transition + audit.
+  // C23 (wave 148, lane 148I — owner ruling 13: "never bypassing compliance, signatures, tenant authority or transaction
+  // gates"). This path used to skip the transaction's gate ENTIRELY — a reason could close a deal over a FAILED closing
+  // compliance check, an undelivered TRID Closing Disclosure, a missing CDA or an open deal-breaker flag. It now runs the
+  // SAME gate (orchestrator.checkAdvancement → canAdvanceStage, incl. the role gate) and passes only its SOFT process
+  // blockers (lib/kernel/status-override.ts classifyTransactionStageBlocker); a HARD blocker refuses, named. The decision is
+  // the ONE C23 decision (reason, proof for CLOSED, never a gated value) and the write runs inside the action ledger.
   if (params.overrideReason) {
     let overrideCtx
     try {
@@ -92,13 +102,24 @@ export async function advanceTransactionStage(params: {
     const svc = createServiceClient()
 
     // Get current stage for audit metadata
-    const { data: current } = await svc
+    const { data: current, error: currentErr } = await svc
       .from("transactions")
-      .select("stage")
+      .select("stage, status, updated_at")
       .eq("id", params.transactionId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
+    if (currentErr) return { success: false, error: `Could not read the transaction: ${currentErr.message}` }
     if (!current) return { success: false, error: "Transaction not found in your brokerage" }
+
+    // C23 — a stage with a gated door is never an override target (UNDER_CONTRACT: the transaction creation gate).
+    const gatedStage = GATED_TRANSACTION_STAGES[params.targetStage]
+    if (gatedStage) return { success: false, error: gatedStage }
+
+    // C23 — the transaction's OWN gate runs; its hard blockers refuse, its soft ones are passed on the record.
+    const gateCheck = await new TransactionOrchestrator({
+      transactionId: params.transactionId, brokerageId, userId: overrideCtx.userId, userRole: overrideCtx.userType,
+    }).checkAdvancement(params.targetStage)
+    const { hard, soft } = partitionStageBlockers(gateCheck.blockers ?? [])
 
     // FAIL CLOSED (§4) — STAGE_TO_STATUS_MAP lives in transaction-stages.ts, a SEPARATE
     // vocabulary file from transaction-status.ts's TRANSACTION_STATUSES (§6: two files
@@ -113,16 +134,43 @@ export async function advanceTransactionStage(params: {
     // Force the transition. Keep status (lowercase coarse state) in lockstep with stage — the
     // override previously wrote only stage, leaving status stale (e.g. stage CLOSING_PREP while
     // status still under_contract), which is what the dashboards + status filters read.
-    const { error: updateErr } = await svc
-      .from("transactions")
-      .update({
-        stage: params.targetStage,
-        status: mappedStatus,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", params.transactionId)
-      .eq("brokerage_id", brokerageId)
-    if (updateErr) return { success: false, error: updateErr.message }
+    // C23: the ONE decision (reason; proof for CLOSED; hard blockers refuse) and the write inside the action ledger.
+    const overridden = await overrideStatus(
+      {
+        entity: "transaction", from: (current.status as string | null) ?? null, to: mappedStatus,
+        stage: { from: (current.stage as string | null) ?? null, to: params.targetStage },
+        reason: overrideCtx.reason, evidence: params.overrideEvidence ?? null,
+        actor: { userId: overrideCtx.userId, userType: overrideCtx.userType }, hardBlockers: hard, softBlockers: soft,
+      },
+      {
+        brokerageId, subject: { type: "transaction", id: params.transactionId }, rowVersion: (current.updated_at as string | null) ?? null,
+        systemSource: "transaction-stage-machine", action: "transaction.stage.override",
+        apply: async () => {
+          const { data: moved, error: updateErr } = await svc
+            .from("transactions")
+            .update({
+              stage: params.targetStage,
+              status: mappedStatus,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", params.transactionId)
+            .eq("brokerage_id", brokerageId)
+            .select("id")
+          if (updateErr) return { ok: false, error: updateErr.message }
+          if ((moved?.length ?? 0) !== 1) return { ok: false, error: "the transaction did not move (not found in your brokerage)" }
+          return { ok: true }
+        },
+      },
+      { ledger: (await import("@/lib/kernel/action-ledger")).withActionLedger, client: svc },
+    )
+    if (!overridden.ok) return { success: false, error: overridden.message, ...(hard.length > 0 ? { blockers: hard } : {}) }
+    // A deal CLOSED by override records its ACTUAL closing day on the closing-date model (lib/transactions/closing-dates.ts) —
+    // a separate, best-effort write so a not-yet-applied column (m927) can never refuse the stage move itself (PGRST204).
+    if (params.targetStage === TRANSACTION_STAGES.CLOSED) {
+      const { recordActualClosing } = await import("@/lib/transactions/closing-dates")
+      const stamped = await recordActualClosing(svc, { brokerageId, transactionId: params.transactionId, closedOn: new Date(), source: "stage_override" })
+      if (!stamped.ok) console.warn(`[transaction-stage-machine] actual closing day not stamped: ${stamped.error}`)
+    }
 
     // Audit trail — explicit override event with reason + actor role in metadata
     await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
@@ -138,6 +186,9 @@ export async function advanceTransactionStage(params: {
         override_actor:       overrideCtx.userId,
         override_user_type:   overrideCtx.userType,
         original_reason:      params.reason ?? null,
+        // C23: what the override consciously passed, and the proof it carried — never hidden.
+        soft_blockers_passed: soft,
+        evidence:             params.overrideEvidence ?? null,
       },
       createdAt: new Date().toISOString(),
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })

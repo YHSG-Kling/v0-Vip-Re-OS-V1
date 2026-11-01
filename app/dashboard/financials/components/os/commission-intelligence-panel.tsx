@@ -147,8 +147,8 @@ export function CommissionIntelligencePanel({
             <p className="text-xs text-green-700">{formatCurrency(summary.totalPaid)}</p>
           </div>
           <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-center">
-            <p className="text-xs text-red-700">Held</p>
-            <p className="text-lg font-bold text-red-600">{summary.held}</p>
+            <p className="text-xs text-red-700">Disputed (held)</p>
+            <p className="text-lg font-bold text-red-700">{summary.held}</p>
           </div>
         </div>
 

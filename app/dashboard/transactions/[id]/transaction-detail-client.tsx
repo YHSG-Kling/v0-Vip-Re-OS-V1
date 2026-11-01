@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Input } from "@/components/ui/input"
+import { ClosingDatesPanel } from "./closing-dates-panel"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -625,6 +626,8 @@ export function TransactionDetailClient({
   const canOverrideStage = OVERRIDE_USER_TYPES.has(userType?.toLowerCase?.() ?? "")
   const [showOverridePanel, setShowOverridePanel] = useState(false)
   const [overrideReason, setOverrideReason] = useState("")
+  // C23 (wave 148, lane 148I): closing a deal by hand needs PROOF — the settlement statement / closing file reference.
+  const [overrideEvidenceRef, setOverrideEvidenceRef] = useState("")
   const [overrideError, setOverrideError] = useState<string | null>(null)
 
   // Milestone override dialog state — separate from stage override so both
@@ -681,11 +684,13 @@ export function TransactionDetailClient({
         targetStage,
         reason: advanceReason || undefined,
         overrideReason: overrideReason.trim(),
+        overrideEvidence: targetStage === "CLOSED" && overrideEvidenceRef.trim() ? { kind: "external_reference", ref: overrideEvidenceRef.trim() } : null,
       })
       if (result.success) {
         setShowBlockersModal(false)
         setShowOverridePanel(false)
         setOverrideReason("")
+        setOverrideEvidenceRef("")
         setAdvanceReason("")
         router.refresh()
       } else {
@@ -1854,6 +1859,9 @@ export function TransactionDetailClient({
                 </div>
               </CardContent>
             </Card>
+
+            {/* Closing dates — contract (on / on or before) vs expected vs actual (wave 148, lane 148I — owner ruling 21) */}
+            <ClosingDatesPanel transactionId={transaction.id} />
 
             {/* Health Card */}
             <Card>
@@ -5182,8 +5190,9 @@ export function TransactionDetailClient({
                 Force advance with override
               </Button>
               <p className="text-[11px] text-muted-foreground mt-1.5">
-                Requires broker / admin / compliance role. Bypasses the blockers above and
-                writes an audit row with your reason.
+                Requires broker / admin / compliance role. Passes PROCESS blockers only (a deadline not yet marked, the
+                contract date not keyed) and writes an audit row with your reason. Compliance, signatures, TRID and the
+                CDA are never overridden — they are cleared at their own gate.
               </p>
             </div>
           )}
@@ -5201,8 +5210,22 @@ export function TransactionDetailClient({
                 rows={3}
                 className="text-sm"
               />
+              {targetStage === "CLOSED" && (
+                <div className="space-y-1">
+                  <Label htmlFor="override_evidence" className="text-xs font-medium text-amber-700">
+                    Proof of closing (required) — the settlement statement or title / escrow / attorney file number
+                  </Label>
+                  <Input
+                    id="override_evidence"
+                    placeholder="e.g. ALTA statement doc id, or title file #12345"
+                    value={overrideEvidenceRef}
+                    onChange={(e) => setOverrideEvidenceRef(e.target.value)}
+                    className="text-sm"
+                  />
+                </div>
+              )}
               {overrideError && (
-                <p className="text-xs text-red-600">{overrideError}</p>
+                <p className="text-xs text-red-700">{overrideError}</p>
               )}
               <p className="text-[11px] text-muted-foreground">
                 This action is logged as <code className="text-[10px]">transaction.stage_overridden</code>

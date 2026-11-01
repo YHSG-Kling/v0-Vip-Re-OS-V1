@@ -15,16 +15,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogCancel,
-  AlertDialogAction,
-} from "@/components/ui/alert-dialog"
+import { StatusChangeDialog, type StatusChange } from "@/components/status/status-change-dialog"
+import { OPEN_HOUSE_EVENT_STATUSES, statusLabel, type OpenHouseEventStatus } from "@/lib/kernel/status-override"
 import {
   Select,
   SelectTrigger,
@@ -65,13 +57,20 @@ interface Props {
   fetchError?: string
 }
 
-const STATUS_STYLES: Record<string, string> = {
+// "IF A STATUS IS OFFERED THE UI HAS TO SHOW IT" (wave 148, lane 148I — owner ruling 14). Typed over the live CHECK's
+// vocabulary (lib/kernel/status-override.ts OPEN_HOUSE_EVENT_STATUSES), so every status has a style and a label. It was
+// keyed on `invitations_sent` (no such status) and missed `draft` and `marketing`, which rendered unstyled as raw words.
+const STATUS_STYLES: Record<OpenHouseEventStatus, string> = {
+  draft: "bg-muted text-muted-foreground border-border",
   scheduled: "bg-blue-100 text-blue-700 border-blue-200",
-  active: "bg-green-100 text-green-700 border-green-200",
-  completed: "bg-slate-100 text-slate-600 border-slate-200",
+  marketing: "bg-purple-100 text-purple-700 border-purple-200",
+  active: "bg-green-100 text-green-800 border-green-200",
+  completed: "bg-slate-100 text-slate-700 border-slate-200",
   cancelled: "bg-red-100 text-red-700 border-red-200",
-  invitations_sent: "bg-purple-100 text-purple-700 border-purple-200",
 }
+/** Every event status, rendered (the census reads this). */
+const EVENT_STATUS_BADGES = OPEN_HOUSE_EVENT_STATUSES.map((s) => ({ value: s, label: statusLabel("open_house_event", s), style: STATUS_STYLES[s] }))
+const eventBadge = (status: string) => EVENT_STATUS_BADGES.find((b) => b.value === status) ?? { value: status, label: statusLabel("open_house_event", status), style: "bg-muted" }
 
 // open_house_attendees.interest_level is CHECK-constrained (verified live in
 // pg_constraint):
@@ -661,7 +660,9 @@ function ActionsTab({
   const [cancelPending, startCancelTransition] = useTransition()
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
 
-  const canCancel = event.status === "scheduled" || event.status === "active" || event.status === "invitations_sent"
+  // C23 (wave 148, lane 148I): `invitations_sent` is not an open_house_events.status (the live CHECK) — it never matched, and
+  // a MARKETING event (invitations out) had no cancel at all. Every not-yet-finished state may be cancelled, with a reason.
+  const canCancel = event.status === "draft" || event.status === "scheduled" || event.status === "marketing" || event.status === "active"
 
   // C22 (wave 148, lane 148H): the kinds that register attendees carry an AI-drafted page held for approval, and a recording.
   const needsRegistration = event.event_type === "virtual_open_house" || event.event_type === "webinar" || event.event_type === "education_session"
@@ -699,9 +700,9 @@ function ActionsTab({
     })
   }
 
-  const handleCancel = () => {
+  const handleCancel = (change: StatusChange) => {
     startCancelTransition(async () => {
-      const res = await cancelOpenHouse(event.id)
+      const res = await cancelOpenHouse(event.id, { reason: change.reason })
       if (res.success) {
         sonnerToast.success("Event cancelled")
         setShowCancelConfirm(false)
@@ -786,28 +787,16 @@ function ActionsTab({
         </div>
       )}
 
-      <AlertDialog open={showCancelConfirm} onOpenChange={setShowCancelConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Cancel this open house?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The event will be marked as cancelled and will appear in your past events.
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={cancelPending}>Keep Event</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleCancel}
-              disabled={cancelPending}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {cancelPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : null}
-              Yes, Cancel Event
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* C23: the cancel carries its reason (it lands on the event's cancellation_reason and the action ledger). */}
+      <StatusChangeDialog
+        entity="open_house_event"
+        from={event.status}
+        to="cancelled"
+        open={showCancelConfirm}
+        pending={cancelPending}
+        onOpenChange={setShowCancelConfirm}
+        onConfirm={handleCancel}
+      />
     </div>
   )
 }
@@ -838,8 +827,8 @@ function EventDetailSheet({
         <SheetHeader className="pb-2">
           <SheetTitle className="text-base leading-snug pr-6">{address}</SheetTitle>
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge className={`text-[10px] px-1.5 py-0 border ${STATUS_STYLES[event.status] ?? "bg-muted"}`}>
-              {event.status}
+            <Badge className={`text-[10px] px-1.5 py-0 border ${eventBadge(event.status).style}`}>
+              {eventBadge(event.status).label}
             </Badge>
             <span className="text-xs text-muted-foreground flex items-center gap-1">
               <Calendar className="h-3 w-3" />{formatDate(event.event_date)}
@@ -1295,8 +1284,8 @@ function EventRow({ event, onClick }: { event: OpenHouseEvent; onClick: () => vo
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <p className="text-sm font-medium truncate">{address}</p>
-          <Badge className={`text-[10px] px-1.5 py-0 border ${STATUS_STYLES[event.status] ?? "bg-muted"}`}>
-            {event.status}
+          <Badge className={`text-[10px] px-1.5 py-0 border ${eventBadge(event.status).style}`}>
+            {eventBadge(event.status).label}
           </Badge>
         </div>
         <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">

@@ -12,6 +12,8 @@ import { updateTicketStatus, getBrokerageTicketThread, replyToBrokerageTicket, l
 import { TICKET_STATUSES, type SupportTicket, type TicketStatus } from "@/lib/support/ticket-constants"
 import type { TicketThread as Thread } from "@/lib/support/support-thread"
 import { byPriorityDesc } from "@/lib/kernel/priority-rank"
+import { StatusChangeDialog, type StatusChange } from "@/components/status/status-change-dialog"
+import { statusLabel } from "@/lib/kernel/status-override"
 
 const STATUS_BADGE: Record<string, string> = {
   open: "bg-blue-100 text-blue-700 border-blue-200",
@@ -209,10 +211,13 @@ export function SupportQueueClient({
     return [...list].sort(byPriorityDesc)
   }, [tickets, filter])
 
-  async function setStatus(id: string, status: TicketStatus) {
+  // C23 (wave 148, lane 148I — owner ruling 13): a status pick opens the reason dialog first; the door asks the same decision.
+  const [pendingChange, setPendingChange] = useState<{ id: string; from: TicketStatus; to: TicketStatus } | null>(null)
+
+  async function setStatus(id: string, status: TicketStatus, change: StatusChange) {
     const prev = tickets
     setTickets((cur) => cur.map((t) => (t.id === id ? { ...t, status } : t)))
-    const r = await updateTicketStatus(id, status)
+    const r = await updateTicketStatus(id, status, undefined, { reason: change.reason })
     if (!r.ok) {
       setTickets(prev)
       toast({ title: "Update failed", description: r.error, variant: "destructive" })
@@ -223,6 +228,14 @@ export function SupportQueueClient({
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
+      <StatusChangeDialog
+        entity="support_ticket"
+        from={pendingChange?.from ?? null}
+        to={pendingChange?.to ?? null}
+        open={pendingChange !== null}
+        onOpenChange={(o) => { if (!o) setPendingChange(null) }}
+        onConfirm={(change) => { const p = pendingChange; setPendingChange(null); if (p) void setStatus(p.id, p.to, change) }}
+      />
       <div className="flex items-center gap-2">
         <LifeBuoy className="h-6 w-6 text-primary" />
         <div>
@@ -295,10 +308,10 @@ export function SupportQueueClient({
                       )}
                       <AdminTicketThread ticketId={t.id} />
                     </div>
-                    <Select value={t.status} onValueChange={(v) => setStatus(t.id, v as TicketStatus)}>
+                    <Select value={t.status} onValueChange={(v) => { if (v !== t.status) setPendingChange({ id: t.id, from: t.status as TicketStatus, to: v as TicketStatus }) }}>
                       <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {TICKET_STATUSES.map((s) => <SelectItem key={s} value={s} className="capitalize">{s.replace("_", " ")}</SelectItem>)}
+                        {TICKET_STATUSES.map((s) => <SelectItem key={s} value={s}>{statusLabel("support_ticket", s)}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </CardContent>

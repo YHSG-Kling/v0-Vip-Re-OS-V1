@@ -22,6 +22,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { OVERRIDE_REASON_MIN_CHARS } from "@/lib/kernel/status-override"
 
 export class PortalAuthError extends Error {
   constructor(message: string) {
@@ -425,8 +426,10 @@ const OVERRIDE_USER_TYPES = new Set([
 ])
 
 export async function requireOverrideActor(reason: string | null | undefined): Promise<OverrideContext> {
-  if (!reason || reason.trim().length < 10) {
-    throw new PortalAuthError("Override reason required (min 10 characters) for audit trail")
+  // ONE floor (wave 148, lane 148I — contract C23): the same reason rule every manual status change holds
+  // (lib/kernel/status-override.ts OVERRIDE_REASON_MIN_CHARS), never a second literal.
+  if (!reason || reason.trim().length < OVERRIDE_REASON_MIN_CHARS) {
+    throw new PortalAuthError(`Override reason required (min ${OVERRIDE_REASON_MIN_CHARS} characters) for audit trail`)
   }
 
   const supabase = await createClient()

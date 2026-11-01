@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ClipboardList, MapPin, Calendar, ChevronRight, AlertTriangle } from "lucide-react"
 import Link from "next/link"
+import { StatusBadge } from "@/components/status/status-badge"
 
 interface Transaction {
   id: string
@@ -168,9 +169,14 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                           <div className="flex items-center gap-2 flex-wrap">
                             <MapPin className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                             <span className="font-medium truncate">{txn.property_address || "No address"}</span>
-                            <Badge className={`${getStageColor(txn.stage)} border text-xs`}>
-                              {formatStage(txn.stage || txn.status)}
-                            </Badge>
+                            {txn.stage && (
+                              <Badge className={`${getStageColor(txn.stage)} border text-xs`}>
+                                {formatStage(txn.stage)}
+                              </Badge>
+                            )}
+                            {/* C23 census (wave 148, lane 148I): the deal's STATUS is shown as itself — showing only the stage
+                                hid it (a FUNDED deal read "Closed", a pre-contract one showed a raw word). */}
+                            <StatusBadge entity="transaction" value={txn.status} />
                           </div>
 
                           {/* Metrics Row */}

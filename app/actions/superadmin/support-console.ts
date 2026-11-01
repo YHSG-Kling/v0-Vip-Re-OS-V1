@@ -194,19 +194,26 @@ export async function assignTicketAction(params: { ticketId: string; assigneeUse
   return { ok: true }
 }
 
-export async function setTicketStatusAction(params: { ticketId: string; status: "open" | "in_progress" | "resolved" | "closed" }): Promise<{ ok: boolean; error?: string }> {
+export async function setTicketStatusAction(params: { ticketId: string; status: "open" | "in_progress" | "resolved" | "closed"; reason?: string | null }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireStaff()
   if (!auth.ok) return auth
   const svc = createServiceClient()
   const lane = await requireConsoleTicket(svc, params.ticketId)
   if (!lane.ok) return lane
+  // C23 (wave 148, lane 148I — owner ruling 13): platform staff give the reason too — the SAME decision as the office desk
+  // (lib/kernel/status-override.ts decideStatusOverride), read against the ticket's current status.
+  const { data: cur, error: curErr } = await svc.from("support_tickets").select("status").eq("id", params.ticketId).maybeSingle()
+  if (curErr) return { ok: false, error: curErr.message }
+  const { decideStatusOverride } = await import("@/lib/kernel/status-override")
+  const decision = decideStatusOverride({ entity: "support_ticket", from: (cur as { status?: string | null } | null)?.status ?? null, to: params.status, reason: params.reason ?? null, actor: { userId: auth.userId } })
+  if (!decision.ok) return { ok: false, error: decision.message }
   const patch: Record<string, unknown> = { status: params.status, updated_at: new Date().toISOString() }
   if (params.status === "resolved" || params.status === "closed") patch.resolved_at = new Date().toISOString()
   else patch.resolved_at = null
   const { data: rows, error } = await svc.from("support_tickets").update(patch).eq("id", params.ticketId).select("id")
   if (error) return { ok: false, error: error.message }
   if ((rows?.length ?? 0) === 0) return { ok: false, error: "Ticket not found" }
-  await audit(auth.userId, "support_ticket.status_changed", params.ticketId, { status: params.status })
+  await audit(auth.userId, "support_ticket.status_changed", params.ticketId, { status: params.status, from: decision.from, reason: decision.reason, contract: "C23" })
   revalidatePath(`/dashboard/superadmin/support/${params.ticketId}`)
   revalidatePath("/dashboard/superadmin/support")
   return { ok: true }

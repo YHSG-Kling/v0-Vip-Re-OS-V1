@@ -6,6 +6,7 @@ import * as TransactionService from "@/lib/application/transactions"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isAdminOrBroker, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createContactManually } from "@/lib/kernel/crm"
+import { revalidatePath } from "next/cache"
 
 // ============================================
 // TRANSACTION CRUD
@@ -150,6 +151,14 @@ export async function updateTransaction(
   }>,
 ) {
   if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
+  // C23 + the closing-date model (wave 148, lane 148I — owner rulings 13 + 21). This public endpoint wrote `status` and
+  // `close_date` as free text: a deal could be marked closed with no reason, no proof and none of its gates (compliance,
+  // TRID, CDA), and the closing date — the CONTRACT's deadline — could be overwritten as if an amendment had been executed.
+  // Both now have their one door each:
+  //   status     → app/actions/transaction-stage-machine.ts advanceTransactionStage (the gate, or the C23 override);
+  //   close_date → recordClosingDateChange below (anticipated vs an EXECUTED amendment, with proof).
+  if (updates.status !== undefined) return { success: false, error: "A deal's status moves through its stage (advanceTransactionStage) — with the gate, or an override that carries its reason." }
+  if (updates.close_date !== undefined) return { success: false, error: "The closing date is the contract's term — record an anticipated date or an executed amendment through recordClosingDateChange." }
   return TransactionService.updateTransaction(transactionId, updates)
 }
 
@@ -245,6 +254,70 @@ async function requireTransactionActor(
     }
   }
   return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
+}
+
+// ============================================
+// CLOSING DATES — contractual (on / on or before) vs anticipated vs actual (wave 148, lane 148I — owner ruling 21)
+// ============================================
+
+/**
+ * The deal's three closing facts (lib/transactions/closing-dates.ts resolveClosingDates) with the state note — the
+ * agent on the deal or a tenant admin (requireTransactionActor). Read on the service client after the session gate.
+ */
+export async function getClosingDates(transactionId: string): Promise<
+  { ok: true; dates: import("@/lib/transactions/closing-dates").ClosingDates } | { ok: false; error: string }
+> {
+  if (!isValidUUID(transactionId)) return { ok: false, error: "Invalid transaction ID" }
+  const gate = await requireTransactionActor(transactionId)
+  if (!gate.ok) return gate
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { resolveClosingDates } = await import("@/lib/transactions/closing-dates")
+  // m927 columns may not be applied yet: read them, and on a refusal fall back to the survivors' columns (said, not hidden).
+  const svc = createServiceClient()
+  const full = await svc.from("transactions")
+    .select("status, close_date, estimated_close_date, property_state, financing_type, contract_closing_date, contract_closing_terms, contract_closing_source, contract_closing_amendment_ref, actual_close_date")
+    .eq("id", transactionId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+  let row = full.data as Record<string, string | null> | null
+  if (full.error) {
+    const base = await svc.from("transactions").select("status, close_date, estimated_close_date, property_state, financing_type").eq("id", transactionId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+    if (base.error) return { ok: false, error: base.error.message }
+    row = base.data as Record<string, string | null> | null
+  }
+  if (!row) return { ok: false, error: "Transaction not found" }
+  const dates = resolveClosingDates(row)
+  if (full.error) dates.notes.push(`The closing-date model columns are not readable yet (${full.error.message}) — showing the dates the deal already carries.`)
+  return { ok: true, dates }
+}
+
+/**
+ * Record a closing-date change under its rule (lib/transactions/closing-dates.ts applyClosingDateChange): a PROPOSED day
+ * moves the anticipated date only — never the contract; an EXECUTED amendment changes the contractual deadline and needs
+ * its reference; the contract's wording (on / on or before) is read off the executed contract with its reference. Reason
+ * always. Tenant and actor from the session (requireTransactionActor) — never the body.
+ */
+export async function recordClosingDateChange(params: {
+  transactionId: string
+  kind: "anticipated" | "executed_amendment" | "contract_wording"
+  date?: string | null
+  terms?: "on" | "on_or_before" | null
+  reason: string
+  evidenceRef?: string | null
+}): Promise<
+  | { ok: true; assessment: import("@/lib/transactions/closing-dates").ClosingDateChangeAssessment | null; dates: import("@/lib/transactions/closing-dates").ClosingDates }
+  | { ok: false; error: string; assessment?: import("@/lib/transactions/closing-dates").ClosingDateChangeAssessment }
+> {
+  if (!isValidUUID(params.transactionId)) return { ok: false, error: "Invalid transaction ID" }
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return gate
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { applyClosingDateChange } = await import("@/lib/transactions/closing-dates")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const r = await applyClosingDateChange(createServiceClient(), {
+    brokerageId: gate.brokerageId, transactionId: params.transactionId, actorUserId: gate.userId,
+    kind: params.kind, date: params.date ?? null, terms: params.terms ?? null, reason: params.reason, evidenceRef: params.evidenceRef ?? null,
+  }, { ledger: withActionLedger })
+  if (r.ok) revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+  return r
 }
 
 /**

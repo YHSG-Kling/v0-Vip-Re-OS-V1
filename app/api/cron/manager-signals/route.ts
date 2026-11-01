@@ -125,7 +125,10 @@ export async function GET(req: NextRequest) {
       // The inbound chain's redriver is handed in HERE, at the composition root (wave 147 integrator): the supervisor no
       // longer imports the chain itself.
       const { inboundCompletionRedrivers } = await import("@/lib/communications/inbound-record")
-      const supervision = { redrivers: inboundCompletionRedrivers() }
+      // C24 (wave 148, lane 148I — owner ruling 16): the answerer for a reply whose person's window passed — the net recovers
+      // what the durable timer missed with the SAME answerer (its ledger cycle keeps it at most once).
+      const { unattendedAnswerers } = await import("@/lib/communications/unattended-answer")
+      const supervision = { redrivers: inboundCompletionRedrivers(), silentAnswerers: unattendedAnswerers() }
       for (const t of (tenants ?? []) as Array<{ id: string }>) {
         try {
           const tk = await watchUnresolvedTickets(supabase, t.id)

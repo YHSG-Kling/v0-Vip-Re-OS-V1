@@ -1183,6 +1183,13 @@ export async function closeTransactionCommand(params: {
     // A tenant-pinned UPDATE that matches nothing RESOLVES with no error (CLAUDE.md §3) — count it, or a
     // wrong-tenant / already-gone deal reports a close that never happened (the 142J finding).
     if (!closedRows || closedRows.length === 0) return { success: false, error: "No transaction was closed — 0 rows matched this transaction in this brokerage" }
+    // THE ACTUAL CLOSING DAY (wave 148, lane 148I — owner ruling 21, m927) — beside the effective close_date; a separate
+    // best-effort write so a database without m927 still closes the deal (logged).
+    {
+      const { recordActualClosing } = await import("@/lib/transactions/closing-dates")
+      const stamped = await recordActualClosing(supabase, { brokerageId: params.brokerageId, transactionId: params.transactionId, closedOn: today, source: "close_command" })
+      if (!stamped.ok) console.warn(`[closeTransactionCommand] actual closing day not stamped for ${params.transactionId}: ${stamped.error}`)
+    }
 
     // Timeline + lifecycle_event + per-contact activity rows
     // (activity rows are what the CRM contact Activity tab reads — the

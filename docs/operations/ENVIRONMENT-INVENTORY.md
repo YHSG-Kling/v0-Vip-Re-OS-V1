@@ -426,7 +426,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 
 | Name | Requirement | Scope | Tenancy (matrix) | Purpose | Repo reads | Documented |
 |---|---|---|---|---|---|---|
-| `VERCEL` | PROVIDED | provided | platform | Present on Vercel; selects the serverless chromium path. | 2 @ lib/kernel/completion-tracking.ts:414 | .env.example |
+| `VERCEL` | PROVIDED | provided | platform | Present on Vercel; selects the serverless chromium path. | 2 @ lib/kernel/completion-tracking.ts:416 | .env.example |
 | `VERCEL_DEPLOYMENT_ID` | PROVIDED | provided | platform | Deployment id; part of the Remotion code revision (lib/remotion/code-revision.ts:207). | 1 @ lib/remotion/code-revision.ts:207 | .env.example |
 | `VERCEL_ENV` | PROVIDED | provided | platform | production \| preview \| development; demo sign-in is off when 'production' (app/constants/auth.ts:284). | 1 @ app/constants/auth.ts:293 | .env.example |
 | `VERCEL_GIT_COMMIT_SHA` | PROVIDED | provided | platform | Commit sha; part of the Remotion code revision (lib/remotion/code-revision.ts:205). | 1 @ lib/remotion/code-revision.ts:205 | .env.example |

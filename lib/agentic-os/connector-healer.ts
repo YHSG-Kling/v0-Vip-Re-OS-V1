@@ -393,6 +393,8 @@ interface ProviderHealDeps {
   researchModel?: BoundedModelDeps
   /** Test seam for a synthetic adapter declaration (production resolves adapterFor). */
   resolveAdapter?: (connector: string) => ProviderAdapter | null
+  /** C25 (wave 148) — the reversal of a configuration that failed its retry (default: provider-config-healing revertProviderConfiguration). */
+  revert?: typeof import("@/lib/kernel/provider-config-healing").revertProviderConfiguration
 }
 
 interface ProviderHealReport {
@@ -404,6 +406,8 @@ interface ProviderHealReport {
   proposalId: string | null
   /** Wave 138B — the cited finding the research step produced (null when it did not run / found none). */
   research: { finding: ProviderSetupFinding; citations: Citation[]; costUsd: number } | null
+  /** C25 (wave 148) — the applied alternate failed its retry and was taken back (absent = nothing to take back). */
+  reverted?: boolean
 }
 
 export async function healProviderFailure(input: ProviderHealInput, deps: ProviderHealDeps = {}): Promise<ProviderHealReport> {
@@ -469,7 +473,12 @@ export async function healProviderFailure(input: ProviderHealInput, deps: Provid
   const applyAndRetry = async (alternate: DeclaredAlternate, reason: string, extra: Record<string, unknown> = {}): Promise<ProviderHealReport> => {
     const apply = deps.apply ?? applyDeclaredAlternate
     const sig = `HTTP {${input.failures.map((f) => f.status ?? "?").join(",")}} — ${reason}`
-    const applied = await ledger("apply", { reason, alternate: alternate.id, ...evidence, ...extra },
+    // C25 (wave 148, lane 148I): the change's ruling-14 class is DERIVED and recorded on the apply step — a declared
+    // config-level alternate (it reached this arm only from the adapter's own declaration) is a safe self_healing_repair.
+    const { classifyProviderConfigChange } = await import("@/lib/kernel/provider-config-healing")
+    const governedChange = classifyProviderConfigChange({ kind: "declared_config_alternate", connector: input.connector, alternateId: alternate.id, summary: reason, confidence: 1 }, { declaredConfigAlternate: alternate.level === "config" })
+    if (governedChange.verdict !== "safe") return report
+    const applied = await ledger("apply", { reason, alternate: alternate.id, governed_change: governedChange, ...evidence, ...extra },
       () => apply(client, { connector: input.connector, alternateId: alternate.id, failureSignature: sig, evidence: { ...evidence, ...extra } }),
       (x) => ({ ok: x.applied, note: x.reason }))
     report.applied = !!applied?.applied
@@ -482,6 +491,15 @@ export async function healProviderFailure(input: ProviderHealInput, deps: Provid
     report.retryOk = retried?.ok ?? false
     const booked = await bookAdapterUsage(adapter, { brokerageId: input.brokerageId, executed: !!retried?.ok, units: retried?.units, systemSource: "provider_self_heal", usageType: "heal_retry" }, { meter: deps.meter })
     report.booked = booked ? 1 : 0
+    // C25 (wave 148, lane 148I — owner ruling 15: a configuration self-heal must not break the rest of the OS): the retry IS
+    // the change's test. A configuration that failed its test is TAKEN BACK at once — the version flips applied → reverted and
+    // egress falls back to the version before (lib/kernel/provider-config-healing.ts revertProviderConfiguration, ledgered).
+    if (!report.retryOk && report.proposalId) {
+      const { revertProviderConfiguration } = await import("@/lib/kernel/provider-config-healing")
+      const r = await (deps.revert ?? revertProviderConfiguration)(client, { proposalId: report.proposalId, actor: "auto", reason: `the retry under ${alternate.id} failed — the configuration is taken back` }, { brokerageId: input.brokerageId, cycle: input.cycle })
+      report.reverted = r.ok
+      if (!r.ok) console.error(`[connector-healer] ${input.connector}: the failed alternate ${alternate.id} could NOT be reverted (${r.error}) — a person must take it back`)
+    }
     return report
   }
 

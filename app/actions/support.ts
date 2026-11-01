@@ -38,6 +38,7 @@ import {
 } from "@/lib/support/ticket-constants"
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import { decideStatusOverride, statusOverrideDetail } from "@/lib/kernel/status-override"
 import {
   resolveTicketQueueScope, scopeTicketQuery, ticketWithinScope,
   type TicketQueueScope,
@@ -394,6 +395,8 @@ export async function updateTicketStatus(
   ticketId: string,
   status: TicketStatus,
   priority?: TicketPriority,
+  /** C23 (wave 148, lane 148I — owner ruling 13): the desk's REASON for the status change (the resolution note on resolve). */
+  change?: { reason?: string | null },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Forbidden" }
@@ -418,6 +421,12 @@ export async function updateTicketStatus(
   if (!prior) return { ok: false, error: "Ticket not found" }
   const before = prior as { id: string; brokerage_id: string | null; lane: string | null; status: string | null; updated_at: string | null; subject: string | null; submitted_by_user_id: string | null }
   if (!before.brokerage_id) return { ok: false, error: "Ticket has no tenant" }
+  // C23 — a status CHANGE carries its reason (lib/kernel/status-override.ts decideStatusOverride, the ONE decision); a
+  // priority-only edit (status unchanged) is not a status pick and needs none.
+  const statusChange = before.status !== status
+    ? decideStatusOverride({ entity: "support_ticket", from: before.status, to: status, reason: change?.reason ?? null, actor: { userId: ctx.userId ?? null, userType: ctx.userType ?? null } })
+    : null
+  if (statusChange && !statusChange.ok) return { ok: false, error: statusChange.message }
 
   const { withActionLedger } = await import("@/lib/kernel/action-ledger")
   const result = await withActionLedger<{ ok: true } | { ok: false; error: string }>(
@@ -425,9 +434,9 @@ export async function updateTicketStatus(
       brokerageId: before.brokerage_id, action: "support.ticket.status_change",
       actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
       subject: { type: "support_ticket", id: ticketId },
-      reasonDetail: `${before.status ?? "?"} → ${status} from the support desk`,
+      reasonDetail: `${before.status ?? "?"} → ${status} from the support desk${statusChange?.ok ? `: ${statusChange.reason}` : ""}`.slice(0, 500),
       idempotencyKey: `support_status:${ticketId}:${before.status ?? "?"}->${status}:${before.updated_at ?? "never"}`,
-      riskClass: "LOW_RISK_WRITE", channel: "support", detail: { lane: before.lane, from: before.status, to: status, priority: update.priority ?? null },
+      riskClass: "LOW_RISK_WRITE", channel: "support", detail: { lane: before.lane, from: before.status, to: status, priority: update.priority ?? null, ...(statusChange?.ok ? statusOverrideDetail(statusChange, { userId: ctx.userId ?? null, userType: ctx.userType ?? null }) : {}) },
     },
     async () => {
       // A tenant scope pins the write to the session tenant; only platform support is unpinned.
