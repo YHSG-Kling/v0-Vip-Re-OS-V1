@@ -91,6 +91,18 @@ export interface ExternalListing {
   propertyType: string | null
   daysOnMarket: number | null
   photoUrl: string | null
+  /**
+   * WAVE 148 (lane 148E — owner: "yard size … outdoor space is a home with acreage … like a map"). The facts the
+   * buyer explanation answers yard / acreage / commute from, CARRIED instead of dropped: RentCast's /listings rows
+   * already hold them (rentcast.ts listingRowExtras — latitude, longitude, lotSize in SQUARE FEET, hoa.fee, status);
+   * the tenant's IDX featured-set reader does not return them, so an IDX row carries null (stated, never guessed).
+   */
+  latitude?: number | null
+  longitude?: number | null
+  lotSizeSqft?: number | null
+  hoaMonthly?: number | null
+  /** The status AS THE SOURCE REPORTS IT. For RentCast this is a property-data service's view, not an MLS verification. */
+  sourceStatus?: string | null
 }
 
 export interface ExternalSearchInput {
@@ -310,6 +322,11 @@ function idxToExternal(l: NormalizedIdxListing): ExternalListing {
     propertyType: l.propertyType,
     daysOnMarket: l.daysOnMarket,
     photoUrl: l.photoUrl,
+    latitude: null,
+    longitude: null,
+    lotSizeSqft: null,
+    hoaMonthly: null,
+    sourceStatus: null,
   }
 }
 
@@ -333,5 +350,10 @@ function rentcastToExternal(l: RentcastListing, listingType: ExternalListingType
     propertyType: l.propertyType,
     daysOnMarket: l.daysOnMarket,
     photoUrl: l.photoUrl,
+    latitude: l.latitude ?? null,
+    longitude: l.longitude ?? null,
+    lotSizeSqft: l.lotSizeSqft ?? null,
+    hoaMonthly: l.hoaMonthly ?? null,
+    sourceStatus: l.status ?? null,
   }
 }

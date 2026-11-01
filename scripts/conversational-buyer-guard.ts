@@ -176,7 +176,11 @@ async function main() {
   const elm = fits[0].fit
   check("12 Elm: price, beds, city, no-HOA match from listing data", ["maxPrice", "minBeds", "cities", "dealBreakers"].every((f) => elm.matches.some((m) => m.field === f && m.source === "listing")))
   check("12 Elm: natural light + open plan match ONLY as the listing agent's words, attributed as such", elm.matches.filter((m) => m.source === "listing_remarks").length >= 2 && elm.matches.filter((m) => m.source === "listing_remarks").every((m) => /listing description mentions/.test(m.detail)))
-  check("12 Elm: commute and yard are UNKNOWN (no source measures them)", elm.unknowns.some((u) => u.field === "lifestyle:commute") && elm.unknowns.some((u) => u.field === "lifestyle:outdoor_space"))
+  // Wave 148 (lane 148E — owner ruling 7: "yard size … outdoor space is a home with acreage"): this assertion pinned a WAYPOINT
+  // ("yard is UNKNOWN") that the wave-148 evidence rule correctly moves. THE RULE, re-asserted: with no travel evidence the
+  // commute stays UNKNOWN; the yard is answered ONLY from the listing's lot size, in acres, with the unit basis stated
+  // (lot_size has no recorded unit — 0.18 can only be acres, and the caveat says it was read from the size of the number).
+  check("12 Elm: commute stays UNKNOWN (no travel evidence); the yard is answered only from the lot size, in acres, unit basis stated", elm.unknowns.some((u) => u.field === "lifestyle:commute") && [...elm.matches, ...elm.misses].some((m) => m.field === "lifestyle:outdoor_space" && /0\.18 acre/.test(m.detail) && /doesn't record the unit/.test(m.evidence?.caveat ?? "")))
   const oak = fits[1].fit
   check("9 Oak: over budget and short a bedroom → two misses with the facts", oak.misses.some((m) => m.field === "maxPrice" && /\$40k over/.test(m.detail)) && oak.misses.some((m) => m.field === "minBeds"))
   check("9 Oak: no remarks → natural light UNKNOWN; HOA dues null → HOA UNKNOWN (absence of data is not a 'no')", oak.unknowns.some((u) => u.field === "lifestyle:natural_light") && oak.unknowns.some((u) => u.field === "dealBreakers"))

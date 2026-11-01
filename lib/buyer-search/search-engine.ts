@@ -15,7 +15,8 @@ import { publiclyVisibleListingStatuses } from '@/lib/listings/listing-status-sy
 import { handleError } from '@/lib/errors'
 import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } from './intent-parser'
 import { inferBuyerPersona } from './persona-inference'
-import { generateMatchExplanation, explainCriteriaFit, composeNeighbourlyExplanation, type CriteriaFit, type ListingFitFacts } from './explanation-generator'
+import { generateMatchExplanation, explainCriteriaFit, composeNeighbourlyExplanation, fullExplanationText, type CriteriaFit, type ListingFitFacts } from './explanation-generator'
+import { describeListingSource, claimsFromFit, validateClaims, type ExplanationClaim, type ListingSourceLabel, type HomeLocationEvidence } from './explanation-evidence'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
 import { scanExplanation, scanFairHousing } from './fair-housing'
 import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching'
@@ -77,6 +78,44 @@ export interface BuyerSearchResult {
   fit?: CriteriaFit
   /** Wave 147C: the neighbourly explanation built ONLY from `fit` (+ the code-authored unknowns line). */
   explanation_voice?: string
+  /**
+   * Wave 148E (owner ruling 8): WHAT THIS RESULT IS — one of the brokerage's own listings, an MLS listing through the
+   * tenant's IDX feed, or RentCast property data (NOT a verified active listing).
+   */
+  source_label?: ListingSourceLabel
+  /** Wave 148E (contract C18): every buyer-facing claim with its evidence source and confidence; unknowns stay unknown. */
+  claims?: ExplanationClaim[]
+  /** Wave 148E: the one gentle question and the offer to meet the agent (the agent's first impression). */
+  follow_up_question?: string
+  agent_offer?: string
+}
+
+/**
+ * The brand an explanation speaks for (wave 148E): the brokerage's name and the buyer's agent's FIRST name, read under
+ * the caller's verified tenant (agents.id → agents.user_id → users — agents.id and users.id are disjoint, CLAUDE.md §3).
+ * Every refusal is read and logged; an unreadable name degrades to "your agent", never to an invented one.
+ */
+export async function loadExplanationVoice(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string | null,
+  agentId: string | null,
+): Promise<{ brokerageName: string | null; agentName: string | null }> {
+  if (!brokerageId) return { brokerageName: null, agentName: null }
+  const { data: b, error: bErr } = await supabase.from('brokerages').select('name, dba').eq('id', brokerageId).maybeSingle()
+  if (bErr) console.error('[buyer-search] brokerage name read refused:', bErr.message)
+  const brokerageName = ((b as { dba?: string | null; name?: string | null } | null)?.dba || (b as { name?: string | null } | null)?.name || null)
+  let agentName: string | null = null
+  if (agentId) {
+    const { data: a, error: aErr } = await supabase.from('agents').select('user_id').eq('id', agentId).eq('brokerage_id', brokerageId).maybeSingle()
+    if (aErr) console.error('[buyer-search] agent read refused:', aErr.message)
+    const userId = (a as { user_id?: string | null } | null)?.user_id ?? null
+    if (userId) {
+      const { data: u, error: uErr } = await supabase.from('users').select('first_name').eq('id', userId).maybeSingle()
+      if (uErr) console.error('[buyer-search] agent name read refused:', uErr.message)
+      agentName = ((u as { first_name?: string | null } | null)?.first_name ?? '').trim() || null
+    }
+  }
+  return { brokerageName, agentName }
 }
 
 export interface BuyerSearchParams {
@@ -122,7 +161,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     // 2. Fetch contact + conversation context
     const { data: contact } = await supabase
       .from('contacts')
-      .select('id, brokerage_id, first_name, last_name, notes, created_at')
+      .select('id, brokerage_id, agent_id, first_name, last_name, notes, created_at')
       .eq('id', contactId)
       .single()
 
@@ -184,12 +223,20 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     })
 
     // 4. Query listings
+    //
+    // IN-HOUSE MEANS THIS BROKERAGE'S OWN (wave 148E, owner ruling 8: "buyer search is either on in-house listings or
+    // outside properties using RentCast or the tenant's IDX/MLS provider"). This read used to take every active
+    // listing on the PLATFORM — another brokerage's inventory shown inside this tenant's portal as "our listing",
+    // which is neither in-house nor the tenant's own IDX display agreement (MLS IDX rules are how brokers show each
+    // other's listings). It is now bounded to the CONTACT's tenant (read above under the contact id — never a caller
+    // value); a contact with no tenant gets no in-house rows (fail closed), and the outside sources below still run.
     const filters = intentToFilters(enrichedIntent)
     let q = supabase
       .from('listings')
       // has_pool / has_septic / hoa_dues / lot_size / year_built / public_remarks (wave 147C) are what
       // the explainable fit answers lifestyle asks and deal-breakers from — columns the live table has.
       .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks')
+      .eq('brokerage_id', contact.brokerage_id ?? '')
       .in('status', buyerShoppableListingStatuses())
       .is('deleted_at', null)  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)
 
@@ -202,9 +249,9 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     if (filters.states?.length)  q = q.in('state', filters.states)
     if (filters.propertyTypes?.length) q = q.in('property_type', filters.propertyTypes)
 
-    const { data: platformListings, error: listingsError } = await q
-      .order('created_at', { ascending: false })
-      .limit(200)
+    const { data: platformListings, error: listingsError } = contact.brokerage_id
+      ? await q.order('created_at', { ascending: false }).limit(200)
+      : { data: [] as any[], error: null }
 
     if (listingsError) return { success: false, error: 'Failed to fetch listings' }
 
@@ -269,6 +316,13 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
             features: [],
             status: 'active',
             created_at: new Date().toISOString(),
+            // Wave 148E: the facts a RentCast row carries (an IDX row carries none of them — null, never guessed).
+            // lot_size_sqft is SQUARE FEET as RentCast reports it; facts_source labels whose facts these are (C18).
+            lot_size_sqft: e.lotSizeSqft ?? null,
+            hoa_dues: e.hoaMonthly ?? null,
+            facts_source: e.source === 'rentcast' ? 'provider:rentcast' : 'listing',
+            __lat: e.latitude ?? null,
+            __lon: e.longitude ?? null,
             __external: true,
             __source: e.source,
             __external_id: e.externalId,
@@ -342,6 +396,31 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     // provenance, plus this query's own words as said. Built once per search.
     const fitCriteria = fitCriteriaFor(enrichedIntent, storedCriteria)
 
+    // WAVE 148E — THE NEIGHBOURLY ANSWER'S EVIDENCE AND VOICE. The brand the explanation speaks for (the brokerage, the
+    // buyer's agent by first name), and — when the buyer named a place they commute to — ONE cache-first, gated Matrix
+    // request for the homes that already carry coordinates (location-evidence.ts; never a geocode per home here).
+    // Best-effort: a failure leaves the commute UNKNOWN with an invitation to "why this home?", never a guess.
+    const brand = await loadExplanationVoice(supabase, contact.brokerage_id ?? null, (contact as { agent_id?: string | null }).agent_id ?? null)
+      .catch(() => ({ brokerageName: null, agentName: null }))
+    let pageEvidence = new Map<string, HomeLocationEvidence>()
+    if (contact.brokerage_id && (fitCriteria.lifestyle ?? []).some((a) => a.kind === 'commute' && !!a.target)) {
+      try {
+        const { gatherPageTravelEvidence } = await import('./location-evidence')
+        pageEvidence = await gatherPageTravelEvidence({
+          brokerageId: contact.brokerage_id,
+          homes: viableListings.map(({ listing }) => {
+            const l = listing as any
+            return { key: String(l.id), address: l.__external ? (l.__address ?? null) : (l.address ?? null), city: l.city ?? null, state: l.state ?? null, zip: l.zip ?? null, lat: l.__lat ?? null, lon: l.__lon ?? null, coordsSource: l.__source === 'rentcast' ? 'provider:rentcast' : 'listing' }
+          }),
+          asks: fitCriteria.lifestyle ?? [],
+          systemSource: enrichedIntent.listingType === 'rent' ? 'renter_search' : 'buyer_search',
+        })
+      } catch (e) {
+        console.error('[buyer-search] travel evidence unavailable (commute stays unknown):', e instanceof Error ? e.message : e)
+      }
+    }
+    let claimProblems = 0
+
     const results: BuyerSearchResult[] = viableListings.map(({ listing, matchScore, confidence }) => {
       const scanned = scanExplanation(generateMatchExplanation(listing, enrichedIntent, persona, matchScore))
       if (scanned.flagged.length > 0) {
@@ -352,10 +431,15 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       const isExternal = (listing as any).__external === true
       // EXPLAINABLE MATCH (C10): deterministic, from the listing's own data only; the neighbourly
       // voice is composed from the fit and steering-checked like every other line WE author.
-      const fit: CriteriaFit = explainCriteriaFit(listing as unknown as ListingFitFacts, fitCriteria)
+      const fit: CriteriaFit = explainCriteriaFit(listing as unknown as ListingFitFacts, fitCriteria, pageEvidence.get(String(listing.id)) ?? null)
       const label = (isExternal ? (listing as any).__address : (listing as any).address) || listing.city || 'This home'
-      const voice = composeNeighbourlyExplanation(fit, label)
-      const voiceScan = scanFairHousing([voice.narrative, voice.unknownsSentence].filter(Boolean).join(' '))
+      // C18 + owner ruling 8: the source labelled for what it is; every claim carries its evidence.
+      const sourceLabel = describeListingSource(isExternal ? (listing as any).__source : 'platform', { brokerageName: brand.brokerageName })
+      const claims = claimsFromFit(fit, sourceLabel)
+      const verdict = validateClaims(claims)
+      if (!verdict.ok) { claimProblems += verdict.problems.length; console.error('[buyer-search] C18 claim contract broken:', verdict.problems.slice(0, 3)) }
+      const voice = composeNeighbourlyExplanation(fit, label, { agentName: brand.agentName, brokerageName: brand.brokerageName, source: sourceLabel })
+      const voiceScan = scanFairHousing(fullExplanationText(voice))
       if (voiceScan.flagged.length > 0) {
         fairHousingRewrites++
         for (const l of voiceScan.flagged) fairHousingLabels.add(l)
@@ -382,8 +466,13 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         photo_url: isExternal ? (listing as any).__photo_url : undefined,
         fit,
         explanation_voice: voiceScan.clean,
+        source_label: sourceLabel,
+        claims,
+        follow_up_question: voice.followUpQuestion,
+        agent_offer: voice.agentOffer,
       }
     })
+    if (claimProblems > 0) console.error(`[buyer-search] ${claimProblems} C18 claim problem(s) on this page — see above`)
 
     if (fairHousingRewrites > 0) {
       console.warn('[buyer-search] fair-housing sanitizer rewrote generated match copy', {

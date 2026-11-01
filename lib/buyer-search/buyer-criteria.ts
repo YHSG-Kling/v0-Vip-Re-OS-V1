@@ -386,3 +386,116 @@ export async function settleCriteriaChange(
     error: null,
   }
 }
+
+// ─── The buyer's own words (m916 buyer_criteria_utterances — wave 148, lane 148E, owner ruling 9) ──
+//
+// Owner (2026-11-01): "Buyers' words are recorded; call transcripts save to the criteria store — literal wording,
+// structured interpretation, confidence, consent; corrections keep history." The per-field provenance above keeps a
+// QUOTE per field and buyer_criteria_changes keeps every change with its reason; what no row kept was the WHOLE
+// utterance — the buyer's literal lines from a call, an email, a text or a portal turn — beside what the parser made of
+// it, how confident it was and on what consent basis it was captured. One row per utterance (idempotent on its source:
+// a re-analysed call or a re-delivered webhook writes nothing new), linked from each change it produced through
+// `evidence.utterance_id`. Corrections are NOT edits of this row: they are new change rows (trigger "corrected"), so the
+// history keeps both what was heard and what the buyer later fixed. The intent interface (lane 148D, C17) reaches this
+// store through criteria-turn.ts recordStatedCriteriaTurn — the one writer — never a second utterance table.
+
+/** Where an utterance came from — one vocabulary (m916 CHECK buyer_criteria_utterances_source_kind_check mirrors it). */
+export const UTTERANCE_SOURCE_KINDS = ["portal_turn", "call_transcript", "inbound_email", "inbound_sms", "intent_interface", "agent_entry", "system_import"] as const
+export type UtteranceSourceKind = (typeof UTTERANCE_SOURCE_KINDS)[number]
+
+/**
+ * The basis on which the buyer's words were captured (m916 CHECK mirrors it). NEVER fabricated: a basis is stated by
+ * the door that heard the words, or derived only where it is a fact of the channel (the buyer typed in their own
+ * portal; the buyer wrote to us). A call with no stated disclosure is recorded with consent_basis NULL — "not stated",
+ * never "consented".
+ */
+export const CONSENT_BASES = ["self_service_portal", "inbound_message", "call_recording_disclosure", "agent_attested"] as const
+export type ConsentBasis = (typeof CONSENT_BASES)[number]
+
+export interface BuyerUtteranceDraft {
+  channel: CriteriaChannel
+  sourceKind: UtteranceSourceKind
+  /** The call id / message id / turn key — the idempotency anchor (unique per contact + source kind). */
+  sourceRef: string
+  /** The buyer's literal words (buyer lines only on a labelled transcript). */
+  literal: string
+  /** What the parser made of it: criteria, lifestyle asks, deal-breakers, priority, gaps, which passes ran. */
+  interpretation: Record<string, unknown>
+  confidence: "high" | "low"
+  consent: { basis: ConsentBasis; ref?: string | null } | null
+  appliedChangeCount: number
+  createdByUserId?: string | null
+}
+
+export interface BuyerUtteranceRow {
+  id: string
+  channel: string
+  sourceKind: string
+  sourceRef: string | null
+  literal: string
+  interpretation: Record<string, unknown>
+  confidence: string
+  consentBasis: string | null
+  appliedChangeCount: number
+  createdAt: string | null
+}
+
+/**
+ * Record one utterance. Idempotent on (contact, source kind, source ref): a replay returns the existing row's id and
+ * writes nothing. Degrades BY NAME until m916 is applied (42P01 / PGRST205) and says so; any other refusal is reported.
+ */
+export async function recordBuyerUtterance(
+  svc: ReturnType<typeof createServiceClient>,
+  input: { brokerageId: string; contactId: string; draft: BuyerUtteranceDraft },
+): Promise<{ id: string | null; persisted: boolean; replay: boolean; note: string | null }> {
+  const d = input.draft
+  const literal = d.literal.trim().slice(0, 4000)
+  if (!input.brokerageId || !input.contactId || !literal) return { id: null, persisted: false, replay: false, note: "Nothing to record (no tenant, contact or words)." }
+  const row = {
+    brokerage_id: input.brokerageId,
+    contact_id: input.contactId,
+    channel: d.channel,
+    source_kind: d.sourceKind,
+    source_ref: d.sourceRef.slice(0, 300),
+    literal_text: literal,
+    interpretation: d.interpretation ?? {},
+    confidence: d.confidence,
+    consent_basis: d.consent?.basis ?? null,
+    consent_ref: d.consent?.ref ?? null,
+    applied_change_count: Math.max(0, Math.round(d.appliedChangeCount)),
+    created_by_user_id: d.createdByUserId ?? null,
+  }
+  const { data, error } = await svc.from("buyer_criteria_utterances")
+    .upsert(row, { onConflict: "contact_id,source_kind,source_ref", ignoreDuplicates: true }).select("id")
+  if (error) {
+    if (isSchemaAbsentError(error)) return { id: null, persisted: false, replay: false, note: "The buyer's words wait for m916 (buyer_criteria_utterances) — the criteria change itself was still recorded." }
+    return { id: null, persisted: false, replay: false, note: `Utterance record refused: ${error.message}` }
+  }
+  const inserted = ((data ?? []) as Array<{ id: string }>)[0]
+  if (inserted) return { id: inserted.id, persisted: true, replay: false, note: null }
+  // ignoreDuplicates resolves EMPTY on a replay — read the existing row's id under the same tenant + contact.
+  const { data: prior, error: priorError } = await svc.from("buyer_criteria_utterances").select("id")
+    .eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId).eq("source_kind", d.sourceKind).eq("source_ref", row.source_ref).maybeSingle()
+  if (priorError) return { id: null, persisted: false, replay: true, note: `Utterance replay read refused: ${priorError.message}` }
+  return { id: (prior as { id: string } | null)?.id ?? null, persisted: !!prior, replay: true, note: prior ? null : "Utterance upsert matched nothing and no prior row exists" }
+}
+
+/** The buyer's recent words with what we understood (one tenant, one contact) — the "what you told us" view. */
+export async function loadBuyerUtterances(
+  svc: ReturnType<typeof createServiceClient>,
+  input: { brokerageId: string; contactId: string; limit?: number },
+): Promise<{ rows: BuyerUtteranceRow[]; note: string | null }> {
+  const { data, error } = await svc.from("buyer_criteria_utterances")
+    .select("id, channel, source_kind, source_ref, literal_text, interpretation, confidence, consent_basis, applied_change_count, created_at")
+    .eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId)
+    .order("created_at", { ascending: false }).limit(input.limit ?? 10)
+  if (error) return { rows: [], note: isSchemaAbsentError(error) ? "What you've told us is kept once m916 is applied." : `Utterance read refused: ${error.message}` }
+  return {
+    rows: ((data ?? []) as Array<Record<string, any>>).map((r) => ({
+      id: r.id, channel: r.channel, sourceKind: r.source_kind, sourceRef: r.source_ref ?? null, literal: r.literal_text,
+      interpretation: r.interpretation ?? {}, confidence: r.confidence, consentBasis: r.consent_basis ?? null,
+      appliedChangeCount: Number(r.applied_change_count ?? 0), createdAt: r.created_at ?? null,
+    })),
+    note: null,
+  }
+}

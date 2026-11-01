@@ -78,13 +78,19 @@ export function parseNaturalLanguageQuery(query: string): ParsedBuyerIntent {
   //     buyer is RENTING ("under 2500 a month"), where it is the monthly rent.
   const NUM = String.raw`(\$?[\d,]+\.?\d*\s*(?:(?:million|mil|[km])\b)?)`
   const COUNT_UNIT = String.raw`(?!\s*\+?\s*(?:bed|br\b|bd\b|bath|ba\b|stor|car\b|garage|acre|sq|year|yr|min|mile))`
+  // Wave 148 (lane 148E) — A DURATION / DISTANCE / SIZE IS NOT A PRICE. The single-value patterns did not refuse a unit,
+  // so "the commute should be under 30 minutes" read as maxPrice 30 and — scalars overwrite in speaking order
+  // (conversation-criteria.ts) — REPLACED the buyer's stated "under 900k" on the call transcript, the saved criteria and
+  // the alert proposal. They now refuse the same count units the range already refused; `(?![\d,]|\.\d)` stops the regex
+  // backtracking to a shorter number ("3" of "30") to dodge the unit check (a sentence-ending "." is still allowed).
+  const SINGLE_END = String.raw`(?![\d,]|\.\d)${COUNT_UNIT}`
   const pricePatterns = [
     new RegExp(`${NUM}\\s*(?:[-–]|to)\\s*${NUM}${COUNT_UNIT}`, "i"), // Range: "300k-400k", "300k to 400k"
-    new RegExp(`under\\s+${NUM}`, "i"),     // Max: "under 500k"
-    new RegExp(`below\\s+${NUM}`, "i"),     // Max: "below 400k"
-    new RegExp(`max\\s+${NUM}`, "i"),       // Max: "max 450k"
-    new RegExp(`budget\\s+of\\s+${NUM}`, "i"), // Max: "budget of 400k"
-    new RegExp(`around\\s+${NUM}`, "i"),    // Target: "around 350k"
+    new RegExp(`under\\s+${NUM}${SINGLE_END}`, "i"),     // Max: "under 500k"
+    new RegExp(`below\\s+${NUM}${SINGLE_END}`, "i"),     // Max: "below 400k"
+    new RegExp(`max\\s+${NUM}${SINGLE_END}`, "i"),       // Max: "max 450k"
+    new RegExp(`budget\\s+of\\s+${NUM}${SINGLE_END}`, "i"), // Max: "budget of 400k"
+    new RegExp(`around\\s+${NUM}${SINGLE_END}`, "i"),    // Target: "around 350k"
   ]
 
   // RENT CONTEXT — decides both the market (listingType) and how a bare

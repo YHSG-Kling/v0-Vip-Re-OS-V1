@@ -53,7 +53,8 @@ import {
   type FieldProvenance,
   provenanceOf,
 } from "./buyer-criteria"
-import { composeNeighbourlyExplanation, numbersAreGrounded, restatesUnknown, type CriteriaFit } from "./explanation-generator"
+import { composeNeighbourlyExplanation, numbersAreGrounded, restatesUnknown, type CriteriaFit, type NeighbourlyVoice } from "./explanation-generator"
+import { inventedPlaces, warmVoiceRubric, type ExplanationClaim } from "./explanation-evidence"
 import { scanFairHousing } from "./fair-housing"
 import type { ParsedBuyerIntent } from "./intent-parser"
 
@@ -446,19 +447,23 @@ export function applyLearnedChanges(current: BuyerCriteria, drafts: CriteriaChan
 // ─── 5. The narrated explanation (model-written, grounded, validated) ───────
 
 /**
- * THE EXPLANATION PROMPT (wave 147C — preamble rule: prompt quality is a deliverable).
- * Role → business context → facts it may rely on → what it must not do → the decision it
- * owns → output contract → escalation. Its output is then validated in code; the unknowns
- * sentence is never model-authored.
+ * THE EXPLANATION PROMPT (wave 147C; REWRITTEN wave 148, lane 148E to the owner's standard: "creative, pushing the
+ * limits … an expert in every detailed area" + ruling 7: "a helping neighbor and more personable so that they want to
+ * meet with an agent … It is about them. Be kind and neighborly."). Role → business context → creative brief → facts it
+ * may rely on (the C18 claims, each with its evidence source) → what it must not do → the decision it owns → the
+ * compliance boundary → output contract → escalation. Its output is then validated IN CODE (numbers grounded, no unknown
+ * restated, no invented place, the warm-voice rubric, the steering check); the unknowns sentence is never model-authored.
  */
 export const EXPLANATION_SYSTEM = [
-  "ROLE: You are the buyer's home-search guide at a real-estate brokerage. You write the way a knowledgeable, unhurried neighbour who happens to know real estate talks: plain, warm, specific, never salesy.",
-  "BUSINESS CONTEXT: A buyer asked why a home came up in their search. A deterministic matcher has already compared the listing's data with the buyer's criteria; you explain ITS verdict, you do not make your own. Your words appear in the buyer's client portal and their agent can read them.",
-  "FACTS YOU MAY RELY ON: only the JSON block — the listing's own data points and the matcher's `matches` and `misses`. Each item says its source: `listing` is the listing's data feed; `listing_remarks` is the listing agent's own description, which you must attribute ('the listing says…'), never state as verified.",
-  "YOU MUST NOT: invent or embellish any fact — condition, light, views, noise, commute, schools, neighbourhood character, who lives nearby, investment returns, 'move-in ready', 'won't last'. Do not mention anything the matcher could not answer; the application says those itself. Do not write a number that is not in the facts. Do not describe people, demographics, safety, schools, religion, or say a home suits any kind of household. No pressure or urgency language.",
-  "THE DECISION YOU OWN: the order and the wording. Lead with what the buyer SAID they want (provenance `said`) before anything inferred, give the misses honestly in one sentence, and end with one low-pressure next step (a tour, a question for their agent, a comparison).",
-  "OUTPUT CONTRACT: JSON { headline: at most 12 words, narrative: 2 to 4 sentences }. Second person. No emojis, no markdown, no exclamation marks.",
-  "ESCALATION: if the facts are too thin to say anything true (no matches), say plainly that it only partly fits and suggest asking their agent. Never pad.",
+  "ROLE: You are the home-search guide for the brokerage named in `brand`, writing on behalf of the buyer's own agent (`brand.agent`, or 'your agent' when none is named). Write the way a kind, knowledgeable neighbour who happens to be the best agent in town talks over the fence: warm, plain, specific, generous with what you know, honest about what you don't, never salesy. This explanation is often the buyer's first real impression of that agent's business — it is about THEM, their routine and what they told you matters.",
+  "BUSINESS CONTEXT: A buyer asked why a home came up in their search (in-house listings, the MLS through the tenant's IDX feed, or RentCast property data). A deterministic matcher has already compared the home with the buyer's own criteria and gathered evidence for their lifestyle asks; you explain ITS verdicts, you never make your own. Your words appear in the buyer's client portal and their agent reads them.",
+  "CREATIVE BRIEF: open on what the buyer told you, then make the figures mean something for daily life using ONLY the facts — a measured drive time with its traffic assumption, the lot in acres, how far the nearest other mapped building sits, which mapped places are within an easy walk. Sound like a person who looked at this home for them, not a report. One sentence of honesty about what doesn't fit is a kindness, not a weakness.",
+  "FACTS YOU MAY RELY ON: only the JSON block — `brand`, `listing_data`, and `claims`. Each claim carries its `verdict` (match / miss / fact), its `evidence_source` and `confidence`: `listing` = the brokerage's or the MLS's own row; `agent_remarks` = the listing agent's description, which you attribute ('the listing says…'); `provider:rentcast` = RentCast property data, which is NOT a verified active listing (say the agent will confirm it is available); `provider:mapbox` = a routed drive or walk time, always given with its `caveat` (the traffic assumption); `provider:osm` = places, buildings and roads OpenStreetMap has mapped — straight-line, a rough guide, coverage varies.",
+  "YOU MUST NOT: invent or embellish anything — no place, park, shop, school, road, business or amenity name that is not in the facts; no number that is not in the facts; no condition, light, views, noise, 'quiet', 'move-in ready' or 'won't last' claim the facts do not hold. Do not speak to anything the matcher could not answer (the application states those itself). Never describe people, demographics, safety or crime, school quality, religion, or who lives nearby, and never say a home suits any kind of household. Never promise a commute, quiet or availability. No pressure or urgency. Never mention AI, scores, algorithms or systems.",
+  "THE DECISION YOU OWN: the order, the warmth and the wording. Lead with what the buyer SAID they want before anything inferred, give the misses honestly in one sentence, ask ONE gentle follow-up question about what matters to them (where the commute is to, whether a miss is a deal-breaker, what would make it a yes), and close with ONE gentle offer to connect with the agent — an invitation, never a push.",
+  "COMPLIANCE BOUNDARY: this is a buyer-facing recommendation, so the fair-housing steering check runs on every word you write. Describe the home, the lot, the roads, the distances and the mapped places — never the people.",
+  "OUTPUT CONTRACT: JSON { headline: at most 12 words; narrative: 2 to 4 sentences, second person; follow_up_question: one question ending in '?'; agent_offer: one sentence naming `brand.agent` (or 'your agent') that offers to show the home or talk it through }. No emojis, no markdown, no exclamation marks.",
+  "ESCALATION: if the facts are too thin to say anything true (no matches), say plainly that it only partly fits and that the agent can tell them more. If the buyer's situation touches money, a contract or a legal question, the agent answers it — say so warmly. Never pad.",
 ].join("\n")
 
 // The draft validators (numbersAreGrounded, restatesUnknown) live beside the fit they check, in
@@ -469,6 +474,9 @@ export interface NarratedExplanation {
   narrative: string
   /** Code-authored, always present when the fit has unknowns. */
   unknownsSentence: string | null
+  /** Wave 148E: one gentle question, and the gentle offer to meet the agent. */
+  followUpQuestion: string
+  agentOffer: string
   via: "model" | "deterministic"
   /** Why the model text was not used (validation, steering check, spend not allowed, error). */
   note: string | null
@@ -489,8 +497,13 @@ export async function narrateFitExplanation(input: {
   fit: CriteriaFit
   facts: Record<string, unknown>
   allowModel?: boolean
+  /** Wave 148E: the C18 claims (evidence source + confidence per claim) the model may rely on. */
+  claims?: ExplanationClaim[]
+  /** Wave 148E: the brand the explanation speaks for — the brokerage and the buyer's agent. */
+  voice?: NeighbourlyVoice
 }): Promise<NarratedExplanation> {
-  const fallback = composeNeighbourlyExplanation(input.fit, input.listingLabel)
+  const voice = input.voice ?? {}
+  const fallback = composeNeighbourlyExplanation(input.fit, input.listingLabel, voice)
   const deterministic = (note: string | null, flagged: string[] = []): NarratedExplanation => ({ ...fallback, via: "deterministic", note, fairHousingFlagged: flagged })
   if (input.allowModel === false) return deterministic(null)
   if (!input.brokerageId) return deterministic("No tenant to book the AI spend against — the deterministic explanation is shown.")
@@ -498,7 +511,9 @@ export async function narrateFitExplanation(input: {
 
   const factsBlock = JSON.stringify({
     listing: input.listingLabel,
+    brand: { brokerage: voice.brokerageName ?? null, agent: voice.agentName ?? null },
     listing_data: input.facts,
+    claims: (input.claims ?? []).filter((c) => !c.unknown).map((c) => ({ claim: c.claim, verdict: c.verdict, evidence_source: c.evidence_source, confidence: c.confidence, figures: c.figures ?? null, caveat: c.caveat ?? null })),
     matches: input.fit.matches.map((m) => ({ ask: m.ask, detail: m.detail, source: m.source, provenance: m.provenance })),
     misses: input.fit.misses.map((m) => ({ ask: m.ask, detail: m.detail, source: m.source, provenance: m.provenance })),
   })
@@ -514,21 +529,31 @@ export async function narrateFitExplanation(input: {
       userId: input.userId ?? null,
       system: EXPLANATION_SYSTEM,
       prompt: `Facts (JSON):\n${factsBlock}\n\nWrite the explanation.`,
-      maxTokens: 300,
-      temperature: 0.3,
-      schema: z.object({ headline: z.string(), narrative: z.string() }),
+      maxTokens: 420,
+      temperature: 0.4,
+      schema: z.object({ headline: z.string(), narrative: z.string(), follow_up_question: z.string(), agent_offer: z.string() }),
     })
-    const headline = String((object as { headline?: string }).headline ?? "").trim()
-    const narrative = String((object as { narrative?: string }).narrative ?? "").trim()
+    const o = object as { headline?: string; narrative?: string; follow_up_question?: string; agent_offer?: string }
+    const headline = String(o.headline ?? "").trim()
+    const narrative = String(o.narrative ?? "").trim()
+    const followUpQuestion = String(o.follow_up_question ?? "").trim()
+    const agentOffer = String(o.agent_offer ?? "").trim()
     if (!headline || !narrative) return deterministic("The model returned an empty explanation.")
-    const both = `${headline} ${narrative}`
-    if (!numbersAreGrounded(both, factsBlock)) return deterministic("The model wrote a number the listing data does not hold — not shown.")
-    const restated = restatesUnknown(both, input.fit)
+    if (!/\?$/.test(followUpQuestion) || !agentOffer) return deterministic("The model left out the follow-up question or the offer to meet the agent — not shown.")
+    const all = `${headline} ${narrative} ${followUpQuestion} ${agentOffer}`
+    if (!numbersAreGrounded(all, factsBlock)) return deterministic("The model wrote a number the listing data does not hold — not shown.")
+    const restated = restatesUnknown(`${headline} ${narrative}`, input.fit)
     if (restated) return deterministic(`The model spoke to "${restated}", which the listing data cannot answer — not shown.`)
+    // C18: a place / amenity the evidence does not hold is an INVENTED amenity — refused, never softened.
+    const invented = inventedPlaces(all, factsBlock)
+    if (invented.length > 0) return deterministic(`The model named ${invented.slice(0, 3).map((p) => `"${p}"`).join(", ")}, which the evidence does not hold — not shown.`)
+    // Owner ruling 7: the voice is part of the contract — warm, specific, one gentle question, the agent offered without pressure.
+    const rubric = warmVoiceRubric(`${narrative} ${followUpQuestion} ${agentOffer}`, { agentName: voice.agentName ?? null })
+    if (!rubric.pass) return deterministic(`The model's draft missed the voice the agent's business is owed (${rubric.failures.slice(0, 2).join("; ")}) — the deterministic explanation is shown.`)
     // STEERING CHECK on copy WE author (the recommendation path, ruling 2 / brief rule 8).
-    const scan = scanFairHousing(both)
+    const scan = scanFairHousing(all)
     if (scan.flagged.length > 0) return deterministic("The steering check flagged the model's wording — the deterministic explanation is shown.", scan.flagged)
-    return { headline, narrative, unknownsSentence: fallback.unknownsSentence, via: "model", note: null, fairHousingFlagged: [] }
+    return { headline, narrative, unknownsSentence: fallback.unknownsSentence, followUpQuestion, agentOffer, via: "model", note: null, fairHousingFlagged: [] }
   } catch (err) {
     return deterministic(`The model explanation was unavailable (${err instanceof Error ? err.message : "error"}).`)
   }

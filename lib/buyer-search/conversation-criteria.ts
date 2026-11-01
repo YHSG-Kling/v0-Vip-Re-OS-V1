@@ -441,6 +441,8 @@ export interface LifestyleAsk {
   target: string | null
   /** A stated time limit for a commute ("under 30 minutes" → 30), else null. */
   maxMinutes: number | null
+  /** Wave 148 (148E): a stated minimum lot for an acreage ask ("2 acres" → 2), else null/absent. */
+  minAcres?: number | null
   /** The buyer's literal words — the proof the ask was STATED. */
   evidence: string
 }
@@ -510,14 +512,23 @@ export function extractLifestyleAsks(text: string): LifestyleAsk[] {
         push({ kind: "nearby_amenity", label: "walkable", direction: "must", target: null, maxMinutes: null, evidence: ev })
       }
 
+      // Wave 148 (lane 148E — owner: "outdoor space is a home with acreage"): ACREAGE is its own ask (label "acreage",
+      // answered in acres from the lot size; "2 acres" keeps the stated minimum), distinct from a bigger yard.
+      const acresStated = /\b(\d+(?:\.\d+)?)\s*\+?\s*(?:or more\s+)?acres?\b/i.exec(s)
       if (/\b(less yard|smaller yard|small yard|low[- ]maintenance yard|no yard|less (?:lawn|grass)|tiny yard)\b/i.test(s)) {
         push({ kind: "outdoor_space", label: "outdoor space", direction: "less", target: null, maxMinutes: null, evidence: ev })
-      } else if (/\b(more yard|bigger yard|big yard|large yard|lots of yard|room for a garden|big lot|large lot|acreage)\b/i.test(s)) {
+      } else if (acresStated || /\b(acreage|acres|some land|a little land|room to roam|horse property|hobby farm|small farm)\b/i.test(s)) {
+        push({ kind: "outdoor_space", label: "acreage", direction: "more", target: null, maxMinutes: null, minAcres: acresStated ? Number(acresStated[1]) : null, evidence: ev })
+      } else if (/\b(more yard|bigger yard|big yard|large yard|lots of yard|room for a garden|big lot|large lot|outdoor space|private (?:back)?yard|fenced (?:back)?yard|a (?:back)?yard)\b/i.test(s)) {
         push({ kind: "outdoor_space", label: "outdoor space", direction: "more", target: null, maxMinutes: null, evidence: ev })
       }
 
       if (/\b(quiet street|cul[- ]de[- ]sac|not on a busy (?:road|street)|away from traffic|low traffic)\b/i.test(s)) {
         push({ kind: "quiet_setting", label: "quiet street", direction: /\bnot on\b|\baway from\b/i.test(s) ? "avoid" : "must", target: null, maxMinutes: null, evidence: ev })
+      } else if (/\b(quiet|peaceful|privacy|private setting|secluded|tucked away|not (?:too )?close to (?:the |my )?neighbou?rs|space (?:between|from) (?:the )?(?:neighbou?rs|houses|homes)|no (?:close )?neighbou?rs|away from (?:the )?neighbou?rs)\b/i.test(s)) {
+        // Owner: "quiet setting is not close to neighbors" — answered from building spacing, lot size and road
+        // exposure (location-evidence.ts), never from who lives nearby.
+        push({ kind: "quiet_setting", label: "quiet and away from close neighbors", direction: "must", target: null, maxMinutes: null, evidence: ev })
       }
     }
   }

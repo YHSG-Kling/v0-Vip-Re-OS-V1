@@ -69,6 +69,7 @@ import {
 } from "@/lib/buyer-search/conversational-search"
 import type { ClarifyingQuestion } from "@/lib/buyer-search/conversation-criteria"
 import type { CriteriaFit } from "@/lib/buyer-search/explanation-generator"
+import type { ExplanationClaim } from "@/lib/buyer-search/explanation-evidence"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -438,14 +439,26 @@ export async function editBuyerCriteriaAction(input: {
 // ═════════════════════════════════════════════════════════════════════════════
 
 export async function loadBuyerCriteriaStateAction(input: { contactId: string }): Promise<
-  | { ok: true; criteria: CriteriaChip[]; proposals: CriteriaChangeRow[]; recent: CriteriaChangeRow[]; notes: string[] }
+  | {
+      ok: true; criteria: CriteriaChip[]; proposals: CriteriaChangeRow[]; recent: CriteriaChangeRow[]; notes: string[]
+      /** Wave 148E (ruling 9): what the buyer told us, in their words, with what we understood — correctable via the chips. */
+      heard: Array<{ id: string; channel: string; literal: string; understood: string; confidence: string; at: string | null }>
+    }
   | { ok: false; error: string }
 > {
   const g = await gateBuyer(input.contactId)
   if (!g.ok) return g
   const current = await loadBuyerCriteria(g.svc, input.contactId, { brokerageId: g.brokerageId })
   const changes = await loadCriteriaChanges(g.svc, { brokerageId: g.brokerageId, contactId: input.contactId })
-  const notes = [current?.note, changes.note].filter((n): n is string => !!n)
+  const { loadBuyerUtterances } = await import("@/lib/buyer-search/buyer-criteria")
+  const { describeCriteria } = await import("@/lib/buyer-search/conversation-criteria")
+  const words = await loadBuyerUtterances(g.svc, { brokerageId: g.brokerageId, contactId: input.contactId, limit: 5 })
+  const heard = words.rows.map((r) => {
+    const i = r.interpretation as { criteria?: Record<string, unknown>; lifestyle?: Array<{ label?: string }>; deal_breakers?: string[] }
+    const parts = [describeCriteria((i.criteria ?? {}) as never), ...(i.lifestyle ?? []).map((x) => x.label ?? "").filter(Boolean), ...(i.deal_breakers ?? []).map((d) => `no ${d}`)]
+    return { id: r.id, channel: r.channel, literal: r.literal, understood: parts.filter((p) => p && p !== "Buyer search").join(" · ") || "nothing searchable yet", confidence: r.confidence, at: r.createdAt }
+  })
+  const notes = [current?.note, changes.note, words.note].filter((n): n is string => !!n)
   if (current?.saidOverridesColumn?.length) {
     notes.push(`Kept what you said for ${current.saidOverridesColumn.join(", ")} — a learned estimate had replaced it in the saved columns.`)
   }
@@ -455,6 +468,7 @@ export async function loadBuyerCriteriaStateAction(input: { contactId: string })
     proposals: changes.rows.filter((r) => r.status === "proposed"),
     recent: changes.rows.filter((r) => r.status === "applied").slice(0, 8),
     notes,
+    heard,
   }
 }
 
@@ -519,7 +533,16 @@ export async function buyerKeepWatchingAction(input: { contactId: string }): Pro
 // ═════════════════════════════════════════════════════════════════════════════
 
 export async function explainHomeForBuyerAction(input: { contactId: string; listingId: string }): Promise<
-  | { ok: true; headline: string; narrative: string; unknownsSentence: string | null; fit: CriteriaFit; via: "model" | "deterministic"; note: string | null }
+  | {
+      ok: true; headline: string; narrative: string; unknownsSentence: string | null; fit: CriteriaFit; via: "model" | "deterministic"; note: string | null
+      /** Wave 148E (C18): the claims with their evidence; a map rides ONLY on a claim whose evidence drew it. */
+      claims: ExplanationClaim[]
+      sourceLabel: string
+      followUpQuestion: string
+      agentOffer: string
+      /** Why a drive time / walkability / spacing could not be measured (no coordinates, provider unconfigured, …). */
+      evidenceNotes: string[]
+    }
   | { ok: false; error: string }
 > {
   // Market (external) listings are display-only and not stored; their result already carries its
@@ -527,18 +550,43 @@ export async function explainHomeForBuyerAction(input: { contactId: string; list
   if (!UUID_RE.test(input.listingId ?? "")) return { ok: false, error: "The explanation shown with this home is the full one for market listings." }
   const g = await gateBuyer(input.contactId)
   if (!g.ok) return g
-  const { buyerShoppableListingStatuses } = await import("@/lib/buyer-search/search-engine")
+  const { buyerShoppableListingStatuses, loadExplanationVoice } = await import("@/lib/buyer-search/search-engine")
+  // IN-HOUSE = THIS BROKERAGE'S OWN (wave 148E, ruling 8): the read is bounded to the gate's tenant — a buyer cannot
+  // have another brokerage's listing explained as "ours" by guessing its id.
   const { data: listing, error } = await g.svc.from("listings")
-    .select("id, address, city, zip, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, status, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks")
-    .eq("id", input.listingId).in("status", buyerShoppableListingStatuses()).is("deleted_at", null).maybeSingle()
+    .select("id, address, city, state, zip, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, status, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks")
+    .eq("id", input.listingId).eq("brokerage_id", g.brokerageId).in("status", buyerShoppableListingStatuses()).is("deleted_at", null).maybeSingle()
   if (error) return { ok: false, error: "That home couldn't be read just now." }
   if (!listing) return { ok: false, error: "That home isn't available to explain." }
   const criteria = await loadBuyerCriteria(g.svc, input.contactId, { brokerageId: g.brokerageId })
   const { explainCriteriaFit } = await import("@/lib/buyer-search/explanation-generator")
   const { emptyCriteria } = await import("@/lib/buyer-search/conversational-search")
+  const { describeListingSource, claimsFromFit } = await import("@/lib/buyer-search/explanation-evidence")
   const l = listing as Record<string, any>
-  const fit = explainCriteriaFit(l as never, criteria ?? emptyCriteria())
+  const label = l.address || l.city || "This home"
+  // THE EVIDENCE (C18, ruling 7): the routed drive to each place the buyer named (with its route map), what is mapped
+  // within an easy walk, how close the next buildings and the big roads are — gathered on demand, cache first, the paid
+  // Mapbox calls gated and booked to the gate's tenant. Best-effort: what can't be measured stays UNKNOWN, with a note.
+  let evidence: Awaited<ReturnType<typeof import("@/lib/buyer-search/location-evidence").gatherHomeLocationEvidence>> | null = null
+  try {
+    const { gatherHomeLocationEvidence } = await import("@/lib/buyer-search/location-evidence")
+    evidence = await gatherHomeLocationEvidence({
+      brokerageId: g.brokerageId,
+      home: { address: l.address ?? null, city: l.city ?? null, state: l.state ?? null, zip: l.zip ?? null, coordsSource: "listing" },
+      asks: criteria?.lifestyle ?? [],
+      systemSource: "buyer_portal_explanation",
+    })
+  } catch (e) {
+    console.error("[buyer-conversation] location evidence unavailable:", e instanceof Error ? e.message : e)
+  }
+  const fit = explainCriteriaFit(l as never, criteria ?? emptyCriteria(), evidence)
+  const brand = await loadExplanationVoice(g.svc, g.brokerageId, g.agentId)
+  const source = describeListingSource("platform", { brokerageName: brand.brokerageName })
+  const claims = claimsFromFit(fit, source)
   const facts = { price: l.price, bedrooms: l.bedrooms, bathrooms: l.bathrooms, square_feet: l.square_feet, property_type: l.property_type, city: l.city, year_built: l.year_built }
-  const told = await narrateFitExplanation({ brokerageId: g.brokerageId, userId: g.actorUserId, listingLabel: l.address || l.city || "This home", fit, facts })
-  return { ok: true, headline: told.headline, narrative: told.narrative, unknownsSentence: told.unknownsSentence, fit, via: told.via, note: told.note }
+  const told = await narrateFitExplanation({ brokerageId: g.brokerageId, userId: g.actorUserId, listingLabel: label, fit, facts, claims, voice: { agentName: brand.agentName, brokerageName: brand.brokerageName, source } })
+  return {
+    ok: true, headline: told.headline, narrative: told.narrative, unknownsSentence: told.unknownsSentence, fit, via: told.via, note: told.note,
+    claims, sourceLabel: source.label, followUpQuestion: told.followUpQuestion, agentOffer: told.agentOffer, evidenceNotes: evidence?.notes ?? [],
+  }
 }

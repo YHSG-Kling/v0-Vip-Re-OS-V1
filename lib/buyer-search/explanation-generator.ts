@@ -15,6 +15,17 @@ import type { ListingProfile } from '@/lib/property-matching'
 import type { BuyerCriteria, CriteriaField, CriteriaProvenanceSource } from './buyer-criteria'
 import { provenanceOf } from './buyer-criteria'
 import type { LifestyleAsk } from './conversation-criteria'
+import {
+  lotFactsFrom,
+  formatAcres,
+  formatDistance,
+  type EvidenceSource,
+  type FitEvidence,
+  type HomeLocationEvidence,
+  type AmenityKind,
+  type PlaceEvidence,
+  type ListingSourceLabel,
+} from './explanation-evidence'
 
 export interface BuyerFacingExplanation {
   headline: string // Short, compelling match reason
@@ -501,12 +512,18 @@ function formatPropertyType(type: string | null): string {
 //             absence of a mention is not absence of the feature, and no feed measures
 //             natural light, a commute, or how quiet a street is.
 //
-// Lifestyle asks are answered ONLY where accurate source data exists. Today that is the
-// listing's own structured columns (has_pool, has_septic, hoa_dues, lot_size) and the
-// listing agent's public remarks — which are a REPORT, attributed as such ("the listing
-// description mentions …"), never restated as verified fact.
+// Lifestyle asks are answered ONLY where accurate source data exists: the listing's own
+// structured columns (has_pool, has_septic, hoa_dues, lot_size), the listing agent's public
+// remarks — a REPORT, attributed as such ("the listing description mentions …"), never
+// restated as verified fact — and, since wave 148 (lane 148E, contract C18), the evidence a home
+// carries (location-evidence.ts): a Mapbox-routed drive time, OpenStreetMap places within an
+// easy walk, building spacing and road exposure, a RentCast lot size in acres. Each such answer
+// names its source on `evidence`; with no evidence the ask stays UNKNOWN.
 
-export type FitSource = 'listing' | 'listing_remarks' | 'none'
+// Wave 148 (lane 148E, contract C18): + 'provider' — an ask answered by a provider's evidence (a Mapbox drive time,
+// OpenStreetMap places / building spacing, a RentCast lot size) rather than the listing row; the item then carries
+// `evidence` naming exactly which source, how sure, the figures it states and — only then — a map.
+export type FitSource = 'listing' | 'listing_remarks' | 'provider' | 'none'
 
 export interface FitItem {
   /** The criteria field (or `lifestyle:<kind>`) this item answers. */
@@ -518,6 +535,10 @@ export interface FitItem {
   source: FitSource
   /** said | inferred | default — said asks lead every bucket. */
   provenance: CriteriaProvenanceSource | null
+  /** C18 (wave 148E): the evidence behind a lifestyle answer — absent on a plain listing-row fact. */
+  evidence?: FitEvidence
+  /** Wave 148E: the same fact said briefly, for the spoken / narrative voice (the checklist keeps `detail`). */
+  brief?: string
 }
 
 export interface CriteriaFit {
@@ -543,6 +564,10 @@ export interface ListingFitFacts {
   year_built?: number | null
   public_remarks?: string | null
   features?: string[] | null
+  /** Wave 148 (148E): a lot size the source reports in SQUARE FEET (RentCast lotSize) — converted to acres, never guessed. */
+  lot_size_sqft?: number | null
+  /** Wave 148 (148E): who reported the row's facts — the listing itself, or RentCast property data. */
+  facts_source?: EvidenceSource
 }
 
 function money(n: number): string {
@@ -568,13 +593,157 @@ const QUIET_IN_REMARKS = /\b(cul[- ]de[- ]sac|quiet street|low[- ]traffic)\b/i
 
 type Bucketed = { bucket: keyof CriteriaFit; item: FitItem }
 
-function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProvenanceSource | null): Bucketed {
+// ─── LIFESTYLE ANSWERED FROM EVIDENCE (wave 148, lane 148E — owner ruling 7, contract C18) ───────
+//
+// Owner: "if they need walkability or how far it is to commute or yard size or quiet setting, those can have more
+// info like a map; outdoor space is a home with acreage; quiet setting is not close to neighbors." Each ask is now
+// answered from the evidence a home actually carries (./location-evidence.ts gathers it; ./explanation-evidence.ts
+// types it), with the figure, the source, the assumption and the limits — and stays UNKNOWN when no evidence exists.
+// The thresholds below are the plain-language bars the explanation uses to say "fits" or "doesn't"; the FIGURE is
+// always shown beside the verdict so the buyer judges for themselves.
+
+/** Acres a home needs for an "acreage" ask (unless the buyer stated their own minimum). */
+const ACREAGE_MIN_ACRES = 1
+/** A "more yard / outdoor space" ask: a lot this large reads as roomy; under the small bar it does not. */
+const ROOMY_LOT_ACRES = 0.25
+/** A "less yard" ask: at or under this a yard is easy to keep up. */
+const SMALL_LOT_ACRES = 0.2
+/** Straight-line metres that read as "an easy walk" (≈ 15 minutes at an average pace). */
+const WALKABLE_METERS = 1200
+/** Quiet / privacy bars: the nearest other mapped building, and how close a major road or mainline rail runs. */
+const ROOMY_SPACING_METERS = 40
+const CLOSE_SPACING_METERS = 25
+const LOUD_ROAD_METERS = 120
+const LOUD_RAIL_METERS = 200
+
+const AMENITY_KIND_BY_TARGET: Array<[RegExp, AmenityKind]> = [
+  [/\b(parks?|trails?|greenbelt)\b/i, 'park'],
+  [/\b(grocery|grocery stores?)\b/i, 'grocery'],
+  [/\b(coffee|coffee shops?|restaurants?|shops|shopping)\b/i, 'cafe_restaurant'],
+  [/\b(transit|train|train station|light rail)\b/i, 'transit'],
+]
+const AMENITY_WORDS_FOR: Record<AmenityKind, string> = { park: 'park', grocery: 'grocery store', cafe_restaurant: 'café or restaurant', transit: 'transit stop' }
+
+const OUTDOOR_FEATURES_IN_REMARKS = /\b(fenced (?:back)?yard|covered patio|patio|deck|porch|outdoor kitchen|garden|wooded|pasture|barn|creek|pond|sprinkler system|mature trees)\b/gi
+
+const lifestyleMap = (m: import('./explanation-evidence').MapEvidence | null | undefined) => (m && m.image_url ? m : null)
+
+function outdoorFeatureNote(l: ListingFitFacts): string | null {
+  const found = new Set<string>()
+  for (const m of (l.public_remarks ?? '').matchAll(OUTDOOR_FEATURES_IN_REMARKS)) found.add(m[0].toLowerCase())
+  for (const f of l.features ?? []) if (OUTDOOR_FEATURES_IN_REMARKS.test(f)) found.add(f.toLowerCase())
+  OUTDOOR_FEATURES_IN_REMARKS.lastIndex = 0
+  if (!found.size) return null
+  return `the listing mentions ${[...found].slice(0, 3).join(', ')}`
+}
+
+function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProvenanceSource | null, ev?: HomeLocationEvidence | null): Bucketed {
   const field = `lifestyle:${ask.kind}` as const
   const askText = ask.label.charAt(0).toUpperCase() + ask.label.slice(1)
   const reported = (phrase: string): Bucketed => ({ bucket: 'matches', item: { field, ask: askText, detail: `The listing description mentions "${phrase}" (the listing agent's words, not an inspection)`, source: 'listing_remarks', provenance: prov } })
   const unknown = (detail: string): Bucketed => ({ bucket: 'unknowns', item: { field, ask: askText, detail, source: 'none', provenance: prov } })
+  const proven = (bucket: keyof CriteriaFit, detail: string, evidence: FitEvidence, brief?: string): Bucketed => ({ bucket, item: { field, ask: askText, detail, source: evidence.source === 'listing' ? 'listing' : 'provider', provenance: prov, evidence, ...(brief ? { brief } : {}) } })
+  const acreLot = (acres: number) => `a ${acres >= 10 ? Math.round(acres) : acres >= 1 ? acres.toFixed(1).replace(/\.0$/, '') : acres.toFixed(2)}-acre lot`
+  const lot = lotFactsFrom({ lotSizeSqft: l.lot_size_sqft ?? null, lotSize: l.lot_size ?? null, source: l.facts_source ?? 'listing' })
+  const lotCaveat = lot?.basis === 'inferred_from_magnitude' ? "the listing doesn't record the unit, so it's read from the size of the number" : null
 
   switch (ask.kind) {
+    case 'commute': {
+      if (!ask.target) return unknown("Tell me where the commute is to and I'll map the drive from this address")
+      const t = ev?.travel.find((x) => x.target.toLowerCase() === ask.target!.toLowerCase())
+      if (!t || t.minutes == null) {
+        return unknown(t?.note
+          ? `I couldn't measure the drive to ${ask.target} just now (${t.note}) — ask me again or check a map from the address at the hour you'd travel`
+          : `Drive time to ${ask.target} isn't measured for this home yet — tap "Why this home?" and I'll map it, or ask your agent`)
+      }
+      const miles = t.meters != null ? Math.round((t.meters / 1609.344) * 10) / 10 : null
+      const how = t.profile === 'walking' ? 'on foot' : t.profile === 'cycling' ? 'by bike' : 'by car'
+      const detail = `About ${t.minutes} min ${how} to ${t.placeLabel}${miles != null ? ` (${formatDistance(t.meters!)})` : ''} — ${t.assumption}`
+      const evidence: FitEvidence = { source: 'provider:mapbox', confidence: t.profile === 'driving-traffic' ? 'high' : 'medium', figures: { minutes: t.minutes, ...(miles != null ? { miles } : {}) }, observed_at: t.observed_at, caveat: t.assumption, map: lifestyleMap(t.map) }
+      const brief = `about ${t.minutes} minutes ${how} to ${t.placeLabel}${t.profile === 'driving' ? ' outside rush hour' : ''}`
+      if (ask.maxMinutes != null && t.minutes > ask.maxMinutes) return proven('misses', `${detail} — over the ${ask.maxMinutes} minutes you gave`, evidence, `${brief}, over the ${ask.maxMinutes} minutes you gave`)
+      return proven('matches', detail, evidence, brief)
+    }
+    case 'nearby_amenity': {
+      const kind = ask.target ? AMENITY_KIND_BY_TARGET.find(([re]) => re.test(ask.target!))?.[1] ?? null : null
+      if (ask.target && !kind) return unknown(`Whether ${ask.target} ${/s$/.test(ask.target) ? 'are' : 'is'} close by isn't something I can map yet — a map from the address will show you`)
+      const a = ev?.amenities
+      if (!a) {
+        return unknown(ask.target
+          ? `Whether ${ask.target} ${/s$/.test(ask.target) ? 'are' : 'is'} close by isn't in the listing data — tap "Why this home?" and I'll look at the map`
+          : "Walkability isn't in the listing data — tap \"Why this home?\" and I'll look at what's mapped within an easy walk")
+      }
+      const pool: PlaceEvidence[] = (kind ? a.places.filter((p) => p.kind === kind) : a.places).slice().sort((x, y) => x.meters - y.meters)
+      const near = pool.filter((p) => p.meters <= WALKABLE_METERS)
+      const evidence = (figures: Record<string, number>): FitEvidence => ({ source: a.source, confidence: 'medium', figures, observed_at: a.observed_at, caveat: 'straight-line distances to places OpenStreetMap has mapped — actual walking routes are longer, and coverage varies', map: lifestyleMap(a.map) })
+      const list = (ps: PlaceEvidence[]) => ps.slice(0, 3).map((p) => `${p.name} (${formatDistance(p.meters)})`).join(', ')
+      if (near.length > 0) {
+        const lead = kind ? `${near.length === 1 ? 'A' : near.length} ${AMENITY_WORDS_FOR[kind]}${near.length === 1 ? '' : 's'} within an easy walk` : `${near.length} everyday place${near.length === 1 ? '' : 's'} mapped within an easy walk`
+        return proven('matches', `${lead}: ${list(near)}`, evidence({ places_within_walk: near.length, nearest_meters: near[0].meters }), `${near[0].name} is ${formatDistance(near[0].meters)} away`)
+      }
+      if (pool.length > 0) return proven('misses', `The nearest mapped ${kind ? AMENITY_WORDS_FOR[kind] : 'everyday place'} is ${pool[0].name}, ${formatDistance(pool[0].meters)} away — more of a short drive than a walk`, evidence({ nearest_meters: pool[0].meters }), `the nearest mapped ${kind ? AMENITY_WORDS_FOR[kind] : 'everyday place'} is ${formatDistance(pool[0].meters)} away`)
+      return unknown(`OpenStreetMap shows no ${kind ? AMENITY_WORDS_FOR[kind] : 'everyday places'} mapped close by — coverage varies, so a drive around is worth it`)
+    }
+    case 'outdoor_space': {
+      if (!lot) return unknown("Yard size isn't in the listing data — photos and a visit will show you")
+      if (lot.acres == null) return unknown(`The lot size is listed as ${lot.raw} but the listing doesn't say whether that's acres or square feet — your agent can confirm`)
+      const acres = Math.round(lot.acres * 100) / 100
+      const sizeText = `${formatAcres(lot.acres)}${lot.sqft ? ` (about ${Math.round(lot.sqft).toLocaleString('en-US')} sq ft)` : ''}`
+      const features = outdoorFeatureNote(l)
+      const caveat = ["usable yard isn't measured — slopes, easements, setbacks and HOA rules can shrink it, and the plat or survey shows the boundaries", lotCaveat].filter(Boolean).join('; ')
+      const evidence: FitEvidence = { source: lot.source, confidence: lot.basis === 'reported_sqft' ? 'high' : 'medium', figures: { acres, ...(lot.sqft ? { lot_sqft: Math.round(lot.sqft) } : {}) }, caveat }
+      const withFeatures = (s: string) => (features ? `${s}; ${features}` : s)
+      const lotBrief = (tail: string) => `${acreLot(lot.acres!)}${tail}`
+      if (ask.label === 'acreage') {
+        const min = ask.minAcres && ask.minAcres > 0 ? ask.minAcres : ACREAGE_MIN_ACRES
+        return lot.acres >= min
+          ? proven('matches', withFeatures(`The lot is ${sizeText} — real room to spread out`), evidence, lotBrief(' with real room to spread out'))
+          : proven('misses', withFeatures(`The lot is ${sizeText} — under the ${formatAcres(min)} you're after`), evidence, lotBrief(`, under the ${formatAcres(min)} you're after`))
+      }
+      if (ask.direction === 'less') {
+        return lot.acres <= SMALL_LOT_ACRES
+          ? proven('matches', withFeatures(`A ${sizeText} lot — an easy yard to keep up`), evidence, lotBrief(', an easy yard to keep up'))
+          : proven('misses', withFeatures(`A ${sizeText} lot — more yard than you said you want to look after`), evidence, lotBrief(', more yard than you wanted to keep up'))
+      }
+      return lot.acres >= ROOMY_LOT_ACRES
+        ? proven('matches', withFeatures(`A ${sizeText} lot — room outside to garden, play or just breathe`), evidence, lotBrief(' with room outside to garden, play or just breathe'))
+        : proven('misses', withFeatures(`A ${sizeText} lot — a compact yard`), evidence, lotBrief(', a compact yard'))
+    }
+    case 'quiet_setting': {
+      const hit = remarksMention(l.public_remarks, QUIET_IN_REMARKS)
+      const s = ev?.surroundings
+      const acres = lot?.acres ?? null
+      const caveatQuiet = "distance isn't sound — a visit at rush hour is the real test, and OpenStreetMap's building coverage varies by area"
+      if (s) {
+        const figures: Record<string, number> = {}
+        if (s.nearestOtherBuildingMeters != null) figures.nearest_building_feet = Math.round(s.nearestOtherBuildingMeters * 3.28084)
+        if (s.nearestMajorRoad) figures.major_road_feet = Math.round(s.nearestMajorRoad.meters * 3.28084)
+        if (acres != null) figures.acres = Math.round(acres * 100) / 100
+        const evidence: FitEvidence = { source: s.source, confidence: 'low', figures, observed_at: s.observed_at, caveat: caveatQuiet }
+        const remarkNote = hit ? `; the listing description mentions "${hit}"` : ''
+        if (s.nearestMajorRoad && s.nearestMajorRoad.meters <= LOUD_ROAD_METERS) {
+          return proven('misses', `A major road${s.nearestMajorRoad.name ? ` (${s.nearestMajorRoad.name})` : ''} runs ${formatDistance(s.nearestMajorRoad.meters)} away, so expect some traffic sound${remarkNote}`, evidence, `a major road runs ${formatDistance(s.nearestMajorRoad.meters)} away`)
+        }
+        if (s.nearestRailMeters != null && s.nearestRailMeters <= LOUD_RAIL_METERS) {
+          return proven('misses', `A rail line runs ${formatDistance(s.nearestRailMeters)} away${remarkNote}`, evidence, `a rail line runs ${formatDistance(s.nearestRailMeters)} away`)
+        }
+        const spacing = s.nearestOtherBuildingMeters
+        const onLand = acres != null && acres >= 0.75
+        if ((spacing != null && spacing >= ROOMY_SPACING_METERS) || onLand) {
+          return proven('matches', `${spacing != null ? `The nearest other mapped building is ${formatDistance(spacing)} away` : 'No other building is mapped close by'}${acres != null ? ` on ${acreLot(acres)}` : ''}, and no major road is mapped within a quarter mile${remarkNote}`, evidence, spacing != null ? `the nearest other building sits ${formatDistance(spacing)} away, with no major road close by` : 'no other building is mapped close by')
+        }
+        if (spacing != null && spacing < CLOSE_SPACING_METERS) {
+          return proven('misses', `Homes sit close together here — the nearest other mapped building is ${formatDistance(spacing)} away${remarkNote}`, evidence, `homes sit close together, about ${formatDistance(spacing).replace(/^about /, '')} apart`)
+        }
+        if (spacing != null) {
+          return proven('matches', `Typical spacing — the nearest other mapped building is ${formatDistance(spacing)} away, with no major road mapped close by${remarkNote}`, evidence, `typical spacing, the next building ${formatDistance(spacing)} away`)
+        }
+      }
+      if (acres != null && acres >= 1) {
+        return proven('matches', `On ${formatAcres(acres)}, there's real room between this home and the next${hit ? `; the listing description mentions "${hit}"` : ''}`, { source: lot!.source, confidence: 'medium', figures: { acres: Math.round(acres * 100) / 100 }, caveat: caveatQuiet }, `real room between this home and the next on ${formatAcres(acres)}`)
+      }
+      return hit ? reported(hit) : unknown("How close the next home sits and how busy the street is aren't in the listing data — tap \"Why this home?\" and I'll check the map, or drive by at rush hour")
+    }
     case 'natural_light': {
       if (ask.direction === 'less') return unknown("How much light the rooms get isn't in the listing data — photos and a visit will tell you")
       const hit = remarksMention(l.public_remarks, LIGHT_IN_REMARKS)
@@ -591,22 +760,6 @@ function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProve
     case 'accessibility': {
       const hit = remarksMention(l.public_remarks, ACCESS_IN_REMARKS)
       return hit ? reported(hit) : unknown("Accessibility features aren't confirmed in the listing data — your agent can ask the listing agent for specifics")
-    }
-    case 'commute':
-      return unknown(ask.target
-        ? `Drive time to ${ask.target} isn't calculated here yet — check a map from the address at the hour you'd travel, or ask your agent`
-        : "Commute time isn't calculated here yet — tell me where the commute is to, and check a map from the address")
-    case 'nearby_amenity':
-      return unknown(ask.target
-        ? `Whether ${ask.target} ${/s$/.test(ask.target) ? 'are' : 'is'} close by isn't in the listing data — a map from the address will show you`
-        : "Walkability isn't in the listing data — a map from the address will show you what's nearby")
-    case 'outdoor_space':
-      return unknown(l.lot_size != null
-        ? `The lot size is listed as ${l.lot_size} (units as the listing reports them); whether the yard suits you is best judged in person`
-        : "Yard size isn't in the listing data — photos and a visit will show you")
-    case 'quiet_setting': {
-      const hit = remarksMention(l.public_remarks, QUIET_IN_REMARKS)
-      return hit ? reported(hit) : unknown("How busy the street is isn't in the listing data — drive by at rush hour before you decide")
     }
   }
 }
@@ -654,7 +807,7 @@ function dealBreakerFit(db: string, l: ListingFitFacts, prov: CriteriaProvenance
  * bucket, and an ask the data cannot answer is an UNKNOWN with a plain sentence saying so.
  * Said asks are listed before inferred ones in each bucket.
  */
-export function explainCriteriaFit(listing: ListingFitFacts, criteria: BuyerCriteria): CriteriaFit {
+export function explainCriteriaFit(listing: ListingFitFacts, criteria: BuyerCriteria, evidence: HomeLocationEvidence | null = null): CriteriaFit {
   const fit: CriteriaFit = { matches: [], misses: [], unknowns: [] }
   const add = (b: Bucketed) => fit[b.bucket].push(b.item)
   const p = (f: CriteriaField) => provenanceOf(criteria, f)
@@ -699,7 +852,7 @@ export function explainCriteriaFit(listing: ListingFitFacts, criteria: BuyerCrit
   }
   for (const f of criteria.mustHaveFeatures) add(featureFit(f, listing, p('mustHaveFeatures')))
   for (const db of criteria.dealBreakers) add(dealBreakerFit(db, listing, p('dealBreakers')))
-  for (const ask of criteria.lifestyle ?? []) add(lifestyleFit(ask, listing, p('lifestyle')))
+  for (const ask of criteria.lifestyle ?? []) add(lifestyleFit(ask, listing, p('lifestyle'), evidence))
 
   const rank = (i: FitItem) => (i.provenance === 'said' ? 0 : i.provenance === 'inferred' ? 1 : 2)
   for (const k of ['matches', 'misses', 'unknowns'] as const) fit[k].sort((a, b) => rank(a) - rank(b))
@@ -738,16 +891,56 @@ export function restatesUnknown(text: string, fit: CriteriaFit): string | null {
   return null
 }
 
+/** Who the explanation speaks for (wave 148E): the tenant's brand and the buyer's agent — never invented. */
+export interface NeighbourlyVoice {
+  /** The buyer's agent's name as the brokerage holds it; absent → "your agent". */
+  agentName?: string | null
+  brokerageName?: string | null
+  /** The source label (in-house · IDX/MLS · RentCast property data) — a RentCast home says so in the narrative. */
+  source?: ListingSourceLabel | null
+}
+
+export interface NeighbourlyExplanation {
+  headline: string
+  narrative: string
+  /** Code-authored, always present when the fit has unknowns. */
+  unknownsSentence: string | null
+  /** ONE gentle question drawn from a fixed list (never free text) — what would help the buyer next. */
+  followUpQuestion: string
+  /** The gentle offer to meet the agent — the explanation is the agent's first impression. */
+  agentOffer: string
+}
+
+/** PURE. The one follow-up question, chosen from a FIXED list in the order that helps the buyer most. */
+function chooseFollowUp(fit: CriteriaFit): string {
+  const unknown = (k: string) => fit.unknowns.find((u) => u.field === `lifestyle:${k}`)
+  const commute = unknown('commute')
+  if (commute && /^Tell me where/.test(commute.detail)) return "Where's the commute to? Give me an address or a landmark and I'll map the drive for you."
+  if (commute) return 'Would you like me to map the drive at the time you usually leave?'
+  if (unknown('quiet_setting')) return 'Would you like me to look at how close the next homes sit and how near the busy roads run?'
+  if (unknown('nearby_amenity')) return "Would you like me to map what's within an easy walk of the front door?"
+  if (unknown('outdoor_space')) return 'Would you like me to ask for the lot survey so you can see exactly where the yard ends?'
+  if (unknown('natural_light')) return 'Would you like me to ask the listing agent which rooms get the best light, and when?'
+  if (fit.misses.length > 0) return `Is "${fit.misses[0].ask.toLowerCase()}" a deal-breaker for you, or could the rest make up for it?`
+  return 'What would make this one a yes for you?'
+}
+
 /**
- * PURE. The explanation in the voice of a knowledgeable neighbour — built only from the fit,
- * so it can say nothing the data does not. The unknowns sentence is ALWAYS present when there
- * are unknowns: the buyer is told what the listing cannot tell them.
+ * PURE. The explanation in the voice of a kind, knowledgeable neighbour who happens to be the best agent in town —
+ * built ONLY from the fit, so it says nothing the data does not (owner: "a helping neighbor and more personable so
+ * that they want to meet with an agent … It is about them."). It opens on what the buyer told us, gives the specific
+ * figures (including a measured drive, the acres, the spacing, when evidence holds them), is honest about a miss in
+ * one sentence, says when a home is RentCast property data rather than a verified listing, asks ONE gentle question,
+ * and offers the agent without pressure. The unknowns sentence is ALWAYS present when there are unknowns.
  */
 export function composeNeighbourlyExplanation(
   fit: CriteriaFit,
   listingLabel: string,
-): { headline: string; narrative: string; unknownsSentence: string | null } {
+  voice: NeighbourlyVoice = {},
+): NeighbourlyExplanation {
   const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
+  const agent = voice.agentName?.trim() || null
+  const agentRef = agent ?? 'your agent'
   const said = fit.matches.filter((m) => m.provenance === 'said')
   const lead = (said.length ? said : fit.matches).slice(0, 3)
   const headline = fit.misses.length === 0 && fit.matches.length > 0
@@ -755,17 +948,32 @@ export function composeNeighbourlyExplanation(
     : fit.matches.length > 0 ? `${listingLabel} fits part of your list` : `${listingLabel} only partly fits`
   const parts: string[] = []
   if (lead.length > 0) {
-    parts.push(`Here's how ${listingLabel} lines up with what you told me: ${lead.map((m) => `${lower(m.ask)} — ${lower(m.detail)}`).join('; ')}.`)
+    const opener = fit.misses.length === 0 ? `I took a close look at ${listingLabel} for you, and it lines up with what you told me matters` : `I took a close look at ${listingLabel} for you — here's how it lines up with what you told me`
+    parts.push(`${opener}: ${lead.map((m) => `${lower(m.ask)} — ${m.brief ?? lower(m.detail)}`).join('; ')}.`)
   } else {
-    parts.push(`${listingLabel} came up, but the listing data doesn't confirm any of your asks yet.`)
+    parts.push(`I looked at ${listingLabel} for you, but the listing data doesn't confirm any of what you asked for yet.`)
   }
+  // The evidence-backed lifestyle answers the lead did not already say (a measured drive, the acres, the spacing).
+  const extra = fit.matches.filter((m) => !lead.includes(m) && m.source === 'provider').slice(0, 2)
+  const TOPIC: Record<string, string> = { 'lifestyle:commute': 'your commute', 'lifestyle:nearby_amenity': 'getting around on foot', 'lifestyle:quiet_setting': 'peace and quiet', 'lifestyle:outdoor_space': 'outdoor space' }
+  for (const m of extra) parts.push(`Good to know for ${TOPIC[m.field as string] ?? lower(m.ask)}: ${m.brief ?? lower(m.detail)}.`)
   if (fit.misses.length > 0) {
-    const extra = fit.misses.length - 1
-    parts.push(`One thing to know: ${lower(fit.misses[0].detail)}${extra > 0 ? `, and ${extra} more ${extra === 1 ? "ask doesn't" : "asks don't"} line up` : ''}.`)
+    const more = fit.misses.length - 1
+    parts.push(`One honest heads-up: ${fit.misses[0].brief ?? lower(fit.misses[0].detail)}${more > 0 ? `, and ${more} more ${more === 1 ? "thing doesn't" : "things don't"} line up` : ''}.`)
   }
-  parts.push(fit.matches.length > 0 ? 'If it looks right, I can ask your agent to set up a tour.' : 'Your agent can tell you more before you decide whether it is worth a visit.')
+  if (voice.source && !voice.source.verified_active_listing) {
+    parts.push(`This one comes from RentCast property data rather than a verified active listing, so ${agentRef} will confirm it's truly available before you plan a visit.`)
+  }
   const unknownsSentence = fit.unknowns.length > 0
-    ? `What I can't tell you from the listing: ${fit.unknowns.map((u) => lower(u.ask)).join(', ')}. Worth checking in person or asking your agent.`
+    ? `What I can't tell you yet from the listing: ${fit.unknowns.map((u) => lower(u.ask)).join(', ')}. ${agent ? `${agent} can find out` : 'Your agent can find out'}, or you'll see it for yourself in person.`
     : null
-  return { headline, narrative: parts.join(' '), unknownsSentence }
+  const agentOffer = fit.matches.length > 0
+    ? `If it feels promising, ${agentRef} would be glad to show it to you in person and answer what a listing can't — just say the word and I'll set up a time.`
+    : `${agent ?? 'Your agent'} would be happy to talk it through with you before you decide whether it's worth a visit — just say the word.`
+  return { headline, narrative: parts.join(' '), unknownsSentence, followUpQuestion: chooseFollowUp(fit), agentOffer }
+}
+
+/** PURE. The whole buyer-facing explanation as one text (narrative · unknowns · question · offer) — what the rubric reads. */
+export function fullExplanationText(e: Pick<NeighbourlyExplanation, 'narrative' | 'unknownsSentence' | 'followUpQuestion' | 'agentOffer'>): string {
+  return [e.narrative, e.unknownsSentence, e.followUpQuestion, e.agentOffer].filter(Boolean).join(' ')
 }

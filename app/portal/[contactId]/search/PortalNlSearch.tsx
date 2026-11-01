@@ -31,6 +31,8 @@ import {
 import type { CriteriaChip, NextExperience } from "@/lib/buyer-search/conversational-search"
 import type { ClarifyingQuestion } from "@/lib/buyer-search/conversation-criteria"
 import { voiceTurnPlan } from "@/lib/buyer-search/voice-turn"
+// Wave 148E (owner ruling 8, C18): the source labelled for what it is; a map only beside the evidence that drew it.
+import { describeListingSource, type MapEvidence } from "@/lib/buyer-search/explanation-evidence"
 import { usdOrDash } from "@/lib/format/money"
 
 // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrDash
@@ -51,6 +53,8 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
   const [nextBest, setNextBest] = useState<NextExperience[]>([])
   const [notes, setNotes] = useState<string[]>([])
   const [whyText, setWhyText] = useState<Record<string, string>>({})
+  const [whyMaps, setWhyMaps] = useState<Record<string, MapEvidence[]>>({})
+  const [heard, setHeard] = useState<Array<{ id: string; literal: string; understood: string }>>([])
   const [noteFor, setNoteFor] = useState<string | null>(null)
   const [noteText, setNoteText] = useState("")
   const [voiceOk, setVoiceOk] = useState(false)
@@ -68,6 +72,7 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
       setProposals(s.proposals.map((p) => ({ id: p.id, field: p.field, reason: p.reason, status: p.status })))
       setChanges(s.recent.map((p) => ({ id: p.id, field: p.field, reason: p.reason, status: p.status })))
       setNotes(s.notes)
+      setHeard((s.heard ?? []).slice(0, 3).map((h) => ({ id: h.id, literal: h.literal, understood: h.understood })))
     }).catch(() => { /* the search still works without the saved state */ })
   }, [contactId])
 
@@ -174,7 +179,9 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
     if (!m.listingId) return
     startTransition(async () => {
       const x = await explainHomeForBuyerAction({ contactId, listingId: m.listingId! })
-      setWhyText((prev) => ({ ...prev, [m.listingId!]: x.ok ? [x.narrative, x.unknownsSentence].filter(Boolean).join(" ") : x.error }))
+      setWhyText((prev) => ({ ...prev, [m.listingId!]: x.ok ? [x.narrative, x.unknownsSentence, x.followUpQuestion, x.agentOffer].filter(Boolean).join(" ") : x.error }))
+      // A map renders ONLY when a claim carries the evidence that drew it (C18) — never a placeholder picture.
+      if (x.ok) setWhyMaps((prev) => ({ ...prev, [m.listingId!]: x.claims.map((c) => c.map).filter((mp): mp is MapEvidence => !!mp && !!mp.image_url) }))
     })
   }
 
@@ -272,6 +279,17 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
 
       {notes.length > 0 && <p className="text-xs text-muted-foreground">{notes.join(" ")}</p>}
 
+      {heard.length > 0 && (
+        <details className="rounded-md border p-2 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">What you've told us</summary>
+          <ul className="mt-1 space-y-1">
+            {heard.map((h) => (
+              <li key={h.id}><span className="italic">“{h.literal.length > 160 ? `${h.literal.slice(0, 157)}…` : h.literal}”</span> <span className="text-muted-foreground">— we understood: {h.understood}. Tap a criterion above to correct it.</span></li>
+            ))}
+          </ul>
+        </details>
+      )}
+
       {nextBest.filter((n) => n.key !== "answer_question" && n.key !== "request_showing").length > 0 && (
         <div className="flex flex-wrap gap-1.5" aria-label="What you can do next">
           {nextBest.map((n) => {
@@ -302,8 +320,11 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {[m.bedrooms != null ? `${m.bedrooms} bd` : null, m.bathrooms != null ? `${m.bathrooms} ba` : null, m.city].filter(Boolean).join(" · ")}
-                  {m.source !== "platform" ? " · market listing" : " · our listing"}
+                  {` · ${describeListingSource(m.source).label}`}
                 </p>
+                {describeListingSource(m.source).verified_active_listing === false && (
+                  <p className="text-[11px] text-muted-foreground">{describeListingSource(m.source).caveat}</p>
+                )}
                 {m.headline && <p className="text-xs">{m.headline}</p>}
                 {m.fit && (
                   <ul className="space-y-0.5 text-xs">
@@ -313,6 +334,16 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
                   </ul>
                 )}
                 {m.explanation && <p className="text-xs text-muted-foreground">{m.listingId && whyText[m.listingId] ? whyText[m.listingId] : m.explanation}</p>}
+                {m.listingId && (whyMaps[m.listingId] ?? []).map((mp, k) => (
+                  <figure key={`map${k}`} className="space-y-0.5">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- a provider-minted static map URL (booked server-side) */}
+                    <img src={mp.image_url} alt={mp.kind === "route" ? `Route map from ${mp.from.label} to ${mp.to?.label ?? "the place you named"}` : `Map of places near ${mp.from.label}`} className="w-full rounded border" loading="lazy" />
+                    <figcaption className="text-[11px] text-muted-foreground">
+                      {mp.kind === "route" && mp.minutes != null ? `About ${mp.minutes} min — ${mp.assumption ?? ""}. ` : "Places as OpenStreetMap maps them (straight-line distances). "}
+                      {mp.attribution}
+                    </figcaption>
+                  </figure>
+                ))}
                 {m.listingId && (
                   <div className="flex flex-wrap gap-1.5 pt-1">
                     <button type="button" disabled={pending} onClick={() => react(m, "saved")} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs"><Heart className="h-3 w-3" /> Save</button>

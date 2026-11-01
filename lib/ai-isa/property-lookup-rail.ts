@@ -306,6 +306,7 @@ export type ProviderCapability =
   | "motivated_seller_list"  // quicklist pulls (pre-foreclosure, absentee, vacant, …)
   | "property_valuation"     // "what is this home worth?" — AVM point + range (wave 99, lane 99C)
   | "map_render"             // a map of coordinates — static image or browser tiles (wave 140, lane 140I)
+  | "travel_time"            // drive / walk / cycle minutes + distance between a home and a place the buyer named (wave 148, lane 148E)
   | "business_identity"      // a BUSINESS identity (LinkedIn URL / name + city + state) ↔ its consumer contact points — the B2B2C crosswalk (wave 142, lane 142D)
   | "online_presence"        // observed online real-estate activity + property/behaviour indicators for a known person (wave 142, lane 142D)
   | "audience_estimate"      // HOW MANY people match a geography + housing-fact lead-gen filter — a FREE COUNT with provenance, never a contact, never a purchase (wave 143, lane 143D; 144E: a count for any lawful lead-gen criteria, not look-alike research only)
@@ -395,6 +396,17 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
     { provider: "mapbox", unitCostUsd: MAPBOX_SKU_USD.static_image, keyedBy: "coordinates" },
     { provider: "google_maps", unitCostUsd: GOOGLE_MAPS_SKU_USD.static_map, keyedBy: "coordinates" },
   ],
+  // Wave 148 (lane 148E; owner: "if they need walkability or how far it is to commute … those can have more info like
+  // a map" + "which providers do you need for commute, etc.?"). THE TRAVEL-TIME CAPABILITY: ONE provider today — Mapbox
+  // Matrix (per ELEMENT = sources × destinations, 100,000 free / month then $2.00 / 1k) with the Directions API for the
+  // one route a map draws (same price per request) — the SAME platform account, token and Commercial Application License
+  // as map_render. Walked by lib/property/street-view.ts requestTravelTimes / requestTravelRoute (health-aware,
+  // unconfigured → skipped with its reason, cache-first through the provider-payload store, gated by mayUseAndAfford
+  // before the paid call). Google's Distance Matrix is NOT a second row: no transport exists for it and adding one would
+  // be a purchase decision (lane-148E notes, "Providers needed").
+  travel_time: [
+    { provider: "mapbox", unitCostUsd: MAPBOX_SKU_USD.matrix_element, keyedBy: "coordinates" },
+  ],
   // Wave 142 (lane 142D; owner: "expose contact/business append, B2B2C identity matching, online-presence /
   // real-estate indicators … through the EXISTING kernel capability routing"). ONE provider sells each
   // (audited: lib/external/versium-client.ts — the B2B2C Crosswalk Append API and the full_demographic
@@ -431,7 +443,9 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
  */
 // Wave 144 (lane 144E): + online_audience_match — an append the record does without when Versium is down (the next enrichment
 // pass re-asks the gap); it never blocks the failover of Versium's other capabilities.
-export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity", "audience_estimate", "online_audience_match"])
+// Wave 148 (lane 148E): + travel_time — a buyer explanation without a drive time says "unknown" and offers to map it; a
+// Mapbox outage never blocks the failover of Mapbox's map_render capability.
+export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity", "audience_estimate", "online_audience_match", "travel_time"])
 
 /**
  * Capabilities whose route row is FREE (unit 0) — each carries the vendor statement that makes it free. Every OTHER

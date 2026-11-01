@@ -20,7 +20,10 @@
 
 export interface OSINTAmenityEntry {
   name: string
-  distance: number // meters, rounded
+  distance: number // meters, rounded (STRAIGHT-LINE from the geocoded point — not a walking route)
+  /** Wave 148 (lane 148E): where OSM places it, so a buyer map can pin exactly what was returned (never an invented place). */
+  lat?: number
+  lon?: number
 }
 
 export interface OSINTAmenities {
@@ -74,7 +77,7 @@ function bucketOverpassElements(elements: any[], lat: number, lon: number): OSIN
 
     const dist = Math.round(haversineMeters(lat, lon, elLat, elLon))
     const name: string = el.tags?.name ?? el.tags?.brand ?? "Unnamed"
-    const entry: OSINTAmenityEntry = { name, distance: dist }
+    const entry: OSINTAmenityEntry = { name, distance: dist, lat: Number(elLat), lon: Number(elLon) }
 
     const amenity = el.tags?.amenity ?? ""
     const shop = el.tags?.shop ?? ""
@@ -145,6 +148,89 @@ export async function probeOverpassAmenities(
     })
   } catch (err) {
     return unreachableProbe<OSINTAmenities>(err)
+  }
+}
+
+// ─── SURROUNDINGS — how close the neighbours' buildings and the big roads are (wave 148, lane 148E) ──
+//
+// Owner (2026-11-01): "quiet setting is not close to neighbors". What a buyer means by quiet / private is
+// PHYSICAL: how far the nearest other building is, and how close a highway, arterial or rail line runs. Those
+// are mapped facts in OpenStreetMap, asked through the SAME keyless Overpass egress as the amenities above (no
+// second Overpass caller). The answer is a ROUGH GUIDE and is reported with its limits: OSM building coverage
+// varies by area, the home's own footprint may or may not be mapped, and distance is not sound — nothing here
+// ever promises "quiet". It describes buildings and roads, never people.
+
+export interface OSINTSurroundings {
+  /** Straight-line metres to the nearest mapped building that is NOT the home itself (see nearestOtherBuilding). */
+  nearestOtherBuildingMeters: number | null
+  /** Mapped buildings within 100 m of the point (the home's own footprint, when mapped, is one of them). */
+  buildingsWithin100m: number
+  /** The nearest motorway / trunk / primary / secondary road, from its mapped geometry (vertex distance). */
+  nearestMajorRoad: { meters: number; name: string | null; kind: string } | null
+  /** Straight-line metres to the nearest mapped mainline rail, when one is within the search radius. */
+  nearestRailMeters: number | null
+}
+
+/** A footprint centroid this close to the geocoded point is taken to be the home itself (an address point sits on or beside its own roof). */
+const OWN_FOOTPRINT_METERS = 20
+
+/** PURE. Overpass elements → the surroundings facts. */
+function summarizeSurroundings(elements: any[], lat: number, lon: number): OSINTSurroundings {
+  const buildings: number[] = []
+  let road: OSINTSurroundings["nearestMajorRoad"] = null
+  let rail: number | null = null
+  for (const el of Array.isArray(elements) ? elements : []) {
+    const tags = el?.tags ?? {}
+    if (tags.building) {
+      const c = el?.center ?? (typeof el?.lat === "number" ? { lat: el.lat, lon: el.lon } : null)
+      if (c && Number.isFinite(c.lat) && Number.isFinite(c.lon)) buildings.push(haversineMeters(lat, lon, c.lat, c.lon))
+      continue
+    }
+    const geom: Array<{ lat: number; lon: number }> = Array.isArray(el?.geometry) ? el.geometry : []
+    const nearest = geom.reduce((m, g) => (Number.isFinite(g?.lat) && Number.isFinite(g?.lon) ? Math.min(m, haversineMeters(lat, lon, g.lat, g.lon)) : m), Infinity)
+    if (!Number.isFinite(nearest)) continue
+    if (tags.highway) {
+      if (!road || nearest < road.meters) road = { meters: Math.round(nearest), name: typeof tags.name === "string" ? tags.name : (typeof tags.ref === "string" ? tags.ref : null), kind: String(tags.highway) }
+    } else if (tags.railway) {
+      rail = rail == null ? Math.round(nearest) : Math.min(rail, Math.round(nearest))
+    }
+  }
+  buildings.sort((a, b) => a - b)
+  const others = buildings.length && buildings[0] <= OWN_FOOTPRINT_METERS ? buildings.slice(1) : buildings
+  return {
+    nearestOtherBuildingMeters: others.length ? Math.round(others[0]) : null,
+    buildingsWithin100m: buildings.filter((d) => d <= 100).length,
+    nearestMajorRoad: road,
+    nearestRailMeters: rail,
+  }
+}
+
+/**
+ * Query Overpass for buildings within `buildingRadius` and major roads / rail within `roadRadius`, REPORTING WHY it
+ * failed (unreachable ≠ nothing mapped — the FreeProbe contract). Never throws. `opts.call` injects the transport (the
+ * buyer-explanation proof drives fixture elements through it — no network); production rides the connector gateway.
+ */
+export async function probeOverpassSurroundings(lat: number, lon: number, opts: { buildingRadius?: number; roadRadius?: number; call?: typeof callConnector } = {}): Promise<FreeProbe<OSINTSurroundings>> {
+  const b = Math.min(250, Math.max(50, Math.round(opts.buildingRadius ?? 150)))
+  const r = Math.min(800, Math.max(100, Math.round(opts.roadRadius ?? 400)))
+  const q = `
+    [out:json][timeout:10];
+    way["building"](around:${b},${lat},${lon});
+    out center;
+    (
+      way["highway"~"^(motorway|trunk|primary|secondary)$"](around:${r},${lat},${lon});
+      way["railway"="rail"](around:${r},${lat},${lon});
+    );
+    out geom;
+  `.trim()
+  try {
+    const res = await (opts.call ?? callConnector)<any>({
+      connector: "overpass", baseUrl: "", path: "", url: OVERPASS_BASE, method: "POST",
+      auth: { style: "none" }, bodyType: "form", body: { data: q }, timeoutMs: 12000,
+    })
+    return gatewayProbe<OSINTSurroundings>(res, () => summarizeSurroundings(Array.isArray(res.data?.elements) ? res.data.elements : [], lat, lon))
+  } catch (err) {
+    return unreachableProbe<OSINTSurroundings>(err)
   }
 }
 

@@ -97,8 +97,10 @@ const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 // the record, owner ruling 10; a PAID row at the same credit constant). The named list stays explicit ON PURPOSE (an unannounced
 // capability must turn this red); the count in the label is derived.
 // The label states the DERIVED count (a hard-coded "eleven" was a waypoint: it went false the moment a capability was added).
-check(`${caps.length} capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, business_identity, online_presence, audience_estimate, online_audience_match)`,
-  caps.sort().join(",") === "audience_estimate,business_identity,dnc_tcpa,email_validation,map_render,motivated_seller_list,online_audience_match,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
+// Wave 148 (lane 148E): + travel_time (Mapbox Matrix/Directions — the owner's "which providers do you need for commute?";
+// a single-provider PAID row at MAPBOX_SKU_USD.matrix_element, the constant the transport books). ANNOUNCED here on purpose.
+check(`${caps.length} capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, travel_time, business_identity, online_presence, audience_estimate, online_audience_match)`,
+  caps.sort().join(",") === "audience_estimate,business_identity,dnc_tcpa,email_validation,map_render,motivated_seller_list,online_audience_match,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact,travel_time")
 const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
 // Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person email+phone
 // append, People Data Labs only when Versium misses"): Versium (an EXISTING vendor) leads both overlap
