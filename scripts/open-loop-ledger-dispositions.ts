@@ -181,6 +181,7 @@ export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
   "146H-SO-06": { s: "carried", k: "inherent-limit", o: "owner", r: "[BS_BROWSER]" },
   "146I-OL-02": { s: "carried", k: "inherent-limit", o: "inherent", r: "A label line inside 146I's Outside-lane list (a heading, not an item); the items under it are their own rows." },
   "146I-OL-09": handed("lane148A", "Every webhook door declares its receive truth (C7) with a fail-closed fixture proof — WhatsApp / social DM still lack one (see 143J-SO-05); webhook routes are lane 148A's.", true),
-  "CS-M-m275": { s: "carried", k: "inherent-limit", o: "integrator", e: ["scripts/live-tables.ts#\"vendor_tax_documents\""], r: "m275 carries no APPLIED stamp on any header line, yet its table is in the generated live catalog (live-tables.ts) — applied without a stamp. The capability-surface audit therefore reads it 'written'. Integrator: stamp line 1 after a live check (no SQL change)." },
+  // TOMBSTONE (wave 148 integrator, WIP 3): CS-M-m275 — m275 now carries the line-1 APPLIED stamp (live table vendor_tax_documents), so the
+  // capability-surface audit no longer emits the row and the ledger id no longer exists; the disposition went with it.
   "147R-RP-04": { s: "carried", k: "owner-decision", o: "owner", r: `${R22} — embed consent box (148B), unknown texter kept, scraper terms kept, lifestyle data Mapbox first (148E), DealMachine platform-paid evaluation (148J).` },
 }
