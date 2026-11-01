@@ -103,7 +103,27 @@
  * a scheduled probe that writes `connector_health_log`, rather than from these literals.
  */
 
-export type SocrataDatasetKind = "permits" | "code_violations" | "probate" | "property_transfers"
+/** `street_use_permits` (wave 148, lane 148F): a city's street-use / right-of-way permits — the dumpster or moving container on the
+ *  street (lib/intent/movement-source-registry.ts pr_street_use_permit). Registered as a VERIFIED CANDIDATE only (no adapter yet). */
+export type SocrataDatasetKind = "permits" | "code_violations" | "probate" | "property_transfers" | "street_use_permits"
+
+/**
+ * WAVE 148, LANE 148F (owner ruling 6, contract C19 — "create a dataset verification in the market registry"). The LICENCE half of
+ * a dataset's verification, read from the publisher on the day stated. A dataset whose licence nobody read is never `verified`
+ * (lib/intent/dataset-verification.ts) — technical verification proves the columns, not the right to use the rows.
+ *   public_domain     the catalog states a public-domain / PDDL dedication;
+ *   portal_terms      the portal's own terms of use govern reuse (the catalog licence field is empty or says "See Terms of Use");
+ *                     the platform keeps only a DERIVED fact (an address match -> a signal), never republishes rows;
+ *   as_is_disclaimer  the publisher provides the data "as is" with a fitness disclaimer, no reuse restriction stated;
+ *   unknown           not read — the dataset cannot be verified until it is.
+ */
+export interface DatasetLicence {
+  class: "public_domain" | "portal_terms" | "as_is_disclaimer" | "unknown"
+  /** The publisher's words (catalog `license` field / item licenseInfo), verbatim or summarised with where they were read. */
+  text: string
+  /** ISO date the licence was read. */
+  readOn: string
+}
 
 /**
  * Which adapter can read this dataset.
@@ -168,6 +188,12 @@ export interface PermitDatasetSpec {
   unavailable?: string
   /** Free-form notes — column hints, known quirks, refresh cadence. */
   notes?:      string
+  /** C19 (wave 148, 148F): the licence as read from the publisher. Absent = never read (the dataset is unverified). */
+  licence?:    DatasetLicence
+  /** C19: the newest DATA the publisher had on the verification day (catalog data_updated_at / max event date / item modified). */
+  lastDataAt?: string
+  /** C19: how stale the data may be before the dataset reads `stale` (publisher cadence + lag). Default 14 days. */
+  maxLagDays?: number
 }
 
 /**
@@ -213,7 +239,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       // max(issue_date) 2026-08-18, catalog data_updated_at 2026-08-19. Working.
       { host: "data.austintexas.gov", datasetId: "3syk-w9eu", kind: "permits",
         label: "Austin issued construction permits", dateColumn: "issue_date", verifiedOn: "2026-08-20",
-        notes: "Single address column (original_address1). description + permit_type_desc + work_class." },
+        notes: "Single address column (original_address1). description + permit_type_desc + work_class.",
+        // C19 (148F, 2026-11-01): catalog ids=3syk-w9eu -> license "Public Domain U.S. Government", data_updated_at 2026-11-01T17:05:37Z.
+        licence: { class: "public_domain", text: "Socrata catalog license: \"Public Domain U.S. Government\"", readOn: "2026-11-01" }, lastDataAt: "2026-11-01T17:05:37.000Z" },
       { host: "data.austintexas.gov", datasetId: "9qy3-hbf9", kind: "code_violations",
         label: "Austin code-enforcement cases",
         unavailable: "404 on 2026-08-19 — dataset id retired by data.austintexas.gov" },
@@ -261,7 +289,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       { host: "data.cityofchicago.org", datasetId: "ydr8-5enu", kind: "permits",
         label: "Chicago building permits", dateColumn: "issue_date", verifiedOn: "2026-08-20",
         notes: "Composite address (number/direction/name). Permit id is `permit_` (label 'PERMIT#'). " +
-               "`work_type` ('Masonry Work') is a second, sparsely-populated work-text column." },
+               "`work_type` ('Masonry Work') is a second, sparsely-populated work-text column.",
+        // C19 (148F, 2026-11-01): catalog license "See Terms of Use" (City of Chicago Data Portal), data_updated_at 2026-10-31T12:12:57Z.
+        licence: { class: "portal_terms", text: "Socrata catalog license: \"See Terms of Use\" — the City of Chicago Data Portal terms govern reuse", readOn: "2026-11-01" }, lastDataAt: "2026-10-31T12:12:57.000Z" },
       // Re-verified live 2026-08-20 (`$order=violation_date DESC`): violation_date
       // "2026-08-18T00:00:00.000" · address "3830 W 63RD ST" · violation_description
       // "REPAIR DOOR, INT." · violation_status "OPEN" · violation_code "CN105015".
@@ -272,7 +302,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       { host: "data.cityofchicago.org", datasetId: "22u3-xenr", kind: "code_violations",
         label: "Chicago building violations", dateColumn: "violation_date", verifiedOn: "2026-08-20",
         notes: "Single `address` column, `violation_description`, `violation_status` OPEN/CLOSED, " +
-               "real timestamp on violation_date." },
+               "real timestamp on violation_date.",
+        // C19 (148F, 2026-11-01): catalog license field empty -> the portal's terms; data_updated_at 2026-10-30T07:01:22Z.
+        licence: { class: "portal_terms", text: "Socrata catalog license field empty — the City of Chicago Data Portal terms govern reuse", readOn: "2026-11-01" }, lastDataAt: "2026-10-30T07:01:22.000Z" },
     ],
   },
   [k("CA", "Los Angeles")]: {
@@ -292,7 +324,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
         label: "LA building & safety permits issued 2020–present",
         dateColumn: "issue_date", verifiedOn: "2026-08-20",
         notes: "Single `primary_address`. Permit id is `permit_nbr`; valuation is `valuation`; " +
-               "work text is `work_desc` + `permit_type` + `permit_sub_type`." },
+               "work text is `work_desc` + `permit_type` + `permit_sub_type`.",
+        // C19 (148F, 2026-11-01): catalog license field empty -> the portal's terms; data_updated_at 2026-10-26T15:47:50Z (refreshed ~weekly).
+        licence: { class: "portal_terms", text: "Socrata catalog license field empty — the City of Los Angeles open-data portal terms govern reuse", readOn: "2026-11-01" }, lastDataAt: "2026-10-26T15:47:50.000Z", maxLagDays: 21 },
       // The retired feed. The id is real (it is the parent of the published view xnhu-aczu) but it
       // is now ABSENT from the Socrata catalog outright (`ids=yv23-pmwf` → 0 results, 2026-08-20),
       // and its published view proves where the data stopped: xnhu-aczu holds 375,150 rows with
@@ -321,9 +355,16 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       // so `$order=filed_date DESC&$limit=1` reads back `{}` and looks like a dead feed. It is not;
       // `>=` excludes nulls, so the sweep's own query is unaffected. Use max()/IS NOT NULL when
       // probing this one by hand.
-      { host: "data.sfgov.org", datasetId: "i98e-djp9", kind: "permits",
-        label: "San Francisco building permits", dateColumn: "filed_date", verifiedOn: "2026-08-20",
-        notes: "filed_date is the FILING date (issued_date also exists and is also a timestamp)." },
+      // C19 DRIFT FOUND (148F, 2026-11-01): the registered host `data.sfgov.org` no longer serves this dataset — it answers
+      // `resource/i98e-djp9.json` with an HTTP 200 HTML page whose <meta http-equiv="refresh"> points at `data.sf.gov` (a body the
+      // JSON client cannot parse: a refusal every day, the fourth failure shape wearing a 200), and the catalog no longer lists the
+      // id under data.sfgov.org (ids=i98e-djp9&domains=data.sfgov.org -> 0 results). Re-verified at the new host the same day:
+      //   data.sf.gov  $where=filed_date >= '2026-10-25' -> count 371, max(filed_date) 2026-10-30T16:08:00
+      // The datasetId is unchanged, so permitDedupeKey (keyed on datasetId, never host) files no duplicate on the repoint.
+      { host: "data.sf.gov", datasetId: "i98e-djp9", kind: "permits",
+        label: "San Francisco building permits", dateColumn: "filed_date", verifiedOn: "2026-11-01",
+        notes: "filed_date is the FILING date (issued_date also exists and is also a timestamp). Host moved data.sfgov.org -> data.sf.gov (2026-11-01).",
+        licence: { class: "portal_terms", text: "DataSF portal terms govern reuse (the catalog lists no licence for the moved id on 2026-11-01)", readOn: "2026-11-01" }, lastDataAt: "2026-10-30T16:08:00.000Z" },
     ],
   },
   [k("NY", "New York")]: {
@@ -346,7 +387,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
         label: "NYC DOB NOW: Build – approved permits",
         dateColumn: "issued_date", verifiedOn: "2026-08-20",
         notes: "house_no + street_name compose the address; permit id is `job_filing_number`; " +
-               "valuation is `estimated_job_costs`; work text is work_type + job_description." },
+               "valuation is `estimated_job_costs`; work text is work_type + job_description.",
+        // C19 (148F, 2026-11-01): catalog license field empty -> NYC Open Data terms; data_updated_at 2026-10-31T18:44:39Z.
+        licence: { class: "portal_terms", text: "Socrata catalog license field empty — the NYC Open Data portal terms govern reuse", readOn: "2026-11-01" }, lastDataAt: "2026-10-31T18:44:39.000Z" },
       // THE BIS-ERA FEED — well-formed, live, fresh, and USELESS AS A BOUND. See the fifth failure
       // shape in the header. It was registered bound on `dobrundate` because `issuance_date` is
       // TEXT "06/17/2020" (a lexicographic comparison that answered 200-with-[] forever), and that
@@ -377,7 +420,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
         label: "NYC HPD housing-maintenance code violations",
         dateColumn: "novissueddate", verifiedOn: "2026-08-20",
         notes: "housenumber + streetname compose the address; violationid is the stable handle; " +
-               "violationstatus is Open/Close; class A/B/C is HPD's hazard tier." },
+               "violationstatus is Open/Close; class A/B/C is HPD's hazard tier.",
+        // C19 (148F, 2026-11-01): catalog license field empty -> NYC Open Data terms; data_updated_at 2026-11-01T15:53:35Z.
+        licence: { class: "portal_terms", text: "Socrata catalog license field empty — the NYC Open Data portal terms govern reuse", readOn: "2026-11-01" }, lastDataAt: "2026-11-01T15:53:35.000Z" },
     ],
   },
   // ── MONTGOMERY COUNTY, MARYLAND (new 2026-08-20) ───────────────────────────
@@ -404,6 +449,8 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
              "valuation is `declaredvaluation`; description + worktype carry the work. " +
              "Selectivity measured 2026-08-20: issueddate >= '2026-08-13' → 133 rows, " +
              "max 2026-08-19T12:08:49.",
+      // C19 (148F, 2026-11-01): catalog license "Public Domain", data_updated_at 2026-10-30T04:17:26Z.
+      licence: { class: "public_domain", text: "Socrata catalog license: \"Public Domain\"", readOn: "2026-11-01" }, lastDataAt: "2026-10-30T04:17:26.000Z",
     }
     const cities = [
       "Rockville", "Silver Spring", "Bethesda", "Gaithersburg", "Germantown",
@@ -468,7 +515,11 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
                "Permit id is `PermitNumber`; valuation is `EstimatedValue` (a STRING on the wire); " +
                "work text is DetailDescriptionComments + ApplicationTypeDescription + PermitType. " +
                "maxRecordCount is 1000 and the 7-day window is ~1,161 rows, so this layer NEEDS " +
-               "the pager in recentArcgisPermits — one page is not one week." },
+               "the pager in recentArcgisPermits — one page is not one week.",
+        // C19 (148F, 2026-11-01): ArcGIS item licenseInfo: "Miami-Dade County provides this data for use \"as is\" ... not suitable
+        // for site-specific decision making ... should not be used for making financial or any other commitments" — a fitness
+        // disclaimer, no reuse restriction; item modified 2026-10-28T12:37:32Z.
+        licence: { class: "as_is_disclaimer", text: "ArcGIS item licenseInfo: provided \"as is\"; approximate; not for site-specific decisions or financial commitments (prioritisation only, never a commitment)", readOn: "2026-11-01" }, lastDataAt: "2026-10-28T12:37:32.000Z" },
       // The City of Miami Socrata id this file was written with. Kept and marked: the host is an
       // ArcGIS Hub site and `resource/{id}.json` can never work there, and it is a CITY feed where
       // the entry above is the COUNTY's, which is the broader population a territory named "Miami"
@@ -496,7 +547,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       // `$order=issueddate DESC&$limit=1` reads back `{}`; `>=` is unaffected.)
       { host: "data.seattle.gov", datasetId: "76t5-zqzr", kind: "permits",
         label: "Seattle building permits", dateColumn: "issueddate", verifiedOn: "2026-08-20",
-        notes: "Single address column (originaladdress1). estprojectcost + permittypedesc." },
+        notes: "Single address column (originaladdress1). estprojectcost + permittypedesc.",
+        // C19 (148F, 2026-11-01): catalog license "Public Domain", data_updated_at 2026-11-01T01:14:34Z.
+        licence: { class: "public_domain", text: "Socrata catalog license: \"Public Domain\"", readOn: "2026-11-01" }, lastDataAt: "2026-11-01T01:14:34.000Z" },
       // Never verified, and it does not exist: two live fetches 404'd and an `ids=skuc-86g2`
       // lookup against the Socrata catalog returns zero results on 2026-08-20. Same defect as
       // Dallas's violations id — an id copied out of a document nobody checked.
@@ -516,6 +569,55 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
     ],
   },
 })
+
+/**
+ * WAVE 148, LANE 148F (owner ruling 6, contract C19): THE CANDIDATE DATASETS the movement registry's configuration-only sources wait
+ * on — probate (pr_probate_open_data), deed / property transfer (pr_property_transfer_open_data) and street-use / relocation
+ * (pr_street_use_permit) — each VERIFIED BY ID (never by catalog search, per the header's warning) or MARKED with why not. They are
+ * NOT in MARKETS on purpose: MARKETS is the permit sweep's coverage, and a kind the sweep does not ingest would make a market read
+ * "unboundable" when it is simply not swept. lib/intent/dataset-verification.ts turns every entry here and in MARKETS into one
+ * C19 verification contract; a candidate that is verified still has no adapter (Still open — registering an adapter is code, not data).
+ *
+ * Probes, 2026-11-01 (read-only GETs; the outputs are in the lane notes):
+ *   - NYC ACRIS Real Property Master bnx9-e6tj: doc_type='DEED' AND recorded_datetime >= '2026-09-15' -> 2,871 deeds,
+ *     max(recorded_datetime) 2026-09-30; latest deed document_id 2026092800714001 (document_date 2026-09-24, borough 1); catalog
+ *     data_updated_at 2026-10-08 (the publisher lags ~4-5 weeks). The master carries NO address: ACRIS Real Property Legals
+ *     8h5j-fqxa joins on document_id (that deed -> 325 WEST BROADWAY, block 228 lot 1418). Party names live in a THIRD dataset
+ *     (ACRIS Parties) that is deliberately NOT registered — a deed is a fact about a PROPERTY here, never people-sourcing.
+ *   - Cambridge MA Dumpster Parking Permits 8xmj-thsm: issue_date >= '2026-10-25' -> 15 of 860 rows (1.7% selectivity — a real
+ *     bound), max(issue_date) 2026-10-29; live row id 1235822 "79 Rice St, Cambridge, MA 02140", street_or_private "Street";
+ *     catalog license "Open Data Commons Public Domain Dedication and License". The dumpster on the street, lawfully.
+ *   - Santa Clara County "County Probate Cases" rh64-rgza: an ARCHIVAL index (probate_date "22 May 1895", box / folder /
+ *     accession columns, collection "Superior Court Records - Probate Cases"), not a current filing feed. MARKED unavailable.
+ *   - Seattle "Street Use Permit Applications Public Notices" eyde-ia6x: application_type values -> "Stadium Event Days" (1 row).
+ *     Not a residential street-use feed. MARKED unavailable.
+ * No current probate-filing open dataset was found for any registered market — probate stays a person's lookup
+ * (RESEARCH_STRATEGIES manual_record_check) and pr_probate_open_data stays configuration-only.
+ */
+export const MARKET_DATASET_CANDIDATES: readonly (PermitDatasetSpec & { market: string })[] = Object.freeze([
+  { market: "NY:New York", host: "data.cityofnewyork.us", datasetId: "bnx9-e6tj", kind: "property_transfers",
+    label: "NYC ACRIS — Real Property Master (deeds and other recorded documents)", dateColumn: "recorded_datetime", verifiedOn: "2026-11-01",
+    notes: "doc_type 'DEED' selects transfers; recorded_datetime is a Calendar date; NO address — join ACRIS Real Property Legals (8h5j-fqxa) on document_id.",
+    licence: { class: "portal_terms", text: "Socrata catalog license field empty — the NYC Open Data portal terms govern reuse (the nyc.gov terms page answered 403 to the probe; the platform keeps only a derived fact)", readOn: "2026-11-01" },
+    lastDataAt: "2026-09-30T00:00:00.000Z", maxLagDays: 45 },
+  { market: "NY:New York", host: "data.cityofnewyork.us", datasetId: "8h5j-fqxa", kind: "property_transfers",
+    label: "NYC ACRIS — Real Property Legals (the address half of a recorded document)", verifiedOn: "2026-11-01",
+    notes: "street_number + street_name + borough + block + lot, keyed by document_id; good_through_date is the extract date. Read only to place a master record at an address.",
+    licence: { class: "portal_terms", text: "Socrata catalog license field empty — the NYC Open Data portal terms govern reuse", readOn: "2026-11-01" },
+    lastDataAt: "2026-09-30T00:00:00.000Z", maxLagDays: 45 },
+  { market: "MA:Cambridge", host: "data.cambridgema.gov", datasetId: "8xmj-thsm", kind: "street_use_permits",
+    label: "Cambridge MA dumpster parking permits (street-use)", dateColumn: "issue_date", verifiedOn: "2026-11-01",
+    notes: "Single `address` column; `street_or_private` says whether the container sits on the street; contractor_or_client says who applied. A dumpster is a renovation OR a move-out — the signal is never read as either alone.",
+    licence: { class: "public_domain", text: "Socrata catalog license: \"Open Data Commons Public Domain Dedication and License\"", readOn: "2026-11-01" },
+    lastDataAt: "2026-10-29T00:00:00.000Z", maxLagDays: 14 },
+  { market: "CA:San Jose", host: "data.sccgov.org", datasetId: "rh64-rgza", kind: "probate",
+    label: "Santa Clara County probate cases (archival index)", verifiedOn: "2026-11-01",
+    unavailable: "an ARCHIVAL index of historical Superior Court probate files (probate_date \"22 May 1895\", box / folder / accession), not a current filing feed — nothing in it is a movement signal" },
+  { market: "WA:Seattle", host: "cos-data.seattle.gov", datasetId: "eyde-ia6x", kind: "street_use_permits",
+    label: "Seattle street-use permit application public notices", verifiedOn: "2026-11-01",
+    unavailable: "application_type grouped on 2026-11-01 -> only \"Stadium Event Days\" (1 row): event notices, not residential street-use (dumpster / moving container) permits",
+    licence: { class: "public_domain", text: "Socrata catalog license: \"Public Domain\"", readOn: "2026-11-01" } },
+])
 
 /** Lookup helper — case-insensitive on city, returns null when the market isn't registered yet
  *  so the caller can fall through to a "configure your local open-data portal" path. */

@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 747 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 748 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-01
  * source: public.live_schema_json()
- * body-sha256: dca5b2c816f4eccc8b06dea12e114abf5d9ca045a14f22a10c7743373d72e823
+ * body-sha256: d4d41d45a6ce99898883430747df3488a7edec81d1cf398530e8a59125763a7a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -430,6 +430,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   market_active_listings: ["address_key", "batchdata_quicklists", "baths", "beds", "brokerage_id", "city", "created_at", "current_status", "id", "last_seen_at", "last_status_change_at", "list_price", "market_id", "property_address", "property_type", "sqft", "state", "updated_at", "zip"],
   market_data: ["active_listings", "avg_days_on_market", "brokerage_id", "city", "created_at", "data_date", "dom_trend", "id", "list_to_sale_ratio", "market_area", "market_type", "median_list_price", "median_sale_price", "months_of_inventory", "new_listings_30d", "price_trend_pct_1yr", "price_trend_pct_30d", "price_trend_pct_90d", "sold_listings_30d", "source_type", "state", "updated_at", "zip_code"],
   market_data_sources: ["brokerage_id", "city", "created_at", "id", "is_active", "last_synced_at", "market_area", "source_type", "state", "sync_error", "zip_codes"],
+  market_dataset_verifications: ["confidence", "coverage", "created_at", "data_rights", "dataset_id", "dataset_key", "drift", "evidence", "freshness", "geography", "host", "id", "idempotency_key", "kind", "label", "last_verified_at", "licence", "method", "observed_at", "provider", "source", "status", "verified_by"],
   market_insights: ["agent_id", "ai_model_used", "ai_narrative", "brokerage_id", "buyer_indicators", "competition_alert", "dom_trend", "generated_at", "headline", "id", "insight_date", "inventory_level", "key_stats", "market_area", "market_type", "price_trend", "seasonal_pattern", "seller_indicators", "summary", "zip_code"],
   market_pulse: ["brokerage_id", "created_at", "generated_at", "id", "insights", "pulse_week", "scope", "source_count"],
   market_rate_snapshots: ["fetched_at", "id", "rate_15yr_fixed_bps", "rate_30yr_fixed_bps", "rate_5_1_arm_bps", "rate_date", "rate_jumbo_30yr_bps", "source"],
@@ -453,7 +454,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   missions: ["actions", "authority_ceiling", "blockers", "brokerage_id", "budget", "completed_at", "created_at", "created_by", "deadline", "dependencies", "evidence", "id", "mission_type", "objective", "outcomes", "owner_manager", "parent_mission", "participating_managers", "priority", "progress", "spent_tokens", "spent_usd", "state", "state_changed_at", "subject_id", "subject_type", "success_criteria", "updated_at"],
   model_retraining_log: ["agent_style_updates", "approval_rate_before", "brokerage_id", "completed_at", "created_at", "error_message", "feedback_records_used", "id", "prompt_changes", "source_system", "status", "trigger_type"],
   motivated_seller_signals: ["brokerage_id", "contact_id", "detected_at", "detected_via", "id", "lead_id", "signal_details", "signal_strength", "signal_type"],
-  movement_signals: ["brokerage_id", "captured_by", "confidence", "contact_id", "created_at", "data_rights", "decided_at", "decided_by", "decision", "event_relevance", "evidence", "id", "idempotency_key", "identity_match", "intents", "lead_id", "next_action", "observed_at", "outcome", "outcome_at", "outcome_evidence", "outreach", "property_address", "property_address_key", "protected_proxy", "raw_lead_id", "recorded_at", "sensitivity", "side", "source_key", "source_kind", "subject_type", "targeting_prohibited", "territory_key", "updated_at"],
+  movement_signals: ["brokerage_id", "captured_by", "confidence", "contact_id", "created_at", "data_rights", "decided_at", "decided_by", "decision", "event_at", "event_relevance", "evidence", "id", "idempotency_key", "identity_match", "intents", "lead_id", "life_event", "next_action", "observed_at", "outcome", "outcome_at", "outcome_evidence", "outreach", "property_address", "property_address_key", "protected_proxy", "raw_lead_id", "recorded_at", "sensitivity", "sequence", "side", "source_key", "source_kind", "subject_type", "supersedes", "targeting_prohibited", "territory_key", "updated_at"],
   movement_source_items: ["brokerage_id", "created_at", "digest", "first_seen_at", "id", "item_key", "last_changed_at", "last_seen_at", "last_signal_id", "source_key"],
   movement_source_polls: ["brokerage_id", "cadence_minutes", "created_at", "id", "last_change_count", "last_error", "last_item_count", "last_polled_at", "last_success_at", "promised_freshness_minutes", "source_key", "updated_at"],
   narration_cache: ["alignment", "audio_url", "brokerage_id", "created_at", "duration_seconds", "first_render_key", "hit_count", "id", "last_used_at", "script_chars", "script_hash", "script_preview", "voice_id"],

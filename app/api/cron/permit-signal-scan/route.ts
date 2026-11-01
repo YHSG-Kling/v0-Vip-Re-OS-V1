@@ -212,6 +212,22 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── C19 (wave 148, lane 148F — owner ruling 6): THE FEED OBSERVATION ─────
+    // The per-dataset verdicts above are the registry's own evidence that a verified feed is still MOVING (a served window with
+    // rows) or has DRIFTED (a refusal after a verified state). One observation per dataset per run (deduped across brokerages —
+    // the map keeps the first verdict) lands in market_dataset_verifications (m918, lib/intent/dataset-verification.ts); a drifted
+    // dataset then lends `unknown` to every movement record citing it until a later served read. Never fails the sweep.
+    let datasetVerification: { recorded: number; replayed: number; drifted: string[] } | { error: string } = { recorded: 0, replayed: 0, drifted: [] }
+    try {
+      const { recordDatasetObservations } = await import("@/lib/intent/dataset-verification")
+      const obs = await recordDatasetObservations(supabase, { probes: [...datasetHealth.values()], windowSinceIso: sinceIso })
+      datasetVerification = { recorded: obs.recorded, replayed: obs.replayed, drifted: obs.drifted }
+      for (const e of obs.errors.slice(0, 5)) errors.push(`dataset verification: ${e}`)
+    } catch (e) {
+      datasetVerification = { error: e instanceof Error ? e.message : String(e) }
+      errors.push(`dataset verification: ${datasetVerification.error}`)
+    }
+
     // ── THE SECOND SOURCE: BATCHDATA, OVER THE TENANT'S OWN LEADS ────────────
     //
     // Runs for EVERY active-subscription brokerage, territory or no territory — see the header.
@@ -371,7 +387,7 @@ export async function GET(request: Request) {
         market_coverage: marketCoverage, market_gaps: marketGaps,
         supported_markets: supportedMarkets,
         queryable_datasets: queryableDatasets,
-        dataset_health: health,
+        dataset_health: health, dataset_verification: datasetVerification,
         datasets_silent: silent.length > 0 ? silent : undefined,
         unavailable_datasets: unavailable, errors: errors.slice(0, 20),
       },
@@ -394,6 +410,8 @@ export async function GET(request: Request) {
       // PER-DATASET, ALWAYS PRESENT. `permits_fetched` is the sum; this is the breakdown, and it
       // is the only thing in this response that can distinguish a quiet portal from a dead one.
       dataset_health: health,
+      // C19: what the run told the market registry (observations recorded / already recorded today / datasets that DRIFTED).
+      dataset_verification: datasetVerification,
       datasets_silent: silent.length > 0 ? silent : undefined,
       unavailable_datasets: unavailable,
       errors: errors.slice(0, 20),

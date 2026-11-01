@@ -28,6 +28,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { LIFETIME_CONTACT_TYPES, isLifetimeRelationshipType } from "@/lib/contact-types"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
+import { lifeEventTypeOf } from "@/lib/enrichment/life-event-vocabulary"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -116,7 +117,9 @@ export function isWithdrawn(c: Pick<RadarContact, "nurture_status">): boolean {
 /** Normalize the life_events jsonb (array of {type,...} or a loose object) into a type list. */
 function lifeEventTypes(raw: unknown): string[] {
   if (Array.isArray(raw)) {
-    return raw.map((e) => (typeof e === "string" ? e : (e && typeof e === "object" ? String((e as any).type ?? "") : "")))
+    // C20 (wave 148, lane 148F): both stored shapes (`{ type }` / OSINT's `{ event }`) through THE vocabulary's reader; a token the
+    // vocabulary does not know keeps its raw text for the radar's own angle regex.
+    return raw.map((e) => (typeof e === "string" ? e : (e && typeof e === "object" ? (lifeEventTypeOf(e as never) ?? String((e as any).type ?? (e as any).event ?? "")) : "")))
       .filter(Boolean).map((s) => s.toLowerCase())
   }
   return []

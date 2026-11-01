@@ -22,5 +22,5 @@ export default async function MovementSignalsPage() {
       </div>
     )
   }
-  return <MovementSignalsClient records={result.records} sources={result.sources} freshnessNote={result.freshnessNote} />
+  return <MovementSignalsClient records={result.records} sources={result.sources} freshnessNote={result.freshnessNote} verifications={result.verifications} verificationNote={result.verificationNote} verificationPolicy={result.verificationPolicy} />
 }

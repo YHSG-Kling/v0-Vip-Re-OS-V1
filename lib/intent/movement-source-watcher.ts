@@ -33,6 +33,7 @@ import {
   movementSignalFromLifeEvent, movementSignalFromPublicPost, movementSignalFromSellerSignalRow, movementSource, recordMovementSignal, reconcileMovementOutcomes, CALCULATOR_MOVEMENT_SOURCE,
   type MovementBuild, type MovementClassify, type MovementDeps, type MovementRecordResult, type MovementSignalRecord, type MovementSubject,
 } from "@/lib/intent/movement-signals"
+import { canonicalLifeEventType, normalizeLifeEvent } from "@/lib/enrichment/life-event-vocabulary"
 
 type Svc = { from: (t: string) => any }
 const MIN_MS = 60_000
@@ -374,9 +375,16 @@ const LEDGER_ROUTED_FACTS_SOURCE: MovementPollSource = {
         const life = lifeEvents.get(party.id)
         for (const lifeRaw of life?.events ?? []) {
           const e = (lifeRaw && typeof lifeRaw === "object" ? lifeRaw : { event: String(lifeRaw) }) as Record<string, any>
-          const token = String(e.event ?? e.type ?? "")
+          // C20 (wave 148, lane 148F): the item is the EVENT, not its spelling — keyed on the canonical type (LIFE_EVENT_VOCAB) and the
+          // event's own day, so a stored `divorce` and a later `divorce_filing` (or two pages about one filing) are ONE item and raise
+          // once, while a genuinely new occurrence (another day) is a new item. An element the vocabulary does not know keeps its raw
+          // token (the builder refuses it, the refusal is remembered as seen).
+          const canon = canonicalLifeEventType(e.type ?? e.event)
+          const token = canon ?? String(e.event ?? e.type ?? "")
+          const norm = normalizeLifeEvent(e, { observedAt: String(life?.detectedAt ?? ev.created_at) })
+          const eventDay = norm.ok && norm.record.event_at ? norm.record.event_at.slice(0, 10) : null
           items.push({
-            itemKey: `life:${party.id}:${token}:${movementDigest(String(e.url ?? e.details ?? e.source ?? ""))}`, material: { token, url: e.url ?? null }, observedAt: e.publishedDate ?? e.date ?? life?.detectedAt ?? ev.created_at ?? null,
+            itemKey: `life:${party.id}:${token}:${eventDay ?? movementDigest(String(e.url ?? e.source_url ?? e.details ?? e.source ?? ""))}`, material: { token, event_day: eventDay }, observedAt: e.publishedDate ?? e.date ?? e.event_at ?? life?.detectedAt ?? ev.created_at ?? null,
             toSignal: () => movementSignalFromLifeEvent({ brokerageId, contactId: party.id, event: e, detectedAt: String(life?.detectedAt ?? ev.created_at) }),
           })
         }

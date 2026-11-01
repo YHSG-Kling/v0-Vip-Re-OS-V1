@@ -32,6 +32,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { fieldProvenanceForDisplay, type FieldProvenanceLine } from "@/lib/lead-pipeline/enrichment-column-map"
+import { canonicalLifeEventType, lifeEventChronology, lifeEventTypeOf } from "@/lib/enrichment/life-event-vocabulary"
 import {
   enrichContactRecord,
   runLifeChangeCheck,
@@ -373,10 +374,14 @@ export async function getRecentLifeChanges(agentId?: string, daysBack = 7): Prom
 
   return contacts
     .map((contact) => {
-      const lifeEvents = (contact.life_events as any[]) || []
+      // C20 (wave 148, lane 148F): the person's life events through THE chronological vocabulary — canonical spellings (the
+      // OSINT `{ event }` elements, which this view used to render as a nameless "life_event", now carry their `type`), in event
+      // order, health / pregnancy tokens never surfaced.
+      const lifeEvents: any[] = lifeEventChronology(contact.life_events, { observedFallback: contact.last_life_event_detected as string | null })
       return lifeEvents
         .filter((event: any) => {
-          const detectedAt = new Date(event.detected_at || contact.last_life_event_detected || 0)
+          // C20 (wave 148): `observed_at` is the vocabulary's own "when we saw it" (detected_at is the older writers' key).
+          const detectedAt = new Date(event.observed_at || event.detected_at || contact.last_life_event_detected || 0)
           return detectedAt >= new Date(cutoffDate)
         })
         .map((event: any) => ({
@@ -443,8 +448,10 @@ export async function markLifeChangeNotified(
   const rawEvents: unknown = contact.life_events
   const events: any[] = Array.isArray(rawEvents) ? rawEvents : []
   let matched = false
+  // C20 (wave 148, lane 148F): one event, any spelling or stored shape — `{ event: "divorce" }` and `divorce_filing` are the same.
+  const wanted = canonicalLifeEventType(eventType) ?? eventType
   const updated = events.map((e) => {
-    if (e?.type !== eventType || e?.notified_at) return e
+    if ((lifeEventTypeOf(e) ?? e?.type) !== wanted || e?.notified_at) return e
     matched = true
     return { ...e, notified_at: new Date().toISOString() }
   })

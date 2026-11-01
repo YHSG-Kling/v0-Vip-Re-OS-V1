@@ -16,6 +16,7 @@
 
 import type { EnrichmentProfileLike } from "@/lib/lead-pipeline/enrichment-column-map"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { canonicalLifeEventType, currentLifeEvents, lifeEventToneBrief, screenLifeEventOutreach } from "@/lib/enrichment/life-event-vocabulary"
 import { resolveModel } from "@/lib/ai/resolve-model"
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -60,6 +61,9 @@ export interface OutreachCopy {
   body: string
   /** How copy was produced */
   source: "gateway" | "deterministic_fallback"
+  /** Wave 148 (148F, ruling 17): a model draft the life-event screen REFUSED (it named or alluded to a life event) — the
+   *  deterministic copy went instead. Absent when nothing was refused. */
+  lifeEventScreen?: { refused: true; hits: string[] }
 }
 
 export interface PersonalizeOutreachParams {
@@ -129,19 +133,35 @@ export function buildPersonalizationFacts(input: PersonalizationInput): Personal
   const ms = input.marital_status ?? ep?.marital_status
   if (ms) push("marital_status", "Marital status", ms)
 
-  // ── Life events — the richest personalization signal ─────────────────────
+  // ── Life events — NEVER copy (wave 148, lane 148F — owner ruling 17) ─────
+  // This block used to call a life event "the richest personalization signal" and put it in the draft ("I'm reaching out with
+  // your recent divorce" was a reachable deterministic sentence). The owner: "the arbiter should decide the best way to warm
+  // engagement without mentioning the life event — it is about them and their emotions at this time." So a life event now shapes
+  // only the TONE (LIFE_EVENT_VOCAB's empathetic brief, which names no event) and rides an INTERNAL fact (`_life_events`, the
+  // canonical spellings) that the prompt never shows and the screen reads: personalizeOutreach refuses a draft that names or
+  // alludes to it (screenLifeEventOutreach) and sends the deterministic copy instead.
   const lifeEvents =
     input.life_events
     ?? (Array.isArray(ep?.life_events) ? ep!.life_events : null)
 
   if (lifeEvents && lifeEvents.length > 0) {
-    // Surface the most recent / most relevant life event
-    const primary = lifeEvents[0]
-    const desc = primary.description ?? humanizeLifeEvent(primary.type)
-    if (desc) push("life_event", "Recent life event", desc)
+    const tone = lifeEventToneBrief(lifeEvents)
+    if (tone) push("tone", "Tone", `${tone} Never mention, allude to, congratulate or condole on any personal or life event.`)
+    const carried = [...new Set(currentLifeEvents(lifeEvents).map((e) => e.type))]
+    if (carried.length > 0) push(INTERNAL_LIFE_EVENTS_KEY, "(internal — never shown)", carried.join(","))
   }
 
   return facts
+}
+
+/** Wave 148 (148F): the internal fact carrying a person's canonical life events for the draft SCREEN — never in a prompt, never in copy. */
+export const INTERNAL_LIFE_EVENTS_KEY = "_life_events"
+const isInternalFact = (f: PersonalizationFact) => f.key.startsWith("_")
+
+/** PURE. The canonical life events an internal fact carries (for the screen). */
+function lifeEventsOfFacts(facts: PersonalizationFact[]): string[] {
+  const raw = facts.find((f) => f.key === INTERNAL_LIFE_EVENTS_KEY)?.value ?? ""
+  return raw.split(",").map((t) => canonicalLifeEventType(t)).filter((t): t is NonNullable<typeof t> => !!t)
 }
 
 // ── buildOutreachPrompt ────────────────────────────────────────────────────
@@ -165,14 +185,17 @@ export function buildOutreachPrompt(
 
   const channelRules = CHANNEL_RULES[channel]
 
-  const factBlock = facts.length > 0
-    ? facts.map((f) => `- ${f.label}: ${f.value}`).join("\n")
+  const shown = facts.filter((f) => !isInternalFact(f))
+  const factBlock = shown.length > 0
+    ? shown.map((f) => `- ${f.label}: ${f.value}`).join("\n")
     : "(no enrichment data available)"
 
   const systemPrompt = [
     `You are an AI ISA (Inside Sales Agent) writing a ${channel} for a real estate brokerage.`,
     brandVoice ? `\n${brandVoice}` : "",
     "\n\nFair Housing: Never reference race, color, religion, sex, national origin, disability, or familial status.",
+    // Wave 148 (148F, owner ruling 17): a universal rule, not only when an event is known — whatever you suspect, it is theirs.
+    "\nLife events: Never mention, allude to, congratulate or condole on any personal or life event (a loss, an estate, a separation, money trouble, a wedding, a baby, a new job, a move) and never imply you know about one. Be useful and kind; it is about them.",
     "\nHonesty: Only reference facts from the ENRICHMENT FACTS block below — never invent or assume.",
     `\n\nChannel rules for ${channel}:\n${channelRules}`,
   ].filter(Boolean).join("")
@@ -224,6 +247,16 @@ export async function personalizeOutreach(
   // Try gateway
   const result = await gw({ model, messages, maxTokens: 512, temperature: 0.75 })
 
+  // Wave 148 (148F, ruling 17): THE LIFE-EVENT SCREEN — the deterministic backstop behind the prompt's rule. A model draft that names
+  // or alludes to a life event (always: a loss / an estate / a separation / financial hardship; and any event this person's record
+  // carries) is REFUSED and the deterministic copy — which never carries a life event — goes instead, with the refusal said.
+  const carried = lifeEventsOfFacts(facts)
+  const screened = (copy: OutreachCopy): OutreachCopy => {
+    const verdict = screenLifeEventOutreach(`${copy.subject ?? ""}\n${copy.body}`, { events: carried })
+    if (verdict.ok) return copy
+    return { ...buildDeterministicCopy(facts, channel, firstName), lifeEventScreen: { refused: true, hits: verdict.hits.map((h) => h.term) } }
+  }
+
   if (result.ok && result.content) {
     try {
       if (channel === "email") {
@@ -232,21 +265,21 @@ export async function personalizeOutreach(
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]) as { subject?: string; body?: string }
           if (parsed.body) {
-            return {
+            return screened({
               subject: parsed.subject ?? buildDeterministicSubject(facts, firstName),
               body:    enforceOptOut(channel, parsed.body),
               source:  "gateway",
-            }
+            })
           }
         }
       }
       // SMS / voicemail / call_opener / direct_mail — plain text
       const body = result.content.trim()
       if (body) {
-        return {
+        return screened({
           body:   enforceOptOut(channel, body),
           source: "gateway",
-        }
+        })
       }
     } catch {
       // fall through to deterministic
@@ -275,15 +308,16 @@ export function buildDeterministicCopy(
   const motivation  = get("motivation")
   const city        = get("city")
   const occupation  = get("occupation")
-  const lifeEvent   = get("life_event")
+  // Wave 148 (148F, ruling 17): no life-event hook — the copy is about them, never the event ("with your recent …" is gone).
+  const gentle      = !!get("tone")
   const budget      = get("budget")
   const timeline    = get("timeline")
   const homeStatus  = get("home_owner_status")
   const income      = get("household_income")
 
   // Build a contextual hook from the richest available fact
-  const hook = lifeEvent
-    ? `with your recent ${lifeEvent}`
+  const hook = gentle
+    ? "simply to say we're here whenever it's useful — no rush at all"
     : motivation
     ? `given your goal to ${motivation.toLowerCase()}`
     : occupation
@@ -375,9 +409,7 @@ function buildDeterministicSubject(facts: PersonalizationFact[], firstName?: str
   const name       = firstName ?? get("first_name")
   const motivation = get("motivation")
   const city       = get("city")
-  const lifeEvent  = get("life_event")
 
-  if (lifeEvent && name) return `${name}, a personal note from your real estate team`
   if (motivation && city) return `Your ${motivation.toLowerCase()} goals in ${city}`
   if (motivation)          return `About your ${motivation.toLowerCase()} plans`
   if (city && name)        return `${name} — the ${city} market update you've been waiting for`
@@ -413,21 +445,10 @@ function humanizeOwnerStatus(s: string): string {
   return map[s.toLowerCase()] ?? s
 }
 
-function humanizeLifeEvent(type: string): string {
-  const map: Record<string, string> = {
-    new_job:          "new job",
-    job_change:       "job change",
-    marriage:         "recent marriage",
-    divorce:          "life transition",
-    new_baby:         "growing family",
-    retirement:       "upcoming retirement",
-    relocation:       "planned relocation",
-    inheritance:      "recent inheritance",
-    graduation:       "recent graduation",
-    empty_nest:       "children leaving home",
-  }
-  return map[type] ?? type.replace(/_/g, " ")
-}
+// TOMBSTONE (wave 148, lane 148F — owner ruling 17): humanizeLifeEvent turned a life event into copy words ("recent inheritance",
+// "growing family") for the draft. Its function moved: a life event shapes only the TONE now — lib/enrichment/life-event-vocabulary.ts
+// lifeEventToneBrief (called in buildPersonalizationFacts above) — and the screen there refuses any draft naming one. Its own map
+// also restated the event spellings a sixth way (§6); LIFE_EVENT_VOCAB's aliases absorb them.
 
 function formatBudget(min: number | null | undefined, max: number | null | undefined): string | null {
   if (min != null && max != null) return `$${min.toLocaleString()}–$${max.toLocaleString()}`

@@ -1277,15 +1277,19 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     check("the signal vocabulary covers the owner's examples (moving, refinance, home sale, buying, lawful life events, equity)",
       ["moving", "refinance", "home_sale", "buying", "life_event", "equity"].every((k) => Object.values(arb.LIFE_CHANGE_SIGNAL_KINDS).includes(k as never)) && arb.LIFE_CHANGE_SIGNAL_KINDS.refinance_opportunity === "refinance" && arb.LIFE_CHANGE_SIGNAL_KINDS.equity_milestone === "equity")
 
-    // WAVE 147 (lane 147Z, convergence — lane 147B's advisory): a LIFE EVENT that is the DECISIVE signal narrows the closed menu
-    // to a person or a bounded wait; the model can still choose, but only between those.
+    // WAVE 147 (lane 147Z) narrowed a decisive LIFE EVENT to a person or a wait, with the PERSON as the fallback. WAVE 148 (lane
+    // 148F, owner ruling 17 — "a life event signal should never just send to a human and the arbiter should decide the best way to
+    // warm engagement without mentioning the life event") RE-ASSERTS THE RULE, not the waypoint: the menu is the empathetic branch
+    // (quiet monitoring · helpful education / appropriate outreach only on confirmed evidence under explicit autonomy · a person),
+    // and the policy's own fallback is QUIET MONITORING, never a person by reflex. scripts/life-event-engagement-guard.ts drives the
+    // authority + evidence matrix; these two checks keep the 147Z cases on the new rule.
     const divorce = await seller([sig("divorce_filing", 1)])
     const dMenu = divorce.r.decision?.menu ?? []
-    check("147Z LIFE EVENT DECISIVE: the closed menu holds ONLY a person or a wait (no automated touch to pick), and with the model down the person stands",
-      dMenu.length > 0 && dMenu.includes("agent_intervention") && dMenu.every((m) => m === "agent_intervention" || m === "wait") && divorce.r.plan.chosen.kind === "agent_intervention", JSON.stringify(dMenu))
+    check("148F LIFE EVENT DECISIVE (no autonomy grant, unconfirmed evidence): the closed menu is quiet monitoring or a person — no automated touch — and with the model down QUIET MONITORING stands (never a person by reflex)",
+      dMenu.includes("wait") && dMenu.includes("agent_intervention") && dMenu.every((m) => m === "agent_intervention" || m === "wait") && divorce.r.plan.chosen.kind === "wait" && divorce.r.decision?.lifeEvent?.mode === "quiet_monitoring", `${JSON.stringify(dMenu)} · ${divorce.r.plan.chosen.kind} · ${divorce.r.decision?.lifeEvent?.mode}`)
     const tried = await run({ world: { signals: [sig("divorce_filing", 1)] }, input: sellerInput(), decide: reply({ optionId: "market_update", channel: "email" }) })
-    check("147Z …a model reply naming an automated touch is OFF the narrowed menu and refused — the person stands",
-      tried.r.decision?.source === "deterministic" && /not on the menu/.test(tried.r.decision?.fallbackReason ?? "") && tried.r.plan.chosen.kind === "agent_intervention", `${tried.r.decision?.fallbackReason} · ${tried.r.plan.chosen.kind}`)
+    check("148F …a model reply naming an automated touch is OFF that menu and refused — quiet monitoring stands, and the ledger row carries the life-event guard (mode + never-mention terms)",
+      tried.r.decision?.source === "deterministic" && /not on the menu/.test(tried.r.decision?.fallbackReason ?? "") && tried.r.plan.chosen.kind === "wait" && tried.arbitration.life_event?.mode === "quiet_monitoring" && (tried.arbitration.life_event?.never_mention ?? []).length > 0, `${tried.r.decision?.fallbackReason} · ${tried.r.plan.chosen.kind} · ${JSON.stringify(tried.arbitration.life_event)}`)
     const fresher = await seller([sig("divorce_filing", 6), sig("home_sale_interest", 1)])
     check("147Z (control) a FRESHER home-sale signal is decisive: the menu is NOT narrowed — a market update stays on it",
       (fresher.r.decision?.menu ?? []).includes("market_update"), JSON.stringify(fresher.r.decision?.menu))
@@ -1377,7 +1381,8 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     const stBlind = ((stored.arbitration.channel_blind_spots ?? []) as string[]).join(" | ")
     check("144E STORED SIGNALS: fresh online real-estate activity (behaviour → its first intent, moving), a job change dated 5 days ago and a public life event detected 3 days ago (both → life_event) reach the planner as evidence on the ledger row",
       st.includes("versium.online_real_estate_activity:moving") && st.includes("peopledata.job_change:life_event") && st.includes("osint.public_life_event:life_event") && stored.r.plan.contributed.includes("signal"), st.join(","))
-    check("…a LIFE EVENT is a service topic: it reaches only a PERSON (agent_intervention, 'a person's conversation'), and no signal's reason or ledger entry repeats the event itself ('divorce')",
+    check("…a LIFE EVENT is about the person (148F, ruling 17): it reaches the planner as a person's conversation (agent_intervention) BESIDE quiet monitoring and helpful education — never only a person — and no signal's reason or ledger entry repeats the event itself ('divorce')",
+      !!stored.r.plan.ranked.find((r) => r.kind === "wait")?.reasons.some((x) => /quiet monitoring/.test(x)) && !!stored.r.plan.ranked.find((r) => r.kind === "education")?.reasons.some((x) => /event-agnostic/.test(x)) &&
       !!stored.r.plan.ranked.find((r) => r.kind === "agent_intervention")?.reasons.some((x) => /peopledata\.job_change/.test(x) && /person's conversation/.test(x)) && !/divorce/i.test(JSON.stringify(stored.arbitration.signals ?? [])) && !/divorce/i.test(stored.r.plan.ranked.flatMap((r) => r.reasons).join(" ")))
     check("…AGE is never a follow-up input: the birthday month / birth date appear in NO signal and NO blind spot (not even as a count) — cards and the education format only",
       !st.some((t) => /birth/.test(t)) && !/birth/.test(stBlind), `${st.join(",")} · ${stBlind}`)

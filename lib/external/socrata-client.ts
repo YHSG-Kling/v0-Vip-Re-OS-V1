@@ -9,7 +9,7 @@
  *   - data.austintexas.gov (Austin)
  *   - data.cityofchicago.org (Chicago)
  *   - data.lacity.org (Los Angeles)
- *   - data.sfgov.org (San Francisco)
+ *   - data.sf.gov (San Francisco — was data.sfgov.org until the host moved; see socrata-market-registry.ts, 2026-11-01)
  *   - data.dallasopendata.com (Dallas)
  *   - data.cityofnewyork.us (NYC) — etc.
  *

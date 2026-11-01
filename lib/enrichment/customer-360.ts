@@ -43,6 +43,7 @@ import { fieldProvenanceOf } from "@/lib/lead-pipeline/enrichment-column-map"
 import { intentSignalsFromContact, type IntentKind } from "@/lib/enrichment/intent-signal-sources"
 import { PROVIDER_FRESHNESS_DAYS, isFresh } from "@/lib/enrichment/provider-dedup"
 import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
+import { lifeEventVocabEntry } from "@/lib/enrichment/life-event-vocabulary"
 import { voiceReachable, resolveContactChannel } from "@/lib/ai-isa/contact-channel-policy"
 import { LEAD_ALLOWED_CHANNELS } from "@/lib/ai-isa/lead-channel-policy"
 import { isLifetimeRelationshipType } from "@/lib/contact-types"
@@ -614,8 +615,11 @@ export async function customer360For(
         const first = f.intents.find((i) => PLAYBOOK_BY_INTENT[i as IntentKind]) as IntentKind | undefined
         let playbook: IntentPlaybook | null = first ? PLAYBOOK_BY_INTENT[first] ?? null : null
         if (playbook === "life_event" && f.key === "public_life_event") {
-          const types = Array.isArray(row.life_events) ? (row.life_events as unknown[]).map((e) => (typeof e === "string" ? e : e && typeof e === "object" ? String((e as Record<string, unknown>).type ?? "") : "")) : []
-          if (types.some((t) => t && protectedClassReasonFor(t))) playbook = "household"
+          // C20 (wave 148, lane 148F): both stored shapes through the vocabulary; a protected-proxy event (LIFE_EVENT_VOCAB
+          // protectedProxy — marriage, a baby, a retirement, a divorce) is the household playbook even when the classifier's
+          // field-name list does not know its spelling.
+          const types = Array.isArray(row.life_events) ? (row.life_events as unknown[]).map((e) => (typeof e === "string" ? e : e && typeof e === "object" ? String((e as Record<string, unknown>).type ?? (e as Record<string, unknown>).event ?? "") : "")) : []
+          if (types.some((t) => t && (protectedClassReasonFor(t) || lifeEventVocabEntry(t)?.protectedProxy))) playbook = "household"
         }
         observations.push({ playbook, signal: f.key, basis: f.provider === "first_party" ? "first_party_action" : "provider_append", confirmed: false, source: `${f.provider} · ${f.field}`, observedAt: f.freshness.observedAt, freshness: f.freshness })
       }

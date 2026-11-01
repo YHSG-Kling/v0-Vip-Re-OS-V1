@@ -257,7 +257,10 @@ async function main() {
   check("rich input → occupation present",        richKeys.includes("occupation"))
   check("rich input → household_income present",  richKeys.includes("household_income"))
   check("rich input → home_owner_status present", richKeys.includes("home_owner_status"))
-  check("rich input → life_event present",        richKeys.includes("life_event"))
+  // WAVE 148 (lane 148F, owner ruling 17) — re-asserted to the RULE: a life event is never copy ("it is about them and their
+  // emotions at this time"); it shapes only the TONE fact, and the event itself rides no fact the prompt shows.
+  check("rich input → a life event shapes only the TONE (148F): a tone fact, never a 'life_event' copy fact",
+    richKeys.includes("tone") && !richKeys.includes("life_event") && !richFacts.some((f) => !f.key.startsWith("_") && /new job|started a new/i.test(f.value)))
   check("rich input → marital_status present",    richKeys.includes("marital_status"))
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -285,10 +288,13 @@ async function main() {
   check("prompt A ≠ prompt B (non-hardcoded)",      promptAText !== promptBText)
   check("prompt A includes Alice",                  promptAText.includes("Alice"))
   check("prompt A includes Austin",                 promptAText.includes("Austin"))
-  check("prompt A includes life_event (new_baby)",  promptAText.toLowerCase().includes("child") || promptAText.toLowerCase().includes("baby"))
+  // WAVE 148 (148F, ruling 17): the USER message (the facts) never names the life event — the system message carries the rule
+  // (and lists example events in the rule itself, which is why the whole-prompt text is not the thing tested).
+  const userOf = (p: typeof promptA) => String(p.find((m) => m.role === "user")?.content ?? "").toLowerCase()
+  check("prompt A never names the life event (new baby) — the tone carries it instead",  !/child|baby/.test(userOf(promptA)) && /tone/.test(userOf(promptA)))
   check("prompt B includes Bob",                    promptBText.includes("Bob"))
   check("prompt B includes Dallas",                 promptBText.includes("Dallas"))
-  check("prompt B includes life_event (retirement)",promptBText.toLowerCase().includes("retir"))
+  check("prompt B never names the life event (retirement) — the tone carries it instead", !/retir/.test(userOf(promptB)) && /tone/.test(userOf(promptB)))
 
   // Deterministic fallback: two different records yield different copy
   const fallbackA = buildDeterministicCopy(recordA, "email", "Alice")

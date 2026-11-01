@@ -12,6 +12,8 @@
 // genuinely conserved AND usable, on both the enrich path and lead->contact
 // promotion. No gateway/server imports — unit-testable under plain tsx.
 
+import { mergeLifeEvents } from "@/lib/enrichment/life-event-vocabulary"
+
 /** The shape of the enrichment_profile JSONB blob (see enrichment-orchestrator). */
 export interface EnrichmentProfileLike {
   provider?: string | null
@@ -109,7 +111,10 @@ export function peopleDataProfileToContactColumns(
   if (Object.keys(social).length > 0) out.social_handles = social
 
   if (Array.isArray(profile.life_events) && profile.life_events.length > 0) {
-    out.life_events = profile.life_events
+    // C20 (wave 148, lane 148F): mapped onto THE chronological vocabulary (canonical spelling, `{ type }`, event_at / observed_at /
+    // sequence / supersedes); a token outside it is dropped, never stored under a spelling no scorer reads.
+    const canon = mergeLifeEvents([], profile.life_events, { now: new Date() }).events
+    if (canon.length > 0) out.life_events = canon
   }
 
   // contacts.enrichment_source = THE PROVIDER (wave 86, §6) — only a name in ENRICHMENT_PROVIDERS; a
@@ -290,7 +295,9 @@ export function peopleDataProfileToLeadColumns(
     out.home_owner_status = profile.home_owner_status
   }
   if (Array.isArray(profile.life_events) && profile.life_events.length > 0) {
-    out.life_events = profile.life_events
+    // C20 (wave 148, lane 148F): the same mapping onto the chronological vocabulary as the contact columns above.
+    const canon = mergeLifeEvents([], profile.life_events, { now: new Date() }).events
+    if (canon.length > 0) out.life_events = canon
   }
   return out
 }

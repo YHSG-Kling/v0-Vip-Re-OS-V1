@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 476 tables, 915 columns.
+ * MEASURED AT GENERATION: 477 tables, 921 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-01
  * source: public.live_check_constraints_json()
- * body-sha256: 114ecc7105ae895376606b8ccda43e3dbe3034ca1ae12d0d663b9d3023557814
+ * body-sha256: 65efc68b095f0800f87b729166f6bdc4a2edc98204294ce7c450814514729352
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1048,6 +1048,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   market_data_sources: {
     source_type: ["batchdata", "cma_aggregate", "housecanary", "idx_broker", "manual_import", "mls_feed", "osint_scrape"],
   },
+  market_dataset_verifications: {
+    confidence: ["unknown", "verified"],
+    kind: ["change_of_address", "code_violations", "permits", "probate", "property_transfers", "street_use_permits"],
+    method: ["catalog_probe", "live_row_read", "manual", "registry_seed", "sweep_observation"],
+    provider: ["arcgis", "file", "licensed_api", "socrata"],
+    status: ["drifted", "stale", "unavailable", "unverified", "verified"],
+  },
   market_insights: {
     dom_trend: ["decreasing", "increasing", "stable"],
     inventory_level: ["balanced", "oversupplied", "tight"],
@@ -1119,6 +1126,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     confidence: ["inferred", "reported", "unknown", "verified"],
     event_relevance: ["community_change", "divorce", "life_stage", "market_event", "probate_estate", "property_event", "relocation", "seeking_agent"],
     identity_match: ["name_only", "none", "record_key", "verified_match"],
+    life_event: ["bankruptcy", "death_in_household", "divorce_filing", "empty_nester", "foreclosure_filing", "inheritance", "job_change", "job_change_to_non_local", "kids_graduated", "marriage", "new_baby", "relocation", "retirement"],
     next_action: ["human", "offer_help", "research", "wait"],
     outcome: ["appointment", "declined", "engaged", "false_positive", "listed", "moved", "no_change", "opted_out", "purchased"],
     outreach: ["address_correction_only", "consent_gated", "email_mail_only", "none"],

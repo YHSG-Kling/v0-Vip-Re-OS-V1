@@ -67,6 +67,7 @@ import { bookSourceSpend } from "@/lib/lead-pipeline/source-cost-ledger"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { collectError } from "@/lib/errors/collect-error"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
+import { canonicalLifeEventType, mergeLifeEvents } from "@/lib/enrichment/life-event-vocabulary"
 
 // Previously every function in this file (except `trackBehavior`, which is
 // a legitimate public visitor-tracking pixel) was unauthenticated. Some
@@ -1170,7 +1171,9 @@ async function enrichWithPeopleData(
         demographic_data: enrichedData.demographics as Record<string, unknown> | null,
         employment_data: enrichedData.employment as Record<string, unknown> | null,
         financial_indicators: enrichedData.financial as Record<string, unknown> | null,
-        life_events: enrichedData.lifeEvents as Record<string, unknown>[] | null,
+        // C20 (wave 148, lane 148F): mapped onto THE chronological vocabulary at the write (canonical spelling, chronology fields);
+        // a provider token outside the map is dropped, never stored under a spelling no scorer reads.
+        life_events: Array.isArray(enrichedData.lifeEvents) ? (mergeLifeEvents([], enrichedData.lifeEvents, { now: new Date() }).events as Record<string, unknown>[]) : null,
         social_presence: enrichedData.social as unknown as Record<string, unknown> | null,
         contact_enrichment: enrichedData.additionalContacts as Record<string, unknown>[] | null,
         data_source: "peopledata",
@@ -1667,8 +1670,10 @@ async function detectMotivatedSellerSignals(entityId: string) {
     }
 
     if (peopleData?.life_events) {
-      const motivatingEvents = ["divorce", "retirement", "job_change", "marriage", "new_baby"]
-      const recentEvents = peopleData.life_events.filter((event: any) => motivatingEvents.includes(event.type))
+      // C20 (wave 148, lane 148F — CLAUDE.md §6): canonical spellings read through THE vocabulary. This list keyed on the retired
+      // `divorce`, so a provider's `divorce_filing` (the spelling every writer now writes) never matched.
+      const motivatingEvents = ["divorce_filing", "retirement", "job_change", "marriage", "new_baby"]
+      const recentEvents = peopleData.life_events.filter((event: any) => motivatingEvents.includes(canonicalLifeEventType(event?.type ?? event?.event) ?? ""))
 
       for (const event of recentEvents) {
         signals.push({

@@ -21,6 +21,12 @@
  *      state, fails closed on an unread state, and publishes the freshness it can promise (or none).
  *   G. OUTCOMES — the loop closes (listed / opted_out / no_change), once; an UPDATE that matches nothing is a refusal.
  *   H. THE ARBITER HOOK — one LifeChangeSignal in the arbiter's own spelling, tenant-pinned, never throws.
+ *   L. WAVE 148, LANE 148F — C19 DATASET VERIFICATION + C20 CHRONOLOGY: an issuer row from an unverified / stale / drifted /
+ *      unavailable dataset (or naming none) never records above `unknown`, an intimate one is refused outright; a refused probe
+ *      appends a `drifted` observation exactly once per day; an unreadable observation log keeps the dated code contract and the
+ *      ledger row names the unread overlay; the C20 sequence / supersedes columns are derived from the prior rows
+ *      and an unread chronology fails closed; ruling 17 — a corroborated sensitive moment is OFFERED help, never handed to a person by
+ *      reflex. Each refusal beside its positive control (a verified dataset still records `verified`).
  *
  * Scans read STRIPPED source (scripts/strip-comments.ts) — a tombstone is not a call site. BLIND SPOTS, published: the in-memory
  * client's grammar is the subset the kernel uses; the cron wiring and the arbiter wiring are Outside-lane (reported, not executed);
@@ -350,7 +356,11 @@ async function main() {
     const d5 = db()
     const hr = await quiet(() => mv.recordMovementSignal(d5 as never, { brokerageId: B, subject: { type: "contact", id: "c2" }, sourceKey: "pr_batchdata_quicklist", eventRelevance: "probate_estate", identity: "verified_match", capturedBy: "automation", observedAt: daysAgo(3), evidence: { confidence: "reported", reportedBy: "provider", reference: { kind: "vendor_compiled_record", id: "mss:p1", retrievedAt: daysAgo(3) }, summary: "the property is listed as inherited (probate)" } }, humanSeam.deps))
     const task = humanSeam.cap.agentTasks[0]
-    ok(hr.status === "recorded" && !hr.evaluation?.decision?.allowed.includes("offer_help") && hr.evaluation?.decision?.action === "human", "probate is NEVER an automated offer — the manager hands it to a person")
+    // WAVE 148 (148F, ruling 17): re-asserted — a single-kind estate record is not strong enough for an offer (band, not topic), and
+    // the model's HUMAN choice is honoured as JUDGMENT; section L proves a corroborated sensitive moment CAN be offered help.
+    const hrWhy = String((d5.tables.agent_action_ledger.find((l: any) => l.action === "intent.movement_signal.decide")?.detail?.why ?? {}).offer_help ?? "")
+    ok(hr.status === "recorded" && !hr.evaluation?.decision?.allowed.includes("offer_help") && /combination is only/.test(hrWhy) && !/never answered by an automated offer/.test(hrWhy) && hr.evaluation?.decision?.action === "human",
+      "a single-kind estate record earns no offer because of its BAND, not its topic (the wave-147 'never answered by an automated offer' block is gone) — the manager's chosen PERSON is honoured as judgment", hrWhy)
     ok(!!task && /sensitive/i.test(task.description) && !/probate|inherit|died|death/i.test(task.description) && humanSeam.cap.publishes.length === 0, "the agent's task never names the intimate event (redacted) and nothing is sent automatically", task?.description)
     const noAgent = seams(async (a) => { const p = JSON.parse(a.prompt); return { action: "human", rationale: "A person should look at this before anything else happens.", helper_keys: [], research_keys: [], evidence: p.contributions.map((c: any) => c.id), confidence: 0.9 } })
     const d6 = db()
@@ -405,7 +415,7 @@ async function main() {
     const stateFeed = (items: Array<{ key: string; at: string; v: string }>) => ({
       key: "test:state_feed", registryKeys: ["fp_calc_moving_cost"], cadenceMinutes: 15,
       fetch: async () => ({ ok: true as const, items: items.map((i) => ({ itemKey: i.key, material: { v: i.v }, observedAt: i.at,
-        toSignal: () => ({ ok: true as const, record: { brokerageId: B, subject: { type: "contact" as const, id: "c1" }, sourceKey: "fp_calc_moving_cost", sourceKind: "first_party_behaviour" as const, evidence: { confidence: "verified" as const, reference: { kind: "first_party_row" as const, id: i.key, retrievedAt: i.at }, summary: "priced a move" }, observedAt: i.at, eventRelevance: "relocation" as const, identity: "record_key" as const, capturedBy: "automation" as const, intents: ["moving" as const], side: "unknown" as const, confidence: "verified" as const, protectedProxy: false, targetingProhibited: false, sensitivity: "behaviour" as const, dataRights: { collection: "first_party", storage: "first_party", terms: "", costClass: "free_first_party", status: "live" }, outreach: "consent_gated" as const, propertyAddress: null, idempotencyKey: `t:${i.key}`, nextAction: null, outcome: null } }) })) }),
+        toSignal: () => ({ ok: true as const, record: { brokerageId: B, subject: { type: "contact" as const, id: "c1" }, sourceKey: "fp_calc_moving_cost", sourceKind: "first_party_behaviour" as const, evidence: { confidence: "verified" as const, reference: { kind: "first_party_row" as const, id: i.key, retrievedAt: i.at }, summary: "priced a move" }, observedAt: i.at, eventRelevance: "relocation" as const, identity: "record_key" as const, capturedBy: "automation" as const, intents: ["moving" as const], side: "unknown" as const, confidence: "verified" as const, protectedProxy: false, targetingProhibited: false, sensitivity: "behaviour" as const, dataRights: { collection: "first_party", storage: "first_party", terms: "", costClass: "free_first_party", status: "live" }, outreach: "consent_gated" as const, propertyAddress: null, datasetKey: null, lifeEvent: null, eventAt: null, idempotencyKey: `t:${i.key}`, nextAction: null, outcome: null } }) })) }),
     })
     const sf = db({}, { unique: { ...UNIQUE, movement_source_polls: [["brokerage_id", "source_key"]], movement_source_items: [["brokerage_id", "source_key", "item_key"]] } })
     const feed = [{ key: "recent", at: daysAgo(2), v: "a" }, { key: "history", at: daysAgo(400), v: "b" }]
@@ -416,8 +426,10 @@ async function main() {
     const b3 = (await quiet(() => watcher.runMovementTick(sf as never, B, { now: NOW, force: true, reconcile: false, sources: [stateFeed([{ key: "recent", at: daysAgo(2), v: "a" }, { key: "history", at: daysAgo(1), v: "c" }])] }, { movement: { ...seams().deps, route: false } as never }))).watch.sources[0]
     ok(b3.raised === 1 && b3.unchanged === 1, "after the baseline, a change to an OLD item is a change like any other — raised once")
     // a source whose upstream lag is unpublished promises nothing
+    // WAVE 148 (148F, C19): the permit row names its DATASET (the sweep stamps dataset_host / dataset_id on every row it files) —
+    // a verified market-registry dataset lends `verified`; section L proves the unverified / drifted / unnamed cases cap at unknown.
     const sellerDb = db({ motivated_seller_signals: [
-      { id: "m1", brokerage_id: B, contact_id: "c2", lead_id: null, signal_type: "permit_activity", signal_strength: "moderate", detected_via: "socrata", detected_at: daysAgo(2), signal_details: { permit_id: "P-1", address: "1 Main St" } },
+      { id: "m1", brokerage_id: B, contact_id: "c2", lead_id: null, signal_type: "permit_activity", signal_strength: "moderate", detected_via: "socrata", detected_at: daysAgo(2), signal_details: { permit_id: "P-1", address: "1 Main St", dataset_host: "data.cityofchicago.org", dataset_id: "ydr8-5enu" } },
       { id: "m2", brokerage_id: B, contact_id: null, lead_id: "l-open", signal_type: "preforeclosure", signal_strength: "strong", detected_via: "batchdata", detected_at: daysAgo(2), signal_details: {} },
     ] })
     const sres = (await quiet(() => watcher.runMovementTick(sellerDb as never, B, { now: NOW, force: true, reconcile: false, sources: [watcher.STORED_SELLER_SIGNALS_SOURCE] }, { movement: seams().deps }))).watch.sources[0]
@@ -570,7 +582,10 @@ async function main() {
     ok(a.ok && b2.ok && a.record.eventRelevance === "divorce" && b2.record.eventRelevance === "divorce", "C9 reads a retired stored `divorce` and a survivor `divorce_filing` as the SAME relevance")
     ok(Object.keys(mv.LIFE_EVENT_RELEVANCE).every((k) => (voc.LIFE_EVENT_TYPES as readonly string[]).includes(k)) && (voc.LIFE_EVENT_TYPES as readonly string[]).every((k) => k in mv.LIFE_EVENT_RELEVANCE),
       "LIFE_EVENT_RELEVANCE is keyed on EXACTLY the vocabulary (no restated alias, no missing event)")
-    const readers: Record<string, RegExp> = { "lib/predictive-listing/signal-generators.ts": /lifeEventTypeOf\(/, "lib/sphere-resonance/run-resonance-scan.ts": /lifeEventTypeOf\(/, "lib/intent/movement-signals.ts": /canonicalLifeEventType\(/, "lib/enrichment/contact-enrichment-core.ts": /lifeEventTypeOf\(/ }
+    // WAVE 148 (148F, C20): the life-change merge now WRITES through the vocabulary's one write rule (mergeLifeEvents — canonical
+    // spelling, chronology, same-event dedup), which reads every stored element through lifeEventTypeOf itself — the rule (the merge
+    // goes through the vocabulary), not the waypoint (a direct lifeEventTypeOf call in this file).
+    const readers: Record<string, RegExp> = { "lib/predictive-listing/signal-generators.ts": /lifeEventTypeOf\(/, "lib/sphere-resonance/run-resonance-scan.ts": /lifeEventTypeOf\(/, "lib/intent/movement-signals.ts": /canonicalLifeEventType\(/, "lib/enrichment/contact-enrichment-core.ts": /mergeLifeEvents\(/ }
     const unread = Object.entries(readers).filter(([p, re]) => !re.test(src(p))).map(([p]) => p)
     ok(unread.length === 0, "every scorer / merger reads life events through the vocabulary (predictive listing, sphere resonance, C9, the life-change merge)", unread.join(", "))
     ok(!/LIFE_EVENT_CONFIDENCE\[evt\.event\]/.test(src("lib/predictive-listing/signal-generators.ts")) && /LIFE_EVENT_CONFIDENCE\[evt\.event\]/.test("const cfg = LIFE_EVENT_CONFIDENCE[evt.event]"), "the predictive scorer no longer keys on the raw `evt.event` (positive control: the old line is recognised)")
@@ -606,6 +621,99 @@ async function main() {
     ok(/const PERSON_OUTCOMES = \["false_positive", "declined"\] as const/.test(act) && /recordMovementOutcome\(/.test(act) && !/brokerageId:\s*(?:input|params|opts)\./.test(act), "a person may record ONLY false_positive / declined, through the one outcome writer, with the tenant from the session (never a parameter)")
     ok(!/MOVEMENT_RAW_SIGNAL_VIEWERS\.has\(/.test("const ok = true") && /MOVEMENT_RAW_SIGNAL_VIEWERS\.has\(/.test("if (!MOVEMENT_RAW_SIGNAL_VIEWERS.has(role)) return"), "(positive control) the roster-gate finder sees the gate and nothing else")
     ok(/listMovementSignalsAction\(/.test(stripComments(raw("app/dashboard/intelligence/movement-signals/page.tsx"))) && /markMovementSignalOutcomeAction\(/.test(stripComments(raw("app/dashboard/intelligence/movement-signals/movement-signals-client.tsx"))), "the screen reads through the door and closes records through it")
+  }
+
+  // ── L. WAVE 148 (lane 148F) — C19 DATASET CEILING · C20 CHRONOLOGY · RULING 17 IN THE MOVEMENT MANAGER ─────────────────────
+  console.log("\nL. wave 148: an unverified dataset never raises a signal above unknown (C19); life events carry their chronology (C20); a sensitive moment can be offered warm help (ruling 17)")
+  {
+    const dv = await import("../lib/intent/dataset-verification")
+    const reg = await import("../lib/external/socrata-market-registry")
+    const UNQ = { ...UNIQUE, market_dataset_verifications: [["idempotency_key"]] }
+    const permitRow = (id: string, details: Record<string, unknown>) => ({ id, brokerage_id: B, contact_id: "c2", lead_id: null, signal_type: "permit_activity", signal_strength: "moderate", detected_via: "socrata", detected_at: daysAgo(2), signal_details: { permit_id: `P-${id}`, address: "1 Main St", ...details } })
+    const tick = (d: any) => quiet(() => watcher.runMovementTick(d as never, B, { now: NOW, force: true, reconcile: false, sources: [watcher.STORED_SELLER_SIGNALS_SOURCE] }, { movement: { ...seams().deps, route: false } as never }))
+    // 1. the dataset decides the ceiling — verified / unavailable / unnamed
+    const d1 = db({ motivated_seller_signals: [
+      permitRow("v", { dataset_host: "data.cityofchicago.org", dataset_id: "ydr8-5enu" }),
+      // (the watcher keys a seller-signal item per person × signal type, so each case rides its own person)
+      { ...permitRow("u", { dataset_host: "www.phoenixopendata.com", dataset_id: "ggi7-iuv4" }), contact_id: "c3" },
+      { ...permitRow("n", {}), contact_id: "c1" },
+    ] }, { unique: UNQ })
+    await tick(d1)
+    const rv = d1.tables.movement_signals.find((r: any) => r.contact_id === "c2" && r.confidence === "verified")
+    const ru = d1.tables.movement_signals.find((r: any) => r.contact_id === "c3" && r.confidence === "unknown")
+    const rn = d1.tables.movement_signals.find((r: any) => r.contact_id === "c1")
+    ok(!!rv && !!ru && /ggi7-iuv4 is unavailable in the market registry/.test(ru.evidence?.reason ?? ""), "C19: a permit from a VERIFIED registry dataset is verified; one from an UNAVAILABLE dataset is stored as UNKNOWN with the registry's reason", ru?.evidence?.reason)
+    ok(!!rn && rn.confidence === "unknown" && /names no dataset/.test(rn.evidence?.reason ?? ""), "C19 (fail closed): a public record that cannot say which dataset it came from is never verified", rn?.evidence?.reason)
+    // 2. drift: the latest observation (m918) overrides the code contract until a later served read
+    const d2 = db({ motivated_seller_signals: [permitRow("d", { dataset_host: "data.cityofchicago.org", dataset_id: "ydr8-5enu" })] }, { unique: UNQ })
+    const obs1 = await dv.recordDatasetObservations(d2 as never, { probes: [{ dataset: "data.cityofchicago.org/ydr8-5enu", status: 400, ok: false, rows: 0, error: "No such column: issue_date" }, { dataset: "data.sf.gov/i98e-djp9", status: 200, ok: true, rows: 12, error: null }, { dataset: "nowhere.example/xxxx-0000", status: 200, ok: true, rows: 1, error: null }], windowSinceIso: daysAgo(7), observedAt: new Date(NOW.getTime() - 3_600_000) })
+    const obs1b = await dv.recordDatasetObservations(d2 as never, { probes: [{ dataset: "data.cityofchicago.org/ydr8-5enu", status: 400, ok: false, rows: 0, error: "No such column: issue_date" }], windowSinceIso: daysAgo(7), observedAt: new Date(NOW.getTime() - 3_000_000) })
+    ok(obs1.recorded === 2 && obs1.drifted.includes("data.cityofchicago.org/ydr8-5enu") && obs1.errors.some((e) => /not in the market registry/.test(e)) && obs1b.replayed === 1 && obs1b.recorded === 0,
+      `C19 feed observation: a refusal after a verified state is DRIFT, a served window is recorded, an unregistered dataset is refused by name, and one observation per dataset per day (replayed ${obs1b.replayed})`, JSON.stringify({ obs1, obs1b }))
+    await tick(d2)
+    const drifted = d2.tables.movement_signals.find((r: any) => r.contact_id === "c2")
+    ok(!!drifted && drifted.confidence === "unknown" && /drifted/.test(drifted.evidence?.reason ?? ""), "C19: a DRIFTED dataset lends unknown — the latest observation wins over the code contract", drifted?.evidence?.reason)
+    await dv.recordDatasetObservations(d2 as never, { probes: [{ dataset: "data.cityofchicago.org/ydr8-5enu", status: 200, ok: true, rows: 40, error: null }], windowSinceIso: daysAgo(7), observedAt: new Date(NOW.getTime() + 86_400_000) })
+    // (driven through the PRODUCT doors — datasetCeilingWithObservations is the chokepoint's call, listMarketDatasetVerifications the
+    // lead desk's; the pure contract / overlay helpers behind them are module-private)
+    const healed = await dv.datasetCeilingWithObservations(d2 as never, "data.cityofchicago.org/ydr8-5enu", new Date(NOW.getTime() + 2 * 86_400_000))
+    ok(healed.ceiling === "verified", "(positive control) a LATER served read clears the drift — the dataset lends verified again", JSON.stringify(healed))
+    // 2b. an UNREADABLE observation log keeps the dated code contract (it never upgrades anything) — and the record's ledger row
+    //     SAYS so; positive control: the readable-log record in (1) carries no such note (a note on every row would prove nothing)
+    const d2b = db({ motivated_seller_signals: [permitRow("b", { dataset_host: "data.cityofchicago.org", dataset_id: "ydr8-5enu" })] }, { unique: UNQ, refuse: { market_dataset_verifications: "permission denied for table market_dataset_verifications" } })
+    await tick(d2b)
+    const blindRow = d2b.tables.movement_signals.find((r: any) => r.contact_id === "c2")
+    const blindLedger = d2b.tables.agent_action_ledger.find((l: any) => l.action === "intent.movement_signal.record")
+    const cleanLedger = d1.tables.agent_action_ledger.find((l: any) => l.action === "intent.movement_signal.record" && l.detail?.confidence === "verified")
+    ok(blindRow?.confidence === "verified" && /market_dataset_verifications read refused/.test(String(blindLedger?.detail?.dataset_ceiling?.blind_spot ?? "")) && !!cleanLedger && !cleanLedger.detail?.dataset_ceiling,
+      "C19 blind spot is EVIDENCE: an unreadable m918 log keeps the dated code contract and the ledger row names the unread overlay (control: a readable log writes no note)", JSON.stringify({ confidence: blindRow?.confidence, note: blindLedger?.detail?.dataset_ceiling ?? null, clean: cleanLedger?.detail?.dataset_ceiling ?? null }))
+    // 3. an intimate topic on an unverified dataset is refused (m892 never stores a divorce / estate as unknown)
+    const intimate = await quiet(() => mv.recordMovementSignal(db() as never, { brokerageId: B, subject: { type: "contact", id: "c2" }, sourceKey: "pr_probate_open_data", eventRelevance: "probate_estate", identity: "verified_match", capturedBy: "automation", observedAt: daysAgo(3), datasetKey: "data.sccgov.org/rh64-rgza", evidence: { confidence: "verified", reference: { kind: "court_record", id: "case:1", retrievedAt: daysAgo(3) }, summary: "a probate filing at the address" } }, { ...seams().deps, route: false }))
+    ok(intimate.status === "refused" && (intimate as any).code === "dataset_unverified", "C19: an ESTATE record from an unverified (archival) dataset is REFUSED, never stored as unknown (control: the vendor-compiled estate record in C is stored)")
+    // 4. the registry: every candidate kind verified or marked, statuses derived, staleness and the unregistered case
+    const all = (await dv.listMarketDatasetVerifications(db() as never, { now: NOW })).verifications
+    const st = (k: string) => all.find((v) => v.datasetKey === k)?.status
+    const kinds = new Set(all.map((v) => v.kind))
+    ok(["permits", "probate", "property_transfers", "street_use_permits", "change_of_address"].every((k) => kinds.has(k as never)), `C19: probate, deed-transfer, street-use (relocation), permit and change-of-address candidates each carry a contract (${[...kinds].join(", ")})`)
+    ok(st("data.cityofnewyork.us/bnx9-e6tj") === "verified" && st("data.cambridgema.gov/8xmj-thsm") === "verified" && st("data.sccgov.org/rh64-rgza") === "unavailable" && st("cos-data.seattle.gov/eyde-ia6x") === "unavailable" && st("usps.ncoalink/processing-acknowledgement") === "unverified",
+      "C19 (probed by id 2026-11-01): ACRIS deeds and Cambridge dumpster permits VERIFIED; the Santa Clara archival probate index and Seattle event notices MARKED unavailable; NCOA unverified (contract required)")
+    ok(st("data.sf.gov/i98e-djp9") === "verified" && !all.some((v) => v.host === "data.sfgov.org") && reg.getMarketDatasets({ state: "CA", city: "San Francisco" })[0]?.host === "data.sf.gov", "C19 DRIFT FIXED: San Francisco's dataset is registered at its new host (data.sfgov.org answered an HTML redirect page)")
+    ok(all.filter((v) => v.ingested).every((v) => v.status === "verified" && !!v.licence && v.licence.class !== "unknown"), `every dataset the sweep reads today is verified WITH its licence read (${all.filter((v) => v.ingested).length} ingested)`)
+    const ceil = (key: string | null, at: Date) => dv.datasetCeilingWithObservations(db() as never, key, at)
+    const later = await ceil("datahub.austintexas.gov/3syk-w9eu", NOW)
+    const austin = all.find((v) => v.datasetId === "3syk-w9eu")
+    const staleLater = austin ? await ceil(austin.datasetKey, new Date(NOW.getTime() + 400 * 86_400_000)) : null
+    ok(later.ceiling === "unknown" && /not in the market registry/.test(later.reason) && !!austin && (await ceil(austin.datasetKey, NOW)).ceiling === "verified" && staleLater?.status === "stale",
+      "C19 (positive controls): an unregistered host is unverified; a verified dataset goes STALE when its live-row read and its data age past their windows", JSON.stringify({ later, staleLater }))
+    ok((await ceil(null, NOW)).ceiling === "unknown" && (await ceil("data.lacity.org/yv23-pmwf", NOW)).status === "unavailable", "C19: no dataset → unknown; a retired dataset → unavailable")
+    // 5. C20 chronology on the C9 store
+    const d5c = db({}, { unique: UNQ })
+    const life = (event: Record<string, unknown>) => mv.movementSignalFromLifeEvent({ brokerageId: B, contactId: "c1", event, detectedAt: daysAgo(1) })
+    const j = life({ type: "new_job", url: "https://example.org/a", publishedDate: daysAgo(40) })
+    const rl = life({ event: "relocating", url: "https://example.org/b", publishedDate: daysAgo(10) })
+    const rl2 = life({ type: "relocation", url: "https://example.org/c", publishedDate: daysAgo(10) })
+    ok(j.ok && rl.ok && rl2.ok && j.record.lifeEvent === "job_change" && rl.record.lifeEvent === "relocation" && !!rl.record.eventAt, "C20: any spelling (`new_job`, `relocating`) becomes its canonical event with its own event time", JSON.stringify([j.ok && j.record.lifeEvent, rl.ok && rl.record.lifeEvent]))
+    for (const b of [j, rl, rl2]) if (b.ok) await quiet(() => mv.recordMovementSignal(d5c as never, b.record, { ...seams().deps, route: false }))
+    const lrows = d5c.tables.movement_signals.filter((r: any) => r.contact_id === "c1")
+    const jr = lrows.find((r: any) => r.life_event === "job_change"), rr = lrows.filter((r: any) => r.life_event === "relocation")
+    ok(!!jr && jr.sequence === 1 && jr.supersedes == null && rr.length === 2 && rr.every((r: any) => r.sequence === 2) && rr.filter((r: any) => r.supersedes === jr.id).length === 1 && rr.some((r: any) => r.supersedes == null),
+      "C20: the job change is #1; the relocation is #2 and SUPERSEDES it; a second observation of the SAME relocation keeps #2 and supersedes nothing (another observation, never a second event)", JSON.stringify(lrows.map((r: any) => [r.life_event, r.sequence, r.supersedes ? "→" : null])))
+    ok(d1.tables.movement_signals.every((r: any) => !("life_event" in r) && !("sequence" in r)), "C20: a non-life C9 row names no m919 column (a deploy ahead of m919 breaks only life-event writes)")
+    const unreadable = await quiet(() => mv.recordMovementSignal(db({}, { refuse: { movement_signals: "permission denied" } }) as never, (life({ type: "marriage", url: "https://example.org/m" }) as any).record, { ...seams().deps, route: false }))
+    ok(unreadable.status === "refused" && ["chronology_unread", "persist_refused"].includes((unreadable as any).code), "C20 (fail closed): an unreadable life-event history refuses the record — a sequence is never guessed", JSON.stringify(unreadable))
+    // 6. RULING 17 in the movement manager: a corroborated sensitive moment may be OFFERED help; the fallback is never "human"
+    const d6r = db()
+    const sens = await quiet(async () => {
+      await mv.recordMovementSignal(d6r as never, { brokerageId: B, subject: { type: "contact", id: "c1" }, sourceKey: "po_job_change", eventRelevance: "life_stage", identity: "verified_match", capturedBy: "automation", observedAt: daysAgo(3), evidence: { confidence: "reported", reportedBy: "provider", reference: { kind: "provider_field", id: "pdl:job:1", retrievedAt: daysAgo(3) }, summary: "a new role started" } }, { ...seams().deps, route: false })
+      return mv.recordMovementSignal(d6r as never, { brokerageId: B, subject: { type: "contact", id: "c1" }, sourceKey: "fp_inbound_stated", eventRelevance: "life_stage", identity: "record_key", capturedBy: "automation", protectedProxy: true, observedAt: daysAgo(1), evidence: { confidence: "reported", reportedBy: "self", reference: { kind: "person_message", id: "msg:1", retrievedAt: daysAgo(1) }, summary: "the person mentioned a household change in their own message" } }, seams().deps)
+    })
+    const sd = sens.status === "recorded" ? sens.evaluation?.decision : undefined
+    const sWhy = String((d6r.tables.agent_action_ledger.find((l: any) => l.action === "intent.movement_signal.decide")?.detail?.why ?? {}).offer_help ?? "")
+    ok(!!sd && sd.allowed.includes("offer_help") && /WITHOUT naming the event/.test(sWhy) && sd.source === "deterministic" && sd.action !== "human",
+      `RULING 17: a corroborated, confirmed sensitive life-stage moment is OFFERED help (the arbiter warms engagement without naming it) and the policy's own fallback is "${sd?.action}" — never a person by reflex`, `${sd?.allowed?.join("/")} · ${sWhy}`)
+    ok(/never simply handed to a person/.test(mv.MOVEMENT_DECISION_SYSTEM) && /ruling 17/.test(mv.MOVEMENT_DECISION_SYSTEM) && !/they go to a HUMAN, never an automated offer/.test(mv.MOVEMENT_DECISION_SYSTEM), "the movement decision prompt carries ruling 17 (and the wave-147 'they go to a HUMAN' sentence is gone)")
+    const est = mv.NEIGHBOURLY_HELPERS.find((h) => h.key === "estate_education_without_assumption"), chk = mv.NEIGHBOURLY_HELPERS.find((h) => h.key === "life_change_check_in")
+    ok(est?.experience === "education" && chk?.experience === "communication" && [est, chk].every((h) => !!h && h.never.some((n) => /alludes|alluding/.test(n))), "the sensitive neighbourly helpers are warm, automated-capable help that never names or alludes to the event (was: person-only)")
   }
 
   console.log("\n──────────────────────────────────────────────────")

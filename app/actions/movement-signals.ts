@@ -34,12 +34,19 @@ export async function listMovementSignalsAction(opts: { openOnly?: boolean } = {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
     const { listMovementRecordsForLeadDesk, movementSourceFreshness } = await import("@/lib/intent/movement-signals")
-    const [recs, fresh] = await Promise.all([
+    // C19 (wave 148, lane 148F — owner ruling 6): the market registry's dataset verifications (platform-wide public-data facts, no
+    // tenant rows) — which datasets may lend a signal above `unknown` today, and why the others may not.
+    const { listMarketDatasetVerifications, VERIFICATION_TTL_DAYS, DEFAULT_MAX_LAG_DAYS } = await import("@/lib/intent/dataset-verification")
+    const [recs, fresh, datasets] = await Promise.all([
       listMovementRecordsForLeadDesk(svc as never, { brokerageId: seat.brokerageId, openOnly: opts.openOnly === true, limit: 100 }),
       movementSourceFreshness(svc as never, seat.brokerageId),
+      listMarketDatasetVerifications(svc as never),
     ])
     if (recs.error) return { success: false as const, error: recs.error }
-    return { success: true as const, records: recs.records, sources: fresh.sources, freshnessNote: fresh.error }
+    const verifications = datasets.verifications.map((v) => ({ datasetKey: v.datasetKey, label: v.label, kind: v.kind, markets: v.geography.markets, status: v.status, confidence: v.confidence, lastVerifiedAt: v.lastVerifiedAt, lastDataAt: v.freshness.lastDataAt, licence: v.licence?.class ?? "unknown", reasons: v.reasons.slice(0, 3), ingested: v.ingested }))
+    // The rule the statuses are judged by, said on the screen (never a number the page restates on its own).
+    const verificationPolicy = { ttlDays: VERIFICATION_TTL_DAYS, defaultMaxLagDays: DEFAULT_MAX_LAG_DAYS }
+    return { success: true as const, records: recs.records, sources: fresh.sources, freshnessNote: fresh.error, verifications, verificationNote: datasets.error, verificationPolicy }
   } catch (err) {
     return { success: false as const, error: err instanceof Error ? err.message : "Failed to load movement signals" }
   }

@@ -32,6 +32,7 @@ import { onlineAudienceSummary } from "@/lib/enrichment/online-audience-store"
 import { PROVIDER_FRESHNESS_DAYS, isFresh } from "@/lib/enrichment/provider-dedup"
 import { fieldProvenanceOf } from "@/lib/lead-pipeline/enrichment-column-map"
 import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"
+import { lifeEventTypeOf } from "@/lib/enrichment/life-event-vocabulary"
 
 export type IntentKind = "moving" | "home_sale" | "home_purchase" | "refinance" | "property_engagement" | "market_engagement" | "life_event" | "relationship_moment"
 export type SignalEntity = "raw_lead" | "lead" | "contact" | "lifetime_customer"
@@ -145,8 +146,11 @@ export function intentSignalsFromContact(
   if (profile && typeof profile.birth_date === "string") push("birth_date", "birth_date", profile.birth_date as string, capturedAt)
   if (profile && Array.isArray(profile.location_history) && profile.location_history.length > 1) push("location_history", "location_names", (profile.location_history as unknown[]).length, capturedAt)
   if (profile && typeof profile.job_start_date === "string") push("job_change", "job_start_date", profile.job_start_date as string, capturedAt, true)
+  // C20 (wave 148, lane 148F): read through THE vocabulary's one reader rule — the OSINT rung's `{ event }` elements were invisible
+  // to this `.type`-only read (a public life event the people search found never became a fact), and a retired spelling and its
+  // canonical twin were two facts. lifeEventTypeOf reads both shapes and canonicalises; a token outside the vocabulary is not a fact.
   const lifeTypes = Array.isArray(contact.life_events)
-    ? (contact.life_events as unknown[]).map((e) => (typeof e === "string" ? e : e && typeof e === "object" ? String((e as Record<string, unknown>).type ?? "") : "")).filter(Boolean)
+    ? (contact.life_events as unknown[]).map((e) => lifeEventTypeOf(e as never)).filter((t): t is NonNullable<typeof t> => !!t)
     : []
   if (lifeTypes.length > 0) push("public_life_event", "life_events[].type", [...new Set(lifeTypes)].join(","), contact.last_life_event_detected ?? null)
   if (contact.home_anniversary) push("home_anniversary", "contacts.home_anniversary", contact.home_anniversary, null, true)

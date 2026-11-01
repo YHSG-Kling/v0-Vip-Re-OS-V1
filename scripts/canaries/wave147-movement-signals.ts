@@ -39,8 +39,11 @@ function world() {
       { id: "b147-divorce", brokerage_id: B, contact_type: "lifetime_customer", agent_id: AG, zip_code: "78704", deleted_at: null, opted_out_at: null, life_events: [], last_life_event_detected: null },
     ],
     leads: [], raw_scraped_leads: [], agent_action_ledger: [], movement_signals: [], movement_source_polls: [], movement_source_items: [], calculator_history: [], listings: [], transactions: [],
+    // C19 (wave 148, lane 148F): an issuer row is VERIFIED only when the dataset it came from is — the permit sweep stamps
+    // dataset_host / dataset_id on every row it files, so the fixture carries the Austin permits dataset (a 78702 owner),
+    // which the market registry verifies. A row naming no dataset is capped at `unknown` (movement-signals-guard §L proves that).
     motivated_seller_signals: [
-      { id: "b147-mss-1", brokerage_id: B, contact_id: "b147-owner", lead_id: null, signal_type: "permit_activity", signal_strength: "moderate", detected_via: "socrata", detected_at: daysAgo(2), signal_details: { permit_id: "BP-2026-0147", address: "14 Juniper St" } },
+      { id: "b147-mss-1", brokerage_id: B, contact_id: "b147-owner", lead_id: null, signal_type: "permit_activity", signal_strength: "moderate", detected_via: "socrata", detected_at: daysAgo(2), signal_details: { permit_id: "BP-2026-0147", address: "14 Juniper St", dataset_host: "data.austintexas.gov", dataset_id: "3syk-w9eu" } },
     ],
   }, { uuidIds: true, stampCreatedAt: true, unique: UNIQUE })
 }
@@ -83,7 +86,7 @@ export async function run() {
   // type; the record id and strength are material) — an hour after the first polls, as a real re-sweep stamps detected_at
   const row = tbl(d, "motivated_seller_signals")[0]
   const at = (h: number) => new Date(NOW.getTime() + h * 3_600_000)
-  row.signal_details = { permit_id: "BP-2026-0201", address: "14 Juniper St" }; row.signal_strength = "strong"; row.detected_at = at(1).toISOString()
+  row.signal_details = { permit_id: "BP-2026-0201", address: "14 Juniper St", dataset_host: "data.austintexas.gov", dataset_id: "3syk-w9eu" }; row.signal_strength = "strong"; row.detected_at = at(1).toISOString()
   const r3 = await tick(at(2))
   const after3 = tbl(d, "movement_signals").length
   const r4 = await tick(at(3))

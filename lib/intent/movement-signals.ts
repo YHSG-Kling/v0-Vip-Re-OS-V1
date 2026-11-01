@@ -33,6 +33,16 @@
 // record; a source not permitted on standard terms refuses entirely. Protected proxies are STORED (ruling 2: research is
 // purpose-controlled, never dropped) and flagged `targeting_prohibited` — movementAudienceEligible refuses them for any audience.
 //
+// WAVE 148 (lane 148F — owner rulings 5, 6, 17; contracts C19, C20):
+//   C19  a public-record record (permit / violation / probate / transfer / street-use) is only as good as the DATASET it came from:
+//        recordMovementSignal asks lib/intent/dataset-verification.ts for the dataset's ceiling, and an unverified, stale or drifted
+//        dataset can never raise a record above `unknown` (an intimate topic is refused outright — m892 never stores it as unknown).
+//   C20  a life-event record carries its chronology — `life_event` (the canonical spelling of lib/enrichment/life-event-vocabulary.ts
+//        LIFE_EVENT_VOCAB), `event_at`, `observed_at`, `sequence` and `supersedes` (m919) — so a second observation of the same
+//        event never reads as a second event, and a relocation supersedes the job change that led to it.
+//   R17  a life-event signal NEVER just goes to a person: the menu may offer help for an intimate topic too (the arbiter warms
+//        engagement without naming the event, under the tenant's explicit autonomy), and the policy's own fallback is never "human".
+//
 // NOT server-only: simulator-driven (scripts/movement-signals-guard.ts) like the kernel modules it composes.
 
 import type { IntentKind } from "@/lib/enrichment/intent-signal-sources"
@@ -41,7 +51,7 @@ import type { LifeChangeKind, LifeChangeSignal } from "@/lib/ai-isa/followup-arb
 import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"
 import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
 import { LEAD_DESK_USER_TYPES } from "@/lib/auth/lead-visibility"
-import { canonicalLifeEventType, type LifeEventType } from "@/lib/enrichment/life-event-vocabulary"
+import { canonicalLifeEventType, normalizeLifeEvent, LIFE_EVENT_TYPES, LIFE_EVENT_VOCAB, type LifeEventType } from "@/lib/enrichment/life-event-vocabulary"
 import {
   CONTEXT_RELEVANCE, COST_CLASSES, EPISTEMIC_RANK, INTIMATE_RELEVANCE, MOVEMENT_RELEVANCE, NEIGHBOURLY_HELPERS, RESEARCH_STRATEGIES,
   movementSource, movementSourceKeyForIntentSource,
@@ -114,6 +124,12 @@ export interface MovementSignalInput {
   /** The adapter's own protected-proxy reading (marriage, a household change); the builder ORs the classifier and the source's flag. */
   protectedProxy?: boolean
   propertyAddress?: string | null
+  /** C19: the market-registry dataset (`host/datasetId`) a public-record record came from — its verification caps the record. */
+  datasetKey?: string | null
+  /** C20: the canonical life event this record is about (any spelling — canonicalised by the builder). */
+  lifeEvent?: string | null
+  /** C20: when the event HAPPENED, by the evidence (a filing / publication date) — observedAt stays when the source observed it. */
+  eventAt?: string | null
 }
 
 export type MovementOutreach = "none" | "email_mail_only" | "consent_gated" | "address_correction_only"
@@ -130,6 +146,11 @@ export interface MovementSignalRecord extends Required<Pick<MovementSignalInput,
   dataRights: { collection: string; storage: string; terms: string; costClass: string; status: string }
   outreach: MovementOutreach
   propertyAddress: string | null
+  /** C19: the dataset a public-record record came from (null for every other source). */
+  datasetKey: string | null
+  /** C20: the canonical life event and when it happened (null for a non-life-event record). */
+  lifeEvent: LifeEventType | null
+  eventAt: string | null
   idempotencyKey: string
   /** Chosen by the manager / arbiter (decideMovementNextAction) — never by the source. */
   nextAction: null
@@ -139,7 +160,7 @@ export interface MovementSignalRecord extends Required<Pick<MovementSignalInput,
 export type MovementRefusalCode =
   | "missing_tenant" | "unknown_source" | "source_not_permitted" | "source_waiting_external" | "manual_capture_only"
   | "above_source_ceiling" | "intimate_inference" | "third_party_intimate" | "anonymous_first_party" | "relevance_not_offered_by_source"
-  | "bad_observed_at" | "bad_evidence" | "bad_subject"
+  | "bad_observed_at" | "bad_evidence" | "bad_subject" | "dataset_unverified" | "chronology_unread"
 
 export type MovementBuild = { ok: true; record: MovementSignalRecord } | { ok: false; code: MovementRefusalCode; reason: string }
 
@@ -212,6 +233,11 @@ function buildMovementSignal(input: MovementSignalInput): MovementBuild {
       : s.type === "lead" ? "email_mail_only" : "consent_gated"
   const day = new Date(observed).toISOString().slice(0, 10)
   const idempotencyKey = `movement:${input.brokerageId}:${subjectKey(s)}:${src.key}:${input.eventRelevance}:${movementDigest(`${evidenceIdentity(e)}|${day}`)}`
+  // C20: a life event rides its canonical spelling and its own event time (an event time in the future is not a fact).
+  const lifeEvent = input.lifeEvent ? canonicalLifeEventType(input.lifeEvent) : null
+  if (input.lifeEvent && !lifeEvent) return no("bad_evidence", `"${String(input.lifeEvent)}" is not in LIFE_EVENT_VOCAB (never guessed onto a nearby event)`)
+  const eventAtMs = input.eventAt ? Date.parse(input.eventAt) : NaN
+  const eventAt = Number.isFinite(eventAtMs) && eventAtMs <= Date.now() + DAY_MS ? new Date(eventAtMs).toISOString() : null
   return {
     ok: true,
     record: {
@@ -219,7 +245,8 @@ function buildMovementSignal(input: MovementSignalInput): MovementBuild {
       eventRelevance: input.eventRelevance, intents: [...(input.intents ?? src.intents)], side: input.side ?? "unknown", identity: input.identity,
       capturedBy: input.capturedBy, confidence: e.confidence, protectedProxy, targetingProhibited: protectedProxy || intimate || input.eventRelevance === "life_stage",
       sensitivity, dataRights: { collection: src.licence.collection, storage: src.licence.storage, terms: src.licence.terms, costClass: src.costClass, status: src.status },
-      outreach, propertyAddress: input.propertyAddress ?? (s.type === "property" ? s.address : null), idempotencyKey, nextAction: null, outcome: null,
+      outreach, propertyAddress: input.propertyAddress ?? (s.type === "property" ? s.address : null),
+      datasetKey: input.datasetKey ?? null, lifeEvent, eventAt, idempotencyKey, nextAction: null, outcome: null,
     },
   }
 }
@@ -293,19 +320,17 @@ export function movementSignalFromCalculatorRow(brokerageId: string, row: { id: 
 
 /**
  * Every life event of THE one vocabulary (lib/enrichment/life-event-vocabulary.ts — CLAUDE.md §6) → ONE relevance. WAVE 147 (lane
- * 147Z): keyed on the SURVIVOR spellings only — the retired `divorce` / `death_in_family` rows (and the dead `probate` /
- * `probate_filing` keys no life-event writer ever wrote) are read through canonicalLifeEventType, not restated here; a key that is
- * not a LifeEventType is a type error, so this table can never drift from the vocabulary again.
+ * 147Z): keyed on the canonical spellings only. WAVE 148 (lane 148F, C20): no longer restated here at all — DERIVED from
+ * LIFE_EVENT_VOCAB's `movementRelevance` / `protectedProxy` (the typed `rel` below makes a vocabulary relevance that is not a C9
+ * MovementRelevance a COMPILE error), so the map and this table can never disagree. Financial distress is a property event
+ * (pre-foreclosure is a recorded notice); bankruptcy is not a movement signal (null).
  */
-export const LIFE_EVENT_RELEVANCE: Readonly<Record<LifeEventType, { relevance: MovementRelevance; protectedProxy: boolean } | null>> = Object.freeze({
-  divorce_filing: { relevance: "divorce", protectedProxy: true },
-  inheritance: { relevance: "probate_estate", protectedProxy: false }, death_in_household: { relevance: "probate_estate", protectedProxy: false },
-  relocation: { relevance: "relocation", protectedProxy: false }, job_change: { relevance: "life_stage", protectedProxy: false }, job_change_to_non_local: { relevance: "relocation", protectedProxy: false },
-  marriage: { relevance: "life_stage", protectedProxy: true }, retirement: { relevance: "life_stage", protectedProxy: true }, new_baby: { relevance: "life_stage", protectedProxy: true },
-  kids_graduated: { relevance: "life_stage", protectedProxy: true }, empty_nester: { relevance: "life_stage", protectedProxy: true },
-  // financial distress is a property event (pre-foreclosure is a recorded notice); bankruptcy is not a movement signal here
-  foreclosure_filing: { relevance: "property_event", protectedProxy: false }, bankruptcy: null,
-})
+export const LIFE_EVENT_RELEVANCE: Readonly<Record<LifeEventType, { relevance: MovementRelevance; protectedProxy: boolean } | null>> = Object.freeze(
+  Object.fromEntries(LIFE_EVENT_TYPES.map((t) => {
+    const rel: MovementRelevance | null = LIFE_EVENT_VOCAB[t].movementRelevance
+    return [t, rel ? { relevance: rel, protectedProxy: LIFE_EVENT_VOCAB[t].protectedProxy } : null]
+  })) as Record<LifeEventType, { relevance: MovementRelevance; protectedProxy: boolean } | null>,
+)
 
 /** A contacts.life_events element (OSINT / web-mention writer) → C9. A web mention is a NAME-ONLY identity until a person confirms. */
 export function movementSignalFromLifeEvent(
@@ -316,11 +341,15 @@ export function movementSignalFromLifeEvent(
   const token = canon ?? raw
   const map = canon ? LIFE_EVENT_RELEVANCE[canon] : null
   if (!map) return { ok: false, code: "relevance_not_offered_by_source", reason: `life event "${token}" is not a movement signal` }
+  // C20 (wave 148): the vocabulary's ONE reading of a stored element — event_at from the evidence's own date keys, observed_at
+  // from when we detected it. The C9 observation is when the page was PUBLISHED (unchanged), the event time rides `eventAt`.
+  const n = normalizeLifeEvent(a.event, { observedAt: a.detectedAt })
+  const eventAt = n.ok ? n.record.event_at : null
   const at = a.event.publishedDate ?? a.event.date ?? a.detectedAt
   const ref = a.event.url ?? a.event.source ?? `life_events:${token}`
   return buildMovementSignal({
     brokerageId: a.brokerageId, subject: { type: "contact", id: a.contactId }, sourceKey: "pp_web_mention_life_event", eventRelevance: map.relevance,
-    identity: "name_only", capturedBy: "automation", observedAt: at, protectedProxy: map.protectedProxy,
+    identity: "name_only", capturedBy: "automation", observedAt: at, protectedProxy: map.protectedProxy, lifeEvent: canon, eventAt,
     evidence: { confidence: "reported", reportedBy: "third_party", reference: { kind: "news", id: ref, url: a.event.url ?? null, retrievedAt: a.detectedAt }, summary: `a published public page mentions this name with "${token.replace(/_/g, " ")}"` },
   })
 }
@@ -341,7 +370,10 @@ export function movementSignalFromSellerSignalRow(brokerageId: string, row: { id
   const evidence: MovementEvidence = issuer
     ? { confidence: "verified", reference: { kind: "permit_record", id: String(details.permit_id ?? details.dedupe_key ?? row.id), url: typeof details.source_url === "string" ? details.source_url : null, retrievedAt: at }, summary: `${type.replace(/_/g, " ")} on the owner's address (${via} open data)` }
     : { confidence: "reported", reportedBy: "provider", reference: { kind: "vendor_compiled_record", id: `motivated_seller_signals:${row.id}`, retrievedAt: at }, summary: `${via || "vendor"} lists this property under "${type.replace(/_/g, " ")}"` }
-  return buildMovementSignal({ brokerageId, subject, sourceKey, eventRelevance: relevance, identity: "verified_match", capturedBy: "automation", observedAt: at, evidence, intents: ["home_sale"], side: "seller", propertyAddress: address })
+  // C19: the issuer's dataset rides the record (the permit sweep stamps dataset_host / dataset_id on every row it files since 2026-08)
+  // so the persistence chokepoint can cap it by the dataset's verification; a row that names no dataset is never verified.
+  const datasetKey = issuer && typeof details.dataset_host === "string" && typeof details.dataset_id === "string" ? `${details.dataset_host}/${details.dataset_id}` : null
+  return buildMovementSignal({ brokerageId, subject, sourceKey, eventRelevance: relevance, identity: "verified_match", capturedBy: "automation", observedAt: at, evidence, intents: ["home_sale"], side: "seller", propertyAddress: address, datasetKey })
 }
 
 // ── the AI classifier for public text (posts, announcements) — an expert, structured prompt; the model never sets the class ─────
@@ -582,7 +614,7 @@ function allowedMovementActions(
     .filter((s) => s.corroborates.includes(dom) && s.costClass !== "contract_required")
     .sort((a, b) => COST_CLASSES.indexOf(a.costClass) - COST_CLASSES.indexOf(b.costClass))
   if (research.length > 0) { allowed.push("research"); why.research = `cheapest first: ${research.map((s) => `${s.key} (${s.costClass})`).join(", ")}` }
-  allowed.push("human"); why.human = INTIMATE_RELEVANCE.has(dom) ? `${dom} is a person's conversation — only a person answers it` : "a person may always take it"
+  allowed.push("human"); why.human = INTIMATE_RELEVANCE.has(dom) ? `${dom} is sensitive — a person may take it (escalation), but it is never ONLY a person's: the arbiter may warm engagement without naming it (ruling 17)` : "a person may always take it"
   const person = ctx.subjectClass === "lead" || ctx.subjectClass === "contact" || ctx.subjectClass === "lifetime"
   const reachable = decisive.some((r) => r.outreach && r.outreach !== "none" && r.outreach !== "address_correction_only")
   const strongEnough = combo.band === "warm" || combo.band === "act"
@@ -593,8 +625,11 @@ function allowedMovementActions(
   if (!reachable) blocks.push("no decisive record permits outreach (source terms / subject class)")
   if (!strongEnough) blocks.push(`the combination is only "${combo.band}"`)
   if (!solid) blocks.push("no verified / reported evidence with a confirmed identity")
-  if (sensitive) blocks.push(`${dom} is never answered by an automated offer`)
-  if (blocks.length === 0) { allowed.push("offer_help"); why.offer_help = "a warm, corroborated, reachable person — the arbiter chooses the experience under consent / DNC / TCPA / frequency" }
+  // WAVE 148 (lane 148F, owner ruling 17) — REVERSES wave 147's "never answered by an automated offer": a sensitive topic may be
+  // handed to the arbiter too, which warms engagement WITHOUT naming the event (quiet monitoring is its own default, automated help
+  // needs the tenant's explicit autonomy, and every draft is screened). A name-only identity is never enough for a sensitive topic.
+  if (sensitive && decisive.some((r) => r.identity === "name_only") && !decisive.some((r) => r.identity === "record_key" || r.identity === "verified_match")) blocks.push(`${dom} rests on a name-only match — it may be someone else`)
+  if (blocks.length === 0) { allowed.push("offer_help"); why.offer_help = sensitive ? `a corroborated, reachable person at a sensitive moment — the arbiter decides how to warm engagement WITHOUT naming the event (quiet monitoring, helpful education, appropriate outreach or a person), under consent / DNC / TCPA / frequency and the tenant's autonomy` : "a warm, corroborated, reachable person — the arbiter chooses the experience under consent / DNC / TCPA / frequency" }
   else why.offer_help = `not offered: ${blocks.join("; ")}`
   const maxConf = decisive.reduce((m, r) => Math.max(m, EPISTEMIC_RANK[r.confidence]), 0)
   const helpers = NEIGHBOURLY_HELPERS.filter((h) => h.requires.relevance.includes(dom) && maxConf >= EPISTEMIC_RANK[h.requires.minConfidence] && (!h.requires.personIdentified || (person && solid)) && !h.requires.requestedByPerson)
@@ -606,8 +641,8 @@ export const MOVEMENT_DECISION_SYSTEM = [
   "BUSINESS CONTEXT: The brokerage wants to be the helpful neighbour who notices first and offers help without pressure. Being early is worthless if it feels like surveillance: a person who senses they are being watched is lost for good. Waiting for one more independent sign is often the best answer.",
   "FACTS YOU MAY RELY ON: only the supplied evidence keys — the combination score and band, each contribution's source, epistemic class, age and reason, the subject class, the allowed actions with their reasons, the eligible neighbourly helpers and the research strategies (cheapest first). An 'inferred' contribution is a guess, never a fact; 'reported' is unchecked. Do not invent a person, a reason for a move, a timeline, a price or a fact not supplied.",
   "THE DECISION YOU OWN: choose exactly one action from `allowed` — RESEARCH (corroborate with the cheapest strategy that can close the gap; free and first-party before paid), OFFER_HELP (hand to the follow-up arbiter, which picks the experience and channel under consent, do-not-contact, quiet hours and frequency — you never write the message), WAIT (hold until new evidence arrives; no timer), or HUMAN (a person handles it). Name the helper keys (from `helpers`) and research keys (from `research`) that fit.",
-  "PRIVACY AND COMPLIANCE BOUNDARY: divorce, probate / a death, and household or life-stage changes are a person's own business — they go to a HUMAN, never an automated offer, never a message that mentions the event, never a segment. Never reason from race, colour, religion, sex, disability, familial status, national origin, marital status or age. Fair-housing copy rules apply to public marketing, not to this internal decision — but no decision may steer, exclude or target anyone by a protected trait.",
-  "ESCALATION RULE: choose HUMAN when the evidence is sensitive, contradictory, name-only, or when anything suggests distress, a dispute or a complaint. When unsure between OFFER_HELP and WAIT, choose WAIT.",
+  "PRIVACY AND COMPLIANCE BOUNDARY: divorce, probate / a death, financial hardship and household or life-stage changes are a person's own business. They are NEVER the subject of a message, never a segment, never an audience — and (owner ruling 17) they are never simply handed to a person and forgotten either: when OFFER_HELP is allowed for such a moment, the follow-up arbiter decides how to warm engagement without mentioning the event (quiet monitoring, helpful education, appropriate outreach, or a person) — it is about them and how they feel right now. Never reason from race, colour, religion, sex, disability, familial status, national origin, marital status or age. Fair-housing copy rules apply to public marketing, not to this internal decision — but no decision may steer, exclude or target anyone by a protected trait.",
+  "ESCALATION RULE: choose HUMAN when the evidence is contradictory or name-only, or when anything suggests distress, danger, a dispute or a complaint — a person with judgment, not a reflex. A sensitive topic with corroborated, confirmed evidence is not by itself a reason for HUMAN: OFFER_HELP hands it to the arbiter's empathetic branch, WAIT keeps watching quietly. When unsure between OFFER_HELP and WAIT, choose WAIT.",
   "OUTPUT CONTRACT — JSON only: {action: one of the allowed actions, rationale: 1-3 plain sentences a broker would accept, helper_keys: string[], research_keys: string[], evidence: string[] (contribution ids you relied on), confidence: number 0..1}.",
 ].join("\n")
 
@@ -634,8 +669,8 @@ async function defaultDecide(a: { brokerageId: string; system: string; prompt: s
 
 /** PURE. The policy's own answer when the model is unavailable or refused — the most conservative permitted step. */
 function deterministicMovementAction(combo: MovementCombination, allowed: MovementAllowed): MovementNextAction {
-  const dom = combo.dominantRelevance
-  if (dom && INTIMATE_RELEVANCE.has(dom) && combo.band !== "none" && allowed.allowed.includes("human")) return "human"
+  // WAVE 148 (ruling 17): the policy's own fallback is NEVER "human" for a life event (was: an intimate topic → human). An intimate
+  // topic follows the same conservative ladder; offer_help only hands it to the arbiter, whose own default is quiet monitoring.
   if (allowed.allowed.includes("offer_help") && combo.band === "act") return "offer_help"
   if (allowed.allowed.includes("research") && combo.band !== "none") return "research"
   return "wait"
@@ -716,6 +751,8 @@ interface MovementRow {
   property_address_key: string | null; territory_key: string | null; source_key: string; source_kind: string; confidence: EpistemicClass
   identity_match: IdentityMatch; event_relevance: MovementRelevance; intents: string[]; side: MovementSide; evidence: MovementEvidence
   observed_at: string; outreach: MovementOutreach; protected_proxy: boolean; next_action: MovementNextAction | null; outcome: MovementOutcome | null
+  /** C20 (m919) — present on life-event rows only. */
+  life_event?: LifeEventType | null; event_at?: string | null; sequence?: number | null; supersedes?: string | null
 }
 
 /** PURE. The m892 row for a built record (exact column names — scripts/movement-signals-guard.ts checks them against the migration). */
@@ -728,6 +765,9 @@ function movementRowFor(r: MovementSignalRecord): Record<string, unknown> {
     source_key: r.sourceKey, source_kind: r.sourceKind, confidence: r.confidence, identity_match: r.identity, event_relevance: r.eventRelevance,
     intents: [...r.intents], side: r.side, evidence: r.evidence, observed_at: r.observedAt, captured_by: r.capturedBy, sensitivity: r.sensitivity,
     protected_proxy: r.protectedProxy, targeting_prohibited: r.targetingProhibited, data_rights: r.dataRights, outreach: r.outreach, idempotency_key: r.idempotencyKey,
+    // C20 (m919): the chronology columns ride LIFE-EVENT rows only (sequence / supersedes are set at persistence, from the
+    // subject's earlier rows) — a non-life row names no m919 column at all.
+    ...(r.lifeEvent ? { life_event: r.lifeEvent, event_at: r.eventAt } : {}),
   }
 }
 
@@ -742,6 +782,28 @@ function movementReasonCode(rel: MovementRelevance | null): "SELLER_FOLLOWUP_INT
   if (rel === "property_event" || rel === "relocation" || rel === "probate_estate" || rel === "divorce") return "SELLER_FOLLOWUP_INTENT_INCREASE"
   if (rel === "seeking_agent") return "BUYER_PROPERTY_MATCH"
   return "NURTURE_TOUCH"
+}
+
+/** C19: the registry rows whose evidence comes from a market-registry DATASET (survivor kind public_record) — capped by its verification. */
+const DATASET_BACKED_SOURCES: ReadonlySet<string> = new Set(["pr_permit_activity", "pr_code_violation", "pr_probate_open_data", "pr_property_transfer_open_data", "pr_street_use_permit"])
+
+/** PURE (C20). Where a new life-event row sits in the subject's history: the same event (canonical type + event day, an undated side
+ *  matching) keeps the earlier row's sequence and supersedes nothing; a new event takes max+1 and supersedes the latest earlier row
+ *  of the same event or of one its LIFE_EVENT_VOCAB entry lists in `supersedes`. */
+function movementChronology(
+  prior: ReadonlyArray<{ id: string; life_event: string | null; event_at: string | null; observed_at: string; sequence: number | null }>,
+  next: { lifeEvent: LifeEventType; eventAt: string | null; observedAt: string },
+): { sequence: number; supersedes: string | null } {
+  const day = (iso: string | null) => (iso ? iso.slice(0, 10) : null)
+  const at = (r: { event_at: string | null; observed_at: string }) => Date.parse(r.event_at ?? r.observed_at) || 0
+  const rows = prior.map((p) => ({ ...p, type: canonicalLifeEventType(p.life_event) })).filter((p): p is typeof p & { type: LifeEventType } => !!p.type)
+  const same = rows.find((p) => p.type === next.lifeEvent && (day(p.event_at) === null || day(next.eventAt) === null || day(p.event_at) === day(next.eventAt)))
+  if (same && typeof same.sequence === "number") return { sequence: same.sequence, supersedes: null }
+  const maxSeq = rows.reduce((m, p) => Math.max(m, typeof p.sequence === "number" ? p.sequence : 0), 0)
+  const entry = LIFE_EVENT_VOCAB[next.lifeEvent]
+  const nextAt = Date.parse(next.eventAt ?? next.observedAt) || 0
+  const replaced = rows.filter((p) => (p.type === next.lifeEvent || entry.supersedes.includes(p.type)) && at(p) <= nextAt).sort((a, b) => at(b) - at(a))[0]
+  return { sequence: maxSeq + 1, supersedes: replaced ? replaced.id : null }
 }
 
 export interface MovementDeps {
@@ -776,11 +838,43 @@ export async function recordMovementSignal(svc: Svc, input: MovementSignalInput 
     // A pre-built record (the watcher's, with its change key) is RE-VALIDATED — the record-time rules hold on every path, never
     // only on the builder's; only its idempotency key is kept.
     const fields: MovementSignalInput = "idempotencyKey" in input
-      ? { brokerageId: input.brokerageId, subject: input.subject, sourceKey: input.sourceKey, evidence: input.evidence, observedAt: input.observedAt, eventRelevance: input.eventRelevance, intents: input.intents, side: input.side, identity: input.identity, capturedBy: input.capturedBy, protectedProxy: input.protectedProxy, propertyAddress: input.propertyAddress }
+      ? { brokerageId: input.brokerageId, subject: input.subject, sourceKey: input.sourceKey, evidence: input.evidence, observedAt: input.observedAt, eventRelevance: input.eventRelevance, intents: input.intents, side: input.side, identity: input.identity, capturedBy: input.capturedBy, protectedProxy: input.protectedProxy, propertyAddress: input.propertyAddress, datasetKey: input.datasetKey ?? null, lifeEvent: input.lifeEvent ?? null, eventAt: input.eventAt ?? null }
       : input
-    const built = buildMovementSignal(fields)
+    let built = buildMovementSignal(fields)
     if (!built.ok) return { status: "refused", code: built.code, reason: built.reason }
+    // ── C19: THE DATASET CEILING (wave 148, lane 148F — owner ruling 6). A public-record record is only as good as its dataset: an
+    //    unverified / stale / drifted dataset (lib/intent/dataset-verification.ts, the code contract + its latest m918 observation)
+    //    never raises a record above `unknown`. An intimate topic is REFUSED instead (m892 never stores a divorce / estate as unknown).
+    const nowAt = deps.now ?? new Date()
+    // An unreadable m918 log keeps the dated CODE contract (it never upgrades anything) — and the record's ledger row SAYS so, so an
+    // unread drift overlay never renders as "checked and fine".
+    let datasetCeilingNote: { dataset_key: string | null; status: string; blind_spot: string } | null = null
+    if (DATASET_BACKED_SOURCES.has(built.record.sourceKey) && (built.record.confidence === "verified" || built.record.confidence === "reported")) {
+      const { datasetCeilingWithObservations } = await import("@/lib/intent/dataset-verification")
+      const ceiling = await datasetCeilingWithObservations(svc, built.record.datasetKey, nowAt)
+      if (ceiling.blindSpot) datasetCeilingNote = { dataset_key: built.record.datasetKey ?? null, status: ceiling.status, blind_spot: ceiling.blindSpot.slice(0, 300) }
+      if (ceiling.ceiling !== "verified") {
+        if (INTIMATE_RELEVANCE.has(built.record.eventRelevance)) return { status: "refused", code: "dataset_unverified", reason: `${built.record.datasetKey ?? "no dataset named"} is ${ceiling.status} in the market registry — an intimate topic is never stored on unverified evidence (${ceiling.reason})` }
+        const ev = built.record.evidence
+        built = buildMovementSignal({ ...fields, evidence: { confidence: "unknown", reason: `capped at unknown: dataset ${built.record.datasetKey ?? "(none named)"} is ${ceiling.status} in the market registry (C19) — ${ceiling.reason}`.slice(0, 600), summary: ev.summary, ...(ev.fields ? { fields: ev.fields } : {}) } })
+        if (!built.ok) return { status: "refused", code: built.code, reason: built.reason }
+      }
+    }
     const r: MovementSignalRecord = "idempotencyKey" in input ? { ...built.record, idempotencyKey: input.idempotencyKey } : built.record
+    // ── C20: THE CHRONOLOGY (m919). A life-event record takes its place in the subject's life-event history: the same event observed
+    //    again keeps its sequence (another observation, never a second event); a new event continues the sequence and SUPERSEDES the
+    //    latest earlier row of the same event or of an event its vocabulary entry supersedes. An unreadable history refuses (the next
+    //    tick retries) — a sequence is never guessed.
+    let chronology: { sequence: number; supersedes: string | null } | null = null
+    if (r.lifeEvent) {
+      const col = r.subject.type === "contact" ? "contact_id" : r.subject.type === "lead" ? "lead_id" : r.subject.type === "raw_lead" ? "raw_lead_id" : null
+      const subjectId = r.subject.type === "contact" || r.subject.type === "lead" || r.subject.type === "raw_lead" ? r.subject.id : null
+      if (col && subjectId) {
+        const { data: prior, error: pErr } = await svc.from("movement_signals").select("id, life_event, event_at, observed_at, sequence").eq("brokerage_id", r.brokerageId).eq(col, subjectId).not("life_event", "is", null).limit(200)
+        if (pErr) return { status: "refused", code: "chronology_unread", reason: `the subject's life-event history could not be read (${pErr.message}) — not recorded, the next tick retries` }
+        chronology = movementChronology((prior ?? []) as Array<{ id: string; life_event: string | null; event_at: string | null; observed_at: string; sequence: number | null }>, { lifeEvent: r.lifeEvent, eventAt: r.eventAt, observedAt: r.observedAt })
+      }
+    }
     const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
     let id: string | null = null
     // Set inside the ledger's callbacks (run / replay) — typed wide so the closure assignments are not narrowed away.
@@ -792,10 +886,10 @@ export async function recordMovementSignal(svc: Svc, input: MovementSignalInput 
         subject: r.subject.type === "property" ? { type: "property", ref: r.subject.addressKey } : r.subject.type === "territory" ? { type: "territory", ref: r.subject.territoryKey } : { type: r.subject.type, id: r.subject.id },
         idempotencyKey: r.idempotencyKey, reasonCode: movementReasonCode(r.eventRelevance), systemSource: "movement_signals",
         reasonDetail: `${r.sourceKey} → ${r.eventRelevance} (${r.confidence}, identity ${r.identity})`.slice(0, 500),
-        detail: { source_key: r.sourceKey, source_kind: r.sourceKind, confidence: r.confidence, event_relevance: r.eventRelevance, outreach: r.outreach, sensitivity: r.sensitivity, targeting_prohibited: r.targetingProhibited, data_rights: r.dataRights },
+        detail: { source_key: r.sourceKey, source_kind: r.sourceKind, confidence: r.confidence, event_relevance: r.eventRelevance, outreach: r.outreach, sensitivity: r.sensitivity, targeting_prohibited: r.targetingProhibited, data_rights: r.dataRights, ...(datasetCeilingNote ? { dataset_ceiling: datasetCeilingNote } : {}) },
       },
       async () => {
-        const { data, error } = await svc.from("movement_signals").insert(movementRowFor(r)).select("id").single()
+        const { data, error } = await svc.from("movement_signals").insert({ ...movementRowFor(r), ...(chronology ? { sequence: chronology.sequence, supersedes: chronology.supersedes } : {}) }).select("id").single()
         if (error) {
           if (String((error as { code?: string }).code) === "23505") return (status = "replayed")
           reason = `movement_signals insert refused: ${error.message}`
@@ -1094,7 +1188,12 @@ export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: stri
     const grounded = decisive.filter((r) => r.confidence === "verified" || r.confidence === "reported")
     const t = dom && combo.band !== "none" && grounded.length > 0 ? lifeChangeTypeFor({ relevance: dom, side: grounded[0]?.side, intents: grounded[0]?.intents as IntentKind[], verified: grounded.some((r) => r.confidence === "verified") }) : null
     const newest = grounded.reduce((m, r) => Math.max(m, Date.parse(r.observed_at) || 0), 0)
-    const signals: LifeChangeSignal[] = t ? [{ type: t.responderType, kind: t.kind, strength: combo.score, daysAgo: newest ? Math.max(0, Math.floor((a.now.getTime() - newest) / DAY_MS)) : 0 }] : []
+    // WAVE 148 (148F, ruling 17): the signal says HOW GOOD its evidence is — the arbiter's life-event branch offers automated, event-
+    // agnostic help only on grounded evidence with a confirmed identity (never a name-only match), and names the canonical event so
+    // the draft screen knows exactly which words may never appear.
+    const identityConfirmed = grounded.some((r) => r.identity_match === "record_key" || r.identity_match === "verified_match")
+    const lifeEvent = grounded.map((r) => canonicalLifeEventType(r.life_event ?? null)).find((x): x is LifeEventType => !!x) ?? null
+    const signals: LifeChangeSignal[] = t ? [{ type: t.responderType, kind: t.kind, strength: combo.score, daysAgo: newest ? Math.max(0, Math.floor((a.now.getTime() - newest) / DAY_MS)) : 0, evidence: { grounded: true, identityConfirmed, lifeEvent, source: "movement_signals" } }] : []
     const blind = [...ev.blind, ...(dom && combo.band !== "none" && grounded.length === 0 ? [`the ${dom.replace(/_/g, " ")} evidence is inferred only — research, not a life change`] : [])]
     return { signals, helpers: signals.length > 0 ? allowed.helpers : [], explanation: combo.explanation, blindSpot: blind.length ? `movement: ${blind.join("; ")}` : null }
   } catch (e) {
@@ -1112,6 +1211,8 @@ export const MOVEMENT_RAW_SIGNAL_VIEWERS: ReadonlySet<string> = LEAD_DESK_USER_T
 export interface LeadDeskMovementRecord {
   id: string; subject: { type: string; id: string | null; ref: string | null }; sourceKey: string; relevance: MovementRelevance; confidence: EpistemicClass
   identity: IdentityMatch; observedAt: string; outcome: MovementOutcome | null; nextAction: MovementNextAction | null; evidence: string; protectedProxy: boolean
+  /** C20 (wave 148, 148F, m919): the life-event chronology — null on a non-life row. `supersedes` is the earlier record's id. */
+  lifeEvent: LifeEventType | null; eventAt: string | null; sequence: number | null; supersedes: string | null
 }
 
 /**
@@ -1122,7 +1223,7 @@ export interface LeadDeskMovementRecord {
 export async function listMovementRecordsForLeadDesk(svc: Svc, a: { brokerageId: string; limit?: number; openOnly?: boolean }): Promise<{ records: LeadDeskMovementRecord[]; error: string | null }> {
   if (!a.brokerageId) return { records: [], error: "no tenant" }
   let q = svc.from("movement_signals")
-    .select("id, subject_type, contact_id, lead_id, raw_lead_id, property_address_key, territory_key, source_key, confidence, identity_match, event_relevance, evidence, observed_at, outcome, next_action, protected_proxy")
+    .select("id, subject_type, contact_id, lead_id, raw_lead_id, property_address_key, territory_key, source_key, confidence, identity_match, event_relevance, evidence, observed_at, outcome, next_action, protected_proxy, life_event, event_at, sequence, supersedes")
     .eq("brokerage_id", a.brokerageId)
   if (a.openOnly) q = q.is("outcome", null)
   const { data, error } = await q.order("observed_at", { ascending: false }).limit(Math.min(Math.max(a.limit ?? 50, 1), 200))
@@ -1134,6 +1235,8 @@ export async function listMovementRecordsForLeadDesk(svc: Svc, a: { brokerageId:
     observedAt: String(r.observed_at), outcome: (r.outcome ?? null) as MovementOutcome | null, nextAction: (r.next_action ?? null) as MovementNextAction | null,
     evidence: r.evidence ? `${(r.evidence as MovementEvidence).summary ?? ""} — ${movementEvidenceLabel(r.evidence as MovementEvidence)}` : "no evidence recorded",
     protectedProxy: r.protected_proxy === true,
+    lifeEvent: canonicalLifeEventType(r.life_event ?? null), eventAt: typeof r.event_at === "string" ? r.event_at : null,
+    sequence: typeof r.sequence === "number" ? r.sequence : null, supersedes: typeof r.supersedes === "string" ? r.supersedes : null,
   }))
   return { records, error: null }
 }

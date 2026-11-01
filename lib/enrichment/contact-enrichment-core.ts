@@ -61,6 +61,7 @@ import {
   fieldProvenanceOf,
 } from "@/lib/lead-pipeline/enrichment-column-map"
 import { OSINTClient } from "@/lib/osint-client"
+import { mergeLifeEvents } from "@/lib/enrichment/life-event-vocabulary"
 import { validateEmail, validatePhone } from "@/lib/contact-validation"
 import { trackVendorUsageService } from "@/lib/vendor-governance"
 import { isContactInLiveDeal, contactsInLiveDeals } from "./deal-suppression"
@@ -531,7 +532,7 @@ export async function enrichContactRecord(params: {
       .from("contacts")
       // Wave 144 (lane 144E): + the provider-written profile columns (PROVIDER_WRITTEN_PROFILE_COLUMNS), so the write below can
       // tell a GAP from a value a human stated (provider-dedup.ts protectStatedValues — no silent overwrite).
-      .select("id, brokerage_id, first_name, last_name, email, phone, address, city, state, zip_code, enriched_at, enrichment_profile, age_range, gender, occupation, education_level, home_owner_status, home_value_estimate, marital_status, household_income, net_worth_range, linkedin_url, facebook_url, twitter_url")
+      .select("id, brokerage_id, first_name, last_name, email, phone, address, city, state, zip_code, enriched_at, enrichment_profile, age_range, gender, occupation, education_level, home_owner_status, home_value_estimate, marital_status, household_income, net_worth_range, linkedin_url, facebook_url, twitter_url, life_events, last_life_event_detected")
       .eq("id", contactId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
@@ -709,14 +710,22 @@ export async function enrichContactRecord(params: {
       metadata: { lane: "contact_enrichment", trigger: params.trigger ?? "auto" },
     })
 
+    // C20 (wave 148, lane 148F): the OSINT pass used to REPLACE contacts.life_events with whatever this one search found (and with
+    // [] when it found nothing, or when OSINT did not run) — the person's life-event history, chronology and all, erased on every
+    // enrichment, and last_life_event_detected nulled with it. It now MERGES through the ONE write rule
+    // (lib/enrichment/life-event-vocabulary.ts mergeLifeEvents: canonical spelling, event_at / observed_at / sequence / supersedes,
+    // same-event dedup) and the stamp moves only when something NEW was added.
+    let lifeEventsAdded = 0
     if (osintData) {
+      const lifeMerge = mergeLifeEvents((contact as { life_events?: unknown }).life_events, osintData.life_events || [], { now: new Date() })
+      lifeEventsAdded = lifeMerge.added.length
       enrichmentData = {
         ...enrichmentData,
         public_records: osintData.public_records || [],
         court_records: osintData.court_records || [],
         property_records: osintData.property_records || [],
-        life_events: osintData.life_events || [],
-        last_life_event_detected: osintData.life_events?.length > 0 ? new Date().toISOString() : null,
+        life_events: lifeMerge.events,
+        last_life_event_detected: lifeEventsAdded > 0 ? new Date().toISOString() : ((contact as { last_life_event_detected?: string | null }).last_life_event_detected ?? null),
       }
 
       if (osintData.social_profiles?.length) {
@@ -744,6 +753,15 @@ export async function enrichContactRecord(params: {
     const enrichmentProvider: EnrichmentProvider | null =
       personData ? (enrichmentProviderOf(mappedColumns.enrichment_source) ?? "peopledata") : paidRungProvider
     delete mappedColumns.enrichment_source
+    // C20 (wave 148, 148F): a provider profile's life events join the SAME merged history (never a second, overwriting write of the
+    // column through the mapper's spread).
+    if (Array.isArray(mappedColumns.life_events)) {
+      const pdlMerge = mergeLifeEvents(Array.isArray(enrichmentData.life_events) ? enrichmentData.life_events : (contact as { life_events?: unknown }).life_events, mappedColumns.life_events as unknown[], { now: new Date() })
+      lifeEventsAdded += pdlMerge.added.length
+      enrichmentData.life_events = pdlMerge.events
+      enrichmentData.last_life_event_detected = lifeEventsAdded > 0 ? new Date().toISOString() : (enrichmentData.last_life_event_detected ?? (contact as { last_life_event_detected?: string | null }).last_life_event_detected ?? null)
+      delete mappedColumns.life_events
+    }
 
     // 5. Persist. Tenant-anchored on both the PK and the brokerage.
     //
@@ -762,7 +780,8 @@ export async function enrichContactRecord(params: {
       for (const k of ["linkedin_url", "facebook_url", "twitter_url"] as const) {
         if (enrichmentData[k] && enrichmentData[k] !== profile?.[k]) osintFilled.push(k)
       }
-      for (const k of ["life_events", "public_records", "court_records", "property_records"] as const) {
+      if (lifeEventsAdded > 0) osintFilled.push("life_events")
+      for (const k of ["public_records", "court_records", "property_records"] as const) {
         if (Array.isArray(enrichmentData[k]) && enrichmentData[k].length > 0) osintFilled.push(k)
       }
     }
@@ -779,8 +798,8 @@ export async function enrichContactRecord(params: {
       facebook_url: enrichmentData.facebook_url ?? mappedColumns.facebook_url,
       twitter_url: enrichmentData.twitter_url ?? mappedColumns.twitter_url,
       instagram_url: enrichmentData.instagram_url,
-      life_events: enrichmentData.life_events || [],
-      last_life_event_detected: enrichmentData.last_life_event_detected,
+      // C20: written only when the OSINT pass ran (the merged history) — a pass without it never touches the stored events.
+      ...(Array.isArray(enrichmentData.life_events) ? { life_events: enrichmentData.life_events, last_life_event_detected: enrichmentData.last_life_event_detected } : {}),
       public_records: enrichmentData.public_records || [],
       court_records: enrichmentData.court_records || [],
       property_records: enrichmentData.property_records || [],
@@ -962,28 +981,23 @@ export async function runLifeChangeCheck(params: {
       found = (osintData?.life_events ?? []).map((e) => ({ event: e.event, details: e.source, confidence: 50 }))
     }
 
-    let changesFound = 0
-    const existingEvents: any[] = Array.isArray(contact.life_events) ? (contact.life_events as any[]) : []
-    // §6 (wave 147, lane 147Z): ONE vocabulary (lib/enrichment/life-event-vocabulary.ts). A stored row under a retired spelling
-    // (`divorce`, `death_in_family`) or the OSINT `{ event }` shape is the SAME event as its survivor — never appended twice.
-    const { lifeEventTypeOf, canonicalLifeEventType } = await import("@/lib/enrichment/life-event-vocabulary")
-    const existingTypes = new Set<string>(existingEvents.map((e: any) => lifeEventTypeOf(e) ?? String(e?.type ?? e?.event ?? "")))
-    const merged = [...existingEvents]
-
-    for (const event of found) {
-      const type = canonicalLifeEventType(event.event) ?? event.event
-      if (existingTypes.has(type)) continue
-      existingTypes.add(type)
-      merged.push({
-        type,
-        details: event.details,
-        detected_at: new Date().toISOString(),
-        confidence: event.confidence,
-        ...(event.url ? { source_url: event.url } : {}),
-        ...(event.publishedDate ? { source_date: event.publishedDate } : {}),
-      })
-      changesFound++
-    }
+    // §6 (wave 147, lane 147Z): ONE vocabulary (lib/enrichment/life-event-vocabulary.ts). C20 (wave 148, lane 148F): and ONE write
+    // rule — mergeLifeEvents canonicalises the stored array (a retired spelling or the OSINT `{ event }` shape is the SAME event as
+    // its canonical record), dedups the same event (type + event day; was "keyed on the TYPE", which could never record a SECOND
+    // relocation), stamps event_at / observed_at / sequence and links a new record to the earlier one it supersedes. The event's
+    // own date (the page's published date) is its event_at; when we found it is its observed_at.
+    const nowIso = new Date().toISOString()
+    const lifeMerge = mergeLifeEvents(contact.life_events, found.map((event) => ({
+      type: event.event,
+      details: event.details,
+      detected_at: nowIso,
+      confidence: event.confidence,
+      ...(event.url ? { source_url: event.url } : {}),
+      ...(event.publishedDate ? { source_date: event.publishedDate } : {}),
+    })), { now: nowIso })
+    const merged = lifeMerge.events
+    const changesFound = lifeMerge.added.length
+    if (lifeMerge.dropped.length > 0) console.warn(`[enrichment] life-change check dropped ${lifeMerge.dropped.length} token(s) outside the vocabulary: ${lifeMerge.dropped.map((d) => d.token).join(", ").slice(0, 200)}`)
 
     // ONE write, whether or not anything changed. The old implementation wrote
     // the whole array once PER new event inside the loop and then wrote the

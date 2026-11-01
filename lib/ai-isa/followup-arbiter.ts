@@ -89,6 +89,10 @@ import { channelCarriesVideo, type CampaignChannelKey } from "@/lib/campaigns/ch
 import { CHANNEL_PROVIDER_MATRIX } from "@/lib/providers/channel-provider-matrix"
 import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"
 import { LEAD_ALLOWED_CHANNELS } from "./lead-channel-policy"
+import {
+  LIFE_EVENT_TYPES, LIFE_EVENT_VOCAB, canonicalLifeEventType, lifeEventVocabEntry,
+  type LifeEventType, type LifeEventEngagementMode, type LifeEventSensitivity,
+} from "@/lib/enrichment/life-event-vocabulary"
 
 /** Contract C1's row shape, local on purpose (one line): the arbiter depends on the matrix's VALUES, never on lane D's type names. */
 type ChannelProviderRule = { categories?: readonly string[]; providers?: readonly string[] }
@@ -363,6 +367,10 @@ export type LifeChangeKind = "moving" | "home_sale" | "buying" | "refinance" | "
  * inbound-intent classifier writes (`returning_<side>_<reason>`). An unknown type is `engagement` — real intent, no assumption.
  */
 export const LIFE_CHANGE_SIGNAL_KINDS: Readonly<Record<string, LifeChangeKind>> = Object.freeze({
+  // WAVE 148 (lane 148F, C20): every spelling of every life event in THE chronological map (lib/enrichment/life-event-vocabulary.ts
+  // LIFE_EVENT_VOCAB — canonical + aliases) reads as its follow-up kind, so a signal written under any spelling (`probate_filing`,
+  // `divorce`, `death_in_family`, `wedding` …) reaches the life-event branch; the explicit rows below win where they overlap.
+  ...Object.fromEntries(LIFE_EVENT_TYPES.flatMap((t) => [t, ...LIFE_EVENT_VOCAB[t].aliases].map((k) => [k, LIFE_EVENT_VOCAB[t].followupKind as LifeChangeKind]))),
   refinance_opportunity: "refinance", rate_drop_refinance: "refinance",
   equity_milestone: "equity", equity_event: "equity",
   next_move_intent: "moving", relocation_referral_request: "moving", moving_intent: "moving", change_of_address: "moving",
@@ -396,7 +404,13 @@ function lifeChangeKindOf(signalType: string | null | undefined): LifeChangeKind
   return "engagement"
 }
 
-export interface LifeChangeSignal { type: string; kind: LifeChangeKind; strength: number | null; daysAgo: number }
+export interface LifeChangeSignal {
+  type: string; kind: LifeChangeKind; strength: number | null; daysAgo: number
+  /** WAVE 148 (148F, ruling 17): how good the evidence behind the signal is — automated, event-agnostic help for a life event needs
+   *  `grounded` (a verified / reported record) AND `identityConfirmed` (never a name-only match); `lifeEvent` is the canonical event
+   *  (LIFE_EVENT_VOCAB) so the draft screen knows which words may never appear. Absent = unknown = not enough for automated help. */
+  evidence?: { grounded: boolean; identityConfirmed: boolean; lifeEvent: LifeEventType | null; source: string }
+}
 
 /**
  * PURE. The SIGNAL slice of the candidate set: a recent life-change / intent signal adds the experiences that serve that moment,
@@ -448,7 +462,13 @@ function planWithLifeChangeSignals(
         if (buyerish || type === "") push("properties", 55, `signal: ${when} — buying intent: matching properties`)
         break
       case "life_event":
-        push("agent_intervention", 45, `signal: ${when} — a life event is a person's conversation, never an automated message about it`)
+        // WAVE 148 (lane 148F, owner ruling 17 — REVERSES wave 144's "a person only"): a life event is about THEM and how they feel
+        // right now. Quiet monitoring is the empathetic default; helpful, event-agnostic education is the gentlest automated help; a
+        // person may reach out personally. The arbiter's life-event branch (lifeEventMenu) decides among them — automated help
+        // only on confirmed evidence under the tenant's explicit autonomy — and nothing ever names the event.
+        push("wait", 45, `signal: ${when} — a significant personal moment: quiet monitoring is the kind default (no message about it, no pressure)`)
+        push("education", 30, `signal: ${when} — helpful, event-agnostic education (something useful to anyone) — never about the moment itself`)
+        push("agent_intervention", 25, `signal: ${when} — a person's conversation when judgment is needed: the agent may reach out personally about something useful, never the event`)
         break
       case "engagement":
         push("communication", 15, `signal: ${when} — fresh engagement: a personal, useful touch`)
@@ -496,6 +516,9 @@ export interface ArbiterFacts {
   /** Wave 147 (147Z, lane 147B C9): the neighbourly helpers the verified / reported movement evidence supports — OPTIONS the
    *  model may weigh (each names the planner experience that carries it), never a schedule and never the signal's source. */
   neighbourlyHelpers?: Array<{ key: string; title: string; offer: string; experience: string }>
+  /** Wave 148 (148F, ruling 17): present when the DECISIVE signal is a life event — the brief the empathetic branch decides under
+   *  (never the words to say: the sensitivity, the tone, what the evidence and the tenant's authority permit). */
+  lifeEvent?: { sensitivity: LifeEventSensitivity | "unknown"; category: string; tone: string; modesOffered: LifeEventEngagementMode[]; automatedHelpOffered: boolean; whyNotAutomated: string[]; evidence: { grounded: boolean; identityConfirmed: boolean } }
 }
 
 export interface ArbiterDecision {
@@ -516,7 +539,13 @@ export interface ArbiterDecision {
   /** Why the planner's verdict stood instead of a model choice (locked / disabled / budget / invalid / outage). */
   fallbackReason: string | null
   menu: string[]
+  /** Wave 148 (148F, ruling 17): the life-event guard every downstream writer honours — the mode chosen, the canonical event (or
+   *  null), the words a draft may never contain and the tone. Present only when the decisive signal was a life event. */
+  lifeEvent?: LifeEventDecisionGuard
 }
+
+/** What a life-event decision hands downstream (and to the ledger): the mode, and the rules of the words. */
+export interface LifeEventDecisionGuard { mode: LifeEventEngagementMode; canonical: LifeEventType | null; sensitivity: LifeEventSensitivity | "unknown"; neverMention: string[]; tone: string; automatedHelpOffered: boolean }
 
 export interface ArbiterRaw {
   optionId?: unknown
@@ -614,8 +643,10 @@ export interface ArbiterMenu {
   menu: ArbiterOption[]
   /** A hard verdict the model is never asked about (and why). */
   locked: { kind: ExperienceKind; reason: string } | null
-  /** Wave 147 (147Z): the menu was narrowed to a person / a wait because the decisive signal is a life event. */
+  /** Wave 147 (147Z) / 148 (148F): the menu was shaped by the life-event branch (lifeEventMenu) because the decisive signal is a life event. */
   narrowedForLifeEvent?: boolean
+  /** Wave 148 (148F): the brief + guard of that branch. */
+  lifeEvent?: { brief: NonNullable<ArbiterFacts["lifeEvent"]>; guard: Omit<LifeEventDecisionGuard, "mode"> }
 }
 
 /**
@@ -646,11 +677,7 @@ function arbiterMenuFromPlan(
 
 /**
  * PURE (wave 147, lane 147Z — lane 147B's advisory, owner ruling 3). The DECISIVE signal is the freshest one that is not mere
- * engagement (a tie goes to the life event — the conservative reading). When it is a LIFE EVENT (a divorce or probate filing, a
- * disclosed life change, a provider's public life event) the follow-up is a person's conversation: the menu keeps only
- * `agent_intervention` and `wait` (a person is always present — added when the planner did not rank one), so the model cannot pick
- * an automated touch for that moment. Never applied to a locked menu (the hard verdict stands) or to a requirement (speed-to-lead /
- * a promised deliverable — the person asked; that branch already offers a person).
+ * engagement (a tie goes to the life event — the conservative reading).
  */
 export function decisiveLifeChangeSignal(signals: readonly LifeChangeSignal[]): LifeChangeSignal | null {
   let best: LifeChangeSignal | null = null
@@ -661,14 +688,66 @@ export function decisiveLifeChangeSignal(signals: readonly LifeChangeSignal[]): 
   return best
 }
 
-function narrowMenuForLifeEvent(menu: ArbiterMenu, signals: readonly LifeChangeSignal[], priority: ArbiterPriority | null): ArbiterMenu {
+/** Wave 148 (148F): whether the tenant has EXPLICITLY granted the AI ISA autonomy (the same grant the inbound responder honours —
+ *  lib/managers/autonomy-gate.ts posture `autonomous` + the authority ladder + no halt). Unreadable = not granted (fail closed). */
+export interface LifeEventAuthority { allowed: boolean; reason: string | null }
+
+/** The automated experiences the life-event branch may offer when nothing names the event (a generic `life_event` signal). */
+const GENERIC_LIFE_EVENT_AUTOMATED: readonly ExperienceKind[] = ["education", "communication"]
+
+/** PURE. The mode (ruling 17's five words) an experience carries for a life event. */
+function lifeEventModeOf(kind: ExperienceKind): LifeEventEngagementMode {
+  if (kind === "wait") return "quiet_monitoring"
+  if (kind === "education") return "helpful_education"
+  if (kind === "agent_intervention" || kind === "professional_referral") return "human"
+  return "appropriate_outreach"
+}
+
+/**
+ * PURE (wave 148, lane 148F — owner ruling 17; REPLACES wave 147's narrowMenuForLifeEvent, which cut the menu to a person or a
+ * wait). "A life event signal should never just send to a human and the arbiter should decide the best way to warm engagement
+ * without mentioning the life event — it is about them and their emotions at this time." When the DECISIVE signal is a life event,
+ * the closed menu becomes the empathetic branch:
+ *   · QUIET MONITORING (`wait`) — always offered unless the moment is overdue; the policy's own fallback (a person is never the reflex);
+ *   · HELPFUL EDUCATION / APPROPRIATE OUTREACH — the automated experiences LIFE_EVENT_VOCAB allows for this event (education /
+ *     communication; market updates / homes only where the map allows), offered ONLY when the evidence is grounded with a CONFIRMED
+ *     identity (never a name-only match) AND the tenant has explicitly granted the AI ISA autonomy — otherwise the reasons are said;
+ *   · A HUMAN (`agent_intervention`) — always present: escalation for distress, contradiction or anything needing judgment;
+ *   · RESEARCH is the movement manager's own step (lib/intent/movement-signals.ts decideMovementNextAction) — here it is quiet
+ *     monitoring while evidence gathers.
+ * Every option outside those is removed (no video, no portal task, no referral rides a life event). Never applied to a locked menu
+ * (the hard verdict stands) or to a requirement (speed-to-lead / a promised deliverable — the person asked).
+ */
+function lifeEventMenu(menu: ArbiterMenu, signals: readonly LifeChangeSignal[], priority: ArbiterPriority | null, authority: LifeEventAuthority | null): ArbiterMenu {
   if (menu.locked || priority) return menu
   const decisive = decisiveLifeChangeSignal(signals)
   if (!decisive || decisive.kind !== "life_event") return menu
-  const why = `the decisive signal is a life event (${decisive.type}, ${decisive.daysAgo}d ago) — a person's conversation, never an automated message`
-  const kept = menu.menu.filter((o) => o.kind === "agent_intervention" || o.kind === "wait")
-  const person = kept.some((o) => o.kind === "agent_intervention") ? [] : [{ id: "agent_intervention", kind: "agent_intervention" as ExperienceKind, channels: ["human_task" as ArbiterChannel], why: [why] }]
-  return { menu: [...person, ...kept].map((o) => (o.kind === "agent_intervention" && !o.why.includes(why) ? { ...o, why: [...o.why, why].slice(-4) } : o)), locked: null, narrowedForLifeEvent: true }
+  const entry = lifeEventVocabEntry(decisive.evidence?.lifeEvent ?? decisive.type)
+  const automated: readonly ExperienceKind[] = entry ? entry.allowedOutreach.automatedExperiences : GENERIC_LIFE_EVENT_AUTOMATED
+  const grounded = decisive.evidence?.grounded === true
+  const confirmed = decisive.evidence?.identityConfirmed === true
+  const whyNot: string[] = []
+  if (!grounded) whyNot.push("the evidence is not grounded in a verified or reported record")
+  if (!confirmed) whyNot.push("the identity is not confirmed (it may be someone else)")
+  if (!authority?.allowed) whyNot.push(authority?.reason ?? "the tenant has not explicitly granted the AI ISA autonomy for help it sends itself")
+  const autoOk = whyNot.length === 0
+  const sensitivity: LifeEventSensitivity | "unknown" = entry?.sensitivity ?? "unknown"
+  const tone = entry?.allowedOutreach.tone ?? LIFE_EVENT_VOCAB.death_in_household.allowedOutreach.tone
+  const note = `a life event is decisive (${decisive.daysAgo}d ago, ${sensitivity}) — warm engagement that is about them, never the event`
+  const kept = menu.menu
+    .filter((o) => o.kind === "wait" || o.kind === "agent_intervention" || (autoOk && automated.includes(o.kind)))
+    .map((o) => ({ ...o, why: [...o.why, o.kind === "wait" ? "quiet monitoring — the kind default while the moment breathes" : o.kind === "agent_intervention" ? "a person, when judgment is needed (distress, a question, a contradiction)" : "warm, event-agnostic help — the draft is screened and may never name or allude to the event", note].slice(-4) }))
+  const person = kept.some((o) => o.kind === "agent_intervention") ? [] : [{ id: "agent_intervention", kind: "agent_intervention" as ExperienceKind, channels: ["human_task" as ArbiterChannel], why: ["a person, when judgment is needed (distress, a question, a contradiction)", note] }]
+  const out = [...kept, ...person]
+  const modes = [...new Set(out.map((o) => lifeEventModeOf(o.kind)))]
+  const neverMention = entry ? [...entry.allowedOutreach.neverMention] : [...new Set(LIFE_EVENT_TYPES.flatMap((t) => [...LIFE_EVENT_VOCAB[t].allowedOutreach.neverMention]))]
+  return {
+    menu: out, locked: null, narrowedForLifeEvent: true,
+    lifeEvent: {
+      brief: { sensitivity, category: entry?.category ?? "unknown", tone, modesOffered: modes, automatedHelpOffered: autoOk && out.some((o) => automated.includes(o.kind)), whyNotAutomated: whyNot, evidence: { grounded, identityConfirmed: confirmed } },
+      guard: { canonical: entry?.canonical ?? null, sensitivity, neverMention, tone, automatedHelpOffered: autoOk && out.some((o) => automated.includes(o.kind)) },
+    },
+  }
 }
 
 // ── prompt + validation ──────────────────────────────────────────────────────────────────────
@@ -684,9 +763,30 @@ export const ARBITER_SYSTEM = [
   "When moment.key is speed_to_lead the person is NEW and must be answered now: a fast first response is a high-priority requirement, so waiting is not offered — choose the best permitted way to answer (the first touch on the channel that fits their stage, consent, preference, urgency and any existing activity, or a person when the situation needs one). The one welcome on becoming a contact is a fixed send outside this judgment.",
   "When moment.key is promised_deliverable we promised this person something (a guide, report, video or book) and it has not reached them: deliver it now on the permitted channel that fits them, or hand it to a person — never wait.",
   "When moment.key starts with inbound_ the person just wrote to us: answer usefully (reply), or hand it to a person when it needs judgment (a complaint, distress, a legal or fair-housing question, a negotiation). A public comment is read by everyone — the reply stays general and invites a private conversation.",
-  "evidence.signals are recent life-change / intent signals — evidence, not certainty (a movement signal reaches you only when a verified or reported record carries it). A life event (divorce, probate, a disclosed life change) is a person's conversation: never an automated message about it. evidence.neighbourlyHelpers, when present, are neighbourly ways to help that the evidence supports (each names the experience that carries it) — weigh them as options, never mention the signal or where it came from, and never assume more than the evidence says.",
+  "evidence.signals are recent life-change / intent signals — evidence, not certainty (a movement signal reaches you only when a verified or reported record carries it). A life event (divorce, a death or estate, financial hardship, a household or career change) is about the person and how they feel right now: it is never the subject of a message, and it is never simply handed to a person either — the life-event brief (evidence.lifeEvent) says what the evidence and the tenant's authority permit. evidence.neighbourlyHelpers, when present, are neighbourly ways to help that the evidence supports (each names the experience that carries it) — weigh them as options, never mention the signal or where it came from, and never assume more than the evidence says.",
   "Reply with JSON only: {optionId, channel|null, format|null, waitHours|null, rationale (1-3 sentences, plain words), evidence (the fact keys you used), confidence 0..1}.",
 ].join(" ")
+
+/**
+ * WAVE 148 (lane 148F, owner ruling 17 — "a life event signal should never just send to a human and the arbiter should decide the
+ * best way to warm engagement without mentioning the life event — it is about them and their emotions at this time"): THE
+ * LIFE-EVENT BRANCH'S DECISION PROMPT. Used (through arbitrateFollowUp's `system`) whenever lifeEventMenu shaped the menu; the SAME
+ * closed-menu validator applies (an option off the menu, an uncited reason or a confidence under the tenant's floor keeps the
+ * policy's quiet-monitoring default). Business voice from .claude/skills/real-estate-client-communication (trusted advisor,
+ * emotionally aware, never pushy — the agent's reputation is on every word) and .claude/skills/real-estate-expert (fair housing,
+ * state-varying solicitation rules for estates; no legal or financial advice).
+ */
+export const ARBITER_LIFE_EVENT_SYSTEM = [
+  "ROLE. You are the most emotionally intelligent member of a licensed real-estate brokerage's AI team — part seasoned agent, part trusted neighbour, part counsellor who knows when to say nothing. You decide how the team shows up for ONE person who may be living through a significant personal moment. The AI is the first line of the agent's business and every choice reflects on that agent: be kind and neighbourly.",
+  "BUSINESS CONTEXT. A signal suggests a life event — a loss or an estate, a separation, financial hardship, a household change, a new job or a move. In real estate these moments often precede a home decision, and the brokerage that is genuinely helpful (never opportunistic) is the one people remember and call when THEY are ready. A person who senses they are being watched, sold to, or 'targeted because of what happened' is lost for good — and may be hurt. It is about them and their emotions at this time, not about a transaction.",
+  "FACTS YOU MAY RELY ON — ONLY the JSON given: evidence.lifeEvent (the sensitivity, the category, the tone brief, which modes are on the menu, whether automated help is offered and — if not — exactly why), evidence.signals (types and how many days ago; evidence, never certainty), evidence.relationship, evidence.history (when they were last touched and how), evidence.preferences, evidence.channels (what is permitted per channel), evidence.blindSpots (each is UNKNOWN, never 'fine'), the options menu with the planner's reasons, and tenant_guidance. Never invent what happened, who was involved, how they feel, a timeline, a price or a reason.",
+  "THE DECISION YOU OWN — choose exactly ONE option id from the menu: QUIET MONITORING ('wait': hold, keep listening, let the moment breathe — often the kindest answer, especially soon after a loss or a separation); HELPFUL EDUCATION ('education', when offered: something useful to ANY homeowner — a seasonal home-care checklist, trusted local services, how to read the local market — chosen because it fits their stage, never because of the event); APPROPRIATE OUTREACH ('communication' / 'market_update' / 'properties', when offered: a warm, low-pressure touch that would make sense even if nothing had happened); or A HUMAN ('agent_intervention': the agent reaches out personally — when judgment is genuinely needed). Research continues through the movement manager whatever you choose. You do NOT write the message; whoever writes it receives the same rules and a screen refuses any draft that names or alludes to the event.",
+  "WHAT 'WARM' MEANS HERE. Lead with usefulness and choice, never urgency. No congratulations, no condolences used as an opener, no 'I noticed', no 'heard about', no valuation nudge, no 'now is a great time'. The person must never be able to infer that we know about the event. Consider timing: a fresh, painful event usually calls for quiet monitoring; an older or upbeat one (a new job) may welcome gentle, useful help. Frequency matters: if they were touched recently, prefer quiet monitoring.",
+  "AUTONOMY AND EVIDENCE. Automated help appears on the menu only when the evidence is grounded with a CONFIRMED identity AND the tenant explicitly granted the AI ISA autonomy; when evidence.lifeEvent.automatedHelpOffered is false, choose between quiet monitoring and a person — and do not choose a person merely because the topic is sensitive.",
+  "ESCALATION RULE (choose agent_intervention). Signs of distress, danger, grief expressed TO US, a dispute or a legal matter; contradictory or confusing evidence; a person who asked to speak to someone; a relationship where the agent clearly knows them personally and a human note is what a friend would send; anything you are unsure a machine should touch. Estate-solicitation and outreach rules vary by state — when in doubt about the law, a person.",
+  "COMPLIANCE BOUNDARY. Never reason from race, colour, religion, sex, disability, familial status, national origin, marital status or age, and never let a protected trait or its proxy (a marriage, a baby, a retirement) steer a housing offer — a household change never selects homes or neighbourhoods. Consent, opt-out, do-not-contact, quiet hours and fatigue are enforced around you and cannot be changed. Fair-housing copy screening applies to public marketing; your decision rests only on the evidence keys supplied.",
+  "OUTPUT CONTRACT. Reply with JSON only: {\"optionId\": one menu id, \"channel\": one of that option's channels or null, \"format\": null, \"waitHours\": hours to hold when optionId is 'wait' (within the bounds given) else null, \"rationale\": 1-3 plain sentences a broker would accept, written WITHOUT naming the event, \"evidence\": [the top-level evidence keys you relied on, e.g. \"lifeEvent\", \"signals\", \"history\"], \"confidence\": 0..1}.",
+].join("\n")
 
 /**
  * WAVE 147 (lane 147G, owner rulings 12 + 18 — "sms needs to reach the arbiter's responder"; "prompts are detailed, expert,
@@ -870,6 +970,8 @@ async function arbitrateExperiencePlan(
     checks?: ChannelCheck[] | null; deliverable?: readonly ArbiterChannel[] | null; signals?: readonly LifeChangeSignal[]; priority?: ArbiterPriority | null
     /** Wave 147 (147Z): the neighbourly helpers lane B's C9 evidence supports — options for the model, never a timetable. */
     helpers?: readonly ArbiterMovementHelper[]
+    /** Wave 148 (148F): the tenant's explicit autonomy grant, read only when the decisive signal is a life event (null = not granted). */
+    lifeEventAuthority?: LifeEventAuthority | null
   },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbitratedPlan> {
@@ -879,15 +981,20 @@ async function arbitrateExperiencePlan(
     allowedChannels: a.input.policy.allowedChannels, videoAllowed: a.input.policy.videoAllowed, checks: a.checks ?? null, deliverable: a.deliverable ?? null,
     daysSinceMomentOpen: a.moment?.daysSinceOpen ?? a.daysDeferred ?? null,
   }
-  // WAVE 147 (147Z, lane 147B's advisory): a LIFE EVENT that is the decisive signal is a person's conversation — the closed menu
-  // narrows to a person or a bounded wait (never an automated touch the model might still pick). A requirement (speed-to-lead,
-  // a promised deliverable) is not narrowed: the person asked for that, and its own branch already offers a person.
-  const menu = narrowMenuForLifeEvent(arbiterMenuFromPlan(a.plan, a.policy, ctx), a.signals ?? [], a.priority ?? null)
-  const plannedKind: ExperienceKind = menu.narrowedForLifeEvent && !menu.menu.some((o) => o.kind === a.plan.chosen.kind) ? (menu.menu[0]?.kind ?? a.plan.chosen.kind) : a.plan.chosen.kind
+  // WAVE 148 (148F, owner ruling 17 — REPLACES wave 147's narrowing to a person or a wait): a LIFE EVENT that is the decisive
+  // signal opens the empathetic branch (lifeEventMenu): quiet monitoring, helpful education, appropriate outreach (automated help
+  // only on confirmed evidence under the tenant's explicit autonomy) or a person — decided under ARBITER_LIFE_EVENT_SYSTEM, with
+  // QUIET MONITORING as the policy's own fallback (never a person by reflex). A requirement (speed-to-lead, a promised
+  // deliverable) is not reshaped: the person asked for that, and its own branch already offers a person.
+  const menu = lifeEventMenu(arbiterMenuFromPlan(a.plan, a.policy, ctx), a.signals ?? [], a.priority ?? null, a.lifeEventAuthority ?? null)
+  const lifeDefault: ExperienceKind | null = menu.lifeEvent ? (menu.menu.some((o) => o.kind === "wait") ? "wait" : "agent_intervention") : null
+  const plannedKind: ExperienceKind = lifeDefault ?? a.plan.chosen.kind
   const plannedRanked = a.plan.ranked.find((r) => r.kind === plannedKind)
-  const chosenOpt: ArbiterOption = { id: plannedKind, kind: plannedKind, channels: channelsForKind(plannedKind, ctx), why: (plannedKind === a.plan.chosen.kind ? a.plan.chosen.reasons : plannedRanked?.reasons ?? ["a life event is a person's conversation"]).slice(0, 4) }
+  const chosenOpt: ArbiterOption = { id: plannedKind, kind: plannedKind, channels: channelsForKind(plannedKind, ctx), why: (plannedKind === a.plan.chosen.kind ? a.plan.chosen.reasons : plannedRanked?.reasons ?? ["quiet monitoring — the kind default for a significant personal moment"]).slice(0, 4) }
   const facts = arbiterFactsFromExperienceInput(a.input, moment, { checks: a.checks ?? null, signals: a.signals, helpers: a.helpers })
-  const decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null }, deps)
+  if (menu.lifeEvent) facts.lifeEvent = menu.lifeEvent.brief
+  const decided = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null, system: menu.lifeEvent ? ARBITER_LIFE_EVENT_SYSTEM : null }, deps)
+  const decision: ArbiterDecision = menu.lifeEvent ? { ...decided, lifeEvent: { ...menu.lifeEvent.guard, mode: lifeEventModeOf(decided.kind) } } : decided
   if (decision.kind === a.plan.chosen.kind && decision.waitHours === null) return { plan: a.plan, decision }
   let found: RankedExperience | undefined = a.plan.ranked.find((r) => r.kind === decision.kind)
   if (!found && decision.kind === "agent_intervention") {
@@ -910,6 +1017,8 @@ export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | 
     ...(extra.checks ? { channels_considered: extra.checks.map((c) => ({ channel: c.channel, available: c.available, approval: c.approval, spend_tier: c.spendTier, reasons: c.reasons.slice(0, 3) })) } : {}),
     ...(extra.signals && extra.signals.length > 0 ? { signals: extra.signals.map((s) => ({ type: s.type, kind: s.kind, days_ago: s.daysAgo })) } : {}),
     ...(extra.blindSpots && extra.blindSpots.length > 0 ? { channel_blind_spots: [...extra.blindSpots] } : {}),
+    // Wave 148 (148F, ruling 17 — LAW 5): the life-event mode chosen and the rules of the words, for every downstream writer and audit.
+    ...(d.lifeEvent ? { life_event: { mode: d.lifeEvent.mode, canonical: d.lifeEvent.canonical, sensitivity: d.lifeEvent.sensitivity, automated_help_offered: d.lifeEvent.automatedHelpOffered, never_mention: d.lifeEvent.neverMention, tone: d.lifeEvent.tone } } : {}),
   }
 }
 
@@ -1248,18 +1357,25 @@ async function loadLifeChangeSignals(
   a: { brokerageId: string; contactId: string; now: Date; policy: FollowupPolicy; movementConsumer?: MovementSignalConsumer | null },
 ): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null; helpers: ArbiterMovementHelper[] }> {
   const since = new Date(a.now.getTime() - a.policy.sphere.lifeEventWindowDays * DAY_MS).toISOString()
-  const { data, error } = await svc.from("signal_reactivations").select("signal_type, signal_strength, triggered_at")
+  const { data, error } = await svc.from("signal_reactivations").select("signal_type, signal_strength, triggered_at, signal_data")
     .eq("brokerage_id", a.brokerageId).eq("contact_id", a.contactId).gte("triggered_at", since).order("triggered_at", { ascending: false }).limit(20)
   const blind: string[] = []
   const seen = new Set<string>()
   const signals: LifeChangeSignal[] = []
   if (error) blind.push(`signals: signal_reactivations read refused (${error.message})`)
-  for (const r of (error ? [] : (data ?? [])) as Array<{ signal_type: string | null; signal_strength: number | null; triggered_at: string | null }>) {
+  for (const r of (error ? [] : (data ?? [])) as Array<{ signal_type: string | null; signal_strength: number | null; triggered_at: string | null; signal_data?: Record<string, unknown> | null }>) {
     const type = String(r.signal_type ?? "")
     if (!type || seen.has(type)) continue
     seen.add(type)
     const at = r.triggered_at ? Date.parse(r.triggered_at) : NaN
-    signals.push({ type, kind: lifeChangeKindOf(type), strength: typeof r.signal_strength === "number" ? r.signal_strength : null, daysAgo: Number.isFinite(at) ? Math.max(0, Math.floor((a.now.getTime() - at) / DAY_MS)) : 0 })
+    // WAVE 148 (148F): a signal's evidence quality. Only the C9 movement path (the bus line from lib/intent/movement-signals.ts —
+    // offer_help is allowed there only on verified / reported evidence with a confirmed identity) is grounded + confirmed; every
+    // other writer's row is unknown evidence (fail closed: not enough for automated help on a life event).
+    const source = String(r.signal_data?.source ?? "")
+    const c9 = source === "enrichment:movement_signals" || source.startsWith("movement:")
+    const kind = lifeChangeKindOf(type)
+    signals.push({ type, kind, strength: typeof r.signal_strength === "number" ? r.signal_strength : null, daysAgo: Number.isFinite(at) ? Math.max(0, Math.floor((a.now.getTime() - at) / DAY_MS)) : 0,
+      ...(kind === "life_event" ? { evidence: { grounded: c9, identityConfirmed: c9, lifeEvent: canonicalLifeEventType(type), source: source || "signal_reactivations" } } : {}) })
   }
   // Lane 144E's provider-backed signals (`## Signals available`): STORED facts on the contact row, read through ITS pure reader
   // (lib/enrichment/intent-signal-sources.ts intentSignalsFromContact — no call, no spend). Tenant-pinned read by the PK.
@@ -1360,7 +1476,11 @@ function storedFactSignals(
     if (!Number.isFinite(at) || at < since) { notAChange.push(`${type} (not dated inside the window)`); continue }
     const kind: LifeChangeKind | null = o.sensitivity === "life_event" ? "life_event" : (INTENT_TO_LIFE_CHANGE[o.intents[0] ?? ""] ?? null)
     if (!kind) { notAChange.push(type); continue }
-    signals.push({ type, kind, strength: null, daysAgo: Math.max(0, Math.floor((now.getTime() - at) / DAY_MS)) })
+    // WAVE 148 (148F): a public web mention (osint) is a NAME-ONLY match — never confirmed; a licensed provider's field rides the
+    // enrichment's identity match (reported, confirmed). The canonical event is read from the stored value through the vocabulary.
+    const lifeEvent = kind === "life_event" ? (String(v).split(",").map((x) => canonicalLifeEventType(x)).find((x): x is LifeEventType => !!x) ?? (o.key === "job_change" ? "job_change" : null)) : null
+    signals.push({ type, kind, strength: null, daysAgo: Math.max(0, Math.floor((now.getTime() - at) / DAY_MS)),
+      ...(kind === "life_event" ? { evidence: { grounded: true, identityConfirmed: o.provider !== "osint", lifeEvent, source: `${o.provider}.${o.key}` } } : {}) })
   }
   return { signals, notAChange }
 }
@@ -1536,6 +1656,25 @@ export async function respondToLifeChangeSignal(
   }
 }
 
+/**
+ * Wave 148 (148F, ruling 17): the tenant's EXPLICIT grant for help the AI ISA sends ITSELF at a life event — the same standard the
+ * inbound responder applies to an unattended reply (lib/communications/inbound-responder.ts): posture `autonomous` (never merely
+ * "no signal"), the authority ladder, no platform / tenant halt. Fails CLOSED (an unreadable grant is no grant).
+ */
+async function defaultLifeEventAuthority(svc: { from: (t: string) => any }, brokerageId: string): Promise<LifeEventAuthority> {
+  try {
+    const g = await import("@/lib/managers/autonomy-gate")
+    const posture = await g.resolveManagerAutonomy(brokerageId, "ai_isa", svc as never)
+    const authority = await g.resolveAgentAuthorityLevel(brokerageId, "ai_isa", svc as never)
+    const d = g.autonomyDecision({ managerKey: "ai_isa", effective: posture, authorityLevel: authority })
+    if (!d.allow) return { allowed: false, reason: d.reason ?? "the autonomy gate holds the AI ISA" }
+    if (posture !== "autonomous") return { allowed: false, reason: "the tenant has not explicitly granted the AI ISA autonomy (managed_agents ai_isa autonomy_tier) — automated help at a life event waits for that grant" }
+    return { allowed: true, reason: null }
+  } catch (e) {
+    return { allowed: false, reason: `autonomy could not be read (${e instanceof Error ? e.message : String(e)}) — no automated help` }
+  }
+}
+
 // ── the one call the experience paths make ───────────────────────────────────────────────────
 
 /**
@@ -1561,6 +1700,8 @@ export async function arbitrateAndRecordExperience(
     decide?: ArbiterDecide; record?: Record<string, unknown>; readiness?: Parameters<typeof loadChannelReadiness>[2]
     /** Wave 147 (147Z): the C9 movement consumer (a proof injects one; null = unwired, undefined = the wired hook). */
     movement?: MovementSignalConsumer | null
+    /** Wave 148 (148F): the tenant's explicit autonomy grant for life-event help (a proof injects one; default: lib/managers/autonomy-gate.ts). */
+    lifeEventAuthority?: (brokerageId: string) => Promise<LifeEventAuthority>
   } = {},
 ): Promise<{ plan: NextBestExperiencePlan; decision: ArbiterDecision | null; recorded: Awaited<ReturnType<typeof import("./lead-action-plan").recordAndExecuteExperience>> }> {
   const { loadFollowupPolicy } = await import("./followup-policy")
@@ -1589,7 +1730,14 @@ export async function arbitrateAndRecordExperience(
     if (sig.blindSpot) channelBlindSpots.push(sig.blindSpot)
     signals = sig.signals
     const withSignals = planWithLifeChangeSignals(a.plan, signals, { contactType: a.input.person.contactType }, { executors: EXPERIENCE_EXECUTORS, kinds: EXPERIENCE_KINDS })
-    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, helpers: sig.helpers, priority: a.priority ?? null }, { decide: deps.decide })
+    // WAVE 148 (148F, ruling 17): the tenant's EXPLICIT autonomy grant is read only when a life event is decisive (the empathetic
+    // branch offers automated help only under it). Unreadable = not granted, and the reason rides the brief.
+    let lifeEventAuthority: LifeEventAuthority | null = null
+    if (!a.priority && decisiveLifeChangeSignal(signals)?.kind === "life_event") {
+      try { lifeEventAuthority = await (deps.lifeEventAuthority ?? ((b: string) => defaultLifeEventAuthority(svc, b)))(a.brokerageId) }
+      catch (e) { lifeEventAuthority = { allowed: false, reason: `autonomy could not be read (${e instanceof Error ? e.message : String(e)}) — no automated help` } }
+    }
+    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, helpers: sig.helpers, priority: a.priority ?? null, lifeEventAuthority }, { decide: deps.decide })
     plan = arbitrated.plan
     decision = arbitrated.decision
   }

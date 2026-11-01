@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1921 of 1996 pairs) — storing them would be
+ * overwhelming majority (1922 of 1997 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,10 +75,10 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 2095 edges across 752 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1996 unordered
+ * MEASURED AT GENERATION: 2096 edges across 752 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1997 unordered
  * table pairs carry at least one FK; 75
- * carry more than one and are listed below. 19 of the constraints are self-referential.
+ * carry more than one and are listed below. 20 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-01
  * source: public.live_foreign_keys_json()
- * body-sha256: afb6f3f2bf310d6c799ceab5ad139c8bd357bd3686253d4aa652beaee116dbee
+ * body-sha256: eac4ee802cf6aaf2b13bb5f2c6527b0021326056b936107aff98c8750a351950
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -531,7 +531,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "missions": { "brokerage_id": "brokerages", "created_by": "users", "parent_mission": "missions" },
   "model_retraining_log": { "brokerage_id": "brokerages" },
   "motivated_seller_signals": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
-  "movement_signals": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads", "raw_lead_id": "raw_scraped_leads" },
+  "movement_signals": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads", "raw_lead_id": "raw_scraped_leads", "supersedes": "movement_signals" },
   "movement_source_items": { "brokerage_id": "brokerages", "last_signal_id": "movement_signals" },
   "movement_source_polls": { "brokerage_id": "brokerages" },
   "narration_cache": { "brokerage_id": "brokerages" },
