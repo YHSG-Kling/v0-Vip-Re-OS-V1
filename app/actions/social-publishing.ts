@@ -5,8 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 // Wave 97 (lane 97C): routed lane — books ai_tool_usage under the caller's tenant + user.
 import { generateTextRouted } from "@/lib/ai/models"
-import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
-import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+import { createSocialPostDraft } from "@/lib/social/create-social-post-draft"
 import { encryptSecret } from "@/lib/security/secret-crypto"
 // resolveRecipientBrokerageId (the recipient-tenant rule for notifications) is
 // no longer imported here: its only user, handleContentApproved, was deleted
@@ -290,85 +289,12 @@ export async function createSocialPost(params: {
 }) {
   const caller = await resolveCaller()
   if (!caller.ok) throw new Error("Unauthorized")
-
-  const supabase = createServiceClient()
-  // agent_id (nullable — a non-agent staffer, e.g. broker_admin, may post) —
-  // merged in from the listing-media duplicate, which set this and this
-  // function did not.
-  const agentId = await resolveAgentIdInBrokerage(supabase as any, caller.userId, caller.brokerageId)
-
-  // Compliance gate — hard stop if content violates real-estate rules
-  const gate = await runComplianceGate({
-    content: params.content,
-    brokerageId: caller.brokerageId,
-    authorUserId: caller.userId,
-    contentType: (params.contentType as any) ?? "social_post",
-    platforms: params.platforms,
-  })
-
-  if (!gate.passed) {
-    const { data: draftPost, error: draftPostErr } = await supabase
-      .from("social_posts")
-      .insert({
-        user_id: caller.userId,
-        agent_id: agentId,
-        brokerage_id: caller.brokerageId,
-        content: params.content,
-        media_urls: params.mediaUrls ?? [],
-        hashtags: params.hashtags ?? [],
-        scheduled_for: params.scheduledFor,
-        platform: params.platforms?.[0] ?? "facebook",
-        post_type: params.contentType ?? "custom",
-        listing_id: params.linkedListingId ?? null,
-        social_account_id: params.socialAccountId ?? null,
-        ai_generated: params.generatedByAi ?? false,
-        post_brief: params.aiPrompt ?? null,
-        status: "draft",
-        brand_compliance_passed: false,
-        approval_status: "pending",
-      })
-      .select("id")
-      .maybeSingle()
-    if (draftPostErr) console.error(`[social-publishing] held draft post NOT saved: ${draftPostErr.message}`)
-
-    revalidatePath("/content-studio")
-    return {
-      success: false,
-      complianceBlocked: true,
-      violations: gate.violations,
-      draftPostId: draftPost?.id ?? null,
-      message: `Content held for compliance review: ${gate.violations.map((v) => v.rule).join(", ")}`,
-    }
-  }
-
-  const { data, error } = await supabase
-    .from("social_posts")
-    .insert({
-      user_id: caller.userId,
-      agent_id: agentId,
-      brokerage_id: caller.brokerageId,
-      content: params.content,
-      media_urls: params.mediaUrls ?? [],
-      hashtags: params.hashtags ?? [],
-      scheduled_for: params.scheduledFor,
-      platform: params.platforms?.[0] ?? "facebook",
-      post_type: params.contentType ?? "custom",
-      listing_id: params.linkedListingId ?? null,
-      social_account_id: params.socialAccountId ?? null,
-      ai_generated: params.generatedByAi ?? false,
-      post_brief: params.aiPrompt ?? null,
-      status: "scheduled",
-      brand_compliance_passed: true,
-      approval_status: params.forceApprovalPending || gate.requiresHumanReview ? "pending" : "approved",
-    })
-    .select()
-    .maybeSingle()
-
-  if (error) throw error
-
+  // THE writer lives in lib/social/create-social-post-draft.ts (explicit actor; the orchestrator drafts through it without a
+  // session) — this action is its session door: the caller, then the studio paths revalidated.
+  const result = await createSocialPostDraft(createServiceClient() as never, { userId: caller.userId, brokerageId: caller.brokerageId }, params)
   revalidatePath("/content-studio")
-  revalidatePath("/social-planner")
-  return data
+  if (!("complianceBlocked" in result)) revalidatePath("/social-planner")
+  return result
 }
 
 export async function updateSocialPost(

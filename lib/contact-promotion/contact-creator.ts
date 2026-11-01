@@ -359,11 +359,13 @@ export async function createContactFromLead(
       // would let a stale lead column clobber a fresh PeopleData answer.
       home_owner_status: data.lead.home_owner_status ?? null,
       // WAVE 148 (148Z — lane 148F hand-off, C20): the lead's life events cross onto the contact through the ONE chronological
-      // vocabulary (mergeLifeEvents — the same idiom the column map uses for the enrichment payload just below): canonical
+      // vocabulary (mergeLifeEvents — the same idiom the column map uses for the enrichment payload just below): the lead's array is
+      // the STORED side of the merge (a spelling the map does not know is kept untouched — not ours to drop; only a prohibited token
+      // goes, with its reason), never the incoming side (which drops what it cannot read): canonical
       // spellings, event/observed time, sequence + supersedes, prohibited tokens (health / pregnancy) dropped. It carried
       // the raw array across before, so a pre-C20 spelling or a prohibited token rode onto the contact unexamined.
       life_events:       Array.isArray(data.lead.life_events) && data.lead.life_events.length > 0
-        ? (() => { const canon = mergeLifeEvents([], data.lead.life_events as unknown[], { now: data.lead.last_enriched_at ?? new Date() }).events; return canon.length > 0 ? canon : null })()
+        ? (() => { const canon = mergeLifeEvents(data.lead.life_events as unknown[], [], { now: data.lead.last_enriched_at ?? new Date() }).events; return canon.length > 0 ? canon : null })()
         : null,
       ...peopleDataProfileToContactColumns(data.lead.enrichment_profile, {
         enrichedAt: data.lead.last_enriched_at ?? undefined,

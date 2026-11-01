@@ -14,8 +14,8 @@
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
-import type { Event, EventInput } from "@/lib/orchestrator"
-import { EVENT_TYPES } from "@/lib/orchestrator"
+import type { Event, EventInput } from "@/lib/orchestrator/event-types"
+import { EVENT_TYPES } from "@/lib/orchestrator/event-types" // the module, not the barrel (proxy-graph budget)
 
 // THE SERVICE CLIENT, NOT THE COOKIE ONE (lane 86F). This module is dispatched
 // from emitEventFromCron (poll-did-videos, render-composition, the image
@@ -1047,7 +1047,9 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
       const fallbackCaption = captionByType[video_type] ?? "New video from your real estate team. #RealEstate"
       const platforms = ["facebook", "instagram", "linkedin"]
       try {
-        const { createSocialPost } = await import("@/app/actions/social-publishing")
+        // THE draft writer with an explicit actor (lib/social/create-social-post-draft.ts) — never the session-bound server action,
+        // which an event handler without a cookie session could only ever be refused by (and which put the action module on every page).
+        const { createSocialPostDraft } = await import("@/lib/social/create-social-post-draft")
         const { kitCaptionFor } = await import("@/lib/marketing/video-content-kit")
         for (const platform of platforms) {
           // CHANNEL-FIT copy from the content kit (owner rule: no hardcoded
@@ -1056,7 +1058,7 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
           const caption = contentKit
             ? [kitCaptionFor(contentKit, platform), contentKit.hashtags.map((h) => `#${h}`).join(" ")].filter(Boolean).join("\n\n")
             : fallbackCaption
-          await createSocialPost({
+          await createSocialPostDraft(svc, { userId: agentId, brokerageId: event.brokerage_id }, {
             content:         caption,
             mediaUrls:       [video_url],
             mediaTypes:      ["video"],
@@ -1066,7 +1068,6 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
             linkedListingId: listing_id ?? undefined,
             generatedByAi:   true,
             aiPrompt:        `Auto-drafted from completed ${video_type} video ${video_id}`,
-            userId:          agentId,
           })
         }
         summary.push("draft social posts (FB, IG, LinkedIn)")
@@ -1280,9 +1281,11 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
     if (socialImageTypes.includes(image_type) && agentId) {
       const platforms = ["facebook", "instagram", "linkedin"]
       try {
-        const { createSocialPost } = await import("@/app/actions/social-publishing")
+        // THE draft writer with an explicit actor (lib/social/create-social-post-draft.ts) — never the session-bound server action,
+        // which an event handler without a cookie session could only ever be refused by (and which put the action module on every page).
+        const { createSocialPostDraft } = await import("@/lib/social/create-social-post-draft")
         for (const platform of platforms) {
-          await createSocialPost({
+          await createSocialPostDraft(svc, { userId: agentId, brokerageId: event.brokerage_id }, {
             content:         baseCaption,
             mediaUrls:       [image_url],
             mediaTypes:      ["image"],
@@ -1292,7 +1295,6 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
             linkedListingId: listing_id ?? undefined,
             generatedByAi:   true,
             aiPrompt:        `Auto-drafted from completed ${image_type} image ${image_id}`,
-            userId:          agentId,
           })
         }
         summary.push("draft social posts (FB, IG, LinkedIn)")

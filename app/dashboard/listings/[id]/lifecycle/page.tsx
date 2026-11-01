@@ -14,10 +14,10 @@ import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
 import { getListingTasks } from "@/app/actions/listing-lifecycle"
 import { getListingTimeline } from "@/app/actions/listings"
 import { getOpenHouseDashboard, getPostEventIntelligence } from "@/app/actions/seller-open-house"
-import {
-  LaunchReadinessChecklist,
-  LaunchActionsPanel,
-} from "../components/launch"
+// Imported from their own files, not the launch barrel (../components/launch/index.ts re-exports ten panels; this page renders
+// two — the barrel edge made the other eight part of this entry's module graph, scripts/proxy-graph-budget-guard.ts).
+import { LaunchReadinessChecklist } from "../components/launch/launch-readiness-checklist"
+import { LaunchActionsPanel } from "../components/launch/launch-actions-panel"
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
 import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"

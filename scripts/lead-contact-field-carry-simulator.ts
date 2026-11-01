@@ -125,6 +125,9 @@ async function main(): Promise<void> {
   // Values the converter validates/normalizes need real tokens, not sentinels.
   Object.assign(fullLead, {
     id: "lead-1",
+    // WAVE 148 (C20, lane 148F; carried onto the stored side of mergeLifeEvents by lane 148Z): the lead's life events are an ARRAY —
+    // a retired spelling canonicalises on the way across, a spelling the map does not know is kept untouched, nothing is dropped.
+    life_events: [{ type: "divorce", detected_at: "2026-10-01T00:00:00.000Z" }, { type: "won_the_lottery" }],
     contact_id: "SOME_OTHER_CONTACT_PK",
     motivation_type: "buyer",
     lead_type: "buyer",
@@ -190,8 +193,10 @@ async function main(): Promise<void> {
     written.first_touch_channel === "L_first_touch_channel" &&
     written.first_touched_at === "L_first_touched_at")
   check("tags carry", Array.isArray(written.tags) && written.tags.includes("austin"))
-  check("home_owner_status / life_events carry from the lead's own columns",
-    written.home_owner_status === "L_home_owner_status" && written.life_events === "L_life_events")
+  check("home_owner_status / life_events carry from the lead's own columns — life_events canonicalised onto the C20 map (divorce → divorce_filing, sequenced), an unknown spelling kept untouched, nothing dropped",
+    written.home_owner_status === "L_home_owner_status" && Array.isArray(written.life_events) && written.life_events.length === 2
+      && written.life_events[0]?.type === "divorce_filing" && typeof written.life_events[0]?.sequence === "number" && written.life_events[0]?.observed_at === "2026-10-01T00:00:00.000Z"
+      && written.life_events[1]?.type === "won_the_lottery")
 
   check("lead_temperature normalized to a CHECK-legal band", written.lead_temperature === "hot")
   check("preferred_channel normalized through the Data Steward ('text' → 'sms')",

@@ -34,14 +34,14 @@ import { Loader2, Mic, Square, Send, CheckCircle2, ShieldAlert, HelpCircle, Spar
 import { cn } from "@/lib/utils"
 import type { IntentInterpretation, IntentScreen } from "@/lib/voice-admin/intent-interface"
 import type { IntentExecution } from "@/lib/voice-admin/intent-interface-live"
-import { processVoiceCommand } from "@/app/actions/voice-assistant"
-import { handleVoiceCommand } from "@/app/actions/voice-assistant/handle-voice-command"
 
 interface DoorResponse {
   utterance: string
   interpretation: IntentInterpretation
   execution: IntentExecution | null
   spokenSummary: string
+  /** The legacy surface's own answer when the door handed the words off (command_layer / field_assistant) — run by the route, never by this component. */
+  handoff?: { door: string; say: string } | null
 }
 
 type SpeechCtor = new () => {
@@ -152,12 +152,9 @@ export function IntentAffordance({ screen, context, seed, compact, title, classN
           say = j?.spokenResponse ?? j?.spoken ?? j?.error ?? `The team desk refused the request (HTTP ${r.status}).`
         } else if (door === "client_portal") {
           say = "That goes through the request card on your portal page, so your agent sees it."
-        } else if (door === "field_assistant") {
-          const r = await processVoiceCommand({ commandText: said })
-          say = (r as { response?: string; error?: string }).response ?? (r as { error?: string }).error ?? "The field assistant didn't answer."
         } else {
-          const r = await handleVoiceCommand({ voice_input: said })
-          say = r.text_response || r.spoken_response
+          // field_assistant / command_layer: the route already ran that surface's own door (server-side) and answered for it.
+          say = json.handoff?.say ?? `That request is handled by the ${door.replace(/_/g, " ")}, which did not answer.`
         }
         setHandoffSay(say)
         if (how === "voice") speak(say)

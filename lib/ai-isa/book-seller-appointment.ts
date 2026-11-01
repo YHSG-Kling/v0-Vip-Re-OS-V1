@@ -30,7 +30,7 @@ import "server-only"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scheduleISAAppointment } from "./appointment-scheduler"
-import { promoteLeadToContactService } from "@/lib/contact-promotion"
+import { promoteLeadToContactService } from "@/lib/contact-promotion/promote-lead-to-contact" // the module, not the barrel (proxy-graph budget)
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"

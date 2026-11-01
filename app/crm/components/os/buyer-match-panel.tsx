@@ -23,7 +23,10 @@ import {
 } from "@/app/actions/ai-property-matching"
 import { searchAndPushToBuyer } from "@/app/actions/ai-buyer-search-push"
 import { sendFirstLookText } from "@/app/actions/instant-property-alerts"
-import { requestShowing } from "@/app/actions/smart-insights"
+// THE canonical showing door (app/actions/showings.ts requestShowing), not the smart-insights wrapper that forwards to it with a
+// buyer_portal source: an agent scheduling from the CRM is agent_input, and the wrapper edge put the whole smart-insights module on this
+// page's graph (scripts/proxy-graph-budget-guard.ts).
+import { requestShowing } from "@/app/actions/showings"
 import { updateContact } from "@/app/actions/contacts"
 import { toast } from "sonner"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -201,16 +204,19 @@ export function BuyerMatchPanel({
       // closed and cleared as if the showing were booked when the request had been refused
       // (the buyer-agreement gate, an unreadable contact, a refused insert) and the agent
       // never saw why (wave 143J).
-      const requested = await requestShowing(
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      const requested = await requestShowing({
         contactId,
-        match.listing_id,
-        match.address || "Property",
-        { price: match.price, bedrooms: match.bedrooms },
-        [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
-        showingNotes
-      )
-      if (requested?.error) {
-        toast.error(requested.error)
+        listingId: uuidRe.test(String(match.listing_id)) ? match.listing_id : undefined,
+        mlsNumber: uuidRe.test(String(match.listing_id)) ? undefined : String(match.listing_id),
+        propertyAddress: match.address || "Property",
+        listPrice: typeof match.price === "number" ? match.price : undefined,
+        source: "agent_input",
+        preferredDates: [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
+        clientNotes: showingNotes,
+      })
+      if (!requested.success) {
+        toast.error(requested.error ?? "The showing request was refused.")
         return
       }
       toast.success("Showing request created")

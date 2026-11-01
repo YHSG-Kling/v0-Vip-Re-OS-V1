@@ -9,20 +9,13 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
-import {
-  type ListingStage,
-  type TransitionValidationContext,
-  getStageDefinition,
-  getAllStages,
-  getEnabledSystemGates,
-  isSystemGateEnabled,
-  validateStageTransition,
-  getNextAllowedStages,
-  canSkipStages,
-  evaluateReadinessChecks,
-  getLifecycleStatistics,
-  getStageTimingMetrics,
-} from "@/lib/listing-lifecycle"
+// Direct module imports, not the lib/listing-lifecycle barrel: this action uses four of its seven modules, and the barrel edge
+// made rollback-cascade, multi-listing-priority and exception-recovery-limits part of every page that reaches this file
+// (scripts/proxy-graph-budget-guard.ts). The barrel stays for callers that want the whole surface.
+import { type ListingStage, getStageDefinition, getAllStages, getEnabledSystemGates, isSystemGateEnabled } from "@/lib/listing-lifecycle/lifecycle-definitions"
+import { type TransitionValidationContext, validateStageTransition, getNextAllowedStages, canSkipStages } from "@/lib/listing-lifecycle/transition-validator"
+import { evaluateReadinessChecks } from "@/lib/listing-lifecycle/readiness-checker"
+import { getLifecycleStatistics, getStageTimingMetrics } from "@/lib/listing-lifecycle/lifecycle-logger"
 // (resolveAgentRecordToUserId, handleSellerToLifetimeTransition and the three lifecycle loggers left
 // with executeListingTransition — see the tombstone below; the survivor imports them itself.)
 

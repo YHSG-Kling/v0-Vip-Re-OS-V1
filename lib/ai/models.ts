@@ -4,8 +4,8 @@ import type { z } from "zod"
 import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
-import { evaluateContentCompliance } from "@/lib/compliance-rules"
-import { validateThemFirstContent } from "@/lib/them-first"
+import { evaluateContentCompliance } from "@/lib/compliance-rules/compliance-engine" // the module, not the barrel (proxy-graph budget)
+import { validateThemFirstContent } from "@/lib/them-first/validator" // the module, not the barrel (proxy-graph budget)
 import { resolveAIModel } from "@/lib/kernel/ai-model"
 import {
   logAIUsage,

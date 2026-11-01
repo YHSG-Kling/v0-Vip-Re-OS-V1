@@ -3,9 +3,9 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient }        from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getSellerCoaching }   from "@/lib/seller-coaching"
+import { getSellerCoaching }   from "@/lib/seller-coaching/coaching-generator" // the module, not the barrel (proxy-graph budget)
 import { getSellerPersona }    from "@/lib/seller-coaching/persona-utils"
-import type { SellerPersona, SellerCoachingContent } from "@/lib/seller-coaching"
+import type { SellerPersona, SellerCoachingContent } from "@/lib/seller-coaching/coaching-generator"
 
 interface GetListingCoachingResult {
   success: boolean

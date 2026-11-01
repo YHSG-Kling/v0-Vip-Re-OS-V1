@@ -19,7 +19,7 @@ import { generateMatchExplanation, explainCriteriaFit, composeNeighbourlyExplana
 import { describeListingSource, claimsFromFit, validateClaims, type ExplanationClaim, type ListingSourceLabel, type HomeLocationEvidence } from './explanation-evidence'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
 import { scanExplanation, scanFairHousing } from './fair-housing'
-import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching'
+import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching/match-scorer' // the module, not the barrel (proxy-graph budget)
 import type { ParsedBuyerIntent } from './intent-parser'
 import type { BuyerCriteria } from './buyer-criteria'
 import { intentWithStoredCriteria, fitCriteriaFor } from './conversational-search'

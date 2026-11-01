@@ -97,6 +97,13 @@ export async function POST(req: Request) {
   const interpretation = await interpretIntentLive({ utterance, modality, actor, tenant, screen, context, svc })
   const execution = interpretation.capability ? await executeIntent(interpretation, { actor, tenant, confirmed, context, svc }) : null
   await recordIntentCommand(svc, { actor, tenant, interpretation, execution, source: screen === "mobile" ? "mobile" : "web" })
+  // THE LEGACY HAND-OFF RUNS HERE, NOT IN THE BROWSER (wave 148 integrator, proxy-graph budget): an intent a legacy surface
+  // still executes (command_layer / field_assistant) is handed the SAME words through that surface's own server door from this
+  // route — the one affordance (app/components/shared/intent-affordance.tsx) then carries no import of those doors, so the seven
+  // pages it is mounted on stop paying the field assistant's whole module graph. team_brain stays a browser-side fetch of its
+  // own internal route (it needs the caller's cookie session); client_portal is a sentence, not a door.
+  const handoff = await legacyHandoff(execution, utterance)
+
 
   return NextResponse.json({
     utterance,
@@ -107,5 +114,27 @@ export async function POST(req: Request) {
     execution,
     // What the assistant says — the execution's words when something ran or was refused, else the plan's.
     spokenSummary: execution?.say ?? interpretation.plan.summary,
+    handoff,
   })
+}
+
+/** PURE-ish: the legacy surface's answer for a hand-off the one interface does not execute itself (null when nothing to hand off). */
+async function legacyHandoff(execution: Awaited<ReturnType<typeof executeIntent>> | null, said: string): Promise<{ door: string; say: string } | null> {
+  if (!execution || execution.status !== "handoff" || !execution.executorDoor) return null
+  const door = execution.executorDoor
+  try {
+    if (door === "field_assistant") {
+      const { processVoiceCommand } = await import("@/app/actions/voice-assistant")
+      const r = (await processVoiceCommand({ commandText: said })) as { response?: string; error?: string }
+      return { door, say: r.response ?? r.error ?? "The field assistant didn't answer." }
+    }
+    if (door === "command_layer") {
+      const { handleVoiceCommand } = await import("@/app/actions/voice-assistant/handle-voice-command")
+      const r = await handleVoiceCommand({ voice_input: said })
+      return { door, say: r.text_response || r.spoken_response || "The command desk didn't answer." }
+    }
+    return null
+  } catch (e) {
+    return { door, say: `The ${door.replace(/_/g, " ")} refused the request: ${e instanceof Error ? e.message : String(e)}` }
+  }
 }
