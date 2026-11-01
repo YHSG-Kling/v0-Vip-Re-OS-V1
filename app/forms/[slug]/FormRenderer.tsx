@@ -1,5 +1,7 @@
 'use client'
 
+// C15 (wave 148, lane 148B): the ONE consent component — this form no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes } from '@/app/components/forms/ConsentBoxes'
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -23,12 +25,14 @@ interface FormDef {
 
 interface Props {
   form: FormDef
+  /** The name the consent names — THE one brand rule, resolved by the page exactly as the kernel re-renders it. */
+  consentBrandName?: string
 }
 
-export default function FormRenderer({ form }: Props) {
+export default function FormRenderer({ form, consentBrandName = 'our brokerage' }: Props) {
   const router = useRouter()
   const [values, setValues] = useState<Record<string, string>>({})
-  const [tcpaChecked, setTcpaChecked] = useState(false)
+  const consent = useConsentBoxes('web_form', consentBrandName)
   const [submitted, setSubmitted] = useState(false)
   const [thankYou, setThankYou] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -42,8 +46,8 @@ export default function FormRenderer({ form }: Props) {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!tcpaChecked) {
-      setError('You must consent to the terms before submitting.')
+    if (!consent.serviceGiven) {
+      setError('Please tick the first consent box (the service follow-up) so we can follow up on your request.')
       return
     }
 
@@ -59,8 +63,7 @@ export default function FormRenderer({ form }: Props) {
           body: JSON.stringify({
             slug: form.slug,
             data: values,
-            tcpaConsent: tcpaChecked,
-            tcpaConsentText: form.tcpa_disclosure_text ?? 'By submitting this form you consent to receive communications from us. Message and data rates may apply.',
+            consent: consent.submission,
           }),
         })
         const json = await res.json() as {
@@ -142,26 +145,8 @@ export default function FormRenderer({ form }: Props) {
         </div>
       ))}
 
-      {/* TCPA — must be explicit and visible */}
-      <div className="rounded-md border border-border bg-muted/40 p-4 space-y-3">
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {form.tcpa_disclosure_text ??
-            'By submitting this form you consent to receive communications from us. Message and data rates may apply.'}
-        </p>
-        <label className="flex items-start gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={tcpaChecked}
-            onChange={e => setTcpaChecked(e.target.checked)}
-            required
-            className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
-            aria-label="I agree to the terms above"
-          />
-          <span className="text-xs text-foreground font-medium">
-            I agree to the terms above and consent to be contacted.
-          </span>
-        </label>
-      </div>
+      {/* C15 — the ONE consent component: explicit, visible, service delivery required, marketing optional per channel. */}
+      <ConsentBoxes {...consent.boxProps} idPrefix={`form-consent-${form.slug}`} className="rounded-md border border-border bg-muted/40 p-4" />
 
       {error && (
         <p role="alert" className="text-sm text-destructive">{error}</p>
@@ -169,7 +154,7 @@ export default function FormRenderer({ form }: Props) {
 
       <button
         type="submit"
-        disabled={isPending || !tcpaChecked}
+        disabled={isPending || !consent.serviceGiven}
         className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {isPending ? 'Submitting...' : 'Submit'}

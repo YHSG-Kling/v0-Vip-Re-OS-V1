@@ -10,10 +10,14 @@ type Stage = 'confirm' | 'processing' | 'done' | 'error' | 'invalid'
 export function UnsubscribeClient() {
   const params = useSearchParams()
   const contactId = params.get('contactId')
-  const channel   = params.get('channel') as 'email' | 'sms' | 'mail' | null
+  // Wave 148 (C16): the per-contact unsubscribe TOKEN the email footer now carries (m910 contacts.unsubscribe_token) — the
+  // credential that is not an entity id. The legacy contactId shape still works for links already delivered.
+  const token     = params.get('t')
+  const tokenContact = params.get('c')
+  const channel   = (params.get('channel') ?? (token ? 'email' : null)) as 'email' | 'sms' | 'mail' | null
 
   const [stage, setStage]   = useState<Stage>(() => {
-    if (!contactId || !channel) return 'invalid'
+    if ((!contactId && !token) || !channel) return 'invalid'
     // 'mail' is admitted now that both suppression writers can express it and
     // dispatchDirectMail reads it back. The route's ALLOWED set is the authority;
     // this list must not be narrower or a valid link renders as "invalid link".
@@ -32,7 +36,7 @@ export function UnsubscribeClient() {
       const res = await fetch('/api/unsubscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contactId, channel }),
+        body: JSON.stringify(token ? { token, c: tokenContact, channel } : { contactId, channel }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -65,7 +69,7 @@ export function UnsubscribeClient() {
         <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-4" />
         <h1 className="text-xl font-semibold text-foreground mb-2">You have been unsubscribed</h1>
         <p className="text-muted-foreground text-sm">
-          You will no longer receive {channelLabel} from us. This may take up to 10 business days to take effect across all systems.
+          You will no longer receive {channelLabel} from us. This takes effect immediately across every channel we send on your behalf.
         </p>
         <p className="text-muted-foreground text-xs mt-4">
           You may still receive transactional messages required to complete an active transaction.

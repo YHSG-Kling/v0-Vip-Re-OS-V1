@@ -4,7 +4,9 @@ import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { createPortalInviteForContact } from "./portal-invites"
+// Wave 148 (lane 148B): THE one intake door (C8) + the one consent component's server contract (C15). The separate portal
+// invite import (createPortalInviteForContact) is gone — the invite is captureContact's.
+import { captureContact, captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } from "@/lib/contact-pipeline/contact-capture"
 import { CONTACT_SOURCE_HOME_VALUE } from "@/lib/campaigns/contact-sources"
 import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
 import { pushPortalValueCard } from "@/lib/kernel/portal-value"
@@ -65,8 +67,13 @@ interface HomeValueFormData {
   agentSlug?: string
   brokerageId?: string
   utmSource?: string
-  /** Caller MUST pass true — form must show and require TCPA checkbox */
-  tcpaConsent: boolean
+  /**
+   * THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). The service-delivery box ("contact me about my home
+   * value estimate") is required; marketing boxes are optional and per channel. The wording is re-rendered on the server.
+   */
+  consent?: unknown
+  /** @deprecated pre-148 clients only — a bare box with the door's legacy wording. Superseded by `consent`. */
+  tcpaConsent?: boolean
   tcpaConsentText?: string
   qualificationData?: {
     sellTimeline?: string
@@ -125,6 +132,41 @@ interface AIValuationResponse {
 }
 
 // ============================================================================
+// THE CONSENT BRAND + legacy wording (wave 148, lane 148B — C15)
+// ============================================================================
+
+/** The words the pre-148 home-value form displayed beside its single box (kept only for a cached old client's record). */
+const HOME_VALUE_LEGACY_CONSENT_TEXT =
+  "I agree to receive calls, texts, and emails from this brokerage and its agents regarding real estate services. Consent is not required for purchase. Message and data rates may apply."
+
+/** The form's sell-timeline answers → the contacts.timeline CHECK buckets (CLAUDE.md §5: buckets, never 30/60/90). */
+const HOME_VALUE_TIMELINE: Readonly<Record<string, string>> = {
+  asap: "immediate", immediately: "immediate", "0-3": "1-3_months", "1-3": "1-3_months", "1-3_months": "1-3_months",
+  "3-6": "3-6_months", "3-6_months": "3-6_months", "6-12": "6-12_months", "6-12_months": "6-12_months",
+  "12+": "12+_months", "12+_months": "12+_months", just_curious: "researching", researching: "researching",
+}
+
+/** Who the consent names — THE one rule (lib/contact-pipeline/contact-capture.ts resolveConsentBrand), for the page and the door. */
+async function homeValueConsentBrand(svc: ReturnType<typeof createServiceClient>, owner: { agentId: string | null; brokerageId: string | null }): Promise<string> {
+  return resolveConsentBrand(svc, owner)
+}
+
+/**
+ * The name the home-value page's consent component renders (C15). Public on purpose — the landing page renders for an
+ * anonymous visitor; it returns only a display name, resolved exactly as the submission door resolves it.
+ */
+export async function getHomeValueConsentBrand(input: { agentSlug?: string | null; brokerageId?: string | null }): Promise<{ brandName: string }> {
+  const svc = createServiceClient()
+  let agentId: string | null = null
+  let brokerageId: string | null = input.brokerageId ?? null
+  if (input.agentSlug) {
+    const { data } = await svc.from("agents").select("id, brokerage_id").eq("public_slug", input.agentSlug).maybeSingle()
+    if (data) { agentId = (data as { id: string }).id; brokerageId = (data as { brokerage_id: string }).brokerage_id }
+  }
+  return { brandName: await homeValueConsentBrand(svc, { agentId, brokerageId }) }
+}
+
+// ============================================================================
 // convertValuationRequestToContact
 // ============================================================================
 
@@ -168,33 +210,47 @@ export async function convertValuationRequestToContact(params: {
       return { success: false, error: "Already converted" }
     }
 
-    // 2. Extract name from qualification_data if available, else use address prefix
+    // 2. The person on the request — what they TYPED, never invented. TOMBSTONE (wave 148, lane 148B): this used to fall
+    //    back to "Home" / "Seller" and a fabricated `seller-<id>@pending.local` email, i.e. a contact for a person who does
+    //    not exist under that identity (and an unsubscribe / welcome mailed to a dead address). No email and no phone → no
+    //    contact; the request stays for a human.
     const qualData = (request.qualification_data as any) ?? {}
-    const firstName = qualData.firstName ?? "Home"
-    const lastName = qualData.lastName ?? "Seller"
-    const email = qualData.email ?? `seller-${request.id.slice(0, 8)}@pending.local`
-    const phone = qualData.phone ?? null
-    const phoneDigits = phone ? phone.replace(/\D/g, "") : null
+    const firstName = String(qualData.firstName ?? "").trim()
+    const lastName = String(qualData.lastName ?? "").trim() || null
+    const email = String(qualData.email ?? "").trim().toLowerCase() || null
+    const phone = String(qualData.phone ?? "").trim() || null
+    if (!firstName || (!email && !phone)) {
+      return { success: false, error: "This request has no name and email or phone to put on a contact — follow up from the request itself." }
+    }
 
-    // 3. Create contact
-    const { data: newContact, error: contactError } = await service
-      .from("contacts")
-      .insert({
+    // 3. ONE DOOR (wave 148, lane 148B — owner ruling 4). TOMBSTONE (orphan doctrine §1.1): the contacts INSERT (no
+    //    dedupe — a returning homeowner became a second contact), the separate portal invite with its OWN magic-link email
+    //    (a SECOND email on top of captureContact's welcome, which already carries the portal door) and the separate
+    //    enrichment queue call are merged onto THE one survivor, lib/contact-pipeline/contact-capture.ts captureContact,
+    //    on the service client AFTER the session gate above (CLAUDE.md §4). The converting agent is owner AND creator.
+    //    No consent is claimed: a staff conversion is not the homeowner's box.
+    let captured: Awaited<ReturnType<typeof captureContact>>
+    try {
+      captured = await captureContact({
+        brokerageId: tenant.brokerageId,
+        ownerAgentId: tenant.agentId,
+        creatorUserId: tenant.userId,
+        source: CONTACT_SOURCE_HOME_VALUE,
+        contact_type: "seller",
         first_name: firstName,
         last_name: lastName,
         email,
         phone,
-        contact_type: "seller",
-        source: CONTACT_SOURCE_HOME_VALUE,
-        agent_id: tenant.agentId,
-        brokerage_id: tenant.brokerageId,
-      })
-      .select("id")
-      .single()
-
-    if (contactError || !newContact) {
-      return { success: false, error: contactError?.message ?? "Failed to create contact" }
+        address: request.property_address ?? null,
+        city: request.city ?? null,
+        state: request.state ?? null,
+        zip_code: request.zip_code ?? null,
+        tcpa_consent: false,
+      }, { client: service })
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : "Failed to create contact" }
     }
+    const newContact = { id: captured.contactId }
 
     // 4. Link request to contact. Counted (§3): a DELETE/UPDATE that matches
     //    nothing also resolves, and an unlinked request would be offered for
@@ -208,32 +264,7 @@ export async function convertValuationRequestToContact(params: {
     if (linkError) return { success: false, error: `Contact created but request not linked: ${linkError.message}`, contactId: newContact.id }
     if (!linked || linked.length === 0) return { success: false, error: "Contact created but request not linked (no matching row)", contactId: newContact.id }
 
-    // 5. Send portal invite
-    await createPortalInviteForContact({
-      contactId: newContact.id,
-      brokerageId: tenant.brokerageId,
-      invitedByUserId: tenant.userId,
-      sendMagicLink: true,
-    }).catch(() => {})
-
-    // 6. AUTOMATIC ENRICHMENT (owner, wave 14): "any time there is a new contact,
-    //    there is an automatic enrichment run." This door inserts the contact
-    //    directly — no captureContact, no CONTACT_CREATED emit — so neither the
-    //    create-time lane nor the reactor reached it. The SURVIVOR is called
-    //    (lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment); it
-    //    owns the freshness check, the pending-row idempotency guard, the owner's
-    //    live-deal suppression and the backlog cap. Best-effort — a conversion
-    //    must never fail because enrichment could not be queued.
-    try {
-      const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
-      await queueContactEnrichment({
-        contactId:   newContact.id,
-        brokerageId: tenant.brokerageId,
-        triggerType: "home_value_conversion",
-      })
-    } catch (err) {
-      console.error("[convertValuationRequestToContact] enrichment enqueue failed (non-fatal):", err)
-    }
+    // 5–6. The portal invite and the enrichment queue are captureContact's (above) — one invite, one email, one queue row.
 
     return { success: true, contactId: newContact.id }
   } catch (error: any) {
@@ -278,6 +309,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     tcpaConsentText,
     qualificationData,
   } = formData
+    const consentRaw = formData.consent
 
     // Step 1: Resolve agent from slug if provided, else get default brokerage agent
     let resolvedAgentId: string | null = null
@@ -296,20 +328,17 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       }
     }
 
-    // If no brokerage resolved, get the first active brokerage
-    if (!resolvedBrokerageId) {
-      const { data: defaultBrokerage } = await supabase
-        .from("brokerages")
-        .select("id")
-        .is("deleted_at", null)
-        .limit(1)
-        .single()
-
-      resolvedBrokerageId = defaultBrokerage?.id
-    }
-
+    // TENANT FROM THE PAGE'S OWNER, NEVER A DEFAULT (wave 148, lane 148B — CLAUDE.md §4). TOMBSTONE: with no agent slug and
+    // no brokerage this door used to file the homeowner into "the first active brokerage" in the database — a stranger's
+    // tenant. A submission whose page names no resolvable owner is refused. A body brokerage id (the page's ?brokerage=
+    // param) is accepted only when that brokerage exists and is not deleted.
     if (!resolvedBrokerageId) {
       return { success: false, error: "Unable to determine brokerage" }
+    }
+    if (!resolvedAgentId) {
+      const { data: brkRow, error: brkRowErr } = await supabase.from("brokerages").select("id").eq("id", resolvedBrokerageId).is("deleted_at", null).maybeSingle()
+      if (brkRowErr) return { success: false, error: "Failed to look up your record. Please try again." }
+      if (!brkRow) return { success: false, error: "Unable to determine brokerage" }
     }
 
     // Agent assignment fallback — if no agent resolved from slug, assign the
@@ -351,90 +380,66 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       }
     }
 
-    // Step 2: Check for existing contact by email OR phone in this brokerage
-    const normalizedPhone = phone.replace(/\D/g, "")
-
-    const { data: existingContact, error: existingContactError } = await supabase
-      .from("contacts")
-      .select("id, first_name")
-      .eq("brokerage_id", resolvedBrokerageId)
-      .or(`email.eq.${email},phone.eq.${phone}`)
-      // limit(1) before maybeSingle: a homeowner whose email AND phone are on two
-      // different rows matches twice, and maybeSingle turns "2 rows" into an error
-      // that used to read as "no match" — creating a third, duplicate contact.
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle()
-
-    if (existingContactError) {
-      // A refused dedupe read resolves as "no match" and would create a DUPLICATE
-      // contact for a homeowner who is already in the book. Fail loudly instead.
-      console.error("[home-value] contact dedupe read refused:", existingContactError.message)
-      return { success: false, error: "Failed to look up your record. Please try again." }
-    }
-
-    let contactId: string
-
-    // Step 3: If no match, INSERT new contact FIRST
-    // Per TCPA rules: create lead regardless of consent, but only store phone
-    // and enable phone/SMS channels when consent is explicitly given.
-    if (!existingContact) {
-      const consentNow = new Date().toISOString()
-      const { data: newContact, error: contactError } = await supabase
-        .from("contacts")
-        .insert({
-          // Tenant anchor first: the scope guard reads a fixed window after
-          // .from(), so burying brokerage_id deep in a long payload makes a
-          // properly-scoped write look unscoped.
-          brokerage_id: resolvedBrokerageId,
-          agent_id: resolvedAgentId,
-          first_name: firstName,
-          last_name: lastName,
-          email,
-          // Only store phone if TCPA consent given; otherwise omit to prevent calling
-          phone: tcpaConsent ? phone : null,
-          preferred_channel: tcpaConsent ? "phone" : "email",
-          contact_type: "seller",
-          // was "home_value_tool" — one feature wrote contacts.source two ways
-          source: CONTACT_SOURCE_HOME_VALUE,
-          buyer_stage: "BUYER_CONTACT_CREATED",
-          tcpa_consent: tcpaConsent,
-          tcpa_consent_at: tcpaConsent ? consentNow : null,
-          tcpa_consent_date: tcpaConsent ? consentNow : null,
-          tcpa_consent_text: tcpaConsent ? (tcpaConsentText ?? null) : null,
-          tcpa_consent_source: tcpaConsent ? "home_value_tool" : null,
-        })
-        .select("id")
-        .single()
-
-      if (contactError || !newContact) {
-        console.error("Error creating contact:", contactError)
-        return { success: false, error: "Failed to create contact" }
-      }
-      contactId = newContact.id
-
-      // AUTOMATIC ENRICHMENT ON A NEW CONTACT (owner, wave 14). Public,
-      // sessionless door that inserts a contact directly, so neither
-      // captureContact's create-time lane nor the reactor's CONTACT_CREATED
-      // branch reached it. Queued through the survivor
-      // (lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment), which
-      // carries the identifier gate, the live-deal suppression and the backlog
-      // cap. Only on the CREATE branch: a returning homeowner is already known to
-      // the queue's freshness check, which would refuse them anyway.
-      // Best-effort — a public form submission must never fail on enrichment.
-      try {
-        const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
-        await queueContactEnrichment({
-          contactId,
-          brokerageId: resolvedBrokerageId,
-          triggerType: "home_value_form",
-        })
-      } catch (err) {
-        console.error("[submitHomeValueRequest] enrichment enqueue failed (non-fatal):", err)
-      }
+    // Step 2–3: ONE DOOR, ONE CONSENT COMPONENT (wave 148, lane 148B — owner rulings 3, 4, 12).
+    // TOMBSTONE (orphan doctrine §1.1): the `.or("email.eq.<raw>,phone.eq.<raw>")` dedupe (a public form's raw input
+    // spliced into the filter grammar), the contacts INSERT with its own tcpa_* stamp and a consent text the browser SENT
+    // (which differed from the words the form showed), and the separate enrichment queue call were a second consented
+    // intake. Merged onto THE one survivor — captureConsentedContact (C8): captureContact's dedupe (fail-closed; exact email
+    // = the same person) → the Contact (seller; the page's agent as owner AND creator — ruling 12) → every ticked box of the
+    // ONE consent component recorded with the wording the SERVER re-renders → the welcome → enrichment → the AI ISA desk.
+    // Preserved: the phone is kept only with a consent that covers it; preferred channel follows it; a refused dedupe read
+    // refuses the submission (never a duplicate).
+    const brandName = await homeValueConsentBrand(supabase, { agentId: resolvedAgentId, brokerageId: resolvedBrokerageId })
+    let consents: import("@/lib/contact-pipeline/contact-capture").ConsentGrantInput[]
+    let consentEvidence: Record<string, unknown>
+    const c15 = consentGrantsFromComponent(consentRaw, { door: "home_value", brandName, provided: { email: !!email?.trim(), phone: !!phone?.trim() } })
+    if (c15.submission) {
+      if (!c15.submission.service_delivery) return { success: false, error: "Please tick the consent box so we may contact you about your home value estimate." }
+      consents = c15.grants
+      consentEvidence = { ...c15.evidence, wording_hash: c15.wordingHash }
     } else {
-      contactId = existingContact.id
+      // A pre-148 cached client: the bare box with the door's legacy wording (the text the old form displayed). Recorded
+      // with that wording and a legacy version label — never upgraded into a C15 record it was not.
+      consents = [{ family: "phone", given: tcpaConsent === true, text: HOME_VALUE_LEGACY_CONSENT_TEXT, textVersion: "home_value_tool:legacy", purposes: ["home_valuation", "requested_information"] }]
+      consentEvidence = { consent_component: "legacy_box", client_text_matched: typeof tcpaConsentText === "string" && tcpaConsentText.trim() === HOME_VALUE_LEGACY_CONSENT_TEXT }
     }
+    const phoneConsented = consents.some((g) => g.family === "phone" && g.given)
+    const sellTimeline = HOME_VALUE_TIMELINE[String(qualificationData?.sellTimeline ?? "")] ?? null
+
+    const intake = await captureConsentedContact({
+      brokerageId: resolvedBrokerageId,
+      ownerAgentId: resolvedAgentId,
+      creatorUserId: resolvedAgentUserId,
+      source: CONTACT_SOURCE_HOME_VALUE,
+      first_name: firstName,
+      last_name: lastName,
+      email: email?.trim().toLowerCase() || null,
+      // Only store phone if a consent covering it was given; otherwise omit to prevent calling
+      phone: phoneConsented ? phone : null,
+      preferred_channel: phoneConsented ? "phone" : "email",
+      contact_type: "seller",
+      address: propertyAddress ?? null,
+      city: city ?? null,
+      state: state ?? null,
+      zip_code: zipCode ?? null,
+      ...(sellTimeline ? { timeline: sellTimeline } : {}),
+      ...(propertyType ? { property_type: propertyType } : {}),
+      consents,
+      intake: {
+        channel: "home_value",
+        // TCPA provenance keeps the tool's literal (the column records which tool captured consent; contacts.source is canonical).
+        consentSource: "home_value_tool",
+        sourceUrl: agentSlug ? `/home-value?agent=${agentSlug}` : "/home-value",
+        evidence: { ...consentEvidence, utm_source: utmSource ?? null },
+        formOwner: resolvedAgentId ? { table: "agents", id: resolvedAgentId } : null,
+      },
+    }, { client: supabase })
+    if (!intake.ok || !intake.contactId) {
+      console.error("[home-value] consented intake refused:", intake.refused, intake.reason)
+      return { success: false, error: intake.refused === "not_identifiable" ? "Please add your name and an email or phone." : "Failed to create contact" }
+    }
+    for (const w of intake.warnings) console.warn(`[home-value] consented intake: ${w}`)
+    const contactId: string = intake.contactId
 
     // ── STEP 3b: THE PORTAL LOGIN ────────────────────────────────────────────
     // The ruling: "they will be presented with a contact portal to log in and the
@@ -459,8 +464,10 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     // Run for EXISTING contacts too, not only new ones: a returning homeowner is
     // just as entitled to their report, and issuePortalInvite is idempotent (it
     // reuses the open invite row and re-sends the magic link).
-    let portalInvited = false
-    if (resolvedAgentUserId) {
+    // Wave 148: a NEW contact's portal invite + welcome were issued by captureContact above (one email, carrying the portal
+    // door); only a RETURNING homeowner is re-invited here (issuePortalInvite is idempotent and re-sends the magic link).
+    let portalInvited = intake.action === "created"
+    if (resolvedAgentUserId && intake.action === "merged") {
       const { createSystemPortalInvite } = await import("@/lib/portal/portal-invite-core")
       const invite = await createSystemPortalInvite({
         contactId,
@@ -471,7 +478,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       if (!portalInvited) {
         console.error("[home-value] portal invite failed:", (invite as { error?: string }).error)
       }
-    } else {
+    } else if (!resolvedAgentUserId) {
       console.error(
         `[home-value] no agent users.id for brokerage=${resolvedBrokerageId} — contact ${contactId} gets no portal login`,
       )

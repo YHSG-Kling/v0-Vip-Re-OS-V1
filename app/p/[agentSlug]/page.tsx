@@ -410,6 +410,7 @@ export default async function AgentPublicProfilePage({
                 brokerageId={profile.brokerageId}
                 agentName={profile.fullName}
                 brand={brand}
+                consentBrandName={profile.brokerageName ?? null}
               />
             </CardContent>
           </Card>

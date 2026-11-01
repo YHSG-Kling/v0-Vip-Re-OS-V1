@@ -3,12 +3,15 @@
 import { useState } from "react"
 import { CheckCircle, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+// C15 (wave 148, lane 148B): the ONE consent component (app/components/forms/ConsentBoxes.tsx).
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-const TCPA_CONSENT_TEXT = (brokerageName: string) =>
-  `By checking this box, you agree to receive calls, texts, emails, and direct mail from ${brokerageName} and its agents regarding your real estate needs. Consent is not a condition of purchase. You may unsubscribe or opt out at any time.`
+// TOMBSTONE (wave 148, lane 148B — owner ruling 3, "all forms need to have the same consent boxes"): the kiosk's own one-box
+// TCPA_CONSENT_TEXT(brokerageName) wording lived here. The kiosk now renders the ONE consent component (C15) named for the same
+// party (consentPartyName below); the server keeps this wording only to record a cached pre-148 kiosk's submission
+// (app/api/open-house/attend/route.ts KIOSK_CONSENT_TEXT).
 
 /**
  * The public payload, exactly as getOpenHouseEventPublic returns it.
@@ -56,7 +59,6 @@ export function SignInKiosk({ event }: Props) {
   const [phone, setPhone] = useState("")
   const [workingWithAgent, setWorkingWithAgent] = useState<boolean | null>(null)
   const [hearAboutUs, setHearAboutUs] = useState<string | null>(null)
-  const [tcpaConsent, setTcpaConsent] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const primaryColor = branding?.primaryColor ?? "#2563eb"
@@ -67,6 +69,8 @@ export function SignInKiosk({ event }: Props) {
    * app name, and only falls back to a generic phrase when neither is known.
    */
   const consentPartyName = event.brokerageName ?? branding?.appName ?? "our brokerage"
+  // C15 (wave 148, lane 148B): the ONE consent component — the kiosk no longer renders its own consent checkbox.
+  const kioskConsent = useConsentBoxes("open_house_kiosk", consentPartyName)
 
   const fmtDate = (d: string) =>
     new Date(d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
@@ -79,7 +83,7 @@ export function SignInKiosk({ event }: Props) {
     setPhone("")
     setWorkingWithAgent(null)
     setHearAboutUs(null)
-    setTcpaConsent(false)
+    kioskConsent.setValue({ serviceDelivery: false, marketing: { email: false, sms: false, voice: false, direct_mail: false } })
     setError(null)
   }
 
@@ -90,14 +94,12 @@ export function SignInKiosk({ event }: Props) {
       setError("Please fill in all required fields.")
       return
     }
-    if (!tcpaConsent && !event.brokerOpen) {
+    if (!kioskConsent.serviceGiven && !event.brokerOpen) {
       setError("Consent is required before we can contact you across all communication channels.")
       return
     }
     setError(null)
     setSubmitting(true)
-
-    const consentText = TCPA_CONSENT_TEXT(consentPartyName)
 
     try {
       const res = await fetch("/api/open-house/attend", {
@@ -113,7 +115,7 @@ export function SignInKiosk({ event }: Props) {
           hearAboutUs: hearAboutUs ?? undefined,
           ...(event.brokerOpen
             ? { tcpaConsent: false }
-            : { tcpaConsent: true, tcpaConsentText: consentText, tcpaConsentSource: "/open-house/sign-in" }),
+            : { consent: kioskConsent.submission, tcpaConsentSource: "/open-house/sign-in" }),
         }),
       })
       const data = await res.json()
@@ -288,19 +290,7 @@ export function SignInKiosk({ event }: Props) {
                 Broker open: agent sign-in. Your visit is recorded for the listing agent. You are not added to any consumer list.
               </p>
             ) : (
-            <div className="rounded-lg border border-border bg-muted/40 p-4">
-              <label className="flex items-start gap-3 cursor-pointer">
-                <Checkbox
-                  checked={tcpaConsent}
-                  onCheckedChange={(v) => setTcpaConsent(v === true)}
-                  className="mt-0.5 h-5 w-5 shrink-0"
-                  aria-label="I agree to be contacted"
-                />
-                <span className="text-xs text-foreground leading-relaxed">
-                  {TCPA_CONSENT_TEXT(consentPartyName)}
-                </span>
-              </label>
-            </div>
+            <ConsentBoxes {...kioskConsent.boxProps} idPrefix="kiosk-consent" className="rounded-lg border border-border bg-muted/40 p-4" />
             )}
 
             {error && (

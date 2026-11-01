@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { addSuppression } from '@/lib/kernel/compliance/check-suppression'
 import { validateTwilioSignature } from '@/lib/voice/twilio-voice'
-import { twilioTokenCandidates } from '@/lib/voice/sms-inbound'
+import { resolveTenantByOwnNumber, twilioTokenCandidates } from '@/lib/voice/sms-inbound'
+import { detectOptOutIntent } from '@/lib/ai-isa/opt-out-utils'
+import { processOptOutFromVerifiedInbound } from '@/lib/ai-isa/opt-out-writer'
 
 /**
  * app/api/sms/inbound-optout/route.ts
@@ -55,7 +57,9 @@ import { twilioTokenCandidates } from '@/lib/voice/sms-inbound'
  * token as fallback) so a request Twilio really signed still passes here.
  */
 
-const STOP_KEYWORDS = /^\s*(stop|stopall|unsubscribe|cancel|end|quit)\s*$/i
+// TOMBSTONE (wave 148, lane 148B — CLAUDE.md §6, C16): this route's own STOP_KEYWORDS regex (stop|stopall|unsubscribe|cancel|
+// end|quit — no "revoke", no "opt out") was a second revocation vocabulary beside the survivor. It reads THE one list now:
+// lib/ai-isa/opt-out-utils.ts detectOptOutIntent / REVOCATION_KEYWORDS (the carrier keywords + the FCC 2024 revocation words).
 
 const STOP_REPLY =
   'You have been successfully unsubscribed. You will receive no more messages from this number. Reply START to re-subscribe.'
@@ -91,66 +95,59 @@ export async function POST(req: NextRequest) {
       return new NextResponse('invalid signature', { status: 403 })
     }
 
-    // Normalize phone — strip spaces/dashes for lookup
-    const normalizedPhone = from.replace(/\s|-/g, '')
 
-    if (!STOP_KEYWORDS.test(msgBody)) {
-      // Not a STOP — pass through for normal inbound handling
+    const optOut = detectOptOutIntent(msgBody)
+    if (!optOut.isOptOut || optOut.confidence !== 'high') {
       return NextResponse.json({ success: true, action: 'pass_through' })
     }
 
     // STOP keyword detected — suppress immediately
     const supabase = createServiceClient()
 
-    // Look up contact(s) by phone across all brokerages.
-    //
-    // SELECTS `id`, NOT `contact_id`. `contacts` carries TWO distinct unique
-    // uuid columns — the primary key `id` and a secondary `contact_id` — and
-    // they are NEVER equal (app/api/unsubscribe/route.ts:10-27 records the live
-    // verification). `contact_suppression_list.contact_id` is a FOREIGN KEY onto
-    // `contacts(id)`, so this handler was handing addSuppression the OTHER uuid:
-    // every STOP produced a foreign-key violation, addSuppression returned void
-    // and swallowed it, and the sender replied "You have been successfully
-    // unsubscribed" to a person it had not suppressed. Same defect the email
-    // footer had, in the one channel where the reply PROMISES the suppression.
-    const { data: contacts, error: contactsError } = await supabase
-      .from('contacts')
-      .select('id, brokerage_id, phone')
-      .or(`phone.eq.${from},phone.eq.${normalizedPhone}`)
+    // C16 — ONE WRITER (wave 148, lane 148B). The STOP is written through the ONE opt-out writer (lib/ai-isa/opt-out-writer.ts
+    // processOptOutFromVerifiedInbound → writeOptOut: the contact's flags for every channel the word revokes — a bare STOP is
+    // channel "all", the survivor's ruling — AND, since wave 148, one contact_suppression_list row per channel keyed by the
+    // contact and the number). TOMBSTONE: this route used to suppress SMS ONLY through its own addSuppression loop, matched
+    // contacts in EVERY tenant by an exact `phone.eq.<raw>` (a stored "(555) 123-4567" never matched the carrier's
+    // "+15551234567"), so the same STOP left email / calls / mail open and missed reformatted numbers. Now: the tenant that owns
+    // the To number (resolveTenantByOwnNumber) when it resolves, every contact of it whose phone_digits match the sender.
+    const fromDigits = from.replace(/\D/g, '')
+    const ten = fromDigits.length === 11 && fromDigits.startsWith('1') ? fromDigits.slice(1) : fromDigits
+    const digitForms = ten.length === 10 ? [ten, `1${ten}`] : [fromDigits]
+    const owner = await resolveTenantByOwnNumber(supabase, to)
+    let contactsQuery = supabase.from('contacts').select('id, brokerage_id, phone').in('phone_digits', digitForms)
+    if (owner?.brokerageId) contactsQuery = contactsQuery.eq('brokerage_id', owner.brokerageId)
+    const { data: contacts, error: contactsError } = await contactsQuery
 
-    // FAIL LOUD, not silently-pass-through: a refused lookup is not "no such
-    // contact". Answering 200 here would tell the carrier the STOP was handled.
     if (contactsError) {
       console.error('[sms-optout] contact lookup refused:', contactsError.message)
       return NextResponse.json({ error: 'Could not process opt-out' }, { status: 503 })
     }
 
     if (contacts && contacts.length > 0) {
-      // Suppress in all brokerages that have this contact
       const results = await Promise.all(
-        contacts.map((c) =>
-          addSuppression({
+        contacts.map((c: { id: string; brokerage_id: string }) =>
+          processOptOutFromVerifiedInbound({
+            entityType: 'contact',
+            entityId: c.id,
             brokerageId: c.brokerage_id,
-            contactId:   c.id,
-            phone:       c.phone ?? from,
-            channel:     'sms',
-            reason:      `STOP keyword received: "${msgBody.trim()}"`,
-            source:      'sms_stop',
+            channel: optOut.channel,
+            source: 'inbound_sms',
+            rawMessage: `STOP keyword received: "${msgBody.trim().slice(0, 200)}"`,
           })
         )
       )
 
-      // CHECK THE RESULT. A STOP is a legal obligation under TCPA/CTIA; the
-      // reply below states it as done, so a refusal must not be answered with
-      // that reply. 503 makes the provider retry the webhook.
-      const refused = results.filter((r) => !r.suppressed || r.contactFlagsUpdated === false)
+      const refused = results.filter((r) => !r.success)
       if (refused.length > 0) {
         console.error(
           `[sms-optout] ${refused.length}/${results.length} STOP suppression(s) REFUSED for ${from}:`,
-          refused.flatMap((r) => r.errors).join(' | ') || '(no error reported)',
+          refused.map((r) => r.error ?? 'unknown').join(' | '),
         )
         return NextResponse.json({ error: 'Could not record opt-out' }, { status: 503 })
       }
+      const unsynced = results.filter((r) => r.listSynced === false).length
+      if (unsynced > 0) console.error(`[sms-optout] ${unsynced} STOP(s) landed on the contact flags but NOT on the suppression list — number-only sends may not see them`)
     } else {
       // Phone not in contacts. The comment here used to say the brokerage came from the
       // "to" number's provider config — but the query never used `to`. It took the FIRST
@@ -169,22 +166,23 @@ export async function POST(req: NextRequest) {
         .limit(1)
         .maybeSingle()
 
-      const providerConfig = numberOwner as { brokerage_id?: string | null } | null
+      const providerConfig = (owner?.brokerageId ? { brokerage_id: owner.brokerageId } : numberOwner) as { brokerage_id?: string | null } | null
       if (!providerConfig?.brokerage_id) {
         console.warn(`[sms-optout] STOP from unknown number to unattributable number ${to} — not suppressed`)
       }
 
       if (providerConfig?.brokerage_id) {
-        const applied = await addSuppression({
-          brokerageId: providerConfig.brokerage_id,
+        // A number with no contact yet: the list row IS the suppression (keyed by the number). A bare STOP revokes texts AND
+        // calls for that number (the survivor reads it as "all"; email / mail have no address to key on here).
+        const channels: Array<'sms' | 'phone'> = optOut.channel === 'all' ? ['sms', 'phone'] : optOut.channel === 'phone' ? ['phone'] : ['sms']
+        const appliedAll = await Promise.all(channels.map((channel) => addSuppression({
+          brokerageId: providerConfig.brokerage_id as string,
           phone:       from,
-          channel:     'sms',
-          reason:      `STOP keyword received from unknown number: "${msgBody.trim()}"`,
+          channel,
+          reason:      `STOP keyword received from unknown number: "${msgBody.trim().slice(0, 200)}"`,
           source:      'sms_stop',
-        })
-        // No contactId here (the number is not in contacts), so
-        // contactFlagsUpdated is null by design — only the list row can bind
-        // this suppression, and `checkSuppression` matches it on `phone`.
+        })))
+        const applied = { suppressed: appliedAll.every((a) => a.suppressed), errors: appliedAll.flatMap((a) => a.errors) }
         if (!applied.suppressed) {
           console.error(
             `[sms-optout] STOP suppression for unknown number ${from} REFUSED:`,

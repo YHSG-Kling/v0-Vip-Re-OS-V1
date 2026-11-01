@@ -357,15 +357,19 @@ function sourceLayer() {
   ]) {
     // WAVE 147 (lane 147Z): a door MERGED onto contract C8 (captureConsentedContact → captureContact) queues through the
     // survivor's own queueContactEnrichmentAndScore — pinned right below, so the door is credited only while that holds.
+    // WAVE 148 (lane 148B — ruling 4): a door merged onto THE one door directly (captureContact — the staff walk-in, the
+    // listing seller contact) is credited the same way: captureContact's own queue call is pinned right below.
     check(`direct door still queues enrichment: ${door}`,
-      /queueContactEnrichment\s*\(/.test(code(door)) || (/captureConsentedContact\s*\(\{/.test(code(door)) && c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts"))))
+      /queueContactEnrichment\s*\(/.test(code(door)) || (/captureConsentedContact\s*\(\{|\bcaptureContact\s*\(\{/.test(code(door)) && c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts"))))
   }
   // The C8 survivor's enrichment hook, followed: captureContact calls queueContactEnrichmentAndScore, which calls the one
   // queue writer (lib/enrichment/contact-enrichment-core.ts queueContactEnrichment) — and captureConsentedContact is ON captureContact.
   check("the C8 survivor queues enrichment itself (captureConsentedContact → captureContact → queueContactEnrichmentAndScore → queueContactEnrichment)",
     c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts")))
   check("POSITIVE CONTROL: a C8 survivor whose captureContact no longer queues is not credited",
-    !c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts").replace(/await queueContactEnrichmentAndScore\(/g, "await noop(")))
+    // wave 148: the call is no longer spelled `await queueContactEnrichmentAndScore(` (it is captureContact's default enrich
+    // effect) — the mutation removes every CALL of it while leaving its declaration, so the control still bites.
+    !c8QueuesEnrichment(code("lib/contact-pipeline/contact-capture.ts").replace(/(?<!function )\bqueueContactEnrichmentAndScore\(/g, "noop(")))
 
   console.log("\n[source · one queue writer, not four]")
   // Each of these used to hold its own private copy with a different set of guards.

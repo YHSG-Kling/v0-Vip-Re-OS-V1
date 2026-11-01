@@ -329,6 +329,13 @@ export interface SendEmailParams {
    *  personal-mailbox tier and goes straight to SendGrid — never a silently
    *  dropped attachment. */
   icsAttachment?: { filename: string; content: string }
+  /**
+   * Wave 148 (lane 148B — C16): extra MIME headers — the List-Unsubscribe / List-Unsubscribe-Post pair assembleEmail builds for
+   * a non-transactional send (RFC 8058 one-click). Carried by the SendGrid tier (`headers` on /v3/mail/send). BLIND SPOT, named:
+   * the Tier-1 personal-mailbox adapter (Gmail / Outlook, 1:1 agent mail) builds no custom headers — that mail still carries the
+   * footer link, and a 1:1 conversation is not bulk mail.
+   */
+  headers?: Record<string, string>
 }
 
 export interface SendEmailResult {
@@ -486,6 +493,7 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         { type: "text/plain", value: params.text || params.html.replace(/<[^>]*>/g, "") },
         { type: "text/html", value: params.html },
       ],
+      ...(params.headers && Object.keys(params.headers).length ? { headers: params.headers } : {}),
       attachments: params.icsAttachment
         ? [{
             content: Buffer.from(params.icsAttachment.content, "utf-8").toString("base64"),

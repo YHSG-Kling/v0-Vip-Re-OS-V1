@@ -357,75 +357,38 @@ export async function createOrAttachSellerContact(
   try {
     const supabase = await createClient()
 
-    // Search by email first, then phone.
-    // A FAILED dedupe read must NOT fall through to the insert below: an
-    // unchecked `{ data: existing }` turns a refused lookup into "no match",
-    // and this function's whole contract is "never create a duplicate".
-    if (input.email) {
-      const { data: existing, error: emailLookupError } = await supabase
-        .from("contacts")
-        .select("id")
-        .eq("brokerage_id", input.brokerageId)
-        .eq("email", input.email.toLowerCase().trim())
-        .maybeSingle()
-      if (emailLookupError) return { success: false, error: `Could not check for an existing contact by email: ${emailLookupError.message}` }
-      if (existing?.id) return { success: true, contactId: existing.id, created: false }
-    }
-
-    if (input.phone) {
-      // phone_digits is a generated column — query using the phone column directly
-      const { data: existing, error: phoneLookupError } = await supabase
-        .from("contacts")
-        .select("id")
-        .eq("brokerage_id", input.brokerageId)
-        .eq("phone", input.phone.trim())
-        .maybeSingle()
-      if (phoneLookupError) return { success: false, error: `Could not check for an existing contact by phone: ${phoneLookupError.message}` }
-      if (existing?.id) return { success: true, contactId: existing.id, created: false }
-    }
-
-    // Create new contact
-    // NOTE: phone_digits is a generated/computed column in the DB — do NOT include it in INSERT.
-    // The database calculates it automatically from the phone column.
-    const { data: contact, error } = await supabase
-      .from("contacts")
-      .insert({
-        brokerage_id:  input.brokerageId,
-        agent_id:      input.agentId,
-        first_name:    input.firstName.trim(),
-        last_name:     input.lastName?.trim() ?? "",
-        email:         input.email?.toLowerCase().trim() ?? null,
-        phone:         input.phone ?? null,
-        contact_type:  "seller",
-        status:        "active",
-        source:        "manual_entry",
+    // ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147Z Still open 1). TOMBSTONE (orphan doctrine §1.1): the
+    // email-then-phone lookup and the contacts INSERT that stood here were a second contact writer. Merged onto THE one
+    // survivor, lib/contact-pipeline/contact-capture.ts captureContact, riding THIS door's own client (the signed-in
+    // agent's session client — RLS stays the gate it always was; the injected-client contract). Preserved: a refused dedupe
+    // read refuses (captureContact throws on it — never an insert on "no match"), an existing contact is attached and NEVER
+    // overwritten (the merge is fill-if-empty; a conflicting value goes to notes), a new contact is a seller, status active,
+    // source manual_entry, source_family direct_intake, the agent as owner AND creator, enrichment queued by the survivor
+    // (its live-deal check decides, exactly as before). No consent is claimed: the agent typing a seller's details is not
+    // the seller's box.
+    const { data: { user } } = await supabase.auth.getUser()
+    const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+    let captured: Awaited<ReturnType<typeof captureContact>>
+    try {
+      captured = await captureContact({
+        brokerageId: input.brokerageId,
+        ownerAgentId: input.agentId,
+        creatorUserId: user?.id ?? null,
+        source: "manual_entry",
         source_family: "direct_intake",
-      })
-      .select("id")
-      .single()
+        status: "active",
+        contact_type: "seller",
+        first_name: input.firstName.trim(),
+        last_name: input.lastName?.trim() || null,
+        email: input.email?.toLowerCase().trim() ?? null,
+        phone: input.phone ?? null,
+        tcpa_consent: false,
+      }, { client: supabase })
+    } catch (e) {
+      return { success: false, error: `Could not attach or create the seller contact: ${e instanceof Error ? e.message : String(e)}` }
+    }
 
-    if (error) return { success: false, error: error.message }
-
-    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). A seller contact
-    // created alongside a listing is the case the ruling's "just before" is
-    // about: the listing exists but has not been signed, so the seller is still
-    // a prospect and enrichment is exactly what should happen now. If the
-    // listing is already at LISTING_AGREEMENT_SIGNED or beyond,
-    // queueContactEnrichment's live-deal check declines and the contact is
-    // picked up after the deal ends instead. The decision is the predicate's,
-    // not this call site's. Voided — listing setup must not fail on enrichment.
-    void import("@/lib/enrichment/contact-enrichment-core")
-      .then((m) =>
-        m.queueContactEnrichment({
-          contactId: contact.id,
-          brokerageId: input.brokerageId,
-          triggerType: "listing_seller_intake",
-          supabase,
-        }),
-      )
-      .catch(() => {})
-
-    return { success: true, contactId: contact.id, created: true }
+    return { success: true, contactId: captured.contactId, created: captured.action === "created" }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "createOrAttachSellerContact failed" }
   }

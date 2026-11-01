@@ -6,7 +6,8 @@ import type { LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Checkbox } from "@/components/ui/checkbox"
+// C15 (wave 148, lane 148B): the ONE consent component — this form no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
@@ -24,7 +25,10 @@ interface Props {
   headline?: string
   subheadline?: string
   ctaText?: string
+  /** @deprecated wave 148 — the consent wording is the ONE component's (C15). */
   tcpaText?: string
+  /** The name the consent names — THE one brand rule, resolved by the page exactly as the kernel re-renders it. */
+  consentBrandName?: string
   thankYouMessage?: string
   primaryColor?: string
   /** Wave 141: where the visitor came from (the page parsed it from the query string). */
@@ -51,7 +55,7 @@ export function HomeValueForm({
   headline = "What Is Your Home Worth?",
   subheadline = "Get a free, instant estimate from a local expert.",
   ctaText = "Get My Free Home Valuation",
-  tcpaText = "By submitting, you consent to receive communications. You may opt out at any time.",
+  consentBrandName = "our brokerage",
   thankYouMessage = "Thank you! Your request has been received. We will be in touch shortly.",
   attribution = null,
   onSubmitted,
@@ -59,7 +63,7 @@ export function HomeValueForm({
   const [isPending, startTransition] = useTransition()
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [tcpaChecked, setTcpaChecked] = useState(false)
+  const consent = useConsentBoxes("lead_magnet", consentBrandName, ["email", "sms", "voice", "direct_mail"])
 
   // Form fields — matching `home_valuation` default fields in the kernel
   const [firstName, setFirstName] = useState("")
@@ -84,7 +88,7 @@ export function HomeValueForm({
     if (!city.trim())       return "City is required"
     if (!state.trim())      return "State is required"
     if (!zip.trim())        return "ZIP code is required"
-    if (!tcpaChecked)       return "Please acknowledge the consent statement"
+    if (!consent.serviceGiven) return "Please tick the first consent box (the service follow-up) so we can send your home value"
     return null
   }
 
@@ -99,7 +103,7 @@ export function HomeValueForm({
         formId,
         brokerageId,
         source,
-        tcpaConsentGiven: tcpaChecked,
+        consent: consent.submission,
         attribution,
         submissionData: {
           first_name: firstName.trim(),
@@ -236,16 +240,8 @@ export function HomeValueForm({
         <Textarea id="hv-motivation" value={motivation} onChange={(e) => setMotivation(e.target.value)} rows={2} placeholder="Downsizing, relocating, investment..." />
       </div>
 
-      {/* TCPA Consent */}
-      <label className="flex items-start gap-3 cursor-pointer">
-        <Checkbox
-          checked={tcpaChecked}
-          onCheckedChange={(v) => setTcpaChecked(Boolean(v))}
-          className="mt-0.5 shrink-0"
-          required
-        />
-        <span className="text-xs text-muted-foreground leading-relaxed">{tcpaText}</span>
-      </label>
+      {/* C15 — the ONE consent component (service delivery required; marketing optional, per channel). */}
+      <ConsentBoxes {...consent.boxProps} idPrefix={`hv-consent-${formId}`} />
 
       {error && (
         <p className="text-sm text-destructive font-medium" role="alert">{error}</p>

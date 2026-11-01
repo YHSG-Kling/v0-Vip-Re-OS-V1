@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
+// C15 (wave 148, lane 148B): the ONE consent component — this form no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 import {
   Select,
   SelectContent,
@@ -35,7 +37,10 @@ interface Props {
   headline?: string
   subheadline?: string
   ctaText?: string
+  /** @deprecated wave 148 — the consent wording is the ONE component's (C15), never a per-form string. */
   tcpaText?: string
+  /** The name the consent names — THE one brand rule, resolved by the page exactly as the kernel re-renders it. */
+  consentBrandName?: string
   thankYouMessage?: string
   /** Wave 141: where the visitor came from (the page parsed it from the query string). */
   attribution?: LeadMagnetAttribution | null
@@ -50,7 +55,7 @@ export function GenericCaptureForm({
   headline,
   subheadline,
   ctaText = "Submit",
-  tcpaText = "By submitting, you consent to receive communications. You may opt out at any time.",
+  consentBrandName = "our brokerage",
   thankYouMessage = "Thank you! We will be in touch shortly.",
   attribution = null,
   onSubmitted,
@@ -58,7 +63,7 @@ export function GenericCaptureForm({
   const [isPending, startTransition] = useTransition()
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [tcpaChecked, setTcpaChecked] = useState(false)
+  const consent = useConsentBoxes("lead_magnet", consentBrandName, fields.some((f) => f.name === "property_address") ? ["email", "sms", "voice", "direct_mail"] : undefined)
 
   // Dynamic field values keyed by field.name
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -78,7 +83,7 @@ export function GenericCaptureForm({
         return `${field.label} must be a valid email address`
       }
     }
-    if (!tcpaChecked) return "Please acknowledge the consent statement"
+    if (!consent.serviceGiven) return "Please tick the first consent box (the service follow-up) so we can send what you asked for"
     return null
   }
 
@@ -102,7 +107,7 @@ export function GenericCaptureForm({
         formId,
         brokerageId,
         source,
-        tcpaConsentGiven: tcpaChecked,
+        consent: consent.submission,
         submissionData,
         attribution,
       })
@@ -189,15 +194,8 @@ export function GenericCaptureForm({
         </div>
       ))}
 
-      {/* TCPA Consent */}
-      <label className="flex items-start gap-3 cursor-pointer">
-        <Checkbox
-          checked={tcpaChecked}
-          onCheckedChange={(v) => setTcpaChecked(Boolean(v))}
-          className="mt-0.5 shrink-0"
-        />
-        <span className="text-xs text-muted-foreground leading-relaxed">{tcpaText}</span>
-      </label>
+      {/* C15 — the ONE consent component (service delivery required; marketing optional, per channel). */}
+      <ConsentBoxes {...consent.boxProps} idPrefix={`gcf-consent-${formId}`} />
 
       {error && (
         <p className="text-sm text-destructive font-medium" role="alert">{error}</p>

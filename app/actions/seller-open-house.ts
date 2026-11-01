@@ -664,10 +664,17 @@ export async function checkInAttendee(params: {
   email?: string
   phone?: string
   workingWithAgent: boolean
-  tcpaConsent: boolean
+  /**
+   * THE ONE CONSENT COMPONENT (C15 — wave 148, lane 148B). The visitor ticks the boxes on the agent's device; the
+   * service-delivery box ("contact me about this open house") is required to sign in. TOMBSTONE: this used to be a
+   * `tcpaConsent: boolean` the event-day tab HARDCODED to `true` for every walk-in the agent typed — a consent nobody gave
+   * (ruling 3: consent is never fabricated). The field is gone; only what the visitor ticked is recorded.
+   */
+  consent: import("@/lib/kernel/compliance/consent-component").ConsentComponentSubmission | null
+  /** The visitor's situation (ruling 12) — what they SAID. */
+  situation?: { intent?: "buyer" | "seller" | "both" | null; timeline?: string | null }
 }) {
   if (!isValidUUID(params.eventId)) return { success: false, error: "Invalid event ID" }
-  if (!params.tcpaConsent) return { success: false, error: "TCPA consent is required" }
 
   // Public kiosk endpoint — no caller auth. Brokerage is derived from the
   // event itself, so an attacker can only create attendees against an event
@@ -675,27 +682,39 @@ export async function checkInAttendee(params: {
   // brokerage). They cannot forge cross-tenant data.
   const serviceClient = createServiceClient()
 
-  const { data: event } = await serviceClient
+  const { data: event, error: eventErr } = await serviceClient
     .from("open_house_events")
     .select("id, brokerage_id, listing_id, agent_id, status")
     .eq("id", params.eventId)
     .maybeSingle()
 
+  if (eventErr) return { success: false, error: "We could not look that event up right now. Please try again." }
   if (!event) return { success: false, error: "Event not found" }
   if (event.status === "completed" || event.status === "cancelled") {
     return { success: false, error: "Event is not accepting check-ins" }
   }
 
-  const safePhone = params.tcpaConsent ? (params.phone ?? null) : null
+  // THE WORDING NAMES THE EVENT'S AGENT / BROKERAGE — THE one brand rule (resolveConsentBrand), off the event row, never the body.
+  // Wave 148 (lane 148B): THE one intake door (C8) and the one consent component's server contract (C15), loaded here.
+  const { captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  const brandName = await resolveConsentBrand(serviceClient, { agentId: event.agent_id ?? null, brokerageId: event.brokerage_id })
+  const email = params.email?.trim().toLowerCase() || null
+  const rawPhone = params.phone?.trim() || null
+  const c15 = consentGrantsFromComponent(params.consent, { door: "open_house_kiosk", brandName, provided: { email: !!email, phone: !!rawPhone } })
+  // THE SERVICE BOX IS THE SIGN-IN'S CONSENT (C15: service delivery is required for the service asked). No box → refused,
+  // nothing filed — the same rule the public kiosk door holds (app/api/open-house/attend/route.ts).
+  if (!c15.submission?.service_delivery) return { success: false, error: "Please tick the first consent box (the service follow-up) so the agent may follow up about this open house." }
+  // A phone is kept only with the service consent that covers it (calls / texts are what TCPA governs).
+  const safePhone = rawPhone
 
-  if (params.email) {
-    const { data: existing } = await serviceClient
+  if (email) {
+    const { data: existing, error: existingErr } = await serviceClient
       .from("open_house_attendees")
       .select("id")
       .eq("event_id", params.eventId)
-      .eq("email", params.email)
+      .eq("email", email)
       .maybeSingle()
-
+    if (existingErr) return { success: false, error: "We could not check the sign-in sheet right now. Please try again." }
     if (existing) {
       return { success: true, attendeeId: existing.id, duplicate: true }
     }
@@ -707,10 +726,10 @@ export async function checkInAttendee(params: {
       event_id: params.eventId,
       brokerage_id: event.brokerage_id,
       name: params.name,
-      email: params.email ?? null,
+      email,
       phone: safePhone,
       working_with_agent: params.workingWithAgent,
-      tcpa_consent: params.tcpaConsent,
+      tcpa_consent: c15.grants.some((g) => g.family === "phone" && g.given),
       check_in_time: new Date().toISOString(),
       arrival_time: new Date().toISOString(),
       // interest_level is NULLABLE and has no 'unknown' — at sign-in we have
@@ -722,38 +741,60 @@ export async function checkInAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
-  // THE CONTACT AND THE IDENTITY AT CHECK-IN (wave 147, lane 147F — owner rulings 1 + 7: "make sure that we didn't lose
-  // check-in writers for any event like open houses"; a consent box ⇒ a CONTACT). This door recorded a CONSENTED sign-in as
-  // an attendee with no contact and no identity match — the contact waited for a human "convert" click, and the consent row
-  // below was written with NO contact_id (consent nobody could ever be found by). A consented, identifiable sign-in now
-  // resolves (dedupes) onto the open-house Contact through the open-house kernel's ONE resolver
-  // (lib/kernel/open-house.ts resolveOrCreateOpenHouseContact), the attendee row is stamped with it (COUNTED — an update
-  // that matches nothing resolves too, §3), and the contact + attendee become person-identity evidence through the ONE
-  // check-in identity helper (lib/open-house/instant-greeting.ts linkOpenHouseCheckInIdentity). A failure here never undoes
-  // the check-in; it is logged by name and the human convert path (convertAttendeeToContact) still exists.
-  // HANDOFF (lane 147A, C8): when lane A names the ONE consented-intake survivor, this resolve is the call to re-point.
+  // THE CONTACT AT CHECK-IN — ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147Z Still open 1).
+  // TOMBSTONE: this used to resolve through lib/kernel/open-house.ts resolveOrCreateOpenHouseContact (an exact email/phone
+  // match, then its own contacts insert) and then INSERT its own contact_consent_events row with a wording the visitor never
+  // saw ("By submitting this form, you consent to be contacted about real estate services."). Both halves now ride THE one
+  // consented-intake door — lib/contact-pipeline/contact-capture.ts captureConsentedContact (C8): captureContact's dedupe
+  // (fail-closed, exact email = same person) → the Contact (the event's agent as owner AND creator — the person is assigned
+  // back to them, ruling 12) → each ticked C15 box recorded through the one consent writer with the wording the visitor read
+  // → the welcome (mentioning the visit) → enrichment → the AI ISA desk told. The attendee is stamped with the contact
+  // (COUNTED), and the contact + attendee become person-identity evidence through linkOpenHouseCheckInIdentity.
   let checkedInContactId: string | null = null
-  if (attendee?.id && (params.email || safePhone) && event.agent_id) {
+  if (attendee?.id && (email || safePhone)) {
     const parts = String(params.name ?? "").trim().split(/\s+/).filter(Boolean)
     const firstName = parts[0] ?? ""
     const lastName = parts.slice(1).join(" ")
     if (firstName) {
-      const { resolveOrCreateOpenHouseContact } = await import("@/lib/kernel/open-house")
-      const resolved = await resolveOrCreateOpenHouseContact({
-        brokerage_id: event.brokerage_id, agent_id: event.agent_id, first_name: firstName, last_name: lastName || undefined,
-        email: params.email ?? undefined, phone: safePhone ?? undefined, open_house_id: params.eventId,
-      })
-      if (!resolved.success || !resolved.contact_id) {
-        console.error(`[seller-open-house] consented check-in ${attendee.id} kept WITHOUT a contact — the resolve was refused: ${resolved.error ?? "no contact id"}`)
+      const { data: agentRow } = event.agent_id
+        ? await serviceClient.from("agents").select("user_id").eq("id", event.agent_id).maybeSingle()
+        : { data: null }
+      const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
+      const origin = await resolveOpenHouseWelcomeOrigin(serviceClient, params.eventId).catch(() => null)
+      const intent = params.situation?.intent ?? null
+      const resolved = await captureConsentedContact({
+        brokerageId: event.brokerage_id,
+        ownerAgentId: event.agent_id ?? null,
+        creatorUserId: (agentRow as { user_id?: string | null } | null)?.user_id ?? null,
+        source: "open_house",
+        first_name: firstName, last_name: lastName || null,
+        email, phone: safePhone,
+        // An open-house visitor tours a for-sale listing — a buyer-side contact unless they SAID otherwise (ruling 12).
+        contact_type: intent ?? "buyer",
+        ...(params.situation?.timeline ? { timeline: params.situation.timeline } : {}),
+        preferred_channel: safePhone ? "phone" : "email",
+        isa_reengage_allowed: false,
+        welcomeOrigin: origin,
+        consents: c15.grants,
+        intake: {
+          channel: "open_house",
+          sourceUrl: null,
+          evidence: { ...c15.evidence, wording_hash: c15.wordingHash, event_id: params.eventId, attendee_id: attendee.id, surface: "event_day_tab" },
+          formOwner: { table: "open_house_events", id: params.eventId },
+        },
+      }, { client: serviceClient })
+      if (!resolved.ok || !resolved.contactId) {
+        console.error(`[seller-open-house] consented check-in ${attendee.id} kept WITHOUT a contact — the intake was refused: ${resolved.reason ?? resolved.refused ?? "no contact id"}`)
       } else {
-        checkedInContactId = resolved.contact_id
+        checkedInContactId = resolved.contactId
+        for (const w of resolved.warnings) console.warn(`[seller-open-house] consented intake: ${w}`)
         const { data: stamped, error: stampErr } = await serviceClient.from("open_house_attendees")
           .update({ contact_id: checkedInContactId }).eq("id", attendee.id).eq("brokerage_id", event.brokerage_id).select("id")
         if (stampErr || !stamped?.length) console.error(`[seller-open-house] attendee ${attendee.id} not linked to contact ${checkedInContactId}: ${stampErr?.message ?? "matched no row"}`)
         const { linkOpenHouseCheckInIdentity } = await import("@/lib/open-house/instant-greeting")
         await linkOpenHouseCheckInIdentity(serviceClient, {
           brokerageId: event.brokerage_id, contactId: checkedInContactId, attendeeId: attendee.id, eventId: params.eventId,
-          firstName, lastName: lastName || null, email: params.email ?? null, phone: safePhone, source: "open_house_event_day",
+          firstName, lastName: lastName || null, email, phone: safePhone, source: "open_house_event_day",
         })
       }
     }
@@ -776,26 +817,30 @@ export async function checkInAttendee(params: {
       event_id: params.eventId,
       eventId: params.eventId,
       contactId: checkedInContactId,
-      has_email: !!params.email,
+      has_email: !!email,
       working_with_agent: params.workingWithAgent,
     },
   }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "the check-in's lifecycle event (fanned out to the reactor); a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-  if (params.email || safePhone) {
-    const { error: kioskConsentErr } = await serviceClient.from("contact_consent_events").insert({
-      brokerage_id: event.brokerage_id,
-      agent_id: event.agent_id,
-      // wave 147F: the consent is anchored to the person it belongs to (was always null here)
-      contact_id: checkedInContactId,
-      consent_type: "tcpa",
-      consent_text: "By submitting this form, you consent to be contacted about real estate services.",
-      consent_source: "open_house_kiosk",
-      consented: true,
-    })
-    if (kioskConsentErr) console.error(`[seller-open-house] TCPA consent from the open-house kiosk NOT recorded on the consent ledger: ${kioskConsentErr.message}`)
-  }
+  // TOMBSTONE (wave 148, lane 148B): the door's own `contact_consent_events` insert that stood here (consent_type 'tcpa', a
+  // fixed wording the visitor never saw) is retired — the consent is recorded by C8 above, one row per ticked C15 box, anchored
+  // to the contact, through THE one consent writer (lib/kernel/compliance/require-contact-consent.ts persistContactConsent).
 
   return { success: true, attendeeId: attendee?.id, contactId: checkedInContactId, duplicate: false }
+}
+
+/**
+ * The name the C15 consent wording names at an event-day check-in — the EVENT's brokerage, exactly as checkInAttendee
+ * re-renders it on the server (so the words the visitor reads are the words the ledger stores). Public on purpose (the
+ * kiosk tab renders before any write); it returns only a display name for an event the caller already holds the id of.
+ */
+export async function getCheckInConsentBrand(eventId: string): Promise<{ brandName: string }> {
+  if (!isValidUUID(eventId)) return { brandName: "our brokerage" }
+  const svc = createServiceClient()
+  const { data: event } = await svc.from("open_house_events").select("brokerage_id, agent_id").eq("id", eventId).maybeSingle()
+  if (!event?.brokerage_id) return { brandName: "our brokerage" }
+  const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  return { brandName: await resolveConsentBrand(svc, { agentId: event.agent_id ?? null, brokerageId: event.brokerage_id }) }
 }
 
 // ─── POST-EVENT: CONVERT ATTENDEE TO CONTACT ─────────────────────────────────
@@ -826,60 +871,45 @@ export async function convertAttendeeToContact(params: {
   if (attendee.contact_id) return { success: false, error: "Already converted to contact" }
   if (!attendee.email) return { success: false, error: "Attendee has no email address" }
 
-  const nameParts = (attendee.name ?? "").trim().split(/\s+/)
-  const firstName = nameParts[0] ?? "Open House"
-  const lastName = nameParts.slice(1).join(" ") || "Attendee"
+  const nameParts = (attendee.name ?? "").trim().split(/\s+/).filter(Boolean)
+  const firstName = nameParts[0] ?? ""
+  // No invented surname (was "Attendee") — an unknown last name stays unknown.
+  const lastName = nameParts.slice(1).join(" ") || null
+  if (!firstName) return { success: false, error: "Attendee has no name to put on a contact" }
 
-  const { data: existingContact } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("brokerage_id", auth.brokerageId)
-    .eq("email", attendee.email)
-    .is("deleted_at", null)
-    .maybeSingle()
-
-  let contactId: string
-
-  if (existingContact) {
-    contactId = existingContact.id
-  } else {
-    const { data: newContact, error: contactErr } = await serviceClient
-      .from("contacts")
-      .insert({
-        brokerage_id: auth.brokerageId,
-        agent_id: auth.agentId,
-        first_name: firstName,
-        last_name: lastName,
-        email: attendee.email,
-        phone: attendee.tcpa_consent ? (attendee.phone ?? null) : null,
-        source: "open_house",
-        contact_type: "buyer",
-        status: "new",
-        tcpa_consent: attendee.tcpa_consent,
-        tcpa_consent_source: "open_house_kiosk",
-        tcpa_consent_at: new Date().toISOString(),
-      })
-      .select("id")
-      .maybeSingle()
-
-    if (contactErr || !newContact) return { success: false, error: contactErr?.message ?? "Failed to create contact" }
-    contactId = newContact.id
-
-    await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+  // ONE DOOR (wave 148, lane 148B — owner ruling 4). TOMBSTONE: this staff conversion used to run its own exact-email
+  // lookup (error not read — a refused read became "no match" and a SECOND contact) and its own contacts INSERT (with a
+  // fabricated last name, and tcpa_consent copied off the attendee row). It now rides captureContact — the dedupe
+  // (fail-closed, exact email = the same person), the lossless merge, the assignment (the converting agent as owner AND
+  // creator — ruling 12), the CONTACT_CAPTURED fan-out (the reactor's enrichment + auto-enroll readers), enrichment and
+  // person evidence. NO CONSENT IS CLAIMED HERE: a staff click is not the person's box. A consent the visitor gave at sign-in
+  // is on the consent ledger already (C8 at check-in); a pre-148 attendee row's bare tcpa_consent flag is not re-stamped as a
+  // contact consent (blind spot named in the lane notes). The welcome stays THE one conversion welcome below (it names the
+  // visit and grants the portal), so captureContact's own welcome + invite are deferred to it — never two emails.
+  const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
+  const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+  let captured: Awaited<ReturnType<typeof captureContact>>
+  try {
+    captured = await captureContact({
       brokerageId: auth.brokerageId,
-      entityType: "contact",
-      entityId: contactId,
-      event: KernelEvent.CONTACT_CREATED,
-      actorUserId: auth.userId,
-      // AUTOMATIC ENRICHMENT ON A NEW CONTACT (owner, wave 14): the CONTACT_CREATED reactor branch
-      // enqueues enrichment. ONE EMIT (wave 101C): this used to be an audit-only row plus a separate
-      // processKernelEvent (emitKernelEvent "did not carry" the actor then — it does now). The
-      // reactor's CONTACT_CREATED readers use no metadata; contactId rides through; agentUserId: null
-      // keeps its attribution exactly as the bare fan-out had it.
-      contactId,
-      agentUserId: null,
-    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      ownerAgentId: auth.agentId ?? null,
+      creatorUserId: auth.userId,
+      source: "open_house",
+      contact_type: "buyer",
+      status: "new",
+      first_name: firstName,
+      last_name: lastName,
+      email: attendee.email,
+      phone: attendee.tcpa_consent ? (attendee.phone ?? null) : null,
+      tcpa_consent: false,
+    }, { client: serviceClient, effects: { welcome: async () => undefined, portalInvite: async () => undefined } })
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : "Failed to create contact" }
+  }
+  const contactId = captured.contactId
+  const existingContact = captured.action === "merged"
 
+  if (!existingContact) {
     // THE WELCOME (owner ruling 2026-09-10, wave 51): "contact came from open house
     // — same welcome email but mentions the open house with welcome video/portal
     // invite." This is the attendee's becomes-a-contact moment — hand it to
@@ -892,7 +922,6 @@ export async function convertAttendeeToContact(params: {
     // ensureClientWelcome itself applies (state 'no_assigned_agent').
     if (auth.agentId) {
       try {
-        const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
         const origin = await resolveOpenHouseWelcomeOrigin(serviceClient, attendee.event_id)
         const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
         await deliverConversionWelcome(serviceClient, {

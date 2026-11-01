@@ -17,7 +17,8 @@
  */
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { createContactManually } from "@/lib/kernel/crm"
+// Wave 148 (lane 148B): THE one consented-intake door (C8) + the one consent component's server contract (C15).
+import { captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } from "@/lib/contact-pipeline/contact-capture"
 import { resolveWidgetNotificationTarget } from "@/lib/integrations/widget/resolve-notification-target"
 import { createCallbackTask } from "@/lib/ai-isa/callback-task"
 
@@ -30,16 +31,20 @@ export async function POST(request: NextRequest) {
     bestTime,
     tcpaConsent,
     session_token,
+    consent,
   }: {
     firstName?: string
     lastName?: string
     phone?: string
     bestTime?: string
-    tcpaConsent: boolean
+    /** @deprecated pre-148 widgets — the bare box. Superseded by `consent` (C15). */
+    tcpaConsent?: boolean
     session_token?: string
+    /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148). The wording is re-rendered here, never the body's. */
+    consent?: unknown
   } = body
 
-  if (!tcpaConsent) return NextResponse.json({ error: "TCPA consent required" }, { status: 400 })
+  if (!tcpaConsent && !consent) return NextResponse.json({ error: "TCPA consent required" }, { status: 400 })
   if (!session_token) return NextResponse.json({ error: "session_token required" }, { status: 400 })
 
   const supabase = createServiceClient()
@@ -86,22 +91,40 @@ export async function POST(request: NextRequest) {
     recipient = await resolveWidgetNotificationTarget("brokerage", brokerageId)
   }
 
-  // Create contact via kernel CRM (they gave TCPA consent, so they're a contact)
-  const contactResult = agentId
-    ? await createContactManually({
-        first_name: firstName ?? "Widget",
-        last_name: lastName ?? "Visitor",
-        phone: phone ?? null,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        tcpa_consent: true,
-        source_label: "website_widget_callback",
-        status: "new",
-        notes: bestTime ? `Best time to call: ${bestTime}` : undefined,
-      })
-    : { success: false, contactId: undefined }
-
-  const contactId = contactResult.contactId ?? null
+  // ONE DOOR (wave 148, lane 148B — owner rulings 3, 4). TOMBSTONE: this used to create the contact through the kernel
+  // CRM's staff manual-create (createContactManually) with an invented "Widget Visitor" name, `tcpa_consent: true` stamped
+  // with no wording, and ONLY when the session was agent-scoped (a brokerage widget's callback filed no contact at all). It
+  // now rides THE one consented-intake door (C8) with the ONE consent component's boxes (C15) — or, for a cached pre-148
+  // widget, the label it showed beside its box. A visitor with no name stays a callback task, never a fabricated contact.
+  const callbackBrand = await resolveConsentBrand(supabase, { agentId: null, brokerageId })
+  const callbackC15 = consentGrantsFromComponent(consent, { door: "chat_widget", brandName: callbackBrand, provided: { email: false, phone: !!phone } })
+  if (consent && !callbackC15.submission?.service_delivery) return NextResponse.json({ error: "Please tick the first consent box (the service follow-up) so we can call you back." }, { status: 400 })
+  const CALLBACK_LEGACY_TEXT = "I agree to be contacted by a real estate professional via phone, email, or text."
+  let contactId: string | null = null
+  if ((firstName ?? lastName) && phone) {
+    const intake = await captureConsentedContact({
+      brokerageId,
+      ownerAgentId: agentId,
+      source: "website_widget_callback",
+      status: "new",
+      first_name: firstName ?? null,
+      last_name: lastName ?? null,
+      phone,
+      preferred_channel: "phone",
+      notes: bestTime ? `Best time to call: ${bestTime}` : null,
+      ...(bestTime ? { preferred_contact_time: bestTime.slice(0, 120) } : {}),
+      consents: callbackC15.submission
+        ? callbackC15.grants
+        : [{ family: "phone", given: tcpaConsent === true, text: CALLBACK_LEGACY_TEXT, textVersion: "widget_callback:legacy", purposes: ["requested_information"] }],
+      intake: {
+        channel: "chat_widget", sourceUrl: "/api/widget/live-agent-request",
+        evidence: { ...callbackC15.evidence, ...(callbackC15.wordingHash ? { wording_hash: callbackC15.wordingHash } : {}), chat_session_id: session.id, ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null, user_agent: request.headers.get("user-agent") ?? null },
+        formOwner: { table: "chat_sessions", id: session.id },
+      },
+    }, { client: supabase })
+    if (intake.ok && intake.contactId) contactId = intake.contactId
+    else console.error("[widget/live-agent-request] consented intake refused:", intake.refused, intake.reason)
+  }
 
   // THE DURABLE HALF — owner ruling (wave 55): a callback ask must become a
   // real task with an autonomous executor, not just a notification a human

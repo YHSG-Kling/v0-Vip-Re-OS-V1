@@ -221,8 +221,10 @@ function enrichmentSource() {
     ["lib/contact-pipeline/contact-capture.ts",        /queueContactEnrichment\(/],
     ["lib/kernel/event-reactor.ts",                    /queueContactEnrichment\(/],
     ["lib/kernel/crm.ts",                              /queueContactEnrichment\(/],
-    ["lib/application/lead-application-service.ts",    /queueContactEnrichment\(/],
-    ["app/actions/home-value.ts",                      /queueContactEnrichment\(/],
+    // wave 148 (lane 148B — ruling 4): these two doors ride THE one door now (captureContact / captureConsentedContact), which
+    // calls the survivor queue on create AND merge (pinned above) — credited on that, never on a private copy.
+    ["lib/application/lead-application-service.ts",    /queueContactEnrichment\(|\bcaptureContact\(/],
+    ["app/actions/home-value.ts",                      /queueContactEnrichment\(|\bcaptureContact\(|captureConsentedContact\(/],
   ] as const
   for (const [file, re] of doors) {
     check(`${file} calls the SURVIVOR (no private copy)`, re.test(src(file)))
@@ -247,13 +249,20 @@ function enrichmentSource() {
   // 101C) ONE emitKernelEvent of it that is not audit-only (row + fan-out in one call).
   const dispatchesCreated = (s: string) => /processKernelEvent\(\{[\s\S]{0,200}?KernelEvent\.CONTACT_CREATED/.test(s) ||
     /emitKernelEvent\(\{[^}]*event:\s*KernelEvent\.CONTACT_CREATED(?:(?!auditOnly)[^}])*\}\)/.test(s)
-  check("the open-house conversion now DISPATCHES its CONTACT_CREATED (a bare lifecycle insert never reached the reactor)",
-    dispatchesCreated(openHouse))
+  // WAVE 148 (lane 148B — owner ruling 4) moved this WAYPOINT: the post-event conversion rides THE one door (captureContact),
+  // whose CREATE fans out CONTACT_CAPTURED through processKernelEvent — the reactor queues enrichment on CONTACT_CREATED ||
+  // CONTACT_CAPTURED (asserted above). RULE re-asserted: the conversion's creation reaches the reactor, never a bare row.
+  const convertBody = openHouse.slice(openHouse.indexOf("export async function convertAttendeeToContact"))
+  check("the open-house conversion's creation REACHES the reactor (its own CONTACT_CREATED dispatch, or captureContact's CONTACT_CAPTURED fan-out)",
+    dispatchesCreated(openHouse) || (/\bcaptureContact\(/.test(convertBody.slice(0, 6000)) && /notify\(\{\s*event: KernelEvent\.CONTACT_CAPTURED/.test(capture)))
   check("POSITIVE CONTROL: an audit-only CONTACT_CREATED row (no reactor) fails",
     !dispatchesCreated(`emitKernelEvent({ event: KernelEvent.CONTACT_CREATED, entityId: c, auditOnly: true })`))
   const homeValue = src("app/actions/home-value.ts")
-  check("both home-value contact doors queue enrichment",
-    (homeValue.match(/queueContactEnrichment\(/g) ?? []).length === 2)
+  // WAVE 148 moved this WAYPOINT (a hardcoded count of 2 direct queue calls): both home-value doors now ride the one door,
+  // which queues on create AND merge. RULE: each door reaches the queue — directly or through captureContact / C8.
+  const hvDoor = (fn: string) => { const i = homeValue.indexOf(`export async function ${fn}`); return i < 0 ? "" : homeValue.slice(i, i + 9000) }
+  check("both home-value contact doors queue enrichment (directly or through the one door)",
+    ["convertValuationRequestToContact", "submitHomeValueRequest"].every((fn) => /queueContactEnrichment\(|\bcaptureContact\(|captureConsentedContact\(/.test(hvDoor(fn))))
 
   console.log("\n[SOURCE · ruling 2 — A LIST: every import door reaches the lane]")
   const importActions = src("app/actions/lead-import/import-actions.ts")
@@ -263,8 +272,10 @@ function enrichmentSource() {
   check("the CRM migration pull feeds the SAME gated import pipeline (no bypass)",
     /CrmPullPage/.test(importPull) && !/from\("contacts"\)/.test(importPull))
   const appService = src("lib/application/lead-application-service.ts")
-  check("serviceImportLeads — the list door that inserted contacts directly — now queues per row",
-    /queueContactEnrichment\(\{[\s\S]{0,200}?triggerType: "import"/.test(appService))
+  // wave 148 (lane 148B): serviceImportLeads rides THE one door per row (captureContact — which queues on create and merge,
+  // pinned above); RULE re-asserted: every imported row reaches the queue, never a bare insert.
+  check("serviceImportLeads — the list door that inserted contacts directly — now queues per row (directly or through captureContact)",
+    /queueContactEnrichment\(\{[\s\S]{0,200}?triggerType: "import"/.test(appService) || (/for \(const lead of leads\)[\s\S]{0,6000}\bcaptureContact\(\{/.test(appService) && !/\.from\("contacts"\)\.insert\(/.test(appService)))
 
   console.log("\n[SOURCE · ruling 2 — SUPPRESSED during an active deal (previous ruling, still in force)]")
   check("the queue writer consults the live-deal predicate BEFORE writing a row",

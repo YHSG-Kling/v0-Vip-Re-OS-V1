@@ -608,7 +608,9 @@ function kioskLayer() {
     !/\bemail\b/.test(props) && !/list_price/.test(props))
   check("P13", "...and the TCPA disclosure names the brokerage, resolved not guessed",
     /const consentPartyName = event\.brokerageName \?\? branding\?\.appName \?\? "our brokerage"/.test(kiosk) &&
-    /TCPA_CONSENT_TEXT\(consentPartyName\)/.test(kiosk))
+    // wave 148 (lane 148B, C15): the kiosk renders THE ONE consent component named for that party (was its own
+    // TCPA_CONSENT_TEXT(consentPartyName) box) — the RULE (the disclosure names the resolved brokerage) is unchanged.
+    (/TCPA_CONSENT_TEXT\(consentPartyName\)/.test(kiosk) || /useConsentBoxes\("open_house_kiosk", consentPartyName\)/.test(kiosk)))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

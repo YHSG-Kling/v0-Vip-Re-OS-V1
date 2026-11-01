@@ -271,16 +271,23 @@ console.log("\n━━━ E · the door census (stripped, strings kept) ━━━
   const bad = doors.filter((d) => !d.dispatches && !d.identifierless)
   console.log(`  census: ${files.length} files; ${doors.length} contacts insert/upsert door(s); ${doors.filter((d) => d.dispatches).length} dispatch; ${doors.filter((d) => !d.dispatches && d.identifierless).length} identifier-less placeholder(s); ${bad.length} cron-only`)
   for (const d of doors) console.log(`    ${d.dispatches ? "·" : d.identifierless ? "○" : "✗"} ${d.file}:${d.line} ${d.dispatches ? "dispatches" : d.identifierless ? `placeholder (${d.keys})` : `CRON-ONLY (${d.keys})`}`)
-  ok(doors.length >= 15, `positive control: the census sees the doors (${doors.length} ≥ 15)`)
+  // WAVE 148 (lane 148B — owner ruling 4) moved this WAYPOINT: the hardcoded floor of 15 was a count of doors that each wrote
+  // their own contact; seven of them now ride THE one door (lib/contact-pipeline/contact-capture.ts), so FEWER inserts is the
+  // finding, not a blind census. The positive control now proves the FINDER (a specimen insert is a door; a comment is not)
+  // and that the survivor's own inserts are still seen.
+  const specimen = census(stripComments(`await svc.from("contacts").insert({ email: e, brokerage_id: b })\n// await svc.from("contacts").insert({ email })`), "specimen.ts")
+  ok(specimen.length === 1 && doors.some((d) => d.file === "lib/contact-pipeline/contact-capture.ts"), `positive control: the census sees a specimen door (and not its comment) and the survivor's inserts (${doors.length} doors today)`)
   ok(bad.length === 0, "every contacts create door dispatches enrichment, or inserts an identifier-less placeholder the rail refuses anyway", bad.map((d) => `${d.file}:${d.line}`).join(", "))
   // the door this lane hooked, by name (a direct hook rots silently — enrichment-suppression-simulator's rule)
   const wa = stripped("app/api/webhooks/whatsapp/route.ts")
   ok(/queueContactEnrichment\(\{ contactId: newContactId, brokerageId: tenantId, triggerType: "whatsapp_dm", supabase: svc \}\)/.test(wa), "the WhatsApp door (a contact WITH a phone, no kernel event) now queues — hooked by name")
   // the brief's named doors, by name
   for (const [door, token] of [
-    ["lib/kernel/lead-magnets.ts", /queueContactEnrichment\s*\(/],            // captureFormSubmission
+    // wave 148 (lane 148B): captureFormSubmission and the ad-lead intake ride THE one door (captureConsentedContact → captureContact →
+    // queueContactEnrichmentAndScore, pinned on the last row) — credited on that, never on a private queue call.
+    ["lib/kernel/lead-magnets.ts", /queueContactEnrichment\s*\(|captureConsentedContact\s*\(/],            // captureFormSubmission
     ["app/api/forms/submit/route.ts", /captureFormSubmission\s*\(/],          // /api/forms/submit — consolidated onto the lead-magnets survivor (wave 142E), which queues
-    ["lib/ads/ad-lead-intake.ts", /queueContactEnrichment\s*\(/],             // ad-lead intake
+    ["lib/ads/ad-lead-intake.ts", /queueContactEnrichment\s*\(|captureConsentedContact\s*\(/],             // ad-lead intake
     ["app/actions/business-card/business-card-actions.ts", /captureContact\s*\(/], // the scanner
     ["lib/kernel/crm.ts", /enrichContactAfterIntake\s*\(/],                   // manual create (survivor)
     ["lib/contact-pipeline/contact-capture.ts", /queueContactEnrichmentAndScore\s*\(/], // the identity layer every capture door shares

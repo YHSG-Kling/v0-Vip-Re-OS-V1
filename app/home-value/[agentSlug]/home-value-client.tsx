@@ -6,7 +6,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Checkbox } from "@/components/ui/checkbox"
+// C15 (wave 148, lane 148B): the ONE consent component — this page no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes, type ConsentBoxesProps } from "@/app/components/forms/ConsentBoxes"
 import { evaluatePropertyAction } from "@/app/actions/property-evaluation"
 import { captureHomeValueLead } from "@/app/actions/home-value-lead"
 import type { PropertyEvaluation, EvaluationAudience } from "@/lib/property/property-evaluation"
@@ -52,7 +53,8 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
   const [fullName, setFullName] = useState("")
   const [email, setEmail] = useState("")
   const [phone, setPhone] = useState("")
-  const [consent, setConsent] = useState(false)
+  // THE one brand rule (resolveConsentBrand): the brokerage by name, else the agent — what captureHomeValueLead re-renders.
+  const consent = useConsentBoxes("home_value", branding.brokerageName?.trim() || branding.agentName, ["email", "sms", "voice", "direct_mail"])
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -87,8 +89,8 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
   async function submitLead(e: React.FormEvent) {
     e.preventDefault()
     setSubmitError(null)
-    if (!fullName.trim() || (!email.trim() && !phone.trim()) || !consent) {
-      setSubmitError("Name, contact info, and consent are all required.")
+    if (!fullName.trim() || (!email.trim() && !phone.trim()) || !consent.serviceGiven) {
+      setSubmitError("Name, contact info, and the first consent box are all required.")
       return
     }
     setSubmitting(true)
@@ -99,7 +101,7 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
       fullName: fullName.trim(),
       email: email.trim(),
       phone: phone.trim() || undefined,
-      consentToContact: consent,
+      consent: consent.submission,
       property: {
         address: address.trim(),
         city: city.trim(),
@@ -189,7 +191,7 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
             fullName={fullName} setFullName={setFullName}
             email={email} setEmail={setEmail}
             phone={phone} setPhone={setPhone}
-            consent={consent} setConsent={setConsent}
+            consentBoxes={consent.boxProps}
             submitting={submitting}
             submitError={submitError}
             onSubmit={submitLead}
@@ -321,7 +323,7 @@ function ResultsStage(props: {
   fullName: string; setFullName: (v: string) => void
   email: string; setEmail: (v: string) => void
   phone: string; setPhone: (v: string) => void
-  consent: boolean; setConsent: (v: boolean) => void
+  consentBoxes: Pick<ConsentBoxesProps, "door" | "brandName" | "value" | "onChange" | "offered">
   submitting: boolean
   submitError: string | null
   onSubmit: (e: React.FormEvent) => void
@@ -507,17 +509,8 @@ function ResultsStage(props: {
               </div>
             </div>
 
-            <label className="flex items-start gap-2 text-xs text-gray-600 pt-1">
-              <Checkbox
-                checked={props.consent}
-                onCheckedChange={(c) => props.setConsent(Boolean(c))}
-                className="mt-0.5"
-              />
-              <span>
-                I agree to be contacted by {props.agentName} about real estate services
-                via the contact methods I provided. I understand I can opt out at any time.
-              </span>
-            </label>
+            {/* C15 — the ONE consent component (service delivery required; marketing optional, per channel). */}
+            <ConsentBoxes {...props.consentBoxes} idPrefix="hv-agent-consent" compact className="pt-1" />
 
             {props.submitError && (
               <p className="text-xs text-red-600">{props.submitError}</p>

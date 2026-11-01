@@ -342,11 +342,16 @@ function staticLayer(): void {
     check("OH-ATTRIB-ERR", "a refused attribution lifecycle write is reported, not swallowed",
       /eventErr/.test(attribution) && /success:\s*false/.test(guardedBlock(attribution, "eventErr")))
 
+    // WAVE 148 (lane 148B — owner ruling 4) moved the WAYPOINT these two checks pinned: the walk-in resolve no longer runs its
+    // own email / phone lookups — it rides THE one door, lib/contact-pipeline/contact-capture.ts captureContact, whose dedupe
+    // THROWS on a refused read (findCaptureCandidates). The RULE is re-asserted on both halves: the survivor's dedupe reads
+    // destructure and refuse, and the resolve turns that refusal into success:false — never an insert on "no match".
     const contact = functionBody(S.ohKernel, "resolveOrCreateOpenHouseContact")
-    check("OH-DEDUP-READS", "contact dedup lookups destructure their errors",
-      !hasBareDataDestructure(contact))
-    check("OH-DEDUP-ABORT", "every refused dedup lookup returns instead of falling through to an insert",
-      (contact.match(/if\s*\(\s*error\s*\)\s*\{\s*return/g) ?? []).length >= 2)
+    const capture = readFileSync(resolvePath(ROOT, "lib/contact-pipeline/contact-capture.ts"), "utf8")
+    check("OH-DEDUP-READS", "contact dedup lookups destructure their errors (the resolve has none of its own; the survivor's do)",
+      !hasBareDataDestructure(contact) && /const \{ data, error \} = await r\.q\.limit\(25\)/.test(capture))
+    check("OH-DEDUP-ABORT", "a refused dedup lookup refuses instead of falling through to an insert (survivor throws; the resolve returns success:false)",
+      /if \(error\) throw new Error\(`Contact dedupe read/.test(capture) && /captureContact\(/.test(contact) && /catch \(e\) \{\s*return \{\s*success: false/.test(contact))
   }
 
   console.log("\n[open house · surface reachability]")
@@ -673,7 +678,8 @@ function staticLayer(): void {
     check("TCPA-KIOSK-HOME-CONTROL", "POSITIVE CONTROL: a consumer attendee insert without contact_id is found",
       !consumerAttendeeInserts(S.ohKiosk.replace(/contact_id:\s*contactId,/, "")).every((s) => /contact_id:/.test(s.split(/\.select\(/)[0])))
     check("TCPA-KIOSK-REFUSES", "the public kiosk REFUSES a check-in with no consent, it does not just note it",
-      /if\s*\(\s*!\s*tcpaConsent\s*\)[\s\S]{0,200}?\b400\b/.test(S.ohKiosk))
+      // wave 148 (C15): the kiosk also accepts the ONE consent component's submission; no consent of EITHER kind → 400 (the rule).
+      /if\s*\(\s*!\s*tcpaConsent(?:\s*&&\s*!kioskC15Raw)?\s*\)[\s\S]{0,200}?\b400\b/.test(S.ohKiosk))
     check("TCPA-AGENT-HOME-EXISTS", "the authenticated home still exists and supplies contact_id",
       /export\s+async\s+function\s+createOpenHouseAttendeeFromContact\b/.test(S.ohKernel) &&
       /contact_id,/.test(insertPayload))

@@ -1283,8 +1283,11 @@ export async function routeHistoryToCanonicalEntity(
       .eq("brokerage_id", ctx.brokerageId)
 
     // Hard stop detection (TCPA keywords)
-    const HARD_STOP = /^\s*(stop|cancel|end|quit|unsubscribe|remove me|opt out|optout)\s*$/i
-    if (HARD_STOP.test(inboundText.trim())) {
+    // TOMBSTONE (orphan doctrine §1.1; wave 148, lane 148B — C16): a local HARD_STOP regex stood here
+    // (stop|cancel|end|quit|unsubscribe|remove me|opt out|optout — no "revoke", no "stopall"). "remove me" was merged onto
+    // the ONE list first; SURVIVOR: lib/ai-isa/opt-out-utils.ts:22 REVOCATION_KEYWORDS, read through isRevocationKeyword.
+    const { isRevocationKeyword } = await import("@/lib/ai-isa/opt-out-utils")
+    if (isRevocationKeyword(inboundText)) {
       // Suppress the channel. Live schema is contact-keyed
       // (no entity_type/entity_id columns). For lead-stage suppressions
       // we resolve to the converted contact via leads.contact_id if one

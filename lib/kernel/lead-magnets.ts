@@ -199,6 +199,14 @@ export interface CaptureFormSubmissionInput {
    * stamped — a query-string id never vouches for itself (CLAUDE.md §4).
    */
   attribution?: LeadMagnetAttribution | null
+  /**
+   * THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). When present it is the consent record (the wording
+   * re-rendered server-side from the door key + the magnet owner's name); `tcpaConsentGiven` is then derived from it. Absent
+   * (an older client / the public API) → the legacy single box with the form's own disclosure text.
+   */
+  consent?: unknown
+  /** Which C15 door rendered the component (the /forms page renders 'web_form'; magnet landings 'lead_magnet'). */
+  consentDoor?: "lead_magnet" | "web_form"
 }
 
 export interface CaptureFormSubmissionOutput {
@@ -1087,6 +1095,18 @@ async function enqueueLeadMagnetCard(
 // KERNEL COMMAND 3: captureFormSubmission
 // ============================================================================
 
+/** The contacts.timeline CHECK buckets a magnet form may carry as a situation field (CLAUDE.md §5 — buckets only). */
+const LEAD_MAGNET_TIMELINES = new Set(["immediate", "1-3_months", "3-6_months", "6-12_months", "12+_months", "researching"])
+
+/**
+ * Who a magnet's C15 consent names — THE one rule (lib/contact-pipeline/contact-capture.ts resolveConsentBrand): its agent
+ * (full name), else its brokerage. The magnet page renders the component through the same rule.
+ */
+export async function leadMagnetConsentBrand(supabase: { from: (t: string) => any }, brokerageId: string, agentId: string | null): Promise<string> {
+  const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  return resolveConsentBrand(supabase, { agentId, brokerageId })
+}
+
 export async function captureFormSubmission(
   input: CaptureFormSubmissionInput,
   opts: LeadMagnetClientOpts = {},
@@ -1160,145 +1180,88 @@ export async function captureFormSubmission(
   // contact already existed or was created by this capture.
   let capturedContactType: string | null = null
   let capturedContactPersona: string | null = null
+  let consentWarnings: string[] = []
 
-  // The TCPA consent on the submission becomes a CONTACT-level consent artifact only when there is a
-  // phone to consent for (TCPA governs calls/texts) — the same column set persistContactConsent and the
-  // ad-lead intake stamp, so every consent reader (ISA gates, SMS dispatch) sees one vocabulary.
-  const consentForPhone = input.tcpaConsentGiven === true && !!data.phone
-  const consentCols = consentForPhone
-    ? { tcpa_consent: true, tcpa_consent_at: submittedAt, tcpa_consent_date: submittedAt, tcpa_consent_text: consentText, tcpa_consent_source: "lead_magnet", tcpa_consent_ip: input.ipAddress ?? null }
-    : null
+  // THE CONSENT — C15 when the form rendered the ONE component, else the form's own single box (legacy). The consent is what
+  // the person ticked beside words the SERVER can re-render; never a default the person was not shown as consent.
+  const magnetOwnerName = await leadMagnetConsentBrand(supabase, input.brokerageId, (form as { agent_id?: string | null }).agent_id ?? null)
+  const { consentGrantsFromComponent } = await import("@/lib/contact-pipeline/contact-capture")
+  const c15 = consentGrantsFromComponent(input.consent, { door: input.consentDoor ?? "lead_magnet", brandName: magnetOwnerName, provided: { email: !!data.email, phone: !!data.phone, address: !!data.property_address } })
+  const magnetPurposes: Array<"home_valuation" | "market_updates" | "listing_alerts" | "event_followup"> =
+    "property_address" in input.submissionData ? ["home_valuation"] : []
+  const consents = c15.submission
+    ? c15.grants
+    : [{
+        family: (data.phone ? "phone" : "email") as "phone" | "email", given: input.tcpaConsentGiven === true, text: consentText,
+        textVersion: `lead_magnet:${input.formId}`, purposes: ["requested_information" as const, ...magnetPurposes],
+      }]
 
   if (data.email || data.phone) {
-    // DEDUP within the tenant: email first, then phone (the ad-lead intake's order — one rule).
-    type ExistingContact = { id: string; agent_id?: string | null; contact_type?: string | null; contact_persona?: string | null; campaign_attribution_id?: string | null; tcpa_consent?: boolean | null }
-    let existingContact: ExistingContact | null = null
-    if (data.email) {
-      const { data: byEmail, error: byEmailErr } = await supabase
-        .from("contacts")
-        .select("id, agent_id, contact_type, contact_persona, campaign_attribution_id, tcpa_consent")
-        .eq("email", data.email)
-        .eq("brokerage_id", input.brokerageId)
-        .maybeSingle()
-      if (byEmailErr) console.warn("[lead-magnets] contact email lookup refused:", byEmailErr.message)
-      existingContact = (byEmail as ExistingContact | null) ?? null
+    // ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147A / 147Z Still open 1 — the "DUPLICATED upsert half").
+    // TOMBSTONE (orphan doctrine §1.1): the email-then-phone dedupe, the attribution / consent UPGRADE update, the
+    // unowned-contact CLAIM update, the contacts INSERT and the voided enrichment queue that stood here were a SECOND upsert
+    // of a consented person beside THE one survivor. Merged onto lib/contact-pipeline/contact-capture.ts
+    // captureConsentedContact (C8) → captureContact, riding THIS kernel's injected client (the contract the blocker named —
+    // its proofs drive it on an in-memory client). Every semantic the merge had to preserve is carried by the survivor now:
+    //   · campaign_attribution_id — the VERIFIED (this tenant's) campaign, FIRST-TOUCH (fill-if-empty on a returning person);
+    //   · source_channel — 'online_form' / 'paid_ad' / 'qr_code' from the proven arrival, first-touch;
+    //   · tcpa_consent_ip — stamped with the phone consent it evidences (C8 passes the evidence ip);
+    //   · the unowned-contact claim — a returning person with no owner is assigned to the magnet's agent (the merge path's
+    //     owner hint); an owned contact is never reassigned (no lead-stealing);
+    //   · consent UPGRADED, never revoked (an unticked box writes nothing);
+    //   · a NEW contact's intent from the magnet type / declared persona, status 'new', the captured language;
+    //   · enrichment queued (captureContact's create AND merge paths), the welcome, person evidence.
+    // The magnet's agent is owner AND creator (contacts.source_agent_id — ruling 12, assigned back to them).
+    const captureMagnetType = ((form as any).magnet_type ?? "generic_form") as string
+    const { classifyMagnetIntent } = await import("@/lib/marketing/lead-magnet-intent")
+    const intentRouting = classifyMagnetIntent(captureMagnetType)
+    // Wave 142: the form's DECLARED persona (settings.default_contact_type — the Forms Manager's one unique
+    // piece, merged onto this kernel) fills in only when the magnet type itself says nothing.
+    const declaredType = declarableContactType((((form as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>).default_contact_type)
+    const resolvedContactType = intentRouting.contactType ?? declaredType
+    let creatorUserId: string | null = null
+    if ((form as any).agent_id) {
+      const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+      creatorUserId = await resolveUserIdForAgentRecord(supabase, (form as any).agent_id)
     }
-    if (!existingContact && data.phone) {
-      const { data: byPhone, error: byPhoneErr } = await supabase
-        .from("contacts")
-        .select("id, agent_id, contact_type, contact_persona, campaign_attribution_id, tcpa_consent")
-        .eq("phone", data.phone)
-        .eq("brokerage_id", input.brokerageId)
-        .maybeSingle()
-      if (byPhoneErr) console.warn("[lead-magnets] contact phone lookup refused:", byPhoneErr.message)
-      existingContact = (byPhone as ExistingContact | null) ?? null
-    }
-
-    if (existingContact) {
-      contactId = existingContact.id
-      capturedContactType = (existingContact as { contact_type?: string | null }).contact_type ?? null
-      capturedContactPersona = (existingContact as { contact_persona?: string | null }).contact_persona ?? null
-      // FIRST-TOUCH attribution stays; a returning contact with none yet gets this campaign. Consent is
-      // UPGRADED (never revoked) when this submission consented and the contact had not.
-      const upgrade: Record<string, unknown> = {}
-      if (verifiedCampaignId && !existingContact.campaign_attribution_id) upgrade.campaign_attribution_id = verifiedCampaignId
-      if (consentCols && existingContact.tcpa_consent !== true) Object.assign(upgrade, consentCols)
-      if (Object.keys(upgrade).length > 0) {
-        const { error: upgradeErr } = await supabase.from("contacts")
-          .update(upgrade)
-          .eq("brokerage_id", input.brokerageId)
-          .eq("id", contactId)
-        if (upgradeErr) console.error(`[lead-magnets] attribution/consent upgrade REFUSED for contact ${contactId}:`, upgradeErr.message)
-      }
-      // Claim an UNOWNED contact for the magnet's agent — a returning-but-unassigned person who fills
-      // out this agent's lead magnet becomes that agent's lead. Never reassign a contact another agent
-      // already owns (no lead-stealing). The contacts.agent_id trigger emits contact_agent_assigned.
-      if (!(existingContact as any).agent_id && form.agent_id) {
-        // tenant anchor: the contact was resolved by email WITHIN this brokerage,
-        // so the update must be pinned to it too — a bare `.eq("id", …)` on a
-        // service client is a cross-tenant write waiting to happen.
-        // The error is READ. An unclaimed contact staying unclaimed is invisible:
-        // the capture reports success, the agent's CRM simply never shows the lead.
-        const { error: claimError } = await supabase.from("contacts")
-          .update({ agent_id: form.agent_id })
-          .eq("brokerage_id", input.brokerageId)
-          .eq("id", contactId)
-        if (claimError) {
-          console.error(`[lead-magnets] agent claim REFUSED for contact ${contactId}:`, claimError.message)
-        }
-      }
+    const { captureConsentedContact } = await import("@/lib/contact-pipeline/contact-capture")
+    const c8 = await captureConsentedContact({
+      brokerageId: input.brokerageId,
+      ownerAgentId: (form as { agent_id?: string | null }).agent_id ?? null,
+      creatorUserId,
+      source: input.source ?? CONTACT_SOURCE_LEAD_MAGNET,
+      source_channel: sourceChannelFor(attribution),
+      campaign_attribution_id: verifiedCampaignId,
+      // 'lead' → 'new' (§6 merge, 2026-08-31): a lead-magnet capture is a NEW contact — leads are a different entity that
+      // belongs to the brokerage (CLAUDE.md §5). Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+      status: "new",
+      first_name: data.first_name ?? "",
+      last_name: data.last_name ?? "",
+      email: data.email ?? null,
+      phone: data.phone ?? null,
+      ...(resolvedContactType ? { contact_type: resolvedContactType } : {}),
+      ...(data.timeline && LEAD_MAGNET_TIMELINES.has(data.timeline) ? { timeline: data.timeline } : {}),
+      language: input.language ?? null,
+      consents,
+      intake: {
+        channel: "lead_magnet",
+        // The consent source has always been 'lead_magnet' (the contact's source is the arrival door).
+        consentSource: "lead_magnet",
+        evidence: { ...c15.evidence, ...(c15.wordingHash ? { wording_hash: c15.wordingHash } : {}), form_id: input.formId, source: input.source ?? null, ip: input.ipAddress ?? null, user_agent: input.userAgent ?? null },
+        formOwner: { table: "lead_capture_forms", id: input.formId },
+      },
+    }, { client: supabase as never })
+    if (c8.ok && c8.contactId) {
+      contactId = c8.contactId
+      captureAction = c8.action ?? "merged"
+      consentWarnings = c8.warnings
+      // The enroller's persona inputs, read back off the canonical row (a returning person keeps their own).
+      const { data: row, error: rowErr } = await supabase.from("contacts").select("contact_type, contact_persona").eq("id", contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (rowErr) console.warn("[lead-magnets] captured contact read-back refused (the enroller resolves no persona):", rowErr.message)
+      capturedContactType = (row as { contact_type?: string | null } | null)?.contact_type ?? resolvedContactType ?? null
+      capturedContactPersona = (row as { contact_persona?: string | null } | null)?.contact_persona ?? null
     } else {
-      // Stamp the new contact's intent from the magnet so determinePortalView shows the right portal +
-      // education (a buyer guide → buyer portal; a seller/home-value magnet → seller portal).
-      const captureMagnetType = ((form as any).magnet_type ?? "generic_form") as string
-      const { classifyMagnetIntent } = await import("@/lib/marketing/lead-magnet-intent")
-      const intentRouting = classifyMagnetIntent(captureMagnetType)
-      const newRow: Record<string, unknown> = {
-        first_name: data.first_name ?? "",
-        last_name:  data.last_name ?? "",
-        email:      data.email ?? null,
-        phone:      data.phone ?? null,
-        source:     input.source ?? CONTACT_SOURCE_LEAD_MAGNET,
-        // 'online_form' as before; 'paid_ad' / 'qr_code' only when the attribution proves the arrival.
-        source_channel: sourceChannelFor(attribution),
-        // The VERIFIED campaign (this tenant's) — the first-touch stamp the acquisition-cost and
-        // network-benchmark readers key on. Null when none / not ours.
-        campaign_attribution_id: verifiedCampaignId,
-        ...(consentCols ?? {}),
-        brokerage_id: input.brokerageId,
-        agent_id:   form.agent_id,
-        // 'lead' → 'new' (§6 merge, 2026-08-31): a lead-magnet capture is a NEW
-        // contact — leads are a different entity that belongs to the brokerage
-        // (CLAUDE.md §5). 'lead' was this file's private spelling: no reader
-        // matched it, so these contacts were invisible to every workable-contact
-        // list (e.g. app/dashboard/isa/calling filters new/contacted/active).
-        // Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
-        status:     "new",
-      }
-      // Wave 142: the form's DECLARED persona (settings.default_contact_type — the Forms Manager's one unique
-      // piece, merged onto this kernel) fills in only when the magnet type itself says nothing.
-      const declaredType = declarableContactType((((form as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>).default_contact_type)
-      const resolvedContactType = intentRouting.contactType ?? declaredType
-      if (resolvedContactType) newRow.contact_type = resolvedContactType
-      capturedContactType = resolvedContactType
-      if (input.language) newRow.metadata = { captured_language: input.language }
-      // The error is READ. `if (newContact)` below already fails closed, but a
-      // refused INSERT and a client that simply returned no row were
-      // indistinguishable — so a rejected contact create (a CHECK on
-      // contact_type, a PGRST204 phantom column) went by with no trace at all.
-      const { data: newContact, error: newContactError } = await supabase
-        .from("contacts")
-        // tenant anchor (scope burn-down): re-stamped ON the chain, not only
-        // inside `newRow` — the scope guard reads the window after `.from(`, and
-        // a brokerage_id set in a payload variable declared further up is
-        // invisible to it (and to a reader auditing the query).
-        .insert({ ...newRow, brokerage_id: input.brokerageId })
-        .select("id")
-        .maybeSingle()
-
-      if (newContactError) {
-        console.error(`[lead-magnets] contact INSERT REFUSED for brokerage ${input.brokerageId}:`, newContactError.message)
-      }
-
-      if (newContact) {
-        contactId = newContact.id
-        captureAction = "created"
-        // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). A lead-magnet
-        // download creates the contact row here and emits no CONTACT_CREATED, so
-        // the event-reactor lane never saw it. Voided — the form submission must
-        // land even if the queue write fails. Live-deal suppression and
-        // de-duplication are inside queueContactEnrichment.
-        void import("@/lib/enrichment/contact-enrichment-core")
-          .then((m) =>
-            m.queueContactEnrichment({
-              contactId: newContact.id,
-              brokerageId: input.brokerageId,
-              triggerType: "lead_magnet",
-              supabase,
-            }),
-          )
-          .catch(() => {})
-      }
+      console.error(`[lead-magnets] consented intake REFUSED for brokerage ${input.brokerageId}: ${c8.refused ?? "?"} — ${c8.reason ?? ""}`)
     }
   }
 
@@ -1312,7 +1275,7 @@ export async function captureFormSubmission(
       submission_data: input.submissionData,
       ip_address: input.ipAddress ?? null,
       user_agent: input.userAgent ?? null,
-      tcpa_consent_given: input.tcpaConsentGiven ?? false,
+      tcpa_consent_given: c15.submission ? consents.some((g) => g.given && (g.family === "phone" || g.slot === "service_delivery")) : (input.tcpaConsentGiven ?? false),
       // The arrival channel, written (wave 141) — it was a live column with a reader (person-timeline)
       // and no writer, and getMagnetPerformance.topSources fabricated a 50/50 split in its place.
       source: input.source ?? (attribution ? sourceChannelFor(attribution) : null),
@@ -1337,38 +1300,12 @@ export async function captureFormSubmission(
     firstName: data.first_name ?? null, lastName: data.last_name ?? null, email: data.email ?? null, phone: data.phone ?? null,
   })
 
-  // CONSENT RECORD — CONTRACT C8 (wave 147, lane 147A; owner ruling 1). TOMBSTONE: this used to be its own
-  // contact_consent_events insert (consent_type 'marketing' — a THIRD spelling beside the consent writer's 'tcpa' / 'email',
-  // CLAUDE.md §6). It is now the ONE consented-intake record half — lib/contact-pipeline/contact-capture.ts
-  // completeConsentedIntake — through THE one consent writer (persistContactConsent, consent_type by channel, the m889 scope:
-  // wording hash + version, purposes, channels, evidence, idempotent per submission), then any same-person open lead in this
-  // tenant closed onto the contact, the contact_consented_intake event, and the AI ISA desk told. consent_source stays
-  // 'lead_magnet'. The contact upsert ABOVE is still this kernel's own (the DUPLICATED half — lane-147A notes, Still open).
-  if (contactId) {
-    try {
-      const { completeConsentedIntake } = await import("@/lib/contact-pipeline/contact-capture")
-      const magnetPurposes: Array<"home_valuation" | "market_updates" | "listing_alerts" | "event_followup"> =
-        "property_address" in input.submissionData ? ["home_valuation"] : []
-      const c8 = await completeConsentedIntake(supabase, {
-        brokerageId: input.brokerageId, contactId, action: captureAction, personId, agentId: form.agent_id ?? null,
-        email: data.email ?? null, phone: data.phone ?? null, source: "lead_magnet",
-        consents: [{
-          family: data.phone ? "phone" : "email", given: input.tcpaConsentGiven === true, text: consentText,
-          textVersion: `lead_magnet:${input.formId}`, purposes: ["requested_information", ...magnetPurposes],
-        }],
-        intake: {
-          capturedAt: submittedAt, channel: "lead_magnet",
-          evidence: { form_id: input.formId, submission_ref: submission.id, source: input.source ?? null, ip: input.ipAddress ?? null, user_agent: input.userAgent ?? null },
-          formOwner: { table: "lead_capture_forms", id: input.formId },
-        },
-        idempotencyKey: `lm:${submission.id}`,
-        stampPartyColumns: false,
-      })
-      for (const w of c8.warnings) console.warn(`[lead-magnets] consented intake: ${w}`)
-    } catch (err) {
-      console.error("[lead-magnets] consented-intake record half threw (the capture stands):", err instanceof Error ? err.message : String(err))
-    }
-  }
+  // CONSENT RECORD — CONTRACT C8 (wave 147, lane 147A; owner ruling 1; wave 148 lane 148B). TOMBSTONE: this used to be its
+  // own contact_consent_events insert (consent_type 'marketing' — a THIRD spelling, CLAUDE.md §6), then (wave 147) a direct
+  // call to the record half (completeConsentedIntake) after this kernel's OWN upsert. Since wave 148 the WHOLE intake —
+  // contact AND consent record AND lead closure AND event AND the AI ISA desk — is the one captureConsentedContact call
+  // above; its warnings (any best-effort step that did not land) are said here.
+  for (const w of consentWarnings) console.warn(`[lead-magnets] consented intake: ${w}`)
 
   // ATTRIBUTION TOUCHPOINT (wave 141): the conversion lands on the EXISTING attribution spine —
   // marketing_campaign_touchpoints (status 'converted', external_table form_submissions) — so

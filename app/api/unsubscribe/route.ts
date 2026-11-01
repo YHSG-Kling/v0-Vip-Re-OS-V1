@@ -89,6 +89,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
+import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { addSuppression, type SuppressionChannel } from "@/lib/kernel/compliance/check-suppression"
 import { applyLeadOptOut, type LeadOptOutChannel } from "@/lib/lead-intent/lead-opt-out"
@@ -103,6 +104,18 @@ import { checkPublicRateLimit, publicCallerIp } from "@/lib/security/public-rate
 const UNVERIFIED_SOURCE = "email_footer_unverified"
 
 const APPLY_LIMIT = { limit: 10, windowMs: 60_000 }
+
+/**
+ * WAVE 148 (lane 148B — C16, owner ruling 3: "follow up that has an easy way to unsubscribe"). THE VERIFIED SHAPE: the email
+ * footer and the List-Unsubscribe header now carry `?c=<contacts.id>&t=<contacts.unsubscribe_token>` (m910: the row by its key, the token as the secret) — a per-contact random credential
+ * that is NOT an entity id (it appears nowhere but the unsubscribe link and rotates by updating one column). Suppressions
+ * written through it carry source `email_footer` (verified) / `email_one_click` (RFC 8058 List-Unsubscribe-Post).
+ * ONE-CLICK (RFC 8058): a mailbox provider POSTs `List-Unsubscribe=One-Click` (application/x-www-form-urlencoded) to the
+ * header's URL with no page and no JavaScript — this route accepts that body and the query-string token.
+ */
+const VERIFIED_SOURCE = "email_footer"
+const ONE_CLICK_SOURCE = "email_one_click"
+const TOKEN_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The legacy shape only ever emitted 'email'; 'sms' was already accepted, and
  *  'mail' is admitted now that both suppression writers can express it. */
@@ -126,7 +139,45 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const { contactId, channel } = await req.json()
+    // JSON (the unsubscribe page) OR the RFC 8058 one-click form body; the token / channel may ride the query string.
+    const url = new URL(req.url)
+    const contentType = req.headers.get("content-type") ?? ""
+    let body: Record<string, unknown> = {}
+    if (contentType.includes("application/json")) body = await req.json().catch(() => ({}))
+    else { const form = await req.formData().catch(() => null); if (form) body = Object.fromEntries(form.entries()) }
+    const oneClick = String(body["List-Unsubscribe"] ?? "") === "One-Click"
+    const token = String(body.token ?? url.searchParams.get("t") ?? "").trim()
+    const tokenContact = String(body.c ?? url.searchParams.get("c") ?? "").trim()
+    const contactId = (body.contactId ?? url.searchParams.get("contactId")) as string | undefined
+    const channel = (body.channel ?? url.searchParams.get("channel") ?? (token ? "email" : undefined)) as string | undefined
+
+    if (token) {
+      if (!TOKEN_RE.test(token) || !TOKEN_RE.test(tokenContact)) return NextResponse.json({ error: "This unsubscribe link is invalid." }, { status: 400 })
+      if (!ALLOWED.includes(channel as SuppressionChannel)) return NextResponse.json({ error: "channel must be email, sms or mail" }, { status: 400 })
+      const supabaseT = createServiceClient()
+      // The row by its PRIMARY KEY (which row), then the SECRET compared in constant time (the credential). `*`, not a column
+      // list: before m910 is applied the token column is absent from the row — every token then fails the compare (404),
+      // never a refused query that reads as an outage.
+      const { data: row, error: rowErr } = await supabaseT.from("contacts").select("*").eq("id", tokenContact).maybeSingle()
+      if (rowErr) return unreadable("contacts.id (unsubscribe token)", rowErr.message)
+      const c = row as { id: string; brokerage_id: string; email: string | null; phone: string | null; unsubscribe_token?: string | null } | null
+      const stored = String(c?.unsubscribe_token ?? "")
+      const matches = !!c && stored.length === token.length && timingSafeEqual(Buffer.from(stored.toLowerCase()), Buffer.from(token.toLowerCase()))
+      if (!c || !matches) return NextResponse.json({ error: "This unsubscribe link is invalid." }, { status: 404 })
+      const chT = channel as "email" | "sms" | "mail"
+      const applied = await addSuppression({
+        brokerageId: c.brokerage_id, contactId: c.id,
+        email: chT === "email" ? c.email : null, phone: chT === "sms" ? c.phone : null,
+        channel: chT,
+        reason: oneClick ? "One-click unsubscribe (List-Unsubscribe-Post)" : chT === "email" ? "Unsubscribed via email footer link" : "Opted out via unsubscribe page",
+        source: oneClick ? ONE_CLICK_SOURCE : VERIFIED_SOURCE,
+      })
+      if (!applied.suppressed || applied.contactFlagsUpdated === false) {
+        console.error(`[/api/unsubscribe] token suppression for contact ${c.id} channel ${chT} was REFUSED:`, applied.errors.join(" | ") || "(no error reported)")
+        return NextResponse.json({ error: "We could not record that right now. Please try again." }, { status: 503 })
+      }
+      return NextResponse.json({ success: true })
+    }
 
     if (!contactId || !channel) {
       return NextResponse.json({ error: "contactId and channel are required" }, { status: 400 })

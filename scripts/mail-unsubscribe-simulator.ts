@@ -285,8 +285,10 @@ async function main() {
     /"inbound_direct_mail"/.test(leadOptOut))
 
   const suppression = src("lib/kernel/compliance/check-suppression.ts")
+  // wave 148 (lane 148B — C16): the list arm reads ONE query per identity (`.eq('contact_id', …)` instead of an or-string term);
+  // the RULE — the contact-side arm matches contact_id + channel — is re-asserted on either spelling.
   check("checkSuppression's list arm matches on contact_id + channel (the contact-side mail arm)",
-    /contact_id\.eq\.\$\{params\.contactId\}/.test(suppression) && /\.eq\('channel', params\.channel\)/.test(suppression))
+    (/contact_id\.eq\.\$\{params\.contactId\}/.test(suppression) || /\.eq\('contact_id', params\.contactId\)/.test(suppression)) && /\.eq\('channel', params\.channel\)/.test(suppression))
   check("SuppressionChannel includes 'mail'", /SuppressionChannel\s*=[^\n]*'mail'/.test(suppression))
 
   const applier = src("lib/direct-mail/mail-unsubscribe.ts")

@@ -15,18 +15,21 @@ export default async function FormPage({ params }: PageProps) {
 
   const { data: form } = await supabase
     .from('lead_capture_forms')
-    .select('id, name, slug, fields, tcpa_disclosure_text, thank_you_message, redirect_url, brokerage_id')
+    .select('id, name, slug, fields, tcpa_disclosure_text, thank_you_message, redirect_url, brokerage_id, agent_id')
     .eq('slug', slug)
     .eq('is_active', true)
     .single()
 
   if (!form) notFound()
+  // C15 (wave 148, lane 148B): the consent names the form's agent / brokerage — THE one rule the kernel re-renders it with.
+  const { leadMagnetConsentBrand } = await import('@/lib/kernel/lead-magnets')
+  const consentBrandName = await leadMagnetConsentBrand(supabase, form.brokerage_id, (form as { agent_id?: string | null }).agent_id ?? null)
 
   return (
     <main className="min-h-screen bg-background flex items-center justify-center p-6">
       <div className="w-full max-w-lg">
         <h1 className="text-2xl font-semibold text-foreground mb-6 text-balance">{form.name}</h1>
-        <FormRenderer form={form} />
+        <FormRenderer form={form} consentBrandName={consentBrandName} />
       </div>
     </main>
   )

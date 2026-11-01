@@ -418,10 +418,15 @@ function testCaptureDoors() {
   const kioskThreadsLanguage = (s: string) => /const capturedLanguage = resolveCapturedLanguage\(/.test(s) && /captureConsentedContact\(\{[\s\S]{0,1500}?\blanguage:\s*capturedLanguage\b/.test(s)
   check("open-house/attend (on C8): threads the resolved value into captureConsentedContact's `language` param (CaptureContactParams.language, not a second field)",
     kioskThreadsLanguage(openHouse))
+  // WAVE 148 (lane 148B) moved the two WAYPOINT spellings below: captureContact now merges the DOOR's own metadata keys with
+  // captured_language (one fill-if-empty rule for every key). The RULE is re-asserted on either spelling: CREATE writes
+  // metadata.captured_language from params.language; MERGE adds a key only where the stored one is empty.
   check("…the survivor's CREATE writes metadata.captured_language from that param",
-    /params\.language\s*\?\s*\{\s*metadata:\s*\{\s*captured_language:\s*params\.language\s*\}\s*\}/.test(capture))
+    /params\.language\s*\?\s*\{\s*metadata:\s*\{\s*captured_language:\s*params\.language\s*\}\s*\}/.test(capture)
+    || /metadata:\s*\{\s*\.\.\.\(params\.metadata \?\? \{\}\),\s*\.\.\.\(params\.language \? \{ captured_language: params\.language \} : \{\}\)\s*\}/.test(capture))
   check("…and the survivor's MERGE fills-if-empty (never overwrites an earlier/explicit capture)",
-    /params\.language\s*&&\s*!existingMetadata\?\.captured_language/.test(capture))
+    /params\.language\s*&&\s*!existingMetadata\?\.captured_language/.test(capture)
+    || (/captured_language: params\.language/.test(capture) && /existingMetadata\?\.\[k\] === undefined \|\| existingMetadata\?\.\[k\] === null/.test(capture)))
   check("POSITIVE CONTROL: a kiosk that resolves the language and drops it (no `language:` on the C8 call) is red",
     !kioskThreadsLanguage(openHouse.replace(/\blanguage:\s*capturedLanguage,/, "")))
 

@@ -268,10 +268,16 @@ async function main() {
   check("POSITIVE CONTROL — the door finder sees a direct captureContact( call", /\bcaptureContact\(/.test(stripComments("await captureContact({ brokerageId })")) && !/\bcaptureContact\(/.test(stripComments("// captureContact( in a comment")))
   const LEGACY = ["lib/kernel/lead-magnets.ts", "lib/ads/ad-lead-intake.ts"]
   const consentInsert = /\.from\(\s*["']contact_consent_events["']\s*\)\s*\.insert\(/
-  const legacyBad = LEGACY.filter((f) => !/completeConsentedIntake\(/.test(src(f)) || consentInsert.test(src(f)))
-  check("the two legacy-upsert doors call the C8 record half and write no consent row of their own", legacyBad.length === 0, legacyBad.join(", "))
+  // WAVE 148 (lane 148B — owner ruling 4) moved the WAYPOINT this check pinned: the two doors that kept their own upsert in
+  // wave 147 and called the record half (completeConsentedIntake) now ride the WHOLE C8 entry (captureConsentedContact on the
+  // injected client). The RULE is re-asserted, never weakened: each rides C8 (either entry) and writes no consent row and no
+  // contact row of its own.
+  const legacyBad = LEGACY.filter((f) => !/captureConsentedContact\(|completeConsentedIntake\(/.test(src(f)) || consentInsert.test(src(f)) || /\.from\(\s*["']contacts["']\s*\)\s*\.insert\(/.test(src(f)))
+  check("the two formerly-legacy-upsert doors ride C8 and write no consent row or contact row of their own", legacyBad.length === 0, legacyBad.join(", "))
   check("POSITIVE CONTROL — the consent-insert finder sees one", consentInsert.test('supabase.from("contact_consent_events").insert({'))
-  check("the embed door claims NO consent (its form shows no box and no wording)", /given:\s*false,\s*text:\s*null/.test(src("app/api/embed/capture/route.ts")) && !/tcpa_consent:\s*true/.test(src("app/api/embed/capture/route.ts")))
+  // wave 148 (C15): the embed form now renders the ONE consent component; the door claims consent ONLY from that submission —
+  // its fallback for a cached pre-148 widget still claims none (the rule this check holds).
+  check("the embed door claims no consent without the C15 submission (its fallback grant is given:false, text:null)", /given:\s*false,\s*text:\s*null/.test(src("app/api/embed/capture/route.ts")) && !/tcpa_consent:\s*true/.test(src("app/api/embed/capture/route.ts")))
   check("the arbiter's read carries the consent scope (customer-360 → consentScopeFor + answerConsentQuestion)", /consentScopeFor\(/.test(src("lib/enrichment/customer-360.ts")) && /answerConsentQuestion\(/.test(src("lib/enrichment/customer-360.ts")))
   // no ads / audience / dispatch module reaches the research reader
   const walk = (d: string, out: string[] = []) => { if (!existsSync(join(ROOT, d))) return out; for (const n of readdirSync(join(ROOT, d))) { const p = `${d}/${n}`; if (statSync(join(ROOT, p)).isDirectory()) walk(p, out); else if (/\.(ts|tsx)$/.test(n)) out.push(p) } return out }

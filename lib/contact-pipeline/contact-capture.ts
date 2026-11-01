@@ -20,6 +20,11 @@ import { createHash } from 'node:crypto'
 import {
   canonicalConsentPurposes, channelsNamedInConsentText, consentTextHash, purposesNamedInConsentText, type ConsentChannel, type ConsentPurpose,
 } from '@/lib/kernel/compliance/require-contact-consent'
+// C15 (wave 148): the ONE consent component's pure wording + submission contract — the same module the React component imports.
+import {
+  CONSENT_COMPONENT_VERSION, consentComponentWording, consentGrantsFor, consentWordingText, parseConsentSubmission,
+  type ConsentComponentSubmission, type ConsentDoorKey,
+} from '@/lib/kernel/compliance/consent-component'
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -170,6 +175,81 @@ export interface CaptureContactParams {
    * by a lower-confidence retry).
    */
   language?: string | null
+
+  // ── WAVE 148 (lane 148B — owner rulings 4 + 12): THE DOOR'S OWN SEMANTICS, CARRIED BY THE ONE DOOR ──────────────────────
+  // The seven doors that used to insert contacts their own way each wrote a few columns of their own. Those columns are
+  // now first-class here so a door can move onto captureContact WITHOUT losing them. Every one is CREATE-path data; on a
+  // MERGE they are fill-if-empty (prior history is preserved — the first touch, the first source, the first owner win).
+
+  /**
+   * users.id of the agent/user who CREATED the form, profile, QR code, open house or import the person came through —
+   * owner ruling 12 ("these will also hold the agent/user that creates so the person gets assigned back to them").
+   * Stored in contacts.source_agent_id (FK users — "who SOURCED it", the column lib/agents/agent-deactivation.ts already
+   * classifies the book by), fill-if-empty on merge. When `ownerAgentId` is absent the creator's agents row becomes the
+   * assignment hint, so the person is assigned back to the creator.
+   */
+  creatorUserId?: string | null
+  /** Team affinity of the door (a team-owned widget / QR) — the assignment resolver's team hint. */
+  teamId?: string | null
+  /** contacts.status on CREATE only (vocabulary: check-vocabularies contacts.status). Never changed on a merge. */
+  status?: string | null
+  source_family?: string | null
+  source_subtype?: string | null
+  /** contacts.source_channel (first-touch arrival channel) — fill-if-empty on merge. */
+  source_channel?: string | null
+  /** The VERIFIED (this tenant's) marketing_campaigns.id — first-touch attribution, fill-if-empty on merge. */
+  campaign_attribution_id?: string | null
+  /** contacts.embed_widget_id — the widget the person arrived through, fill-if-empty on merge. */
+  embed_widget_id?: string | null
+  contact_persona?: string | null
+  /** contacts.ai_isa_enabled on CREATE only. */
+  ai_isa_enabled?: boolean | null
+  /** contacts.isa_reengage_allowed on CREATE only (default true; a kiosk contact holds false). */
+  isa_reengage_allowed?: boolean | null
+  /** The IP the TCPA box was ticked from — stamped only with the consent it evidences. */
+  tcpa_consent_ip?: string | null
+  /**
+   * THE PERSON'S SITUATION (owner ruling 12: "other fields for identity and attributes about that person's situation").
+   * What the person SAID on the form — never inferred. Vocabularies are the live CHECKs (contacts.timeline buckets per
+   * CLAUDE.md §5: 1-3 / 3-6 / 6-12, never 30/60/90). Fill-if-empty on merge; a conflicting answer is kept in notes.
+   */
+  timeline?: string | null
+  budget_min?: number | null
+  budget_max?: number | null
+  property_type?: string | null
+  beds?: number | null
+  baths?: number | null
+  preferred_contact_time?: string | null
+  /** Merged into contacts.metadata key by key, fill-if-empty (an earlier capture's keys are never overwritten). */
+  metadata?: Record<string, unknown> | null
+  /** The open-house origin the welcome mentions (lib/kernel/client-welcome.ts EnsureClientWelcomeOptions.origin). */
+  welcomeOrigin?: import('@/lib/kernel/client-welcome').EnsureClientWelcomeOptions['origin']
+}
+
+/**
+ * THE INJECTED-CLIENT CONTRACT (wave 148, lane 148B — owner ruling 4; the blocker lane 147Z recorded: "captureContact has no
+ * injected-client seam. It creates its own service client, so the doors running on a session client or an injected test
+ * client cannot ride it unchanged").
+ *
+ * `client` — every read and write captureContact makes (dedupe, owner lookup, assignment, the contact upsert, the lifecycle
+ * echo, the score, person evidence, the welcome ledger, the enrichment queue) rides it. A door passes the client it already
+ * gated with: a service client after its own tenant gate, the session client where RLS is the gate, an in-memory client in
+ * a proof. Omitted → the service client (unchanged for every existing caller).
+ *
+ * `effects` — the side effects that mint their OWN service client (the notification engine's fan-out and the portal invite)
+ * or run paid/model work (the welcome, the enrichment drain). Each is best-effort AFTER the contact exists: a failure is
+ * logged by name and never unwinds a landed capture. A proof stubs them; production passes none.
+ */
+export type CaptureClient = { from: (table: string) => any; rpc?: (...a: any[]) => any }
+export interface CaptureContactEffects {
+  notify?: typeof processKernelEvent
+  welcome?: (svc: CaptureClient, contact: { id: string; brokerageId: string; contactType: string | null; firstName: string | null; lastName: string | null }, opts: { origin?: CaptureContactParams['welcomeOrigin'] }) => Promise<unknown>
+  portalInvite?: (p: { contactId: string; agentUserId: string; sendMagicLink: boolean }) => Promise<unknown>
+  enrich?: (p: { brokerageId: string; contactId: string; client: CaptureClient }) => Promise<void>
+}
+export interface CaptureContactOptions {
+  client?: CaptureClient
+  effects?: CaptureContactEffects
 }
 
 export interface CaptureContactResult {
@@ -195,7 +275,7 @@ export interface CaptureContactResult {
 // the event; no person.identity_linked. A door that re-links the same contact (the kiosk greeting's
 // capture_match) is a UNIQUE-protected no-op (duplicate: true). Best-effort: never blocks capture.
 async function recordCapturePersonEvidence(
-  supabase: ReturnType<typeof createServiceClient>,
+  supabase: CaptureClient,
   params: CaptureContactParams,
   contactId: string,
   action: 'created' | 'merged',
@@ -203,7 +283,7 @@ async function recordCapturePersonEvidence(
 ): Promise<{ personId: string | null; personIdentity: NormalizedPersonIdentity | null }> {
   try {
     const { resolvePerson, linkPersonEvidence } = await import('@/lib/kernel/person-identity')
-    const person = await resolvePerson(supabase, {
+    const person = await resolvePerson(supabase as never, {
       brokerageId: params.brokerageId,
       firstName: params.first_name ?? null, lastName: params.last_name ?? null,
       email: params.email ?? null, phone: params.phone ?? null,
@@ -212,7 +292,7 @@ async function recordCapturePersonEvidence(
       if (person.reason !== 'no_identity_anchor') console.warn(`[contact-capture] person identity not resolved: ${person.reason}`)
       return { personId: null, personIdentity: null }
     }
-    const link = await linkPersonEvidence(supabase, {
+    const link = await linkPersonEvidence(supabase as never, {
       brokerageId: params.brokerageId, personId: person.personId,
       entityType: 'contact', entityId: contactId, matchMethod: 'capture_match', matchScore,
       source: 'contact_capture', actor: { type: 'system', userId: null }, identity: person.identity,
@@ -227,12 +307,97 @@ async function recordCapturePersonEvidence(
   }
 }
 
+// ─── Dedupe (wave 148, lane 148B — "dedupe before insert") ────────────────────
+//
+// PURE — the identity keys a capture dedupes on: the normalised email, and the phone's digit forms. contacts.phone_digits
+// is GENERATED as regexp_replace(phone, '\D', '', 'g') (lib/application/lead-application-service.ts, m488), so a number
+// stored as "+1 (555) 123-4567" holds "15551234567" and one stored as "555-123-4567" holds "5551234567": both forms are asked.
+function captureIdentityKeys(p: { email?: string | null; phone?: string | null }): { email: string | null; phoneDigits: string[] } {
+  const email = (p.email ?? '').trim().toLowerCase() || null
+  const all = (p.phone ?? '').replace(/\D/g, '')
+  const ten = all.length === 11 && all.startsWith('1') ? all.slice(1) : all
+  const phoneDigits = ten.length >= 10 ? [...new Set([ten, `1${ten}`, all])] : []
+  return { email, phoneDigits }
+}
+
+/**
+ * The tenant's existing contacts that share an identity key with the capture. SEPARATE `.ilike` / `.in` / `.eq` reads instead
+ * of one `.or("email.eq.<raw>,phone.eq.<raw>")` string: a public form's raw email or phone spliced into the or-grammar is a
+ * filter INJECTION (a value carrying `,id.not.is.null` widened the match to the whole tenant, and the fuzzy scorer then merged
+ * the submission into whichever contact scored best). FAIL CLOSED: a refused read THROWS — "nobody checked" must never become
+ * "no match" and a second contact for a person already in the book (the defect lib/kernel/open-house.ts guarded against).
+ */
+async function findCaptureCandidates(supabase: CaptureClient, brokerageId: string, p: { email?: string | null; phone?: string | null }): Promise<Array<Record<string, any>>> {
+  const keys = captureIdentityKeys(p)
+  const byId = new Map<string, Record<string, any>>()
+  const reads: Array<{ what: string; q: any }> = []
+  if (keys.email) reads.push({ what: 'email', q: supabase.from('contacts').select('*').eq('brokerage_id', brokerageId).ilike('email', keys.email.replace(/[\\%_]/g, (c) => `\\${c}`)) })
+  if (keys.phoneDigits.length) reads.push({ what: 'phone_digits', q: supabase.from('contacts').select('*').eq('brokerage_id', brokerageId).in('phone_digits', keys.phoneDigits) })
+  if ((p.phone ?? '').trim()) reads.push({ what: 'phone', q: supabase.from('contacts').select('*').eq('brokerage_id', brokerageId).eq('phone', (p.phone ?? '').trim()) })
+  for (const r of reads) {
+    const { data, error } = await r.q.limit(25)
+    if (error) throw new Error(`Contact dedupe read (${r.what}) refused — nothing was created: ${error.message}`)
+    for (const row of (data ?? []) as Array<Record<string, any>>) {
+      if (row?.id && !row.deleted_at) byId.set(row.id, row)
+    }
+  }
+  return [...byId.values()]
+}
+
+/** The incoming value lands only where the stored one is empty (fill-if-empty); a REAL conflict is reported for the notes. */
+function fillIfEmpty(existing: Record<string, any> | null | undefined, incoming: Record<string, unknown>): { patch: Record<string, unknown>; conflicts: string[] } {
+  const patch: Record<string, unknown> = {}
+  const conflicts: string[] = []
+  for (const [k, v] of Object.entries(incoming)) {
+    if (v === undefined || v === null || v === '') continue
+    const prior = existing?.[k]
+    if (prior === undefined || prior === null || prior === '') patch[k] = v
+    else if (String(prior).trim().toLowerCase() !== String(v).trim().toLowerCase()) conflicts.push(`${k}: kept "${prior}", also saw "${v}"`)
+  }
+  return { patch, conflicts }
+}
+
+/** The door-semantics + situation columns of a capture (wave 148), only those the door actually supplied. */
+function captureColumns(params: CaptureContactParams): { firstTouch: Record<string, unknown>; situation: Record<string, unknown>; createOnly: Record<string, unknown> } {
+  const strip = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== ''))
+  return {
+    firstTouch: strip({
+      source_agent_id: params.creatorUserId, source_channel: params.source_channel, campaign_attribution_id: params.campaign_attribution_id,
+      embed_widget_id: params.embed_widget_id, contact_persona: params.contact_persona, team_id: params.teamId,
+    }),
+    situation: strip({
+      timeline: params.timeline, budget_min: params.budget_min, budget_max: params.budget_max, property_type: params.property_type,
+      beds: params.beds, baths: params.baths, preferred_contact_time: params.preferred_contact_time,
+    }),
+    createOnly: strip({ status: params.status, source_family: params.source_family, source_subtype: params.source_subtype, ai_isa_enabled: params.ai_isa_enabled }),
+  }
+}
+
+/** Best-effort side effect: logged by name, never thrown (the contact already exists; "nobody checked" is said, not hidden). */
+async function bestEffortEffect(name: string, fn: () => Promise<unknown>): Promise<void> {
+  try { await fn() } catch (err) {
+    console.error(`[captureContact] ${name} failed (the capture stands):`, err instanceof Error ? err.message : String(err))
+  }
+}
+
 // ─── captureContact ───────────────────────────────────────────────────────────
 
 export async function captureContact(
   params: CaptureContactParams,
+  opts: CaptureContactOptions = {},
 ): Promise<CaptureContactResult> {
-  const supabase = createServiceClient()
+  const supabase: CaptureClient = opts.client ?? createServiceClient()
+  const effects = opts.effects ?? {}
+  const notify = effects.notify ?? processKernelEvent
+  const enrich = effects.enrich ?? ((p: { brokerageId: string; contactId: string; client: CaptureClient }) => queueContactEnrichmentAndScore({ brokerageId: p.brokerageId, contactId: p.contactId }, { client: p.client }))
+  const welcome = effects.welcome ?? (async (svc: CaptureClient, contact: { id: string; brokerageId: string; contactType: string | null; firstName: string | null; lastName: string | null }, o: { origin?: CaptureContactParams['welcomeOrigin'] }) => {
+    const { ensureClientWelcome } = await import('@/lib/kernel/client-welcome')
+    return ensureClientWelcome(svc as any, contact, { origin: o.origin ?? null })
+  })
+  const portalInvite = effects.portalInvite ?? (async (p: { contactId: string; agentUserId: string; sendMagicLink: boolean }) => {
+    const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
+    return createSystemPortalInvite({ contactId: p.contactId, agentUserId: p.agentUserId, sendMagicLink: p.sendMagicLink })
+  })
 
   // ── Viability gate ───────────────────────────────────────────────────────
   const hasName = !!(
@@ -250,17 +415,23 @@ export async function captureContact(
   // ── Normalize owner hint (contacts.agent_id is agents.id) ────────────────
   // Accept either `ownerAgentId` (agents.id, the correct contract) or the
   // legacy `agentUserId` (users.id). If only the legacy field is set, look
-  // up the matching agents.id via the agents table.
+  // up the matching agents.id via the agents table. Wave 148 (ruling 12): with
+  // neither, the CREATOR's agents row is the hint — the person is assigned back
+  // to the agent/user who made the form.
   let ownerAgentHint: string | null = params.ownerAgentId ?? null
-  if (!ownerAgentHint && params.agentUserId) {
-    const { data: agentRow } = await supabase
+  const ownerUserHint = !ownerAgentHint ? (params.agentUserId ?? params.creatorUserId ?? null) : null
+  if (ownerUserHint) {
+    const { data: agentRow, error: agentRowError } = await supabase
       .from('agents')
       .select('id')
-      .eq('user_id', params.agentUserId)
+      .eq('user_id', ownerUserHint)
       .eq('brokerage_id', params.brokerageId)
       .maybeSingle()
+    if (agentRowError) console.warn(`[captureContact] owner hint lookup refused (assignment falls back to the rules): ${agentRowError.message}`)
     ownerAgentHint = agentRow?.id ?? null
   }
+  const columns = captureColumns(params)
+  const teamHint = params.teamId ?? null
 
   // ── Lead-conversion fast path ────────────────────────────────────────────
   // When a contact is being promoted from a lead record the lead was already
@@ -273,7 +444,9 @@ export async function captureContact(
     const assignment = await resolveAgentForContact({
       brokerageId: params.brokerageId,
       ownerAgentId: ownerAgentHint,
+      teamId: teamHint,
       source: params.source,
+      client: supabase,
     })
     if (!assignment.agentId) {
       throw new Error(
@@ -302,17 +475,18 @@ export async function captureContact(
         ...(params.contact_type ? { contact_type: params.contact_type } : {}),
         ...(params.lead_temperature ? { lead_temperature: params.lead_temperature } : {}),
         ...(params.lender_status ? { lender_status: params.lender_status } : {}),
+        ...columns.firstTouch, ...columns.situation, ...columns.createOnly,
         preferred_channel: params.preferred_channel ?? 'email',
         source: params.source,
         tcpa_consent: params.tcpa_consent,
         tcpa_consent_date: params.tcpa_consent
           ? (params.tcpa_consent_date ?? new Date().toISOString())
           : null,
-        isa_reengage_allowed: true,
+        isa_reengage_allowed: params.isa_reengage_allowed ?? true,
         dnc_status: false,
         notes: [params.fromLeadId ? `Promoted from lead ${params.fromLeadId}` : null, params.notes ?? null]
           .filter(Boolean).join('\n') || undefined,
-        ...(params.language ? { metadata: { captured_language: params.language } } : {}),
+        ...(params.language || params.metadata ? { metadata: { ...(params.metadata ?? {}), ...(params.language ? { captured_language: params.language } : {}) } } : {}),
       })
       .select('id')
       .single()
@@ -321,7 +495,7 @@ export async function captureContact(
       throw new Error(`Failed to create contact from lead: ${createError?.message ?? 'no data'}`)
     }
 
-    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase as never, supabase.from('lifecycle_events').insert({
       brokerage_id: params.brokerageId,
       entity_type: 'contact',
       entity_id: created.id,
@@ -331,62 +505,54 @@ export async function captureContact(
 
     // CLIENT WELCOME (concierge #1–2) — a new buyer/seller client gets the
     // gated warm-welcome + journey-map draft. Best-effort, never blocks capture.
-    try {
-      const { ensureClientWelcome } = await import('@/lib/kernel/client-welcome')
-      await ensureClientWelcome(supabase as any, {
-        id: created.id, brokerageId: params.brokerageId,
-        contactType: params.contact_type ?? null,
-        firstName: params.first_name ?? null, lastName: params.last_name ?? null,
-      })
-    } catch { /* welcome is care, not a dependency */ }
+    await bestEffortEffect('client welcome', () => welcome(supabase, {
+      id: created.id, brokerageId: params.brokerageId,
+      contactType: params.contact_type ?? null,
+      firstName: params.first_name ?? null, lastName: params.last_name ?? null,
+    }, { origin: params.welcomeOrigin }))
 
     return { contactId: created.id, action: 'created' }
   }
 
   // ── Dedup — only for direct public-form captures ─────────────────────────
-  const orFilter = [
-    params.email ? `email.eq.${params.email}` : null,
-    params.phone ? `phone.eq.${params.phone}` : null,
-  ]
-    .filter(Boolean)
-    .join(',')
-
-  const { data: candidates } = orFilter
-    ? await supabase
-        .from('contacts')
-        .select('*')
-        .eq('brokerage_id', params.brokerageId)
-        .or(orFilter)
-    : { data: [] }
+  const candidates = await findCaptureCandidates(supabase, params.brokerageId, params)
+  const incomingKeys = captureIdentityKeys(params)
 
   // ── Score each candidate ─────────────────────────────────────────────────
+  // EXACT EMAIL IS THE SAME PERSON (wave 148): a returning person who typed a different phone (or a nickname) scored below
+  // the fuzzy threshold on email alone and got a SECOND contact carrying the same email. A same-tenant exact email match is
+  // a merge; the differing phone / name is kept as a conflict note by the lossless merge below, never dropped.
   let bestId: string | null = null
   let bestScore = 0
 
-  for (const c of candidates ?? []) {
+  // Phones are compared on their last ten digits (wave 148): "+1 512 555 0100" and "(512) 555-0100" are one number.
+  const ten = (p: string | null | undefined) => { const d = String(p ?? '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : d }
+  for (const c of candidates) {
     const result = calculateFuzzyMatch(
       {
         first_name: params.first_name ?? '',
         last_name: params.last_name ?? '',
         email: params.email ?? '',
-        phone: params.phone ?? '',
+        phone: ten(params.phone),
       },
       {
         first_name: c.first_name ?? '',
         last_name: c.last_name ?? '',
         email: c.email ?? '',
-        phone: c.phone ?? '',
+        phone: ten(c.phone),
       },
     )
-    if (result.score > bestScore) {
-      bestScore = result.score
+    const exactEmail = !!incomingKeys.email && String(c.email ?? '').trim().toLowerCase() === incomingKeys.email
+    const score = exactEmail ? Math.max(result.score, DEDUP_THRESHOLD) : result.score
+    if (score > bestScore) {
+      bestScore = score
       bestId = c.id
     }
   }
 
   // ── MERGE path ───────────────────────────────────────────────────────────
   if (bestId !== null && bestScore >= DEDUP_THRESHOLD) {
-    const existing = (candidates ?? []).find((x) => x.id === bestId)
+    const existing = candidates.find((x) => x.id === bestId)
 
     // Resolve agent to assign on merge if existing contact has none.
     // agents.id (NOT users.id) — contacts.agent_id is agents.id.
@@ -395,7 +561,9 @@ export async function captureContact(
       const assignment = await resolveAgentForContact({
         brokerageId: params.brokerageId,
         ownerAgentId: ownerAgentHint,
+        teamId: teamHint,
         source: params.source,
+        client: supabase,
       })
       mergeAgentId = assignment.agentId
     }
@@ -409,11 +577,11 @@ export async function captureContact(
     // Same read-merge-write shape for the intake-language capture: FILL-IF-EMPTY
     // only — a contact who already told us a language (or gave us one on an
     // earlier capture) keeps it; a retry never demotes a real answer to a guess.
+    // Wave 148: the door's own metadata keys ride the same fill-if-empty rule.
     const existingMetadata = (existing?.metadata as Record<string, unknown> | null) ?? null
-    const mergedMetadata =
-      params.language && !existingMetadata?.captured_language
-        ? { ...(existingMetadata ?? {}), captured_language: params.language }
-        : null
+    const incomingMetadata: Record<string, unknown> = { ...(params.metadata ?? {}), ...(params.language ? { captured_language: params.language } : {}) }
+    const metadataAdds = Object.fromEntries(Object.entries(incomingMetadata).filter(([k, v]) => v !== undefined && v !== null && (existingMetadata?.[k] === undefined || existingMetadata?.[k] === null)))
+    const mergedMetadata = Object.keys(metadataAdds).length ? { ...(existingMetadata ?? {}), ...metadataAdds } : null
 
     // Data Steward lossless merge over the canonical identity/address fields:
     // existing (the surviving row) keeps its non-empty values, empties are filled
@@ -453,6 +621,10 @@ export async function captureContact(
       },
       MERGE_FIELDS,
     )
+    // Wave 148: first-touch columns are FILL-IF-EMPTY silently (a later campaign never steals the first one's credit); the
+    // person's SITUATION is fill-if-empty too, but a different stated answer is a real conflict and is kept in notes.
+    const firstTouchFill = fillIfEmpty(existing, columns.firstTouch)
+    const situationFill = fillIfEmpty(existing, columns.situation)
     // FIELD PROVENANCE IS A PER-FIELD MAP (wave 147, lane 147Z — merging the open-house kiosk onto C8 exposed this): the
     // shallow spread above REPLACED the stored field_provenance block wholesale, erasing every other field's recorded source,
     // and stamped this capture as the source of values the lossless merge KEPT from elsewhere. Layer the incoming stamps over
@@ -469,8 +641,9 @@ export async function captureContact(
         mergedEnrichmentProfile.field_provenance = { ...(priorFp && typeof priorFp === 'object' ? priorFp as Record<string, unknown> : {}), ...landed }
       }
     }
+    const allConflicts = [...conflicts, ...situationFill.conflicts]
     const noteAdditions = [
-      ...(conflicts.length ? [`[merge ${new Date().toISOString().slice(0, 10)} via ${params.source}] ${conflicts.join('; ')}`] : []),
+      ...(allConflicts.length ? [`[merge ${new Date().toISOString().slice(0, 10)} via ${params.source}] ${allConflicts.join('; ')}`] : []),
       ...(params.notes ? [params.notes] : []),
     ]
     const mergedNotes = [existing?.notes, ...noteAdditions].filter(Boolean).join('\n')
@@ -482,10 +655,13 @@ export async function captureContact(
     // CONTACT_DEDUP_MERGED for a merge that never landed — the consent, the notes,
     // the agent assignment, all of it. The CREATE path below already throws on
     // `createError`; the MERGE path now refuses the same way.
-    const { error: mergeError } = await supabase
+    // Wave 148: and COUNTED — an UPDATE that matches no row resolves exactly like one that landed (CLAUDE.md §3).
+    const { data: mergedRows, error: mergeError } = await supabase
       .from('contacts')
       .update({
         ...stewardMerged,
+        ...firstTouchFill.patch,
+        ...situationFill.patch,
         source: existing?.source || params.source,
         ...(mergedNotes ? { notes: mergedNotes } : {}),
         // Assign agent if not already set
@@ -500,38 +676,45 @@ export async function captureContact(
           : existing?.tcpa_consent_date,
         ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
         ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
+        ...(params.tcpa_consent && params.tcpa_consent_ip ? { tcpa_consent_ip: params.tcpa_consent_ip } : {}),
         ...(mergedEnrichmentProfile ? { enrichment_profile: mergedEnrichmentProfile } : {}),
         ...(mergedMetadata ? { metadata: mergedMetadata } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('id', bestId)
+      .eq('brokerage_id', params.brokerageId)
+      .select('id')
 
     if (mergeError) {
       throw new Error(`Failed to merge contact ${bestId}: ${mergeError.message}`)
     }
+    if (!Array.isArray(mergedRows) || mergedRows.length === 0) {
+      throw new Error(`Failed to merge contact ${bestId}: the update matched no row in brokerage ${params.brokerageId}`)
+    }
+    const mergedId: string = bestId
 
-    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase as never, supabase.from('lifecycle_events').insert({
       brokerage_id: params.brokerageId,
       entity_type: 'contact',
-      entity_id: bestId,
+      entity_id: mergedId,
       event_type: KernelEvent.CONTACT_DEDUP_MERGED,
       metadata: { score: bestScore, source: params.source },
     }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-    await processKernelEvent({
+    await bestEffortEffect('merge notification fan-out', () => notify({
       event: KernelEvent.CONTACT_DEDUP_MERGED,
       brokerageId: params.brokerageId,
       entityType: 'contact',
-      entityId: bestId,
-    })
+      entityId: mergedId,
+    }))
 
-    await queueContactEnrichmentAndScore({
-      brokerageId: params.brokerageId,
-      contactId: bestId,
-    })
+    await bestEffortEffect('enrichment queue', () => enrich({ brokerageId: params.brokerageId, contactId: mergedId, client: supabase }))
 
+    // NO SECOND WELCOME, NO SECOND INVITE on a merge (wave 148 — "no duplicate welcome/invite/follow-up"): the person is
+    // already known; the welcome ledger (agent_client_messages, ensureClientWelcome) and the portal invite belong to the
+    // contact's creation, which already happened.
     const mergedPerson = await recordCapturePersonEvidence(supabase, params, bestId, 'merged', bestScore)
-    return { contactId: bestId, action: 'merged', ...mergedPerson }
+    return { contactId: mergedId, action: 'merged', ...mergedPerson }
   }
 
   // ── CREATE path ──────────────────────────────────────────────────────────
@@ -546,14 +729,17 @@ export async function captureContact(
   // event below — the Track-B twin of assignment_log.rule_id on the lead path,
   // so the assignment-policy outcomes rail can grade rule-routed form/import
   // contacts too. Recording starts here; nothing earlier is retro-attributed.
-  let createAttribution: { method: string; rule_id: string | null } | null = null
+  // Wave 148: the creating user rides the same attribution (assignment provenance).
+  let createAttribution: { method: string; rule_id: string | null; creator_user_id: string | null } | null = null
   if (params.skipAutoAssign) {
     createAgentId = ownerAgentHint ?? null
   } else {
     const createAssignment = await resolveAgentForContact({
       brokerageId: params.brokerageId,
       ownerAgentId: ownerAgentHint,
+      teamId: teamHint,
       source: params.source,
+      client: supabase,
     })
     if (!createAssignment.agentId) {
       throw new Error(
@@ -561,7 +747,7 @@ export async function captureContact(
       )
     }
     createAgentId = createAssignment.agentId
-    createAttribution = { method: createAssignment.method, rule_id: createAssignment.ruleId ?? null }
+    createAttribution = { method: createAssignment.method, rule_id: createAssignment.ruleId ?? null, creator_user_id: params.creatorUserId ?? null }
   }
 
   const { data: created, error: createError } = await supabase
@@ -586,6 +772,7 @@ export async function captureContact(
       ...(params.contact_type ? { contact_type: params.contact_type } : {}),
       ...(params.lead_temperature ? { lead_temperature: params.lead_temperature } : {}),
       ...(params.lender_status ? { lender_status: params.lender_status } : {}),
+      ...columns.firstTouch, ...columns.situation, ...columns.createOnly,
       preferred_channel: params.preferred_channel ?? (params.tcpa_consent ? 'phone' : 'email'),
       source: params.source,
       tcpa_consent: params.tcpa_consent,
@@ -594,9 +781,10 @@ export async function captureContact(
         : null,
       ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
       ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
+      ...(params.tcpa_consent && params.tcpa_consent_ip ? { tcpa_consent_ip: params.tcpa_consent_ip } : {}),
       ...(params.enrichmentProfile ? { enrichment_profile: params.enrichmentProfile } : {}),
-      ...(params.language ? { metadata: { captured_language: params.language } } : {}),
-      isa_reengage_allowed: true,
+      ...(params.language || params.metadata ? { metadata: { ...(params.metadata ?? {}), ...(params.language ? { captured_language: params.language } : {}) } } : {}),
+      isa_reengage_allowed: params.isa_reengage_allowed ?? true,
       dnc_status: false,
     })
     .select('id')
@@ -610,7 +798,7 @@ export async function captureContact(
 
   const contactId = created.id
 
-  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase as never, supabase.from('lifecycle_events').insert({
     brokerage_id: params.brokerageId,
     entity_type: 'contact',
     entity_id: contactId,
@@ -621,28 +809,23 @@ export async function captureContact(
     },
   }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-  await processKernelEvent({
+  await bestEffortEffect('capture notification fan-out', () => notify({
     event: KernelEvent.CONTACT_CAPTURED,
     brokerageId: params.brokerageId,
     entityType: 'contact',
     entityId: contactId,
-  })
+  }))
 
   // CLIENT WELCOME (concierge #1–2) — same gated draft on the direct-capture
-  // path. Best-effort, never blocks capture.
-  try {
-    const { ensureClientWelcome } = await import('@/lib/kernel/client-welcome')
-    await ensureClientWelcome(supabase as any, {
-      id: contactId, brokerageId: params.brokerageId,
-      contactType: params.contact_type ?? null,
-      firstName: params.first_name ?? null, lastName: params.last_name ?? null,
-    })
-  } catch { /* welcome is care, not a dependency */ }
+  // path. Best-effort, never blocks capture. Idempotent per contact (the welcome
+  // ledger), so a door that also hands off to deliverConversionWelcome cannot send two.
+  await bestEffortEffect('client welcome', () => welcome(supabase, {
+    id: contactId, brokerageId: params.brokerageId,
+    contactType: params.contact_type ?? null,
+    firstName: params.first_name ?? null, lastName: params.last_name ?? null,
+  }, { origin: params.welcomeOrigin }))
 
-  await queueContactEnrichmentAndScore({
-    brokerageId: params.brokerageId,
-    contactId,
-  })
+  await bestEffortEffect('enrichment queue', () => enrich({ brokerageId: params.brokerageId, contactId, client: supabase }))
 
   // Warm-capture portal invite. These sources are self-provided / consented (web_form / qr_scan /
   // business_card / widget / open_house / home_value_form / showing_request — NOT in
@@ -671,8 +854,7 @@ export async function captureContact(
       // link is the only thing that will ever tell this contact their portal is
       // there. One function decides on both lanes (§6).
       const { resolveWelcomeManagers } = await import('@/lib/kernel/client-welcome')
-      const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
-      await createSystemPortalInvite({
+      await portalInvite({
         contactId,
         agentUserId: agentRow.user_id,
         sendMagicLink: resolveWelcomeManagers(params.contact_type ?? null).length === 0,
@@ -708,10 +890,11 @@ export async function captureContact(
 //   (the C2 boundary: communication ends in the lead table), emitKernelEvent(contact_consented_intake), the AI ISA desk told on
 //   the bus (publishManagerSignal contact_consented_intake).
 //
-// Two doors keep their OWN upsert this wave and call completeConsentedIntake directly after it (lib/kernel/lead-magnets.ts
-// captureFormSubmission, lib/ads/ad-lead-intake.ts ingestConsentedAdLead) — their proofs drive them on an injected in-memory
-// client that captureContact's dependency graph (assignment, notification engine, portal invite) cannot ride yet. Stated in the
-// lane notes as the DUPLICATED upsert half still to merge, with the blocker; the consent / event / signal half is already one.
+// WAVE 148 (lane 148B — owner ruling 4, "all seven doors that create contacts need to be on the same door"): the two doors that
+// kept their OWN upsert in wave 147 (lib/kernel/lead-magnets.ts captureFormSubmission, lib/ads/ad-lead-intake.ts
+// ingestConsentedAdLead) and the seven that inserted contacts their own way are all on this door now. The blocker — captureContact
+// minted its own service client — is closed by the INJECTED-CLIENT CONTRACT (CaptureContactOptions.client / .effects): the
+// capture rides the client the door gated with. completeConsentedIntake stays exported as the record half C8 runs.
 
 /** The tables a consented form can be OWNED by — the tenant is read off the owning row, never taken from the body. */
 // open_house_events (wave 147, lane 147Z): the kiosk sign-in's owning row — the event carries the tenant the attendee is filed under.
@@ -720,8 +903,15 @@ export type ConsentFormOwnerTable = (typeof CONSENT_FORM_OWNER_TABLES)[number]
 
 /** One consent box on the submission. `family` is the box's channel family: 'phone' (TCPA — calls + texts) or 'email'. */
 export interface ConsentGrantInput {
-  family: 'phone' | 'email'
+  /** 'phone' (TCPA — calls + texts), 'email', or 'mail' (direct mail — wave 148, the C15 component's fourth channel). */
+  family: 'phone' | 'email' | 'mail'
   given: boolean
+  /**
+   * Wave 148 (C15): which BOX of the one consent component this grant is — 'service_delivery' or 'marketing'. Two boxes of
+   * the same family (a service-delivery phone consent AND a marketing-text consent) are two consents with two wordings and
+   * two purpose sets; the slot keeps their idempotency keys apart so the second is never replayed as the first.
+   */
+  slot?: string | null
   /** The exact wording the person saw beside the box. Null only when the door genuinely cannot say (recorded as unrecorded). */
   text: string | null
   /** The door's own version label for that wording (e.g. 'qr_landing:2026-10'). */
@@ -746,6 +936,11 @@ export interface ConsentedIntakeEvidence {
   evidence: Record<string, unknown>
   /** The row that OWNS the form — its brokerage_id must equal the capture's tenant (cross-tenant refusal). */
   formOwner?: { table: ConsentFormOwnerTable; id: string } | null
+  /**
+   * Wave 148: the consent's SOURCE label when it differs from the contact's `source` (a lead magnet's contact source is the
+   * arrival — 'landing_page' / 'website' — while its consent source has always been 'lead_magnet'). Default: params.source.
+   */
+  consentSource?: string | null
 }
 
 export type ConsentedIntakeParams =
@@ -768,6 +963,8 @@ export interface ConsentedIntakeResult {
   action?: 'created' | 'merged'
   personId?: string | null
   consentEventIds: { phone: string | null; email: string | null }
+  /** Wave 148 (C15): every consent row written, keyed `<family>` or `<family>:<slot>` (the component writes one per box). */
+  consentEventIdsBySlot?: Record<string, string | null>
   idempotencyKey?: string
   /** The open same-person leads in this tenant the intake closed onto the contact (leads.contact_id stamped). */
   leadsClosed: string[]
@@ -804,7 +1001,7 @@ function consentedIntakeIdempotencyKey(input: {
   capturedAt: string
 }): string {
   const grants = [...input.consents]
-    .map((g) => `${g.family}:${g.given ? 1 : 0}:${consentTextHash(g.text) ?? 'unrecorded'}`)
+    .map((g) => `${g.family}${g.slot ? `/${g.slot}` : ''}:${g.given ? 1 : 0}:${consentTextHash(g.text) ?? 'unrecorded'}`)
     .sort()
     .join('|')
   const evidence = (input.submissionRef ?? '').trim() || input.capturedAt
@@ -834,7 +1031,7 @@ async function verifyFormOwner(
  */
 export async function captureConsentedContact(
   params: ConsentedIntakeParams,
-  opts: { client?: IntakeClient } = {},
+  opts: { client?: IntakeClient; effects?: CaptureContactEffects } = {},
 ): Promise<ConsentedIntakeResult> {
   const base: ConsentedIntakeResult = { ok: false, consentEventIds: { phone: null, email: null }, leadsClosed: [], warnings: [] }
   const svc: IntakeClient = opts.client ?? createServiceClient()
@@ -878,20 +1075,23 @@ export async function captureConsentedContact(
       systemSource: 'consented_intake',
       detail: {
         source: params.source, intake_channel: params.intake.channel, source_url: params.intake.sourceUrl ?? null,
-        consents: params.consents.map((g) => ({ family: g.family, given: g.given, text_hash: consentTextHash(g.text), text_version: g.textVersion ?? null })),
+        consents: params.consents.map((g) => ({ family: g.family, ...(g.slot ? { slot: g.slot } : {}), given: g.given, text_hash: consentTextHash(g.text), text_version: g.textVersion ?? null })),
         form_owner: params.intake.formOwner ?? null,
       },
     },
     async () => {
       let captured: CaptureContactResult
       try {
+        // THE INJECTED-CLIENT CONTRACT (wave 148): the capture rides the SAME client this intake gated the tenant with —
+        // the door's service client, or a proof's in-memory client — never a second one minted inside captureContact.
         captured = await captureContact({
           ...params,
           tcpa_consent: !!phoneGrant,
           tcpa_consent_date: phoneGrant ? capturedAt : null,
           tcpa_consent_text: phoneGrant?.text ?? null,
-          tcpa_consent_source: phoneGrant ? String(params.source) : null,
-        })
+          tcpa_consent_source: phoneGrant ? (params.intake.consentSource ?? String(params.source)) : null,
+          tcpa_consent_ip: phoneGrant && typeof params.intake.evidence?.ip === 'string' ? (params.intake.evidence.ip as string) : null,
+        }, { client: svc, effects: opts.effects })
       } catch (e) {
         return { ...base, refused: 'capture_failed' as const, reason: e instanceof Error ? e.message : String(e), idempotencyKey }
       }
@@ -899,7 +1099,8 @@ export async function captureConsentedContact(
         brokerageId: params.brokerageId, contactId: captured.contactId, action: captured.action,
         personId: captured.personId ?? null, agentId: params.ownerAgentId ?? null,
         email: params.email ?? null, phone: params.phone ?? null,
-        source: String(params.source), consents: params.consents, intake: { ...params.intake, capturedAt }, idempotencyKey,
+        source: params.intake.consentSource ?? String(params.source), consents: params.consents, intake: { ...params.intake, capturedAt }, idempotencyKey,
+        creatorUserId: params.creatorUserId ?? null,
       })
       return { ...done, ok: true, contactId: captured.contactId, action: captured.action, personId: captured.personId ?? null, idempotencyKey }
     },
@@ -939,6 +1140,82 @@ async function consentIdsForKey(
 }
 
 /**
+ * THE PERSON'S SITUATION from an untrusted body (owner ruling 12 — app/components/forms/SituationFields.tsx posts it). PURE and
+ * strict: only the live CHECK vocabularies pass (contacts.contact_type buyer · seller · both; contacts.timeline buckets), the
+ * representation answer becomes the NAR Article 16 disclosure the listing door already honours. Anything else is dropped —
+ * never guessed, never a protected characteristic.
+ */
+const SITUATION_INTENTS = new Set(['buyer', 'seller', 'both'])
+const SITUATION_TIMELINES = new Set(['immediate', '1-3_months', '3-6_months', '6-12_months', '12+_months', 'researching'])
+export function situationFromBody(raw: unknown): { contact_type?: string; timeline?: string; working_with_agent?: boolean } {
+  if (!raw || typeof raw !== 'object') return {}
+  const r = raw as Record<string, unknown>
+  return {
+    ...(typeof r.intent === 'string' && SITUATION_INTENTS.has(r.intent) ? { contact_type: r.intent } : {}),
+    ...(typeof r.timeline === 'string' && SITUATION_TIMELINES.has(r.timeline) ? { timeline: r.timeline } : {}),
+    ...(typeof r.working_with_agent === 'boolean' ? { working_with_agent: r.working_with_agent } : {}),
+  }
+}
+
+/**
+ * WHO A C15 CONSENT NAMES — ONE rule for every door and every page that renders the component (CLAUDE.md §6): the form's
+ * BROKERAGE by name (the legal entity the person is agreeing to hear from — the wording reads "<brokerage> and its agents",
+ * the kiosk's long-standing precedent: sign-in-kiosk.tsx "prefers brokerages.name — the actual entity"), else the form's agent
+ * by full name, else "our brokerage". A page that renders ConsentBoxes resolves its `brandName` through this same function
+ * (or the same read), so the words the person reads and the words the server re-renders for the ledger are identical.
+ */
+export async function resolveConsentBrand(svc: CaptureClient, owner: { agentId?: string | null; brokerageId?: string | null }): Promise<string> {
+  if (owner.brokerageId) {
+    const { data: b } = await svc.from('brokerages').select('name').eq('id', owner.brokerageId).maybeSingle()
+    const name = String((b as { name?: string | null } | null)?.name ?? '').trim()
+    if (name) return name
+  }
+  if (owner.agentId) {
+    const { data: a } = await svc.from('agents').select('user_id').eq('id', owner.agentId).maybeSingle()
+    const userId = (a as { user_id?: string | null } | null)?.user_id ?? null
+    if (userId) {
+      const { data: u } = await svc.from('users').select('first_name, last_name').eq('id', userId).maybeSingle()
+      const name = [(u as { first_name?: string | null } | null)?.first_name, (u as { last_name?: string | null } | null)?.last_name].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+      if (name) return name
+    }
+  }
+  return 'our brokerage'
+}
+
+/**
+ * CONTRACT C15 → C8 (wave 148, lane 148B): THE ONE CONSENT COMPONENT'S SUBMISSION, turned into the grants C8 records.
+ *
+ * The browser sends only BOOLEANS and a door key (lib/kernel/compliance/consent-component.ts ConsentComponentSubmission). The
+ * wording stored on each consent row is RE-RENDERED here from the same pure function the component rendered, with the brand
+ * the SERVER read off the form owner — never text the browser supplied. A browser that rendered a different brand is recorded
+ * as evidence (`rendered_brand_mismatch`), not believed. A missing or malformed submission yields `submission: null` and NO
+ * grants: the door then records no consent (consent is never fabricated, ruling 3).
+ */
+export function consentGrantsFromComponent(
+  raw: unknown,
+  ctx: { door: ConsentDoorKey; brandName: string | null | undefined; provided: { email: boolean; phone: boolean; address?: boolean } },
+): { submission: ConsentComponentSubmission | null; grants: ConsentGrantInput[]; wordingHash: string | null; evidence: Record<string, unknown> } {
+  const submission = parseConsentSubmission(raw)
+  if (!submission) return { submission: null, grants: [], wordingHash: null, evidence: { consent_component: 'absent_or_malformed' } }
+  // The door key is the SERVER's (the route knows which door it is); a submission naming another door is evidence only.
+  const wording = consentComponentWording({ door: ctx.door, brandName: ctx.brandName })
+  const grants = consentGrantsFor(submission, wording, ctx.provided).map((g): ConsentGrantInput => ({
+    family: g.family, slot: g.slot, given: g.given, text: g.text, textVersion: g.textVersion,
+    purposes: canonicalConsentPurposes(g.purposes), channels: g.channels,
+  }))
+  const evidence: Record<string, unknown> = {
+    consent_component: CONSENT_COMPONENT_VERSION,
+    consent_door: ctx.door,
+    service_delivery: submission.service_delivery,
+    marketing: submission.marketing,
+    offered: submission.offered,
+    ...(submission.door !== ctx.door ? { submitted_door_mismatch: submission.door } : {}),
+    ...(submission.rendered_brand !== wording.brandName ? { rendered_brand_mismatch: submission.rendered_brand } : {}),
+  }
+  return { submission, grants, wordingHash: consentTextHash(consentWordingText(wording)), evidence }
+}
+
+/**
  * THE C8 RECORD HALF — after the Contact exists. Exported for the two doors that still own their upsert. Never throws; every
  * best-effort step that did not land is named in `warnings` (nobody checked never reads as checked and fine).
  */
@@ -960,6 +1237,8 @@ export async function completeConsentedIntake(
     idempotencyKey?: string | null
     /** False when the door already stamped the contact's tcpa_* columns itself (default: false — captureContact did). */
     stampPartyColumns?: boolean
+    /** Wave 148 (C15 creator_user_id): the agent/user who created the form — recorded on every consent row's evidence. */
+    creatorUserId?: string | null
   },
 ): Promise<Omit<ConsentedIntakeResult, 'ok'>> {
   const out: Omit<ConsentedIntakeResult, 'ok'> = { consentEventIds: { phone: null, email: null }, leadsClosed: [], warnings: [] }
@@ -973,6 +1252,8 @@ export async function completeConsentedIntake(
   const { persistContactConsent } = await import('@/lib/kernel/compliance/require-contact-consent')
   for (const g of input.consents) {
     if (!g.given) continue
+    // `<family>` for a door with one box per family (unchanged keys for every pre-148 door); `<family>:<slot>` per C15 box.
+    const slotKey = g.slot ? `${g.family}:${g.slot}` : g.family
     const text = (g.text ?? '').trim() || `[consent wording not recorded by ${input.source}]`
     const w = await persistContactConsent({
       brokerageId: input.brokerageId, agentId: input.agentId ?? null, contactId: input.contactId,
@@ -983,15 +1264,16 @@ export async function completeConsentedIntake(
         purposes: canonicalConsentPurposes([...(g.purposes ?? []), ...purposesNamedInConsentText(g.text)]),
         // An EMAIL box is an email consent by the door's own declaration (the widget's separate box); a PHONE box grants
         // exactly the channels its wording names (calls / texts — and email or mail when the same sentence names them).
-        channels: g.channels ? [...g.channels] : g.family === 'email' ? ['email'] : channelsNamedInConsentText(g.text),
+        channels: g.channels ? [...g.channels] : g.family === 'email' ? ['email'] : g.family === 'mail' ? ['direct_mail'] : channelsNamedInConsentText(g.text),
         sourceUrl: input.intake.sourceUrl ?? null,
-        evidence: { ...ev, intake_channel: input.intake.channel, form_owner: input.intake.formOwner ?? null },
-        idempotencyKey: input.idempotencyKey ? `${input.idempotencyKey}:${g.family}` : null,
+        evidence: { ...ev, intake_channel: input.intake.channel, form_owner: input.intake.formOwner ?? null, ...(g.slot ? { consent_box: g.slot } : {}), ...(input.creatorUserId ? { creator_user_id: input.creatorUserId } : {}) },
+        idempotencyKey: input.idempotencyKey ? `${input.idempotencyKey}:${slotKey}` : null,
         personId: input.personId ?? null,
         capturedAt,
       },
     }).catch((e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e), consentEventId: null } as const))
-    out.consentEventIds[g.family] = w.consentEventId
+    if (g.family !== 'mail' && !out.consentEventIds[g.family]) out.consentEventIds[g.family] = w.consentEventId
+    out.consentEventIdsBySlot = { ...(out.consentEventIdsBySlot ?? {}), [slotKey]: w.consentEventId }
     if ('scopeStored' in w && w.scopeStored === false) out.scopeStored = false
     else if (w.consentEventId && out.scopeStored !== false) out.scopeStored = true
     if (!w.consentEventId) out.warnings.push(`${g.family} consent row NOT recorded: ${('error' in w && w.error) || 'the consent ledger refused it'}`)
@@ -1034,7 +1316,7 @@ export async function completeConsentedIntake(
   }
 
   const purposes = canonicalConsentPurposes(input.consents.filter((g) => g.given).flatMap((g) => [...(g.purposes ?? []), ...purposesNamedInConsentText(g.text)]))
-  const channels = [...new Set(input.consents.filter((g) => g.given).flatMap((g) => g.channels ? [...g.channels] : g.family === 'email' ? ['email' as const] : channelsNamedInConsentText(g.text)))]
+  const channels = [...new Set(input.consents.filter((g) => g.given).flatMap((g) => g.channels ? [...g.channels] : g.family === 'email' ? ['email' as const] : g.family === 'mail' ? ['direct_mail' as const] : channelsNamedInConsentText(g.text)))]
   const metadata = {
     consent_event_ids: out.consentEventIds, purposes, channels, source: input.source, intake_channel: input.intake.channel,
     capture_action: input.action, leads_closed: out.leadsClosed, idempotency_key: input.idempotencyKey ?? null, person_id: input.personId ?? null,
@@ -1076,8 +1358,9 @@ export async function completeConsentedIntake(
 export async function queueContactEnrichmentAndScore(params: {
   brokerageId: string
   contactId: string
-}): Promise<void> {
-  const supabase = createServiceClient()
+}, opts: { client?: CaptureClient } = {}): Promise<void> {
+  // Wave 148: the capture's own client (the injected-client contract) — the queue row, the score and its echoes ride it.
+  const supabase: any = opts.client ?? createServiceClient()
 
   // Queue enrichment. This used to be a private copy of the queue write — one of
   // four in the repo, each with a different set of guards. The pending/processing
@@ -1093,6 +1376,7 @@ export async function queueContactEnrichmentAndScore(params: {
     brokerageId: params.brokerageId,
     contactId: params.contactId,
     triggerType: 'contact_captured',
+    ...(opts.client ? { supabase: opts.client as never } : {}),
   })
 
   // Score immediately with available data (re-scored after enrichment completes)

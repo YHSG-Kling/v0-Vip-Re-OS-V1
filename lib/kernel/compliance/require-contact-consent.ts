@@ -156,7 +156,7 @@ export interface PersistConsentParams {
    *     (consent_type 'email'); the tcpa_* columns say nothing about phone consent the visitor never gave.
    * consent_type is a free text column live (no CHECK — information_schema, 2026-10-05).
    */
-  channel?: 'phone' | 'email'
+  channel?: 'phone' | 'email' | 'mail'
   /** Wave 147 (C8): the m889 scope this row records. Omitted → the legacy row, byte-for-byte as before. */
   scope?: ConsentScopeInput | null
   /**
@@ -168,8 +168,13 @@ export interface PersistConsentParams {
   client?: ConsentClient
 }
 
-/** The contact_consent_events.consent_type each channel records — ONE spelling (CLAUDE.md §6). */
-export const CONSENT_TYPE_FOR_CHANNEL = { phone: 'tcpa', email: 'email' } as const
+/**
+ * The contact_consent_events.consent_type each channel records — ONE spelling (CLAUDE.md §6).
+ * 'mail' (wave 148, lane 148B — the C15 component's direct-mail box): consent_type 'direct_mail'. The column carries NO CHECK
+ * (verified: contact_consent_events is absent from scripts/check-vocabularies.ts); the opt-OUT spelling for the same channel
+ * stays addSuppression's 'mail_opt_out' (lib/kernel/compliance/check-suppression.ts CONSENT_TYPE_BY_CHANNEL).
+ */
+export const CONSENT_TYPE_FOR_CHANNEL = { phone: 'tcpa', email: 'email', mail: 'direct_mail' } as const
 
 export interface PersistConsentResult {
   /** False when the CONTACTS consent write was refused — the consent state the
@@ -372,7 +377,12 @@ export interface ConsentAnswer {
 }
 
 /** The consent_type families that speak for a channel on a LEGACY row (no `channels` recorded). */
-const LEGACY_TYPE_CHANNELS: Readonly<Record<string, readonly ConsentChannel[]>> = { tcpa: ['sms', 'voice'], email: ['email'] }
+const LEGACY_TYPE_CHANNELS: Readonly<Record<string, readonly ConsentChannel[]>> = {
+  tcpa: ['sms', 'voice'], email: ['email'], direct_mail: ['direct_mail'],
+  // The withdrawal spellings addSuppression writes (check-suppression.ts CONSENT_TYPE_BY_CHANNEL) — wave 148: a STOP or an
+  // unsubscribe recorded on the ledger now withdraws its channel in the scope answer too, not only through the contact flags.
+  sms_stop: ['sms'], email_unsubscribe: ['email'], phone_opt_out: ['voice'], mail_opt_out: ['direct_mail'],
+}
 
 /** PURE. The answer to (channel, purpose) over a read scope. */
 export function answerConsentQuestion(scope: ConsentScope, question: { channel: ConsentChannel; purpose: ConsentPurpose }): ConsentAnswer {

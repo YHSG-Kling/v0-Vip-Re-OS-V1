@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment"
+// Wave 148 (lane 148B): the import rides THE one contact door (which runs resolveAgentForContact itself).
+import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -302,9 +303,9 @@ export async function serviceRejectLead(
 }
 
 // Lane B import: forms / Facebook ads / real-estate-site exports land here.
-// The source captured TCPA consent already, so each row goes directly into
-// `contacts` with tcpa_consent=true stamped, deduped against existing
-// contacts in the brokerage on email + phone_digits.
+// Each row goes through THE one contact door (captureContact — dedupe, merge,
+// assignment, enrichment). Consent is recorded ONLY when the uploaded row itself
+// attests it (wave 148: the old blanket tcpa_consent=true was a fabricated consent).
 //
 // Agent assignment per the user's product rules:
 //   - If the row carries an explicit owner agent (form attached to an
@@ -339,49 +340,11 @@ export async function serviceImportLeads(
     "lifetime_customer",
   ])
 
-  // Mirror the generation expression on contacts.phone_digits
-  // (regexp_replace(phone, '\\D', '', 'g')) so our lookup matches the
-  // stored value exactly. Slicing to last-10 here would miss contacts
-  // saved with country code prefixes.
-  const normalizeDigits = (p?: string | null) =>
-    p ? p.replace(/\D/g, "") : null
-
   let imported = 0
   let deduped = 0
   let unassigned = 0
 
   for (const lead of leads) {
-    const email = lead.email?.trim().toLowerCase() ?? null
-    const phoneDigits = normalizeDigits(lead.phone)
-
-    // Dedup: lookup any existing contact in this brokerage matching either
-    // email or phone_digits. No unique constraint exists on contacts(email),
-    // so this guard runs in application code.
-    let existingId: string | null = null
-    if (email || phoneDigits) {
-      let dedupQuery = supabase
-        .from("contacts")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-        .is("deleted_at", null)
-
-      if (email && phoneDigits) {
-        dedupQuery = dedupQuery.or(`email.eq.${email},phone_digits.eq.${phoneDigits}`)
-      } else if (email) {
-        dedupQuery = dedupQuery.eq("email", email)
-      } else if (phoneDigits) {
-        dedupQuery = dedupQuery.eq("phone_digits", phoneDigits)
-      }
-
-      const { data: existing } = await dedupQuery.limit(1).maybeSingle()
-      existingId = existing?.id ?? null
-    }
-
-    if (existingId) {
-      deduped++
-      continue
-    }
-
     const incomingStatus = (lead.status ?? "new").toString().toLowerCase()
     const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
 
@@ -392,111 +355,67 @@ export async function serviceImportLeads(
     // AN IMPORT IS ONE OF THOSE DOORS, and this is the door where the claim is
     // cheapest to forge: `lead.status` is caller-supplied all the way from
     // app/actions/lead-management.ts:209 `importLeads`, which is a "use server"
-    // export and therefore a PUBLIC HTTP ENDPOINT (CLAUDE.md §4). Before this line,
-    // an uploaded row that simply said `status: "qualified"` was believed, and a
-    // brokerage could import ten thousand contacts pre-marked as qualified.
-    //
-    // `contacts.status = 'qualified'` is EARNED by the lead→contact CONVERSION path
-    // alone, and is stamped in exactly one place —
-    // lib/portal/portal-invite-core.ts:77 stampQualifiedIfLeadConverted — off the
-    // `leads.contact_id` conversion marker, i.e. off the RECORD.
-    //
-    // NARROWED, NOT REPLACED: only the qualified spelling is refused, and only for
-    // what gets STORED. `aiIsaEnabled` above still reads the RAW incoming status on
-    // purpose — that gate is about active-relationship suppression, it does not list
-    // 'qualified', and re-pointing it here would be a silent change to a different
-    // ruling. Every other imported status is carried through untouched, and the
-    // fallback passed in is this path's OWN prior default, so nothing else moves.
+    // export and therefore a PUBLIC HTTP ENDPOINT (CLAUDE.md §4). An uploaded row
+    // that simply said `status: "qualified"` is NOT believed — `contacts.status =
+    // 'qualified'` is EARNED by the lead→contact CONVERSION path alone
+    // (lib/portal/portal-invite-core.ts stampQualifiedIfLeadConverted). Only the
+    // qualified spelling is refused, and only for what gets STORED.
     const storedStatus = statusForNewContact(incomingStatus, "new")
-
     const sourceLabel = lead.source ?? "admin_import"
 
-    // Resolve the owner agent (agents.id) per the precedence in
-    // resolveAgentForContact. If no agent exists in the brokerage at all,
-    // count this as unassigned and skip — the contact can't be persisted
-    // without an owner (the CRM treats agent_id as required for routing).
-    const ownerAgentId = lead.owner_agent_id ?? null
-    const assignment = await resolveAgentForContact({
-      brokerageId,
-      ownerAgentId,
-      source: sourceLabel,
-      propertyZipCode: (lead as Record<string, unknown>).property_zip_code as string | null | undefined,
-    })
+    // CONSENT IS NEVER FABRICATED (wave 148, lane 148B — owner ruling 3). TOMBSTONE: this door stamped
+    // `tcpa_consent: true` on EVERY imported row ("Lane B: consent was captured at source") — a claim with no wording, no
+    // time and no evidence behind it, which the dispatch TCPA gate then believed. A row carries consent only when the
+    // import itself ATTESTS it (an explicit `tcpa_consent: true` column on the uploaded row), recorded as the importing
+    // agent's attestation with whatever wording the row carried — never invented.
+    const attested = (lead as Record<string, unknown>).tcpa_consent === true
+    const attestedText = String((lead as Record<string, unknown>).tcpa_consent_text ?? "").trim()
 
-    if (!assignment.agentId) {
-      unassigned++
-      console.error(
-        `[serviceImportLeads] no eligible agent in brokerage ${brokerageId}; skipping import row`
-      )
-      continue
-    }
-
-    const { data: insertedContact, error: insertErr } = await supabase.from("contacts").insert({
-      brokerage_id: brokerageId,
-      agent_id: assignment.agentId, // agents.id, not users.id
-      first_name: lead.first_name ?? "Unknown",
-      last_name: lead.last_name ?? "Contact",
-      email,
-      phone: lead.phone ?? null,
-      // phone_digits is a generated column derived from `phone` — do not set.
-      source: sourceLabel,
-      source_family: "contact_direct",
-      contact_type: "lead",
-      status: storedStatus,
-      // Lane B: consent was captured at source. Stamp it explicitly.
-      tcpa_consent: true,
-      tcpa_consent_at: new Date().toISOString(),
-      tcpa_consent_source: sourceLabel,
-      // Auto-enroll into AI-ISA unless restricted-status.
-      ai_isa_enabled: aiIsaEnabled,
-      // Enrichment runs through the existing PeopleData queue — queued for real
-      // right after the insert lands (see below). This comment used to be the
-      // ONLY thing connecting this import to enrichment: nothing here wrote a
-      // queue row, so a list imported through this door was enriched only if the
-      // nightly net happened to reach it.
-      enrichment_source: null,
-      metadata: {
-        imported_via: "serviceImportLeads",
-        imported_by_agent_id: agentId,
-        assignment_method: assignment.method,
-        assignment_rule_id: assignment.ruleId ?? null,
-        original: lead as Record<string, unknown>,
-      },
-    })
-      .select("id")
-      .single()
-
-    if (insertErr) {
-      // Don't abort the batch on a single row failure — log and continue.
-      console.error("[serviceImportLeads] insert failed:", insertErr.message)
-      continue
-    }
-
-    // AUTOMATIC ENRICHMENT ON A LIST IMPORT (owner, wave 14): "when a list or any
-    // time there is a new contact, there is an automatic enrichment run." This door
-    // creates contacts directly instead of going through captureContact, so it did
-    // not reach the create-time lane the other import door uses.
-    //
-    // The SURVIVOR is called — lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment
-    // — never a second queue writer. It carries the freshness check, the
-    // pending-row idempotency guard, the live-deal suppression the owner ruled on,
-    // and the backlog cap that keeps a 5,000-row list from committing the tenant's
-    // whole vendor budget in one loop. Best-effort: an import row must never fail
-    // because enrichment could not be queued.
-    if (insertedContact?.id) {
-      try {
-        const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
-        await queueContactEnrichment({
-          contactId:   insertedContact.id,
-          brokerageId,
-          triggerType: "import",
-        })
-      } catch (err) {
-        console.error("[serviceImportLeads] enrichment enqueue failed (non-fatal):", err)
+    // ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147Z Still open 1). TOMBSTONE (orphan doctrine §1.1): the
+    // email / phone_digits `.or()` dedupe (error unread, the raw value spliced into the filter), the resolveAgentForContact
+    // call and the contacts INSERT that stood here were a second contact writer. Merged onto THE one survivor —
+    // lib/contact-pipeline/contact-capture.ts captureContact — riding this door's own session client (the injected-client
+    // contract; RLS stays the gate). Preserved: the owner precedence (a row's owner_agent_id, else the brokerage rules —
+    // captureContact calls the same resolveAgentForContact), the assignment attribution and the import provenance in
+    // metadata, ai_isa_enabled off for an active-relationship status, the stored status, source / source_family, the
+    // enrichment queue (captureContact's). CHANGED, on purpose: a row matching an existing contact is MERGED fill-if-empty
+    // (its new facts land, nothing is overwritten, conflicts go to notes) instead of silently skipped — it is still counted
+    // as `deduped`. A row with no eligible agent is still counted `unassigned` and skipped.
+    try {
+      const captured = await captureContact({
+        brokerageId,
+        ownerAgentId: lead.owner_agent_id ?? null,
+        creatorUserId: null,
+        source: sourceLabel,
+        source_family: "contact_direct",
+        contact_type: "lead",
+        status: storedStatus,
+        ai_isa_enabled: aiIsaEnabled,
+        first_name: lead.first_name ?? null,
+        last_name: lead.last_name ?? null,
+        email: lead.email?.trim().toLowerCase() ?? null,
+        phone: lead.phone ?? null,
+        tcpa_consent: attested,
+        tcpa_consent_source: attested ? `import_attested:${sourceLabel}` : null,
+        tcpa_consent_text: attested ? (attestedText || `[import attested consent by agent ${agentId ?? "unknown"}; no wording supplied]`) : null,
+        metadata: {
+          imported_via: "serviceImportLeads",
+          imported_by_agent_id: agentId,
+          original: lead as Record<string, unknown>,
+        },
+      }, { client: supabase })
+      if (captured.action === "merged") deduped++
+      else imported++
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (/no eligible agent/i.test(message)) {
+        unassigned++
+        console.error(`[serviceImportLeads] no eligible agent in brokerage ${brokerageId}; skipping import row`)
+      } else {
+        // Don't abort the batch on a single row failure — log and continue.
+        console.error("[serviceImportLeads] capture failed:", message)
       }
     }
-
-    imported++
   }
 
   revalidatePath("/leads")

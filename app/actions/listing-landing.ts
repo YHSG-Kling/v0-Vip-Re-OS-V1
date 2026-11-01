@@ -7,7 +7,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
-import { captureConsentedContact } from "@/lib/contact-pipeline/contact-capture"
+import { captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } from "@/lib/contact-pipeline/contact-capture"
 import { tenantScope, applyTenantScope } from "@/lib/kernel/tenant-scope"
 import { publiclyVisibleListingStatuses } from "@/lib/listings/listing-status-sync"
 
@@ -83,7 +83,10 @@ interface ShowingRequestInput {
   preferredDateTime: string
   notes?: string
   sessionToken?: string
+  /** @deprecated pre-148 clients — the bare box. Superseded by `consent` (C15). */
   tcpaConsent?: boolean
+  /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). The wording is re-rendered here, never the body's. */
+  consent?: unknown
   /** NAR Code of Ethics Article 16 disclosure. Captured on the public form; persisted on
    *  the contact's `enrichment_profile.representation_disclosure` JSONB so the conversion
    *  gate (app/actions/convert-outside-inquiry.ts) can refuse promotion when the buyer
@@ -737,6 +740,18 @@ export async function trackCtaClick(listingId: string, sessionToken: string) {
 // Showing Request Submission
 // ============================================================================
 
+/**
+ * The name a listing's C15 consent names (wave 148): THE one brand rule — the listing's agent, else its brokerage. Public on
+ * purpose (the listing page renders for anonymous visitors); returns only a display name for a publicly visible listing.
+ */
+export async function getListingConsentBrand(listingId: string): Promise<{ brandName: string }> {
+  const svc = createServiceClient()
+  const { data: listing } = await svc.from("listings").select("brokerage_id, agent_id").eq("id", listingId)
+    .in("status", publiclyVisibleListingStatuses()).is("deleted_at", null).maybeSingle()
+  if (!listing?.brokerage_id) return { brandName: "our brokerage" }
+  return { brandName: await resolveConsentBrand(svc, { agentId: listing.agent_id ?? null, brokerageId: listing.brokerage_id }) }
+}
+
 export async function submitShowingRequest(input: ShowingRequestInput) {
   const supabase = await createClient()
 
@@ -758,8 +773,19 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
 
   // Per TCPA rules: always capture, but only store phone and enable phone/SMS channels
   // when explicit consent is given.
-  const consentGiven = input.tcpaConsent === true
   const consentNow = new Date().toISOString()
+  // C15 (wave 148): the ONE consent component's boxes, worded with THE one brand rule (the listing's agent, else brokerage) —
+  // read on the service client (display names only), exactly as getListingConsentBrand hands the page.
+  const listingBrand = await resolveConsentBrand(createServiceClient(), { agentId: listing.agent_id ?? null, brokerageId: listing.brokerage_id })
+  const listingC15 = consentGrantsFromComponent(input.consent, { door: "showing_request", brandName: listingBrand, provided: { email: !!input.email?.trim(), phone: !!input.phone?.trim() } })
+  if (listingC15.submission && !listingC15.submission.service_delivery) {
+    return { success: false, error: "Please tick the first consent box (the service follow-up) so the agent can confirm your showing." }
+  }
+  const LISTING_LANDING_CONSENT_TEXT = "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
+  const listingConsents = listingC15.submission
+    ? listingC15.grants
+    : [{ family: "phone" as const, given: input.tcpaConsent === true, text: LISTING_LANDING_CONSENT_TEXT, textVersion: "listing_landing:v1", purposes: ["property_inquiry" as const] }]
+  const consentGiven = listingConsents.some((g) => g.family === "phone" && g.given)
 
   // NAR Article 16: persist the representation disclosure on enrichment_profile so
   // downstream gates (convert-outside-inquiry) can refuse promotion of a buyer who
@@ -786,12 +812,11 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
     // C8 (wave 147, lane 147A — owner ruling 1): the consented showing request → CONTACT + consent record + arbiter told. The
     // tenant is the LISTING row's (re-read by the contract against listings). The wording is the one this door has always
     // stamped as tcpa_consent_text — now hashed and scoped on the consent record.
-    const LISTING_LANDING_CONSENT_TEXT = "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
     const intake = await captureConsentedContact({
-      consents: [{ family: "phone", given: consentGiven, text: LISTING_LANDING_CONSENT_TEXT, textVersion: "listing_landing:v1", purposes: ["property_inquiry"] }],
+      consents: listingConsents,
       intake: {
         capturedAt: consentNow, channel: "landing_page", sourceUrl: `/listings/${input.listingId}`,
-        evidence: { listing_id: input.listingId, representation: repStatus },
+        evidence: { ...listingC15.evidence, ...(listingC15.wordingHash ? { wording_hash: listingC15.wordingHash } : {}), listing_id: input.listingId, representation: repStatus },
         formOwner: { table: "listings", id: input.listingId },
       },
       brokerageId:         listing.brokerage_id,

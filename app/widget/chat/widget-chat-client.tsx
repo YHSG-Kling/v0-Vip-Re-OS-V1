@@ -5,6 +5,7 @@ import { DefaultChatTransport } from "ai"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Send, X, MessageCircle, Loader2, Phone, ArrowLeft } from "lucide-react"
 import { getMessageText } from "@/lib/ai/get-message-text"
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 
 interface WidgetIdentity {
   assistant_name: string
@@ -75,10 +76,14 @@ export default function WidgetChatClient({
   const [cbLastName, setCbLastName] = useState("")
   const [cbPhone, setCbPhone] = useState("")
   const [cbBestTime, setCbBestTime] = useState("")
-  const [cbConsent, setCbConsent] = useState(false)
   const [cbSubmitting, setCbSubmitting] = useState(false)
   const [cbSubmitted, setCbSubmitted] = useState(false)
   const [cbError, setCbError] = useState("")
+  // C15 (wave 148, lane 148B): the ONE consent component on both forms — named for the session's brokerage (THE one brand
+  // rule the intake and callback doors re-render the wording with).
+  const consentBrand = identity?.brokerage_name || "our brokerage"
+  const intakeConsent = useConsentBoxes("chat_widget", consentBrand)
+  const callbackConsent = useConsentBoxes("chat_widget", consentBrand, ["sms", "voice"])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -158,6 +163,7 @@ export default function WidgetChatClient({
     async (e: React.FormEvent) => {
       e.preventDefault()
       if (!capturedEmail && !capturedPhone) return
+      if (!intakeConsent.serviceGiven) return
       setIntakeSubmitting(true)
       try {
         const lastMsg = [...messages].filter((m) => m.role === "user").slice(-3).map((m) => getMessageText(m)).join(" | ")
@@ -174,8 +180,9 @@ export default function WidgetChatClient({
             // session row this token identifies.
             session_token: sessionToken,
             source: "website_widget",
-            tcpa_consent: true,
-            tcpa_consent_text: "I agree to be contacted by a real estate professional via phone, email, or text.",
+            // C15 (wave 148): the ONE consent component's boxes. TOMBSTONE: a hardcoded `tcpa_consent: true` + wording stood
+            // here — a consent sent for every visitor whether or not they gave it.
+            consent: intakeConsent.submission,
           }),
         })
         setIntakeSubmitted(true)
@@ -187,14 +194,14 @@ export default function WidgetChatClient({
         setIntakeSubmitting(false)
       }
     },
-    [capturedName, capturedEmail, capturedPhone, messages, sessionToken, sendMessage]
+    [capturedName, capturedEmail, capturedPhone, messages, sessionToken, sendMessage, intakeConsent.serviceGiven, intakeConsent.submission]
   )
 
   // ── Callback submit ───────────────────────────────────────────────────────
   const handleCallbackSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault()
-      if (!cbConsent || !cbPhone) return
+      if (!callbackConsent.serviceGiven || !cbPhone) return
       setCbSubmitting(true)
       setCbError("")
       try {
@@ -206,7 +213,7 @@ export default function WidgetChatClient({
             lastName: cbLastName || undefined,
             phone: cbPhone,
             bestTime: cbBestTime || undefined,
-            tcpaConsent: true,
+            consent: callbackConsent.submission,
             // The callback route resolves brokerage AND recipient from the
             // session row — it used to take both off this body.
             session_token: sessionToken,
@@ -220,7 +227,7 @@ export default function WidgetChatClient({
         setCbSubmitting(false)
       }
     },
-    [cbFirstName, cbLastName, cbPhone, cbBestTime, cbConsent, sessionToken]
+    [cbFirstName, cbLastName, cbPhone, cbBestTime, callbackConsent.serviceGiven, callbackConsent.submission, sessionToken]
   )
 
   // ── Render guards ─────────────────────────────────────────────────────────
@@ -356,22 +363,11 @@ export default function WidgetChatClient({
                 value={cbBestTime}
                 onChange={(e) => setCbBestTime(e.target.value)}
               />
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={cbConsent}
-                  onChange={(e) => setCbConsent(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 flex-shrink-0"
-                  required
-                />
-                <span className="text-[11px] text-gray-500 leading-tight">
-                  I agree to be contacted by a real estate professional via phone, email, or text.
-                </span>
-              </label>
+              <ConsentBoxes {...callbackConsent.boxProps} idPrefix="cb-consent" compact />
               {cbError && <p className="text-xs text-red-500">{cbError}</p>}
               <button
                 type="submit"
-                disabled={cbSubmitting || !cbConsent || !cbPhone}
+                disabled={cbSubmitting || !callbackConsent.serviceGiven || !cbPhone}
                 className="w-full bg-blue-700 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50"
               >
                 {cbSubmitting ? "Sending…" : "Request Callback"}
@@ -448,9 +444,7 @@ export default function WidgetChatClient({
             value={capturedPhone}
             onChange={(e) => setCapturedPhone(e.target.value)}
           />
-          <p className="text-[10px] text-gray-400 leading-tight">
-            By submitting, you agree to be contacted by a real estate professional via phone, email, or text. Standard messaging rates may apply.
-          </p>
+          <ConsentBoxes {...intakeConsent.boxProps} idPrefix="intake-consent" compact />
           <button
             type="submit"
             disabled={intakeSubmitting || (!capturedEmail && !capturedPhone)}

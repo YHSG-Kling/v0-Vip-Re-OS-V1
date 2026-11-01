@@ -55,6 +55,12 @@ export interface OptOutResult {
   channelsSuppressed: string[]
   globalDNC: boolean
   error?: string
+  /**
+   * Wave 148 (C16): the suppression-LIST rows (contact_suppression_list, keyed by contact AND by the person's email / phone)
+   * landed for every suppressed channel. False = the flags above landed (every contact-keyed send already refuses) but an
+   * address-keyed send (a number-only text, a mailing to the bare address) may not see it — said, never hidden.
+   */
+  listSynced?: boolean
 }
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -178,6 +184,36 @@ export async function writeOptOut(supabase: Svc, brokerageId: string, params: Op
   }
   if (!updated || updated.length === 0) return refused("suppression matched no row in this brokerage")
 
+  // C16 — SUPPRESSION SYNC (wave 148, lane 148B). The flags above bind every CONTACT-keyed send; the ONE suppression list
+  // (contact_suppression_list via addSuppression — lib/kernel/compliance/check-suppression.ts) is what binds a send keyed by
+  // the bare ADDRESS: a number-only text, an email to the address with no contact id, a provider adapter that only knows the
+  // recipient. A STOP written to the flags alone left those senders blind. One list row per suppressed channel, keyed by the
+  // contact (contacts only — the list's contact_id FKs contacts) AND the person's email / phone; the consent ledger row is
+  // addSuppression's (a withdrawal the scope answer reads). Flags are not re-written (writeContactFlags: false).
+  let listSynced = true
+  {
+    const { data: who, error: whoErr } = await supabase.from(table).select("email, phone").eq("id", entityId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (whoErr) { listSynced = false; console.error("[processOptOut] identity read for the suppression list refused:", whoErr.message) }
+    const LIST_CHANNEL: Record<string, "email" | "sms" | "phone" | "mail"> = { email: "email", sms: "sms", phone: "phone", direct_mail: "mail" }
+    const { addSuppression } = await import("@/lib/kernel/compliance/check-suppression")
+    for (const ch of channelsSuppressed) {
+      const listChannel = LIST_CHANNEL[ch]
+      if (!listChannel) continue
+      const email = listChannel === "email" ? ((who as { email?: string | null } | null)?.email ?? null) : null
+      const phone = listChannel === "sms" || listChannel === "phone" ? ((who as { phone?: string | null } | null)?.phone ?? null) : null
+      if (entityType === "lead" && !email && !phone) continue
+      const listed = await addSuppression({
+        brokerageId,
+        contactId: entityType === "contact" ? entityId : null,
+        email, phone,
+        channel: listChannel,
+        reason: `Opt-out via ${source}${rawMessage ? `: "${rawMessage.slice(0, 120)}"` : ""}`,
+        source,
+      }, { client: supabase, writeContactFlags: false })
+      if (!listed.suppressed) { listSynced = false; console.error(`[processOptOut] suppression-list row for ${ch} NOT written: ${listed.errors.join(" | ") || "unknown"}`) }
+    }
+  }
+
   // Compliance audit — always write, never block on failure.
   //
   // "Never block on failure" was the intent; dropping the result was the
@@ -264,5 +300,5 @@ export async function writeOptOut(supabase: Svc, brokerageId: string, params: Op
     entityId,
   })
 
-  return { success: true, channelsSuppressed, globalDNC }
+  return { success: true, channelsSuppressed, globalDNC, listSynced }
 }

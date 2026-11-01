@@ -101,7 +101,9 @@ function fixture(opts: { refuse?: Record<string, string> } = {}) {
       { id: USER_A, brokerage_id: A, first_name: "Ann", last_name: "Agent", email: "ann@alpha.test", phone: null },
       { id: USER_B, brokerage_id: B, first_name: "Bob", last_name: "Broker", email: "bob@beta.test", phone: null },
     ],
-    agents: [{ id: AGENT_A, user_id: USER_A, brokerage_id: A }, { id: AGENT_B, user_id: USER_B, brokerage_id: B }],
+    // wave 148 (lane 148B): is_active is the live column the ONE door's assignment reads (an owner hint is honoured for an
+    // ACTIVE agent; a departed agent's form routes by the rules). Fixture fidelity.
+    agents: [{ id: AGENT_A, user_id: USER_A, brokerage_id: A, is_active: true }, { id: AGENT_B, user_id: USER_B, brokerage_id: B, is_active: true }],
     marketing_campaigns: [],
     lead_capture_forms: [], form_submissions: [], contacts: [], contact_consent_events: [], marketing_campaign_touchpoints: [],
     lifecycle_events: [], agent_action_ledger: [], qr_codes: [], qr_scan_events: [], manager_signals: [], farm_territories: [],
@@ -498,7 +500,8 @@ async function main() {
     adminDoorsGone && /createLeadMagnet\(/.test(code("app/actions/lead-magnets-actions.ts")) && /DELETED at wave-142 integration/.test(raw("app/dashboard/admin/forms/FormsManagerClient.tsx")) && /createLeadMagnet \/ publishLeadMagnet/.test(raw("app/dashboard/admin/forms/FormsManagerClient.tsx")))
   check("F5 /forms/[slug] captures through captureFormSubmission (no second pipeline: no captureContact, no form_submissions insert, no counter RPC) and the renderer sends the consent it collects; control: the kernel still holds the ONE form_submissions insert",
     /captureFormSubmission\(\{/.test(submit) && !/captureContact\(/.test(submit) && !/from\('form_submissions'\)/.test(submit) && !/increment_form_submission_count/.test(submit) && /language:\s*capturedLanguage/.test(submit)
-    && /tcpaConsent:\s*tcpaChecked/.test(code("app/forms/[slug]/FormRenderer.tsx")) && /from\("form_submissions"\)[\s\S]{0,120}?\.insert\(/.test(kernelSrc))
+    // wave 148 (C15): the renderer sends the ONE consent component's submission (was its own box's `tcpaConsent: tcpaChecked`).
+    && (/tcpaConsent:\s*tcpaChecked/.test(code("app/forms/[slug]/FormRenderer.tsx")) || /consent:\s*consent\.submission/.test(code("app/forms/[slug]/FormRenderer.tsx"))) && /from\("form_submissions"\)[\s\S]{0,120}?\.insert\(/.test(kernelSrc))
 
   // ── G. WIRING ──────────────────────────────────────────────────────────────
   console.log("\n── G. wired, owned, routed ──")

@@ -184,6 +184,9 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
   // submission, VERIFIED by the kernel against this magnet's own tenant before anything is stamped.
   const attribution = parseLeadMagnetAttribution(sp)
   const videoPoster = landing?.videoUrl ? await getLandingVideoPoster(landing.videoProjectId, form.brokerage_id) : null
+  // C15 (wave 148): the consent names the magnet's agent / brokerage — THE one rule the kernel re-renders the wording with.
+  const { leadMagnetConsentBrand } = await import("@/lib/kernel/lead-magnets")
+  const consentBrandName = await leadMagnetConsentBrand(createServiceClient(), form.brokerage_id, (form as { agent_id?: string | null }).agent_id ?? null)
 
   return (
     <main className="min-h-screen bg-background flex items-start justify-center py-10 px-4">
@@ -231,7 +234,7 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
               formId={form.id}
               brokerageId={form.brokerage_id}
               source="landing_page"
-              tcpaText={form.tcpa_disclosure_text ?? undefined}
+              consentBrandName={consentBrandName}
               thankYouMessage={form.thank_you_message ?? undefined}
               ctaText={landing?.cta || undefined}
               attribution={attribution}
@@ -244,7 +247,7 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
               source="landing_page"
               headline={form.name}
               ctaText={landing?.cta || undefined}
-              tcpaText={form.tcpa_disclosure_text ?? undefined}
+              consentBrandName={consentBrandName}
               thankYouMessage={form.thank_you_message ?? undefined}
               attribution={attribution}
             />

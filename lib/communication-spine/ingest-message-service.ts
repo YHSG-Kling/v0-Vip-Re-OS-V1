@@ -111,8 +111,11 @@ export async function ingestMessageService(
 
       // Per TCPA: any inbound SMS with just "STOP" (or common variants) is a
       // hard opt-out — no follow-up permitted on that channel.
-      const smsOptOut = (channel === 'sms') &&
-        /^\s*(stop|unsubscribe|cancel|end|quit|remove)\s*$/i.test(body)
+      // TOMBSTONE (orphan doctrine §1.1; wave 148, lane 148B — C16): this door kept its OWN keyword regex
+      // (stop|unsubscribe|cancel|end|quit|remove — no "revoke", no "opt out"). "remove" was merged onto the ONE list first;
+      // SURVIVOR: lib/ai-isa/opt-out-utils.ts:22 REVOCATION_KEYWORDS, read through isRevocationKeyword.
+      const { isRevocationKeyword } = await import('@/lib/ai-isa/opt-out-utils')
+      const smsOptOut = (channel === 'sms') && isRevocationKeyword(body)
 
       // Global DNC phrases — any channel.
       const globalOptOut =

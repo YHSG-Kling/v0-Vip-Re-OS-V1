@@ -14,6 +14,8 @@
  */
 
 import { useEffect, useRef, useState, useCallback, FormEvent } from "react"
+// C15 (wave 148, lane 148B): the ONE consent component (owner recommendation — the embed widget gets it too).
+import { ConsentBoxes, useConsentBoxes, type ConsentBoxesProps } from "@/app/components/forms/ConsentBoxes"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import * as didSdk from "@d-id/client-sdk"
@@ -72,6 +74,8 @@ interface Props {
   deployment?: EmbedDeployment
   /** Inline (platform) mount: called on the close button instead of postMessage. */
   onClose?: () => void
+  /** The name the consent names (the widget's brokerage — the page reads it as the capture door does). */
+  consentBrandName?: string
 }
 
 interface DisplayMessage {
@@ -87,6 +91,7 @@ export function EmbedWidget(props: Props) {
     enabledModes, leadCaptureMode, leadCaptureFields, label,
   } = props
   const deployment: EmbedDeployment = props.deployment ?? "tenant"
+  const embedConsent = useConsentBoxes("embed_widget", props.consentBrandName ?? label)
   const isPlatform = deployment === "platform"
   // A pre-rendered sample clip the PLATFORM agent asked to play (the
   // [[CLIP:url]] token from show_product_demo — lib/platform/product-demo.ts).
@@ -459,6 +464,8 @@ export function EmbedWidget(props: Props) {
       if (v) payload[f] = v
     }
     if (!sessionIdRef.current) return
+    // The service-delivery box is the capture's consent (C15); without it nothing is sent (the visitor can keep chatting).
+    if (!embedConsent.serviceGiven) return
 
     const res = await fetch("/api/embed/capture", {
       method: "POST",
@@ -468,6 +475,7 @@ export function EmbedWidget(props: Props) {
         sessionId: sessionIdRef.current,
         visitorId,
         ...payload,
+        consent: embedConsent.submission,
       }),
     })
     if (res.ok) {
@@ -699,6 +707,7 @@ export function EmbedWidget(props: Props) {
           colorFg={colorFg}
           onSubmit={submitCapture}
           onSkip={leadCaptureMode === "optional" ? () => setPhase("ready") : undefined}
+          consent={embedConsent.boxProps}
         />
       )}
 
@@ -740,13 +749,14 @@ const FIELD_META: Record<string, { label: string; type: string; placeholder: str
 }
 
 function CaptureForm({
-  fields, colorBg, colorFg, onSubmit, onSkip,
+  fields, colorBg, colorFg, onSubmit, onSkip, consent,
 }: {
   fields: string[]
   colorBg: string
   colorFg: string
   onSubmit: (e: FormEvent<HTMLFormElement>) => void
   onSkip?: () => void
+  consent: Pick<ConsentBoxesProps, "door" | "brandName" | "value" | "onChange" | "offered">
 }) {
   return (
     <form onSubmit={onSubmit} className="border-t bg-gray-50 px-4 py-3 space-y-2">
@@ -764,10 +774,12 @@ function CaptureForm({
           />
         )
       })}
+      <ConsentBoxes {...consent} idPrefix="embed-consent" compact />
       <div className="flex gap-2 pt-1">
         <button
           type="submit"
-          className="flex-1 rounded-md py-2 text-sm font-medium"
+          disabled={!consent.value.serviceDelivery}
+          className="flex-1 rounded-md py-2 text-sm font-medium disabled:opacity-50"
           style={{ background: colorBg, color: colorFg }}
         >
           Continue

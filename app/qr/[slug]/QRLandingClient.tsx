@@ -1,6 +1,9 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+// C15 (wave 148, lane 148B): the ONE consent component + the situation fields every intake form carries (ruling 12).
+import { ConsentBoxes, useConsentBoxes } from '@/app/components/forms/ConsentBoxes'
+import { EMPTY_SITUATION, SituationFields, situationPayload, type SituationValue } from '@/app/components/forms/SituationFields'
 
 interface Props {
   slug: string
@@ -18,6 +21,8 @@ interface Props {
    * the destination.
    */
   continueTo?: { href: string; label: string; external: boolean } | null
+  /** The name the consent names — THE one brand rule, resolved by the page exactly as /api/qr/submit re-renders it. */
+  consentBrandName?: string
 }
 
 interface FormState {
@@ -25,7 +30,6 @@ interface FormState {
   last_name: string
   email: string
   phone: string
-  tcpa_checked: boolean
 }
 
 // MOBILE CONTRACT (wave 141F — "no broken mobile route": the landing renders and
@@ -60,32 +64,31 @@ export default function QRLandingClient({
   agentPhoto,
   listingAddress,
   continueTo = null,
+  consentBrandName,
 }: Props) {
+  const consent = useConsentBoxes('qr_landing', consentBrandName ?? agentName ?? 'our brokerage')
+  const [situation, setSituation] = useState<SituationValue>(EMPTY_SITUATION)
   const [form, setForm] = useState<FormState>({
     first_name: '',
     last_name: '',
     email: '',
     phone: '',
-    tcpa_checked: false,
   })
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const { name, value, type, checked } = e.target
-    setForm((prev) => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : value,
-    }))
+    const { name, value } = e.target
+    setForm((prev) => ({ ...prev, [name]: value }))
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
 
-    if (!form.tcpa_checked) {
-      setError('You must agree to the consent statement to continue.')
+    if (!consent.serviceGiven) {
+      setError('Please tick the first consent box (the service follow-up) so we can follow up on your request.')
       return
     }
     if (!form.first_name.trim() || !form.last_name.trim()) {
@@ -109,7 +112,8 @@ export default function QRLandingClient({
             last_name: form.last_name.trim(),
             email: form.email.trim() || undefined,
             phone: form.phone.trim() || undefined,
-            tcpa_checked: form.tcpa_checked,
+            consent: consent.submission,
+            situation: situationPayload(situation),
           }),
         })
         const json = (await res.json()) as { success: boolean; error?: string }
@@ -259,23 +263,10 @@ export default function QRLandingClient({
             />
           </div>
 
-          {/* TCPA */}
-          <div className="flex items-start gap-3 rounded-md border border-border bg-muted/30 p-3">
-            <input
-              id="tcpa_checked"
-              name="tcpa_checked"
-              type="checkbox"
-              checked={form.tcpa_checked}
-              onChange={handleChange}
-              className="mt-0.5 h-5 w-5 shrink-0 rounded border-border accent-primary cursor-pointer"
-              required
-            />
-            <label htmlFor="tcpa_checked" className="text-xs text-muted-foreground leading-relaxed cursor-pointer">
-              By submitting this form, I consent to receive calls, texts, and emails from this agent
-              and their brokerage regarding real estate services. I understand I may opt out at any time.
-              Message and data rates may apply.
-            </label>
-          </div>
+          <SituationFields value={situation} onChange={setSituation} idPrefix="qr-situation" />
+
+          {/* C15 — the ONE consent component (service delivery required; marketing optional, per channel). */}
+          <ConsentBoxes {...consent.boxProps} idPrefix="qr-consent" className="rounded-md border border-border bg-muted/30 p-3" />
 
           {error && (
             <p role="alert" className="text-sm text-destructive">

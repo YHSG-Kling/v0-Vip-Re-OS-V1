@@ -9,11 +9,29 @@ export interface DetectOptOutResult {
   confidence: "high" | "medium"
 }
 
+/**
+ * THE REVOCATION WORDS — ONE vocabulary (CLAUDE.md §6; wave 148, lane 148B — C16). A reply that IS one of these (trailing
+ * punctuation and "please" tolerated) revokes consent on every channel. The list is the carrier keyword set (STOP, STOPALL,
+ * UNSUBSCRIBE, CANCEL, END, QUIT) plus the words the FCC's 2024 TCPA revocation order (FCC 24-24, 47 CFR §64.1200 — the rule
+ * this repo's law registry cites) names as a per-se reasonable revocation: "revoke" and "opt out". app/api/sms/inbound-optout
+ * used to keep its OWN regex (without revoke / opt out) — it now reads this one. So do the two other copies found by the
+ * orphan census (each merged ONTO this list first, then retired with a tombstone): the communication spine's inbound STOP
+ * (lib/communication-spine/ingest-message-service.ts — brought "remove") and the AI ISA's HARD_STOP (lib/kernel/ai-isa.ts —
+ * brought "remove me"). Neither knew "revoke", so an FCC revocation sent through either door was not honoured.
+ */
+export const REVOCATION_KEYWORDS = ["stop", "stopall", "stop all", "unsubscribe", "cancel", "end", "quit", "optout", "opt out", "opt-out", "revoke", "remove", "remove me"] as const
+
+/** PURE — is this whole message a revocation keyword? (the carrier / FCC single-word reply). */
+export function isRevocationKeyword(text: string | null | undefined): boolean {
+  const t = String(text ?? "").toLowerCase().replace(/[.!?,;:]+$/g, "").replace(/^please\s+|\s+please$/g, "").replace(/\s+/g, " ").trim()
+  return (REVOCATION_KEYWORDS as readonly string[]).includes(t)
+}
+
 export function detectOptOutIntent(text: string): DetectOptOutResult {
   const lower = text.toLowerCase().trim()
 
-  // TCPA-standard single-word commands — highest confidence
-  if (/^(stop|stopall|unsubscribe|cancel|end|quit|optout)$/i.test(lower)) {
+  // TCPA-standard single-word commands + the FCC revocation words — highest confidence (the ONE list above)
+  if (isRevocationKeyword(lower)) {
     return { isOptOut: true, channel: "all", confidence: "high" }
   }
 

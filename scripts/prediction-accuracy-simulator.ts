@@ -561,7 +561,8 @@ async function main() {
     /LEAD_ASSIGNED,\s*\n\s*brokerage_id: brokerageId,\s*\n\s*metadata: \{ assignment:/.test(leadHandlersSrc))
   const captureSrc = readFileSync(join(ROOT, "lib/contact-pipeline/contact-capture.ts"), "utf8")
   check("Track-B capture stamps the matched rule on CONTACT_CAPTURED (attribution starts now — never retro-fabricated)",
-    captureSrc.includes("createAttribution = { method: createAssignment.method, rule_id: createAssignment.ruleId ?? null }")
+    // wave 148 (lane 148B): the attribution also carries the creating user (ruling 12) — the rule-id stamp is unchanged.
+    captureSrc.includes("createAttribution = { method: createAssignment.method, rule_id: createAssignment.ruleId ?? null")
     && captureSrc.includes("{ assignment: createAttribution }"))
   const crossSrc = readFileSync(join(ROOT, "lib/managers/cross-referral.ts"), "utf8")
   const registrySrc = readFileSync(join(ROOT, "lib/kernel/manager-registry.ts"), "utf8")

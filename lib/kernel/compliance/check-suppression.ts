@@ -4,10 +4,19 @@
  * Called before EVERY email or SMS send. Checks:
  *   1. contacts.email_unsubscribed / sms_unsubscribed flags
  *   2. contacts.email_opt_out / sms_opt_out flags (legacy columns)
- *   3. contacts.dnc_status for phone
+ *   3. contacts.dnc_status for phone AND sms (wave 148: a text is a "call" under the TCPA — the FCC applies the National
+ *      DNC protections to texts — so a DNC'd number is not texted either)
  *   4. contact_suppression_list rows by contact_id, email, or phone
+ *   5. platform_suppression_list (wave 148 — the cross-tenant list lib/platform/suppression-list.ts documents as read "before
+ *      any outbound channel attempt"; this gate never read it, so a spam-complaint / litigator / federal-DNC entry still sent)
  *
- * Returns { blocked: boolean, reason?: string }
+ * CONTRACT C16 (wave 148, lane 148B): THIS is the one suppression READ every sender rides (lib/providers/dispatch.ts email /
+ * SMS / direct mail, the outbound call gates, the campaign scheduler's dispatch, the arbiter's and responder's sends through
+ * dispatch) and `addSuppression` below is the one WRITE every revocation lands in (SMS STOP / revocation words, the email
+ * unsubscribe link + one-click List-Unsubscribe, portal preferences, DNC). A STOP at T0 refuses every channel's send at T0+1:
+ * the flags and the list row are written before the STOP is acknowledged, and every send reads them before it spends.
+ *
+ * Returns { suppressed: boolean, reason?: string }
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
@@ -39,15 +48,38 @@ export interface CheckSuppressionParams {
   mailingZip?: string | null
 }
 
+/** The client every read / write rides — the service client by default; an in-memory client in a proof (wave 148). */
+type SuppressionClient = { from: (table: string) => any }
+
+/**
+ * PURE — the stored spellings a phone may sit under in contact_suppression_list.phone (a free-text column: a STOP writes the
+ * carrier's E.164 "+15551234567", an unsubscribe page or a contact row writes "(555) 123-4567"). Asked as an `.in()` set so a
+ * number-only send matches a row written in another format (the defect: `phone.eq.<raw>` matched only the identical string).
+ */
+function suppressionPhoneVariants(phone: string | null | undefined): string[] {
+  const raw = String(phone ?? '').trim()
+  if (!raw) return []
+  const digits = raw.replace(/\D/g, '')
+  const ten = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits
+  const out = new Set<string>([raw])
+  if (ten.length === 10) {
+    out.add(ten); out.add(`1${ten}`); out.add(`+1${ten}`)
+    out.add(`(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}`)
+    out.add(`${ten.slice(0, 3)}-${ten.slice(3, 6)}-${ten.slice(6)}`)
+  }
+  return [...out]
+}
+
 export interface SuppressionResult {
   suppressed: boolean
   reason?: string
 }
 
 export async function checkSuppression(
-  params: CheckSuppressionParams
+  params: CheckSuppressionParams,
+  opts: { client?: SuppressionClient } = {},
 ): Promise<SuppressionResult> {
-  const supabase = createServiceClient()
+  const supabase: any = opts.client ?? createServiceClient()
 
   // ── 1. Check contact flags ────────────────────────────────────────────────
   if (params.contactId) {
@@ -82,6 +114,10 @@ export async function checkSuppression(
         if (contact.sms_unsubscribed || contact.sms_opt_out) {
           return { suppressed: true, reason: 'Contact has opted out of SMS' }
         }
+        // A text is a call under the TCPA (the FCC applies the National DNC protections to texts): a DNC'd number is not texted.
+        if (contact.dnc_status) {
+          return { suppressed: true, reason: 'Contact is on DNC — no calls or texts' }
+        }
       }
       if (params.channel === 'phone') {
         // `phone_opt_out` added: it is the column lib/lead-intent/lead-opt-out.ts
@@ -106,52 +142,74 @@ export async function checkSuppression(
   }
 
   // ── 2. Check contact_suppression_list ────────────────────────────────────
+  // Wave 148: ONE READ PER IDENTITY instead of one `.or("contact_id.eq.<id>,email.eq.<raw>,phone.eq.<raw>")` string — a raw
+  // phone like "(555) 123-4567" carries the or-grammar's own delimiters and broke the filter, and `phone.eq.<raw>` matched
+  // only the identical spelling (a STOP stored "+15551234567" never matched a send to "555-123-4567"). The phone is asked in
+  // every stored spelling, the email case-folded. Each read FAILS CLOSED exactly as the single read did.
   if (params.contactId || params.email || params.phone) {
-    let query = supabase
+    const base = () => supabase
       .from('contact_suppression_list')
       .select('id, suppression_reason')
       .eq('brokerage_id', params.brokerageId)
       .eq('channel', params.channel)
-
-    // OR across contactId / email / phone
-    const orClauses: string[] = []
-    if (params.contactId) orClauses.push(`contact_id.eq.${params.contactId}`)
-    if (params.email)     orClauses.push(`email.eq.${params.email}`)
-    if (params.phone)     orClauses.push(`phone.eq.${params.phone}`)
-
-    if (orClauses.length > 0) {
-      query = query.or(orClauses.join(','))
+    const reads: Array<{ what: string; q: any }> = []
+    if (params.contactId) reads.push({ what: 'contact', q: base().eq('contact_id', params.contactId) })
+    if (params.email) {
+      const e = String(params.email).trim()
+      reads.push({ what: 'email', q: base().in('email', [...new Set([e, e.toLowerCase()])]) })
     }
+    const phones = suppressionPhoneVariants(params.phone)
+    if (phones.length) reads.push({ what: 'phone', q: base().in('phone', phones) })
 
-    const { data: suppressionRows, error: suppressionError } = await query.limit(1)
+    for (const r of reads) {
+      const { data: suppressionRows, error: suppressionError } = await r.q.limit(1)
 
-    // FAIL CLOSED. This read used to be `const { data } = await query` — the
-    // error was never destructured, so a REFUSED query produced null rows and
-    // fell through to `{ suppressed: false }`. A suppression check that cannot
-    // read the suppression list must not report "not suppressed"; that is the
-    // one answer it is certain it does not have.
-    //
-    // This was reachable, not theoretical. brokerage_id is a uuid column, and
-    // callers reached this with brokerageId = "" (app/actions/external-services
-    // resolveBrokerageId returned "" on every failure path). `.eq('brokerage_id','')`
-    // is 22P02 `invalid input syntax for type uuid` — so the query errored, the
-    // error was swallowed, and the send proceeded. The contact-flag gate above
-    // still caught flag-based opt-outs, but this is the gate dispatch documents
-    // as the one that catches LIST-ONLY entries the flag gate misses, so a
-    // recipient on the suppression list and nowhere else was sent to.
-    if (suppressionError) {
-      console.error("[checkSuppression] suppression list read refused:", suppressionError.message)
-      return {
-        suppressed: true,
-        reason: `Suppression list unreadable — refusing to send (${suppressionError.message})`,
+      // FAIL CLOSED. This read used to be `const { data } = await query` — the
+      // error was never destructured, so a REFUSED query produced null rows and
+      // fell through to `{ suppressed: false }`. A suppression check that cannot
+      // read the suppression list must not report "not suppressed"; that is the
+      // one answer it is certain it does not have.
+      //
+      // This was reachable, not theoretical. brokerage_id is a uuid column, and
+      // callers reached this with brokerageId = "" (app/actions/external-services
+      // resolveBrokerageId returned "" on every failure path). `.eq('brokerage_id','')`
+      // is 22P02 `invalid input syntax for type uuid` — so the query errored, the
+      // error was swallowed, and the send proceeded.
+      if (suppressionError) {
+        console.error(`[checkSuppression] suppression list read (${r.what}) refused:`, suppressionError.message)
+        return {
+          suppressed: true,
+          reason: `Suppression list unreadable — refusing to send (${suppressionError.message})`,
+        }
+      }
+
+      if (suppressionRows && suppressionRows.length > 0) {
+        return {
+          suppressed: true,
+          reason: `Suppressed: ${suppressionRows[0].suppression_reason}`,
+        }
       }
     }
+  }
 
-    if (suppressionRows && suppressionRows.length > 0) {
-      return {
-        suppressed: true,
-        reason: `Suppressed: ${suppressionRows[0].suppression_reason}`,
+  // ── 2b. THE PLATFORM LIST (wave 148, C16) — cross-tenant hard suppression (spam complaint, litigator, federal DNC,
+  //    explicit opt-out the ISA escalated). lib/platform/suppression-list.ts documents "Reads happen before any outbound
+  //    channel attempt"; until now only the distribution engine and the predictive auto-send read it. Phone is keyed by its
+  //    last 10 digits, email lower-cased (that module's own normalisation). FAIL CLOSED like every arm above.
+  if (params.channel !== 'mail' && (params.email || params.phone)) {
+    const digits = String(params.phone ?? '').replace(/\D/g, '')
+    const ten = digits.length >= 10 ? digits.slice(-10) : null
+    const email = params.email ? String(params.email).trim().toLowerCase() : null
+    const platformReads: Array<{ what: string; q: any }> = []
+    if (email && params.channel === 'email') platformReads.push({ what: 'email', q: supabase.from('platform_suppression_list').select('id, reason').eq('email', email) })
+    if (ten && (params.channel === 'sms' || params.channel === 'phone')) platformReads.push({ what: 'phone', q: supabase.from('platform_suppression_list').select('id, reason').eq('phone_digits', ten) })
+    for (const r of platformReads) {
+      const { data: rows, error } = await r.q.limit(1)
+      if (error) {
+        console.error(`[checkSuppression] platform suppression list read (${r.what}) refused:`, error.message)
+        return { suppressed: true, reason: `Platform suppression list unreadable — refusing to send (${error.message})` }
       }
+      if (rows && rows.length > 0) return { suppressed: true, reason: `Platform-suppressed: ${rows[0].reason}` }
     }
   }
 
@@ -282,8 +340,14 @@ export async function addSuppression(params: {
   channel: SuppressionChannel
   reason: string
   source: string   // 'email_footer' | 'sms_stop' | 'manual' | 'admin'
-}): Promise<AddSuppressionResult> {
-  const supabase = createServiceClient()
+}, opts: {
+  /** Wave 148: the client the three writes ride (the caller's service client; an in-memory client in a proof). */
+  client?: SuppressionClient
+  /** Wave 148: false when the caller ALREADY wrote the contact's opt-out flags in the same act (lib/ai-isa/opt-out-writer.ts
+   *  writeOptOut) — only the list row and the ledger row are written here. Default true (unchanged). */
+  writeContactFlags?: boolean
+} = {}): Promise<AddSuppressionResult> {
+  const supabase: any = opts.client ?? createServiceClient()
   const now = new Date().toISOString()
   const errors: string[] = []
 
@@ -312,7 +376,7 @@ export async function addSuppression(params: {
 
   // ── WRITE 2 — the contact's own opt-out flags.
   let contactFlagsUpdated: boolean | null = null
-  if (params.contactId) {
+  if (params.contactId && opts.writeContactFlags !== false) {
     const updates: Record<string, unknown> = { updated_at: now }
     if (params.channel === 'email') {
       updates.email_unsubscribed    = true

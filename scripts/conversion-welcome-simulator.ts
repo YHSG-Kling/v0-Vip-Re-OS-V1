@@ -910,7 +910,9 @@ function layer9_formsAndOpenHouse() {
   // capture command); the declared persona moved with it. The survivor is asserted, the route is asserted to use it.
   const formsRoute = src("app/api/forms/submit/route.ts"), formsKernel = src("lib/kernel/lead-magnets.ts")
   check("captureFormSubmission (lib/kernel/lead-magnets.ts — the survivor of /api/forms/submit's capture) reads an admin-declared default_contact_type\n    from lead_capture_forms.settings and applies it to the new contact, instead\n    of guessing one; the route captures through it",
-    /default_contact_type/.test(formsKernel) && /newRow\.contact_type = resolvedContactType/.test(formsKernel) && /captureFormSubmission\(/.test(formsRoute))
+    // wave 148 (lane 148B): the kernel's own contacts insert became THE one door's (captureConsentedContact); the resolved type
+    // rides its params — RULE re-asserted on either spelling, never a guess.
+    /default_contact_type/.test(formsKernel) && (/newRow\.contact_type = resolvedContactType/.test(formsKernel) || /contact_type: resolvedContactType/.test(formsKernel)) && /captureFormSubmission\(/.test(formsRoute))
 
   // ── OPEN HOUSE: ALL THREE READERS/CALLERS REACH THE ONE WELCOME PATH ──────
   const attendedStart = reactor.indexOf("if (params.event === KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED)")

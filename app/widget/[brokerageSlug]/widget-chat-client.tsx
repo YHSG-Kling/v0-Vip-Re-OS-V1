@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
+// C15 (wave 148, lane 148B): the ONE consent component — this widget no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes } from '@/app/components/forms/ConsentBoxes'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,7 +23,6 @@ interface CaptureFormData {
   /** THE SEPARATE EMAIL-CONSENT BOX (wave 104, lane 104E; owner answer 1, 2026-10-05). Sent as
    *  `email_consent` ONLY from a ticked box — the server refuses an email without it (fail closed).
    *  The phone rule ("phone provided = TCPA consent") is unchanged. */
-  emailConsent: boolean
 }
 
 type CaptureState = 'none' | 'prompted' | 'captured'
@@ -52,7 +53,8 @@ export function WidgetChatClient({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [captureState, setCaptureState] = useState<CaptureState>('none')
-  const [captureForm, setCaptureForm] = useState<CaptureFormData>({ name: '', email: '', phone: '', emailConsent: false })
+  const [captureForm, setCaptureForm] = useState<CaptureFormData>({ name: '', email: '', phone: '' })
+  const widgetConsent = useConsentBoxes('chat_widget', config.brokerageName)
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [captureLoading, setCaptureLoading] = useState(false)
   const [input, setInput] = useState('')
@@ -169,8 +171,8 @@ export function WidgetChatClient({
       setCaptureError('Name and email are required.')
       return
     }
-    if (!captureForm.emailConsent) {
-      setCaptureError('Please tick the box to let us email you.')
+    if (!widgetConsent.serviceGiven) {
+      setCaptureError('Please tick the first consent box (the service follow-up) so we can follow up.')
       return
     }
     if (!sessionToken) {
@@ -195,8 +197,9 @@ export function WidgetChatClient({
             : null,
           email: captureForm.email.trim(),
           phone: captureForm.phone.trim() || null,
-          tcpa_consent: !!captureForm.phone.trim(), // phone provided = TCPA consent
-          email_consent: captureForm.emailConsent === true, // the separate email box (104E) — never defaulted
+          // C15 (wave 148): the ONE consent component's boxes — the server re-renders the wording. TOMBSTONE: "phone provided
+          // = TCPA consent" and the single email box stood here; a phone is consented only by a ticked box now.
+          consent: widgetConsent.submission,
           // The tracking cookie /api/track/visitor opened on widget open (wave 103, lane 103D):
           // with it the consented email lands on the visitor's behavioral signal too. Read only,
           // never minted here — a visitor with no cookie sends none.
@@ -323,15 +326,7 @@ export function WidgetChatClient({
               onChange={e => setCaptureForm(p => ({ ...p, phone: e.target.value }))}
               aria-label="Phone number"
             />
-            <label className="widget-capture-consent">
-              <input
-                type="checkbox"
-                checked={captureForm.emailConsent}
-                onChange={e => setCaptureForm(p => ({ ...p, emailConsent: e.target.checked }))}
-                aria-label="I agree to be contacted by email"
-              />
-              <span>I agree to receive emails about my real estate needs. Adding a phone number means you also agree to calls or texts.</span>
-            </label>
+            <ConsentBoxes {...widgetConsent.boxProps} idPrefix="widget-consent" compact />
             {captureError && (
               <p className="widget-capture-error" role="alert">{captureError}</p>
             )}

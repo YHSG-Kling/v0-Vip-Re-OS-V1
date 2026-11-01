@@ -282,8 +282,10 @@ console.log("\n── both captures go through the one enroller ──")
   // tool captured consent — TCPA provenance, not the campaign key. Only
   // contacts.source is canonicalised.
   check("the 'home_value_tool' spelling survives ONLY as consent provenance",
+    // wave 148 (lane 148B): the door rides C8, whose consent provenance is `intake.consentSource` — the literal survives
+    // there (tcpa_consent_source + the consent row's consent_source), never as contacts.source.
     !/\bsource: "home_value_tool"/.test(hv) &&
-    /tcpa_consent_source: tcpaConsent \? "home_value_tool"/.test(hv))
+    (/tcpa_consent_source: tcpaConsent \? "home_value_tool"/.test(hv) || /consentSource: "home_value_tool"/.test(hv)))
 
   const lm = src("lib/kernel/lead-magnets.ts")
   check("lead-magnet calls autoEnrollContact", /autoEnrollContact\(supabase, \{/.test(lm))

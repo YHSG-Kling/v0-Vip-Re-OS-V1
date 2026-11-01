@@ -23,7 +23,7 @@
 //
 // The signature-verified path that actually carries real inbound opt-outs today
 // is app/api/providers/inbound/route.ts (bound as SmsUrl at
-// lib/voice/twilio-voice.ts:151) → lib/ai-isa/opt-out-utils.ts:12
+// lib/voice/twilio-voice.ts:151) → lib/ai-isa/opt-out-utils.ts:30 (detectOptOutIntent)
 // → app/actions/ai-isa/process-opt-out.ts. Prefer it for anything new.
 //
 // ── OWNER RULING (2026-08-24), verbatim ─────────────────────────────────────

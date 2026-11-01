@@ -2,11 +2,10 @@
  * lib/ads/ad-lead-intake.ts
  *
  * Wave 41 — paid-ad LEAD-FORM intake. A Meta/Google lead-ad form submission is
- * itself an explicit opt-in: the prospect filled in their details and agreed to
- * be contacted. So an ad-form lead becomes a CONSENTED CONTACT (tcpa_consent=true
- * + a consent_event audit row), NOT an unconsented `leads` row. That consent is
- * exactly what unlocks downstream avatar-video follow-up and ad-audience
- * membership (which require a consented contact, per m165).
+ * an identifiable person asking to hear back, so it lands on the canonical
+ * CONTACT (C8), never an unconsented `leads` row. Wave 148: the TCPA consent is
+ * recorded ONLY with the platform's own disclosure wording (consentText) — the
+ * submission alone is not a phone consent anyone can show (ruling 3).
  *
  * Idempotent on (brokerage_id, email|phone). Not server-only — never import from
  * a client component.
@@ -56,107 +55,51 @@ export async function ingestConsentedAdLead(
   if (!input.brokerageId) return { ok: false, reason: "missing brokerageId" }
   if (!input.email && !input.phone) return { ok: false, reason: "need an email or phone" }
 
-  const nowIso = new Date().toISOString()
-  const consentText = input.consentText
-    ?? `Submitted a ${input.platform ?? "paid-ad"} lead form${input.formId ? ` (${input.formId})` : ""} agreeing to be contacted.`
+  // ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147A / 147Z Still open 1 — the "DUPLICATED upsert half").
+  // TOMBSTONE (orphan doctrine §1.1): the email-then-phone lookup (errors unread), the consent-column UPDATE / contacts
+  // INSERT, the enrichment queue call and the separate record-half call that stood here were a SECOND upsert of a consented
+  // person. Merged onto THE one survivor — lib/contact-pipeline/contact-capture.ts captureConsentedContact (C8) →
+  // captureContact — riding THIS intake's injected client (the webhook's / reconciler's service client). Preserved: the
+  // tenant is the page credential's (the caller resolved it), contact_type 'lead', source `ad_lead_form:<platform>`, the
+  // agent hint, idempotency per provider submission (Meta leadgen id → C8's key, so a webhook retry records nothing twice),
+  // the consent IP, enrichment, the welcome, the AI ISA desk.
+  //
+  // CONSENT IS NEVER FABRICATED (wave 148 — owner ruling 3). TOMBSTONE: with no platform disclosure captured, this door
+  // stamped tcpa_consent = true with a sentence it WROTE ITSELF ("Submitted a … lead form agreeing to be contacted") — a
+  // TCPA consent whose wording nobody saw. A phone / email consent is now recorded only with the platform's OWN disclosure
+  // text (`consentText`, the form's legal content). Without it the person still lands on the canonical contact (they are
+  // identifiable and asked to hear back), but no consent is claimed — fail closed, the same reading lane 147A gave the embed.
+  // Owner review: fetching the form's legal_content through the Meta adapter (lane-147A Still open 4) is what re-arms texting.
+  const disclosure = (input.consentText ?? "").trim() || null
+  const consents = disclosure
+    ? [
+        ...(input.phone ? [{ family: "phone" as const, given: true, text: disclosure, textVersion: `ad_form:${input.platform ?? "paid_ad"}`, purposes: ["requested_information" as const] }] : []),
+        ...(input.email ? [{ family: "email" as const, given: true, text: disclosure, textVersion: `ad_form:${input.platform ?? "paid_ad"}`, purposes: ["requested_information" as const] }] : []),
+      ]
+    : [{ family: (input.phone ? "phone" : "email") as "phone" | "email", given: false, text: null, textVersion: "ad_form:platform_disclosure_not_captured" }]
 
-  // De-dupe within the brokerage: email first, then phone.
-  let existingId: string | null = null
-  if (input.email) {
-    const { data } = await supabase.from("contacts").select("id").eq("brokerage_id", input.brokerageId).eq("email", input.email).maybeSingle()
-    existingId = (data as { id: string } | null)?.id ?? null
-  }
-  if (!existingId && input.phone) {
-    const { data } = await supabase.from("contacts").select("id").eq("brokerage_id", input.brokerageId).eq("phone", input.phone).maybeSingle()
-    existingId = (data as { id: string } | null)?.id ?? null
-  }
-
-  const consentCols = {
-    tcpa_consent:        true,
-    tcpa_consent_at:     nowIso,
-    tcpa_consent_date:   nowIso,
-    tcpa_consent_text:   consentText,
-    tcpa_consent_source: "ad_lead_form",
-    tcpa_consent_ip:     input.ip ?? null,
-  }
-
-  let contactId: string
-  let created = false
-  if (existingId) {
-    // Upgrade an existing contact to consented (the form is fresh opt-in).
-    // The CREATE branch below already refuses on `error`; this branch dropped it,
-    // so a refused consent stamp returned ok:true with a contactId and the caller
-    // proceeded as though TCPA consent were on file. Same refusal, same answer.
-    // Tenant-anchored (wave 147): the contact was found WITHIN this brokerage, so the write is pinned to it too.
-    const { error: consentError } = await supabase.from("contacts").update(consentCols).eq("id", existingId).eq("brokerage_id", input.brokerageId)
-    if (consentError) return { ok: false, reason: consentError.message }
-    contactId = existingId
-  } else {
-    const { data, error } = await supabase.from("contacts").insert({
-      brokerage_id: input.brokerageId,
-      agent_id:     input.agentId ?? null,
-      first_name:   input.firstName?.trim() || "Ad Lead",
-      last_name:    input.lastName?.trim() || "",   // contacts.last_name is NOT NULL
-      email:        input.email ?? null,
-      phone:        input.phone ?? null,
-      contact_type: "lead",
-      source:       `ad_lead_form:${input.platform ?? "meta"}`,
-      lifecycle_state: "new",
-      ...consentCols,
-    }).select("id").single()
-    if (error || !data) return { ok: false, reason: error?.message ?? "insert failed" }
-    contactId = (data as { id: string }).id
-    created = true
-  }
-
-  // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). Only for a NEW
-  // contact — the `existingId` branch above is a consent upgrade on someone
-  // already in the book, not an arrival. This path emits no kernel contact
-  // event, so nothing else queued it. Best-effort: a paid-ad lead must land even if
-  // enrichment cannot be queued. Suppression lives in queueContactEnrichment.
-  // AWAITED since wave 147 (was voided) so the consented-intake record below can READ the queue as its evidence.
-  if (created) {
-    await import("@/lib/enrichment/contact-enrichment-core")
-      .then((m) =>
-        m.queueContactEnrichment({
-          contactId,
-          brokerageId: input.brokerageId,
-          triggerType: "ad_lead_form",
-          supabase,
-        }),
-      )
-      .catch(() => {})
-  }
-
-  // CONSENT RECORD — CONTRACT C8 (wave 147, lane 147A; owner ruling 1). TOMBSTONE: this used to be its own
-  // contact_consent_events insert (consent_type 'marketing' — a third spelling beside the consent writer's 'tcpa' / 'email',
-  // CLAUDE.md §6). It is now THE consented-intake record half (lib/contact-pipeline/contact-capture.ts completeConsentedIntake):
-  // the consent writer with the m889 scope (idempotent per Meta leadgen id when given), any same-person open lead in this tenant
-  // closed onto the contact, the contact_consented_intake event, and the AI ISA desk told. consent_source stays 'ad_lead_form'.
-  // The upsert above is still this module's own (the DUPLICATED half — lane-147A notes, Still open).
-  try {
-    const { completeConsentedIntake } = await import("@/lib/contact-pipeline/contact-capture")
-    const c8 = await completeConsentedIntake(supabase, {
-      brokerageId: input.brokerageId, contactId, action: created ? "created" : "merged", agentId: input.agentId ?? null,
-      email: input.email ?? null, phone: input.phone ?? null, source: "ad_lead_form",
-      consents: [{
-        family: input.phone ? "phone" : "email", given: true, text: consentText,
-        textVersion: input.consentText ? `ad_form:${input.platform ?? "paid_ad"}` : "ad_form:platform_disclosure_not_captured",
-        purposes: ["requested_information"],
-      }],
-      intake: {
-        channel: "ad_form",
-        evidence: { platform: input.platform ?? null, form_id: input.formId ?? null, submission_ref: input.submissionRef ?? null, ip: input.ip ?? null, user_agent: input.userAgent ?? null },
+  const { captureConsentedContact } = await import("@/lib/contact-pipeline/contact-capture")
+  const c8 = await captureConsentedContact({
+    brokerageId: input.brokerageId,
+    ownerAgentId: input.agentId ?? null,
+    source: `ad_lead_form:${input.platform ?? "meta"}`,
+    contact_type: "lead",
+    first_name: input.firstName?.trim() || null,
+    last_name: input.lastName?.trim() || null,
+    email: input.email?.trim().toLowerCase() || null,
+    phone: input.phone ?? null,
+    consents,
+    intake: {
+      channel: "ad_form",
+      evidence: {
+        platform: input.platform ?? null, form_id: input.formId ?? null, submission_ref: input.submissionRef ?? null,
+        ip: input.ip ?? null, user_agent: input.userAgent ?? null, platform_disclosure_captured: !!disclosure,
       },
-      idempotencyKey: input.submissionRef ? `ad:${input.platform ?? "paid_ad"}:${input.submissionRef}` : null,
-      stampPartyColumns: false,
-    })
-    for (const w of c8.warnings) console.warn(`[ad-lead-intake] consented intake: ${w}`)
-  } catch (err) {
-    console.error("[ad-lead-intake] consented-intake record half threw (the contact stands):", err instanceof Error ? err.message : String(err))
-  }
-
-  return { ok: true, contactId, created }
+    },
+  }, { client: supabase })
+  for (const w of c8.warnings) console.warn(`[ad-lead-intake] consented intake: ${w}`)
+  if (!c8.ok || !c8.contactId) return { ok: false, reason: c8.reason ?? c8.refused ?? "capture failed" }
+  return { ok: true, contactId: c8.contactId, created: c8.action === "created" && !c8.replay }
 }
 
 // ── Meta leadgen-by-reference (ONE path for the webhook AND the reconciler) ──

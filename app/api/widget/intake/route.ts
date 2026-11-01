@@ -59,6 +59,8 @@ export async function POST(req: NextRequest) {
       // Consent
       tcpa_consent,
       tcpa_consent_text,
+      // C15 (wave 148, lane 148B): the ONE consent component's submission — re-rendered here, never the body's words.
+      consent,
       ip_address,
       user_agent,
     } = body
@@ -110,9 +112,22 @@ export async function POST(req: NextRequest) {
     // (app/widget/chat/widget-chat-client.tsx — "By submitting, you agree …"); a body-supplied text is ignored (a forged text
     // would put words in a person's mouth). Submitting IS the act of consent on this form (no checkbox), so `tcpa_consent`
     // from the client is read as the submit; an email / phone the visitor did not give grants nothing for that family.
-    const consentGiven = tcpa_consent === true
     void tcpa_consent_text // the client's copy of the wording is not trusted (above)
-    const { captureConsentedContact } = await import('@/lib/contact-pipeline/contact-capture')
+    const { captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } = await import('@/lib/contact-pipeline/contact-capture')
+    // C15 (wave 148): the widget renders the ONE consent component; its boxes are the consent record (THE one brand rule —
+    // the session's brokerage). A cached pre-148 widget keeps the submit-is-consent reading of its own printed wording.
+    const intakeBrand = await resolveConsentBrand(supabase, { agentId: null, brokerageId: brokerage_id })
+    const intakeC15 = consentGrantsFromComponent(consent, { door: 'chat_widget', brandName: intakeBrand, provided: { email: !!email, phone: !!phoneDigits } })
+    if (consent && !intakeC15.submission?.service_delivery) {
+      return NextResponse.json({ error: 'Please tick the first consent box (the service follow-up) so we can follow up.' }, { status: 400 })
+    }
+    const intakeConsents = intakeC15.submission
+      ? intakeC15.grants
+      : [
+          { family: 'phone' as const, given: tcpa_consent === true && !!phoneDigits, text: WIDGET_INTAKE_CONSENT_TEXT, textVersion: WIDGET_INTAKE_CONSENT_VERSION },
+          { family: 'email' as const, given: tcpa_consent === true && !!email, text: WIDGET_INTAKE_CONSENT_TEXT, textVersion: WIDGET_INTAKE_CONSENT_VERSION },
+        ]
+    const consentGiven = intakeConsents.some((g) => g.given)
     const intake = await captureConsentedContact({
       brokerageId: brokerage_id,
       ownerAgentId: agent_id,
@@ -124,13 +139,10 @@ export async function POST(req: NextRequest) {
       notes: message ?? null,
       preferred_channel: consentGiven && phoneDigits ? 'phone' : 'email',
       rawPayload: { session_token, source_page_url: source_page_url ?? null, utm_source: utm_source ?? null, utm_medium: utm_medium ?? null, utm_campaign: utm_campaign ?? null },
-      consents: [
-        { family: 'phone', given: consentGiven && !!phoneDigits, text: WIDGET_INTAKE_CONSENT_TEXT, textVersion: WIDGET_INTAKE_CONSENT_VERSION },
-        { family: 'email', given: consentGiven && !!email, text: WIDGET_INTAKE_CONSENT_TEXT, textVersion: WIDGET_INTAKE_CONSENT_VERSION },
-      ],
+      consents: intakeConsents,
       intake: {
         channel: 'chat_widget', sourceUrl: source_page_url ?? '/api/widget/intake',
-        evidence: { chat_session_id: session.id, ip: ip_address ?? req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, user_agent: user_agent ?? req.headers.get('user-agent') ?? null, door: 'widget_intake' },
+        evidence: { ...intakeC15.evidence, ...(intakeC15.wordingHash ? { wording_hash: intakeC15.wordingHash } : {}), chat_session_id: session.id, ip: ip_address ?? req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, user_agent: user_agent ?? req.headers.get('user-agent') ?? null, door: 'widget_intake' },
         formOwner: { table: 'chat_sessions', id: session.id },
       },
     })

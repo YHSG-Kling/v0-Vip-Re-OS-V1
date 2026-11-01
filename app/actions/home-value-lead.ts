@@ -10,7 +10,7 @@
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { captureConsentedContact } from "@/lib/contact-pipeline/contact-capture"
+import { captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } from "@/lib/contact-pipeline/contact-capture"
 
 export interface HomeValueLeadInput {
   agentId: string
@@ -19,7 +19,10 @@ export interface HomeValueLeadInput {
   fullName: string
   email: string
   phone?: string
-  consentToContact: boolean   // TCPA consent — required to enable phone/SMS outreach
+  /** @deprecated pre-148 clients — the bare box. Superseded by `consent` (C15). */
+  consentToContact?: boolean
+  /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). The wording is re-rendered here, never the body's. */
+  consent?: unknown
   property: {
     address: string
     city: string
@@ -34,7 +37,7 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
   contactId?: string
   error?: string
 }> {
-  if (!input.consentToContact) {
+  if (!input.consent && !input.consentToContact) {
     return { success: false, error: "Consent to contact is required" }
   }
   if (!input.email && !input.phone) {
@@ -74,8 +77,13 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     // contract against agents. The wording is the page's own label (app/home-value/[agentSlug]/home-value-client.tsx); it refers
     // to "the contact methods I provided", so the channels ARE the methods provided.
     const providedChannels = [...(input.phone ? (["voice", "sms"] as const) : []), ...(input.email ? (["email"] as const) : [])]
+    // C15 (wave 148, lane 148B): the ONE consent component's boxes, worded with THE one brand rule (this agent — the page renders
+    // the same name). A cached pre-148 page sends the bare box; it keeps its legacy (template) record, never upgraded.
+    const hvBrand = await resolveConsentBrand(svc, { agentId: input.agentId, brokerageId: input.brokerageId })
+    const hvC15 = consentGrantsFromComponent(input.consent, { door: "home_value", brandName: hvBrand, provided: { email: !!input.email, phone: !!input.phone, address: !!input.property.address } })
+    if (hvC15.submission && !hvC15.submission.service_delivery) return { success: false, error: "Please tick the first consent box (the service follow-up) so we can send your home value." }
     const result = await captureConsentedContact({
-      consents: [{
+      consents: hvC15.submission ? hvC15.grants : [{
         family: input.phone ? "phone" : "email",
         given: input.consentToContact === true,
         // The label's TEMPLATE (the page fills {agentName}; the agent is on the evidence) — one hash per wording version.
@@ -84,9 +92,10 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
         purposes: ["home_valuation", "requested_information"],
         channels: providedChannels,
       }],
+      creatorUserId: input.agentUserId,
       intake: {
         channel: "web_form", sourceUrl: "/home-value",
-        evidence: { agent_id: input.agentId, property_address: input.property.address ?? null },
+        evidence: { ...hvC15.evidence, ...(hvC15.wordingHash ? { wording_hash: hvC15.wordingHash } : {}), agent_id: input.agentId, property_address: input.property.address ?? null },
         formOwner: { table: "agents", id: input.agentId },
       },
       brokerageId: input.brokerageId,

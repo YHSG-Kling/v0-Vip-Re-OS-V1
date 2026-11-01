@@ -811,7 +811,18 @@ async function main() {
     if (staleNames.length) console.log(`  · stale PAIR_NOT_MERGED entries (merged since; delete them): ${staleNames.join(", ")}`)
     check("POSITIVE CONTROL: the pair finder sees the pre-101C shape", pairsIn(`await emitKernelEvent({ event: KernelEvent.OFFER_AI_EXTRACTED, brokerageId, entityType: "offer", entityId: id, auditOnly: true })\nawait processKernelEvent({ event: KernelEvent.OFFER_AI_EXTRACTED, brokerageId, entityType: "offer", entityId: id })`).length === 1)
     check("CONTROL: the merged shape (one emit, no auditOnly) is not a pair", pairsIn(`await emitKernelEvent({ event: KernelEvent.OFFER_AI_EXTRACTED, brokerageId, entityType: "offer", entityId: id, agentUserId: null })`).length === 0)
-    for (const [rel, ev] of [["lib/offers/offer-extractor.ts", "OFFER_AI_EXTRACTED"], ["app/actions/seller-open-house.ts", "CONTACT_CREATED"], ["app/actions/video-voice.ts", "VOICE_CLONE_PROFILE_CREATED"], ["app/actions/business-card/business-card-actions.ts", "BUSINESS_CARD_APPROVED"]] as const) {
+    // WAVE 148 (lane 148B — owner ruling 4): app/actions/seller-open-house.ts no longer emits its own CONTACT_CREATED — the
+    // post-event conversion rides THE one door (captureContact), whose CREATE fans out CONTACT_CAPTURED through
+    // processKernelEvent (one fan-out, never audit-only). The RULE this row held ("the creation fans out, not an audit-only
+    // row") is re-asserted on the survivor just below, instead of on a waypoint the merge retired.
+    {
+      const soh = stripComments(read("app/actions/seller-open-house.ts"))
+      const capture = stripComments(read("lib/contact-pipeline/contact-capture.ts"))
+      const convert = soh.slice(soh.indexOf("export async function convertAttendeeToContact"), soh.indexOf("export async function convertAttendeeToContact") + 6000)
+      check("app/actions/seller-open-house.ts: the conversion's creation fans out — through captureContact's CONTACT_CAPTURED notify (no audit-only row)",
+        /\bcaptureContact\(/.test(convert) && /notify\(\{\s*event: KernelEvent\.CONTACT_CAPTURED/.test(capture) && !/auditOnly:\s*true[^}]*CONTACT_CAPTURED/.test(capture))
+    }
+    for (const [rel, ev] of [["lib/offers/offer-extractor.ts", "OFFER_AI_EXTRACTED"], ["app/actions/video-voice.ts", "VOICE_CLONE_PROFILE_CREATED"], ["app/actions/business-card/business-card-actions.ts", "BUSINESS_CARD_APPROVED"]] as const) {
       const blocks = emitBlocks(stripComments(read(rel))).filter((b) => new RegExp(`event:\\s*KernelEvent\\.${ev}\\b`).test(b.blk))
       check(`${rel}: ${ev} has an emit that fans out (no auditOnly) and carries the fan-out's own fields`,
         blocks.some((b) => !/auditOnly:\s*true/.test(b.blk)) && (ev !== "BUSINESS_CARD_APPROVED" || blocks.some((b) => /routed_to: "recruit"[^]*?classified_by/.test(b.blk))))

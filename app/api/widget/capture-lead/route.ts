@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { captureConsentedContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
+import { captureConsentedContact, resolveCapturedLanguage, consentGrantsFromComponent, resolveConsentBrand } from '@/lib/contact-pipeline/contact-capture'
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { KernelEvent } from '@/lib/kernel/events'
 
@@ -52,6 +52,9 @@ export async function POST(req: NextRequest) {
        *  consent. FAIL CLOSED: an email arrives only with `email_consent === true` (a ticked box, never a
        *  default) — otherwise the submission is refused (422) and no contact, artifact or signal is written. */
       email_consent?: boolean
+      /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). Present → it is the consent record (the wording
+       *  re-rendered here); the legacy email box / phone rule apply only to a cached pre-148 widget. */
+      consent?: unknown
       /** The widget's tracking cookie (vip_visitor_id) — the behavioral signal /api/track/visitor
        *  opened for this visitor. With it, the consent artifact written below also lets the ONE
        *  capture door stamp the consented email onto that signal and fire the identify loop
@@ -68,7 +71,8 @@ export async function POST(req: NextRequest) {
     }
     // Fail closed (CLAUDE.md §4): an email without its own ticked consent box is refused BEFORE any write.
     const emailConsentGiven = email_consent === true
-    if (email && !emailConsentGiven) {
+    const hasC15 = body.consent !== undefined && body.consent !== null
+    if (!hasC15 && email && !emailConsentGiven) {
       return NextResponse.json({ error: 'email_consent required when an email is provided' }, { status: 422 })
     }
 
@@ -102,7 +106,21 @@ export async function POST(req: NextRequest) {
     // ── captureContact — dedup → merge/create → enrich → score ───────────
     // Widget form fill constitutes TCPA consent.
     // agentUserId from session; captureContact will resolve brokerage primary if null.
-    const consentGiven = tcpa_consent !== false // default true when not explicitly false
+    // CONSENT IS NEVER FABRICATED (wave 148 — ruling 3). TOMBSTONE: `tcpa_consent !== false` read a MISSING field as a TCPA
+    // consent ("default true"). A phone consent is now what the visitor ticked: a C15 box, or (a cached pre-148 widget) the
+    // label's own phone rule with `tcpa_consent === true` — never an absent field.
+    const widgetBrand = await resolveConsentBrand(supabase, { agentId: null, brokerageId: session.brokerage_id })
+    const widgetC15 = consentGrantsFromComponent(body.consent, { door: 'chat_widget', brandName: widgetBrand, provided: { email: !!email, phone: !!phone } })
+    if (hasC15 && !widgetC15.submission?.service_delivery) {
+      return NextResponse.json({ error: 'Please tick the first consent box (the service follow-up) so we can follow up.' }, { status: 422 })
+    }
+    const widgetConsents = widgetC15.submission
+      ? widgetC15.grants
+      : [
+          { family: 'phone' as const, given: tcpa_consent === true, text: WIDGET_CONSENT_TEXT, textVersion: WIDGET_CONSENT_VERSION },
+          { family: 'email' as const, given: !!email && emailConsentGiven, text: WIDGET_CONSENT_TEXT, textVersion: WIDGET_CONSENT_VERSION },
+        ]
+    const consentGiven = widgetConsents.some((g) => g.family === 'phone' && g.given)
     const consentNow = new Date().toISOString()
 
     // ── C8 (wave 147, lane 147A — owner ruling 1): the consented submission → CONTACT + consent record + arbiter ─────
@@ -124,13 +142,10 @@ export async function POST(req: NextRequest) {
       rawPayload: { session_token, intent_type, notes },
       // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
       language: resolveCapturedLanguage(null, req.headers.get('accept-language')),
-      consents: [
-        { family: 'phone', given: consentGiven, text: WIDGET_CONSENT_TEXT, textVersion: WIDGET_CONSENT_VERSION },
-        { family: 'email', given: !!email && emailConsentGiven, text: WIDGET_CONSENT_TEXT, textVersion: WIDGET_CONSENT_VERSION },
-      ],
+      consents: widgetConsents,
       intake: {
         channel: 'chat_widget', sourceUrl: '/api/widget/capture-lead',
-        evidence: { chat_session_id: session.id, ip, user_agent: userAgent, intent_type: intent_type ?? null },
+        evidence: { ...widgetC15.evidence, ...(widgetC15.wordingHash ? { wording_hash: widgetC15.wordingHash } : {}), chat_session_id: session.id, ip, user_agent: userAgent, intent_type: intent_type ?? null },
         formOwner: { table: 'chat_sessions', id: session.id },
       },
     })

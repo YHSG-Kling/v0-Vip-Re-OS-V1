@@ -168,117 +168,56 @@ export async function resolveOrCreateOpenHouseContact(input: {
       }
     }
 
-    // Try to find existing contact by email or phone.
-    //
-    // DESTRUCTURE THE ERROR ON BOTH LOOKUPS. supabase-js RESOLVES a refused
-    // read, so `const { data }` turned a permission failure or a malformed
-    // filter into `null` — indistinguishable from "no such contact". This
-    // function's whole job is dedup, so that silence produced a SECOND contact
-    // row for a person who was already in the book, every time the read failed.
-    // A failed lookup must abort the resolve, not fall through to an insert.
-    let existingContact: { id: string } | null = null
-    if (email) {
-      const { data, error } = await supabase
-        .from("contacts")
-        .select("id")
-        // TENANT: service-role client bypasses RLS, so the brokerage filter is
-        // the only thing keeping this lookup inside the tenant.
-        .eq("brokerage_id", brokerage_id)
-        .eq("email", email)
-        .maybeSingle()
-      if (error) {
-        return {
-          success: false,
-          contact_id: null,
-          was_created: false,
-          error: `Contact lookup by email failed: ${error.message}`,
-        }
-      }
-      existingContact = data
+    // ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147Z Still open 1). TOMBSTONE (orphan doctrine §1.1): the exact
+    // email-then-phone lookup and the contacts INSERT that stood here were a SECOND contact writer beside THE one survivor,
+    // lib/contact-pipeline/contact-capture.ts captureContact. Merged onto it, with the semantics this kernel held preserved:
+    //   · a refused dedupe read ABORTS (never falls through to an insert) — captureContact's dedupe now throws on a refused
+    //     read, so the refusal comes back below as success:false with the reason;
+    //   · an existing contact is RESOLVED, never overwritten — captureContact's merge is fill-if-empty (a conflicting value is
+    //     kept in notes), and the same email is the same person even with a different phone;
+    //   · a new walk-in is a buyer-side contact (the visit is to a for-sale listing), source open_house, status active, the
+    //     event's agent as owner AND creator (contacts.source_agent_id — ruling 12, assigned back to them);
+    //   · enrichment is queued (captureContact's create path), and the welcome + portal invite ride the one welcome path.
+    // NO CONSENT IS CLAIMED: this kernel command is the AGENT typing a walk-in's details — not the person's own box. A visitor
+    // who signs in themselves goes through the kiosk / event-day doors, which record what they ticked (C8 + C15).
+    const { data: agentRow, error: agentRowErr } = await supabase.from("agents").select("user_id").eq("id", agent_id).eq("brokerage_id", brokerage_id).maybeSingle()
+    if (agentRowErr) {
+      return { success: false, contact_id: null, was_created: false, error: `Agent lookup failed: ${agentRowErr.message}` }
     }
-
-    // If not found by email, try phone
-    if (!existingContact && phone) {
-      const { data, error } = await supabase
-        .from("contacts")
-        .select("id")
-        .eq("brokerage_id", brokerage_id)
-        .eq("phone", phone)
-        .maybeSingle()
-      if (error) {
-        return {
-          success: false,
-          contact_id: null,
-          was_created: false,
-          error: `Contact lookup by phone failed: ${error.message}`,
-        }
-      }
-      existingContact = data
-    }
-
-    // Return existing contact if found
-    if (existingContact?.id) {
-      console.log(
-        `[Kernel] Resolved existing contact ${existingContact.id} for ${email || phone} (open_house: ${open_house_id})`
-      )
-      return {
-        success: true,
-        contact_id: existingContact.id,
-        was_created: false,
-      }
-    }
-
-    // Create new contact
-    const { data: newContact, error: createErr } = await supabase
-      .from("contacts")
-      .insert({
-        brokerage_id,
-        agent_id,
-        first_name: first_name.trim(),
-        last_name: (last_name || "").trim(),
-        email: email ? email.trim().toLowerCase() : null,
-        phone: phone ? phone.replace(/\D/g, "") : null,
-        contact_type: "buyer",
+    const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+    let captured: Awaited<ReturnType<typeof captureContact>>
+    try {
+      captured = await captureContact({
+        brokerageId: brokerage_id,
+        ownerAgentId: agent_id,
+        creatorUserId: (agentRow as { user_id?: string | null } | null)?.user_id ?? null,
         source: "open_house",
+        contact_type: "buyer",
         status: "active",
-      })
-      .select("id")
-      .single()
-
-    if (createErr || !newContact?.id) {
-      console.error(`[Kernel] Contact creation failed:`, createErr?.message)
+        first_name: first_name.trim(),
+        last_name: (last_name || "").trim() || null,
+        email: email ? email.trim().toLowerCase() : null,
+        phone: phone ? phone.trim() : null,
+        tcpa_consent: false,
+        metadata: open_house_id ? { open_house_id } : null,
+      }, { client: supabase })
+    } catch (e) {
       return {
         success: false,
         contact_id: null,
         was_created: false,
-        error: `Failed to create contact: ${createErr?.message}`,
+        error: `Failed to resolve or create contact: ${e instanceof Error ? e.message : String(e)}`,
       }
     }
 
     console.log(
-      `[Kernel] Created new contact ${newContact.id} from open_house attendee (open_house: ${open_house_id})`
+      `[Kernel] ${captured.action === "created" ? "Created new" : "Resolved existing"} contact ${captured.contactId} (open_house: ${open_house_id})`
     )
-
-    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This kernel
-    // command creates the contact row directly and emits no CONTACT_CREATED, so
-    // the event-reactor lane never saw open-house attendees. Voided: attendee
-    // resolution must not fail because of enrichment. Live-deal suppression and
-    // de-duplication are inside queueContactEnrichment.
-    void import("@/lib/enrichment/contact-enrichment-core")
-      .then((m) =>
-        m.queueContactEnrichment({
-          contactId: newContact.id,
-          brokerageId: brokerage_id,
-          triggerType: "open_house",
-          supabase,
-        }),
-      )
-      .catch(() => {})
 
     return {
       success: true,
-      contact_id: newContact.id,
-      was_created: true,
+      contact_id: captured.contactId,
+      was_created: captured.action === "created",
     }
   } catch (error: any) {
     console.error(`[Kernel] resolveOrCreateOpenHouseContact error:`, error?.message)

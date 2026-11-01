@@ -51,6 +51,11 @@ export interface ResolveAgentForContactInput {
   /** Hints used by rule evaluation. Optional. */
   source?: string | null
   propertyZipCode?: string | null
+  /**
+   * Wave 148 (lane 148B — the captureContact injected-client contract): the client every assignment read rides. The door's
+   * own gated client (service / session / a proof's in-memory client). Omitted → the service client (unchanged).
+   */
+  client?: { from: (table: string) => any }
 }
 
 export interface ResolveAgentForContactResult {
@@ -75,7 +80,7 @@ const RULE_FIELDS =
 export async function resolveAgentForContact(
   input: ResolveAgentForContactInput
 ): Promise<ResolveAgentForContactResult> {
-  const supabase = createServiceClient()
+  const supabase = (input.client ?? createServiceClient()) as ReturnType<typeof createServiceClient>
   const { brokerageId, ownerAgentId, source, propertyZipCode } = input
   let teamHint: string | null = input.teamId ?? null
 

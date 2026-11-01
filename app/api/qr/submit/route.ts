@@ -5,7 +5,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
-import { captureConsentedContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
+import { captureConsentedContact, consentGrantsFromComponent, resolveCapturedLanguage, resolveConsentBrand, situationFromBody } from '@/lib/contact-pipeline/contact-capture'
 
 // The wording the QR landing shows beside its box (app/qr/[slug]/QRLandingClient.tsx, the tcpa_checked label) — hashed onto the
 // consent record (C8). Kept verbatim; a change to the label is a new version here.
@@ -22,7 +22,12 @@ interface QRSubmitBody {
   last_name: string
   email?: string
   phone?: string
-  tcpa_checked: boolean
+  /** @deprecated pre-148 clients — the bare box with QR_CONSENT_TEXT. Superseded by `consent`. */
+  tcpa_checked?: boolean
+  /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). The wording is re-rendered here, never the body's. */
+  consent?: unknown
+  /** The person's situation (ruling 12) — validated against the live CHECK vocabularies by situationFromBody. */
+  situation?: unknown
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -41,7 +46,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // ── Step 1: TCPA channel check — do not block lead creation ─────────────
     // Per TCPA corrected rule: create contact regardless of consent.
     // Suppress phone/SMS when tcpa_checked is false.
-    const consentGiven = tcpa_checked === true
+    const legacyConsentGiven = tcpa_checked === true
 
     if (!slug || !qrCodeId) {
       return NextResponse.json(
@@ -107,8 +112,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // routes through resolveAgentForContact() so the brokerage's assignment
     // rules apply when no QR is agent-tagged.
     const ownerAgentId: string | null = qr.agent_id ?? null
+    // Ruling 12 (wave 148): the code's agent is its CREATOR — the person is assigned back to them (contacts.source_agent_id).
+    const { data: qrAgent } = ownerAgentId ? await supabase.from('agents').select('user_id').eq('id', ownerAgentId).maybeSingle() : { data: null }
+    const qrCreatorUserId: string | null = (qrAgent as { user_id?: string | null } | null)?.user_id ?? null
 
     const now = new Date().toISOString()
+    // C15 (wave 148): the ONE consent component's boxes, each recorded with the wording re-rendered from THE one brand rule
+    // (the QR page renders the same). A cached pre-148 page sends `tcpa_checked` beside QR_CONSENT_TEXT (legacy record).
+    const qrBrand = await resolveConsentBrand(supabase, { agentId: ownerAgentId, brokerageId: qr.brokerage_id })
+    const qrC15 = consentGrantsFromComponent(body.consent, { door: 'qr_landing', brandName: qrBrand, provided: { email: !!email, phone: !!phone } })
+    if (qrC15.submission && !qrC15.submission.service_delivery) {
+      return NextResponse.json({ success: false, error: 'Please tick the first consent box (the service follow-up) so we can follow up.' }, { status: 400 })
+    }
+    const qrConsents = qrC15.submission
+      ? qrC15.grants
+      : [{ family: 'phone' as const, given: legacyConsentGiven, text: QR_CONSENT_TEXT, textVersion: QR_CONSENT_VERSION, purposes: ['requested_information' as const] }]
+    const consentGiven = qrConsents.some((g) => g.family === 'phone' && g.given)
     // ── C8 (wave 147, lane 147A — owner ruling 1): the consented submission → the canonical CONTACT, its consent record, the
     //    arbiter told. The tenant is the QR row's (re-verified by the contract against qr_codes); never the body's.
     const intake = await captureConsentedContact({
@@ -124,10 +143,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       rawPayload: { slug, qrCodeId, first_name, last_name, email, phone },
       // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
       language: resolveCapturedLanguage(null, req.headers.get('accept-language')),
-      consents: [{ family: 'phone', given: consentGiven, text: QR_CONSENT_TEXT, textVersion: QR_CONSENT_VERSION, purposes: ['requested_information'] }],
+      creatorUserId: qrCreatorUserId,
+      ...(() => { const sit = situationFromBody(body.situation); return { ...(sit.contact_type ? { contact_type: sit.contact_type } : {}), ...(sit.timeline ? { timeline: sit.timeline } : {}) } })(),
+      ...(qr.marketing_campaign_id ? { campaign_attribution_id: qr.marketing_campaign_id as string } : {}),
+      source_channel: 'qr_code',
+      consents: qrConsents,
       intake: {
         capturedAt: now, channel: 'qr', sourceUrl: `/qr/${slug}`,
-        evidence: { qr_code_id: qr.id, slug, ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, user_agent: req.headers.get('user-agent') ?? null },
+        evidence: { ...qrC15.evidence, ...(qrC15.wordingHash ? { wording_hash: qrC15.wordingHash } : {}), qr_code_id: qr.id, slug, ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, user_agent: req.headers.get('user-agent') ?? null },
         formOwner: { table: 'qr_codes', id: qr.id },
       },
     })

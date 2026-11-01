@@ -516,14 +516,25 @@ async function main() {
     && /email_capture: \{ email, consent_event_id: emailConsentEventId \}/.test(captureRoute) && /emailConsentEventId && email && typeof visitor_id === 'string'/.test(captureRoute)
     && /await persistContactConsent\(\{[\s\S]{0,400}channel: g\.family,[\s\S]{0,1600}out\.consentEventIds\[g\.family\] = w\.consentEventId/.test(c8Writer))
   // WAVE 104 (lane 104E; owner answer 1): the SEPARATE email-consent box.
-  check("capture-lead FAILS CLOSED: an email without email_consent === true is refused (422) before any write; the phone/TCPA rule is unchanged", /const emailConsentGiven = email_consent === true/.test(captureRoute) && /if \(email && !emailConsentGiven\) \{\s*return NextResponse\.json\(\{ error: 'email_consent required when an email is provided' \}, \{ status: 422 \}\)/.test(captureRoute) && /const consentGiven = tcpa_consent !== false/.test(captureRoute))
+  // WAVE 148 (lane 148B — C15 + ruling 3 "consent is never fabricated") moved three WAYPOINTS here; each RULE is re-asserted:
+  //   · an email with no consent is refused (422) before any write — the legacy email box for a cached pre-148 widget, the
+  //     ONE consent component's service box for every current one;
+  //   · the PHONE consent is an explicit tick: `tcpa_consent !== false` (a MISSING field read as consent) is retired for
+  //     `tcpa_consent === true` / the C15 boxes;
+  //   · the email box still writes its OWN artifact beside the phone grant (legacy), and C15 writes one per box.
+  check("capture-lead FAILS CLOSED: an email without consent is refused (422) before any write; the phone consent is an explicit tick, never a missing field",
+    /const emailConsentGiven = email_consent === true/.test(captureRoute) && /if \(!hasC15 && email && !emailConsentGiven\) \{\s*return NextResponse\.json\(\{ error: 'email_consent required when an email is provided' \}, \{ status: 422 \}\)/.test(captureRoute)
+    && /if \(hasC15 && !widgetC15\.submission\?\.service_delivery\)[\s\S]{0,160}status: 422/.test(captureRoute) && /given: tcpa_consent === true/.test(captureRoute) && !/tcpa_consent !== false/.test(captureRoute))
   check("the email box writes its OWN artifact through the one consent writer (an 'email' grant beside the 'phone' grant) and the TCPA artifact no longer stands in for it",
-    /\{ family: 'phone', given: consentGiven,/.test(captureRoute) && /\{ family: 'email', given: !!email && emailConsentGiven,/.test(captureRoute)
+    /\{ family: 'phone'(?: as const)?, given: tcpa_consent === true,/.test(captureRoute) && /\{ family: 'email'(?: as const)?, given: !!email && emailConsentGiven,/.test(captureRoute)
     && !/consent_event_id: intake\.consentEventIds\.phone/.test(captureRoute) && !/consentEventIds\.phone[\s\S]{0,80}email_capture/.test(captureRoute))
   const consentWriter = src("lib/kernel/compliance/require-contact-consent.ts")
-  check("persistContactConsent channel 'email' records consent_type 'email' and leaves the leads/contacts tcpa_* columns alone (phone consent the visitor never gave)", /CONSENT_TYPE_FOR_CHANNEL = \{ phone: 'tcpa', email: 'email' \}/.test(consentWriter) && /params\.leadId && channel === 'phone'/.test(consentWriter) && /params\.contactId && channel === 'phone'/.test(consentWriter) && /consent_type:\s*CONSENT_TYPE_FOR_CHANNEL\[channel\]/.test(consentWriter))
+  check("persistContactConsent channel 'email' records consent_type 'email' and leaves the leads/contacts tcpa_* columns alone (phone consent the visitor never gave)", /CONSENT_TYPE_FOR_CHANNEL = \{ phone: 'tcpa', email: 'email'(?:, mail: 'direct_mail')? \}/.test(consentWriter) && /params\.leadId && channel === 'phone'/.test(consentWriter) && /params\.contactId && channel === 'phone'/.test(consentWriter) && /consent_type:\s*CONSENT_TYPE_FOR_CHANNEL\[channel\]/.test(consentWriter))
   const widgetClient = src("app/widget/[brokerageSlug]/widget-chat-client.tsx")
-  check("the widget client has the separate email-consent checkbox, gates submit on it, and sends email_consent ONLY from the ticked box (phone rule unchanged)", /type="checkbox"/.test(widgetClient) && /emailConsent: e\.target\.checked/.test(widgetClient) && /if \(!captureForm\.emailConsent\) \{/.test(widgetClient) && /email_consent: captureForm\.emailConsent === true/.test(widgetClient) && /tcpa_consent: !!captureForm\.phone\.trim\(\)/.test(widgetClient))
+  // wave 148 (C15): the widget renders the ONE consent component (one box per channel) instead of its own email box; the RULE —
+  // consent only from a ticked box, submit gated on it, never a defaulted flag — is re-asserted on the component.
+  check("the widget client renders the ONE consent component, gates submit on its service box, and sends only the component's submission (never a defaulted flag)",
+    /<ConsentBoxes\b/.test(widgetClient) && /useConsentBoxes\('chat_widget'/.test(widgetClient) && /if \(!widgetConsent\.serviceGiven\) \{/.test(widgetClient) && /consent: widgetConsent\.submission/.test(widgetClient) && !/tcpa_consent: !!captureForm\.phone/.test(widgetClient))
   check("POSITIVE CONTROL: a client that defaulted the flag would be flagged", !/email_consent: true/.test(widgetClient) && /email_consent: true/.test("body: { email_consent: true }"))
   check("the widget client sends its vip_visitor_id cookie with the capture form (read, never minted there)", /visitor_id: \(\(\) => \{ try \{ return window\.localStorage\.getItem\('vip_visitor_id'\) \}/.test(src("app/widget/[brokerageSlug]/widget-chat-client.tsx")))
   const consentSrc = src("lib/kernel/compliance/require-contact-consent.ts")

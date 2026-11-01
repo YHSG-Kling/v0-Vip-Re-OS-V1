@@ -32,7 +32,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
   }
   try {
-    const body = await req.json() as { slug: string; data: Record<string, unknown>; tcpaConsent?: boolean; tcpaConsentText?: string }
+    const body = await req.json() as { slug: string; data: Record<string, unknown>; tcpaConsent?: boolean; tcpaConsentText?: string; consent?: unknown }
     const { slug, data, tcpaConsent } = body
 
     if (!slug || !data || typeof data !== 'object') {
@@ -73,6 +73,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       submissionData: data,
       source: 'web_form',
       tcpaConsentGiven: consentGiven,
+      // C15 (wave 148): the ONE consent component's submission — the kernel re-renders the wording (door web_form).
+      consent: body.consent,
+      consentDoor: 'web_form',
       ipAddress: ip,
       userAgent,
       language: capturedLanguage,

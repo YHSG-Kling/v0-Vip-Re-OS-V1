@@ -109,7 +109,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, attendeeId: (agentVisit as { id: string }).id, brokerOpen: true })
     }
 
-    if (!tcpaConsent) {
+    // C15 (wave 148, lane 148B): the kiosk renders the ONE consent component. Its service-delivery box is the sign-in's consent
+    // (required, as the single box was); marketing boxes are optional per channel. A cached pre-148 kiosk sends `tcpaConsent`
+    // beside its own printed wording (the legacy record below). Nothing ticked → refused, nothing filed — as before.
+    const kioskC15Raw = (body as { consent?: unknown }).consent
+    if (!tcpaConsent && !kioskC15Raw) {
       return NextResponse.json({ error: "TCPA consent is required" }, { status: 400 })
     }
 
@@ -130,7 +134,12 @@ export async function POST(req: NextRequest) {
     const { data: brk, error: brkErr } = await supabase.from("brokerages").select("name").eq("id", event.brokerage_id).maybeSingle()
     if (brkErr) console.error("[open-house/attend] brokerage name read refused — the consent wording names 'our brokerage':", brkErr.message)
     const doorText = KIOSK_CONSENT_TEXT(((brk as { name?: string | null } | null)?.name ?? "").trim() || "our brokerage")
-    const { captureConsentedContact } = await import("@/lib/contact-pipeline/contact-capture")
+    const { captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+    const kioskBrand = await resolveConsentBrand(supabase, { agentId: event.agent_id ?? null, brokerageId: event.brokerage_id })
+    const kioskC15 = consentGrantsFromComponent(kioskC15Raw, { door: "open_house_kiosk", brandName: kioskBrand, provided: { email: !!email, phone: !!phone } })
+    if (kioskC15Raw && !kioskC15.submission?.service_delivery) {
+      return NextResponse.json({ error: "TCPA consent is required" }, { status: 400 })
+    }
     const intake = await captureConsentedContact({
       brokerageId: event.brokerage_id,
       ownerAgentId: event.agent_id ?? null,
@@ -144,10 +153,10 @@ export async function POST(req: NextRequest) {
       // TIER 3 OF resolveContactLanguage — the ONE resolver's own doc (CaptureContactParams.language).
       language: capturedLanguage,
       enrichmentProfile: withFieldProvenance({}, stampFieldProvenance(["first_name", "last_name", "email", ...(phone ? ["phone"] : [])], KIOSK_PROVENANCE)),
-      consents: [{ family: "phone", given: true, text: doorText, textVersion: KIOSK_CONSENT_VERSION, purposes: ["event_followup"] }],
+      consents: kioskC15.submission ? kioskC15.grants : [{ family: "phone", given: true, text: doorText, textVersion: KIOSK_CONSENT_VERSION, purposes: ["event_followup"] }],
       intake: {
         channel: "open_house", sourceUrl: tcpaConsentSource ?? "/open-house/sign-in",
-        evidence: { event_id: eventId, ip, user_agent: userAgent, kiosk_text_matched: typeof tcpaConsentText === "string" && tcpaConsentText.trim() === doorText },
+        evidence: { ...kioskC15.evidence, ...(kioskC15.wordingHash ? { wording_hash: kioskC15.wordingHash } : {}), event_id: eventId, ip, user_agent: userAgent, kiosk_text_matched: typeof tcpaConsentText === "string" && tcpaConsentText.trim() === doorText },
         formOwner: { table: "open_house_events", id: eventId },
       },
     })

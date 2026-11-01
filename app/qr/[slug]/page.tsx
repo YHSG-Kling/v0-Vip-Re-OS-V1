@@ -74,6 +74,8 @@ export default async function QRLandingPage({ params }: PageProps) {
   // the name THROUGH agents → users. (Previously this looked the agents.id up directly in `users`,
   // so the agent name never resolved and every QR landing showed an unbranded page.)
   let agentName: string | null = null
+  // C15 (wave 148): THE one brand rule — the code's agent by full name, else its brokerage (the submit door re-renders it).
+  let consentBrandName = 'our brokerage'
   let agentPhoto: string | null = null
 
   if (qr.agent_id) {
@@ -86,6 +88,11 @@ export default async function QRLandingPage({ params }: PageProps) {
     const u = Array.isArray(agent?.users) ? agent?.users[0] : agent?.users
     agentName = u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() || null : null
     agentPhoto = null // agents has no avatar column in this schema
+  }
+
+  {
+    const { resolveConsentBrand } = await import('@/lib/contact-pipeline/contact-capture')
+    consentBrandName = await resolveConsentBrand(supabase, { agentId: qr.agent_id ?? null, brokerageId: qr.brokerage_id })
   }
 
   // Fetch listing info if linked
@@ -130,6 +137,7 @@ export default async function QRLandingPage({ params }: PageProps) {
       label={qr.label}
       purpose={qr.purpose ?? null}
       agentName={agentName}
+      consentBrandName={consentBrandName}
       agentPhoto={agentPhoto}
       listingAddress={listingAddress}
       continueTo={continueTo}

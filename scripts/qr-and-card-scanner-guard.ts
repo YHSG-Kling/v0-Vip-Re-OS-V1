@@ -228,8 +228,11 @@ async function main() {
     const Landing = mod.default as unknown as React.ComponentType<Record<string, unknown>>
     const base = { slug: "s-1", qrCodeId: "q-1", label: "123 Main St Open House", purpose: "open_house", agentName: "Jane Doe", agentPhoto: null, listingAddress: "123 Main St" }
     const html = renderToStaticMarkup(React.createElement(Landing, { ...base, continueTo: null }))
+    // wave 148 (lane 148B — C15): the landing renders THE ONE consent component (its required service box + per-channel
+    // marketing boxes) instead of its own tcpa_checked box — RULE re-asserted on the rendered markup.
     check("renders: the capture form with first/last/email/phone, the consent checkbox and the submit button",
-      /name="first_name"/.test(html) && /name="last_name"/.test(html) && /type="email"/.test(html) && /type="tel"/.test(html) && /name="tcpa_checked"/.test(html) && /Get in Touch/.test(html))
+      /name="first_name"/.test(html) && /name="last_name"/.test(html) && /type="email"/.test(html) && /type="tel"/.test(html)
+      && (/name="tcpa_checked"/.test(html) || (/data-consent-component="c15:/.test(html) && /id="qr-consent-service"[^>]*type="checkbox"|type="checkbox"[^>]*id="qr-consent-service"/.test(html))) && /Get in Touch/.test(html))
     check("every input is 16 px (text-base — no iOS focus zoom) with a 44 px minimum height; the submit is ≥ 44 px",
       (html.match(/<input[^>]*type="(text|email|tel)"[^>]*>/g) ?? []).every((tag) => /text-base/.test(tag) && /min-h-\[44px\]/.test(tag)) && /<button[^>]*min-h-\[44px\][^>]*type="submit"|<button[^>]*type="submit"[^>]*min-h-\[44px\]/.test(html))
     const ext = renderToStaticMarkup(React.createElement(Landing, { ...base, continueTo: { href: "https://video.example/tour", label: "Watch the video tour (video.example)", external: true } }))

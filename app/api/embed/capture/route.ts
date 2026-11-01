@@ -20,7 +20,7 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
-import { captureConsentedContact, resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
+import { captureConsentedContact, consentGrantsFromComponent, resolveCapturedLanguage, resolveConsentBrand } from "@/lib/contact-pipeline/contact-capture"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const runtime = "nodejs"
@@ -33,6 +33,8 @@ interface Body {
   last_name?: string
   email?: string
   phone?: string
+  /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148). The wording is re-rendered here, never taken from the body. */
+  consent?: unknown
 }
 
 export async function POST(request: NextRequest) {
@@ -106,6 +108,12 @@ export async function POST(request: NextRequest) {
   // leadCaptureFields) shows NO consent box and NO disclosure wording — a TCPA consent with no wording behind it is a false
   // record. The person is identifiable, so they still land on the canonical CONTACT; no consent row is written and the tcpa_*
   // columns are not claimed (fail closed). The consent box + wording on the embed form is listed Still-open in the 147A notes.
+  // THE one brand rule (resolveConsentBrand): the widget's agent, else its brokerage — the embed page renders the same.
+  const embedBrand = await resolveConsentBrand(supabase, { agentId: widget.agent_id ?? null, brokerageId: widget.brokerage_id })
+  const embedC15 = consentGrantsFromComponent(body.consent, { door: "embed_widget", brandName: embedBrand, provided: { email: !!body.email?.trim(), phone: !!body.phone?.trim() } })
+  if (embedC15.submission && !embedC15.submission.service_delivery) {
+    return NextResponse.json({ error: "Please tick the first consent box (the service follow-up) so we can follow up." }, { status: 400 })
+  }
   let result: Awaited<ReturnType<typeof captureConsentedContact>>
   try {
     result = await captureConsentedContact({
@@ -119,10 +127,14 @@ export async function POST(request: NextRequest) {
       preferred_channel: "email",
       // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
       language: resolveCapturedLanguage(null, request.headers.get("accept-language")),
-      consents: [{ family: "phone", given: false, text: null, textVersion: "embed:no_disclosure_shown" }],
+      embed_widget_id: widget.id,
+      // C15 (wave 148, lane 148B — owner recommendation): the embed form now renders the ONE consent component, so what the
+      // visitor ticked IS recorded — each box with the wording re-rendered from the widget's brokerage name (the page renders
+      // the same). A cached pre-148 widget sends no submission → no consent claimed, exactly as wave 147 held it.
+      consents: embedC15.submission ? embedC15.grants : [{ family: "phone", given: false, text: null, textVersion: "embed:no_disclosure_shown" }],
       intake: {
         channel: "embed", sourceUrl: `/embed/${body.publicId}`,
-        evidence: { embed_widget_id: widget.id, session_id: body.sessionId, ip: rateIp, user_agent: request.headers.get("user-agent") ?? null },
+        evidence: { ...embedC15.evidence, ...(embedC15.wordingHash ? { wording_hash: embedC15.wordingHash } : {}), embed_widget_id: widget.id, session_id: body.sessionId, ip: rateIp, user_agent: request.headers.get("user-agent") ?? null },
         formOwner: { table: "embed_widgets", id: widget.id },
       },
     })

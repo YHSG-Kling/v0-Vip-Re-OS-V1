@@ -93,9 +93,11 @@ function fixture() {
       { id: USER_A, brokerage_id: A, first_name: "Ann", last_name: "Agent", email: "ann@alpha.test", phone: null },
       { id: USER_B, brokerage_id: B, first_name: "Bob", last_name: "Broker", email: "bob@beta.test", phone: null },
     ],
+    // wave 148 (lane 148B): is_active is a live agents column the ONE door's assignment reads (resolveAgentForContact honours an
+    // owner hint only for an ACTIVE agent — a departed agent's form routes by the rules, never to them). Fixture fidelity.
     agents: [
-      { id: AGENT_A, user_id: USER_A, brokerage_id: A },
-      { id: AGENT_B, user_id: USER_B, brokerage_id: B },
+      { id: AGENT_A, user_id: USER_A, brokerage_id: A, is_active: true },
+      { id: AGENT_B, user_id: USER_B, brokerage_id: B, is_active: true },
     ],
     marketing_campaigns: [
       { id: CAMP_A, brokerage_id: A, campaign_name: "Spring sellers", campaign_type: "ad", status: "active" },
@@ -290,7 +292,8 @@ async function main() {
   const eve = rows(c, "contacts").find((r) => r.email === "eve@else.test")
   check("D8 CONTROL — another tenant's campaign id is DROPPED: capture succeeds, no campaign stamp, no touchpoint, the rest of the attribution kept",
     capForeign.success && capForeign.attribution?.campaignVerified === false && capForeign.attribution?.campaignId === null && capForeign.attribution?.touchpointId === null
-    && eve?.campaign_attribution_id === null && rows(c, "marketing_campaign_touchpoints").length === touchpointsBefore && capForeign.attribution?.creative === "x")
+    // wave 148: the one door writes no column it was not given (the live default is NULL); "no stamp" = absent or null.
+    && (eve?.campaign_attribution_id ?? null) === null && rows(c, "marketing_campaign_touchpoints").length === touchpointsBefore && capForeign.attribution?.creative === "x")
   check("D9 CONTROL — a submission that consented WITHOUT a phone stamps no TCPA consent on the contact (TCPA governs calls/texts) but still records the consent event",
     eve?.tcpa_consent !== true && rows(c, "contact_consent_events").some((e) => e.contact_id === eve?.id))
 

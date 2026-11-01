@@ -9,6 +9,8 @@ interface CaptureFormInput {
   brokerageId: string
   source?: string
   tcpaConsentGiven?: boolean
+  /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148). The kernel re-renders the wording; the body's is never stored. */
+  consent?: unknown
   submissionData: Record<string, unknown>
   /** Wave 141: the landing page's query-string attribution (campaign / ad / creative / QR / utm),
    *  sanitized here and VERIFIED by the kernel against the magnet's own tenant. */
@@ -64,6 +66,7 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
       submissionData: input.submissionData,
       source: input.source ?? "website",
       tcpaConsentGiven: input.tcpaConsentGiven ?? false,
+      consent: input.consent,
       ipAddress,
       userAgent,
       attribution,

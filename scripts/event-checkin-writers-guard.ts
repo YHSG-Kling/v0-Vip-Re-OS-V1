@@ -174,7 +174,9 @@ function brokerOpenBranch(src: string): { ok: boolean; why: string } {
   const why = [
     !/\.from\(\s*["']open_house_events["']\s*\)\s*\.select\(\s*["'][^"']*\bevent_type\b/.test(c) && "the event read does not select event_type (the branch can never fire)",
     !(c8 > at) && "the branch is not ahead of the C8 consumer capture",
-    !(() => { const g = c.search(/if\s*\(\s*!tcpaConsent\s*\)\s*\{?\s*return\b/); return g > at + block.length && g < c8 })() && "the consumer path does not refuse a missing consent between the branch and C8",
+    // wave 148 (C15): the refusal now also admits the ONE consent component's submission (`!tcpaConsent && !kioskC15Raw`) — the
+    // RULE (no consent → refused before C8) is unchanged.
+    !(() => { const g = c.search(/if\s*\(\s*!tcpaConsent(?:\s*&&\s*!kioskC15Raw)?\s*\)\s*\{?\s*return\b/); return g > at + block.length && g < c8 })() && "the consumer path does not refuse a missing consent between the branch and C8",
     !/\.from\(\s*["']open_house_attendees["']\s*\)\s*\.insert\(/.test(block) && "no attendee row",
     !/tcpa_consent:\s*false/.test(block) && "claims consumer consent",
     !/attendee_captured[\s\S]{0,400}broker_open:\s*true/.test(block) && "no capture evidence marked broker_open",
@@ -246,7 +248,8 @@ async function main(): Promise<void> {
     const fallThrough = kioskSrc.replace(/return NextResponse\.json\(\{ success: true, attendeeId: \(agentVisit as \{ id: string \}\)\.id, brokerOpen: true \}\)/, "void 0")
     const consumerInBranch = kioskSrc.replace(/check_in_time: new Date\(\)\.toISOString\(\), working_with_agent: true, tcpa_consent: false,/, "check_in_time: new Date().toISOString(), working_with_agent: true, tcpa_consent: false, x: await persistContactConsent(svc, {}),")
     const noSelect = kioskSrc.replace(/qr_code_id, event_type, listings\(address\)/, "qr_code_id, listings(address)")
-    const noConsentGate = kioskSrc.replace(/\n\s*if \(!tcpaConsent\) \{\n\s*return NextResponse\.json\(\{ error: "TCPA consent is required" \}, \{ status: 400 \}\)\n\s*\}/, "\n")
+    // wave 148 (C15): the gate reads `!tcpaConsent && !kioskC15Raw` — the mutation removes either spelling, so the control bites.
+    const noConsentGate = kioskSrc.replace(/\n\s*if \(!tcpaConsent(?: && !kioskC15Raw)?\) \{\n\s*return NextResponse\.json\(\{ error: "TCPA consent is required" \}, \{ status: 400 \}\)\n\s*\}/, "\n")
     check("POSITIVE CONTROL: a broker-open branch that falls through, one that writes consumer consent, a read that never selects event_type, and a consumer path with no consent refusal are each red",
       fallThrough !== kioskSrc && !brokerOpenBranch(fallThrough).ok && consumerInBranch !== kioskSrc && !brokerOpenBranch(consumerInBranch).ok && noSelect !== kioskSrc && !brokerOpenBranch(noSelect).ok && noConsentGate !== kioskSrc && !brokerOpenBranch(noConsentGate).ok,
       [brokerOpenBranch(fallThrough).why, brokerOpenBranch(consumerInBranch).why, brokerOpenBranch(noSelect).why, brokerOpenBranch(noConsentGate).why].join(" | "))
@@ -297,10 +300,17 @@ async function main(): Promise<void> {
     (() => { const s = stagesOf(`await svc.from("open_house_attendees").insert({ tcpa_consent: true })`); return s.participant && s.consent && !s.identity && !s.contact && !s.follow_up && !s.evidence })())
   {
     const ev = bodyOf(raw("app/actions/seller-open-house.ts"), "checkInAttendee")
-    const emitAt = ev.search(/OPEN_HOUSE_ATTENDEE_CAPTURED/), resolveAt = ev.search(/resolveOrCreateOpenHouseContact\(/)
+    // wave 148 (lane 148B — ruling 4): the event-day door resolves the contact through THE one consented-intake door now
+    // (captureConsentedContact — C8); the RULE (emit AFTER the contact resolves) is held on whichever resolver the door calls.
+    const emitAt = ev.search(/OPEN_HOUSE_ATTENDEE_CAPTURED/), resolveAt = ev.search(/resolveOrCreateOpenHouseContact\(|captureConsentedContact\(/)
     check("event_day: the capture event is emitted AFTER the contact resolves, FANNED OUT (not auditOnly) and carries contactId — so the arbiter's reader sees it",
       emitAt > resolveAt && resolveAt > 0 && !/auditOnly:\s*true/.test(ev.slice(emitAt - 400, emitAt + 900)) && /contactId:\s*checkedInContactId/.test(ev.slice(emitAt - 400, emitAt + 900)))
-    check("event_day: the consent row is anchored to the contact (contact_id on contact_consent_events)", /contact_consent_events"\)\.insert\(\{[\s\S]{0,200}contact_id:\s*checkedInContactId/.test(ev))
+    // wave 148 (lane 148B): the door's own contact_consent_events insert is retired — C8 records one row per ticked C15 box,
+    // anchored to the contact it just resolved. RULE re-asserted: the consent rides C8 (the contact-anchored writer) OR the old
+    // anchored insert; never an un-anchored row.
+    check("event_day: the consent row is anchored to the contact (C8 records it on the resolved contact, or an insert carries contact_id)",
+      /contact_consent_events"\)\.insert\(\{[\s\S]{0,200}contact_id:\s*checkedInContactId/.test(ev)
+      || (/captureConsentedContact\(\{/.test(ev) && /formOwner:\s*\{\s*table:\s*"open_house_events"/.test(ev) && !/contact_consent_events"\)\.insert\(/.test(ev)))
     const walkIn = bodyOf(raw("app/actions/open-house-kernel.ts"), "completeOpenHouseCheckInAction")
     check("walk_in: the session gate runs BEFORE any write (resolveOpenHouseScope; a body brokerage that disagrees is refused)",
       /const scoped = await resolveOpenHouseScope\(input\.open_house_id\)/.test(walkIn) && /decideClaimedTenant\(\{\s*actingBrokerageId:\s*scoped\.scope\.brokerageId,\s*claimedBrokerageId:\s*input\.brokerage_id\s*\}\)/.test(walkIn) && walkIn.search(/resolveOpenHouseScope\(/) < walkIn.search(/resolveOrCreateOpenHouseContact\(/))
@@ -345,21 +355,26 @@ async function main(): Promise<void> {
       open_house_events: [{ id: EV, brokerage_id: B, listing_id: LST, agent_id: AG, status: "scheduled" }],
       listings: [{ id: LST, brokerage_id: B, address: "5 Sign-In St" }],
       // AG2 is ANOTHER tenant's agent: with its id in the body, the pre-147 door accepted brokerage B2 outright.
-      agents: [{ id: AG, user_id: U, brokerage_id: B }, { id: "a1470000-0000-4000-8000-0000000000e2", user_id: "u1470000-0000-4000-8000-0000000000e2", brokerage_id: B2 }],
+      // wave 148: is_active is the live column the ONE door's assignment reads (an owner hint is honoured for an ACTIVE agent).
+      agents: [{ id: AG, user_id: U, brokerage_id: B, is_active: true }, { id: "a1470000-0000-4000-8000-0000000000e2", user_id: "u1470000-0000-4000-8000-0000000000e2", brokerage_id: B2, is_active: true }],
       contacts: [], open_house_attendees: [], contact_consent_events: [], lifecycle_events: [], person_identities: [], person_identity_evidence: [],
     }, { uuidIds: true })
     setSvc(svc)
     const soh = await import("../app/actions/seller-open-house")
-    const r = await soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat@example.test", phone: "8135550147", workingWithAgent: false, tcpaConsent: true }) as any
+    // wave 148 (lane 148B — C15): the visitor's consent is the ONE consent component's submission (the event-day tab used to
+    // hardcode `tcpaConsent: true` for every walk-in — a consent nobody gave). A ticked service box = a consented sign-in.
+    const C15 = await import("../lib/kernel/compliance/consent-component")
+    const ticked = C15.consentSubmissionFor({ serviceDelivery: true, marketing: { email: false, sms: false, voice: false, direct_mail: false } }, { door: "open_house_kiosk", brandName: "our brokerage" })
+    const r = await soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat@example.test", phone: "8135550147", workingWithAgent: false, consent: ticked }) as any
     const tbl = (t: string) => ((svc as any).tables?.[t] ?? []) as any[]
     const att = tbl("open_house_attendees")[0], contact = tbl("contacts")[0], consent = tbl("contact_consent_events")[0]
     check("a consented sign-in → an attendee AND a Contact, the attendee stamped with it", r?.success === true && !!contact?.id && att?.contact_id === contact.id && r.contactId === contact.id, JSON.stringify({ r, att, contact }).slice(0, 300))
     check("…the consent row is anchored to that contact", consent?.contact_id === contact?.id && consent?.consented === true)
     check("…the contact and the attendee are person-identity evidence", tbl("person_identity_evidence").some((e) => e.entity_type === "contact" && e.entity_id === contact?.id) && tbl("person_identity_evidence").some((e) => e.entity_type === "open_house_attendee" && e.entity_id === att?.id), JSON.stringify(tbl("person_identity_evidence")).slice(0, 300))
     check("…and the capture event is recorded WITH the contact (fanned-out evidence the arbiter's reader keys on)", tbl("lifecycle_events").some((e) => String(e.event_type ?? e.event ?? "").includes("attendee") && JSON.stringify(e).includes(String(contact?.id))), JSON.stringify(tbl("lifecycle_events")).slice(0, 300))
-    const again = await soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat@example.test", workingWithAgent: false, tcpaConsent: true }) as any
+    const again = await soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat@example.test", workingWithAgent: false, consent: ticked }) as any
     check("a second sign-in of the same email at the same event is the same attendee (no duplicate row, no second contact)", again?.duplicate === true && tbl("open_house_attendees").length === 1 && tbl("contacts").length === 1)
-    const noConsent = await soh.checkInAttendee({ eventId: EV, name: "No Consent", email: "nc@example.test", workingWithAgent: false, tcpaConsent: false }) as any
+    const noConsent = await soh.checkInAttendee({ eventId: EV, name: "No Consent", email: "nc@example.test", workingWithAgent: false, consent: null }) as any
     check("POSITIVE CONTROL: no consent → refused, nothing filed", noConsent?.success === false && tbl("contacts").length === 1)
     const ohk = await import("../app/actions/open-house-kernel")
     const foreign = await ohk.completeOpenHouseCheckInAction({ brokerage_id: B2, agent_id: "a1470000-0000-4000-8000-0000000000e2", open_house_id: EV, first_name: "Eve", last_name: "Other", email: "eve@example.test", check_in_method: "manual" } as any)

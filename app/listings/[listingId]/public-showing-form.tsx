@@ -1,12 +1,14 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Loader2, CheckCircle } from "lucide-react"
-import { submitShowingRequest } from "@/app/actions/listing-landing"
+import { getListingConsentBrand, submitShowingRequest } from "@/app/actions/listing-landing"
+// C15 (wave 148, lane 148B): the ONE consent component — this form no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 
 interface Props {
   listingId: string
@@ -21,11 +23,19 @@ export function PublicShowingForm({ listingId }: Props) {
   // NAR Code of Ethics Article 16 — captured here so the listing agent doesn't auto-take
   // a buyer who already has another agent. Server side blocks conversion when "represented".
   const [representation, setRepresentation] = useState<RepresentationStatus | "">("")
+  const [consentBrand, setConsentBrand] = useState("our brokerage")
+  const consent = useConsentBoxes("showing_request", consentBrand)
+  useEffect(() => { getListingConsentBrand(listingId).then((b) => setConsentBrand(b.brandName)).catch(() => null) }, [listingId])
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (!representation) {
       setErrorMsg("Please tell us whether you're currently working with another real estate agent.")
+      setStatus("error")
+      return
+    }
+    if (!consent.serviceGiven) {
+      setErrorMsg("Please tick the first consent box (the service follow-up) so the agent can confirm your showing.")
       setStatus("error")
       return
     }
@@ -44,7 +54,7 @@ export function PublicShowingForm({ listingId }: Props) {
         preferredDateTime: String(fd.get("preferred_date") ?? ""),
         notes: String(fd.get("notes") ?? "") || undefined,
         sessionToken: crypto.randomUUID(),
-        tcpaConsent: fd.get("tcpa_consent") === "on",
+        consent: consent.submission,
         representationStatus: representation,
       })
 
@@ -185,17 +195,8 @@ export function PublicShowingForm({ listingId }: Props) {
         )}
       </fieldset>
 
-      <label className="flex items-start gap-2 cursor-pointer">
-        <input
-          type="checkbox"
-          name="tcpa_consent"
-          className="mt-0.5 h-3.5 w-3.5 rounded border-gray-300"
-        />
-        <span className="text-xs text-blue-700 leading-snug">
-          I agree to receive calls, texts, and emails regarding this property. Consent is not
-          required to schedule a showing.
-        </span>
-      </label>
+      {/* C15 — the ONE consent component (service delivery required; marketing optional, per channel). */}
+      <ConsentBoxes {...consent.boxProps} idPrefix="public-showing-consent" compact />
 
       {errorMsg && (
         <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">

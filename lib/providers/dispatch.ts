@@ -562,6 +562,15 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       systemSource:   params.systemSource,
     })
     if (deferred) return deferred
+  } else if (params.to) {
+    // C16 (wave 148, lane 148B): A SEND KEYED ONLY BY THE ADDRESS still reads the ONE suppression list. This gate used to run
+    // only when the caller named a contact or a lead, so an email to an address someone had unsubscribed (a list row keyed by
+    // email — the STOP / unsubscribe writers key rows by the address too) went out whenever the caller omitted the id.
+    const byAddress = await checkSuppression({ brokerageId: params.brokerageId, contactId: null, email: params.to, phone: null, channel: "email" })
+    if (byAddress.suppressed) {
+      console.warn(`[Dispatch] Email blocked for ${params.to}: ${byAddress.reason}`)
+      return { success: false, providerKey: "compliance_gate", error: `Outbound blocked: ${byAddress.reason}` }
+    }
   }
 
   const { providerKey } = await resolveProvider({
@@ -613,6 +622,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     signatureIncluded:    false,
     unsubscribeIncluded:  false,
     disclosuresIncluded:  false,
+    headers:              {} as Record<string, string>,
   }))
 
   // ── FAIR-HOUSING CONTENT BACKSTOP — re-scan the FINAL assembled content at the chokepoint.
@@ -655,6 +665,9 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       text:        assembled.text,
       agentUserId: params.sendAsAgentUserId,
       icsAttachment: params.icsAttachment,
+      // C16 (wave 148): the List-Unsubscribe / List-Unsubscribe-Post headers assembleEmail built for a non-transactional
+      // send — the mailbox provider's own one-click unsubscribe (CAN-SPAM's "easy way out", RFC 8058).
+      headers: assembled.headers,
     })
     result = {
       success: raw.success,
@@ -833,6 +846,14 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
       systemSource:   params.systemSource,
     })
     if (deferred) return deferred
+  } else if (params.to) {
+    // C16 (wave 148, lane 148B): a NUMBER-ONLY text still reads the ONE suppression list (and the platform list) — a STOP
+    // from that number at T0 is a list row keyed by the number, so the send at T0+1 refuses even with no contact id.
+    const byNumber = await checkSuppression({ brokerageId: params.brokerageId, contactId: null, email: null, phone: params.to, channel: "sms" })
+    if (byNumber.suppressed) {
+      console.warn(`[Dispatch] SMS blocked for ${params.to}: ${byNumber.reason}`)
+      return { success: false, providerKey: "compliance_gate", error: `Outbound blocked: ${byNumber.reason}` }
+    }
   }
 
   // ── FAIR-HOUSING CONTENT BACKSTOP ─────────────────────────────────────────────

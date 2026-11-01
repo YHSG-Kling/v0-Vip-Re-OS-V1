@@ -79,7 +79,8 @@ console.log("\n── §retired · /api/widget/capture retired onto its survivor
   check("the survivor passes the session's agents id as ownerAgentId, never as a users id", ownerRule(survivor))
   check("CONTROL: the pre-86C survivor shape (agents id as agentUserId) is recognised",
     !ownerRule(`await captureContact({ brokerageId: session.brokerage_id, agentUserId: session.agent_id ?? null })`))
-  check("the survivor keeps the twin's consent row and lifecycle event", (/persistContactConsent\(/.test(survivor) || (viaC8 && /consents: \[/.test(survivor))) && /KernelEvent\.CONTACT_CAPTURED/.test(survivor))
+  // wave 148 (C15): the grants are the ONE consent component's (`consents: widgetConsents`) — a list either way.
+  check("the survivor keeps the twin's consent row and lifecycle event", (/persistContactConsent\(/.test(survivor) || (viaC8 && /consents: (\[|widgetConsents\b)/.test(survivor))) && /KernelEvent\.CONTACT_CAPTURED/.test(survivor))
   check("the off-site capability is this proof's embed survivor (the route it posts to exists)", existsSync(join(root, "app/api/lead-magnets/submissions/route.ts")))
   const census = code("scripts/opposite-missing-census.ts")
   check("the census no longer carries the retired door as a qualified/unresolved entry", !/\["\/api\/widget\/capture",/.test(census))
