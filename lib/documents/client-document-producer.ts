@@ -102,7 +102,8 @@ export async function produceClientDocument(
     // "book" (wave 142): the AI-written lead-magnet book (lib/lead-magnets/book-creator.ts) — generated_documents.document_type
     // carries no CHECK (scripts/check-vocabularies.ts), the library reads it as a document type like the guides.
     // "market_report" (wave 147, lane 147E — owner ruling 6): the tenant-branded territory report (lib/market-reports/producer.ts).
-    documentType: "cma" | "net_sheet" | "buyer_guide" | "seller_guide" | "listing_presentation" | "listing_brochure" | "listing_packet" | "recruiting_pitch" | "book" | "market_report"
+    // "checklist" (wave 148, lane 148G — contract C21): a lead-magnet funnel's designed checklist (lib/lead-magnets/magnet-funnel.ts).
+    documentType: "cma" | "net_sheet" | "buyer_guide" | "seller_guide" | "listing_presentation" | "listing_brochure" | "listing_packet" | "recruiting_pitch" | "book" | "market_report" | "checklist"
     spec: ClientPdfSpec
     metadata?: Record<string, unknown>
   },

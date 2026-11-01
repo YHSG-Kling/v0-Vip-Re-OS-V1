@@ -143,6 +143,15 @@ export function mergeExtraQuestions(base: LeadMagnetField[], questions: MagnetDr
   return out
 }
 
+/** What a C21 funnel hands the draft (wave 148, lane 148G). */
+interface FunnelDraftOverrides {
+  /** Merged into lead_capture_forms.settings (settings.funnel — the package, read by deliverableSpecFor / the publish gate). */
+  settings?: Record<string, unknown>
+  baseFields?: LeadMagnetField[]
+  fixedBullets?: string[]
+  baseline?: { headline: string; subhead: string; cta: string }
+}
+
 interface ComposedDraft {
   spec: MagnetDraftSpec
   /** true when the headline / subhead / bullets came from the model (not the deterministic baseline). */
@@ -158,8 +167,13 @@ export function composeMagnetDraft(
   concept: string,
   ctx: { area?: string | null; brand?: string | null },
   generated: MagnetDraftGenerated | null,
+  /** Wave 148 (lane 148G, contract C21 — lib/lead-magnets/magnet-funnel.ts createMagnetFunnel): a FUNNEL hands its own form
+   *  (identity + situation + qualifiers), its TRUTHFUL "what you get" lines (only ready / arranged deliverables — fixed in the
+   *  AI path AND the escalation baseline, so a fallback page never promises a generic guide) and its own baseline hero copy. */
+  funnel?: FunnelDraftOverrides | null,
 ): ComposedDraft {
-  const base = landingPageCopy(magnetType, { area: ctx.area ?? null, brand: ctx.brand ?? null })
+  const generic = landingPageCopy(magnetType, { area: ctx.area ?? null, brand: ctx.brand ?? null })
+  const base = funnel?.baseline ? { ...generic, ...funnel.baseline } : generic
   const g = generated ?? {}
   // The human's concept names the asset when the model offered no name/headline (never a blank draft title).
   const conceptLine = cleanLine(concept, 60)
@@ -177,9 +191,9 @@ export function composeMagnetDraft(
     headline: headline ?? base.headline,
     subhead: subhead ?? base.subhead,
     cta: cleanLine(g.cta, 40) ?? base.cta,
-    bullets: bullets.length > 0 ? bullets : base.bullets,
+    bullets: funnel?.fixedBullets?.length ? funnel.fixedBullets.map((b) => cleanLine(b, 160)).filter((b): b is string => !!b) : bullets.length > 0 ? bullets : base.bullets,
     thankYou: cleanLine(g.thankYou, 160) ?? "Thank you! We'll be in touch shortly.",
-    fields: mergeExtraQuestions(defaultFieldsForType(magnetType), g.questions),
+    fields: mergeExtraQuestions(funnel?.baseFields?.length ? funnel.baseFields : defaultFieldsForType(magnetType), g.questions),
     faq,
   }
   return { spec, fromAi }
@@ -271,12 +285,16 @@ interface DraftLeadMagnetInput {
   audience?: string | null
   /** For the entitlement gate's staff bypass (access half only; never the budget half). */
   actor?: { platformRole?: string | null; userType?: string | null } | null
+  /** Wave 148 (lane 148G, C21): the funnel package this draft is the landing page of (lib/lead-magnets/magnet-funnel.ts). */
+  funnel?: FunnelDraftOverrides | null
 }
 
 interface DraftLeadMagnetDeps {
   generator?: DraftGenerator
   entitlement?: EntitlementGate
   client?: NonNullable<Parameters<typeof createLeadMagnet>[1]>["client"]
+  /** @proofSeam wave 148 (C21): the C11 producers' seams, handed to createLeadMagnet (production never passes it). */
+  deliverable?: NonNullable<Parameters<typeof createLeadMagnet>[1]>["deliverable"]
   now?: Date
   /** The tenant brand for the final phase (default: the ONE brand cascade + brand voice, read on the client). */
   brand?: () => Promise<import("@/lib/marketing/humanize-final").TenantBrandForFinal>
@@ -293,6 +311,8 @@ interface DraftLeadMagnetOutput {
   fallbackReason?: string | null
   /** Wave 142: the rewrite loop's outcome — how many rewrites ran and whether a human now owns the copy. */
   fairHousing?: { flagged: string[]; high: string[]; rewrites: number; escalated: boolean }
+  /** Wave 148 (C21): the C11 delivery asset createLeadMagnet produced with the draft (null when the type promises none). */
+  deliverable?: Awaited<ReturnType<typeof createLeadMagnet>>["deliverable"]
   error?: string
 }
 
@@ -316,7 +336,7 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
   const generator = deps.generator ?? routedDraftGenerator
   const generated = await generator({ brokerageId: input.brokerageId, userId: input.createdBy, magnetType, concept, area: input.area ?? null, brand: input.brand ?? null, audience: input.audience ?? null }).catch(() => null)
 
-  let composed = composeMagnetDraft(magnetType, concept, { area: input.area, brand: input.brand }, generated)
+  let composed = composeMagnetDraft(magnetType, concept, { area: input.area, brand: input.brand }, generated, input.funnel)
   let fallbackReason: string | null = generated ? null : "model lane unavailable — deterministic baseline used"
   // THE REWRITE LOOP (wave 142, lane 142E; owner: "any fair housing flags on copy ai should rewrite with
   // those comments in mind"). What the MODEL wrote is scanned (the ONE pattern list + the public gate's
@@ -339,7 +359,7 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
         rewrite: async (_text, findings, attempt) => {
           const regenerated = await generator({ brokerageId: input.brokerageId, userId: input.createdBy, magnetType, concept, area: input.area ?? null, brand: input.brand ?? null, audience: input.audience ?? null, violations: findings, attempt }).catch(() => null)
           if (!regenerated) return null
-          latest = composeMagnetDraft(magnetType, concept, ctx, regenerated)
+          latest = composeMagnetDraft(magnetType, concept, ctx, regenerated, input.funnel)
           return draftPublicText(latest.spec)
         },
       })
@@ -348,7 +368,7 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
   const fh = { ok: loop.ok, flagged: [...new Set(loop.trail.flatMap((t) => t.findings))], high: loop.findings.map((f) => f.phrase) }
   if (!loop.ok) {
     fallbackReason = `AI copy refused by the fair-housing scan after ${loop.rewrites} rewrite${loop.rewrites === 1 ? "" : "s"} (${fh.high.join(", ")}) — deterministic baseline used; escalated to the reviewer`
-    composed = composeMagnetDraft(magnetType, concept, ctx, null)
+    composed = composeMagnetDraft(magnetType, concept, ctx, null, input.funnel)
   }
   const now = (deps.now ?? new Date()).toISOString()
   const spec = composed.spec
@@ -394,6 +414,8 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
         // Wave 145: the final personalization phase's account (the version itself is in distribution_finals).
         humanized: { summary: pageFinal.summary, removed: pageFinal.removed.length, blockers: pageFinal.blockers, review_notes: pageFinal.reviewNotes, tagline: pageFinal.tagline, logo: pageFinal.logo },
       },
+      // Wave 148 (C21): the funnel package (settings.funnel) — its primary is what createLeadMagnet's C11 deliverable produces.
+      ...(input.funnel?.settings ?? {}),
     },
   }
 
@@ -412,7 +434,7 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
         systemSource: "lead_magnets",
         detail: { magnetType, feature: LEAD_MAGNET_DRAFT_FEATURE, from_ai_copy: composed.fromAi, fallback_reason: fallbackReason, fair_housing_flags: fh.flagged, fair_housing_rewrites: loop.rewrites, fair_housing_escalated: loop.escalated, questions: spec.fields.length },
       },
-      () => createLeadMagnet(createInput, { client: deps.client }),
+      () => createLeadMagnet(createInput, { client: deps.client, deliverable: deps.deliverable }),
       {
         settle: (r) => r.success ? { status: "executed", outcome: "draft_created", providerRef: r.magnetId ?? null } : { status: "failed", outcome: "create_refused", error: r.error ?? null },
         replay: (claim) => ({ success: false, error: claim.kind === "replay" ? "already drafted" : `ledger refused the draft: ${claim.kind}` }),
@@ -463,5 +485,5 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
     else if (staged.notifyError) console.warn("[lead-magnets] the draft's humanized final:", staged.notifyError)
   }
 
-  return { success: true, magnetId: result.magnetId, slug: result.slug, magnetType, draft: spec, fromAi: composed.fromAi, fallbackReason, fairHousing: { flagged: fh.flagged, high: fh.high, rewrites: loop.rewrites, escalated: loop.escalated } }
+  return { success: true, magnetId: result.magnetId, slug: result.slug, magnetType, draft: spec, fromAi: composed.fromAi, fallbackReason, fairHousing: { flagged: fh.flagged, high: fh.high, rewrites: loop.rewrites, escalated: loop.escalated }, deliverable: result.deliverable ?? null }
 }

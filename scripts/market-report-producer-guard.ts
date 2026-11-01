@@ -17,8 +17,9 @@
  *      branded asset under the action ledger → narrated video COMMISSIONED (staged, never published); a writer that types a
  *      figure / trips fair housing falls back to the data composer; insufficient data and a refused read refuse with nothing
  *      rendered; the real fair-housing scan passes the data composer's copy.
- *   E. TOPICS WITH EVIDENCE — from the topic bank + market rows; an invented evidence id is dropped; a suggestion with only
- *      invented ids is discarded (fallback said).
+ *   E. TOPICS WITH VERIFIED EVIDENCE (re-asserted wave 148, lane 148G — owner ruling 10) — market rows, monthly trends, MLS closed
+ *      sales and the market registry's verified datasets ONLY; the topic bank is never read (a recording client measures it, with a
+ *      positive control); an invented id is dropped; a C19-unverified source adds nothing; a refused C19 read fails closed.
  *   F. EXPERT PROMPTS — role, context, facts-only rule, decision, output contract, compliance boundary, escalation.
  *   G. THE CHAIN — topic → research → verified report → branded asset → approval → form → Contact → promise → delivery →
  *      follow-up → attribution, on the real C11 deliverable + C4 ledger.
@@ -242,25 +243,56 @@ async function main() {
   }
 
   // ── E ────────────────────────────────────────────────────────────────────
-  section("E. topic suggestions carry their evidence")
+  // RE-ASSERTED (wave 148, lane 148G — owner ruling 10, 2026-11-01: "market reports do not take from the topic bank"). The RULE
+  // moved: topic evidence is verified market data + the market registry only. The client below RECORDS every table read, so "no
+  // topic-bank read" is measured on the real code path (with a positive control that the recorder sees a planted read).
+  section("E. topic suggestions carry VERIFIED evidence — market data + the market registry only; the topic bank is never read")
   {
     const bank = [
       { id: "t1", brokerage_id: B1, status: "fresh", expires_at: "2026-12-01T00:00:00Z", scraped_at: "2026-10-28T00:00:00Z", topic_title: "Is now a good time to sell?", value_angle: "timing", raw_data: { topic_evidence: { source_class: "customer_questions", source: "communications", observed_at: "2026-10-27" } } },
       { id: "t2", brokerage_id: B1, status: "fresh", expires_at: "2026-12-01T00:00:00Z", scraped_at: "2026-10-26T00:00:00Z", topic_title: "Price-drop posts", value_angle: null, raw_data: { topic_evidence: { source_class: "competitor_posts", source: "competitor_content", observed_at: "2026-10-25" } } },
-      { id: "t3", brokerage_id: B2, status: "fresh", expires_at: "2026-12-01T00:00:00Z", scraped_at: "2026-10-26T00:00:00Z", topic_title: "Other tenant", value_angle: null, raw_data: { topic_evidence: { source_class: "customer_questions" } } },
     ]
+    const trends = [
+      { id: "tr-1", brokerage_id: B1, zip_code: "78704", snapshot_month: "2026-10-01", median_price: 605000, active_inventory: 220 },
+      { id: "tr-0", brokerage_id: B1, zip_code: "78704", snapshot_month: "2026-09-01", median_price: 598000, active_inventory: 205 },
+      { id: "tr-x", brokerage_id: B2, zip_code: "78704", snapshot_month: "2026-10-01", median_price: 1, active_inventory: 1 },
+    ]
+    /** A client that records every table it is asked for (the measurement), over the in-memory world. */
+    const recording = (db: any) => { const reads: string[] = []; return { reads, client: { ...db, from: (t: string) => { reads.push(t); return db.from(t) } } } }
+    const W = (extra: Record<string, any[]> = {}, opts: Parameters<typeof memSupabase>[1] = {}) => recording(world({ content_topic_bank: bank, market_trends: trends, market_dataset_verifications: [], ...extra }, opts))
     let prompt = ""
-    const r = await suggestMarketReportTopics(world({ content_topic_bank: bank }) as never, { brokerageId: B1, territory: ZIP }, {
+    const w1 = W()
+    const r = await suggestMarketReportTopics(w1.client as never, { brokerageId: B1, territory: ZIP }, {
       now: NOW,
       rank: async (a) => { prompt = a.prompt; return { suggestions: [
-        { title: "When to sell in 78704", angle: "a seller's timing question", format: "equity_this_quarter", evidence_ids: ["topic:t1", "market:md-1", "topic:INVENTED"], why_now: "asked and moving" },
-        { title: "Made up", angle: "x", format: "inventory_watch", evidence_ids: ["topic:NOPE"], why_now: "x" },
+        { title: "78704 asking prices against a firming month", angle: "is the dip real?", format: "equity_this_quarter", evidence_ids: ["market:md-1", "trend:78704:2026-10-01", "topic:t1", "INVENTED"], why_now: "two kinds of evidence agree" },
+        { title: "Registry only", angle: "x", format: "inventory_watch", evidence_ids: ["registry:data.austintexas.gov/3syk-w9eu"], why_now: "x" },
+        { title: "Made up", angle: "x", format: "inventory_watch", evidence_ids: ["NOPE"], why_now: "x" },
       ] } },
     })
-    check("evidence gathered from the topic bank (audience question + competitor theme) and the market rows, tenant-pinned", prompt.includes("[topic:t1] (audience_question)") && prompt.includes("[topic:t2] (competitor_theme)") && prompt.includes("[market:md-1] (market_signal)") && !prompt.includes("Other tenant"))
-    check("each suggestion carries its REAL evidence; an invented id is dropped and said", r.suggestions.length === 1 && r.suggestions[0].evidence.map((e) => e.id).join(",") === "topic:t1,market:md-1" && r.notes.some((n) => /invented/.test(n)))
-    check("a suggestion citing only invented evidence is discarded", !r.suggestions.some((x) => x.title === "Made up"))
-    const none = await suggestMarketReportTopics(world({ market_data: [] }) as never, { brokerageId: B1, territory: ZIP }, { now: NOW, rank: async () => { throw new Error("should not be asked") } })
+    check("NO TOPIC-BANK READ: the recorded client never asked for content_topic_bank (owner ruling 10)", !w1.reads.includes("content_topic_bank"), w1.reads.join(","))
+    check("…and nothing from the bank reached the strategist (no topic: id, no bank title)", !/\[topic:|Is now a good time to sell|Price-drop posts/.test(prompt))
+    check("positive control: the same recorder DOES see a planted topic-bank read", (() => { const w = W(); w.client.from("content_topic_bank"); return w.reads.includes("content_topic_bank") })())
+    check("evidence = verified market data (market row, monthly trend, MLS closed sales) + THE MARKET REGISTRY's verified dataset, tenant-pinned",
+      prompt.includes("[market:md-1] (market_signal)") && prompt.includes("[trend:78704:2026-10-01] (market_trend)") && prompt.includes("(closed_sales)") && prompt.includes("[registry:data.austintexas.gov/3syk-w9eu] (registry_dataset)") && !prompt.includes("$1 (") && w1.reads.includes("market_dataset_verifications"))
+    check("each suggestion carries its REAL evidence; an invented id (and a topic-bank id) is dropped and said", r.suggestions.length === 1 && r.suggestions[0].evidence.map((e) => e.id).join(",") === "market:md-1,trend:78704:2026-10-01" && r.notes.some((n) => /invented/.test(n)), JSON.stringify(r.suggestions.map((x) => x.evidence.map((e) => e.id))))
+    check("a registry entry alone never carries a topic; a suggestion citing only invented evidence is discarded", !r.suggestions.some((x) => x.title === "Registry only" || x.title === "Made up"))
+    // C19 — a source the registry marks UNVERIFIED cannot raise a signal above unknown: it adds no evidence, and the exclusion is said.
+    const w2 = W({ market_dataset_verifications: [
+      { source: "rentcast", geography: "78704", confidence: "unverified", last_verified_at: "2026-10-01T00:00:00Z" },
+      { source: "data.austintexas.gov/3syk-w9eu", geography: "Austin, TX", confidence: "high", last_verified_at: "2026-10-20T00:00:00Z" },
+    ] })
+    let p2 = ""
+    const r2 = await suggestMarketReportTopics(w2.client as never, { brokerageId: B1, territory: ZIP }, { now: NOW, rank: async (a) => { p2 = a.prompt; return { suggestions: [] } } })
+    check("C19: an UNVERIFIED source (rentcast here) is excluded and said; a verified registry dataset carries its C19 verdict", !p2.includes("[market:md-1]") && r2.notes.some((n) => /rentcast excluded — the registry marks it unverified/.test(n)) && p2.includes("C19: verified 2026-10-20"), r2.notes.join(" | "))
+    const w3 = W({}, { missingTables: ["market_dataset_verifications"] })
+    const r3 = await suggestMarketReportTopics(w3.client as never, { brokerageId: B1, territory: ZIP }, { now: NOW, rank: async () => ({ suggestions: [] }) })
+    check("C19 table not applied yet → said; each source's own verification stands (the registry's verifiedOn)", r3.notes.some((n) => /not present yet/.test(n)) && r3.evidenceCount >= 4)
+    let p4 = ""
+    const w4 = W({}, { refuse: { market_dataset_verifications: "permission denied for table market_dataset_verifications" } })
+    const r4 = await suggestMarketReportTopics(w4.client as never, { brokerageId: B1, territory: ZIP }, { now: NOW, rank: async (a) => { p4 = a.prompt; return { suggestions: [] } } })
+    check("C19 read REFUSED → registry datasets are not cited (fail closed), said", !p4.includes("registry_dataset") && r4.notes.some((n) => /treated as UNVERIFIED this run/.test(n)))
+    const none = await suggestMarketReportTopics(world({ market_data: [], listings: [], market_trends: [], brokerages: [{ id: B1, name: "Elm Realty" }] }) as never, { brokerageId: B1, territory: { grain: "zip", label: "99999", zip: "99999", city: null, state: null } }, { now: NOW, rank: async () => { throw new Error("should not be asked") } })
     check("no evidence → the fallback snapshot, said (the model is not asked)", none.suggestions[0].by === "fallback" && none.notes.some((n) => /no evidence/.test(n)))
   }
 
@@ -311,6 +343,14 @@ async function main() {
   check("positive control: the same scan DOES see a planted vendor call", /getRentcast\w*\(/.test(mrDir + "\ngetRentcastAVM({})"))
   check("fair housing on the public copy: scanPublicCopy(…, 'lead_magnet')", /scanPublicCopy\(text,\s*"lead_magnet"\)/.test(prod))
   check("the narrated version goes through commissionVideo (staged) — no publish call in the producer", /commissionVideo\(/.test(prod) && !/queueYouTubeAutoPublish|publishVideoProjectLanding|approveStagedVideo/.test(prod))
+  {
+    // RULING 10 (wave 148, 148G): no market-report module names the topic bank or its picker (stripped of comments — the topics.ts
+    // TOMBSTONE that names the old read stays — but NOT of strings: the table name is a string literal).
+    const mrCode = ["contract", "validator", "prompts", "research", "topics", "producer"].map((f) => code(`lib/market-reports/${f}.ts`)).join("\n")
+    const bankRead = /["'`]content_topic_bank["'`]|pickTopics\(|content-intel\/topic-bank/
+    check("no lib/market-reports module reads the topic bank (no content_topic_bank literal, no pickTopics, no topic-bank import)", !bankRead.test(mrCode))
+    check("positive control: the finder sees a planted read and ignores the tombstone comment", bankRead.test(stripComments('await svc.from("content_topic_bank").select("id")')) && !bankRead.test(stripComments('// TOMBSTONE: svc.from("content_topic_bank") lived here')))
+  }
   const mig = code("lib/intelligence/market-insight-generator.ts")
   check("market_data writer: the CHECK's vocabulary ('sellers'/'buyers'), no 'seller' / 'buyer' literal", /'sellers'/.test(mig) && /'buyers'/.test(mig) && !/'seller'|'buyer'/.test(mig))
   check("market_data writer: no onConflict on market_data (no matching unique constraint live) and a refused write returns success: false", !/from\('market_data'\)\.upsert/.test(mig) && /write refused[\s\S]{0,80}success: false/.test(mig))

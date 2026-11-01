@@ -80,7 +80,11 @@ export interface PromiseBookRef { pdfUrl: string; documentId: string | null; tit
  * LANDING: "Send me the guide", "Your local market report", "a precise, agent-prepared value"). Null for a magnet that promises
  * no asset (a listing-alert subscription, an open-house RSVP, a plain contact form).
  */
-function promisedAssetFor(input: { magnetType: string | null | undefined; book?: PromiseBookRef | null }): PromisedAsset | null {
+function promisedAssetFor(input: { magnetType: string | null | undefined; book?: PromiseBookRef | null; funnelPrimary?: { kind: string; title: string } | null }): PromisedAsset | null {
+  // WAVE 148 (lane 148G — contract C21): a FUNNEL's page promises its declared primary first (a checklist, an education video,
+  // a guide, a report or an agent-prepared value) — the same declaration C11 produced the asset from (deliverableSpecFor).
+  const fp = input.funnelPrimary
+  if (fp && (PROMISE_ASSET_KINDS as readonly string[]).includes(fp.kind)) return { kind: fp.kind as PromiseAssetKind, title: fp.title, fulfilment: fp.kind === "valuation" ? "human" : "system" }
   switch (input.magnetType) {
     case "buyer_guide":
     case "seller_guide":
@@ -101,8 +105,9 @@ export interface PreparedAsset {
   deliverable: { subject: string; title: string; body: string } | null
   pdfUrl: string | null
   documentId: string | null
-  /** "report" (wave 147, lane 147E): the market-report producer's hosted report (lib/lead-magnets/deliverable-asset.ts). */
-  deliverableKind: "book" | "booklet" | "copy" | "report"
+  /** "report" (wave 147, lane 147E): the market-report producer's hosted report (lib/lead-magnets/deliverable-asset.ts).
+   *  "checklist" / "video" (wave 148, lane 148G — C21): a funnel primary's designed checklist PDF / its approved education video. */
+  deliverableKind: "book" | "booklet" | "copy" | "report" | "checklist" | "video"
   heldReason?: string
 }
 
@@ -128,6 +133,14 @@ function preparedAssetVerdict(kind: PromiseAssetKind, prepared: PreparedAsset | 
       // Wave 147 (147E): the producer exists (lib/market-reports/producer.ts) and runs when the magnet is CREATED (C11) — a report
       // promise is fulfilled by that validated, hosted report; a cover note is still not the report.
       if (!url || prepared.deliverableKind !== "report") return { ok: false, reason: "no validated market-report document exists for this request — the cover note is not the report" }
+      break
+    case "checklist":
+      // Wave 148 (C21): the designed checklist PDF produced with the funnel — a cover note is not the checklist.
+      if (!url || prepared.deliverableKind !== "checklist") return { ok: false, reason: "the promised checklist (the designed PDF) is not available — the cover note alone is not the checklist" }
+      break
+    case "video":
+      // Wave 148 (C21): only a video an assigned approver approved (video staging) is deliverable — a staged video is missing.
+      if (!url || prepared.deliverableKind !== "video") return { ok: false, reason: "the promised video is not approved and hosted yet (staged) — nothing to deliver" }
       break
     default:
       return { ok: false, reason: `a ${kind} is fulfilled by a person, not by the system rail` }
@@ -158,6 +171,8 @@ export interface RecordPromiseInput {
   book?: PromiseBookRef | null
   tcpaConsentGiven?: boolean
   now?: Date
+  /** @proofSeam wave 148 (C21): the funnel follow-through's seams (production never passes it). */
+  funnel?: import("./magnet-funnel").FunnelDeps
 }
 
 export type RecordPromiseResult =
@@ -191,7 +206,23 @@ interface PromiseRow {
 export async function recordPromisedDeliverable(svc: Db, input: RecordPromiseInput): Promise<RecordPromiseResult> {
   try {
     if (!input.brokerageId || !input.formId || !input.submissionId) return { ok: false, error: "tenant, form and submission are required" }
-    const asset = promisedAssetFor({ magnetType: input.magnetType, book: input.book ?? null })
+    // WAVE 148 (C21): the form's own declaration decides what a FUNNEL promised (tenant-pinned read; an unreadable form keeps the
+    // magnet-type answer, said on the row). captureFormSubmission passes the type only — the funnel lives on the form's settings.
+    let funnelPrimary: { kind: string; title: string } | null = null
+    let isFunnel = false
+    let formLookupError: string | null = null
+    {
+      const { data: formRow, error: formErr } = await svc.from("lead_capture_forms").select("id, settings").eq("id", input.formId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (formErr) formLookupError = `lead_capture_forms read refused: ${formErr.message ?? "unknown"}`
+      else {
+        const { funnelPrimaryOf } = await import("./magnet-funnel")
+        const settings = ((formRow as { settings?: Record<string, unknown> | null } | null)?.settings ?? null)
+        const fp = funnelPrimaryOf(settings)
+        funnelPrimary = fp ? { kind: fp.kind, title: fp.title } : null
+        isFunnel = !!fp
+      }
+    }
+    const asset = promisedAssetFor({ magnetType: input.magnetType, book: input.book ?? null, funnelPrimary })
     if (!asset) return { ok: true, promised: false, reason: `a ${input.magnetType} magnet promises no asset` }
     if (!input.contactId) return { ok: true, promised: false, reason: "no recipient identity (no email or phone on the request) — nothing can be delivered" }
     const now = input.now ?? new Date()
@@ -233,7 +264,7 @@ export async function recordPromisedDeliverable(svc: Db, input: RecordPromiseInp
       magnet_type: input.magnetType,
       asset_kind: asset.kind,
       asset_title: asset.title,
-      asset_ref: { ...(input.book ? { table: "book_projects", url: input.book.pdfUrl, document_id: input.book.documentId } : {}), ...deliverableRef },
+      asset_ref: { ...(input.book ? { table: "book_projects", url: input.book.pdfUrl, document_id: input.book.documentId } : {}), ...deliverableRef, ...(formLookupError ? { form_lookup_error: formLookupError.slice(0, 300) } : {}), ...(isFunnel ? { funnel: true } : {}) },
       fulfilment: asset.fulfilment,
       consent_basis: input.tcpaConsentGiven === true ? "requested_with_tcpa_consent" : "requested_by_form",
       status,
@@ -252,6 +283,14 @@ export async function recordPromisedDeliverable(svc: Db, input: RecordPromiseInp
       return { ok: false, error: `the promise was not recorded: ${ins.error.message ?? "unknown"}` }
     }
     if (!ins.data?.id) return { ok: false, error: "the promise insert returned no row" }
+    // WAVE 148 (C21): a funnel's per-person ARRANGEMENTS are promises too — recorded and started with the promise (the agent's
+    // task, the sequence enrolment, the portal card, the staged personal reel), outcomes on asset_ref.funnel_steps. Once per new
+    // promise (a reused one never re-runs); a failed step is retried by the sweep (bounded). Best-effort: the promise stands.
+    if (isFunnel && input.contactId) {
+      const { followThroughMagnetFunnel } = await import("./magnet-funnel")
+      const ft = await followThroughMagnetFunnel(svc, { brokerageId: input.brokerageId, formId: input.formId, promiseId: ins.data.id, contactId: input.contactId, now }, input.funnel ?? {})
+      if (ft.error) console.warn(`[promised-deliverables] funnel follow-through for promise ${ins.data.id}: ${ft.error}`)
+    }
     return { ok: true, promised: true, promiseId: ins.data.id, reused: false, status }
   } catch (e) {
     return { ok: false, error: `recordPromisedDeliverable threw: ${e instanceof Error ? e.message : String(e)}` }
@@ -502,6 +541,24 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
     // Wave 147 (C11 + C5): a deliverable approved by its C5-permitted publisher is the stronger basis, recorded on its own row.
     const approvalBasis = fromDeliverable?.approvedBy ? "deliverable_approved_by_c5_approver" : lifecycle?.approved_by ? "magnet_published_by_a_person" : "live_magnet_without_recorded_publisher"
 
+    // THE FUNNEL BUNDLE (wave 148, lane 148G — contract C21): a funnel's other READY assets (promised, or a bonus once approved)
+    // and every ARRANGEMENT's own line ride THIS delivery — one promise, one send. A PROMISED secondary asset that is not ready is
+    // MISSING: the promise is never delivered without it (retried; the recovery re-produces it; overdue → the arbiter).
+    let bundle: import("./magnet-funnel").FunnelBundle | null = null
+    if (((f.settings ?? {}) as { funnel?: unknown }).funnel) {
+      const { funnelBundleFor } = await import("./magnet-funnel")
+      const fb = await funnelBundleFor(svc, { brokerageId: row.brokerage_id, formId: f.id })
+      if (fb.error) return failAttempt(svc, claimed, "asset_missing", `the funnel's items are unreadable: ${fb.error}`, now, deps)
+      if (fb.bundle.promisedMissing.length) return failAttempt(svc, claimed, "asset_missing", `the funnel promised what is not ready yet: ${fb.bundle.promisedMissing.join("; ")}`, now, deps)
+      bundle = fb.bundle
+    }
+    const bundleHtml = bundle && (bundle.assets.length || bundle.arrangements.length)
+      ? `<p><strong>Also for you:</strong></p><ul>${bundle.assets.map((a) => `<li><a href="${escapeHtml(a.url)}">${escapeHtml(a.title)}</a>${a.bonus ? " (a bonus)" : ""}</li>`).join("")}${bundle.arrangements.map((a) => `<li>${escapeHtml(a.line)}${a.joinUrl ? ` — <a href="${escapeHtml(a.joinUrl)}">join link</a>` : ""}</li>`).join("")}</ul>`
+      : ""
+    const bundleText = bundle && (bundle.assets.length || bundle.arrangements.length)
+      ? `\n\nAlso for you:\n${[...bundle.assets.map((a) => `- ${a.title}: ${a.url}`), ...bundle.arrangements.map((a) => `- ${a.line}${a.joinUrl ? ` (join: ${a.joinUrl})` : ""}`)].join("\n")}`
+      : ""
+
     // DELIVER — every permitted channel; at least one must accept.
     const channels: string[] = []
     const evidence: Record<string, unknown> = {
@@ -510,6 +567,8 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
       // THE CHAIN (lane brief requirement 2): campaign + form + attribution (source) ↔ deliverable + version + approval ↔ recipient ↔ promise ↔ delivery.
       deliverable: fromDeliverable ? { id: fromDeliverable.id, version: fromDeliverable.version, approved_by: fromDeliverable.approvedBy, approved_at: fromDeliverable.approvedAt, produced_at_creation: true } : null,
       recipient: { contact_id: row.contact_id, person_id: row.person_id },
+      // C21: what else the funnel carried (each asset's url, each arrangement's mechanism) — the chain closes per item.
+      ...(bundle ? { funnel_items: [...bundle.assets.map((a) => ({ key: a.key, kind: a.kind, url: a.url, bonus: a.bonus })), ...bundle.arrangements.map((a) => ({ key: a.key, kind: a.kind, mechanism: a.mechanism }))] } : {}),
     }
     const errors: string[] = []
     if (c.email) {
@@ -519,10 +578,10 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
         return dispatchEmail({ ...p, systemSource: "lead_magnet_delivery", ledger: { reasonCode: "CONVERSATION_RESPONSE", cycle: p.ledger.cycle } })
       })
       const greeting = c.first_name ? `Hi ${escapeHtml(c.first_name)},` : "Hi,"
-      const html = `<p>${greeting}</p><p>${escapeHtml(deliverable.body).replace(/\n/g, "<br/>")}</p><p><a href="${escapeHtml(verdict.assetUrl)}">Open ${escapeHtml(verdict.title)}</a></p>`
+      const html = `<p>${greeting}</p><p>${escapeHtml(deliverable.body).replace(/\n/g, "<br/>")}</p><p><a href="${escapeHtml(verdict.assetUrl)}">Open ${escapeHtml(verdict.title)}</a></p>${bundleHtml}`
       const sent = await send({
         brokerageId: row.brokerage_id, contactId: c.id, agentId: f.agent_id ?? undefined, userId: agentUserId ?? undefined,
-        to: c.email, subject: deliverable.subject, html, text: `${deliverable.body}\n\n${verdict.assetUrl}`,
+        to: c.email, subject: deliverable.subject, html, text: `${deliverable.body}\n\n${verdict.assetUrl}${bundleText}`,
         // The person ASKED for this asset on the form — the reply to their own request, governed like every send.
         channelPurpose: "transactional", systemSource: "lead_magnet_delivery",
         ledger: { reasonCode: "CONVERSATION_RESPONSE", cycle: `lead_magnet_promise:${row.id}` },
@@ -629,7 +688,11 @@ export async function undeliveredPromisesFor(svc: Db, input: { brokerageId: stri
 
 // ── THE RETRY DRIVER ─────────────────────────────────────────────────────────
 
-export interface PromiseSweepResult { examined: number; delivered: number; stillOpen: number; escalated: number; errors: string[] }
+export interface PromiseSweepResult {
+  examined: number; delivered: number; stillOpen: number; escalated: number; errors: string[]
+  /** Wave 148 (C21): the funnel asset recovery that ran FIRST (so a recovered asset is delivered in the same sweep). */
+  funnel?: { examined: number; recovered: number; stillOpen: number; notified: number; stepRetries: number }
+}
 
 /**
  * Retry every due promise and escalate every overdue one, across tenants (the cron's caller verified CRON_SECRET); each promise
@@ -664,10 +727,18 @@ async function arbiterAnswersRaisedPromise(svc: Db, input: { brokerageId: string
   }
 }
 
-export async function sweepUndeliveredPromises(svc: Db, opts: { now?: Date; limit?: number; deps?: PromiseDeps; answer?: typeof arbiterAnswersRaisedPromise } = {}): Promise<PromiseSweepResult> {
+export async function sweepUndeliveredPromises(svc: Db, opts: { now?: Date; limit?: number; deps?: PromiseDeps; answer?: typeof arbiterAnswersRaisedPromise; funnel?: import("./magnet-funnel").FunnelDeps } = {}): Promise<PromiseSweepResult> {
   const out: PromiseSweepResult = { examined: 0, delivered: 0, stillOpen: 0, escalated: 0, errors: [] }
   const now = opts.now ?? new Date()
   try {
+    // UNDELIVERED-ASSET RECOVERY FIRST (wave 148, lane 148G — C21 + the C14 completion half 147E left to lane G): stalled funnel
+    // assets are re-produced (never published), so the promises waiting on them are delivered by THIS sweep's retry below.
+    {
+      const { recoverMagnetFunnelAssets } = await import("./magnet-funnel")
+      const rec = await recoverMagnetFunnelAssets(svc, { now, deps: opts.funnel })
+      out.funnel = { examined: rec.examined, recovered: rec.recovered, stillOpen: rec.stillOpen, notified: rec.notified, stepRetries: rec.stepRetries }
+      out.errors.push(...rec.errors.map((e) => `funnel recovery: ${e}`))
+    }
     const { applyTenantScope, platformScope } = await import("@/lib/kernel/tenant-scope")
     const q = applyTenantScope(
       svc.from("lead_magnet_promises").select("id, brokerage_id, status, next_attempt_at, due_at, escalated_at")

@@ -31,6 +31,11 @@
 // counted; every { error } is read. Never throws.
 
 import { PROMISE_ASSET_KINDS, type PreparedAsset, type PromiseAssetKind } from "./promised-deliverables"
+// Wave 148 (lane 148G — owner ruling 11, contract C21): a FUNNEL's primary deliverable may be a designed checklist or an education
+// video as well as a guide / report / agent-prepared value. Its kind is declared on settings.funnel.primary and produced HERE —
+// one producer per kind (lib/lead-magnets/magnet-funnel.ts produceChecklistDocument / commissionFunnelVideo, shared with the
+// funnel's secondaries). A video is STAGED until video staging says an assigned approver approved it.
+import { funnelPrimaryOf, type FunnelDeps } from "./magnet-funnel"
 
 type Db = { from: (table: string) => any }
 
@@ -52,6 +57,9 @@ interface DeliverableSpec { kind: PromiseAssetKind; fulfilment: "asset" | "human
 /** PURE. What a magnet must have produced before it can publish — null when it promises no asset. */
 export function deliverableSpecFor(magnetType: string | null | undefined, settings: Record<string, unknown> | null | undefined): DeliverableSpec | null {
   const s = (settings ?? {}) as { book_id?: unknown; book?: unknown }
+  // C21: a funnel declares its primary — that is what the page promises first, whatever routing type the magnet carries.
+  const fp = funnelPrimaryOf(settings)
+  if (fp) return { kind: fp.kind, fulfilment: fp.kind === "valuation" ? "human" : "asset" }
   switch (magnetType) {
     case "buyer_guide":
     case "seller_guide":
@@ -107,6 +115,11 @@ export interface DeliverableDeps {
   produceReport?: (svc: Db, a: DeliverableProductionInput & { agentUserId: string | null }) => Promise<ProducedDeliverable>
   /** The producer's own seams for the DEFAULT report path (the proof runs the real producer with fake providers). */
   report?: import("@/lib/market-reports/producer").ProducerDeps
+  /** C21 (wave 148): a funnel primary checklist / video (default: lib/lead-magnets/magnet-funnel.ts producers). */
+  produceChecklist?: (svc: Db, a: DeliverableProductionInput & { agentUserId: string | null }) => Promise<ProducedDeliverable>
+  produceVideo?: (svc: Db, a: DeliverableProductionInput & { agentUserId: string | null }) => Promise<ProducedDeliverable>
+  /** The funnel producers' own seams for the DEFAULT checklist / video path. */
+  funnel?: FunnelDeps
 }
 
 type DeliverableResult =
@@ -151,9 +164,22 @@ const defaultProduceGuide: NonNullable<DeliverableDeps["produceGuide"]> = async 
   }
 }
 
+/** C21: the funnel primary's checklist / video, through the ONE producer per kind (lib/lead-magnets/magnet-funnel.ts). */
+const defaultProduceFunnelKind = (kind: "checklist" | "video", funnelDeps?: FunnelDeps) => async (svc: Db, a: DeliverableProductionInput & { agentUserId: string | null }): Promise<ProducedDeliverable> => {
+  const fp = funnelPrimaryOf(a.settings)
+  if (!fp) return { status: "failed", reason: `a ${kind} primary needs its funnel brief (settings.funnel.primary)` }
+  const { data: b, error: bErr } = await svc.from("brokerages").select("id, name").eq("id", a.brokerageId).maybeSingle()
+  if (bErr) return { status: "failed", reason: `brokerages read refused: ${bErr.message ?? "unknown"}` }
+  const f = await import("./magnet-funnel")
+  const brief = { brokerageId: a.brokerageId, agentUserId: a.agentUserId, agentId: a.agentId, actorUserId: a.actorUserId, title: fp.title, outline: fp.outline ?? [], audience: fp.brief.audience, benefit: fp.brief.benefit, outcome: fp.brief.outcome, area: fp.brief.area, brandName: (b as { name?: string | null } | null)?.name ?? "the brokerage", agentFirstName: null, discriminator: `funnel:${fp.funnel_id}:${fp.key}`, territory: fp.brief.territory }
+  return kind === "checklist" ? f.produceChecklistDocument(svc, brief, funnelDeps) : f.commissionFunnelVideo(svc, brief, funnelDeps)
+}
+
 const defaultProduceReport = async (svc: Db, a: DeliverableProductionInput & { agentUserId: string | null }, producerDeps?: DeliverableDeps["report"]): Promise<ProducedDeliverable> => {
   const { produceMarketReport } = await import("@/lib/market-reports/producer")
-  const mr = ((a.settings ?? {}) as { market_report?: { territory?: Record<string, unknown>; narrate?: boolean; topic?: { title?: string; angle?: string } } }).market_report ?? {}
+  const fp = funnelPrimaryOf(a.settings)
+  // a funnel's report primary takes its territory from the funnel brief (settings.funnel.primary.brief.territory)
+  const mr = ((a.settings ?? {}) as { market_report?: { territory?: Record<string, unknown>; narrate?: boolean; topic?: { title?: string; angle?: string } } }).market_report ?? (fp?.brief.territory ? { territory: fp.brief.territory as Record<string, unknown> } : {})
   const r = await produceMarketReport(svc, {
     brokerageId: a.brokerageId, agentUserId: a.agentUserId, agentId: a.agentId,
     actor: a.actorUserId ? { type: "user", userId: a.actorUserId } : { type: "manager", managerKey: "campaign_orchestrator" },
@@ -201,7 +227,7 @@ export async function deliverableById(svc: Db, input: { brokerageId: string; del
 /** PURE. A ready deliverable → what the promise ledger delivers (no per-recipient render). Null when it is not deliverable. */
 export function deliverableAsPreparedAsset(d: DeliverableRow | null): PreparedAsset | null {
   if (!d || d.status !== "ready" || d.fulfilment !== "asset" || !d.cover_note || !httpsUrl(d.asset_url)) return null
-  return { deliverable: d.cover_note, pdfUrl: d.asset_url, documentId: d.document_id, deliverableKind: d.kind === "book" ? "book" : d.kind === "guide" ? "booklet" : "report" }
+  return { deliverable: d.cover_note, pdfUrl: d.asset_url, documentId: d.document_id, deliverableKind: d.kind === "book" ? "book" : d.kind === "guide" ? "booklet" : d.kind === "checklist" ? "checklist" : d.kind === "video" ? "video" : "report" }
 }
 
 // ── PRODUCE ──────────────────────────────────────────────────────────────────
@@ -239,6 +265,10 @@ export async function produceLeadMagnetDeliverable(svc: Db, input: DeliverablePr
     } else if (spec.kind === "report") {
       out = await (deps.produceReport ? deps.produceReport(svc, { ...input, agentUserId: owner.userId }) : defaultProduceReport(svc, { ...input, agentUserId: owner.userId }, deps.report))
         .catch((e: unknown) => ({ status: "failed" as const, reason: `the report producer threw: ${e instanceof Error ? e.message : String(e)}` }))
+    } else if (spec.kind === "checklist" || spec.kind === "video") {
+      const produce = spec.kind === "checklist" ? (deps.produceChecklist ?? defaultProduceFunnelKind("checklist", deps.funnel)) : (deps.produceVideo ?? defaultProduceFunnelKind("video", deps.funnel))
+      out = await produce(svc, { ...input, agentUserId: owner.userId })
+        .catch((e: unknown) => ({ status: "failed" as const, reason: `the ${spec.kind} producer threw: ${e instanceof Error ? e.message : String(e)}` }))
     } else {
       out = await (deps.produceGuide ?? defaultProduceGuide)(svc, { ...input, agentUserId: owner.userId, kind: spec.kind === "book" ? "book" : "guide" })
         .catch((e: unknown) => ({ status: "failed" as const, reason: `the guide producer threw: ${e instanceof Error ? e.message : String(e)}` }))

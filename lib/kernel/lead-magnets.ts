@@ -724,6 +724,12 @@ export async function publishLeadMagnet(
     if (!gate.ok) return { success: false, error: `Not published — ${gate.error}` }
     deliverableApproval = { deliverable: deliverableGate.deliverable, decision: gate.decision }
   }
+  // A FUNNEL PUBLISHES ONLY WHEN EVERYTHING IT PROMISES IS REAL (wave 148, lane 148G — owner ruling 11, contract C21): every
+  // PROMISED item ready (validated) or truthfully arranged — statuses re-read from their survivors first — and the publisher a
+  // C5-permitted approver. A staged bonus never blocks; a staged / failed promise does, by name. Not a funnel → unchanged.
+  const { funnelPublishGate, recordFunnelApproval } = await import("@/lib/lead-magnets/magnet-funnel")
+  const funnelGate = await funnelPublishGate(supabase as never, { brokerageId: input.brokerageId, formId: input.magnetId, settings: curSettings, agentId: formRow.agent_id ?? null, approverUserId: input.actorUserId })
+  if (!funnelGate.ok) return { success: false, error: `Not published — ${funnelGate.error}` }
   // THE VERSION THAT GOES OUT (wave 145, lane 145G — owner ruling 20 / contract C4): the page about to go live is checked
   // against the humanized final the AI draft recorded (distribution_finals, lib/marketing/humanize-final.ts): byte-for-byte the
   // staged final, or the reviewer's OWN edit — which must keep every disclosure the final carried and no word the brand
@@ -757,7 +763,7 @@ export async function publishLeadMagnet(
       reasonDetail: `human approval: publish lead magnet ${form.slug} to ${input.channels.join(", ")}`,
       riskClass: "LOW_RISK_WRITE",
       systemSource: "lead_magnets",
-      detail: { channels: input.channels, landingUrl, authoring: curSettings.authoring ?? null, provenance: curSettings.provenance ?? null, deliverable: deliverableApproval ? { id: deliverableApproval.deliverable.id, version: deliverableApproval.deliverable.version, kind: deliverableApproval.deliverable.kind, approver_basis: deliverableApproval.decision.basis } : null },
+      detail: { channels: input.channels, landingUrl, authoring: curSettings.authoring ?? null, provenance: curSettings.provenance ?? null, deliverable: deliverableApproval ? { id: deliverableApproval.deliverable.id, version: deliverableApproval.deliverable.version, kind: deliverableApproval.deliverable.kind, approver_basis: deliverableApproval.decision.basis } : null, funnel: funnelGate.required ? { promised: funnelGate.items.filter((i) => i.promised).map((i) => ({ key: i.item_key, kind: i.kind, status: i.status })), approver_basis: funnelGate.decision.basis } : null },
     },
     async () => {
       // C11 + C5: the approval of the delivery asset lands on ITS row first (counted, ready-fenced) — never an activation on an
@@ -765,6 +771,12 @@ export async function publishLeadMagnet(
       if (deliverableApproval) {
         const rec = await recordDeliverableApproval(supabase as never, { brokerageId: input.brokerageId, deliverableId: deliverableApproval.deliverable.id, approverUserId: input.actorUserId, decision: deliverableApproval.decision, at: publishedAt })
         if (!rec.ok) return { ok: false as const, error: `The delivery asset's approval was not recorded — not published: ${rec.error}` }
+      }
+      // C21: the funnel's promised items take the approval too (counted) — never an activation on an unrecorded approval.
+      if (funnelGate.required) {
+        const promisedCount = funnelGate.items.filter((i) => i.promised).length
+        const rec = await recordFunnelApproval(supabase as never, { brokerageId: input.brokerageId, formId: input.magnetId, approverUserId: input.actorUserId, decision: funnelGate.decision, at: publishedAt, promisedCount })
+        if (!rec.ok) return { ok: false as const, error: `The funnel's approval was not recorded — not published: ${rec.error}` }
       }
       // The humanized-review sign-off lands on the BOOK first (counted): a page never activates on an unrecorded sign-off.
       if (bookSignOff && distributed.book) {

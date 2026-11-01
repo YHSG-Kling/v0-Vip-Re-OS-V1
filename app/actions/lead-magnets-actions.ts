@@ -207,6 +207,32 @@ export async function draftLeadMagnetWithAiAction(input: { concept: string; magn
   }
 }
 
+/**
+ * THE FUNNEL (wave 148, lane 148G — owner ruling 11, contract C21): the creator describes audience, benefit and outcome; the AI
+ * proposes and BUILDS the package — landing page in the tenant's site, form (C15 consent + identity + situation + owner), the
+ * deliverables of any kind (staged allowed, promised only when ready or truthfully arranged), thank-you, optional steps,
+ * follow-up policy, attribution, learning. A DRAFT: publishLeadMagnetAction (C5) runs the C21 publish gate. Tenant, agent and
+ * creator come from the SESSION only (CLAUDE.md §4).
+ */
+export async function createMagnetFunnelAction(input: { audience: string; benefit: string; outcome: string; area?: string | null; territory?: { zip?: string | null; city?: string | null; state?: string | null } | null; preferred_deliverables?: string[] | null; webinar_at?: string | null; webinar_join_url?: string | null; sequence_id?: string | null }) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId || !ctx.agentId || !ctx.userId) return { success: false as const, error: "Not authenticated" }
+    const { createMagnetFunnel, FUNNEL_DELIVERABLE_KINDS } = await import("@/lib/lead-magnets/magnet-funnel")
+    const preferred = (input.preferred_deliverables ?? []).filter((k): k is (typeof FUNNEL_DELIVERABLE_KINDS)[number] => (FUNNEL_DELIVERABLE_KINDS as readonly string[]).includes(k))
+    const r = await createMagnetFunnel({
+      brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId,
+      audience: input.audience, benefit: input.benefit, outcome: input.outcome, area: input.area ?? null, territory: input.territory ?? null,
+      preferredDeliverables: preferred, schedule: { webinar_at: input.webinar_at ?? null, webinar_join_url: input.webinar_join_url ?? null }, sequenceId: input.sequence_id ?? null,
+      baseUrl: process.env.NEXT_PUBLIC_APP_URL ?? null, actor: { userType: ctx.role ?? null },
+    })
+    if (!r.ok) return { success: false as const, error: r.error, stage: r.stage }
+    return { success: true as const, funnel: r.package }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to build the funnel" }
+  }
+}
+
 /** CLONE an existing magnet (same tenant) into a new DRAFT with provenance (wave 141). */
 export async function cloneLeadMagnetAction(sourceMagnetId: string, title?: string) {
   try {
