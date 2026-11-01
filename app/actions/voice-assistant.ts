@@ -44,17 +44,20 @@ async function resolveCallerAgentId(): Promise<{
   agentId: string | null
   brokerageId: string | null
   userId: string
+  /** users.user_type from the session — the C17 authority check reads the role from here, never a body. */
+  userType: string | null
   isAuthenticated: boolean
 }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) {
-    return { agentId: null, brokerageId: null, userId: "", isAuthenticated: false }
+    return { agentId: null, brokerageId: null, userId: "", userType: null, isAuthenticated: false }
   }
   if (ctx.agentId) {
     return {
       agentId: ctx.agentId,
       brokerageId: ctx.brokerageId,
       userId: ctx.userId,
+      userType: ctx.userType || null,
       isAuthenticated: true,
     }
   }
@@ -69,6 +72,7 @@ async function resolveCallerAgentId(): Promise<{
     agentId: agentRow?.id ?? null,
     brokerageId: ctx.brokerageId ?? agentRow?.brokerage_id ?? null,
     userId: ctx.userId,
+    userType: ctx.userType || null,
     isAuthenticated: true,
   }
 }
@@ -112,8 +116,30 @@ export async function processVoiceCommand(params: {
   const supabase = await createClient()
 
   try {
-    // Parse intent using AI
-    const intent = await parseVoiceIntent(commandText, agentId, context)
+    // ── WHICH INTENT — THE ONE INTENT INTERFACE (C17, wave 148 lane 148D) ──
+    // TOMBSTONE (§1.1, Law 2): parseVoiceIntent (a 12-intent prompt POSTed to /api/ai/analyze — booked to
+    // no tenant, a wrong invoice by CLAUDE.md §5) and its keyword fallback simpleIntentParsing were one of
+    // FOUR classifiers. Their intents moved into the ONE catalogue (lib/voice-admin/intent-interface.ts
+    // FIELD_SEEDS + the merged hot_leads / deals_at_risk / lookup_contact / create_task executors), the
+    // entities they extracted are the routes' params (rules first; the one expert prompt, booked to this
+    // session's tenant, fills only words the agent actually said). Every executor below is unchanged.
+    const { interpretIntentLive } = await import("@/lib/voice-admin/intent-interface-live")
+    const interpretation = await interpretIntentLive({
+      utterance: commandText,
+      modality: "voice",
+      actor: { userId: caller.userId, userType: caller.userType, platformRole: null, agentId },
+      tenant: { brokerageId: caller.brokerageId ?? "" },
+      screen: "mobile",
+      context: { contactId: contactId ?? null },
+    })
+    const fieldExecutor = interpretation.executors.field_assistant
+    const intent: VoiceIntent = {
+      // A route another desk executes (an ad, a blog, an open house, the kernel lane) → the one affordance;
+      // a field intent still missing what it needs → ask; otherwise this file's own executor.
+      type: !fieldExecutor ? (interpretation.capability ? "intent_interface" : "unknown") : interpretation.missing.length > 0 ? "needs_info" : fieldExecutor,
+      entities: { ...interpretation.params, ...(context ? { context } : {}) },
+      confidence: interpretation.confidence === "high" ? 0.9 : interpretation.confidence === "medium" ? 0.6 : 0.3,
+    }
 
     let response = ""
     let actionTaken = ""
@@ -361,6 +387,22 @@ export async function processVoiceCommand(params: {
         break
       }
 
+      case "intent_interface":
+        // Understood, and owned by another desk — said honestly, finished where the rails are visible.
+        response = interpretation.authority_check.allowed
+          ? `${interpretation.plan.summary} Finish it on the assistant bar — it asks for anything missing and waits for your yes.`
+          : (interpretation.authority_check.reasons[0] ?? interpretation.plan.summary)
+        actionTaken = "intent_interface"
+        success = interpretation.authority_check.allowed
+        break
+
+      case "needs_info":
+        // Asked, never guessed (C17): the first thing this command still needs.
+        response = interpretation.missing[0]?.ask ?? "What else should I know?"
+        actionTaken = "needs_info"
+        success = false
+        break
+
       default:
         response = "I didn't understand that command. Try 'What's my schedule' or 'Who are my hot leads?'"
         success = false
@@ -570,106 +612,11 @@ export async function updateVoiceConfig(_agentId: string | undefined, updates: a
 // HELPER FUNCTIONS
 // ============================================================================
 
-async function parseVoiceIntent(commandText: string, agentId: string, context: any): Promise<VoiceIntent> {
-  // Use OpenAI to parse natural language intent
-  const prompt = `
-Parse this voice command for a real estate agent:
-
-Command: "${commandText}"
-
-Context:
-- Agent ID: ${agentId}
-- Current Location: ${context?.location || "unknown"}
-- Current Time: ${new Date().toLocaleTimeString()}
-- Active Transaction: ${context?.active_transaction || "none"}
-
-Detect Intent (one of):
-- lookup_contact: Find info about a contact
-- get_schedule: Calendar queries
-- add_note: Add note to contact
-- send_property: Send listing to contact
-- hot_leads: Get hot leads list
-- deals_at_risk: Check deal health
-- create_task: Create a task
-- call_contact: Initiate call
-- request_document: Ask a client for a document ("request the pre-approval letter from Jane")
-- assign_vendor: Introduce/link a vendor to a contact ("assign my stager to the Hendersons")
-- log_upgrade: Record a property upgrade/renovation on a listing ("they added a new roof at 12 Oak St")
-- set_portal_milestones: Show/hide a milestone on a client's portal ("hide the inspection milestone from Jane's portal")
-
-Extract Entities:
-- contact_name: Person's name mentioned
-- property_address: Address mentioned
-- note_text: Note content
-- task_title: Task title
-- task_description: Task description
-- due_date: Any time/date mentioned
-- document_name: Document being requested
-- vendor_name: Vendor/business name mentioned
-- vendor_role: The vendor's role (stager, inspector, lender, …)
-- amount: Any dollar amount mentioned (number only)
-- milestone_name: Portal milestone mentioned (inspection, appraisal, …)
-
-Return JSON:
-{
-  "type": "intent_type",
-  "entities": {},
-  "confidence": 0.95
-}
-`
-
-  try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/ai/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, temperature: 0.2 }),
-    })
-
-    const result = await response.json()
-    return result as VoiceIntent
-  } catch (error) {
-    // Fallback to simple keyword matching
-    return simpleIntentParsing(commandText)
-  }
-}
-
-function simpleIntentParsing(text: string): VoiceIntent {
-  const lower = text.toLowerCase()
-
-  if (lower.includes("schedule") || lower.includes("appointment") || lower.includes("calendar")) {
-    return { type: "get_schedule", entities: {}, confidence: 0.8 }
-  }
-  if (lower.includes("hot lead") || lower.includes("top lead")) {
-    return { type: "hot_leads", entities: {}, confidence: 0.8 }
-  }
-  if (lower.includes("risk") || lower.includes("problem") || lower.includes("concern")) {
-    return { type: "deals_at_risk", entities: {}, confidence: 0.8 }
-  }
-  if (lower.includes("add note") || lower.includes("make note")) {
-    return { type: "add_note", entities: { note_text: text }, confidence: 0.7 }
-  }
-  if (lower.includes("request") && (lower.includes("document") || lower.includes("letter") || lower.includes("pre-approval") || lower.includes("preapproval"))) {
-    return { type: "request_document", entities: { document_name: text }, confidence: 0.6 }
-  }
-  if ((lower.includes("assign") || lower.includes("introduce") || lower.includes("connect")) && (lower.includes("vendor") || lower.includes("stager") || lower.includes("inspector") || lower.includes("photographer"))) {
-    return { type: "assign_vendor", entities: {}, confidence: 0.6 }
-  }
-  if (lower.includes("upgrade") || lower.includes("renovation") || lower.includes("remodel")) {
-    return { type: "log_upgrade", entities: { note_text: text }, confidence: 0.6 }
-  }
-  // The spoken action receipt — "what did you (all) do", "daily receipt",
-  // "while I was out/asleep", "AI report".
-  if (
-    lower.includes("what did you do") || lower.includes("what did the team do") ||
-    lower.includes("daily receipt") || lower.includes("ai report") ||
-    lower.includes("while i was")
-  ) {
-    return { type: "ai_work_receipt", entities: {}, confidence: 0.85 }
-  }
-
-  return { type: "unknown", entities: {}, confidence: 0.5 }
-}
-
+// TOMBSTONE (§1.1, Law 2 — wave 148, lane 148D): parseVoiceIntent + simpleIntentParsing deleted. They
+// were the field mic's private classifier (a prompt POSTed to /api/ai/analyze, booked to no tenant, and a
+// keyword fallback). SURVIVOR: lib/voice-admin/intent-interface.ts interpretIntent (FIELD_SEEDS carry the
+// intents and their keyword phrases) + lib/voice-admin/intent-interface-live.ts interpretIntentLive (the
+// one expert prompt, booked to the session tenant), called from processVoiceCommand above.
 async function lookupContact(name: string, agentId: string) {
   const supabase = await createClient()
   const { data } = await supabase

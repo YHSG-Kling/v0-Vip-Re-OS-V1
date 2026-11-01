@@ -141,6 +141,7 @@ import { SmartNoteComposer } from "./components/os/smart-note-composer"
 import { BuyerMatchPanel } from "./components/os/buyer-match-panel"
 import { QualificationSummaryCard } from "./components/os/qualification-summary-card"
 import { ConversionForecastPanel } from "./components/os/conversion-forecast-panel"
+import { IntentAffordance } from "@/app/components/shared/intent-affordance"
 import type { IsaHandoffBriefShape } from "./components/os/qualification-summary-card"
 interface Contact {
   id: string
@@ -1310,6 +1311,12 @@ export default function CRMPage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Contacts
           </Button>
+        </div>
+
+        {/* C17 (wave 148D): the one affordance, knowing whose page this is — "find homes with a private
+            backyard and a short commute to downtown" searches for THIS buyer (re-read under the session tenant). */}
+        <div className="px-4 pt-3 shrink-0">
+          <IntentAffordance screen="contacts" compact context={{ contactId: selectedContact.id }} title="Ask about this contact" />
         </div>
 
         {detailLoading ? (
@@ -3329,6 +3336,9 @@ export default function CRMPage() {
   // Contact List View
   return (
     <div className="p-6 space-y-6">
+      {/* C17 (wave 148D): "show me which contacts may need help" · "find buyers interested in acreage". */}
+      <IntentAffordance screen="contacts" title="Ask about your contacts" />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

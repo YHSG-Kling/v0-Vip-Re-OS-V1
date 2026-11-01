@@ -3,6 +3,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { redirect } from "next/navigation"
 import { DailyBriefingCard } from "@/app/components/mobile/DailyBriefingCard"
 import { QuickActionGrid } from "@/app/components/mobile/QuickActionGrid"
+import { IntentAffordance } from "@/app/components/shared/intent-affordance"
 import { MobileActivityFeed } from "@/app/components/mobile/MobileActivityFeed"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -208,6 +209,9 @@ export default async function MobileAssistantPage() {
       <main className="px-4 py-4 space-y-6">
         {/* Mobile OS Command Strip */}
         <MobileCommandStrip agentId={agentId ?? ""} />
+
+        {/* C17 (wave 148D): the one voice/text affordance — speak or type anything the OS can do. */}
+        <IntentAffordance screen="mobile" compact title="Ask the team" />
 
         {/* Section 1: Daily Briefing */}
         <section>

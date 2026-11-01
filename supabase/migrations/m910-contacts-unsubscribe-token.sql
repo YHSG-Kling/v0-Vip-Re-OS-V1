@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 148, lane 148B) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-01 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 148, lane 148B ──
 --
 -- m910 — EVERY MARKETING EMAIL CARRIES AN UNSUBSCRIBE THAT IS NOT AN ENTITY ID (wave 148, lane 148B; owner ruling 3, contract C16).
 --

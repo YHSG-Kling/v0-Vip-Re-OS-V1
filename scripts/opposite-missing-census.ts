@@ -3655,7 +3655,8 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   // requireAuth, which reads a Supabase session a bearer token never mints. Both were
   // session-only endpoints with NO session-bearing caller — loops, not doors — and
   // lane G2 closed them with real callers
-  // (app/components/dashboard/voice/KernelPlanCard.tsx and
+  // (app/components/shared/intent-affordance.tsx — the ONE voice/text affordance KernelPlanCard.tsx
+  // now binds, wave 148D — and
   // app/dashboard/superadmin/connectors/capability-resolver-card.tsx) instead of
   // exempting them. Same directory, opposite verdicts, decided on the auth path.
   ["/api/agentic-os/actions",              "Agentic-API DISCOVER (agenticapi.com ACTION model) — the vendor-anonymous action manifest an EXTERNAL agent reads first. Auth: vos_ bearer token via resolveAgenticCaller; credentials minted at app/dashboard/superadmin/api-tokens, documented at app/settings/developers/developers-client.tsx:326"],

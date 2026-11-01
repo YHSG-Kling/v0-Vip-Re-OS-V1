@@ -66,6 +66,50 @@ export interface FieldProvenance {
   /** ISO time the value was said / learned / defaulted. */
   at: string
   reason: string | null
+  /** Wave 148D (ruling 9): how sure the parse of that statement was (ParsedBuyerCriteria.confidence). */
+  confidence?: "high" | "low" | null
+  /** Wave 148D (ruling 9): on what basis the buyer's words are held — never fabricated (ruling 3). */
+  consent?: CriteriaConsent | null
+}
+
+/**
+ * WAVE 148 (lane 148D, owner ruling 9: "buyers' words are recorded; call transcripts save to the criteria
+ * store — literal wording, structured interpretation, confidence, consent; corrections keep history").
+ * The basis on which a buyer's own words are held in this store. One vocabulary (§6), carried in the
+ * jsonb provenance / change evidence (m895 / m896 — no new column). It states what is KNOWN, never more:
+ * a call transcript says the AI-call disclosure policy applies, not that this call's announcement played.
+ */
+/** ONE consent vocabulary (CLAUDE.md §6) — the m916 CHECK's values (CONSENT_BASES below is this same list). Lane 148D's
+ *  parallel list ("call_transcript" / "agent_entered" / "system") was merged onto it by the wave-148 integrator:
+ *  call_transcript → call_recording_disclosure, agent_entered → agent_attested, system → null (a basis nobody stated is
+ *  NOT stated — never assumed). */
+export const CRITERIA_CONSENT_BASES = ["self_service_portal", "inbound_message", "call_recording_disclosure", "agent_attested"] as const
+export type CriteriaConsentBasis = (typeof CRITERIA_CONSENT_BASES)[number]
+
+export interface CriteriaConsent {
+  basis: CriteriaConsentBasis
+  /** The record the basis rests on — a signed-in user id, a message id, `voice_call:<id>` (m916 consent_ref). */
+  ref?: string | null
+  /** What the basis rests on, in words (the disclosure policy, the sign-in, the inbound message). */
+  note?: string | null
+  /** The record the words came from — `voice_call:<id>`, `message:<id>` — traceable. */
+  sourceRef?: string | null
+  capturedAt?: string
+}
+
+/** PURE: the basis a channel implies AS A FACT when the door states none — the buyer typed in their own signed-in
+ *  portal (a signed-in user only), the buyer wrote to us (email / SMS), the buyer's agent entered it (attested by that
+ *  agent). A call must state its own basis (the recording disclosure) and anything else is null: "not stated". */
+export function defaultCriteriaConsent(
+  channel: CriteriaChannel, at: string, sourceRef: string | null = null, actor?: { type?: string; userId?: string | null } | null,
+): CriteriaConsent | null {
+  if ((channel === "portal" || channel === "mobile") && actor?.type === "user" && actor.userId)
+    return { basis: "self_service_portal", ref: actor.userId, note: "Typed or spoken by the buyer in their own signed-in portal.", sourceRef, capturedAt: at }
+  if (channel === "email" || channel === "sms")
+    return { basis: "inbound_message", ref: sourceRef, note: "The buyer wrote to us; their message is the record.", sourceRef, capturedAt: at }
+  if (channel === "agent" && actor?.userId)
+    return { basis: "agent_attested", ref: actor.userId, note: "Entered by the buyer's agent on the buyer's behalf.", sourceRef, capturedAt: at }
+  return null
 }
 
 export type CriteriaProvenanceMap = Partial<Record<CriteriaField, FieldProvenance>>
@@ -409,8 +453,8 @@ export type UtteranceSourceKind = (typeof UTTERANCE_SOURCE_KINDS)[number]
  * portal; the buyer wrote to us). A call with no stated disclosure is recorded with consent_basis NULL — "not stated",
  * never "consented".
  */
-export const CONSENT_BASES = ["self_service_portal", "inbound_message", "call_recording_disclosure", "agent_attested"] as const
-export type ConsentBasis = (typeof CONSENT_BASES)[number]
+export const CONSENT_BASES = CRITERIA_CONSENT_BASES
+export type ConsentBasis = CriteriaConsentBasis
 
 export interface BuyerUtteranceDraft {
   channel: CriteriaChannel

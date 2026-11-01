@@ -288,9 +288,20 @@ async function proposeSpokenCriteriaAlert(svc: any, call: {
       if (whoError) console.error("[call-analysis] contact side read refused — spoken criteria not saved:", whoError.message)
       else if (spoken && who && isBuyerSideContactType((who as { contact_type: string | null }).contact_type)) {
         const { recordStatedCriteriaTurn } = await import("@/lib/buyer-search/criteria-turn")
+        // Wave 148D (ruling 9): the transcript is held on its OWN basis, stated as what is known — the
+        // AI-call disclosure policy applies (lib/communication/call-disclosures.ts withAiCallDisclosures);
+        // whether this call's announcement played lives on the call record and is not re-asserted here.
         const turn = await recordStatedCriteriaTurn(svc, {
           brokerageId: call.brokerage_id, contactId: call.contact_id, text: spoken, channel: "voice", actor: { type: "system" },
           idempotencyKey: `buyer_search.criteria.update:${call.contact_id}:call:${call.id}`, allowModelAssist: false, ledgerClient: svc,
+          sourceRef: `voice_call:${call.id}`,
+          consent: {
+            basis: "call_recording_disclosure",
+            ref: `voice_call:${call.id}`,
+            note: "The buyer's own lines from a call transcript; AI calls carry the AI + recording disclosure by policy (withAiCallDisclosures) — the call record holds whether it played.",
+            sourceRef: `voice_call:${call.id}`,
+            capturedAt: new Date().toISOString(),
+          },
         })
         if (turn.error) console.error("[call-analysis] spoken criteria not saved to the buyer's search:", turn.error)
       }

@@ -11,6 +11,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { AdsDashboardClient } from "./ads-dashboard-client"
+import { IntentAffordance } from "@/app/components/shared/intent-affordance"
 import { getAdConnections } from "@/lib/ads/connection-status"
 import { listAudienceTemplates } from "@/app/actions/fb-audience-templates"
 import { isVibeConfigured } from "@/lib/providers/vibe"
@@ -214,6 +215,11 @@ export default async function AdsCampaignsPage() {
   const openaiAdsConnected = await isOpenaiAdsConfigured(profile.brokerage_id)
 
   return (
+    <>
+    {/* C17 (wave 148D): say or type the ad you want — "create an ad for my new listing". */}
+    <div className="mx-auto w-full max-w-7xl px-4 pt-4">
+      <IntentAffordance screen="ads" title="Tell me the ad you want" />
+    </div>
     <AdsDashboardClient
       userId={user.id}
       brokerageId={profile.brokerage_id}
@@ -230,5 +236,6 @@ export default async function AdsCampaignsPage() {
       openaiAdsConnected={openaiAdsConnected}
       organicLift={workspace.organicLift}
     />
+    </>
   )
 }

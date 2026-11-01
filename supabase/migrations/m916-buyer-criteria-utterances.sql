@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 148, lane 148E) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-01 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 148, lane 148E ──
 --
 -- m916 — buyer_criteria_utterances: THE BUYER'S OWN WORDS, KEPT WHOLE, BESIDE WHAT WE UNDERSTOOD
 --

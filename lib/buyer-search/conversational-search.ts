@@ -51,6 +51,7 @@ import {
   type CriteriaField,
   type CriteriaChangeTrigger,
   type FieldProvenance,
+  type CriteriaConsent,
   provenanceOf,
 } from "./buyer-criteria"
 import { composeNeighbourlyExplanation, numbersAreGrounded, restatesUnknown, type CriteriaFit, type NeighbourlyVoice } from "./explanation-generator"
@@ -118,6 +119,20 @@ export interface TurnContext {
   channel: CriteriaChannel
   at: string
   trigger: Extract<CriteriaChangeTrigger, "stated" | "corrected" | "feedback">
+  /** Wave 148D (ruling 9): the statement record every change and provenance entry of this turn carries —
+   *  the literal wording, the structured interpretation, its confidence and the consent basis. */
+  statement?: CriteriaStatement
+}
+
+/** Wave 148D (ruling 9): what the buyer said, what it was taken to mean, how sure, on what basis. */
+export interface CriteriaStatement {
+  /** The buyer's literal words for the whole turn (clipped to 600 characters). */
+  literal: string
+  /** The structured interpretation of those words (the one parser's output, compact). */
+  interpretation: Record<string, unknown>
+  confidence: "high" | "low"
+  /** null = no basis was stated (never assumed). */
+  consent: CriteriaConsent | null
 }
 
 export function emptyCriteria(): BuyerCriteria {
@@ -175,7 +190,13 @@ export function applyConversationTurn(
   }
   const said = (value: unknown, quote: string): FieldProvenance => ({
     source: "said", value, evidence: quote, channel: turn.channel, at: turn.at, reason: null,
+    ...(turn.statement ? { confidence: turn.statement.confidence, consent: turn.statement.consent } : {}),
   })
+  // Wave 148D (ruling 9): every change row of this turn carries the whole statement — literal wording,
+  // interpretation, confidence, consent — so the history shows exactly what was said and how it was read.
+  const statementEvidence = turn.statement
+    ? { literal: turn.statement.literal, interpretation: turn.statement.interpretation, confidence: turn.statement.confidence, consent: turn.statement.consent }
+    : {}
   const set = (field: CriteriaField, value: unknown, needle: string | number | null) => {
     const prev = (next as any)[field]
     const quote = quoteFor(needle)
@@ -189,7 +210,7 @@ export function applyConversationTurn(
     changes.push({
       field, previous: prev ?? null, proposed: value, provenance: "said", trigger: turn.trigger,
       reason: turn.trigger === "corrected" ? "You changed this yourself" : `You said "${quote}"`,
-      evidence: { quote, channel: turn.channel }, status: "applied", channel: turn.channel,
+      evidence: { quote, channel: turn.channel, ...statementEvidence }, status: "applied", channel: turn.channel,
     })
   }
   const c = parsed.criteria

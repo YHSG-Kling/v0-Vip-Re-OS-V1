@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { BlogDashboardClient } from "./blog-dashboard-client"
+import { IntentAffordance } from "@/app/components/shared/intent-affordance"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
@@ -76,11 +77,17 @@ export default async function BlogDashboardPage() {
   }
 
   return (
-    <BlogDashboardClient
-      userId={user.id}
-      brokerageId={userData.brokerage_id}
-      initialPosts={posts || []}
-      keywords={keywords || []}
-    />
+    <>
+      {/* C17 (wave 148D): say or type the post you want — "write a blog on this month's market". */}
+      <div className="mx-auto w-full max-w-7xl px-4 pt-4">
+        <IntentAffordance screen="blog" title="Tell me the post you want" />
+      </div>
+      <BlogDashboardClient
+        userId={user.id}
+        brokerageId={userData.brokerage_id}
+        initialPosts={posts || []}
+        keywords={keywords || []}
+      />
+    </>
   )
 }

@@ -30,6 +30,8 @@ import { DefaultChatTransport } from "ai"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2, Zap, Mic, MicOff, Phone, Volume2 } from "lucide-react"
 import { useEnterToSubmit } from "@/hooks/use-enter-to-submit"
+import { IntentAffordance } from "@/app/components/shared/intent-affordance"
+import type { IntentInterpretation } from "@/lib/voice-admin/intent-interface"
 
 // ─── Suggested questions by role ─────────────────────────────────────────────
 
@@ -563,6 +565,8 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
   const [voiceTranscript, setVoiceTranscript] = useState("")
   const [callQueue, setCallQueue] = useState<CallQueueItem[]>([])
   const [voiceResponse, setVoiceResponse] = useState<string | null>(null)
+  /** A plan the team brain handed to the ONE affordance (C17 action "intent_interface"). */
+  const [intentSeed, setIntentSeed] = useState<{ utterance: string; interpretation: IntentInterpretation | null } | null>(null)
   const [fetchedWakeWord, setFetchedWakeWord] = useState<string | null>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const wakeRecognitionRef = useRef<SpeechRecognition | null>(null)
@@ -674,12 +678,13 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     setVoiceTranscript(transcript)
     setVoiceResponse(null)
     setCallQueue([])
+    setIntentSeed(null)
 
     try {
       const res = await fetch("/api/internal/voice-command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript, sessionId }),
+        body: JSON.stringify({ transcript, sessionId, modality: "voice" }),
       })
       const data = await res.json()
 
@@ -705,6 +710,10 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
       // If the intent is general, also forward to text chat
       if (data.action === "forward_to_chat") {
         sendMessageRef.current({ text: transcript })
+      }
+      // C17: another desk executes it — the one affordance takes the plan from here.
+      if (data.action === "intent_interface" && data.data?.interpretation) {
+        setIntentSeed({ utterance: transcript, interpretation: data.data.interpretation as IntentInterpretation })
       }
     } catch {
       const errMsg = "Sorry, I couldn't process that command. Please try again."
@@ -1406,6 +1415,18 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
                       Replay
                     </button>
                   </div>
+                )}
+
+                {/* C17 (wave 148D): the team brain understood a request another desk executes (an ad, a
+                    blog, an open house, who may need help…). The ONE affordance carries it from here —
+                    the plan, the missing detail it asks for, and the "yes, do it" — never a second UI. */}
+                {intentSeed && !voiceProcessing && (
+                  <IntentAffordance
+                    screen="assistant"
+                    compact
+                    seed={intentSeed}
+                    context={{ contactId: pageContext?.contactId ?? null, listingId: pageContext?.listingId ?? null }}
+                  />
                 )}
 
                 {/* Call queue — shown after hot contacts query */}

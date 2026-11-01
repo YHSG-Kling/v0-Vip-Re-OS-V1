@@ -1,81 +1,58 @@
 // app/api/agentic-os/voice/route.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// THE KERNEL VOICE LANE'S DOOR. An utterance in, a GOVERNED PLAN out — and, on a
-// confirmed turn, one manager signal per step on the egress.
+// THE C17 DOOR (wave 148, lane 148D) — and still the kernel voice lane's door. One sentence in, spoken or
+// typed, from any screen; out comes the interpretation (capability, params, missing information, the plan
+// in words, the authority answer) and — on a turn that clears every rail — the execution.
 //
-// `lib/voice-admin/plan-voice-command.ts` was built complete and left with no
-// caller: `planVoiceCommand` and its UI helper `planLines` were referenced by
-// nothing in the tree, so the entire multi-step, manager-attributed voice lane —
-// the thing lib/kernel/manager-registry.ts:voice_kernel_command_surface describes
-// as the differentiator a single-assistant product cannot copy — had no way in.
-// The DIRECT lane (`handleVoiceCommand` → COMMAND_EXECUTORS, one verb, wired to
-// app/dashboard/voice/VoiceCommandCenterClient.tsx) is untouched and stays the
-// front door for a single command.
+// WHAT CHANGED, AND WHAT DID NOT. This route was the kernel lane's door: an utterance → planVoiceCommand →
+// a governed plan, one manager signal per step on a confirmed turn. That lane is untouched and still runs
+// here — it is the `kernel_signal` family of the ONE intent catalogue (lib/voice-admin/intent-interface.ts),
+// executed by executeIntent through planVoiceCommand. What the door gained is the rest of the OS: the six
+// domain routes the owner named (an ad, a buyer search by interest, a market blog, a home search, an open
+// house, who may need help), and a HANDOFF for every intent a legacy surface still executes (the team
+// brain, the field mic, the governed command layer) — the affordance posts the same words to that door,
+// whose classifier is now this catalogue too.
 //
-// THE OTHER HALF OF THAT LOOP, closed later: this route was itself addressed by
-// NOTHING. It refuses a bearer token (below), so it can never be an external
-// door — a session-only endpoint no session-bearing surface calls is not
-// "unreferenced by design", it is a planner with a door and no doorway. Its
-// caller is now
-// app/components/dashboard/voice/KernelPlanCard.tsx, rendered beside the direct
-// lane in app/dashboard/voice/VoiceCommandCenterClient.tsx: it POSTs the
-// utterance, renders `lines[]` per step with the owning manager, and on
-// `awaitingConfirmation > 0` re-POSTs with confirmed:true, showing `dispatched`,
-// `failed` and `error` rather than swallowing any of them.
+// ITS CALLER is app/components/shared/intent-affordance.tsx — the ONE voice/text affordance, mounted on
+// the screens listed in INTENT_SCREENS (it replaced app/components/dashboard/voice/KernelPlanCard.tsx,
+// whose plan rendering, confirmation turn and refusal display it carries).
 //
-// WHY HERE AND NOT A PAGE. The planner's own docblock names its authority source:
-// "the same scope machinery the Agentic API uses, so voice cannot reach further
-// than a token could". That machinery is `resolveAgenticCaller`, and this
-// directory is where it lives — /api/agentic-os/actions discovers what a caller
-// may do, /api/agentic-os/mcp exposes it as tools, and this turns a sentence into
-// a plan over the same manifest. Putting the planner behind a different gate would
-// have meant a second authority answer for the same capabilities.
+// TWO REFUSALS THAT ARE DELIBERATE (unchanged):
+//   · A BEARER TOKEN CANNOT SPEAK. Every dispatched step and every ledger row records the HUMAN who asked
+//     (users.id); an agent credential has no human behind it, and agents.id / users.id are DISJOINT — so
+//     /api/agentic-os/actions is the door for a token.
+//   · THE TENANT AND THE ACTOR ARE THE SESSION'S. Nothing in the body names a brokerage, a user or a role;
+//     a contactId / listingId in `context` is a HINT the executor re-reads under the session tenant.
 //
-// TWO REFUSALS THAT ARE DELIBERATE, not gaps:
-//
-//   · A BEARER TOKEN CANNOT SPEAK. `planVoiceCommand` records `spoken_by` (a
-//     users.id) on every dispatched signal and passes the same id as
-//     `agentUserId` to the capability resolver. An agent credential has a
-//     brokerage but no human behind it, and `agents.id` / `users.id` are DISJOINT
-//     id spaces — so there is no id to substitute that would not be a lie in the
-//     audit trail. Token callers are refused with that reason rather than
-//     dispatched anonymously.
-//   · THE SPEAKER IS NEVER IN THE BODY. `userId`, `agentId` and `brokerageId` all
-//     come from the session; the request supplies only what was SAID. A voice
-//     surface is exactly where a caller-supplied identity is most tempting and
-//     least defensible — the person talking does not know their uuid, so any id
-//     on the wire was invented upstream or hallucinated out of the sentence.
-//
-// CONFIRMATION IS A SECOND REQUEST, and that is the planner's rule, not this
-// route's: buildVoicePlan marks a mutating step `needs_confirmation`, and only a
-// call carrying `confirmed: true` dispatches. So a first POST is always safe to
-// make — building the plan is how the voice admin knows what to say.
-// ─────────────────────────────────────────────────────────────────────────────
+// AUTHORITY: a plain tenant session carries no agent-token scopes (resolveAgenticCaller grants scopes to
+// tokens and platform staff only), which is why the kernel lane used to answer "you are not able to …"
+// to every broker. C17 decides authority from the session ROLE (FEATURE_FLAGS), the assistant's risk
+// ceiling and the never-spoken list, and grants the kernel step exactly the one scope it cleared.
+
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
-import { planVoiceCommand, planLines } from "@/lib/voice-admin/plan-voice-command"
+import { isIntentScreen, INTENT_MODALITIES, type IntentActor, type IntentModality } from "@/lib/voice-admin/intent-interface"
+import { interpretIntentLive, executeIntent, recordIntentCommand } from "@/lib/voice-admin/intent-interface-live"
 
 export const dynamic = "force-dynamic"
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function POST(req: Request) {
-  // Scopes first. This is the ONLY authority answer in this file — everything
-  // below either narrows it or refuses.
   const caller = await resolveAgenticCaller(req)
   if (caller.via === "none") {
-    return NextResponse.json(
-      { error: "Unauthenticated — sign in to speak a command" },
-      { status: 401 },
-    )
+    return NextResponse.json({ error: "Unauthenticated — sign in to ask the assistant" }, { status: 401 })
   }
   if (caller.via === "token") {
     return NextResponse.json(
       {
         error:
-          "A spoken command needs a speaker. This endpoint attributes every dispatched " +
-          "step to the human who asked, and an agent credential has no human behind it. " +
-          "Use /api/agentic-os/actions to invoke a capability with a token.",
+          "A spoken or typed request needs a person. This door records the human who asked on every step " +
+          "and ledger row, and an agent credential has no human behind it. Use /api/agentic-os/actions to " +
+          "invoke a capability with a token.",
       },
       { status: 403 },
     )
@@ -85,55 +62,50 @@ export async function POST(req: Request) {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response
 
-  let body: unknown
+  let body: Record<string, unknown>
   try {
-    body = await req.json()
+    body = (await req.json()) as Record<string, unknown>
   } catch {
     return NextResponse.json({ error: "Body must be JSON" }, { status: 400 })
   }
-  const utterance =
-    typeof (body as { utterance?: unknown })?.utterance === "string"
-      ? ((body as { utterance: string }).utterance).trim()
-      : ""
+  const utterance = typeof body.utterance === "string" ? body.utterance.trim().slice(0, 1000) : ""
   if (!utterance) {
     return NextResponse.json({ error: "Nothing was said — `utterance` is required" }, { status: 400 })
   }
-  const confirmed = (body as { confirmed?: unknown })?.confirmed === true
+  const modality: IntentModality = (INTENT_MODALITIES as readonly string[]).includes(String(body.modality)) ? (body.modality as IntentModality) : "text"
+  const screen = isIntentScreen(body.screen) ? body.screen : null
+  const confirmed = body.confirmed === true
+  const rawCtx = (body.context && typeof body.context === "object" ? body.context : {}) as Record<string, unknown>
+  const context = {
+    contactId: typeof rawCtx.contactId === "string" && UUID.test(rawCtx.contactId) ? rawCtx.contactId : null,
+    listingId: typeof rawCtx.listingId === "string" && UUID.test(rawCtx.listingId) ? rawCtx.listingId : null,
+  }
 
-  // Never throws by contract — a voice surface that 500s mid-sentence is worse
-  // than one that says it could not tell. Its `error` field carries anything it
-  // could not do, and it is passed through below rather than swallowed.
-  const result = await planVoiceCommand({
-    utterance,
-    brokerageId: auth.brokerageId,
+  const actor: IntentActor = {
     userId: auth.userId,
-    // agents.id, resolved by requireAuth from agents.user_id — NOT the users.id
-    // above. The two spaces are disjoint and the capability resolver keys on the
-    // agents one.
-    agentId: auth.agentId ?? undefined,
-    scopes: caller.scopes,
-    confirmed,
-  })
+    userType: auth.userType,
+    platformRole: auth.platformRole,
+    // agents.id, resolved by requireAuth from agents.user_id — never the users.id above (disjoint spaces).
+    agentId: auth.agentId,
+    // A buyer in their own portal acts AS the contact the page is about — proven again by
+    // requireContactAccess inside the executor before any read.
+    contactId: (auth.userType ?? "").toLowerCase() === "contact" ? context.contactId : null,
+  }
+  const tenant = { brokerageId: auth.brokerageId }
+  const svc = createServiceClient()
+
+  const interpretation = await interpretIntentLive({ utterance, modality, actor, tenant, screen, context, svc })
+  const execution = interpretation.capability ? await executeIntent(interpretation, { actor, tenant, confirmed, context, svc }) : null
+  await recordIntentCommand(svc, { actor, tenant, interpretation, execution, source: screen === "mobile" ? "mobile" : "web" })
 
   return NextResponse.json({
     utterance,
+    modality,
+    screen,
     confirmed,
-    // The spoken line, and the same plan as lines a human can read — one entry per
-    // step, in the order the planner produced them.
-    spokenSummary: result.plan.spokenSummary,
-    lines: planLines(result.plan).map((l) => ({
-      text: l.text,
-      capability: l.step.capability,
-      manager: l.step.manager,
-      disposition: l.step.disposition,
-      mutates: l.step.mutates,
-    })),
-    actionable: result.plan.actionable,
-    awaitingConfirmation: result.plan.awaitingConfirmation,
-    dispatched: result.dispatched,
-    // Surfaced, never silently absent: a dispatch that failed quietly would have
-    // the voice admin say "on it" about work nobody received.
-    failed: result.failed,
-    error: result.error,
+    interpretation,
+    execution,
+    // What the assistant says — the execution's words when something ran or was refused, else the plan's.
+    spokenSummary: execution?.say ?? interpretation.plan.summary,
   })
 }

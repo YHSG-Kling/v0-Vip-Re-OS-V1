@@ -25,13 +25,15 @@ import {
   saveBuyerCriteria,
   recordCriteriaChanges,
   recordBuyerUtterance,
+  defaultCriteriaConsent,
+  type CriteriaConsent,
   type BuyerCriteria,
   type CriteriaChangeDraft,
   type CriteriaChannel,
   type ConsentBasis,
   type UtteranceSourceKind,
 } from "./buyer-criteria"
-import { applyConversationTurn } from "./conversational-search"
+import { applyConversationTurn, type CriteriaStatement } from "./conversational-search"
 import type { ParsedBuyerCriteria } from "./parse-buyer-criteria"
 
 type Svc = Parameters<typeof loadBuyerCriteria>[0]
@@ -97,7 +99,30 @@ export async function persistCriteriaChanges(
   )
 }
 
+/**
+ * PURE (wave 148D, ruling 9): the statement record of one turn — the buyer's literal words, the one
+ * parser's structured interpretation, its confidence, and the consent basis. Carried on every change row
+ * (history) and every `said` provenance entry (the store) this turn writes.
+ */
+function criteriaStatementOf(parsed: ParsedBuyerCriteria, text: string, consent: CriteriaConsent | null, sourceRef: string | null): CriteriaStatement {
+  return {
+    literal: (text ?? "").trim().slice(0, 600),
+    interpretation: {
+      criteria: parsed.criteria,
+      lifestyle: parsed.lifestyle.map((a) => ({ kind: a.kind, label: a.label, direction: a.direction, target: a.target })),
+      dealBreakers: parsed.dealBreakers,
+      gaps: parsed.gaps,
+      via: parsed.via,
+      signalCount: parsed.signalCount,
+    },
+    confidence: parsed.confidence,
+    consent: consent ? { ...consent, sourceRef: consent.sourceRef ?? sourceRef } : null,
+  }
+}
+
 export interface StatedTurnResult {
+  /** Wave 148D: the statement record this turn wrote (literal, interpretation, confidence, consent). */
+  statement?: CriteriaStatement
   parsed: ParsedBuyerCriteria
   next: BuyerCriteria
   changes: Array<CriteriaChangeDraft & { id: string | null }>
@@ -119,11 +144,8 @@ const SOURCE_KIND_BY_CHANNEL: Record<CriteriaChannel, UtteranceSourceKind> = {
  * own authenticated portal, or the buyer wrote to us. A call, an AI conversation, an agent's entry or a system import
  * carries whatever basis the door STATES, else none ("not stated", recorded as NULL with a note).
  */
-function factualConsentFor(channel: CriteriaChannel, actor: CriteriaActor): { basis: ConsentBasis; ref?: string | null } | null {
-  if ((channel === "portal" || channel === "mobile") && actor.type === "user" && actor.userId) return { basis: "self_service_portal", ref: actor.userId }
-  if (channel === "email" || channel === "sms") return { basis: "inbound_message" }
-  return null
-}
+// TOMBSTONE (wave 148, integrator): `factualConsentFor` MERGED onto lib/buyer-search/buyer-criteria.ts defaultCriteriaConsent — one
+// default for one consent vocabulary (lanes 148D and 148E each wrote one; CLAUDE.md §6).
 
 /** Did the buyer state anything searchable (criteria, a lifestyle ask, a deal-breaker)? */
 const statedSomething = (p: ParsedBuyerCriteria) =>
@@ -156,8 +178,10 @@ export async function recordStatedCriteriaTurn(
     ledgerClient?: unknown
     /** Wave 148E: where the words came from (defaults by channel) and its stable reference (defaults to the idempotency key). */
     source?: { kind?: UtteranceSourceKind; ref?: string | null }
+    /** Wave 148D spelling of the same reference (`voice_call:<id>`); `source.ref` wins when both are given. */
+    sourceRef?: string | null
     /** Wave 148E: the consent basis the door STATES (e.g. the call's recording disclosure). Never invented here. */
-    consent?: { basis: ConsentBasis; ref?: string | null } | null
+    consent?: CriteriaConsent | null
   },
 ): Promise<StatedTurnResult> {
   const { parseBuyerCriteria } = await import("./parse-buyer-criteria")
@@ -168,12 +192,16 @@ export async function recordStatedCriteriaTurn(
   })
   const current = await loadBuyerCriteria(svc, input.contactId, { brokerageId: input.brokerageId })
   const at = new Date().toISOString()
-  const { next, changes } = applyConversationTurn(current, parsed, { text: input.text, channel: input.channel, at, trigger: input.trigger ?? "stated" })
+  // ONE default, ONE vocabulary (integrator merge of lanes 148D + 148E): the door's stated basis, else the channel's
+  // FACTUAL default, else null ("not stated"). The same object feeds the statement view AND the utterance record.
+  const sourceRef = input.source?.ref ?? input.sourceRef ?? input.idempotencyKey
+  const consent: CriteriaConsent | null = input.consent !== undefined ? input.consent : defaultCriteriaConsent(input.channel, at, sourceRef, input.actor)
+  const statement = criteriaStatementOf(parsed, input.text, consent, sourceRef)
+  const { next, changes } = applyConversationTurn(current, parsed, { text: input.text, channel: input.channel, at, trigger: input.trigger ?? "stated", statement })
   const notes = [...parsed.notes, ...(current?.note ? [current.note] : [])]
-  if (!statedSomething(parsed)) return { parsed, next, changes: [], notes, error: null, utteranceId: null }
+  if (!statedSomething(parsed)) return { statement, parsed, next, changes: [], notes, error: null, utteranceId: null }
 
   // THE BUYER'S WORDS, recorded whole with what we understood (ruling 9).
-  const consent = input.consent !== undefined ? input.consent : factualConsentFor(input.channel, input.actor)
   if (!consent) notes.push("No consent basis was stated for these words — recorded as 'not stated', never assumed.")
   const utterance = await recordBuyerUtterance(svc, {
     brokerageId: input.brokerageId,
@@ -181,7 +209,7 @@ export async function recordStatedCriteriaTurn(
     draft: {
       channel: input.channel,
       sourceKind: input.source?.kind ?? SOURCE_KIND_BY_CHANNEL[input.channel],
-      sourceRef: input.source?.ref ?? input.idempotencyKey,
+      sourceRef,
       literal: input.text,
       interpretation: {
         criteria: parsed.criteria,
@@ -193,7 +221,7 @@ export async function recordStatedCriteriaTurn(
         signal_count: parsed.signalCount,
       },
       confidence: parsed.confidence,
-      consent: consent ?? null,
+      consent: consent ? { basis: consent.basis, ref: consent.ref ?? consent.sourceRef ?? null } : null,
       appliedChangeCount: changes.length,
       createdByUserId: input.actor.userId ?? null,
     },
@@ -202,12 +230,12 @@ export async function recordStatedCriteriaTurn(
   const drafts = utterance.id ? changes.map((c) => ({ ...c, evidence: { ...c.evidence, utterance_id: utterance.id } })) : changes
 
   const provenanceMoved = JSON.stringify(current?.provenance ?? {}) !== JSON.stringify(next.provenance ?? {})
-  if (drafts.length === 0 && !provenanceMoved) return { parsed, next, changes: [], notes, error: null, utteranceId: utterance.id }
+  if (drafts.length === 0 && !provenanceMoved) return { statement, parsed, next, changes: [], notes, error: null, utteranceId: utterance.id }
   const saved = await persistCriteriaChanges(svc, {
     brokerageId: input.brokerageId, contactId: input.contactId, next, drafts, actor: input.actor,
     idempotencyKey: input.idempotencyKey, trigger: input.trigger ?? "stated", channel: input.channel,
     reasonDetail: `buyer said (${input.channel}): ${input.text}`, ledgerClient: input.ledgerClient,
   })
   notes.push(...saved.notes)
-  return { parsed, next, changes: drafts.map((c, i) => ({ ...c, id: saved.ids[i] ?? null })), notes, error: saved.error, utteranceId: utterance.id }
+  return { statement, parsed, next, changes: drafts.map((c, i) => ({ ...c, id: saved.ids[i] ?? null })), notes, error: saved.error, utteranceId: utterance.id }
 }

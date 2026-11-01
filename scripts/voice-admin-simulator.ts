@@ -24,7 +24,13 @@ function main() {
   const route = src("app/api/internal/voice-command/route.ts")
   const webhook = src("app/api/agent-assistant/tool-call/route.ts")
 
-  check("the create_tenant_user intent is declared + classified", /\| "create_tenant_user"/.test(route) && /create_tenant_user: a PLATFORM-ADMIN command/.test(route))
+  // RULE, NOT WAYPOINT (wave 148D): the brain's classifier prompt moved into THE ONE intent catalogue
+  // (lib/voice-admin/intent-interface.ts — C17). "Classified" now means: the catalogue declares the intent
+  // with the brain as its executor, and the route still declares + handles it.
+  const catalogue = src("lib/voice-admin/intent-interface.ts")
+  check("the create_tenant_user intent is declared + classified (the one catalogue routes it to the brain)",
+    /\| "create_tenant_user"/.test(route) && /intent === "create_tenant_user"/.test(route)
+    && /\["create_tenant_user",[^\n]{0,400}a PLATFORM-ADMIN command/.test(catalogue) && /BRAIN_SEEDS, "team_brain", "team_brain"/.test(catalogue))
   // TWO DOORS, ONE IDENTITY (2026-09-06, the text-an-action door): a session
   // user, OR an internal caller admitted ONLY under the cron secret
   // (verifyCronAuth fails closed) naming the acting user by header. Either way

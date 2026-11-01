@@ -68,8 +68,11 @@ export async function POST(req: NextRequest) {
   //    under the cron secret — verifyCronAuth fails closed when the secret is
   //    unset — and everything below (profile, agent, authority) is resolved
   //    for that user exactly as for a session. Nothing else in this route
-  //    changes; the classifier and the dispatch stay the ONE brain.
+  //    changes; the dispatch stays the ONE brain, and the intent is read from
+  //    the ONE intent interface (C17, lib/voice-admin/intent-interface.ts).
   let user: { id: string } | null = null
+  /** True when the SMS door vouched for the user — the request was TYPED (a text), not spoken. */
+  let actingViaDoor = false
   {
     const supabase = await createClient()
     const { data: { user: sessionUser } } = await supabase.auth.getUser()
@@ -83,9 +86,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
     user = { id: acting }
+    actingViaDoor = true
   }
 
-  const { transcript, sessionId } = await req.json()
+  const rawBody = (await req.json()) as { transcript?: unknown; sessionId?: unknown; modality?: unknown }
+  const { transcript, sessionId } = rawBody as { transcript?: string; sessionId?: string }
   if (!transcript || typeof transcript !== "string") {
     return NextResponse.json({ error: "transcript required" }, { status: 400 })
   }
@@ -117,47 +122,42 @@ export async function POST(req: NextRequest) {
   const today = new Date().toISOString().slice(0, 10)
   const startOfWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
-  // ── Classify intent using AI ──────────────────────────────────────────────
-  const classifyResult = await generateTextRouted({
-      feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
-    system: `Classify the real estate assistant voice command into one of these intents:
-- query_showings: asking about today's or upcoming showings
-- query_hot_contacts: asking about hot leads, top contacts, who to call
-- query_tasks: asking about tasks, to-dos, overdue items
-- query_transactions: asking about active deals or transactions
-- query_pipeline: asking about leads in pipeline or follow-ups needed
-- create_task: asking to create, add, or set a task reminder
-- schedule_followup: asking to schedule a follow-up
-- morning_standup: asking the team what to do / what matters today / what's my day / where to start / priorities (NO specific person named)
-- do_standup_item: telling the team to DO / knock out / handle / approve a stand-up item BY ITS RANK ("do number two", "knock out the first one", "handle #3")
-- reject_standup_item: REJECTING a stand-up item by rank, optionally with a reason ("reject number two — too pushy", "kill the second one, wrong tone")
-- area_query: asking what's happening / running / for sale in an AREA, neighborhood, city, or near a street ("anything happening near 44 Birch", "what's running in Springfield", "our listings in Oakdale")
-- team_query: addressing the whole team ("hey team", "ask the team") OR asking what's happening with a SPECIFIC named person/client/family
-- voice_followup: asking to SEND a follow-up/thank-you/recap message to a named person (e.g. after a call: "send Jordan a follow-up", "follow up with the Hendersons saying ...")
-- start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
-- cut_promo: asking to create/cut/make a promo video/reel for a LISTING ADDRESS ("cut a promo reel for 44 Birch Lane", "make a video for the new listing on Maple")
-- commission_video: asking to create an ON-DEMAND video that is NOT a listing promo — a market update, CMA/home-value, explainer/educational, neighborhood spotlight, testimonial, or anniversary/equity reel ("make a market update reel for Instagram", "create an explainer video about escrow for TikTok", "cut a neighborhood spotlight for Oakdale")
-- studio_session: asking to BOOK / PLAN / SCHEDULE a BATCH or CALENDAR of content / reels / videos for a duration (a day, a week, a month) — the agent wants MULTIPLE reels planned and staged at once ("book me a week of content", "schedule a month of reels", "plan my content calendar for the week", "line up a week of videos", "get me a content calendar")
-- optimize_tour: asking to optimize/fix/re-route a buyer's TOUR by named person ("optimize the Henderson tour", "fix the route and times for Jordan's tour", "sort the Garcia showings by drive time")
-- closings_at_risk: asking which closings/deals are AT RISK or tight this week ("what closings are at risk this week", "any deals about to slip", "which closings are tight")
-- send_equity_report: asking to send/run a named person's ANNIVERSARY EQUITY report ("send the Garcias their anniversary equity report", "run Jordan's equity update")
-- launch_campaign: asking to LAUNCH / push / kick off / go live with the MARKETING CAMPAIGN for a LISTING ADDRESS ("launch the campaign for 123 Oak Street", "push the just-listed campaign on Maple", "take the Birch Lane campaign live")
-- query_flight_risk: asking which AGENTS are at RETENTION / FLIGHT risk, who's slipping, who might leave ("who's at flight risk", "any agents about to leave", "who's slipping on my team", "retention risks")
-- query_vendor_coverage: asking about VENDOR COVERAGE gaps in the bench — categories with upcoming demand but no reliable vendor ("any vendor coverage gaps", "is my bench covered", "do I have enough inspectors", "vendor gaps coming up")
-- query_referral_income: asking about the agent's own AGENT-TO-AGENT referral income / earnings / how much they've earned referring clients ("how much have I earned in referrals", "my referral income", "what have my agent referrals paid me")
-- draft_save_plays: COMMANDING the assistant to DRAFT / write / prepare retention SAVE-PLAYS for the at-risk / flight-risk agents ("draft save-plays for everyone at flight risk", "write save-plays for my at-risk agents", "prepare retention outreach for the agents who are slipping")
-- create_tenant_user: a PLATFORM-ADMIN command to CREATE / add / invite a new USER / agent / admin / TC into a brokerage ("create a new agent named Jane Doe at jane@x.com", "add an admin to the Denver brokerage", "invite a TC to Coastal Realty")
-- find_properties: asking to FIND / SEARCH / pull PROPERTIES or LISTINGS for a named BUYER with criteria — beds/baths/price/area ("find the Hendersons a 3-bed under 500k in Austin", "search a 4 bedroom with a pool under 800 for Jordan", "what's on the market for the Garcias in Oakdale")
-- draft_offer: asking to DRAFT / write / prepare an OFFER for a named buyer on a property ("draft an offer for the Hendersons on 44 Birch at 450", "write up an offer for Jordan at 620 thousand", "start an offer for the Garcias")
-- draft_listing: asking to DRAFT / write / prepare a LISTING AGREEMENT for a named seller/property ("draft a listing agreement for the Garcias at 12 Oak", "write up the listing for 88 Maple", "start a listing agreement for Jordan's house")
-- general_query: anything else
-
-Respond with ONLY the intent string, nothing else.`,
-    messages: [{ role: "user", content: transcript }],
-    maxTokens: 20,
+  // ── WHICH INTENT — THE ONE INTENT INTERFACE (C17, wave 148 lane 148D) ─────
+  // TOMBSTONE (§1.1, Law 2): the 30-intent classifier prompt that lived here (generateTextRouted,
+  // feature intent_classification, "Respond with ONLY the intent string") was one of FOUR classifiers in
+  // the tree. Its intent list moved, description by description, into the ONE catalogue —
+  // lib/voice-admin/intent-interface.ts BRAIN_SEEDS (+ property_search, whose team_brain executor is
+  // find_properties) — and the ONE expert prompt (intentSystemPrompt) asks the model only when the rules
+  // miss or tie. Every branch below is unchanged: the brain keeps its executors and reads its intent from
+  // the interpretation's team_brain executor key. An intent the brain does NOT execute (an ad, a market
+  // blog, an open house, who may need help) comes back as action "intent_interface" with the plan, and
+  // the caller renders it in the one affordance (app/components/shared/intent-affordance.tsx).
+  const bodyModality = typeof rawBody.modality === "string" && rawBody.modality === "text" ? "text" : actingViaDoor ? "text" : "voice"
+  const { interpretIntentLive } = await import("@/lib/voice-admin/intent-interface-live")
+  const interpretation = await interpretIntentLive({
+    utterance: transcript,
+    modality: bodyModality,
+    actor: { userId: user.id, userType: profile.user_type ?? null, platformRole: (profile as { platform_role?: string | null }).platform_role ?? null, agentId: voiceAgentId },
+    tenant: { brokerageId: brokerageId ?? "" },
+    screen: "assistant",
+    svc: service,
   })
-
-  const intent = (classifyResult.text.trim().toLowerCase() as VoiceIntent) ?? "general_query"
+  const brainIntent = interpretation.executors.team_brain as VoiceIntent | undefined
+  if (!brainIntent && interpretation.capability) {
+    // Another desk owns the executor (a domain route, the kernel lane, the field mic, the command layer):
+    // say the plan, and let the one affordance carry the confirmation / the clarification.
+    const { recordIntentCommand } = await import("@/lib/voice-admin/intent-interface-live")
+    if (brokerageId) await recordIntentCommand(service, { actor: { userId: user.id, userType: profile.user_type ?? null, platformRole: null, agentId: voiceAgentId }, tenant: { brokerageId }, interpretation, execution: null, source: "web" })
+    const handed: VoiceCommandResponse = {
+      spokenResponse: interpretation.authority_check.allowed ? interpretation.plan.summary : (interpretation.authority_check.reasons[0] ?? interpretation.plan.summary),
+      intent: "general_query",
+      action: "intent_interface",
+      callQueue: [],
+      data: { interpretation },
+    }
+    return NextResponse.json(handed)
+  }
+  const intent: VoiceIntent = brainIntent ?? "general_query"
 
   let spokenResponse = ""
   let callQueue: CallQueueItem[] = []
@@ -854,7 +854,11 @@ Respond with ONLY the intent string, nothing else.`,
       brokerage_id: brokerageId,
       raw_transcript: transcript,
       parsed_intent: intent,
-      command_type: intent,
+      // NULL, not the intent (wave 148D): voice_commands.command_type is a live CHECK of twelve values
+      // (scripts/check-vocabularies.ts) that admits only create_task of the brain's intents — writing the
+      // intent there refused the WHOLE row (23514) for every other command, so this log was mostly empty.
+      // parsed_intent carries the intent; the field mic (app/actions/voice-assistant.ts) already did this.
+      command_type: null,
       entities: data,
       action_taken: action ?? intent,
       action_result: { spokenResponse, callQueueCount: callQueue.length },
