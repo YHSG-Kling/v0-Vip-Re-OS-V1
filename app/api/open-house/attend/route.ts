@@ -21,6 +21,17 @@ const KIOSK_CONSENT_TEXT = (brokerageName: string) =>
   `By checking this box, you agree to receive calls, texts, emails, and direct mail from ${brokerageName} and its agents regarding your real estate needs. Consent is not a condition of purchase. You may unsubscribe or opt out at any time.`
 const KIOSK_CONSENT_VERSION = "open_house_kiosk:v1"
 
+/**
+ * THE SUBJECT OF A SIGN-IN'S ECHO (wave 148, 148Z — lane 148H Outside-lane 9). An IN-PERSON education session (m924) has no
+ * listing, and the three echoes below passed `entityId: event.listing_id` — null — so a listing-less kiosk sign-in filed the
+ * attendee but its capture echo named no entity. The same rule verifyAttendance uses (lib/open-house/event-attendance.ts):
+ * the listing's stage machine when there is a listing, else the open-house event itself. Not exported (a route file exports
+ * only its handlers).
+ */
+function attendSubject(event: { id: string; listing_id: string | null }): { entityType: string; entityId: string } {
+  return event.listing_id ? { entityType: "listing_stage_machine", entityId: event.listing_id } : { entityType: "open_house", entityId: event.id }
+}
+
 export async function POST(req: NextRequest) {
   // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
   // attendee capture. Generous ceiling — a sign-in kiosk posts every attendee
@@ -103,7 +114,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Failed to record attendance" }, { status: 500 })
       }
       await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
-        brokerageId: event.brokerage_id, entityType: "listing_stage_machine", entityId: event.listing_id, event: "listing.open_house.attendee_captured",
+        brokerageId: event.brokerage_id, ...attendSubject(event), event: "listing.open_house.attendee_captured",
         actorUserId: event.agent_id, metadata: { attendee_id: (agentVisit as { id: string }).id, event_id: eventId, broker_open: true },
       }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a broker-open visit already recorded on open_house_attendees" })
       return NextResponse.json({ success: true, attendeeId: (agentVisit as { id: string }).id, brokerOpen: true })
@@ -256,8 +267,7 @@ export async function POST(req: NextRequest) {
     // 5. Direct lifecycle_events insert
     await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       brokerageId: event.brokerage_id,
-      entityType: "listing_stage_machine",
-      entityId: event.listing_id,
+      ...attendSubject(event),
       event: "listing.open_house.attendee_captured",
       actorUserId: event.agent_id,
       metadata: {
@@ -278,8 +288,7 @@ export async function POST(req: NextRequest) {
     await processKernelEvent({
       event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
       brokerageId: event.brokerage_id,
-      entityType: "listing_stage_machine",
-      entityId: event.listing_id,
+      ...attendSubject(event),
       contactId,
       metadata: { contactId, eventId, attendeeId: attendee.id },
     }).catch(() => {})

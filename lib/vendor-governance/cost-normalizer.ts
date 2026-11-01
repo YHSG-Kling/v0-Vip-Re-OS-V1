@@ -85,8 +85,9 @@ export type GoogleMapsSku = keyof typeof GOOGLE_MAPS_SKU_USD
 
 /** Mapbox (wave 140, lane 140I — owner: Mapbox is REQUIRED), pay-as-you-go list rates, the first band
  *  past the free tier — VARIABLE (volume bands step down; a Commercial Application License changes the
- *  terms). static_image: Static Images API, 100,000 free / month then $1.50 / 1k (mapbox.com/pricing,
- *  read 2026-10-11). map_load: Mapbox GL JS "Map Loads for Web", 50,000 free / month then $5.00 / 1k
+ *  terms). static_image: Static Images API, 50,000 free / month then $1.00 / 1k for 50,001–500,000 (mapbox.com/pricing,
+ *  read 2026-11-01 by lane 148E and re-read by lane 148Z the same day — WAVE 148Z corrected the booking from the 2026-10-11
+ *  read, "100,000 free then $1.50 / 1k", which over-booked every map by 50%; a wrong number here is a wrong invoice). map_load: Mapbox GL JS "Map Loads for Web", 50,000 free / month then $5.00 / 1k
  *  (the pricing page renders that table client-side; the figure is its published restatement —
  *  woosmap.com/blog/mapbox-pricing, 2026 — and reconciles against the Mapbox invoice).
  *  Wave 148 (lane 148E — the owner's "which providers do you need for commute?"): + matrix_element (Matrix API,
@@ -94,7 +95,7 @@ export type GoogleMapsSku = keyof typeof GOOGLE_MAPS_SKU_USD
  *  (Directions API, 100,000 free / month then $2.00 / 1k) — mapbox.com/pricing + docs.mapbox.com/api/navigation/matrix,
  *  read 2026-11-01. The travel_time capability (lib/ai-isa/property-lookup-rail.ts) routes on matrix_element; the
  *  transport books both through lib/property/street-view.ts bookTravelTimeSpend. */
-export const MAPBOX_SKU_USD = { static_image: 0.0015, map_load: 0.005, matrix_element: 0.002, directions_request: 0.002 } as const
+export const MAPBOX_SKU_USD = { static_image: 0.001, map_load: 0.005, matrix_element: 0.002, directions_request: 0.002 } as const
 export type MapboxSku = keyof typeof MAPBOX_SKU_USD
 
 /** OpenAI image models (platform.openai.com/docs/models/gpt-image-1, /dall-e-3). gpt-image-1 is
@@ -344,7 +345,7 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     unitType: 'api_calls',
     costPerUnit: MAPBOX_SKU_USD.static_image,
     priceState: 'variable',
-    priceSource: 'https://www.mapbox.com/pricing — Static Images API 100,000 free / month then $1.50 / 1k; Map Loads for Web 50,000 free / month then $5.00 / 1k (read 2026-10-11); volume bands step down; a Commercial Application License (required for real-estate production use) carries its own terms',
+    priceSource: 'https://www.mapbox.com/pricing — Static Images API 50,000 free / month then $1.00 / 1k (read 2026-11-01); Map Loads for Web 50,000 free / month then $5.00 / 1k (read 2026-10-11); volume bands step down; a Commercial Application License (required for real-estate production use) carries its own terms',
     notes: 'static_image books MAPBOX_SKU_USD.static_image; map_load books MAPBOX_SKU_USD.map_load; matrix_element (Matrix API, per element, 100,000 free / month then $2.00 / 1k) and directions_request (Directions API, 100,000 free / month then $2.00 / 1k — mapbox.com/pricing read 2026-11-01) book through bookTravelTimeSpend (wave 148E); platform-covered',
   },
 

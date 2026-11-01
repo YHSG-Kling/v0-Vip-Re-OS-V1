@@ -102,15 +102,21 @@ export async function produceListingAdCampaign(
   if (!brokerageId || !listingId) return { produced: false, reason: "missing ids" }
 
   // Idempotent — one auto campaign per listing per kind.
-  const { data: existing } = await supabase.from("ad_campaigns")
+  const { data: existing, error: existingErr } = await supabase.from("ad_campaigns")
     .select("id").eq("brokerage_id", brokerageId)
     .contains("targeting_config", { listing_id: listingId, auto_kind: kind }).maybeSingle()
+  // Fail closed (wave 148Z): an unreadable idempotency check must not produce a second campaign.
+  if (existingErr) return { produced: false, reason: `idempotency read refused: ${existingErr.message}` }
   if (existing) return { produced: false, campaignId: (existing as { id: string }).id, reason: "already produced" }
 
-  const { data: l } = await supabase.from("listings")
-    .select("address, city, state, agent_id, list_price, bedrooms, bathrooms, property_type").eq("id", listingId).maybeSingle()
+  // WAVE 148 (148Z — lane 148D Outside-lane 1): TENANT-PINNED. This read was `.eq("id", listingId)` alone on a service client —
+  // C17 resolved the listing under the tenant first, but every other caller could hand in another brokerage's listing id and
+  // get an ad drafted from its facts under THIS tenant's name. The listing must belong to the brokerage the campaign is for.
+  const { data: l, error: lErr } = await supabase.from("listings")
+    .select("address, city, state, agent_id, list_price, bedrooms, bathrooms, property_type").eq("id", listingId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (lErr) return { produced: false, reason: `listing read refused: ${lErr.message}` }
   const listing = l as (ListingFacts & { agent_id: string | null }) | null
-  if (!listing) return { produced: false, reason: "listing not found" }
+  if (!listing) return { produced: false, reason: "listing not found in this brokerage" }
 
   let agentUserId: string | null = null
   if (listing.agent_id) {

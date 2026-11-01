@@ -138,7 +138,12 @@ export async function reapCdaDeadlines(
   const b = brokerage as { offers_cda?: boolean | null; non_cda_payout_default?: string | null; state?: string | null } | null
   const mode = resolveCdaMode({ offersCda: b?.offers_cda, nonCdaPayoutDefault: b?.non_cda_payout_default })
   if (mode.mode !== "cda") { result.notApplicable = true; return result }
-  const tz = resolveTenantTimeZone({ state: b?.state })
+  // WAVE 148 (148Z — lane 148K hand-off 143H-OL-02, m841's coupled code): the tenant's OWN chosen zone wins
+  // (global_settings.timezone; m841 made NULL mean "not chosen — derive from the brokerage state"), then the state, then the
+  // fallback — and `zoneSource` says which answered. A refused read is said and falls through to the state (never silently UTC).
+  const { data: gs, error: gsErr } = await svc.from("global_settings").select("timezone").eq("brokerage_id", brokerageId).maybeSingle()
+  if (gsErr) console.error(`[cda-deadline-reaper] global_settings.timezone read refused for ${brokerageId} (deadlines read in the brokerage state's zone): ${gsErr.message}`)
+  const tz = resolveTenantTimeZone({ state: b?.state, explicitZone: gsErr ? null : ((gs as { timezone?: string | null } | null)?.timezone ?? null) })
   result.zone = tz.zone
   result.zoneSource = tz.source
 

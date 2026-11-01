@@ -291,8 +291,37 @@ async function main() {
     ok(/datasetCeilingWithObservations\(svc,\s*built\.record\.datasetKey/.test(sig) && /code:\s*"dataset_unverified"/.test(sig), "the ONE persistence chokepoint (recordMovementSignal) asks the dataset ceiling and refuses an intimate topic on an unverified dataset")
   }
 
+  // ── G. LANE 148Z — THE HAND-OFFS: the screen at the dispatch chokepoint, no copy fact, tone-only persona, one carry ────────
+  console.log("\nG. 148Z hand-offs — every automated body screened at the chokepoint; marital status never copy; tone-only persona; the promotion carry on the map")
+  {
+    const cs = await import("../lib/providers/content-safety")
+    const auto = await quiet(() => cs.contentSafetyBackstop({ brokerageId: "b-148z", channel: "sms", parts: ["Hi Pat — so sorry for your loss. When the estate settles we can list quickly."], isAutonomous: true }))
+    ok(auto.blocked && /life_event_mention/.test(auto.reason ?? ""), "POSITIVE CONTROL (chokepoint): an AUTONOMOUS body naming a loss / the estate is BLOCKED by the dispatch backstop — not only personalize-outreach drafts", JSON.stringify(auto))
+    const human = await quiet(() => cs.contentSafetyBackstop({ brokerageId: "b-148z", channel: "email", parts: ["So sorry for your loss."], isAutonomous: false, humanApproved: true }))
+    ok(!human.blocked && human.violations.length > 0, "a HUMAN-approved body with the same words is FLAGGED, not blocked (the module's existing human-responsibility posture)", JSON.stringify(human))
+    const clean = await quiet(() => cs.contentSafetyBackstop({ brokerageId: "b-148z", channel: "sms", parts: ["Hi Pat — a short seasonal home-care checklist, in case it's useful. Reply STOP to opt out."], isAutonomous: true }))
+    ok(!clean.blocked && clean.violations.length === 0, "(control) a warm, event-agnostic automated body passes the chokepoint", JSON.stringify(clean))
+    const unreadable = await quiet(() => cs.contentSafetyBackstop({ brokerageId: "b-148z", channel: "sms", parts: ["Congrats on the new job! Homes near the office?"], isAutonomous: true, contactId: "c-148z" }))
+    ok(unreadable.blocked && /unreadable/.test(unreadable.reason ?? ""), "FAIL CLOSED: when the person's life-event record cannot be read, an autonomous body is refused (the carried-event screen could not run)", JSON.stringify(unreadable))
+    const disp = src("lib/providers/dispatch.ts")
+    ok((disp.match(/contentSafetyBackstop\(/g) ?? []).length >= 3 && /screenLifeEventOutreach\(/.test(src("lib/providers/content-safety.ts")), "the ONE chokepoint: email, sms and direct mail all pass contentSafetyBackstop, which calls the ONE screen (no second list)")
+    const facts = po.buildPersonalizationFacts({ first_name: "Pat", marital_status: "married", enrichment_profile: { marital_status: "divorced" } as never, occupation: "Nurse" })
+    ok(!facts.some((f) => f.key === "marital_status") && !facts.some((f) => /married|divorced/i.test(f.value)) && facts.some((f) => f.key === "occupation"), "marital status is NEVER a copy fact (a protected class and the shadow of the marital life events); control: other facts still build", JSON.stringify(facts))
+    const layers = await import("../lib/contacts/persona-layers")
+    const tone = voc.lifeEventToneBrief([{ type: "divorce_filing" }])
+    const ev = { stated: [], behaviour: [], inferred: [], withheldFromMarketing: [] }
+    const p = layers.buildPersonaDerivationPrompt({ brokerageName: "B", agentName: null, firstName: "Pat", evidence: ev as never, research: [], service: { preferredChannel: null, preferredLanguage: null, bestTime: null, accessibility: null }, serviceTone: tone })
+    ok(!!tone && p.prompt.includes(tone) && !/divorc|separat/i.test(p.prompt), "the persona study receives only the TONE of the person's circumstances (lifeEventToneBrief), never the event", p.prompt.slice(0, 300))
+    const pb = src("lib/contacts/persona-builder.ts")
+    const lifeRefs = pb.match(/\blifeEvents\b[^\n]*/g) ?? []
+    ok(/lifeEventToneBrief\(input\.lifeEvents/.test(pb) && !/lifeEvents[^\n]*buildPersonaDerivationPrompt|evidence:[^\n]*lifeEvents/.test(pb) && lifeRefs.length > 0, "persona-builder reduces raw life events to lifeEventToneBrief before any prompt (no raw path into the study)", lifeRefs.join(" | "))
+    ok(/life_events:[\s\S]{0,200}mergeLifeEvents\(\[\],\s*data\.lead\.life_events/.test(src("lib/contact-promotion/contact-creator.ts")), "lead → contact promotion carries life_events through mergeLifeEvents (C20), not raw")
+    ok(!/life_events:[\s\S]{0,200}mergeLifeEvents\(\[\],\s*data\.lead\.life_events/.test(stripComments("life_events: data.lead.life_events ?? null,")), "POSITIVE CONTROL: the carry finder rejects the raw carry it replaced")
+  }
+
   console.log("\n  BLIND SPOTS (published):")
   console.log("   · memSupabase has no RLS / CHECK / FK / trigger — m918–m920's refusals are each migration's VERIFY block, for the integrator.")
+  console.log("   · §G drives the chokepoint without a database: the carried-event half is proven fail-closed (no client), not with a live contacts row.")
   console.log("   · The model, the autonomy grant and the gateway are INJECTED; the prompts are checked structurally, the live model's empathy is not measured.")
   console.log("   · The screen is lexical: a paraphrase that alludes to an event without any listed word (\"I know things have been hard\") passes it; the prompts carry the rule first.")
   console.log("   · The writer census finds `life_events:` object keys; a write through a computed key or a raw SQL string is not seen.")

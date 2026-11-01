@@ -294,16 +294,30 @@ async function main() {
   const kernelPhrase = (r: IntentRoute, p: string) => r.family === "kernel_signal" && voiceCapabilities().some((vc) => vc.capability === r.key && vc.phrases.includes(p))
   const singles = intentCatalogue().flatMap((r) => r.phrases.filter((p) => p.trim().split(/\s+/).length < 2 && !kernelPhrase(r, p)).map((p) => `${r.key}:${p}`))
   check("5o every phrase this lane authored is multi-word (a generic token never triggers work)", singles.length === 0, singles.join(","))
-  // THE ONE DETERMINISTIC FLOOR STILL OUTSIDE THE CATALOGUE (published, not hidden): lib/voice/parse-team-command.ts
-  // names the team dispatcher's own commands (offer verbs, manager status, run_skill, broker verbs) for the
-  // Command Center bar and the spoken admin's run_team_command tool. Held here to those two NAMED callers,
-  // each consulting C17 FIRST, so it can only shrink (a new caller fails until it asks C17 first and is named).
-  const FLOOR_CALLERS = ["app/actions/command-center.ts", "app/api/agent-assistant/tool-call/route.ts"]
+  // THE TEAM-COMMAND FLOOR IS PICKED INSIDE THE ONE MODULE (wave 148Z — lane 148D Still open 1 closed). The floor
+  // (lib/voice/parse-team-command.ts) names the team dispatcher's own commands; its ONLY caller is interpretIntent
+  // (teamCommandFloor → interpretation.teamCommand). The two surfaces that execute team commands (the Command Center bar,
+  // the spoken admin's run_team_command) read interpretation.teamCommand and call no parser themselves. This check read
+  // "only its two NAMED callers, each asking C17 first" while the merge was pending — tightened to ONE caller (the rule
+  // can only shrink further, never widen).
+  const FLOOR_SURFACES = ["app/actions/command-center.ts", "app/api/agent-assistant/tool-call/route.ts"]
   const floorCallers = files.filter((f) => f !== "lib/voice/parse-team-command.ts" && /parseTeamCommandText\(/.test(stripComments(raw(f))))
-  const asksC17First = (f: string) => { const s = code(f); const a = s.indexOf("interpretIntent("); return a > 0 && a < s.indexOf("parseTeamCommandText(") }
-  check("5q the team-command floor has only its two NAMED callers (Command Center bar · spoken admin tool), and each asks C17 FIRST",
-    floorCallers.every((f) => FLOOR_CALLERS.includes(f)) && FLOOR_CALLERS.every((f) => floorCallers.includes(f) && asksC17First(f)),
+  check("5q the team-command floor has exactly ONE caller — interpretIntent (lib/voice-admin/intent-interface.ts) — and both surfaces read interpretation.teamCommand",
+    floorCallers.length === 1 && floorCallers[0] === "lib/voice-admin/intent-interface.ts"
+    && FLOOR_SURFACES.every((f) => /interpretIntent\(/.test(code(f)) && /interpretation\.teamCommand\b/.test(code(f))),
     floorCallers.join(","))
+  check("5q POSITIVE CONTROL: the floor-caller finder sees a direct call, and not one only named in a tombstone",
+    /parseTeamCommandText\(/.test(stripComments(`const parsed = parseTeamCommandText(text)`))
+    && !/parseTeamCommandText\(/.test(stripComments(`// TOMBSTONE: this bar called parseTeamCommandText(text) itself\nconst parsed = interpretation.teamCommand`)))
+  {
+    const tc = (u: string) => interpretIntent({ utterance: u, modality: "text", actor: { userId: "u", userType: "broker", platformRole: null, agentId: "a" }, tenant: { brokerageId: "b" } })
+    const standup = tc("what should I do today")
+    const ad = tc("create an ad for my new listing at 12 Oak Street")
+    const nothing = tc("what's the weather")
+    check("5r C17 names the team command when no domain route owns the sentence; a domain route carries none; nonsense carries none",
+      standup.teamCommand !== null && standup.family !== "domain" && ad.family === "domain" && ad.teamCommand === null && nothing.teamCommand === null,
+      JSON.stringify({ standup: standup.teamCommand?.name ?? null, standupFamily: standup.family, ad: ad.teamCommand, nothing: nothing.teamCommand }))
+  }
   check("5p POSITIVE CONTROL: the phrase-collision finder sees a collision", (() => { const m = new Map<string, string>(); let d = 0; for (const [k, p] of [["a", "find buyers"], ["b", "find buyers"]]) { if (m.has(p) && m.get(p) !== k) d++; m.set(p, k) } return d === 1 })())
 
   // ── 6 · ONE AFFORDANCE (census) ───────────────────────────────────────────

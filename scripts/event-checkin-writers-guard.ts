@@ -262,8 +262,16 @@ async function main(): Promise<void> {
     // The join door's in-tree producer: the ONE invitation sender (the only code that knows the staged invitation id) mints
     // the join link for a virtual event, from the same (eventId, invitationId) credential the door re-reads.
     const sender = blankComments(raw("lib/communications/send-invitation.ts"))
-    const mintsJoin = (s: string) => /event_type\s*===\s*["']virtual_open_house["'][\s\S]{0,200}`\$\{appUrl\}\/open-house\/\$\{params\.eventId\}\/join\?i=\$\{params\.invitationId\}`/.test(s) && /Join online: \$\{joinLink\}/.test(s) && /joinLink,/.test(s)
-    check("virtual_open_house: the invitation sender mints the join link (eventId + invitationId) for a virtual event, in the email AND the text — the join door has its in-tree producer", mintsJoin(sender))
+    // WAVE 148Z (lane 148H Outside-lane 2): re-asserted from the waypoint ("event_type === 'virtual_open_house'") to the RULE —
+    // EVERY online kind (the registry's isOnlineEvent) gets a link; the join door is still minted from (eventId, invitationId)
+    // for a kind that does not require registration, a registration-required kind links its C15 registration page, and the
+    // link rides the email AND the text.
+    const mintsJoin = (s: string) => /const online = isOnlineEvent\(/.test(s) && /online && appUrl && params\.invitationId/.test(s)
+      && /`\$\{appUrl\}\/open-house\/\$\{params\.eventId\}\/join\?i=\$\{params\.invitationId\}`/.test(s)
+      && /`\$\{appUrl\}\/open-house\/\$\{params\.eventId\}\/register`/.test(s)
+      && /[Jj]oin online"\}: \$\{joinLink\}/.test(s) && /joinLink,/.test(s)
+    check("online kinds: the invitation sender mints the join link (eventId + invitationId) — or the registration page for a registration-required kind — in the email AND the text; the join door has its in-tree producer", mintsJoin(sender))
+    check("POSITIVE CONTROL: the finder rejects the virtual-only waypoint it replaced", !mintsJoin("const joinLink = (event as any).event_type === \"virtual_open_house\" && appUrl ? `${appUrl}/open-house/${params.eventId}/join?i=${params.invitationId}` : null; joinLink,"))
     check("POSITIVE CONTROL: a sender that never mints the join link is red", !mintsJoin(sender.replace(/\/join\?i=/g, "/rsvp/")))
     const openRedirect = joinSrc.replace(/return NextResponse\.redirect\(meetingUrl, 302\)/, `return NextResponse.redirect(req.nextUrl.searchParams.get("to") ?? meetingUrl, 302)`)
     const anyEventInvite = joinSrc.replace(/(\.from\("open_house_invitations"\)[\s\S]*?)\.eq\("event_id", ev\.id\)\n\s*\.eq\("brokerage_id", ev\.brokerage_id\)/, "$1")

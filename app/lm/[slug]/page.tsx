@@ -24,7 +24,7 @@ async function getFormBySlug(slug: string, opts: { includeInactive?: boolean } =
   const { data, error } = await supabase
     .from("lead_capture_forms")
     .select(
-      "id, name, slug, fields, is_active, brokerage_id, agent_id, tcpa_disclosure_text, thank_you_message, redirect_url, landing_content"
+      "id, name, slug, fields, is_active, brokerage_id, agent_id, tcpa_disclosure_text, thank_you_message, redirect_url, landing_content, settings"
     )
     .eq("slug", slug)
     .maybeSingle()
@@ -187,6 +187,16 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
   // C15 (wave 148): the consent names the magnet's agent / brokerage — THE one rule the kernel re-renders the wording with.
   const { leadMagnetConsentBrand } = await import("@/lib/kernel/lead-magnets")
   const consentBrandName = await leadMagnetConsentBrand(createServiceClient(), form.brokerage_id, (form as { agent_id?: string | null }).agent_id ?? null)
+  // WAVE 148 (148Z — lane 148G Outside-lane, C21 → C15): a funnel's form DECLARES its consent (settings.funnel.consent —
+  // lib/lead-magnets/magnet-funnel.ts FunnelConsentSpec, `wording: "rendered_by_c15"`) and never authors words; the ONE
+  // component renders them. The declared channels become the boxes offered — direct mail only where the form asks for an
+  // address (a mail box with nothing to mail to would promise a channel the door cannot use).
+  const funnelConsent = ((form as { settings?: { funnel?: { consent?: { contract?: string; wording?: string; channels?: unknown } } } | null }).settings?.funnel?.consent) ?? null
+  const funnelChannels = funnelConsent?.contract === "C15" && funnelConsent.wording === "rendered_by_c15" && Array.isArray(funnelConsent.channels)
+    ? (funnelConsent.channels as string[]).filter((c): c is "email" | "sms" | "voice" | "direct_mail" =>
+        (c === "email" || c === "sms" || c === "voice" || c === "direct_mail")
+        && (c !== "direct_mail" || fields.some((f: { name?: string }) => f?.name === "property_address")))
+    : null
 
   return (
     <main className="min-h-screen bg-background flex items-start justify-center py-10 px-4">
@@ -248,6 +258,7 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
               headline={form.name}
               ctaText={landing?.cta || undefined}
               consentBrandName={consentBrandName}
+              consentChannels={funnelChannels ?? undefined}
               thankYouMessage={form.thank_you_message ?? undefined}
               attribution={attribution}
             />

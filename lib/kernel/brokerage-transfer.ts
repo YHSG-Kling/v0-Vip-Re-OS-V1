@@ -148,23 +148,22 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   { table: "lead_magnet_deliverables", what: "the produced delivery asset of each of those landing pages (C11; form_id stays in ONE tenant)" },
   { table: "buyer_criteria_changes", what: "each buyer's criteria change history — stated, accepted, rejected (C10; contact_id stays in ONE tenant)" },
   { table: "movement_signals", what: "the C9 movement records on the tenant's own contacts / leads, with their provenance and outcomes (contact_id / lead_id stay in ONE tenant)" },
+  // WAVE 148 (148Z — lane 148G Outside-lane 6, lane 148H Outside-lane 4, lane 148E's m916; placed like wave 147's three): three
+  // tables born in wave 148 that FK onto moved families are the tenant's own business data and move WITH it —
+  //  · lead_magnet_funnel_items (m921, C21) — a funnel's deliverables: form_id → lead_capture_forms, deliverable_id →
+  //    lead_magnet_deliverables, so it follows its page (the landing-page zero-exception rule);
+  //  · buyer_criteria_utterances (m916, C10/C18) — the buyer's own words behind their criteria: contact_id → contacts, the
+  //    statement record beside buyer_criteria_changes (which moves) — left behind it would orphan the history it explains;
+  //  · event_attendance_evidence (m925, C22) — the verified-attendance evidence of the tenant's own events and contacts:
+  //    contact_id → contacts; it follows its event / contact (lane 148H).
+  // The FK-closure ceiling (scripts/brokerage-identity-guard.ts) is NOT raised — these leave the unmoved-children count.
+  { table: "lead_magnet_funnel_items", what: "each funnel's promised deliverables and their staging state (C21; form_id stays in ONE tenant)" },
+  { table: "buyer_criteria_utterances", what: "each buyer's own stated words behind their criteria, with interpretation, confidence and consent basis (C10; contact_id stays in ONE tenant)" },
+  { table: "event_attendance_evidence", what: "the verified-attendance evidence for the tenant's own events and contacts (C22; event / contact stay in ONE tenant)" },
   // …and the watcher's last-seen digest per watched item (m894) follows the records it points at (last_signal_id →
   // movement_signals): the target's watcher continues from the same baseline (no history re-raised as "new") and the FK
   // stays in ONE tenant. Still doorless by design (service-role only — scripts/production-readiness-guard.ts).
   { table: "movement_source_items", what: "the movement watcher's last-seen digest per watched item (follows movement_signals via last_signal_id)" },
-  // WAVE 148 (integrator — lanes 148E / 148G / 148H Outside-lane; placed like wave 147's three): three tables born in wave 148 that
-  // FK onto moved families are the tenant's OWN business data and move WITH it:
-  //  · buyer_criteria_utterances (m916, contract C18) — the buyer's own words, whole, with interpretation and consent basis:
-  //    contact_id → contacts (the book moves, so what the person said does);
-  //  · lead_magnet_funnel_items (m921, contract C21) — the promised items of one of those landing pages: form_id → lead_capture_forms,
-  //    deliverable_id → lead_magnet_deliverables, document_id / video_project_id → the tenant's own assets (the landing-page
-  //    zero-exception rule, scripts/brokerage-identity-guard.ts);
-  //  · event_attendance_evidence (m925, contract C22) — the provider's attendance evidence for the tenant's own events:
-  //    event_id → open_house_events, contact_id → contacts (verified attendance is the tenant's outcome record).
-  // market_dataset_verifications (m918, C19) is PLATFORM public-data metadata with no brokerage_id — not a family, never moved.
-  { table: "buyer_criteria_utterances", what: "each buyer's recorded words with interpretation and consent basis (C18; contact_id stays in ONE tenant)" },
-  { table: "lead_magnet_funnel_items", what: "the promised items of each of those landing pages (C21; form_id / deliverable_id stay in ONE tenant)" },
-  { table: "event_attendance_evidence", what: "the provider attendance evidence of the tenant's own events (C22; event_id / contact_id stay in ONE tenant)" },
   // A BOOK DISTRIBUTED THROUGH ONE OF THOSE PAGES follows the page (wave 145, lane 145Z — owner ruling 19 + the landing-page
   // zero-exception rule, scripts/brokerage-identity-guard.ts): book_projects.distribution_form_id → lead_capture_forms (m867).
   // The subscriber's OWN book (its manuscript, chapters, publishing state) moves with its workspace; a PLATFORM-owned book has

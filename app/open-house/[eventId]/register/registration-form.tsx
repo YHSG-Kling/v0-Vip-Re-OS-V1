@@ -1,15 +1,16 @@
 "use client"
 
 import { useState } from "react"
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 
 /**
  * The registration form for every C22 kind routed to registration. Identity (name, email, mobile) + situation (what brings them,
  * their timeline BUCKET, whether they already have an agent, their question in their own words) + the consent boxes.
  *
- * CONSENT (C15 shape, lane 148B owns the shared component): the three boxes below carry the SERVER's wording verbatim
- * (eventConsentWording) — service delivery is REQUIRED for the service asked (the confirmation and the join link), text reminders
- * and marketing are OPTIONAL, unchecked by default, and each names its channel. When lane B's one consent component lands, it
- * replaces the <fieldset data-consent-block> below 1:1 (Outside-lane note in lane148H-notes.md).
+ * CONSENT — THE ONE COMPONENT (C15; wave 148Z replaced the three-box <fieldset data-consent-block> 1:1, lane148H Outside-lane 1):
+ * service delivery is REQUIRED for the service asked (the confirmation, the join link and — with a mobile number — the text
+ * reminders: the `event_registration` door's purposes), marketing is OPTIONAL per channel and unchecked by default. The browser
+ * posts only the submission; the server re-renders the words from the same brand (consentGrantsFromComponent).
  */
 
 interface Props {
@@ -18,7 +19,8 @@ interface Props {
     dateLabel: string | null; timeLabel: string | null; where: string; hostName: string | null; online: boolean; promisesReplay: boolean
   }
   brand: { name: string | null; logoUrl: string | null; primaryColor: string | null }
-  consentWording: { serviceDelivery: string; textReminders: string; marketing: string }
+  /** THE one brand rule's answer (resolveConsentBrand) — the name the consent words carry, server and page alike. */
+  consentBrandName: string
   intents: string[]
   timelines: string[]
 }
@@ -26,15 +28,15 @@ interface Props {
 const INTENT_LABEL: Record<string, string> = { buying: "Buying a home", selling: "Selling a home", buying_and_selling: "Buying and selling", investing: "Investing", learning: "Just learning for now" }
 const TIMELINE_LABEL: Record<string, string> = { immediate: "Ready now", "1-3_months": "In 1–3 months", "3-6_months": "In 3–6 months", "6-12_months": "In 6–12 months", "12+_months": "A year or more out", researching: "No date yet — researching" }
 
-export function RegistrationForm({ event, brand, consentWording, intents, timelines }: Props) {
+export function RegistrationForm({ event, brand, consentBrandName, intents, timelines }: Props) {
   const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", intent: "", timeline: "", workingWithAgent: "", question: "" })
-  const [consent, setConsent] = useState({ serviceDelivery: false, textReminders: false, marketing: false })
+  const consent = useConsentBoxes("event_registration", consentBrandName, ["email", "sms"])
   const [state, setState] = useState<{ status: "idle" | "sending" | "done" | "error"; message?: string; joinPath?: string | null; already?: boolean }>({ status: "idle" })
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF((p) => ({ ...p, [k]: e.target.value }))
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!consent.serviceDelivery) { setState({ status: "error", message: "Please tick the first box — it is how your confirmation and join link reach you." }); return }
+    if (!consent.serviceGiven) { setState({ status: "error", message: "Please tick the first box — it is how your confirmation and join link reach you." }); return }
     setState({ status: "sending" })
     try {
       const res = await fetch("/api/open-house/register", {
@@ -42,7 +44,7 @@ export function RegistrationForm({ event, brand, consentWording, intents, timeli
         body: JSON.stringify({
           eventId: event.id, firstName: f.firstName, lastName: f.lastName, email: f.email, phone: f.phone || null,
           situation: { intent: f.intent || null, timeline: f.timeline || null, workingWithAgent: f.workingWithAgent === "" ? null : f.workingWithAgent === "yes", question: f.question || null },
-          consent, sourceUrl: typeof window !== "undefined" ? window.location.pathname : null,
+          consent: consent.submission, sourceUrl: typeof window !== "undefined" ? window.location.pathname : null,
         }),
       })
       const body = await res.json().catch(() => ({}))
@@ -109,12 +111,7 @@ export function RegistrationForm({ event, brand, consentWording, intents, timeli
               <textarea rows={3} maxLength={500} className="w-full rounded-md border border-input bg-background px-3 py-2" value={f.question} onChange={set("question")} />
             </label>
 
-            <fieldset data-consent-block className="space-y-3 rounded-md border border-border p-3">
-              <legend className="px-1 text-xs font-medium text-muted-foreground">Your permissions</legend>
-              <label className="flex gap-2 text-sm"><input type="checkbox" className="mt-1" checked={consent.serviceDelivery} onChange={(e) => setConsent((c) => ({ ...c, serviceDelivery: e.target.checked }))} /><span>{consentWording.serviceDelivery} <em className="not-italic text-muted-foreground">(required)</em></span></label>
-              <label className="flex gap-2 text-sm"><input type="checkbox" className="mt-1" disabled={!f.phone} checked={consent.textReminders} onChange={(e) => setConsent((c) => ({ ...c, textReminders: e.target.checked }))} /><span>{consentWording.textReminders} <em className="not-italic text-muted-foreground">(optional)</em></span></label>
-              <label className="flex gap-2 text-sm"><input type="checkbox" className="mt-1" checked={consent.marketing} onChange={(e) => setConsent((c) => ({ ...c, marketing: e.target.checked }))} /><span>{consentWording.marketing} <em className="not-italic text-muted-foreground">(optional)</em></span></label>
-            </fieldset>
+            <ConsentBoxes {...consent.boxProps} idPrefix={`event-consent-${event.id}`} />
 
             {state.status === "error" ? <p className="text-sm text-destructive" role="alert">{state.message}</p> : null}
             <button type="submit" disabled={state.status === "sending"} className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-60" style={accent ? { backgroundColor: accent } : undefined}>

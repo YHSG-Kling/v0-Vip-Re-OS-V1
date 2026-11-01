@@ -43,7 +43,9 @@ const G = globalThis as any
 G.__148B = { svc: null as MemClient | null, events: [] as any[] }
 const STUB: Record<string, string> = {
   "server-only": "export{}",
-  "@/lib/supabase/service": "export const createServiceClient = () => globalThis.__148B.svc",
+  // RECORDING (wave 148Z, lane J2 hand-off): every service client minted is COUNTED, so the injected-client contract can be
+  // asserted end to end — a door given a client must mint none of its own.
+  "@/lib/supabase/service": "export const createServiceClient = () => { globalThis.__148B.minted = (globalThis.__148B.minted ?? 0) + 1; return globalThis.__148B.svc }",
   "@/lib/supabase/server": "export const createClient = async () => globalThis.__148B.svc",
   "next/cache": "export const revalidatePath = () => {}; export const revalidateTag = () => {}",
   "@/lib/kernel/emit": "export async function emitKernelEvent(i){ globalThis.__148B.events.push(i); return { inserted: true, lifecycleEventId: 'ev-' + globalThis.__148B.events.length, fanOutOk: true, error: null } }; export function asWriteResult(r){ return { data: r.lifecycleEventId ? { id: r.lifecycleEventId } : null, error: null } }",
@@ -103,7 +105,8 @@ const CLASSIFIED_WRITERS: Record<string, string> = {
   "app/api/webhooks/meta-dm/route.ts": "inbound MESSAGE (not a form)",
   "app/api/webhooks/twitter/route.ts": "inbound MESSAGE (not a form)",
   "lib/inbound-mail/offer-intake.ts": "an inbound OFFER's buyer named by the buyer's agent (staff provenance, not a consent form)",
-  "lib/kernel/crm.ts": "the CRM's STAFF manual-create (createContactManually — its own dedupe; Still open in the lane notes, not a consent form)",
+  // WAVE 148Z: "lib/kernel/crm.ts" LEFT this list — the CRM's staff create now rides captureContact (DOORS below). Its
+  // classification would otherwise read as enforced while guarding nothing (the stale-classification check).
 }
 /** The doors lane 147Z named (+ the staff twins found on the way) — each must call the one door in its body. */
 const DOORS: Array<{ door: string; file: string; fn: string }> = [
@@ -118,6 +121,8 @@ const DOORS: Array<{ door: string; file: string; fn: string }> = [
   { door: "lead magnets / forms", file: "lib/kernel/lead-magnets.ts", fn: "captureFormSubmission" },
   { door: "ad lead intake", file: "lib/ads/ad-lead-intake.ts", fn: "ingestConsentedAdLead" },
   { door: "widget callback", file: "app/api/widget/live-agent-request/route.ts", fn: "POST" },
+  // WAVE 148Z (lane 148B Still open 1): the CRM's staff create — the add dialog, the transaction sheet, the lead desk's manual conversion.
+  { door: "CRM staff create", file: "lib/kernel/crm.ts", fn: "createOrUpdateContactFromDirectIntake" },
 ]
 
 function sectionA() {
@@ -145,7 +150,7 @@ function sectionA() {
   }
   const cap = src("lib/contact-pipeline/contact-capture.ts")
   check("captureContact takes the injected-client contract (opts.client + opts.effects) and threads it into assignment and the enrichment queue",
-    /export async function captureContact\(\s*params: CaptureContactParams,\s*opts: CaptureContactOptions = \{\}/.test(cap) && /client: supabase,?\s*\}\)/.test(cap) && /queueContactEnrichmentAndScore\([^)]*\{ client: p\.client \}/.test(cap))
+    /export async function captureContact\(\s*params: CaptureContactParams,\s*opts: CaptureContactOptions = \{\}/.test(cap) && /client: supabase,?\s*\}\)/.test(cap) && /queueContactEnrichmentAndScore\([^)]*\{ client: p\.client(, notify)? \}/.test(cap))
   check("captureConsentedContact hands ITS client to captureContact (the capture rides the client the tenant was gated with)", /\}, \{ client: svc, effects: opts\.effects \}\)/.test(cap))
   check("resolveAgentForContact accepts the injected client", /client\?: \{ from: \(table: string\) => any \}/.test(src("lib/lead-assignment/contact-assignment.ts")) && /input\.client \?\? createServiceClient\(\)/.test(src("lib/lead-assignment/contact-assignment.ts")))
 }
@@ -154,7 +159,7 @@ function sectionA() {
 // §B — ONE CONSENT COMPONENT (C15): the derived form-producer census
 // ═════════════════════════════════════════════════════════════════════════════
 /** A form producer = a .tsx that submits to a contact-creating door. Derived from the source, never a hand list. */
-const DOOR_CALLS = /\/api\/(qr\/submit|embed\/capture|widget\/capture-lead|widget\/intake|widget\/live-agent-request|open-house\/attend|forms\/submit)\b|\b(captureFormSubmissionAction|submitHomeValueRequest|captureHomeValueLead|captureProfileLead|submitShowingRequest|checkInAttendee)\s*\(/
+const DOOR_CALLS = /\/api\/(qr\/submit|embed\/capture|widget\/capture-lead|widget\/intake|widget\/live-agent-request|open-house\/attend|open-house\/register|forms\/submit)\b|\b(captureFormSubmissionAction|submitHomeValueRequest|captureHomeValueLead|captureProfileLead|submitShowingRequest|checkInAttendee)\s*\(/
 /** A consent checkbox rendered outside the component: a checkbox within 400 chars of consent / tcpa / "agree to … contact". */
 function ownConsentCheckbox(code: string): boolean {
   const re = /type=\{?["']checkbox["']\}?|<Checkbox\b/g
@@ -169,6 +174,8 @@ const CONSENT_DOOR_FILES = [
   "app/api/qr/submit/route.ts", "app/api/embed/capture/route.ts", "app/api/widget/capture-lead/route.ts", "app/api/widget/intake/route.ts",
   "app/api/widget/live-agent-request/route.ts", "app/api/open-house/attend/route.ts", "lib/kernel/lead-magnets.ts", "app/actions/home-value.ts",
   "app/actions/home-value-lead.ts", "app/actions/agent-public-profile.ts", "app/actions/listing-landing.ts", "app/actions/seller-open-house.ts",
+  // wave 148Z: the event registration door (lane 148H) re-renders through the same contract since its form moved onto ConsentBoxes.
+  "lib/open-house/event-attendance.ts",
 ]
 
 function sectionB() {
@@ -258,9 +265,10 @@ async function sectionD() {
   const cap = await import("../lib/contact-pipeline/contact-capture")
   const C = await import("../lib/kernel/compliance/consent-component")
   const svc = seed(); G.__148B.svc = null // NOTHING may mint a service client: the injected one must carry every write
-  const welcomes: string[] = [], invites: string[] = []
+  G.__148B.minted = 0
+  const welcomes: string[] = [], invites: string[] = [], notified: string[] = []
   const effects = {
-    notify: async () => {},
+    notify: (async (e: { event: string }) => { notified.push(String(e.event)) }) as never,
     welcome: async (_s: unknown, c: { id: string }) => { welcomes.push(c.id) },
     portalInvite: async (p: { contactId: string }) => { invites.push(p.contactId) },
   }
@@ -273,6 +281,19 @@ async function sectionD() {
     r1.action === "created" && jane?.agent_id === AGENT_A && jane?.source_agent_id === "u-a1" && jane?.timeline === "3-6_months" && jane?.status === "new", JSON.stringify(jane ?? null).slice(0, 300))
   check("the welcome and the portal invite ran ONCE for the new contact", welcomes.length === 1 && invites.length === 1)
   check("enrichment was queued on the injected client", rows(svc, "lead_enrichment_queue").some((q) => q.contact_id === r1.contactId))
+  // WAVE 148Z — lane J2's canary: the score step's fan-out called processKernelEvent directly (it mints its own service
+  // client), so an injected-client capture still made one on create and one on merge. It now rides the door's `notify`.
+  check("INJECTED CLIENT END TO END: the capture (dedupe → insert → score → fan-out) minted NO service client, and the score's CONTACT_SCORED fan-out went to the door's own notify",
+    G.__148B.minted === 0 && notified.includes("contact_scored"), JSON.stringify({ minted: G.__148B.minted, notified }))
+  {
+    // NEGATIVE CONTROL — the recorder sees the defect it exists for: without the door's notify threaded through, the score's
+    // fan-out goes to the module's own processKernelEvent (the one that mints a client in production), not to the door.
+    const before = notified.length, engineBefore = G.__148B.events.filter((e: any) => e?.fanout && e.event === "contact_scored").length
+    await cap.queueContactEnrichmentAndScore({ brokerageId: A, contactId: r1.contactId }, { client: svc })
+    const engineAfter = G.__148B.events.filter((e: any) => e?.fanout && e.event === "contact_scored").length
+    check("NEGATIVE CONTROL: the same step WITHOUT the threaded notify sends its fan-out to the engine, not to the door (the recorder can see the bypass)",
+      notified.length === before && engineAfter === engineBefore + 1, JSON.stringify({ before, after: notified.length, engineBefore, engineAfter }))
+  }
   // contacts.phone_digits is GENERATED live; the in-memory row carries what the database would derive.
   jane.phone_digits = "5125550100"
   const r2 = await cap.captureContact({
@@ -393,6 +414,28 @@ async function sectionE() {
   check("the SMS STOP route has NO vocabulary of its own and writes through the ONE opt-out writer", !/STOP_KEYWORDS/.test(route) && /detectOptOutIntent\(/.test(route) && /processOptOutFromVerifiedInbound\(/.test(route))
   check("POSITIVE CONTROL: the own-vocabulary finder sees the old regex", /STOP_KEYWORDS/.test("const STOP_KEYWORDS = /^stop$/i"))
   const m910 = readFileSync(join(ROOT, "supabase/migrations/m910-contacts-unsubscribe-token.sql"), "utf8")
+  // ── WAVE 148Z — CONSENT PURPOSE on the one SMS send path (lane 148B Still open 3): a CAMPAIGN text to a person whose
+  //    recorded SMS consent covers only the service they asked for is REFUSED; a marketing-box consent passes.
+  const RC = await import("../lib/kernel/compliance/require-contact-consent")
+  const PC = "00000000-0000-4000-8000-00000148c0de"
+  const purposeDb = (purposes: string[], channels: string[]) => seed({
+    contacts: [{ id: PC, brokerage_id: A, phone: "(813) 555-0188", tcpa_consent: true }],
+    contact_consent_events: [{ id: "ce-1", brokerage_id: A, contact_id: PC, consent_type: "tcpa", consented: true, purposes, channels, created_at: "2026-11-01T10:00:00Z" }],
+  })
+  const serviceOnly = RC.answerConsentQuestion(await RC.consentScopeFor(purposeDb(["requested_information", "home_valuation"], ["sms", "voice"]), { brokerageId: A, contactId: PC }), { channel: "sms", purpose: "real_estate_services" })
+  const marketingBox = RC.answerConsentQuestion(await RC.consentScopeFor(purposeDb(["real_estate_services", "market_updates", "listing_alerts"], ["sms"]), { brokerageId: A, contactId: PC }), { channel: "sms", purpose: "real_estate_services" })
+  check("a SERVICE-ONLY SMS consent does not cover a marketing purpose (purpose_not_covered); a MARKETING-box consent does (positive control)",
+    serviceOnly.basis === "purpose_not_covered" && !serviceOnly.allowed && marketingBox.allowed && marketingBox.basis === "consent_record", JSON.stringify({ serviceOnly: serviceOnly.basis, marketingBox: marketingBox.basis }))
+  const refusing = /CAMPAIGN_SMS_REFUSING_BASES[^=]*=\s*new Set\(\[([^\]]*)\]\)/.exec(disp)?.[1] ?? ""
+  check("dispatchSms asks the ONE consent-scope reader for a CAMPAIGN text (channelPurposeFor → consentScopeFor → answerConsentQuestion) and refuses purpose_not_covered + unreadable (fail closed)",
+    /channelPurposeFor\(params\)\s*===\s*"campaign"/.test(smsFn) && /consentScopeFor\(/.test(smsFn) && /answerConsentQuestion\(/.test(smsFn) && /CAMPAIGN_SMS_REFUSING_BASES\.has\(/.test(smsFn)
+    && /"purpose_not_covered"/.test(refusing) && /"unreadable"/.test(refusing), refusing)
+  check("ONE channel-purpose inference for email AND sms (no second spelling inside dispatchEmail)",
+    /channelPurposeFor\(params\)/.test(emailFn) && !/systemSource\?\.includes\("campaign"\)/.test(emailFn))
+  check("the marketing SMS senders declare it: campaign-sequence steps and open-house invitations pass channelPurpose \"campaign\"",
+    /channelPurpose:\s*"campaign"/.test(src("lib/workflow/adapters/sms.ts")) && /systemSource:\s*"open_house_invitation",[\s\S]{0,40}channelPurpose:\s*"campaign"/.test(src("lib/communications/send-invitation.ts")))
+  check("POSITIVE CONTROL: the refusing-set reader would see a set that forgot purpose_not_covered",
+    !/"purpose_not_covered"/.test(/CAMPAIGN_SMS_REFUSING_BASES[^=]*=\s*new Set\(\[([^\]]*)\]\)/.exec(`const CAMPAIGN_SMS_REFUSING_BASES: ReadonlySet<string> = new Set(["withdrawn"])`)?.[1] ?? ""))
   check("m910 is stamped (lane stamp OR applied) and adds the unique per-contact token", /^-- (WRITTEN, NOT APPLIED \(wave 148, lane 148B\)|── APPLIED LIVE )/.test(m910) && /ADD COLUMN IF NOT EXISTS unsubscribe_token uuid NOT NULL DEFAULT gen_random_uuid\(\)/.test(m910) && /UNIQUE INDEX/.test(m910))
 }
 

@@ -287,11 +287,16 @@ async function main(): Promise<void> {
       addRegistrant: async (_s: unknown, a: { email: string }) => { zoomCalls.push(a.email); return { added: true as const, registrantId: a.email.startsWith("ana") ? "REG-ANA" : `REG-${zoomCalls.length}`, joinUrl: `https://zoom.us/w/987654321?tk=${zoomCalls.length}` } },
       sendEmail: async (p: { to: string; subject: string; text: string }) => { sent.push(p); return { success: true } },
     }
-    const base = { eventId: EV, firstName: "Ana", lastName: "Lopez", email: "ana@example.test", phone: "8135550148", situation: { intent: "buying", timeline: "1-3_months", workingWithAgent: false, question: "How much do I need for a down payment?" }, consent: { serviceDelivery: true, textReminders: true, marketing: false }, evidence: { ip: "10.14.8.1", userAgent: "guard" } }
+    // WAVE 148Z: the registration form posts the ONE consent component's submission (C15) — built here by the same pure contract.
+    const CC = await import("../lib/kernel/compliance/consent-component")
+    const C15SUB = (service: boolean) => CC.consentSubmissionFor({ ...CC.EMPTY_CONSENT_VALUE, serviceDelivery: service, marketing: { ...CC.EMPTY_CONSENT_VALUE.marketing } }, { door: "event_registration", brandName: "our brokerage", offered: ["email", "sms"] })
+    const base = { eventId: EV, firstName: "Ana", lastName: "Lopez", email: "ana@example.test", phone: "8135550148", situation: { intent: "buying", timeline: "1-3_months", workingWithAgent: false, question: "How much do I need for a down payment?" }, consent: C15SUB(true), evidence: { ip: "10.14.8.1", userAgent: "guard" } }
     const r1 = await A.registerForEvent(svc as never, base, regDeps)
     const contact = tbl("contacts")[0], rsvp = tbl("open_house_rsvp_tracking")[0]
     check("register → ONE Contact through C8, assigned to the event's agent, typed by the stated intent", r1.ok === true && tbl("contacts").length === 1 && contact?.brokerage_id === B && contact?.agent_id === AG && contact?.contact_type === "buyer", JSON.stringify({ r1, contact }).slice(0, 400))
-    check("…its consent rows anchored to the contact with the server's wording version (email + the explicit SMS box)", tbl("contact_consent_events").filter((c) => c.contact_id === contact?.id).length >= 1 && tbl("contact_consent_events").every((c) => c.consent_text_version === "event_registration:v1" || c.consent_text_version == null), JSON.stringify(tbl("contact_consent_events").map((c) => ({ v: c.consent_text_version, ch: c.channels }))).slice(0, 300))
+    // WAVE 148Z: the registration consent is the ONE component's (C15) — re-asserted from "event_registration:v1" (the retired
+    // per-form wording) to the rule: every row this registration wrote carries the C15 version for the event_registration door.
+    check("…its consent rows anchored to the contact with the ONE component's wording version (C15, event_registration door — service on email + phone)", tbl("contact_consent_events").filter((c) => c.contact_id === contact?.id).length >= 2 && tbl("contact_consent_events").filter((c) => c.contact_id === contact?.id).every((c) => /^c15:[^:]+:event_registration$/.test(String(c.consent_text_version ?? ""))), JSON.stringify(tbl("contact_consent_events").map((c) => ({ v: c.consent_text_version, ch: c.channels }))).slice(0, 300))
     check("…ONE registration row: tenant from the event, the situation verbatim, the creating user, registered_at, the C8 consent id", !!rsvp && rsvp.brokerage_id === B && rsvp.rsvp_status === "yes" && rsvp.source === "web_registration" && rsvp.situation?.timeline === "1-3_months" && rsvp.situation?.question === base.situation.question && rsvp.created_by_user_id === U && !!rsvp.registered_at, String(JSON.stringify(rsvp)).slice(0, 400))
     check("…the person's own Zoom registrant + personal https link stored (the key attendance is verified on)", rsvp?.provider_registrant_id === "REG-ANA" && /^https:\/\/zoom\.us\/w\//.test(rsvp?.provider_join_url ?? "") && r1.ok && r1.zoomRegistered)
     check("…and ONE confirmation, in the approved words, carrying the personal join path", sent.length === 1 && sent[0].to === "ana@example.test" && r1.ok && !!r1.joinPath && r1.joinPath.includes(`/open-house/${EV}/join?r=`), JSON.stringify(sent).slice(0, 300))
@@ -301,7 +306,7 @@ async function main(): Promise<void> {
     const r3 = await A.registerForEvent(svc as never, { ...base, firstName: "Bo", lastName: "Chen", email: "bo@example.test", phone: null, situation: { intent: "learning" } }, regDeps)
     check("POSITIVE CONTROL: a different person IS a second contact (the counter above can move)", r3.ok === true && tbl("contacts").length === 2 && tbl("open_house_rsvp_tracking").length === 2)
     const before = tbl("contacts").length
-    const noConsent = await A.registerForEvent(svc as never, { ...base, email: "nc@example.test", consent: { serviceDelivery: false, textReminders: false, marketing: false } }, regDeps)
+    const noConsent = await A.registerForEvent(svc as never, { ...base, email: "nc@example.test", consent: C15SUB(false) }, regDeps)
     const unpublished = await A.registerForEvent(svc as never, { ...base, eventId: EVD, email: "draft@example.test" }, regDeps)
     check("no service-delivery consent → refused (400), nothing filed; an unapproved (unpublished) page → 404", !noConsent.ok && noConsent.status === 400 && !unpublished.ok && unpublished.status === 404 && tbl("contacts").length === before)
 

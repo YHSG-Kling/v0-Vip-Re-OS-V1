@@ -9,6 +9,12 @@
 // Mirrors the codebase pattern: an AI smart-path with a deterministic fallback that is the floor a
 // regression can pin. This module is pure (imports only parseOrdinal + the pure spoken-value
 // resolvers) so it unit-tests with no DB/AI.
+//
+// WAVE 148 (148Z): ONE CALLER — the one intent interface. `interpretIntent` (lib/voice-admin/intent-interface.ts,
+// teamCommandFloor) asks this floor when no DOMAIN capability owns the sentence and returns the pick as
+// `interpretation.teamCommand`; the Command Center bar (app/actions/command-center.ts) and the spoken admin's
+// run_team_command (app/api/agent-assistant/tool-call/route.ts) read it from there and no longer call this module
+// (tombstones at both). scripts/intent-interface-guard.ts 5q holds the single-caller rule.
 
 import { parseOrdinal } from "@/lib/kernel/standup-action"
 import { parseSpokenPrice } from "@/lib/voice/spoken-values"

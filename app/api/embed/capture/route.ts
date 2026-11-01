@@ -145,25 +145,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: result.reason ?? "Capture failed" }, { status: result.refused === "not_identifiable" ? 400 : 500 })
   }
 
-  // ── Stamp embed attribution + link to the visitor session ───────────────
-  // contacts.embed_widget_id ties the contact back to the originating embed
-  // so the broker can see "leads from this embed". embed_sessions.contact_id
-  // links the conversation history.
-  await sentinelWrite(
-    supabase,
-    supabase
-      .from("contacts")
-      .update({ embed_widget_id: widget.id })
-      .eq("id", result.contactId),
-    {
-      table: "contacts",
-      flow: "embed_capture_attribution_stamp",
-      brokerageId: widget.brokerage_id,
-      reason:
-        "attribution stamp tying the contact back to the embed it came from; the contact itself (and its consent columns) was already created and error-checked above, so a lost stamp costs a 'leads from this embed' rollup, not the lead",
-    },
-  )
-
+  // ── Link to the visitor session ─────────────────────────────────────────
+  // FIRST TOUCH WINS (wave 148, 148Z — lane 148B Still open 8; owner ruling 22 takes the recommendation, and the one door's own
+  // rule is "prior history preserved — the first touch, the first source, the first owner win"). TOMBSTONE: a
+  // `contacts.update({ embed_widget_id: widget.id })` stood here AFTER the capture — last touch: redundant for a new contact,
+  // and for a returning one it OVERWROTE the embed they first arrived through. SURVIVOR: the `embed_widget_id: widget.id` passed
+  // to captureConsentedContact above (lib/contact-pipeline/contact-capture.ts captureColumns firstTouch — set on create,
+  // fill-if-empty on merge). Every later visit is still on the record: embed_sessions.contact_id below links each session.
   await sentinelWrite(supabase, supabase
     .from("embed_sessions")
     .update({ contact_id: result.contactId })

@@ -224,6 +224,17 @@ export interface CaptureContactParams {
   metadata?: Record<string, unknown> | null
   /** The open-house origin the welcome mentions (lib/kernel/client-welcome.ts EnsureClientWelcomeOptions.origin). */
   welcomeOrigin?: import('@/lib/kernel/client-welcome').EnsureClientWelcomeOptions['origin']
+  /**
+   * WAVE 148 (148Z — ruling 4, lane 148B Still open 1): a STAFF create through the CRM (lib/kernel/crm.ts
+   * createOrUpdateContactFromDirectIntake — the add dialog, the transaction sheet, the widget callback, the lead desk's manual
+   * conversion). Two semantics only that door needs, both narrower-or-equal to a public door's:
+   *   · a person may be filed by NAME ALONE (a transaction party whose email / phone the agent does not hold yet) — the
+   *     viability gate exists to refuse anonymous public junk, and a staff member naming a client is not that;
+   *   · the lead-conversion FAST PATH is never taken — the CRM dedupes every create (it always did), including the lead desk's
+   *     conversion whose lead may never have been deduped against the book.
+   * Public doors never set it. It grants no consent, no owner and no status the caller could not already pass.
+   */
+  staffCreate?: boolean
 }
 
 /**
@@ -389,7 +400,9 @@ export async function captureContact(
   const supabase: CaptureClient = opts.client ?? createServiceClient()
   const effects = opts.effects ?? {}
   const notify = effects.notify ?? processKernelEvent
-  const enrich = effects.enrich ?? ((p: { brokerageId: string; contactId: string; client: CaptureClient }) => queueContactEnrichmentAndScore({ brokerageId: p.brokerageId, contactId: p.contactId }, { client: p.client }))
+  // WAVE 148Z (lane J2's canary): the score step's fan-out rides the SAME `notify` the door was given — it called
+  // processKernelEvent directly, which mints its own service client, so an injected-client capture still made two of its own.
+  const enrich = effects.enrich ?? ((p: { brokerageId: string; contactId: string; client: CaptureClient }) => queueContactEnrichmentAndScore({ brokerageId: p.brokerageId, contactId: p.contactId }, { client: p.client, notify }))
   const welcome = effects.welcome ?? (async (svc: CaptureClient, contact: { id: string; brokerageId: string; contactType: string | null; firstName: string | null; lastName: string | null }, o: { origin?: CaptureContactParams['welcomeOrigin'] }) => {
     const { ensureClientWelcome } = await import('@/lib/kernel/client-welcome')
     return ensureClientWelcome(svc as any, contact, { origin: o.origin ?? null })
@@ -406,7 +419,7 @@ export async function captureContact(
   const hasContact = !!(
     (params.email ?? '').trim() || (params.phone ?? '').trim()
   )
-  if (!hasName || !hasContact) {
+  if (!hasName || (!hasContact && params.staffCreate !== true)) {
     throw new Error(
       'Contact viability failed: missing name or contact method',
     )
@@ -438,7 +451,7 @@ export async function captureContact(
   // deduplicated and enriched. Skip directly to CREATE and skip enrichment
   // queue — the caller (contact-creator.ts) owns that data transfer.
   const isLeadConversion =
-    !!params.fromLeadId || LEAD_CONVERSION_SOURCES.has(params.source)
+    (!!params.fromLeadId || LEAD_CONVERSION_SOURCES.has(params.source)) && params.staffCreate !== true
 
   if (isLeadConversion) {
     const assignment = await resolveAgentForContact({
@@ -1216,10 +1229,15 @@ export function consentGrantsFromComponent(
 }
 
 /**
- * THE C8 RECORD HALF — after the Contact exists. Exported for the two doors that still own their upsert. Never throws; every
- * best-effort step that did not land is named in `warnings` (nobody checked never reads as checked and fine).
+ * THE C8 RECORD HALF — after the Contact exists. Never throws; every best-effort step that did not land is named in `warnings`
+ * (nobody checked never reads as checked and fine).
+ *
+ * WAVE 148 (148Z — lane 148B Outside-lane 4): UN-EXPORTED. It was exported "for the two doors that still own their upsert";
+ * lane 148B moved both onto the full entry, so its ONLY caller is captureConsentedContact above (in this file) and the export
+ * read as an orphan (scripts/orphan-export-guard.ts: 1 unreferenced export). No capability is removed — every door reaches it
+ * through captureConsentedContact. The integrator re-baselines scripts/orphan-export-baseline.json deliberately.
  */
-export async function completeConsentedIntake(
+async function completeConsentedIntake(
   svc: IntakeClient,
   input: {
     brokerageId: string
@@ -1358,9 +1376,12 @@ export async function completeConsentedIntake(
 export async function queueContactEnrichmentAndScore(params: {
   brokerageId: string
   contactId: string
-}, opts: { client?: CaptureClient } = {}): Promise<void> {
+}, opts: { client?: CaptureClient; notify?: typeof processKernelEvent } = {}): Promise<void> {
   // Wave 148: the capture's own client (the injected-client contract) — the queue row, the score and its echoes ride it.
   const supabase: any = opts.client ?? createServiceClient()
+  // Wave 148Z (lane J2 hand-off): the score's fan-out is the door's `notify` effect (C8: "the side effects that mint their OWN
+  // service client — the notification engine's fan-out"), never a direct processKernelEvent beside an injected client.
+  const notify = opts.notify ?? processKernelEvent
 
   // Queue enrichment. This used to be a private copy of the queue write — one of
   // four in the repo, each with a different set of guards. The pending/processing
@@ -1379,13 +1400,19 @@ export async function queueContactEnrichmentAndScore(params: {
     ...(opts.client ? { supabase: opts.client as never } : {}),
   })
 
-  // Score immediately with available data (re-scored after enrichment completes)
-  const { data: contact } = await supabase
+  // Score immediately with available data (re-scored after enrichment completes). Tenant-pinned, and a refused read is SAID
+  // (it used to be dropped) — the queue row above already landed, so this is a missing score, never a failed queue.
+  const { data: contact, error: contactReadError } = await supabase
     .from('contacts')
     .select('*')
     .eq('id', params.contactId)
-    .single()
+    .eq('brokerage_id', params.brokerageId)
+    .maybeSingle()
 
+  if (contactReadError) {
+    console.error(`[queueContactEnrichmentAndScore] the enrichment queue row landed; the immediate score did not (contact read refused: ${contactReadError.message})`)
+    return
+  }
   if (!contact) return
 
   const scoreResult = calculateLeadScore(contact)
@@ -1423,10 +1450,16 @@ export async function queueContactEnrichmentAndScore(params: {
     metadata: { score: scoreResult.finalScore },
   }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-  await processKernelEvent({
-    event: KernelEvent.CONTACT_SCORED,
-    brokerageId: params.brokerageId,
-    entityType: 'contact',
-    entityId: params.contactId,
-  })
+  // The fan-out is best-effort AFTER the queue row and the score landed. A failure here used to escape and be logged by the
+  // caller as "enrichment queue failed" — a lie: the queue row was there. It is now named for what it is.
+  try {
+    await notify({
+      event: KernelEvent.CONTACT_SCORED,
+      brokerageId: params.brokerageId,
+      entityType: 'contact',
+      entityId: params.contactId,
+    })
+  } catch (err) {
+    console.error(`[queueContactEnrichmentAndScore] score notification fan-out failed — the enrichment queue row and the score landed: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }

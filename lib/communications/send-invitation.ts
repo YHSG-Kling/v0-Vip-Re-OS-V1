@@ -227,9 +227,20 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
     // eventType "virtual_open_house") is attended through app/open-house/[eventId]/join/route.ts, which records the invited
     // contact's attendance from the SAME (eventId, invitationId) credential before forwarding to the event's meeting URL.
     // Same rule as the RSVP link: null rather than a guess when either half is missing.
+    // WAVE 148 (148Z — lane 148H Outside-lane 2): EVERY ONLINE KIND, not only "virtual_open_house" — a webinar or an online
+    // education session invited here got no link at all. The registry decides what is online (isOnlineEvent: the kind's venue +
+    // the event's provider) and where a person enters: a kind whose registry entry REQUIRES registration links its branded
+    // registration page (the C15 form — the join door already redirects a Zoom invitee there); the rest link the join door.
+    const { isOnlineEvent, isEventKind, EVENT_PRODUCER_REGISTRY } = await import("@/lib/open-house/event-registry")
+    const evKind = (event as { event_type?: string | null }).event_type ?? null
+    const evProvider = (event as { virtual_provider?: string | null }).virtual_provider ?? null
+    const online = isOnlineEvent(evKind, evProvider)
+    const registrationRequired = isEventKind(evKind) && EVENT_PRODUCER_REGISTRY[evKind].registration.required === true
     const joinLink =
-      (event as { event_type?: string | null }).event_type === "virtual_open_house" && appUrl && params.invitationId
-        ? `${appUrl}/open-house/${params.eventId}/join?i=${params.invitationId}`
+      online && appUrl && params.invitationId
+        ? registrationRequired
+          ? `${appUrl}/open-house/${params.eventId}/register`
+          : `${appUrl}/open-house/${params.eventId}/join?i=${params.invitationId}`
         : null
 
     let email: ChannelOutcome | undefined
@@ -254,6 +265,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
             propertyImage: property.featured_image || "",
             rsvpLink,
             joinLink,
+            joinLabel: registrationRequired ? "Register to Join Online" : "Join Online",
             personalizedOpening: params.personalizedMessage,
           }),
           channelPurpose: "campaign",
@@ -291,8 +303,11 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
           message:
             (params.personalizedSms?.trim() ||
             `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}.${rsvpLink ? ` RSVP: ${rsvpLink}` : ""}`) +
-            (joinLink ? ` Join online: ${joinLink}` : ""),
+            (joinLink ? `${registrationRequired ? " Register to join online" : " Join online"}: ${joinLink}` : ""),
           systemSource: "open_house_invitation",
+          // WAVE 148 (148Z): an open-house invitation is MARKETING (its email twin above already says "campaign") — the
+          // dispatch consent-purpose gate refuses it to a person whose SMS consent covers only service delivery.
+          channelPurpose: "campaign",
         })
         sms = {
           delivered: res.success,
@@ -529,6 +544,8 @@ function generateInvitationEmailHTML(data: {
   rsvpLink: string | null
   /** A virtual open house's join link (the attendance-recording door); null for an in-person event. */
   joinLink?: string | null
+  /** Wave 148Z: "Register to Join Online" when the link is the kind's registration page. */
+  joinLabel?: string
   personalizedOpening?: string
 }) {
   return `
@@ -570,7 +587,7 @@ function generateInvitationEmailHTML(data: {
           <p>Join us to explore this amazing property and discover if it's the perfect fit for you!</p>
 
           ${data.rsvpLink ? `<a href="${data.rsvpLink}" class="cta-button">RSVP Now</a>` : ""}
-          ${data.joinLink ? `<a href="${data.joinLink}" class="cta-button">Join Online</a>` : ""}
+          ${data.joinLink ? `<a href="${data.joinLink}" class="cta-button">${data.joinLabel ?? "Join Online"}</a>` : ""}
 
           <p>We look forward to seeing you there!</p>
         </div>

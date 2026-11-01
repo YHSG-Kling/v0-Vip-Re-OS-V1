@@ -1538,13 +1538,13 @@ check("G27 when the matrix carries a wave-147 release-gate section, it has a row
 // RELEASE-BLOCKING and lane 148A's release-blockers guard derives them (never pins them).
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[G⁗⁗ · wave 148 gates — the owner's 2026-11-01 rulings → the lane contracts (148A–K, I2, J2) + chained survivors]")
-const WAVE148_LANE_IDS = ["148A", "148B", "148C", "148D", "148E", "148F", "148G", "148H", "148I", "148J", "148K", "148I2", "148J2"] as const
+const WAVE148_LANE_IDS = ["148A", "148B", "148C", "148D", "148E", "148F", "148G", "148H", "148I", "148J", "148K", "148I2", "148J2", "148Z"] as const
 /** NEW proof keys per wave-148 lane (null = the lane had not published its notes when lane 148I2 closed). */
 const WAVE148_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE148_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
   "148A": ["test:release-blockers", "test:subscriber-provisioning"], "148B": ["test:one-door-consent"], "148C": ["test:persona-compliance"],
   "148D": ["test:intent-interface"], "148E": ["test:buyer-explanation"], "148F": ["test:life-event-engagement"], "148G": ["test:magnet-funnel"],
   "148H": ["test:event-producer-registry"], "148I": ["test:status-override", "test:unattended-answer"], "148J": [], "148K": ["test:open-loop-ledger"],
-  "148I2": [], "148J2": ["test:wave148-canaries"],
+  "148I2": [], "148J2": ["test:wave148-canaries"], "148Z": ["test:meta-webhook-fail-closed"],
 })
 const contract148 = (lane: (typeof WAVE148_LANE_IDS)[number]) => WAVE148_CONTRACT_PROOFS[lane] ?? []
 interface Wave148Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE148_LANE_IDS)[number]> }
@@ -1575,6 +1575,8 @@ const WAVE148_GATES: Wave148Gate[] = [
     proofs: ["test:proof-ownership", "test:manager-ownership", "test:manager-cross-cooperation", "test:manager-governance-change", "test:simulator-wiring", "test:production-readiness", ...contract148("148I2")] },
   { gate: "canaries", rulings: "every ruling + contracts C15–C25", lanes: ["148J2"], hookLanes: ["148J2"], canaries: [],
     proofs: [...contract148("148J2")] },
+  { gate: "convergence", rulings: "every Outside-lane item of lanes A–K (ruling 22: recommendations taken) + lane K's launch-critical hand-offs", lanes: ["148Z"], hookLanes: ["148Z"], canaries: [],
+    proofs: ["test:one-door-consent", "test:persona-compliance", "test:intent-interface", "test:life-event-engagement", "test:transfer-classification", "test:brokerage-identity", ...contract148("148Z")] },
 ]
 const verdicts148 = WAVE148_GATES.map((g) => {
   const v = certify145(g, gateEnv, WAVE148_CONTRACT_PROOFS)

@@ -440,7 +440,10 @@ export async function stageAdCampaign(
     // Build a minimum-viable targeting config — agent refines in the ads
     // dashboard before launching (status='draft' on insert).
     const targetingConfig = {
-      age_min: intake.ageMin ?? 25,
+      // WAVE 148 (148Z, owner ruling 1): the default no longer narrows a HOUSING ad by age (it was 25 — a protected-class /
+      // familial-status proxy). An explicit ageMin above 18 is kept as asked and REFUSED at launch by validateAdReadiness
+      // (lib/ads/launch-assembler.ts carries the age pair), so the operator is told in words rather than silently widened.
+      age_min: intake.ageMin ?? 18,
       age_max: intake.ageMax ?? 65,
       locations: intake.city
         ? [{ city: intake.city, state: intake.state ?? "", radius_miles: 25 }]

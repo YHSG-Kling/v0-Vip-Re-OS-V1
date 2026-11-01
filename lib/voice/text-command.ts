@@ -164,7 +164,9 @@ export async function runStaffTextCommand(
         "authorization":    `Bearer ${secret}`,
         "x-acting-user-id": staff.userId,
       },
-      body: JSON.stringify({ transcript: text, surface: "sms" }),
+      // Wave 148Z (lane 148D Outside-lane 6): the modality is SAID — a texted command is text — instead of inferred by the
+      // brain from the cron-door header (C17 interpretIntent reads it; voice-command/route.ts accepts body.modality "text").
+      body: JSON.stringify({ transcript: text, surface: "sms", modality: "text" }),
     })
     const payload = await res.json().catch(() => null)
     if (res.ok && payload?.spokenResponse) {

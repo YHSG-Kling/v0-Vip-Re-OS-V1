@@ -43,13 +43,43 @@ function stripHtml(s?: string | null): string {
   return (s ?? "").replace(/<[^>]+>/g, " ")
 }
 
+type BackstopHit = { category: string; phrase: string; severity: string; reference: string }
+
+/**
+ * WAVE 148 (148Z — lane 148F hand-off, owner ruling 17 "never name the event"): THE LIFE-EVENT SCREEN AT THE CHOKEPOINT.
+ * Lane 148F's screen (lib/enrichment/life-event-vocabulary.ts screenLifeEventOutreach) ran only on personalize-outreach drafts;
+ * every other automated body (arbiter replies, sequences, magnets, sphere touches, voicemail scripts) reached the wire unscreened.
+ * It now runs here on EVERY body, beside the fair-housing scan: surveillance tells and intimate / hardship words always; the
+ * protected-proxy / career words of the events THIS person's record carries (contacts.life_events, tenant-pinned). One screen,
+ * one vocabulary — no second list. A record that cannot be read FAILS CLOSED for an autonomous send (the carried-event half of
+ * the gate could not run, CLAUDE.md §4); a human-approved send is flagged, as every category here is.
+ */
+async function lifeEventHits(input: ContentSafetyInput, text: string): Promise<BackstopHit[]> {
+  const { screenLifeEventOutreach } = await import("@/lib/enrichment/life-event-vocabulary")
+  const REF = "owner ruling 17 — automated outreach never names or alludes to a life event (lib/enrichment/life-event-vocabulary.ts)"
+  const toHits = (v: ReturnType<typeof screenLifeEventOutreach>): BackstopHit[] =>
+    v.hits.map((h) => ({ category: "life_event_mention", phrase: h.term, severity: "high", reference: `${REF} [${h.event}]` }))
+  const always = screenLifeEventOutreach(text)
+  if (!always.ok || !input.contactId) return toHits(always)
+  let events: unknown = []
+  try {
+    const { data, error } = await createServiceClient().from("contacts").select("life_events")
+      .eq("id", input.contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+    if (error) throw new Error(error.message)
+    events = (data as { life_events?: unknown } | null)?.life_events ?? []
+  } catch (e) {
+    return [{ category: "life_event_mention", phrase: "(record unreadable)", severity: "high", reference: `${REF} — the person's life-event record could not be read (${e instanceof Error ? e.message : String(e)}), so the carried-event screen did not run` }]
+  }
+  return toHits(screenLifeEventOutreach(text, { events }))
+}
+
 export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<ContentSafetyResult> {
   const text = input.parts.map(stripHtml).join("\n").trim()
   if (!text) return { blocked: false, violations: [] }
 
   // SYNCHRONOUS PRE-ACTION EVAL — every release-blocking category (fair housing, unsubstantiated
-  // guarantee, PII leak, prompt-injection echo), not just Fair Housing.
-  const hits = evaluateContentSafety(text)
+  // guarantee, PII leak, prompt-injection echo), not just Fair Housing — plus the ruling-17 life-event screen (wave 148Z).
+  const hits: BackstopHit[] = [...evaluateContentSafety(text), ...(await lifeEventHits(input, text))]
   if (hits.length === 0) return { blocked: false, violations: [] }
 
   const phrases = hits.map((h) => h.phrase)

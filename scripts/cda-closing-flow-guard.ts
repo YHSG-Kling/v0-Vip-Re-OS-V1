@@ -123,6 +123,11 @@ async function main() {
   console.log("\n[D · signed approved CDA at title before the scheduled closing, tenant zone]")
   const tzFL = resolveTenantTimeZone({ state: "FL" })
   check("the tenant zone derives from the brokerage's STATE (not hard-coded); unknown → UTC and SAID", tzFL.source === "brokerage_state" && tzFL.zone !== "UTC" && resolveTenantTimeZone({ state: null }).source === "fallback" && resolveTenantTimeZone({ explicitZone: "America/Denver" }).zone === "America/Denver")
+  // WAVE 148Z (lane 148K hand-off 143H-OL-02, m841 coupled code): the reaper passes the tenant's CHOSEN zone
+  // (global_settings.timezone) as explicitZone — the state is the fallback, not the rule.
+  const passesChosenZone = (s: string) => /from\("global_settings"\)\.select\("timezone"\)/.test(s) && /resolveTenantTimeZone\(\{[^}]*explicitZone:/.test(s)
+  check("the CDA deadline reaper reads the tenant's chosen zone (global_settings.timezone) and passes it as explicitZone", passesChosenZone(code("lib/transactions/cda-delivery-reaper.ts")))
+  check("POSITIVE CONTROL: the finder rejects the state-only call it replaced", !passesChosenZone("const tz = resolveTenantTimeZone({ state: b?.state })"))
   const dl = resolveClosingDeadline({ closeDate: "2026-06-15", timeZone: "America/Chicago" })
   check("a DATE-ONLY closing is the closing morning (09:00 local) in the tenant's zone — 2026-06-15 Chicago → 14:00Z", dl.dueAt === "2026-06-15T14:00:00.000Z" && dl.basis === "close_date" && dl.dateOnly)
   check("the title company's scheduled closing wins over the transaction's dates; an EARLIER requirement (24h) wins by subtraction", resolveClosingDeadline({ closingScheduledDate: "2026-06-10T18:00:00Z", closeDate: "2026-06-15", timeZone: "UTC" }).basis === "closing_scheduled_date" && resolveClosingDeadline({ closeDate: "2026-06-15", timeZone: "America/Chicago", earlierCutoffHours: 24 }).dueAt === "2026-06-14T14:00:00.000Z")

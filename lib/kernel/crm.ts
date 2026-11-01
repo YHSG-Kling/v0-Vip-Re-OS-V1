@@ -300,111 +300,86 @@ export async function mergeOrUpdateContactIfDuplicate(params: {
 
 // ─── COMMAND 3: createOrUpdateContactFromDirectIntake ────────────────────────
 /**
- * The canonical entry point for any consented direct intake:
- * web forms, open house sign-ins, QR scans, business card scans, portal invites.
+ * The CRM's STAFF create (createContactManually: the CRM add dialog, the transaction sheet, the widget callback) and the lead
+ * desk's manual conversion (convertLeadToContact).
  *
- * Flow:
- *   1. resolveCanonicalPerson() — dedup check
- *   2a. If duplicate: mergeOrUpdateContactIfDuplicate()
- *   2b. If new: insert contact row
- *   3. enrichContactAfterIntake() — queue enrichment (non-blocking)
- *   4. notifyAssignedAgentForNextAction() — non-blocking
- *   5. Emit CONTACT_CREATED or CONTACT_MERGED event
+ * WAVE 148 (148Z — owner ruling 4 "all seven doors on the same door"; lane 148B Still open 1): THE DEDUPE AND THE INSERT RIDE
+ * THE ONE DOOR. TOMBSTONE: this command kept its own `resolveCanonicalPerson` dedupe, its own `mergeOrUpdateContactIfDuplicate`
+ * overwrite-merge and its own `.from("contacts").insert(...)`. SURVIVOR: lib/contact-pipeline/contact-capture.ts captureContact
+ * (contract C8, injected-client form), called with `staffCreate: true` (a staff create may file a person by name alone, always
+ * dedupes — never the lead-conversion fast path) and `skipAutoAssign: true` (the owner is the one the staff chose, exactly as
+ * before). The one door's merge is fill-if-empty with conflicts kept in notes — prior history preserved, the first touch wins.
+ *
+ * What this command still owns, AFTER the one door (preserved, in order): the CONTACT_CREATED kernel emit (lifecycle row +
+ * reactor fan-out — the concierge spawn), the intake activity that starts the timeline, the enrichment queue and the agent
+ * notification. The one door's own fan-out, welcome, portal invite and enrichment are stubbed for this call: the CONTACT_CREATED
+ * emit below is this door's event, createContactManually runs the ONE welcome + portal invite (deliverConversionWelcome) for a
+ * new row, and enrichContactAfterIntake queues the enrichment — so nothing is sent or queued twice.
+ *
+ * resolveCanonicalPerson / mergeOrUpdateContactIfDuplicate stay exported through the kernel barrel (lib/kernel/index.ts) and
+ * named by scripts/person-identity-guard.ts' R2 census; they are no longer reached from here.
  */
 export async function createOrUpdateContactFromDirectIntake(
   params: CreateContactParams
 ): Promise<CRMContactResult> {
   const supabase = createServiceClient()
-  const now = new Date().toISOString()
-
-  // ── 1. Dedup ──────────────────────────────────────────────────────────────
-  const dedup = await resolveCanonicalPerson({
-    email: params.email ?? null,
-    phone: params.phone ?? null,
-    brokerageId: params.brokerage_id,
-  })
-
-  if (dedup.isDuplicate && dedup.existingContactId) {
-    return mergeOrUpdateContactIfDuplicate({
-      existingContactId: dedup.existingContactId,
-      updates: {
-        first_name: params.first_name,
-        last_name: params.last_name,
-        email: params.email ?? undefined,
-        phone: params.phone ?? undefined,
-        contact_type: params.contact_type,
-        // Direct intake that deduped onto an EXISTING contact. A forged 'qualified'
-        // is refused here too (owner ruling — see the insert below); `undefined` is
-        // what this path already meant by "no status supplied", so the refusal
-        // leaves the existing contact's status untouched rather than overwriting it.
-        status: statusForNewContact(params.status, undefined),
-        source: params.source?.source,
-        source_family: params.source?.source_family,
-        source_channel: params.source?.source_channel,
-        source_subtype: params.source?.source_subtype,
-        campaign_attribution_id: params.source?.campaign_attribution_id,
-      },
-      brokerageId: params.brokerage_id,
-    })
-  }
-
-  // ── 2. Insert new contact ────────────────────────────────────────────────
-// phone_digits is GENERATED ALWAYS on contacts AND leads (regexp_replace of phone —
-// read live 2026-10-01, wave 93 lane 93D). Writing it, even as null, is refused 428C9
-// and PostgREST refuses the WHOLE row: every manual contact create and every direct
-// lead insert through this module failed. The database derives it from `phone`.
   const email_normalized = params.email ? normalizeEmail(params.email) : null
+  const CAPTURE_CHANNELS = new Set(["phone", "email", "sms"])
 
-  const { data, error } = await supabase
-    .from("contacts")
-    .insert({
-      // tenant anchor (scope burn-down): the tenant + owner stamps lead the row
-      brokerage_id:            params.brokerage_id,
-      agent_id:                params.agent_id,     // agents.id — already correct FK
-      first_name:              params.first_name,
-      last_name:               params.last_name,
-      email:                   email_normalized,
-      phone:                   params.phone ?? null,
-      city:                    params.city ?? null,
-      state:                   params.state ?? null,
-      zip_code:                params.zip_code ?? null,
-      contact_type:            params.contact_type ?? "buyer",
-      // OWNER RULING, verbatim: "invitation from a lead converting to a contact
-      // makes sense for status qualified but any other new contacts coming in from
-      // forms, lead magnets, other real estate sites, etc. haven't been qualified
-      // yet." THIS IS THE "any other" DOOR — direct intake and the CRM manual add
-      // both land here, and `params.status` is caller-supplied through a
-      // "use server" export, i.e. a public HTTP endpoint (§4). Removing "Qualified"
-      // from the add dialog's dropdown (app/crm/page.tsx) hides the handle; this
-      // closes the door. 'qualified' is earned by the lead→contact CONVERSION alone
-      // and stamped in exactly one place, lib/portal/portal-invite-core.ts:77
-      // stampQualifiedIfLeadConverted, off the `leads.contact_id` marker. The
-      // fallback is this path's OWN prior default, so no other status moves.
-      status:                  statusForNewContact(params.status, "new"),
-      contact_persona:         params.contact_persona ?? null,
-      notes:                   params.notes ?? null,
-      preferred_channel:       params.preferred_channel ?? null,
-      tcpa_consent:            params.tcpa_consent ?? false,
-      tcpa_consent_at:         params.tcpa_consent ? now : null,
-      tcpa_consent_source:     params.source?.source ?? null,
-      team_id:                 params.team_id ?? null,
-      source:                  params.source?.source ?? null,
-      source_family:           params.source?.source_family ?? null,
-      source_channel:          params.source?.source_channel ?? null,
-      source_subtype:          params.source?.source_subtype ?? null,
-      campaign_attribution_id: params.source?.campaign_attribution_id ?? null,
-      source_agent_id:         params.source?.source_agent_id ?? null,
-      created_at:              now,
-      updated_at:              now,
-    })
-    .select()
-    .maybeSingle()
-
-  if (error || !data) {
-    return { success: false, error: error?.message ?? "Insert failed" }
+  // ── 1+2. THE ONE DOOR: dedupe before insert, then merge (fill-if-empty) or create ──────────────────────────────────────
+  let captured: { contactId: string; action: "created" | "merged" }
+  try {
+    const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+    const none = async () => undefined
+    captured = await captureContact(
+      {
+        brokerageId:   params.brokerage_id,
+        ownerAgentId:  params.agent_id ?? null,     // agents.id — the owner the staff chose
+        skipAutoAssign: true,
+        staffCreate:   true,
+        source:        params.source?.source ?? "manual",
+        first_name:    params.first_name,
+        last_name:     params.last_name,
+        email:         email_normalized,
+        phone:         params.phone ?? null,
+        city:          params.city ?? null,
+        state:         params.state ?? null,
+        zip_code:      params.zip_code ?? null,
+        contact_type:  params.contact_type ?? "buyer",
+        // OWNER RULING, verbatim: "invitation from a lead converting to a contact makes sense for status qualified but any
+        // other new contacts coming in from forms, lead magnets, other real estate sites, etc. haven't been qualified yet."
+        // `params.status` is caller-supplied through a "use server" export (§4) — a forged 'qualified' is refused here, and
+        // 'qualified' is stamped in exactly one place (lib/portal/portal-invite-core.ts stampQualifiedIfLeadConverted).
+        // CREATE-only on the one door: a merge never changes the existing contact's status.
+        status:        statusForNewContact(params.status, "new"),
+        contact_persona: params.contact_persona ?? null,
+        notes:         params.notes ?? null,
+        preferred_channel: params.preferred_channel && CAPTURE_CHANNELS.has(params.preferred_channel)
+          ? (params.preferred_channel as "phone" | "email" | "sms") : null,
+        tcpa_consent:  params.tcpa_consent ?? false,
+        tcpa_consent_source: params.tcpa_consent ? (params.source?.source ?? null) : null,
+        teamId:        params.team_id ?? null,
+        source_family: params.source?.source_family ?? null,
+        source_channel: params.source?.source_channel ?? null,
+        source_subtype: params.source?.source_subtype ?? null,
+        campaign_attribution_id: params.source?.campaign_attribution_id ?? null,
+        creatorUserId: params.source?.source_agent_id ?? null,   // contacts.source_agent_id (users) — who sourced it
+      },
+      { client: supabase, effects: { notify: none as never, welcome: none, portalInvite: none, enrich: async () => {} } },
+    )
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
   }
 
-  const contactId = data.id as string
+  const contactId = captured.contactId
+  const { data: row, error: rowError } = await supabase
+    .from("contacts").select("*").eq("id", contactId).eq("brokerage_id", params.brokerage_id).maybeSingle()
+  if (rowError) console.error("[kernel/crm] the one door landed the contact but its read-back was refused:", rowError.message)
+  const data = (row ?? { id: contactId }) as Record<string, unknown>
+
+  if (captured.action === "merged") {
+    return { success: true, contact: data, contactId, isDuplicate: true, mergedIntoId: contactId }
+  }
 
   // ── 3. Emit CONTACT_CREATED through the canonical kernel emitter — INSERT into
   //       lifecycle_events + reactor fan-out (notifications + sequences + portal cards

@@ -261,7 +261,11 @@ async function main() {
   // emotions at this time"); it shapes only the TONE fact, and the event itself rides no fact the prompt shows.
   check("rich input → a life event shapes only the TONE (148F): a tone fact, never a 'life_event' copy fact",
     richKeys.includes("tone") && !richKeys.includes("life_event") && !richFacts.some((f) => !f.key.startsWith("_") && /new job|started a new/i.test(f.value)))
-  check("rich input → marital_status present",    richKeys.includes("marital_status"))
+  // WAVE 148 (148Z — lane 148F hand-off, rulings 1 + 17): re-asserted to the RULE. Marital status is a protected class and the
+  // shadow of the marital life events; it never becomes a copy fact, and its VALUE appears in no shown fact. Positive control:
+  // the same input still yields the other facts (the builder is not simply empty).
+  check("rich input → marital_status is NEVER a copy fact, and 'married' appears in no shown fact",
+    !richKeys.includes("marital_status") && !richFacts.some((f) => !f.key.startsWith("_") && /\bmarried\b/i.test(f.value)) && richKeys.includes("occupation"))
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[Layer 1d · Two different records → different prompts (non-hardcoded proof)]")

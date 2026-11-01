@@ -66,7 +66,13 @@ export interface PersonaFacts {
   occupation?: string | null
   industry?: string | null
   education?: string | null
-  lifeEvents?: string[] | null
+  /**
+   * WAVE 148 (148Z — lane 148F hand-off, ruling 17 "never name the event"): read ONLY through `lifeEventToneBrief`
+   * (lib/enrichment/life-event-vocabulary.ts) — the raw events never reach a prompt, a persona row or copy. What the study
+   * receives is the empathetic TONE for the person's current circumstances (gentle, unhurried …), never the circumstance.
+   * Accepts both stored shapes (bare strings and C20 records).
+   */
+  lifeEvents?: unknown[] | null
   contactType?: string | null
 }
 
@@ -119,6 +125,11 @@ export interface DerivePersonaInput {
   hints?: { homeOwnerStatus?: string | null; contactType?: string | null }
   /** Research-layer signals computed by the caller from Layer-1 facts (e.g. investment capacity) — stored with Layer 1, never marketing. */
   researchSignals?: string[]
+  /**
+   * WAVE 148 (148Z): the person's raw life events, if the caller holds them. derivePersona reduces them to
+   * `lifeEventToneBrief(...)` BEFORE anything is built — the study is told HOW to be with this person, never WHY (ruling 17).
+   */
+  lifeEvents?: unknown[] | null
 }
 
 export interface DerivePersonaResult {
@@ -191,9 +202,12 @@ export async function derivePersona(
       try {
         const brokerage = await svc.from("brokerages").select("name").eq("id", input.brokerageId).maybeSingle()
         const first = (view.fields["identity.preferred_name"]?.value ?? view.fields["identity.first_name"]?.value ?? null) as string | null
+        // Ruling 17 (lane 148F's C20 map): only the TONE of the person's current circumstances reaches the study.
+        const { lifeEventToneBrief } = await import("@/lib/enrichment/life-event-vocabulary")
+        const serviceTone = lifeEventToneBrief(input.lifeEvents ?? [])
         const { system, prompt } = buildPersonaDerivationPrompt({
           brokerageName: (brokerage.data as { name?: string } | null)?.name ?? null, agentName: null, firstName: first,
-          evidence: floor.evidence, research, service: floor.service.communication,
+          evidence: floor.evidence, research, service: floor.service.communication, serviceTone,
         })
         const text = await (opts.generate ? opts.generate(system, prompt) : defaultGenerate(input.brokerageId, system, prompt))
         const raw = parseJsonObject(text)
@@ -342,6 +356,8 @@ export async function buildContactPersona(
     actor: { userId: null, userType: null, platformRole: null, brokerageId: params.brokerageId, systemSource: "enrichment_pipeline" },
     hints: { homeOwnerStatus: f.homeOwnerStatus ?? null, contactType: f.contactType ?? null },
     researchSignals: isHighNetWorthRange(f.netWorth) ? ["investment_capacity_signal"] : [],
+    // Raw events go in; derivePersona reduces them to lifeEventToneBrief before any prompt is built (ruling 17).
+    lifeEvents: f.lifeEvents ?? null,
   })
   return { written: res.written, personaName: res.persona?.marketing.headline ?? "Needs not yet known" }
 }

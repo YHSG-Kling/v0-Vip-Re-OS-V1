@@ -48,7 +48,12 @@ export const adCampaignAdapter: ChannelAdapter = {
         objective: (step.ad_objective ?? "leads") as "awareness" | "traffic" | "leads" | "conversions",
         dailyBudget: step.ad_budget_cents ? step.ad_budget_cents / 100 : 50,
         targetingConfig: {
-          age_min: 25,
+          // WAVE 148 (148Z, owner ruling 1 — the ruling lib/kernel/manager-registry.ts' ad note waited for): a HOUSING ad
+          // never narrows by age or income. This automation hard-coded age_min 25 and income_percentile "top_50" — both are
+          // fair-housing PROXIES (age is a protected class under most state laws and a familial-status proxy; an income cut
+          // is the classic redlining proxy). Broad 18–65+, no income cut; lib/ads/launch-assembler.ts now carries the age
+          // pair into validateAdReadiness, so a narrowed row refuses at launch on every path.
+          age_min: 18,
           age_max: 65,
           locations: [],
           interests: step.ad_audience_prompt ? [step.ad_audience_prompt] : ["real estate", "homebuying"],
@@ -60,7 +65,7 @@ export const adCampaignAdapter: ChannelAdapter = {
           // meaning something else later.
           excluded_audience_ids: [],
           lookalike_source_audience_id: null,
-          income_percentile: "top_50",
+          income_percentile: "any",
           homeowner_status: "any",
         },
       })

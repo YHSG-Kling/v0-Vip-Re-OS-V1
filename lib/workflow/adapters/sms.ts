@@ -52,6 +52,9 @@ export const smsAdapter: ChannelAdapter = {
     const result = await dispatchSms({
       brokerageId,
       systemSource: "sequence",
+      // WAVE 148 (148Z): a campaign-sequence text is MARKETING — the dispatch consent-purpose gate refuses it to a person
+      // whose recorded SMS consent covers only the service they asked for (owner ruling 3; lane 148B Still open 3).
+      channelPurpose: "campaign",
       contactId: contact.id,
       to: contact.phone,
       message: rendered.textBody,

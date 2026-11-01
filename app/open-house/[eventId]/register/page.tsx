@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { EVENT_PRODUCER_REGISTRY, EVENT_INTENTS, EVENT_TIMELINE_BUCKETS, isEventKind, isOnlineEvent } from "@/lib/open-house/event-registry"
-import { EVENT_EVENT_COLUMNS, eventConsentWording, eventDisplayTitle, type EventRow } from "@/lib/open-house/event-attendance"
+import { EVENT_EVENT_COLUMNS, eventDisplayTitle, type EventRow } from "@/lib/open-house/event-attendance"
+import { resolveConsentBrand } from "@/lib/contact-pipeline/contact-capture"
 import { RegistrationForm } from "./registration-form"
 
 /**
@@ -13,8 +14,8 @@ import { RegistrationForm } from "./registration-form"
  *   · the copy is the APPROVED copy; the facts (date, time, host, address) come from the event row;
  *   · branding is the EVENT's brokerage's (global_settings by brokerage_id — never another tenant's logo);
  *   · the payload handed to the client is display-only (no ids beyond the event's, no agent e-mail, no brokerage id);
- *   · the consent wording is rendered here from the SAME function the server hashes (eventConsentWording) — what the person
- *     reads is what the C8 record stores.
+ *   · the consent is the ONE component (C15, wave 148Z): the page resolves the brand through THE one brand rule
+ *     (resolveConsentBrand) and the server re-renders the same words from it — what the person reads is what the C8 record stores.
  */
 export default async function EventRegistrationPage({ params }: { params: Promise<{ eventId: string }> }) {
   const { eventId } = await params
@@ -64,7 +65,7 @@ export default async function EventRegistrationPage({ params }: { params: Promis
         promisesReplay: spec.deliverables.includes("replay_recording"),
       }}
       brand={{ name: (settings as { app_name?: string | null } | null)?.app_name ?? (brokerageName || null), logoUrl: (settings as { app_logo_url?: string | null } | null)?.app_logo_url ?? null, primaryColor: (settings as { primary_color?: string | null } | null)?.primary_color ?? null }}
-      consentWording={eventConsentWording(brokerageName, title)}
+      consentBrandName={await resolveConsentBrand(svc as never, { brokerageId: ev.brokerage_id, agentId: ev.agent_id ?? null })}
       intents={[...EVENT_INTENTS]}
       timelines={[...EVENT_TIMELINE_BUCKETS]}
     />

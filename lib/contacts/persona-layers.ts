@@ -432,6 +432,11 @@ export interface PersonaPromptInput {
   evidence: ReturnType<typeof buildPersonaEvidence>
   research: ResearchAttribute[]
   service: ServiceProfile["communication"]
+  /**
+   * WAVE 148 (148Z, ruling 17): the empathetic TONE for the person's current circumstances — `lifeEventToneBrief(...)` of
+   * lib/enrichment/life-event-vocabulary.ts, never the events themselves. Shapes the SERVICE profile only.
+   */
+  serviceTone?: string | null
 }
 
 /** PURE. The persona strategist's brief (wave-148 prompt standard: role, brand, facts it may and may not use, the decision it
@@ -463,6 +468,7 @@ export function buildPersonaDerivationPrompt(input: PersonaPromptInput): { syste
   const prompt = [
     `PERSON: ${input.firstName ?? "(name not on record)"}`,
     `CANONICAL SERVICE FACTS (from their record): ${JSON.stringify(input.service)}`,
+    ...(input.serviceTone ? [`SERVICE TONE (how to be with them right now — shape the SERVICE profile only; never name, guess or allude to why): ${input.serviceTone}`] : []),
     "",
     "LAYER 1 — RESEARCH ATTRIBUTES (SERVICE-ONLY: may make the service more considerate; never a need, a label, an audience or a word of copy; never repeat a value):",
     research,

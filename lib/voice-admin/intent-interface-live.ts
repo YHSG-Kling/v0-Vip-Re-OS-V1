@@ -413,9 +413,17 @@ export async function executeIntent(i: IntentInterpretation, ctx: ExecuteIntentC
         if (scope.error) return out("failed", scope.error, { error: scope.error })
         const { getHealthPrioritizedContacts } = await import("@/lib/intelligence/health-prioritizer-runner")
         // The ranking runner scopes by ONE agent; a team is ranked agent by agent (bounded) and merged.
-        const rankedLists = scope.ids
-          ? await Promise.all(scope.ids.slice(0, 15).map((agentId) => getHealthPrioritizedContacts(svc, ctx.tenant.brokerageId, { agentId, limit: 200 })))
-          : [await getHealthPrioritizedContacts(svc, ctx.tenant.brokerageId, { limit: 200 })]
+        // WAVE 148 (148Z): the runner THROWS on a refused read (it used to return [] — which this branch spoke as
+        // "everyone looks well looked-after"). The refusal is said, never ranked as fine (CLAUDE.md §4).
+        let rankedLists: Awaited<ReturnType<typeof getHealthPrioritizedContacts>>[]
+        try {
+          rankedLists = scope.ids
+            ? await Promise.all(scope.ids.slice(0, 15).map((agentId) => getHealthPrioritizedContacts(svc, ctx.tenant.brokerageId, { agentId, limit: 200 })))
+            : [await getHealthPrioritizedContacts(svc, ctx.tenant.brokerageId, { limit: 200 })]
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e)
+          return out("failed", `I couldn't check who may need help right now (${why}) — I won't guess that everyone is fine.`, { error: why })
+        }
         const ranked = rankedLists.flat().sort((a, b) => b.priority - a.priority || a.score - b.score)
         const needing = ranked.filter((r) => r.band === "at_risk" || r.band === "dormant" || r.band === "cooling").slice(0, 8)
         if (needing.length === 0) return out("done", "Everyone looks well looked-after right now. I'll tell you when someone goes quiet.")

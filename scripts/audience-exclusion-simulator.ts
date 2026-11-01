@@ -225,25 +225,34 @@ async function main() {
     (() => { const v = resolveExclusionSlot([], ALL_ROWS, "C"); return v.ok && v.governed.length === 0 })())
 
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[4 · THE INCLUSION ARM IS UNTOUCHED — the owner's them-first ruling]")
-  console.log("     (\"that is how we show them info or ads that is worded to their situation\")")
+  console.log("\n[4 · THE INCLUSION ARM — needs-based only since owner ruling 1 (2026-11-01, wave 148Z)]")
+  console.log("     (the 2026-08-23 situation-persona admission is REVERSED for ad audiences: a housing audience is")
+  console.log("      selected on a NEED, never on who a person is — re-asserted as the rule, not the old waypoint)")
 
   for (const key of PROTECTED_AUDS) {
     const rule = AUD[key].source_rule
-    check(`"${AUD[key].audience_name}" is still a valid TARGETING basis`,
-      resolveAudiencePersonaBasis(rule).ok
-      && ((): boolean => { try { assertAudiencePersonaBasis(rule, "x"); return true } catch { return false } })())
+    const inc = resolveAudiencePersonaBasis(rule)
+    check(`"${AUD[key].audience_name}" is REFUSED as a TARGETING basis too (protected_characteristic, ruling 1)`,
+      !inc.ok && inc.refusalKind === "protected_characteristic"
+      && ((): boolean => { try { assertAudiencePersonaBasis(rule, "x"); return false } catch { return true } })())
   }
-  check("…and the same four audiences pass when named in the INCLUDE slot (only the exclude slot gates)",
+  check("POSITIVE CONTROL — a NEEDS-BASED persona audience is still a valid TARGETING basis (not refuse-every-persona)",
+    resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["downsize"] } }).ok)
+  check("…and the same four audiences named in the INCLUDE slot never reach the EXCLUSION gate (the include slot is the delivery gate's)",
     (() => {
       const ids = PROTECTED_AUDS.map((k) => AUD[k].id)
       const t = targeting([], ids)
       return excludedAudienceIdsIn(t).length === 0 && includedAudienceIdsIn(t).length === 4
         && resolveExclusionSlot(excludedAudienceIdsIn(t), ALL_ROWS, "C").ok
     })())
-  check("the ESCALATION is what makes the difference — the same rule, two operations, two verdicts",
-    resolveAudiencePersonaBasis(AUD.senior.source_rule).ok
-    && !resolveAudiencePersonaBasis(AUD.senior.source_rule, "exclusion").ok)
+  // Since ruling 1 both operations refuse a protected persona; the ESCALATION still decides WHICH refusal is reached —
+  // the exclusion arm's, which names the restricted act (suppression / withholding). Re-asserted as that rule.
+  check("the ESCALATION decides the operation — the same rule refuses on both, and only the escalated verdict speaks of SUPPRESSION",
+    (() => {
+      const inc = resolveAudiencePersonaBasis(AUD.senior.source_rule)
+      const exc = resolveAudiencePersonaBasis(AUD.senior.source_rule, "exclusion")
+      return !inc.ok && !exc.ok && /SUPPRESSES/.test(exc.refusal) && /WITHHOLDING/.test(exc.refusal) && !/SUPPRESSES/.test(inc.refusal)
+    })())
   check("…and the escalation cannot be used to WIDEN (its only value is 'exclusion')",
     /escalateTo\?:\s*"exclusion"/.test(code("lib/ads/audience-persona-basis.ts")))
   check("POSITIVE CONTROL — that scanner would see a two-way parameter if one existed",
@@ -482,21 +491,26 @@ async function main() {
 
   // MUTATION A — the escalation is dropped: the slot asks the audience's OWN rule
   // which operation it performs, which is what every gate did before this lane.
-  function mutantA(ids: string[], rows: ExclusionAudienceRow[]): boolean {
+  // Since owner ruling 1 (wave 148Z) the inclusion arm ALSO refuses a protected persona, so dropping the escalation no
+  // longer ADMITS the four — it reaches the WRONG verdict: the inclusion refusal, which never names the restricted act
+  // (suppression / withholding, 42 U.S.C. § 3604(c)). The mutant returns the refusal text so that difference is visible.
+  function mutantA(ids: string[], rows: ExclusionAudienceRow[]): string | null {
     for (const id of ids) {
       const row = rows.find((r) => r.id === id)
       if (!row) continue
       const res = resolveAudiencePersonaBasis(row.source_rule)   // ← no "exclusion"
-      if (!res.ok) return false
+      if (!res.ok) return res.refusal
     }
-    return true
+    return null
   }
-  const realRefusals = PROTECTED_AUDS.filter((k) => !resolveExclusionSlot([AUD[k].id], ALL_ROWS, "C").ok).length
-  const mutantARefusals = PROTECTED_AUDS.filter((k) => !mutantA([AUD[k].id], ALL_ROWS)).length
-  check(`WITH the escalation, all ${PROTECTED_AUDS.length} protected persona audiences are refused in the slot`,
-    realRefusals === PROTECTED_AUDS.length, `${realRefusals}/${PROTECTED_AUDS.length}`)
-  check(`WITHOUT it, ALL ${PROTECTED_AUDS.length} are ADMITTED — the exact HUD v. Meta shape, reproduced`,
-    mutantARefusals === 0, `${mutantARefusals} still refused`)
+  const realVerdicts = PROTECTED_AUDS.map((k) => resolveExclusionSlot([AUD[k].id], ALL_ROWS, "C"))
+  const realRefusals = realVerdicts.filter((v) => !v.ok).length
+  const realNamesSuppression = realVerdicts.filter((v) => !v.ok && /SUPPRESSES/.test(v.refusal)).length
+  const mutantNamesSuppression = PROTECTED_AUDS.filter((k) => /SUPPRESSES/.test(mutantA([AUD[k].id], ALL_ROWS) ?? "")).length
+  check(`WITH the escalation, all ${PROTECTED_AUDS.length} protected persona audiences are refused in the slot, as SUPPRESSION`,
+    realRefusals === PROTECTED_AUDS.length && realNamesSuppression === PROTECTED_AUDS.length, `${realRefusals}/${PROTECTED_AUDS.length} refused, ${realNamesSuppression} as suppression`)
+  check(`WITHOUT it, NONE of the ${PROTECTED_AUDS.length} is refused for the act it performs (the verdict is reached for the wrong operation)`,
+    mutantNamesSuppression === 0, `${mutantNamesSuppression} still named suppression`)
 
   // MUTATION B — the unknown-audience arm is made permissive ("no row, nothing to
   // check"), which is the shape that reads as safe and is not.

@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-01
  * source: public.live_check_constraints_json()
- * body-sha256: 65efc68b095f0800f87b729166f6bdc4a2edc98204294ce7c450814514729352
+ * body-sha256: e66e49cb7e350ad9ea9688cdaf90503ef244655798684a2821489c23c593d11e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1237,7 +1237,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     interest_level: ["cold", "hot", "no_interest", "warm"],
   },
   open_house_events: {
-    event_type: ["broker_open", "education_session", "open_house", "virtual_open_house", "webinar"],
+    event_type: ["broker_open", "client_event", "education_session", "open_house", "virtual_open_house", "webinar"],
     status: ["active", "cancelled", "completed", "draft", "marketing", "scheduled"],
     virtual_provider: ["external_link", "youtube", "zoom"],
   },
@@ -1246,7 +1246,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   open_house_invitations: {
     channel: ["both", "email", "in_app", "sms"],
-    invitation_type: ["broker_preview", "education_session", "open_house", "virtual_open_house", "webinar"],
+    invitation_type: ["broker_preview", "client_event", "education_session", "open_house", "virtual_open_house", "webinar"],
     rsvp_response: ["maybe", "no", "no_response", "yes"],
   },
   open_house_rsvp_tracking: {

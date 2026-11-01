@@ -475,24 +475,48 @@ export async function generatePersonalizedInvite(params: { contactId: string; ev
       .eq("id", params.eventId)
       .maybeSingle()
 
-    const { data: persona } = await supabase
-      .from("client_detailed_personas")
-      .select("*")
-      .eq("id", contact?.persona_id)
-      .maybeSingle()
+    // WAVE 148 (148Z): THE PERSONA IS READ BY ITS CONTACT, IN THE SESSION TENANT, FROM THE MARKETING-SAFE LAYER.
+    // TOMBSTONE: this read was `.from("client_detailed_personas").eq("id", contact?.persona_id)` — `contacts` has NO
+    // persona_id column (scripts/schema-snapshot.ts), so it always matched nothing (CLAUDE.md §3 trap) and the prompt said
+    // "Pain Points: Unknown" for everyone. SURVIVOR: app/actions/contact-persona.ts loadContactPersona (keyed on
+    // client_detailed_personas.contact_id + the session brokerage — the persona lane 148C's lib/contacts/persona-builder.ts
+    // writes). An invitation is public marketing copy to one person, so only layer 5 (marketing_persona, marketing_safe) is
+    // handed to the model — never the research layer, never the legacy pain_points (unscreened, pre-148).
+    const { loadContactPersona } = await import("@/app/actions/contact-persona")
+    const personaRead = await loadContactPersona({ contactId: params.contactId })
+    const storedPersona = personaRead.ok ? personaRead.persona : null
+    const marketing = personaRead.ok && personaRead.layered && storedPersona?.marketing_safe === true
+      ? (storedPersona.marketing_persona as { headline?: string; needs?: Array<{ need?: string }>; messaging?: { angles?: string[] } } | null)
+      : null
+    const { MARKETING_NEEDS } = await import("@/lib/contacts/persona-layers")
+    const needLabels = (marketing?.needs ?? [])
+      .map((n) => (n.need && n.need in MARKETING_NEEDS ? MARKETING_NEEDS[n.need as keyof typeof MARKETING_NEEDS].label : null))
+      .filter((l): l is string => !!l)
+      .slice(0, 3)
 
     const matchScore = await calculateMatchScore(params.contactId, event?.listing_id)
 
-    const prompt = `Generate personalized open house invitation for ${contact?.first_name} ${contact?.last_name}.
+    // WAVE 148 prompt standard: role + mandate, the brand and the person, the facts it may rely on (and must never invent),
+    // the decision it owns, a typed output contract, the compliance boundary (fair housing — this IS public marketing copy),
+    // and the escalation rule.
+    const system = `You are the listing agent's open-house concierge — the warm, specific voice of a real-estate agent's business, writing ONE personal invitation that makes this person want to come and meet the agent. It is about them: be kind and neighbourly, never pushy.
 
-RECIPIENT PROFILE:
-- Name: ${contact?.first_name} ${contact?.last_name}
-- Persona: ${persona?.persona_type || "general"}
-- Looking for: ${contact?.beds_wanted} bed, ${contact?.baths_wanted} bath
-- Budget: $${contact?.budget_min}-${contact?.budget_max}
-- Priorities: ${contact?.must_have_features?.join(", ") || "Not specified"}
-- Timeline: ${contact?.timeline || "flexible"}
-- Pain Points: ${persona?.pain_points?.join(", ") || "Unknown"}
+YOU OWN: the wording of one invitation (email subject + body, and a short text message).
+FACTS YOU MAY RELY ON: only the RECIPIENT, PROPERTY, MATCH and OPEN HOUSE facts in the message. A value shown as "not specified" is UNKNOWN — never fill it in, never guess a feature, price, school, commute or neighbourhood claim the facts do not state.
+COMPLIANCE (Fair Housing Act §3604(c) — this is public marketing copy): describe the HOME and the person's stated criteria only. Never mention or imply race, colour, religion, sex, disability, familial status, national origin, age or life stage, marital status, a life event, or who a home or area is "perfect for"; no school-quality claims (name a district only if the facts give it); no "exclusive"/"private community" wording that implies who is welcome.
+VOICE: warm, specific, conversational; no "great opportunity", no "don't miss out"; gentle, honest — if the match is weak, say plainly why it may still be worth a look.
+ESCALATE: if the facts are too thin to write something honest and specific, set "needs_human": true and explain in "reasoning" instead of padding.
+OUTPUT: JSON only — {"email_subject": string, "email_body": string, "sms_message": string (≤ 300 chars, include the date), "reasoning": string, "needs_human": boolean}.`
+
+    const prompt = `Write the invitation for ${contact?.first_name ?? "this person"}.
+
+RECIPIENT (their own stated criteria):
+- Name: ${contact?.first_name ?? ""} ${contact?.last_name ?? ""}
+- Looking for: ${contact?.beds_wanted ?? "not specified"} bed, ${contact?.baths_wanted ?? "not specified"} bath
+- Budget: ${contact?.budget_min || contact?.budget_max ? `$${contact?.budget_min ?? "?"}-${contact?.budget_max ?? "?"}` : "not specified"}
+- Priorities: ${contact?.must_have_features?.join(", ") || "not specified"}
+- Timeline: ${contact?.timeline || "not specified"}
+- What they are trying to do (marketing-safe, needs-based persona): ${needLabels.length ? needLabels.join("; ") : "not yet known — lead with the home and their criteria"}${marketing?.messaging?.angles?.length ? `\n- Angles that help them: ${marketing.messaging.angles.slice(0, 2).join("; ")}` : ""}
 
 PROPERTY DETAILS:
 - Address: ${event?.property?.address}
@@ -509,30 +533,12 @@ OPEN HOUSE DETAILS:
 - Date: ${event?.event_date}
 - Time: ${event?.start_time} - ${event?.end_time}
 
-TASK: Write personalized invitation that:
-1. Addresses ${contact?.first_name} by name
-2. Highlights property features matching THEIR specific priorities
-3. Explains why THIS home fits THEIR needs (not generic)
-4. Creates gentle urgency without pressure
-5. Makes it easy to RSVP
-
-TONE: ${persona?.communication_preferences === "formal" ? "Professional but friendly" : "Warm and conversational"}
-
-DO NOT use generic phrases like "great opportunity" or "don't miss out"
-DO reference their specific search criteria
-DO make them feel you're thinking about THEM specifically
-
-OUTPUT FORMAT (JSON):
-{
-  "email_subject": "...",
-  "email_body": "...",
-  "sms_message": "...",
-  "reasoning": "Why this property matches this contact"
-}`
+TASK: address ${contact?.first_name ?? "them"} by name; connect the home's stated features to THEIR stated priorities; say honestly why this home may fit; make RSVP easy. JSON only, per the contract.`
 
     const { text } = await generateText({
       brokerageId: (event as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
       model: "openai/gpt-4o",
+      system,
       prompt,
     })
 

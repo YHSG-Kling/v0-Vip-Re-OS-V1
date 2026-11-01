@@ -14,6 +14,7 @@
  */
 
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
+import { mergeLifeEvents } from '@/lib/enrichment/life-event-vocabulary'
 import { resolveLeadAcquisitionCost } from './acquisition-cost'
 import { ENUM_VOCABULARIES, normalizeEnumValue } from '@/lib/data-steward/value-normalizer'
 import { canonicalContactType, isStorableContactType } from "@/lib/contact-types"
@@ -357,7 +358,13 @@ export async function createContactFromLead(
       // and the lead's own column fills the gap where it does not. Reversing the order
       // would let a stale lead column clobber a fresh PeopleData answer.
       home_owner_status: data.lead.home_owner_status ?? null,
-      life_events:       data.lead.life_events ?? null,
+      // WAVE 148 (148Z — lane 148F hand-off, C20): the lead's life events cross onto the contact through the ONE chronological
+      // vocabulary (mergeLifeEvents — the same idiom the column map uses for the enrichment payload just below): canonical
+      // spellings, event/observed time, sequence + supersedes, prohibited tokens (health / pregnancy) dropped. It carried
+      // the raw array across before, so a pre-C20 spelling or a prohibited token rode onto the contact unexamined.
+      life_events:       Array.isArray(data.lead.life_events) && data.lead.life_events.length > 0
+        ? (() => { const canon = mergeLifeEvents([], data.lead.life_events as unknown[], { now: data.lead.last_enriched_at ?? new Date() }).events; return canon.length > 0 ? canon : null })()
+        : null,
       ...peopleDataProfileToContactColumns(data.lead.enrichment_profile, {
         enrichedAt: data.lead.last_enriched_at ?? undefined,
       }),

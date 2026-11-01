@@ -92,6 +92,8 @@ export interface CreateAttendeeResult {
   success: boolean
   attendee_id: string | null
   error?: string
+  /** Wave 148Z: true when the contact was ALREADY checked in to this event (m925's unique index answered 23505). */
+  already_checked_in?: boolean
 }
 
 export interface AttachAttributionResult {
@@ -353,6 +355,20 @@ export async function createOpenHouseAttendeeFromContact(input: {
       .select("id")
       .single()
 
+    // A REPEAT WALK-IN (wave 148, 148Z — lane 148H Outside-lane 3): since m925's uq_open_house_attendees_event_contact the
+    // same contact checking in twice at one event answers 23505. That is "already checked in", not a failure — read back THE
+    // existing attendee (tenant-pinned) and return it, as the public kiosk route already does. A refused read-back is said.
+    if (insertErr?.code === "23505") {
+      const { data: prior, error: priorErr } = await supabase
+        .from("open_house_attendees").select("id")
+        .eq("event_id", open_house_id).eq("contact_id", contact_id).eq("brokerage_id", brokerage_id)
+        .maybeSingle()
+      if (priorErr || !prior?.id) {
+        return { success: false, attendee_id: null, error: `already checked in, but the existing attendee could not be read back: ${priorErr?.message ?? "no row in this tenant"}` }
+      }
+      console.log(`[Kernel] contact ${contact_id} is already checked in to open_house ${open_house_id} (attendee ${prior.id})`)
+      return { success: true, attendee_id: prior.id as string, already_checked_in: true }
+    }
     if (insertErr || !attendee?.id) {
       console.error(`[Kernel] Attendee creation failed:`, insertErr?.message)
       return {

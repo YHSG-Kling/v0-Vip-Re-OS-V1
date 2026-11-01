@@ -41,6 +41,12 @@ interface Props {
   tcpaText?: string
   /** The name the consent names — THE one brand rule, resolved by the page exactly as the kernel re-renders it. */
   consentBrandName?: string
+  /**
+   * WAVE 148 (148Z): the channels a FUNNEL form declared (settings.funnel.consent.channels — FunnelConsentSpec,
+   * `wording: "rendered_by_c15"`), already narrowed by the page to what the form can use. The ONE component renders them;
+   * absent → the form's own default (direct mail only where an address is asked).
+   */
+  consentChannels?: Array<"email" | "sms" | "voice" | "direct_mail">
   thankYouMessage?: string
   /** Wave 141: where the visitor came from (the page parsed it from the query string). */
   attribution?: LeadMagnetAttribution | null
@@ -56,6 +62,7 @@ export function GenericCaptureForm({
   subheadline,
   ctaText = "Submit",
   consentBrandName = "our brokerage",
+  consentChannels,
   thankYouMessage = "Thank you! We will be in touch shortly.",
   attribution = null,
   onSubmitted,
@@ -63,7 +70,9 @@ export function GenericCaptureForm({
   const [isPending, startTransition] = useTransition()
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const consent = useConsentBoxes("lead_magnet", consentBrandName, fields.some((f) => f.name === "property_address") ? ["email", "sms", "voice", "direct_mail"] : undefined)
+  const consent = useConsentBoxes("lead_magnet", consentBrandName, consentChannels && consentChannels.length > 0
+    ? consentChannels
+    : fields.some((f) => f.name === "property_address") ? ["email", "sms", "voice", "direct_mail"] : undefined)
 
   // Dynamic field values keyed by field.name
   const [values, setValues] = useState<Record<string, string>>(() =>

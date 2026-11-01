@@ -129,9 +129,13 @@ export function buildPersonalizationFacts(input: PersonalizationInput): Personal
   const hv = input.home_value ?? (typeof ep?.home_value === "number" ? ep.home_value : null)
   if (hv != null && hv > 0) push("home_value", "Est. home value", `$${hv.toLocaleString()}`)
 
-  // ── Marital status ────────────────────────────────────────────────────────
-  const ms = input.marital_status ?? ep?.marital_status
-  if (ms) push("marital_status", "Marital status", ms)
+  // ── Marital status — NEVER a copy fact (wave 148, 148Z — lane 148F hand-off, owner rulings 1 + 17) ──
+  // TOMBSTONE: `push("marital_status", "Marital status", ms)` stood here and handed the outreach writer "Marital status:
+  // married" as a fact to USE in a draft. Marital status is a protected class in most states and the shadow of the marital
+  // life events (a wedding, a separation) that ruling 17 says are never named; ruling 1 lets it shape a persona's SERVICE
+  // only, never words. No survivor in copy by design: the attribute stays readable through the research reader
+  // (lib/enrichment/protected-research-store.ts readProtectedAttributes, purpose-audited) and the persona's service profile.
+  // `marital_status` stays on PersonalizationInput so callers need not change; it is read by nothing here.
 
   // ── Life events — NEVER copy (wave 148, lane 148F — owner ruling 17) ─────
   // This block used to call a life event "the richest personalization signal" and put it in the draft ("I'm reaching out with

@@ -29,7 +29,7 @@
  * The live open_house_events.event_type vocabulary after m924 — ONE spelling each (CLAUDE.md §6).
  * @proofSeam scripts/event-producer-registry-guard.ts holds this list = the m924 CHECK = the ONE producer's refusing list
  */
-export const EVENT_KINDS = ["open_house", "broker_open", "virtual_open_house", "webinar", "education_session"] as const
+export const EVENT_KINDS = ["open_house", "broker_open", "virtual_open_house", "webinar", "education_session", "client_event"] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
 /**
@@ -189,6 +189,22 @@ export const EVENT_PRODUCER_REGISTRY: Readonly<Record<EventKind, EventProducerSp
     followUp: { owner: "ai_isa", door: FOLLOW_UP, noShow: "offer_replay" },
     outcome: OUTCOME,
     rationale: "A seminar at the office or online. In person it is attended at the sign-in kiosk; online it is verified exactly like a webinar.",
+  },
+  // WAVE 148 (148Z — lane 148H Still open 5, owner ruling 22): THE SIXTH KIND. Client appreciation and holiday gatherings were
+  // drafted by the sphere's invitation generator (app/actions/ai-sphere-management.ts aiGenerateEventInvitation) for events
+  // nothing stored, registered or verified; they are now a kind of the ONE events table (m926 widens the CHECKs — WRITTEN, NOT
+  // APPLIED; the integrator applies it, and until then the database refuses this kind at the producer's insert, said in words).
+  client_event: {
+    kind: "client_event", label: "Client appreciation event", audience: "consumer", venue: "in_person", listing: "none",
+    producer: SCHEDULER,
+    // Registered (an RSVP count matters for a party) through the C15 form; never asks a past client their buying situation.
+    registration: { required: true, door: REGISTRATION, form: "c15_consented", consentPurposes: ["event_followup"], identityFields: CONSUMER_IDENTITY, situationFields: [], assignsToCreator: true },
+    attendance: { verifiedBy: ["kiosk_signin", "agent_walk_in"], checkInDoors: [KIOSK, WALK_IN], providers: {}, minVerifiedSeconds: null },
+    capability: { hosting: null, broadcast: null },
+    deliverables: [],
+    followUp: { owner: "ai_isa", door: FOLLOW_UP, noShow: "none" },
+    outcome: { ...OUTCOME, evidence: null },
+    rationale: "A thank-you gathering for past clients and their friends (client appreciation, a holiday party). In person: the kiosk sign-in or the agent's check-in is the attendance. It is a relationship moment, not a sales event — attending alone never triggers a sales follow-up, and a no-show is never chased.",
   },
 })
 

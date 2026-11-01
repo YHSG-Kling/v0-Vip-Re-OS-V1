@@ -316,30 +316,30 @@ async function runTeamCommandTool(
   // runTeamCommand): the ONE intent interface hears the free-text command before the team-command floor, so
   // "create an ad for my new listing" said to the spoken admin is answered with its plan (and finished on the
   // one affordance, which waits for a yes) instead of "I didn't catch a team command". Rules only, no spend.
-  {
-    const { data: me, error: meErr } = await supabase.from("users").select("user_type, platform_role").eq("id", session.user_id).maybeSingle()
-    if (meErr) return { error: "role unreadable", spoken_summary: "I couldn't verify your role, so I won't start anything — try again in a moment." }
-    const { interpretIntent } = await import("@/lib/voice-admin/intent-interface")
-    const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-    const agentId = await resolveAgentId(supabase as never, session.user_id)
-    const interpretation = interpretIntent({
-      utterance: command, modality: "voice", screen: "assistant",
-      actor: { userId: session.user_id, userType: (me as { user_type?: string | null } | null)?.user_type ?? null, platformRole: (me as { platform_role?: string | null } | null)?.platform_role ?? null, agentId },
-      tenant: { brokerageId: session.brokerage_id },
-    })
-    if (interpretation.family === "domain") {
-      return {
-        handled: interpretation.authority_check.allowed,
-        intent_interface: interpretation.capability,
-        spoken_summary: interpretation.authority_check.allowed
-          ? `${interpretation.plan.summary} Finish it on the assistant bar — it asks for anything missing and waits for your yes.`
-          : (interpretation.authority_check.reasons[0] ?? interpretation.plan.summary),
-      }
+  const { data: me, error: meErr } = await supabase.from("users").select("user_type, platform_role").eq("id", session.user_id).maybeSingle()
+  if (meErr) return { error: "role unreadable", spoken_summary: "I couldn't verify your role, so I won't start anything — try again in a moment." }
+  const { interpretIntent } = await import("@/lib/voice-admin/intent-interface")
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const agentId = await resolveAgentId(supabase as never, session.user_id)
+  const interpretation = interpretIntent({
+    utterance: command, modality: "voice", screen: "assistant",
+    actor: { userId: session.user_id, userType: (me as { user_type?: string | null } | null)?.user_type ?? null, platformRole: (me as { platform_role?: string | null } | null)?.platform_role ?? null, agentId },
+    tenant: { brokerageId: session.brokerage_id },
+  })
+  if (interpretation.family === "domain") {
+    return {
+      handled: interpretation.authority_check.allowed,
+      intent_interface: interpretation.capability,
+      spoken_summary: interpretation.authority_check.allowed
+        ? `${interpretation.plan.summary} Finish it on the assistant bar — it asks for anything missing and waits for your yes.`
+        : (interpretation.authority_check.reasons[0] ?? interpretation.plan.summary),
     }
   }
 
-  const { parseTeamCommandText } = await import("@/lib/voice/parse-team-command")
-  const parsed = parseTeamCommandText(command)
+  // TOMBSTONE (wave 148, 148Z): this tool called `parseTeamCommandText(command)` (lib/voice/parse-team-command.ts) itself —
+  // a second place that picked commands outside the one module. SURVIVOR: lib/voice-admin/intent-interface.ts interpretIntent →
+  // `teamCommand` (teamCommandFloor), read here; dispatchTeamCommand below is unchanged and keeps its own gates.
+  const parsed = interpretation.teamCommand
   if (!parsed) {
     return { handled: false, spoken_summary: "I didn't catch a team command in that — try \"what should I do today\", \"cut a reel for 12 Oak Street\", or \"follow up with the Hendersons\"." }
   }

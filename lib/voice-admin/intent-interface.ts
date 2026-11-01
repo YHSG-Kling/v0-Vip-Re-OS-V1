@@ -46,6 +46,7 @@ import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-s
 import { resolveSpokenDate, resolveSpokenTime } from "@/lib/voice/spoken-values"
 import { voiceCapabilities, humanManager, VOICE_NEVER_SPOKEN } from "./kernel-command-surface"
 import { assistantSkillRefusal } from "./assistant-reach"
+import { parseTeamCommandText, type ParsedTeamCommand } from "@/lib/voice/parse-team-command"
 
 // ─── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -817,6 +818,21 @@ export interface IntentInterpretation {
   alternatives: string[]
   /** Compliance notes (an ad audience dropped, …) — said, never swallowed. */
   notes: string[]
+  /**
+   * WAVE 148 (148Z — lane 148D Still open 1): THE TEAM-COMMAND FLOOR, PICKED HERE. When the sentence is not a domain
+   * capability, the team dispatcher's own command (offer verbs, manager status, run_skill, the broker verbs, stand-up …) is
+   * named by THIS module through the deterministic floor (lib/voice/parse-team-command.ts parseTeamCommandText), and the two
+   * surfaces that execute it (the Command Center bar, the spoken admin's run_team_command) read it from here — they no
+   * longer pick commands themselves. Null for a domain route, for a client in their portal, and when nothing matched.
+   * Executed by dispatchTeamCommand under its own gates (unchanged).
+   */
+  teamCommand: ParsedTeamCommand | null
+}
+
+/** PURE. The team-command floor, asked only when no DOMAIN route owns the sentence (and never for a client actor). */
+function teamCommandFloor(utterance: string, top: IntentRoute | null, role: CanonicalRole | null): ParsedTeamCommand | null {
+  if (role === "contact" || top?.family === "domain") return null
+  return parseTeamCommandText(utterance)
 }
 
 const NONE_PLAN: IntentPlan = {
@@ -840,6 +856,7 @@ export function interpretIntent(input: InterpretIntentInput): IntentInterpretati
       params: {}, missing: [], clarification: null, plan: NONE_PLAN,
       authority_check: { outcome: "allowed", allowed: false, role, dataScope: "own", confirmationRequired: false, approvalRequired: false, reasons: [] },
       executors: {}, confidence: "low", via: "none", alternatives: [], notes: [],
+      teamCommand: teamCommandFloor(input.utterance, null, role),
     }
   }
   const rulesParams = extractRouteParams(top, input.utterance, { now, screen: input.context, actor: input.actor })
@@ -866,6 +883,7 @@ export function interpretIntent(input: InterpretIntentInput): IntentInterpretati
     executors: top.executors, confidence, via: forced ? "model" : "rules",
     alternatives: matches.filter((m) => m.route.key !== top.key).slice(0, 3).map((m) => m.route.key),
     notes,
+    teamCommand: teamCommandFloor(input.utterance, top, role),
   }
 }
 

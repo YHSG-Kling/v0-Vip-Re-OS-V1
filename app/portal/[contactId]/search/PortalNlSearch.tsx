@@ -320,9 +320,10 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {[m.bedrooms != null ? `${m.bedrooms} bd` : null, m.bathrooms != null ? `${m.bathrooms} ba` : null, m.city].filter(Boolean).join(" · ")}
-                  {` · ${describeListingSource(m.source).label}`}
+                  {/* wave 148Z: the ENGINE's own label (portal-nl-search passes it through), the derived one only as a fallback */}
+                  {` · ${m.sourceLabel ?? describeListingSource(m.source).label}`}
                 </p>
-                {describeListingSource(m.source).verified_active_listing === false && (
+                {(m.sourceIsVerifiedActiveListing ?? describeListingSource(m.source).verified_active_listing) === false && (
                   <p className="text-[11px] text-muted-foreground">{describeListingSource(m.source).caveat}</p>
                 )}
                 {m.headline && <p className="text-xs">{m.headline}</p>}

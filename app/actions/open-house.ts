@@ -133,7 +133,8 @@ export async function createOpenHouse(params: {
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
     // The live open_house_events.event_type CHECK after m924 (scripts/check-vocabularies.ts) = the C22 registry's EVENT_KINDS — one
     // spelling, validated before any write (scripts/event-producer-registry-guard.ts holds CHECK = registry = this list).
-    const OPEN_HOUSE_EVENT_TYPES = ["open_house", "broker_open", "virtual_open_house", "webinar", "education_session"] as const
+    // Wave 148Z: + client_event (the sixth kind — m926 widens the CHECK; WRITTEN, NOT APPLIED until the integrator applies it).
+    const OPEN_HOUSE_EVENT_TYPES = ["open_house", "broker_open", "virtual_open_house", "webinar", "education_session", "client_event"] as const
     const eventType = (params.eventType ?? "open_house") as (typeof OPEN_HOUSE_EVENT_TYPES)[number]
     if (!(OPEN_HOUSE_EVENT_TYPES as readonly string[]).includes(eventType)) return { success: false, error: `Unknown event type "${params.eventType}"` }
     const spec = EVENT_PRODUCER_REGISTRY[eventType]

@@ -665,7 +665,7 @@ function ActionsTab({
   const canCancel = event.status === "draft" || event.status === "scheduled" || event.status === "marketing" || event.status === "active"
 
   // C22 (wave 148, lane 148H): the kinds that register attendees carry an AI-drafted page held for approval, and a recording.
-  const needsRegistration = event.event_type === "virtual_open_house" || event.event_type === "webinar" || event.event_type === "education_session"
+  const needsRegistration = event.event_type === "virtual_open_house" || event.event_type === "webinar" || event.event_type === "education_session" || event.event_type === "client_event"
   const marketing = (event.marketing_assets ?? {}) as Record<string, unknown>
   const [approvePending, startApproveTransition] = useTransition()
   const [replayPending, startReplayTransition] = useTransition()
@@ -1055,6 +1055,8 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
                     <SelectItem value="virtual_open_house">Virtual open house</SelectItem>
                     <SelectItem value="webinar">Webinar</SelectItem>
                     <SelectItem value="education_session">Education session</SelectItem>
+                    {/* wave 148Z: the sixth kind (m926) — a client appreciation / holiday gathering, in person, no listing */}
+                    <SelectItem value="client_event">Client appreciation event</SelectItem>
                   </SelectContent>
                 </Select>
                 {!kindNeedsListing && (

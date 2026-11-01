@@ -472,7 +472,12 @@ async function main() {
   const ev7 = svc7.tables.person_identity_evidence as any[]
   check("…the 102E evidence writer recorded contact + behavioral_signal (email_exact, source visitor_identify) under tenant A with the SYSTEM actor (the public door has no human)", ev7.length === 2 && ev7.some((e) => e.entity_type === "contact" && e.entity_id === CON7 && e.match_method === "email_exact" && e.source === "visitor_identify" && e.actor_type === "system" && e.brokerage_id === A) && ev7.some((e) => e.entity_type === "behavioral_signal" && e.entity_id === SIG && e.detail?.identified_by === "email_captured"))
   check("…person.identity_linked emitted per link under tenant A (no chokepoint event exists at the pixel; the two links are two auditOnly events, as 102E's path already did)", (G.__102A.events as any[]).filter((e) => e.event === "person.identity_linked" && e.brokerageId === A).length === 2 && (G.__102A.events as any[]).every((e) => e.brokerageId === A))
-  const tenantB = await vec.captureConsentedVisitorEmail(svc7, { brokerageId: A, signalId: SIGB, email: "jane.doe@example.com", consent: { consented: true, consentSource: "/x" }, actorUserId: null })
+  // WAVE 148Z: a tick with NO wording is no consent (the default wording nobody was shown is retired) — proven here, and the
+  // tenant-pin check below now carries wording so it still tests the pin, not the wording rule.
+  const consentRowsBefore = (svc7.tables.contact_consent_events as any[]).length
+  const noWording = await vec.captureConsentedVisitorEmail(svc7, { brokerageId: A, signalId: SIGB, email: "jane.doe@example.com", consent: { consented: true, consentSource: "/x" }, actorUserId: null })
+  check("a consent tick that arrives WITHOUT the words the visitor saw is refused (no_consent) and writes no consent row — wording is never fabricated", !noWording.stored && noWording.reason === "no_consent" && (svc7.tables.contact_consent_events as any[]).length === consentRowsBefore)
+  const tenantB = await vec.captureConsentedVisitorEmail(svc7, { brokerageId: A, signalId: SIGB, email: "jane.doe@example.com", consent: { consented: true, consentText: "I agree to be contacted.", consentSource: "/x" }, actorUserId: null })
   check("tenant pin: a consented capture naming another tenant's signal stores nothing on it (the update matched no row — counted, not assumed)", !tenantB.stored && tenantB.reason === "store_refused" && (svc7.tables.behavioral_signals as any[]).find((s) => s.id === SIGB).email_captured === null)
   const oldShape = await vec.resolveSignalIdentity(svc7, { brokerageId: A, signalId: SIGOLD, actorUserId: UA })
   check("the reader repeats the rule: an email with NO consent artifact (a pre-m706 shape) is never matched", !oldShape.identified && oldShape.reason === "no_email" && (svc7.tables.behavioral_signals as any[]).find((s) => s.id === SIGOLD).identified === false)
@@ -492,11 +497,12 @@ async function main() {
   check("an opted-OUT artifact, another tenant's artifact or a made-up id each store nothing (consent_artifact_not_found)", [optOutId, foreignId, madeUpId].every((r) => !r.stored && r.reason === "consent_artifact_not_found") && (svc8.tables.behavioral_signals as any[]).find((s) => s.id === SIGB).email_captured === null)
   const svc9 = memSupabase({ behavioral_signals: seedSignals(), contact_consent_events: [], contacts: [] }, { refuse: { contact_consent_events: "permission denied for table contact_consent_events" } })
   G.__102A.svc = svc9
-  const refusedLedger = await vec.captureConsentedVisitorEmail(svc9, { brokerageId: A, signalId: SIG, email: "jane@example.com", consent: { consented: true, consentSource: "/x" }, actorUserId: null })
+  // wave 148Z: these two calls carry the wording they test past (a tick without words is no_consent — proven above).
+  const refusedLedger = await vec.captureConsentedVisitorEmail(svc9, { brokerageId: A, signalId: SIG, email: "jane@example.com", consent: { consented: true, consentText: "I agree to be contacted.", consentSource: "/x" }, actorUserId: null })
   check("a REFUSED consent-ledger write is read (supabase-js resolves it) and the email is NOT stored: no artifact, no email", !refusedLedger.stored && refusedLedger.reason === "consent_not_recorded" && (svc9.tables.behavioral_signals as any[]).find((s) => s.id === SIG).email_captured === null)
   const svc10 = memSupabase({ behavioral_signals: seedSignals(), contact_consent_events: [], contacts: [] }, { missingColumns: { behavioral_signals: ["email_captured"] } })
   G.__102A.svc = svc10
-  const preM706 = await vec.captureConsentedVisitorEmail(svc10, { brokerageId: A, signalId: SIG, email: "jane@example.com", consent: { consented: true, consentSource: "/x" }, actorUserId: null })
+  const preM706 = await vec.captureConsentedVisitorEmail(svc10, { brokerageId: A, signalId: SIG, email: "jane@example.com", consent: { consented: true, consentText: "I agree to be contacted.", consentSource: "/x" }, actorUserId: null })
   check("before m706 is applied (42703 on the column) the door REPORTS store_refused — the consent artifact stays on the ledger, the email is not silently dropped as a success", !preM706.stored && preM706.reason === "store_refused" && /email_captured/.test(preM706.error ?? "") && (svc10.tables.contact_consent_events as any[]).length === 1)
 
   // ── 17. census: the door is wired at the real writer and the real routes; ONE writer of the column ─

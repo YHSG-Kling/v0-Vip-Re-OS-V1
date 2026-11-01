@@ -99,7 +99,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `NEXT_PUBLIC_DEMO_MODE` | DEV-ONLY | public (browser bundle, build-time) | platform | Enables demo sign-in. Hard-gated OFF when VERCEL_ENV=production (app/constants/auth.ts:284). Keep UNSET in Production. | 1 @ app/constants/auth.ts:293 | .env.example |
 | `NEXT_PUBLIC_DEMO_PASSWORD` | DEV-ONLY | public (browser bundle, build-time) | platform | Demo account password (code default 'Demo@123456' at app/constants/auth.ts:287). Only reachable when NEXT_PUBLIC_DEMO_MODE is on, which is gated off in production. Keep UNSET in Production. | 1 @ app/constants/auth.ts:296 | .env.example |
 | `NEXT_PUBLIC_SITE_URL` | OPTIONAL | public (browser bundle, build-time) | platform | Second origin in the embed-session allowlist (app/api/embed/session/route.ts:48). | 3 @ app/api/embed/session/route.ts:48 | .env.example |
-| `NODE_ENV` | PROVIDED | provided | platform | Set by next dev / next build / the test runner; gates dev-only bypasses off in production. | 12 @ app/actions/open-house-automation.ts:1260 | .env.example |
+| `NODE_ENV` | PROVIDED | provided | platform | Set by next dev / next build / the test runner; gates dev-only bypasses off in production. | 12 @ app/actions/open-house-automation.ts:1266 | .env.example |
 | `SECRETS_ENCRYPTION_KEY` | REQUIRED | server secret | platform | AES-256-GCM key for every stored tenant/provider secret. FAIL CLOSED: absent → every new secret write is refused (lib/security/secret-crypto.ts). | 1 @ lib/security/secret-crypto.ts:42 | .env.example |
 | `SECRETS_ENCRYPTION_KEY_PREVIOUS` | OPTIONAL | server secret | platform | Rotation only: the previous key, tried after the current one when opening an existing envelope. Remove once everything is re-sealed. | 1 @ lib/security/secret-crypto.ts:50 | .env.example |
 | `WORKFLOW_WEBHOOK_SECRET` | OPTIONAL | server secret | platform | CROSS-TENANT master key for the platform path of /api/workflow/trigger (docs/SERVICE-SECRETS.md §2). | 1 @ app/api/workflow/trigger/route.ts:115 | .env.example |
@@ -129,7 +129,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | Name | Requirement | Scope | Tenancy (matrix) | Purpose | Repo reads | Documented |
 |---|---|---|---|---|---|---|
 | `AI_GATEWAY_API_KEY` | REQUIRED | server secret | platform_metered | Vercel AI Gateway key — THE AI route. The model factory throws without it (lib/ai/models.ts:46). | 19 @ app/api/did/custom-llm/route.ts:445 | .env.example |
-| `AI_GATEWAY_DEFAULT_MODEL` | OPTIONAL | server config | platform | Gateway slug override for ISA outreach personalization (default resolveModel('claude-haiku'), lib/ai-isa/personalize-outreach.ts:220). | 1 @ lib/ai-isa/personalize-outreach.ts:243 | .env.example |
+| `AI_GATEWAY_DEFAULT_MODEL` | OPTIONAL | server config | platform | Gateway slug override for ISA outreach personalization (default resolveModel('claude-haiku'), lib/ai-isa/personalize-outreach.ts:220). | 1 @ lib/ai-isa/personalize-outreach.ts:247 | .env.example |
 | `AI_GATEWAY_EXTRACTION_MODEL` | OPTIONAL | server config | platform | Gateway slug for callback-task extraction; code default openai/gpt-4o-mini (lib/ai-isa/callback-task.ts:260). | 1 @ lib/ai-isa/callback-task.ts:260 | .env.example |
 | `ANTHROPIC_API_KEY` | OPTIONAL | server secret | platform | Direct Anthropic access (3 read sites); the primary route is the Gateway. | 3 @ app/api/webhooks/anthropic-agent/route.ts:56 | .env.example |
 | `ANTHROPIC_DEFAULT_ENVIRONMENT_ID` | OPTIONAL | server config | platform | Default managed-agent environment id (lib/agents/spawn-helper.ts:140). | 1 @ lib/agents/spawn-helper.ts:140 | .env.example |
@@ -230,11 +230,11 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `LOB_DEFAULT_LETTER_TEMPLATE_ID` | OPTIONAL | server config | platform | Default letter template (lib/ai-isa/direct-mail-trigger.ts:306). | 1 @ lib/ai-isa/direct-mail-trigger.ts:306 | .env.example |
 | `LOB_DEFAULT_TEMPLATE_ID` | OPTIONAL | server config | platform | Default Lob template id (app/actions/ai-isa.ts:759). | 3 @ app/actions/ai-isa.ts:759 | .env.example |
 | `LOB_NOTECARD_ID` | OPTIONAL | server config | platform | Notecard template id (app/actions/reputation-kernel.ts:316). | 1 @ app/actions/reputation-kernel.ts:316 | .env.example |
-| `LOB_POSTCARD_BACK_ID` | OPTIONAL | server config | platform | Postcard back template id (lib/providers/dispatch.ts:1243). | 1 @ lib/providers/dispatch.ts:1288 | .env.example |
+| `LOB_POSTCARD_BACK_ID` | OPTIONAL | server config | platform | Postcard back template id (lib/providers/dispatch.ts:1243). | 1 @ lib/providers/dispatch.ts:1332 | .env.example |
 | `LOB_POSTCARD_FRONT_ID` | OPTIONAL | server config | platform | Postcard front template id. | 1 @ app/actions/reputation-kernel.ts:316 | .env.example |
 | `LOB_PRELISTING_LETTER_TEMPLATE_ID` | OPTIONAL | server config | platform | Pre-listing appointment letter template (lib/workflow-orchestrator/chains/listing-appt-prep.ts:667). | 1 @ lib/workflow-orchestrator/chains/listing-appt-prep.ts:667 | .env.example |
 | `LOB_PRELISTING_POSTCARD_TEMPLATE_ID` | OPTIONAL | server config | platform | Pre-listing appointment postcard template (same file, :668). | 1 @ lib/workflow-orchestrator/chains/listing-appt-prep.ts:668 | .env.example |
-| `LOB_RETURN_ADDRESS_ID` | OPTIONAL | server config | platform | Lob saved return-address id (lib/providers/dispatch.ts:1214). | 1 @ lib/providers/dispatch.ts:1259 | .env.example |
+| `LOB_RETURN_ADDRESS_ID` | OPTIONAL | server config | platform | Lob saved return-address id (lib/providers/dispatch.ts:1214). | 1 @ lib/providers/dispatch.ts:1303 | .env.example |
 | `LOB_WEBHOOK_SECRET` | OPTIONAL | server secret | platform | Lob webhook signature secret. | 2 @ app/actions/direct-mail.ts:488 | .env.example |
 | `VOICEDROP_API_KEY` | OPTIONAL | server secret | platform | Ringless-voicemail provider key (lib/voicedrop/orchestrate-voicedrop-send.ts). | 1 @ lib/voicedrop/orchestrate-voicedrop-send.ts:274 | .env.example |
 | `VOICEDROP_FROM_PHONE` | OPTIONAL | server config | platform | Caller id for ringless voicemail; falls back to the brand phone. | 1 @ lib/voicedrop/orchestrate-voicedrop-send.ts:275 | .env.example |
@@ -334,7 +334,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `MAPBOX_TOKEN` | OPTIONAL | server secret | platform | Mapbox secret/server token (probe + server calls). | 2 @ lib/property/street-view.ts:191 | .env.example |
 | `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` | DEGRADED | public (browser bundle, build-time) | platform | BROWSER Maps JS key (lib/env/aliases.ts googleMapsBrowserKey). Restrict by HTTP referrer in Google Cloud Console. | 1 @ lib/env/aliases.ts:75 | .env.example |
 | `NEXT_PUBLIC_GOOGLE_MAPS_KEY` | ALIAS | public (browser bundle, build-time) | platform | Deprecated spelling of NEXT_PUBLIC_GOOGLE_MAPS_API_KEY. | 1 @ lib/env/aliases.ts:75 | .env.example |
-| `OPEN_METEO_API_KEY` | DEGRADED | server secret | platform | Open-Meteo commercial key. Production REFUSES without it (app/actions/open-house-automation.ts:1218). | 1 @ app/actions/open-house-automation.ts:1259 | .env.example |
+| `OPEN_METEO_API_KEY` | DEGRADED | server secret | platform | Open-Meteo commercial key. Production REFUSES without it (app/actions/open-house-automation.ts:1218). | 1 @ app/actions/open-house-automation.ts:1265 | .env.example |
 
 ### OAuth apps for tenant connections (Google, Microsoft, Zoom, QuickBooks, Xero)
 

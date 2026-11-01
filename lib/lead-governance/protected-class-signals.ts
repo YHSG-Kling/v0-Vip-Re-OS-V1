@@ -807,6 +807,14 @@ export function labelProtectedClassFields(
  * from the elderly. `lib/ads/audience-persona-basis.ts` refuses that too — this
  * is the second, independent refusal on the same shape, which is what "defence
  * in depth" has meant at these four doors since the gate was built.
+ *
+ * ── 2026-11-01 (wave 148Z): THE INCLUSION ADMISSION IS REVERSED — IN THE PERSONA GATE ──
+ * Owner ruling 1 holds a STAFF-chosen persona audience to the needs-based rule, so
+ * `lib/ads/audience-persona-basis.ts personaAdsEligibility` now refuses senior /
+ * probate / divorce / military on INCLUSION too. This carve-out is kept so the
+ * token gate does not report a canonical persona at the persona key a second
+ * time in its own words: the persona gate, wired beside this one at all four
+ * doors, owns that verdict and names the needs-based alternative.
  */
 function isCanonicalPersonaBasisValue(prefix: string, value: string): boolean {
   if (!/(?:^|\.)personas(?:\[\d+\])?$/.test(prefix)) return false

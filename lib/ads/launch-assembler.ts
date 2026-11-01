@@ -222,11 +222,14 @@ export async function assembleAdFromCampaign(
       // without it, so removing the gate makes the ad unlaunchable rather than quietly ungoverned.
       inclusionGovernance: inclusionGated ? "gated" : undefined,
       // The operator's interests reach the validator so a protected-class / proxy interest (an automation's free-text
-      // `ad_audience_prompt` lands here) is REFUSED in words instead of silently dropped by the payload builder. age_min /
-      // age_max / income_percentile are NOT carried: the Meta builder delivers 18-65 and no income field regardless, and two
-      // writers still default age 25 / top_50 (lane notes, Outside-lane) — carrying them would block launches over values that
-      // never reach the platform. Their writers are the fix.
+      // `ad_audience_prompt` lands here) is REFUSED in words instead of silently dropped by the payload builder.
       interests: Array.isArray(tc.interests) ? (tc.interests as unknown[]).filter((x): x is string => typeof x === "string") : undefined,
+      // WAVE 148 (148Z): the age pair IS carried now that its three writers (lib/workflow/adapters/ad-campaign.ts,
+      // lib/wizard-staging/content-staging.ts, the ads dashboard) default to 18–65+ — a stored narrowing is an operator's
+      // intent to narrow a HOUSING audience, and validateAdReadiness refuses it in words instead of the Meta builder silently
+      // widening it. income_percentile has no platform field and no validator arm; its writers no longer default a cut.
+      ageMin: typeof tc.age_min === "number" ? tc.age_min : undefined,
+      ageMax: typeof tc.age_max === "number" ? tc.age_max : undefined,
     },
     specialAdCategory: "HOUSING",
   }

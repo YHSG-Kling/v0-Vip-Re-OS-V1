@@ -67,30 +67,14 @@ export function eventWindow(ev: Pick<EventRow, "event_date" | "start_time" | "en
 
 // ─── REGISTRATION (C15 → C8) ─────────────────────────────────────────────────
 
-/**
- * The C15 server contract the registration form submits (one consent component, wave 148 contract C15): service delivery is
- * REQUIRED for the service asked (registering and receiving the join link / materials by e-mail); marketing is OPTIONAL; each
- * channel is explicit. The WORDING is the server's (eventConsentWording) — the body only says which boxes were ticked.
- */
-export interface EventConsentSubmission {
-  serviceDelivery: boolean
-  textReminders: boolean
-  marketing: boolean
-  capturedAt?: string | null
-}
-
-const EVENT_CONSENT_VERSION = "event_registration:v1"
-
-/** The exact wording beside each box, rendered from the event's brokerage + title (the C8 record hashes it). */
-export function eventConsentWording(brokerageName: string, eventTitle: string): { serviceDelivery: string; textReminders: string; marketing: string } {
-  const b = brokerageName.trim() || "our brokerage"
-  const t = eventTitle.trim() || "this event"
-  return {
-    serviceDelivery: `Register me for ${t}. ${b} may email me my confirmation, my personal join link, reminders, and the recording or materials from this event.`,
-    textReminders: `Text me reminders about ${t} at the mobile number I provided. Message and data rates may apply. Reply STOP to opt out at any time.`,
-    marketing: `Keep me posted by email about homes, the local market, and help from ${b} and its agents. Consent is not a condition of registering. Unsubscribe at any time.`,
-  }
-}
+// WAVE 148 (148Z — lane 148H Outside-lane 1, ruling 3 "all forms need to have the same consent boxes"): THE REGISTRATION
+// CONSENT IS THE ONE COMPONENT'S. TOMBSTONE: `EventConsentSubmission` ({ serviceDelivery, textReminders, marketing }), the
+// `event_registration:v1` version and `eventConsentWording` (three boxes worded here) stood in this spot — a second consent
+// vocabulary beside C15. SURVIVOR: lib/kernel/compliance/consent-component.ts (door `event_registration`: service delivery
+// REQUIRED — "the event I registered for", purposes requested_information + event_followup, which the phone box covers for
+// text reminders; marketing OPTIONAL per channel) rendered by app/components/forms/ConsentBoxes.tsx, re-rendered and hashed
+// server-side by lib/contact-pipeline/contact-capture.ts consentGrantsFromComponent with the brand resolveConsentBrand reads.
+// The registration page renders the boxes with that same brand, so the words read and the words stored are identical.
 
 export interface RegisterInput {
   eventId: string
@@ -99,7 +83,10 @@ export interface RegisterInput {
   email: string
   phone?: string | null
   situation?: Partial<Record<keyof EventSituation, unknown>> | null
-  consent: EventConsentSubmission
+  /** The ONE consent component's submission exactly as posted (C15) — parsed and re-rendered server-side, never believed. */
+  consent: unknown
+  /** When the person submitted (the route stamps it). */
+  consentCapturedAt?: string | null
   evidence: { ip?: string | null; userAgent?: string | null; sourceUrl?: string | null }
   language?: string | null
 }
@@ -161,21 +148,15 @@ export async function registerForEvent(svc: Db, input: RegisterInput, deps: Regi
   const email = normalizeEmail(input.email)
   const phoneDigits = (input.phone ?? "").replace(/\D/g, "")
   if (!firstName || !lastName || !email) return { ok: false, status: 400, error: "First name, last name and a valid email are required" }
-  if (input.consent?.serviceDelivery !== true) return { ok: false, status: 400, error: "Please agree to receive your confirmation and join link — it is how you get into the event" }
+  // C15: the submission is parsed strictly and the words are re-rendered HERE from the brand the server reads (THE one brand
+  // rule — the event's brokerage, else its agent, else "our brokerage"). No submission, or the required box unticked → refused.
+  const { consentGrantsFromComponent, resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  const brandName = await resolveConsentBrand(svc as never, { brokerageId: ev.brokerage_id, agentId: ev.agent_id ?? null })
+  const c15 = consentGrantsFromComponent(input.consent, { door: "event_registration", brandName, provided: { email: true, phone: phoneDigits.length >= 10 } })
+  if (!c15.submission || c15.submission.service_delivery !== true) return { ok: false, status: 400, error: "Please agree to receive your confirmation and join link — it is how you get into the event" }
   const situation = sanitizeSituation(input.situation)
-
-  const { data: brk, error: brkErr } = await svc.from("brokerages").select("name").eq("id", ev.brokerage_id).maybeSingle()
-  if (brkErr) console.warn("[event-registration] brokerage name read refused — the consent wording names 'our brokerage':", brkErr.message)
   const title = EVENT_LABEL(ev)
-  const wording = eventConsentWording(((brk as { name?: string | null } | null)?.name ?? "").trim(), title)
-  const servicePurposes = spec.registration.consentPurposes.filter((p) => p !== "real_estate_services") as Array<"event_followup" | "requested_information">
-  const emailText = [wording.serviceDelivery, input.consent.marketing ? wording.marketing : null].filter(Boolean).join(" ")
-  const consents: ConsentGrantInput[] = [
-    { family: "email", given: true, text: emailText, textVersion: EVENT_CONSENT_VERSION, purposes: input.consent.marketing ? [...servicePurposes, "real_estate_services", "market_updates"] : servicePurposes },
-  ]
-  if (input.consent.textReminders && phoneDigits.length >= 10) {
-    consents.push({ family: "phone", given: true, text: wording.textReminders, textVersion: EVENT_CONSENT_VERSION, purposes: ["event_followup"] })
-  }
+  const consents: ConsentGrantInput[] = c15.grants
 
   const capture = deps.capture ?? (await import("@/lib/contact-pipeline/contact-capture")).captureConsentedContact
   const intake = await capture({
@@ -193,9 +174,9 @@ export async function registerForEvent(svc: Db, input: RegisterInput, deps: Regi
     consents,
     intake: {
       channel: "event_registration",
-      capturedAt: input.consent.capturedAt ?? now.toISOString(),
+      capturedAt: input.consentCapturedAt ?? now.toISOString(),
       sourceUrl: input.evidence.sourceUrl ?? `/open-house/${ev.id}/register`,
-      evidence: { event_id: ev.id, event_type: ev.event_type, ip: input.evidence.ip ?? null, user_agent: input.evidence.userAgent ?? null, consent_version: EVENT_CONSENT_VERSION, situation },
+      evidence: { event_id: ev.id, event_type: ev.event_type, ip: input.evidence.ip ?? null, user_agent: input.evidence.userAgent ?? null, ...c15.evidence, consent_wording_hash: c15.wordingHash, situation },
       formOwner: { table: "open_house_events", id: ev.id },
     },
   })

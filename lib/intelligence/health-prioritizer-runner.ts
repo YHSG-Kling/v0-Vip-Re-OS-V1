@@ -2,13 +2,30 @@
 //
 // Live side of health reprioritization — compute each contact's relationship health from real
 // signals (last inbound reply, reply rate, touch cadence, enrichment freshness) and return the work
-// list ranked most-at-risk-first, so the team works the right client first. Read-only; never throws.
+// list ranked most-at-risk-first, so the team works the right client first. Read-only.
+//
+// WAVE 148 (148Z): FAILS CLOSED. This used to say "never throws" and dropped both reads' `{ error }` — a refused
+// contacts read returned `[]`, which the one intent interface (C17 contact_care_scan) spoke as "everyone looks well
+// looked-after", and a refused executions read ranked everyone as never-replied. A refused read now THROWS
+// HealthReadRefusedError (CLAUDE.md §4 — "nobody checked" never renders as "checked and fine"). Every caller already
+// runs it inside a try/catch (morning-standup, the steer-my-day action, the voice tool dispatcher, both crons) or, for
+// C17, catches it and says the refusal (lib/voice-admin/intent-interface-live.ts contact_care_scan).
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { prioritizeByHealth, type HealthRankedItem } from "./relationship-health"
 
 type Svc = ReturnType<typeof createServiceClient>
+
+/** A ranking read the database refused — never ranked as "everyone is fine". */
+export class HealthReadRefusedError extends Error {
+  readonly table: string
+  constructor(table: string, detail: string) {
+    super(`relationship-health ranking could not read ${table}: ${detail}`)
+    this.name = "HealthReadRefusedError"
+    this.table = table
+  }
+}
 
 const DAY = 86_400_000
 
@@ -22,17 +39,19 @@ export async function getHealthPrioritizedContacts(
     .neq("status", "archived")
     .limit(opts?.limit ?? 200)
   if (opts?.agentId) q = q.eq("agent_id", opts.agentId)
-  const { data: contacts } = await q
+  const { data: contacts, error: contactsError } = await q
+  if (contactsError) throw new HealthReadRefusedError("contacts", contactsError.message)
   const rows = (contacts ?? []) as any[]
   if (rows.length === 0) return []
 
   // Batch-load step executions for these contacts → last inbound reply + sent/reply counts.
   const ids = rows.map((c) => c.id)
-  const { data: execs } = await svc
+  const { data: execs, error: execsError } = await svc
     .from("sequence_step_executions")
     .select("contact_id, status, replied_at")
     .in("contact_id", ids)
     .limit(20_000)
+  if (execsError) throw new HealthReadRefusedError("sequence_step_executions", execsError.message)
   const byContact = new Map<string, { sent: number; replies: number; lastInbound: string | null }>()
   for (const e of (execs ?? []) as any[]) {
     if (!e.contact_id) continue

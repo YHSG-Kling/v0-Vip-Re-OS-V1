@@ -25,6 +25,12 @@
 //     `protectedClassReasonFor`, on each persona NAME. There is no hand-written
 //     list of "bad personas" here, and that is deliberate — see below.
 //
+// ── REVERSED 2026-11-01 (wave 148, lane 148Z) FOR AD AUDIENCES ──────────────
+// Owner ruling 1 ("the persona handed to marketing is MARKETING-SAFE: needs-based, never a protected characteristic or its
+// proxy") + ruling 22 (take the recorded recommendation) put the four protected-characteristic personas back OUT of the
+// inclusion basis — see the tombstone in `personaAdsEligibility`. The history below is kept because it explains the
+// inclusion/exclusion split, which still decides the EXCLUSION arm; read "ALLOWED" for the four as "allowed until 2026-11-01".
+//
 // ── THE OWNER RULING OF 2026-08-23, WHICH REVERSED THIS MODULE'S FIRST CUT ───
 // VERBATIM: "military, senior, divorced and probate need to be allowed as
 // situation persona because that is how we show them info or ads that is worded
@@ -151,9 +157,9 @@ export interface PersonaAdsEligibility {
   /**
    * Which of the two refusals this is, so callers and the simulator can tell them
    * apart without parsing prose:
-   *   · "protected_characteristic" — the persona is a protected class AND the
-   *     audience would SUPPRESS the people it names (the only refusal left on
-   *     that ground after the 2026-08-23 ruling);
+   *   · "protected_characteristic" — the persona is a protected class, on
+   *     either operation (inclusion since owner ruling 1, 2026-11-01; exclusion
+   *     always);
    *   · "no_basis"                 — the persona names no situation (`other`),
    *     on either operation.
    */
@@ -164,12 +170,12 @@ export interface PersonaAdsEligibility {
  * PURE. Whether one canonical persona may be the basis of an OUTBOUND AD AUDIENCE
  * that performs `use` on the people it selects.
  *
- * ── THE INCLUSION HALF IS NOW OPEN, BY RULING ────────────────────────────────
- * Every persona that names a SITUATION is an eligible inclusion basis, the four
- * protected-characteristic ones included: "military, senior, divorced and probate
- * need to be allowed as situation persona because that is how we show them info
- * or ads that is worded to their situation." Only `other` refuses, and on the
- * other ground entirely (see `UNRESOLVED_PERSONA`).
+ * ── THE INCLUSION HALF: NEEDS-BASED PERSONAS ONLY (owner ruling 1, 2026-11-01) ─
+ * Every persona that names a NEED is an eligible inclusion basis. The four
+ * protected-characteristic personas were admitted by the 2026-08-23 ruling and
+ * are refused again since wave 148Z (tombstone in the body). `other` refuses on
+ * the other ground entirely (see `UNRESOLVED_PERSONA`). The protected set is
+ * still COMPUTED by the classifier, never listed.
  *
  * ── THE EXCLUSION HALF IS DERIVED, NEVER LISTED ──────────────────────────────
  * Which personas may not SUPPRESS an audience is decided by calling the one
@@ -197,8 +203,32 @@ export function personaAdsEligibility(
         `mean "everyone". It stays valid for campaign sequences and copy.`,
     }
   }
+  const protectedReason = protectedClassReasonFor(persona)
+  if (protectedReason && use === "inclusion") {
+    // ── WAVE 148 (148Z) — THE 2026-08-23 SITUATION-PERSONA RULING IS REVERSED FOR AD AUDIENCES ───────────────────────────
+    // TOMBSTONE: "military, senior, divorced and probate need to be allowed as situation persona" (owner, 2026-08-23) admitted
+    // the four as an INCLUSION basis. Owner ruling 1 (2026-11-01): "the persona handed to marketing is MARKETING-SAFE —
+    // needs-based, never a protected characteristic or its proxy; audiences built from personas are custom audiences that
+    // compliance checks on selection AND delivery". Lane 148C applied it to DERIVED personas and recorded the staff path for
+    // the owner; ruling 22 ("go with the recommendation on every recorded open item") takes the recommendation — a STAFF-chosen
+    // persona audience is held to the same rule. The survivor of the tailoring intent is the NEEDS vocabulary
+    // (lib/contacts/persona-layers.ts MARKETING_NEEDS): the person is reached on what they are trying to do (downsizing,
+    // relocation research, home value, equity) — never on who they are. Exclusion stays refused below (unchanged).
+    const needsBased = CAMPAIGN_PERSONAS.filter((p) => p !== UNRESOLVED_PERSONA && !protectedClassReasonFor(p))
+    return {
+      persona,
+      use,
+      eligible: false,
+      refusalKind: "protected_characteristic",
+      reason:
+        `persona "${persona}" names a PROTECTED CHARACTERISTIC. ${protectedReason} A housing ad audience is selected on a ` +
+        `NEED, never on who a person is (owner ruling 1, 2026-11-01 — it reverses the 2026-08-23 situation-persona ruling for ` +
+        `ad audiences). Build the audience on the need the person expressed instead: ${needsBased.join(", ")} ` +
+        `(e.g. downsize for less upkeep, relocated for relocation research). The persona stays valid for service and for ` +
+        `campaign sequences to contacts who consented.`,
+    }
+  }
   if (use === "exclusion") {
-    const protectedReason = protectedClassReasonFor(persona)
     if (protectedReason) {
       return {
         persona,
@@ -221,9 +251,9 @@ export function personaAdsEligibility(
 /**
  * Every canonical persona an ad audience may be TARGETED on. Computed at load.
  *
- * Since the 2026-08-23 ruling this is every canonical persona except the
- * catch-all — the four protected-characteristic personas are in it, because the
- * persona is what selects the WORDING their information is written in.
+ * Since owner ruling 1 (2026-11-01, wave 148Z) this is every NEEDS-BASED
+ * canonical persona: the catch-all and the four protected-characteristic
+ * personas are out (they were in from 2026-08-23 to 2026-11-01).
  */
 export const ADS_ELIGIBLE_PERSONAS: readonly CampaignPersona[] = Object.freeze(
   CAMPAIGN_PERSONAS.filter((p) => personaAdsEligibility(p, "inclusion").eligible),
@@ -316,10 +346,12 @@ export function declaresPersonaBasis(rule: unknown): boolean {
  *                                               a guessed persona is a silently
  *                                               different audience)
  *   · `other`                                 → refuse (no_basis)
- *   · senior / probate / divorce / military   → ADMITTED on an INCLUSION rule
- *                                               (owner ruling 2026-08-23), and
- *                                               refused on an `exclusion_*` rule
- *                                               (protected_characteristic)
+ *   · senior / probate / divorce / military   → REFUSED on every rule
+ *                                               (protected_characteristic):
+ *                                               inclusion since owner ruling 1
+ *                                               (2026-11-01, reversing the
+ *                                               2026-08-23 admission), exclusion
+ *                                               always
  *
  * Deliberately NOT run through `normalizeContactPersona`: that function maps
  * DRIFTED DATABASE SPELLINGS forward for a reader, which is right for reading a
@@ -414,8 +446,9 @@ export function resolveAudiencePersonaBasis(
     // WAVE 148 (lane 148C, owner ruling 1): an audience whose basis is a DERIVED persona (`basis: "derived_persona"` — the
     // marketing-safe layer lib/contacts/persona-builder.ts derivePersona writes) is NEEDS-BASED by definition, so a
     // protected-characteristic persona is refused on it even for inclusion: "the persona handed to marketing is marketing-safe —
-    // needs-based, never a protected characteristic or its proxy". The 2026-08-23 situation-persona ruling (a staff-chosen
-    // persona_segment) is NOT reversed here — it is recorded for the owner in the lane notes.
+    // needs-based, never a protected characteristic or its proxy". Since wave 148Z the STAFF-chosen persona_segment is held
+    // to the same rule by `personaAdsEligibility` below (the 2026-08-23 ruling reversed for ad audiences); this arm stays
+    // because its refusal names the derived-persona basis the operator declared.
     if (isDerivedPersonaBasis(rule) && PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS.includes(candidate)) {
       return {
         ok: false,

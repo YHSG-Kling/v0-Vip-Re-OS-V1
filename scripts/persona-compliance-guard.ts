@@ -248,7 +248,15 @@ async function main() {
     res3.ok && (res3.persona?.firewall.withheldFromMarketing ?? []).some((w) => /senior/.test(w)) && c3?.contact_persona === "senior" && res3.persona?.marketing.campaignPersona === null)
   const derivedSenior = basis.resolveAudiencePersonaBasis({ type: "persona_segment", basis: "derived_persona", filters: { personas: ["senior"] } })
   check("a DERIVED-persona audience on a protected-characteristic persona is REFUSED (protected_characteristic)", !derivedSenior.ok && derivedSenior.refusalKind === "protected_characteristic")
-  check("POSITIVE CONTROL — the 2026-08-23 staff situation-persona path is NOT silently reversed (no basis → inclusion admitted; recorded for the owner)", basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["senior"] } }).ok)
+  // WAVE 148Z: the recorded owner decision is TAKEN (ruling 22 → ruling 1 applies to staff-chosen personas): this check read
+  // "the 2026-08-23 staff path is NOT silently reversed" while the decision was open — a waypoint. The rule now: a STAFF
+  // persona audience (no derived basis) on a protected persona is refused exactly like a derived one, and the refusal says
+  // the reversal out loud; a needs-based staff persona still builds (positive control — not refuse-every-persona).
+  const staffSenior = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["senior"] } })
+  check("a STAFF-chosen persona audience on a protected persona is REFUSED too (ruling 1 reverses 2026-08-23 — said in the refusal)",
+    !staffSenior.ok && staffSenior.refusalKind === "protected_characteristic" && /2026-08-23/.test(staffSenior.refusal))
+  check("POSITIVE CONTROL — a needs-based STAFF persona audience (downsize) still resolves",
+    basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["downsize"] } }).ok)
   check("PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS is COMPUTED by the classifier (probate, military, divorce, senior — investor is not)",
     [...layers.PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS].sort().join(",") === "divorce,military,probate,senior" && !layers.PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS.includes("investor" as never))
   const proxyRules = [

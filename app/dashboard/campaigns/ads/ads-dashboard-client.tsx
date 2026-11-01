@@ -375,7 +375,9 @@ export function AdsDashboardClient({
     lifetimeBudget: "",
     startDate: "",
     endDate: "",
-    ageMin: 25,
+    // WAVE 148 (148Z, owner ruling 1): a HOUSING ad never narrows by age — the default was 25 (a familial-status / age proxy).
+    // A narrowed range typed below is refused at launch by validateAdReadiness (lib/ads/launch-assembler.ts carries it).
+    ageMin: 18,
     ageMax: 65,
     locations: [{ city: "", state: "", radius_miles: 25 }],
     interests: ["real estate", "home buying"],
@@ -540,7 +542,7 @@ export function AdsDashboardClient({
         lifetimeBudget: "",
         startDate: "",
         endDate: "",
-        ageMin: 25,
+        ageMin: 18,
         ageMax: 65,
         locations: [{ city: "", state: "", radius_miles: 25 }],
         interests: ["real estate", "home buying"],
@@ -1872,7 +1874,7 @@ export function AdsDashboardClient({
                     <Input
                       type="number"
                       value={newCampaign.ageMin}
-                      onChange={(e) => setNewCampaign({ ...newCampaign, ageMin: parseInt(e.target.value) || 25 })}
+                      onChange={(e) => setNewCampaign({ ...newCampaign, ageMin: parseInt(e.target.value) || 18 })}
                       min={18}
                       max={65}
                     />

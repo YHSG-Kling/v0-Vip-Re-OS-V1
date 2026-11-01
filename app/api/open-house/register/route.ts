@@ -33,12 +33,10 @@ export async function POST(req: NextRequest) {
     email: String(body.email ?? ""),
     phone: typeof body.phone === "string" ? body.phone : null,
     situation: (body.situation && typeof body.situation === "object") ? body.situation : null,
-    consent: {
-      serviceDelivery: body.consent?.serviceDelivery === true,
-      textReminders: body.consent?.textReminders === true,
-      marketing: body.consent?.marketing === true,
-      capturedAt: new Date().toISOString(),
-    },
+    // C15 (wave 148Z): the ONE consent component's submission, as posted — registerForEvent parses it strictly and re-renders
+    // the words server-side (consentGrantsFromComponent); the booleans this route used to pick out are gone with their wording.
+    consent: body.consent ?? null,
+    consentCapturedAt: new Date().toISOString(),
     evidence: { ip: ip === "unknown" ? null : ip, userAgent: req.headers.get("user-agent"), sourceUrl: typeof body.sourceUrl === "string" ? body.sourceUrl.slice(0, 500) : null },
     language: resolveCapturedLanguage(null, req.headers.get("accept-language")),
   })

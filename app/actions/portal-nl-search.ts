@@ -30,6 +30,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contact-access"
 import type { CriteriaFit } from "@/lib/buyer-search/explanation-generator"
 import type { CriteriaChip } from "@/lib/buyer-search/conversational-search"
+import type { ExplanationClaim } from "@/lib/buyer-search/explanation-evidence"
 
 export interface PortalSearchResult {
   address: string | null
@@ -44,6 +45,17 @@ export interface PortalSearchResult {
   fit: CriteriaFit | null
   /** Wave 147C: the neighbourly explanation composed only from `fit`. */
   explanation: string | null
+  /**
+   * WAVE 148 (148Z — lane 148E Outside-lane 2, owner ruling 8 + contract C18): passed through from the one search engine —
+   * WHAT this result is ("Listed by our brokerage" / "MLS listing via IDX" / "RentCast property data — not a verified active
+   * listing"), every buyer-facing claim with its evidence, the one gentle question and the offer to meet the agent. The portal
+   * derived the label from `source` before; it now shows the engine's own words.
+   */
+  sourceLabel: string | null
+  sourceIsVerifiedActiveListing: boolean | null
+  claims: ExplanationClaim[] | null
+  followUpQuestion: string | null
+  agentOffer: string | null
 }
 
 /** The action's public answer — named only so the body is one unambiguous
@@ -145,6 +157,11 @@ export async function portalNaturalSearchAction(input: {
     listingId: m.listing_id ?? null,
     fit: m.fit ?? null,
     explanation: m.explanation_voice ?? null,
+    sourceLabel: m.source_label?.label ?? null,
+    sourceIsVerifiedActiveListing: typeof m.source_label?.verified_active_listing === "boolean" ? m.source_label.verified_active_listing : null,
+    claims: Array.isArray(m.claims) ? m.claims : null,
+    followUpQuestion: m.follow_up_question ?? null,
+    agentOffer: m.agent_offer ?? null,
   }))
   const { criteriaChips } = await import("@/lib/buyer-search/conversational-search")
   return { ok: true, results, criteria: storedCriteria ? criteriaChips(storedCriteria) : [] }

@@ -39,7 +39,7 @@ export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
   "147B-OL-01": { s: "closed", e: ["lib/ai-isa/followup-arbiter.ts#movementSignalsForArbiter"], by: Z147 },
   "147B-OL-02": { s: "closed", e: ["app/api/cron/enrichment-processor/route.ts#let movementRaised = 0"], by: "wave 147 integrator (WIP 4)" },
   "147B-OL-03": { s: "closed", e: ["lib/kernel/signal-registry.ts#movement_signal_ids"], by: Z147 },
-  "147B-OL-04": { s: "closed", e: ["lib/ai-isa/followup-arbiter.ts#function narrowMenuForLifeEvent"], by: `${Z147}; ruling 17 re-opens the life-event menu (quiet monitoring / research / education / outreach / human) — lane 148F` },
+  "147B-OL-04": { s: "closed", e: ["lib/ai-isa/followup-arbiter.ts#function lifeEventMenu"], by: `${Z147}; ruling 17 re-opened the life-event menu (quiet monitoring / research / education / outreach / human) — lane 148F replaced narrowMenuForLifeEvent with lifeEventMenu (the anchor follows the survivor)` },
   "147B-OL-06": { s: "closed", e: ["lib/intent/movement-source-registry.ts#we_dealmachine"], by: "lane 147B (row present)" },
   "147B-OL-07": handed("lane148C", "Advisory: research reads of movement evidence go through the service client AFTER the purpose gate (RLS admits the lead desk only) — ruling 1's reader widening (lane 148C) must honour it."),
   // ── lane C (buyer) ────────────────────────────────────────────────────────────────────────────────────────────────

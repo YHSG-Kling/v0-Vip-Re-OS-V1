@@ -48,6 +48,7 @@ import { convertSpeech } from "@/lib/providers/elevenlabs/client"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
+import type { ConsentPurpose } from "@/lib/kernel/compliance/require-contact-consent"
 import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconflict"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -439,6 +440,20 @@ async function deconflictGate(args: {
   }
 }
 
+// ─── CHANNEL PURPOSE — one vocabulary for every channel ───────────────────────
+
+/** Why a message is sent. The email assembler's vocabulary (assemble-email.ts), shared by SMS since wave 148Z (§6). */
+export type ChannelPurpose = 'conversation' | 'campaign' | 'update' | 'transactional'
+
+/** PURE. The caller's explicit purpose, else the systemSource inference the email path always used. */
+export function channelPurposeFor(p: { channelPurpose?: ChannelPurpose; systemSource?: string }): ChannelPurpose {
+  return p.channelPurpose ??
+    (p.systemSource?.includes("campaign")        ? "campaign"
+    : p.systemSource?.includes("nurture")        ? "update"
+    : p.systemSource?.includes("transactional")  ? "transactional"
+    : "conversation")
+}
+
 // ─── EMAIL ────────────────────────────────────────────────────────────────────
 
 export interface DispatchEmailParams extends DispatchActorContext {
@@ -460,7 +475,7 @@ export interface DispatchEmailParams extends DispatchActorContext {
    * When omitted, purpose is inferred from systemSource.
    * Always set this explicitly when the caller knows the intent.
    */
-  channelPurpose?: 'conversation' | 'campaign' | 'update' | 'transactional'
+  channelPurpose?: ChannelPurpose
   /**
    * SEND AS THIS AGENT (users.id) — deliver through their own connected
    * Gmail/Outlook mailbox when one exists, so the message arrives FROM the
@@ -583,13 +598,9 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
   })
 
   // ── Kernel OS: assemble body → signature → unsubscribe → legal ─────────────
-  // Prefer an explicit channelPurpose from the caller; fall back to systemSource inference.
-  const channelPurpose: 'conversation' | 'campaign' | 'update' | 'transactional' =
-    params.channelPurpose ??
-    (params.systemSource?.includes("campaign")        ? "campaign"
-    : params.systemSource?.includes("nurture")        ? "update"
-    : params.systemSource?.includes("transactional")  ? "transactional"
-    : "conversation")
+  // Prefer an explicit channelPurpose from the caller; fall back to systemSource inference — ONE inference for every
+  // channel (channelPurposeFor, below; wave 148Z moved it out of this body so SMS reads the same vocabulary, §6).
+  const channelPurpose: ChannelPurpose = channelPurposeFor(params)
 
   // contactId takes precedence over leadId — contacts are promoted leads and
   // the signature/unsubscribe lookup keys off the contacts table.
@@ -756,8 +767,26 @@ export interface DispatchSmsParams extends DispatchActorContext {
    * transactional moments; never for marketing or outreach.
    */
   transactional?: boolean
+  /**
+   * WAVE 148 (148Z — lane 148B Still open 3, owner ruling 3): why this text is sent, in the ONE channel-purpose
+   * vocabulary the email path uses (inferred from systemSource when omitted — channelPurposeFor). A `campaign` text is
+   * MARKETING: it must be covered by a consent whose recorded PURPOSES include marketing, not merely by a phone grant —
+   * a person who ticked only the C15 service-delivery box gets the service they asked for by text, never a campaign.
+   */
+  channelPurpose?: ChannelPurpose
+  /** The consent purpose a campaign text must be covered for (default: the broad real-estate marketing grant). */
+  consentPurpose?: ConsentPurpose
   metadata?: Record<string, unknown>
 }
+
+/**
+ * The consent-scope answers that REFUSE a campaign text (lib/kernel/compliance/require-contact-consent.ts
+ * answerConsentQuestion). purpose_not_covered is the defect this closes (a marketing text to a service-only consent);
+ * withdrawn / channel_opt_out are belt-and-braces beside the suppression gate; unreadable fails CLOSED (§4). legacy_record /
+ * no_record / channel_not_named DEFER to the TCPA gate above (express written consent on the contact) — a pre-m889 row
+ * records no purpose to judge, and the record says nothing it did not record.
+ */
+const CAMPAIGN_SMS_REFUSING_BASES: ReadonlySet<string> = new Set(["purpose_not_covered", "withdrawn", "channel_opt_out", "unreadable"])
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
   // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
@@ -833,6 +862,21 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
           providerKey: "compliance_gate",
           error: `Outbound blocked: ${complianceResult.primaryReason}`,
         }
+      }
+    }
+
+    // ── CONSENT PURPOSE GATE (wave 148, 148Z — lane 148B Still open 3) ──────────────────────────────────────────────
+    // The TCPA gate above asks "may we text this person at all" (contacts.tcpa_consent, set by ANY phone grant — a C15
+    // service-delivery box included). A CAMPAIGN text asks more: does a recorded consent naming SMS cover a MARKETING
+    // purpose? Answered by the ONE consent-scope reader (consentScopeFor → answerConsentQuestion, the reader the arbiter
+    // already uses), never a sibling. A transactional send is outside this gate (recipient-initiated, its own contract).
+    if (params.contactId && params.transactional !== true && channelPurposeFor(params) === "campaign") {
+      const { consentScopeFor, answerConsentQuestion } = await import("@/lib/kernel/compliance/require-contact-consent")
+      const scope = await consentScopeFor(supabase, { brokerageId: params.brokerageId, contactId: params.contactId })
+      const answer = answerConsentQuestion(scope, { channel: "sms", purpose: params.consentPurpose ?? "real_estate_services" })
+      if (CAMPAIGN_SMS_REFUSING_BASES.has(answer.basis)) {
+        console.warn(`[Dispatch] campaign SMS blocked for ${recipientId}: ${answer.basis}`)
+        return { success: false, providerKey: "consent_purpose_gate", error: `Outbound blocked: ${answer.reason}` }
       }
     }
 

@@ -172,7 +172,11 @@ export type CaptureConsentedVisitorEmailResult =
   | { stored: true; email: string; consentEventId: string; identity: ResolveSignalIdentityResult }
   | { stored: false; reason: "no_consent" | "invalid_email" | "consent_not_recorded" | "consent_artifact_not_found" | "store_refused"; error?: string }
 
-const DEFAULT_CONSENT_TEXT = "Website visitor consent — the visitor agreed to be contacted by email about their real estate needs."
+// TOMBSTONE (wave 148, 148Z — lane 148B Still open 9, owner ruling 3 "consent never fabricated"): a DEFAULT_CONSENT_TEXT
+// ("Website visitor consent — the visitor agreed to be contacted by email …") stood here and was STORED as the consent wording
+// whenever the browser sent `consented: true` with no text — words nobody was shown. No survivor by design: a capture with no
+// wording now refuses (`no_consent`) and stores nothing; a door that renders the ONE consent component sends its wording (or a
+// recorded artifact by id, the consentEventId path below).
 
 /**
  * THE ONE writer of behavioral_signals.email_captured / email_captured_at / consent_event_id (m706).
@@ -200,12 +204,14 @@ export async function captureConsentedVisitorEmail(client: Client, input: Captur
     consentEventId = artifact.id as string
   } else {
     const c = input.consent as Exclude<VisitorEmailConsent, { consentEventId: string }>
+    const wording = c.consentText?.trim() ?? ""
+    if (!wording) return { stored: false, reason: "no_consent", error: "no consent wording arrived with the tick — the words the visitor saw are the consent, and none were sent (never fabricated)" }
     const written = await persistContactConsent({
       brokerageId: input.brokerageId,
       agentId: c.agentId ?? null,
       contactId: null,
       leadId: null,
-      consentText: c.consentText?.trim() || DEFAULT_CONSENT_TEXT,
+      consentText: wording,
       consentSource: c.consentSource,
       consented: true,
       ipAddress: c.ipAddress ?? null,

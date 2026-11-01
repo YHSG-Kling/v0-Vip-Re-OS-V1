@@ -352,6 +352,13 @@ async function main() {
   check("the action is session-gated: tenant, agent and creator from getAgentContext — no tenant in its input", /getAgentContext\(\)/.test(actBody) && /brokerageId: ctx\.brokerageId, agentId: ctx\.agentId, createdBy: ctx\.userId/.test(actBody) && !/input\.brokerage/.test(actBody))
   const mr = ["topics", "producer", "research", "prompts"].map((f) => code(`lib/market-reports/${f}.ts`)).join("\n")
   check("ruling 10 cross-check: no market-report module reads the topic bank (the full proof is test:market-report-producer §E)", !/["'`]content_topic_bank["'`]|pickTopics\(/.test(mr))
+  // WAVE 148Z (lane 148G Outside-lane 1a): the funnel form's DECLARED consent (FunnelConsentSpec, wording "rendered_by_c15")
+  // reaches the ONE component — the landing page reads settings.funnel.consent and the form hands its channels to useConsentBoxes.
+  const lm = code("app/lm/[slug]/page.tsx"), gcf = code("app/components/lead-magnet-forms/GenericCaptureForm.tsx")
+  const lmWires = (s: string) => /settings\?\.funnel\?\.consent/.test(s) && /wording === "rendered_by_c15"/.test(s) && /consentChannels=\{funnelChannels/.test(s)
+  check("the funnel's C15 consent spec reaches the ONE component: /lm/[slug] reads settings.funnel.consent (wording rendered_by_c15) and GenericCaptureForm renders its channels through useConsentBoxes",
+    lmWires(lm) && /"id, name, slug, fields[^"]*settings"/.test(lm) && /useConsentBoxes\("lead_magnet", consentBrandName, consentChannels/.test(gcf) && /<ConsentBoxes\b/.test(gcf))
+  check("positive control: the wiring finder rejects a page that reads the spec but never hands it to the form", !lmWires(lm.replace(/consentChannels=\{funnelChannels/g, "data-x={funnelChannels")))
   await new Promise((r) => setTimeout(r, 50))
   check(`every background rejection (${backgroundRejections.length}) is the kernel's fire-and-forget audit echo (write-sentinel), none from the funnel's own code`, backgroundRejections.every((s) => /write-sentinel\.ts/.test(s)), backgroundRejections.find((s) => !/write-sentinel\.ts/.test(s))?.split("\n").slice(0, 6).join(" | "))
 
