@@ -1,6 +1,6 @@
+-- ── APPLIED LIVE 2026-09-12 by the integrator (Supabase MCP apply_migration; schema snapshot regenerated the same day). ──
 -- =====================================================
 -- MIGRATION m625: agent_reviews.auto_publish_at
--- ── APPLIED LIVE 2026-09-12 by the integrator (Supabase MCP apply_migration; schema snapshot regenerated the same day). ──
 -- =====================================================
 --
 -- WAVE 61 LANE 61C — the "review" half of app/actions/settings/

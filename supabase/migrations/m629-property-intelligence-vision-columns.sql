@@ -1,5 +1,5 @@
--- m629-property-intelligence-vision-columns.sql
 -- ── APPLIED LIVE 2026-09-15 on hrvaqgvukzxfskkcrwbt via mcp apply_migration (m629_property_intelligence_vision_columns) ──
+-- m629-property-intelligence-vision-columns.sql
 -- ─────────────────────────────────────────────────────────────────────────────
 -- WIRES lib/external/vision-property.ts::scorePropertyImage (an orphan export —
 -- no caller anywhere in the repo, orphan-export-guard category A) into

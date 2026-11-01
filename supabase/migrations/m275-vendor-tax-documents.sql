@@ -1,3 +1,4 @@
+-- ── APPLIED LIVE (stamp added 2026-11-01 by the wave-148 integrator after verifying the live catalog: vendor_tax_documents is present with its columns and indexes; applied in owner round 43, original date not recorded) ──
 -- m275 — VENDOR W-9 ON FILE (owner round 43).
 --
 -- Vendors invoice buyers/sellers and receive payouts (rounds 34/37), which makes
