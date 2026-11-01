@@ -331,7 +331,9 @@ async function main() {
   check("the deal page renders the closing-date panel, and its door is session-gated (requireTransactionActor)", /<ClosingDatesPanel\b/.test(code("app/dashboard/transactions/[id]/transaction-detail-client.tsx")) && /requireTransactionActor\(params\.transactionId\)/.test(fnBody(code("app/actions/transactions.ts"), "recordClosingDateChange")))
   {
     // A RUNTIME import (static or dynamic) of the ledger / a supabase client — a type-only `typeof import(…)` is erased.
-    const SERVER_IMPORT = /(?:(?<!typeof\s)import\(\s*|from\s+)["']@\/lib\/(?:kernel\/action-ledger|supabase\/)/
+    // a `typeof import()` and an `import type … from` are erased at compile time — neither is a runtime reach (the client-server guard
+    // reads the former as an edge, so the module writes the latter).
+    const SERVER_IMPORT = /(?:(?<!typeof\s)import\(\s*|(?<!import\s+type\s[^\n]*)from\s+)["']@\/lib\/(?:kernel\/action-ledger|supabase\/)/
     check("POSITIVE CONTROL: the finder sees a dynamic and a static server import, and ignores a type-only one", SERVER_IMPORT.test(`await import("@/lib/kernel/action-ledger")`) && SERVER_IMPORT.test(`import { x } from "@/lib/supabase/service"`) && !SERVER_IMPORT.test(`type L = typeof import("@/lib/kernel/action-ledger").withActionLedger`))
     check("status-override + closing-dates reach for NO server module at runtime (client pickers import them)", !SERVER_IMPORT.test(code("lib/kernel/status-override.ts")) && !SERVER_IMPORT.test(code("lib/transactions/closing-dates.ts")) && existsSync(join(ROOT, "lib/kernel/status-override.ts")))
   }

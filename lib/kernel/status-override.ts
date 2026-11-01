@@ -36,6 +36,7 @@ import { TRANSACTION_STATUSES, type TransactionStatus } from "@/lib/transactions
 import type { TransactionStage } from "@/lib/transactions/transaction-stages"
 import { TICKET_STATUSES, type TicketStatus } from "@/lib/support/ticket-constants"
 import { ESIGN_PACKET_STATES, type EsignPacketState } from "@/lib/esign/packet-states"
+import type { withActionLedger } from "@/lib/kernel/action-ledger"
 
 // ── 1. The rule's constants ─────────────────────────────────────────────────────────────────────
 
@@ -304,7 +305,10 @@ export function listingStageOverrideRefusal(stage: string): string | null {
 
 // ── 6. The runtime for a door without a ledger of its own ─────────────────────────────────────────
 
-type LedgerFn = typeof import("@/lib/kernel/action-ledger").withActionLedger
+// TYPE-ONLY: the ledger is handed in by the door (deps.ledger); this module never reaches lib/kernel/action-ledger at runtime, so the
+// client pickers that import the vocabulary above stay out of the server bundle (scripts/client-server-only-guard.ts follows
+// `typeof import()` as a real edge — an `import type` it ignores, as does the SERVER_IMPORT rule in scripts/status-override-guard.ts).
+type LedgerFn = typeof withActionLedger
 
 interface OverrideStatusRun<T> {
   brokerageId: string
