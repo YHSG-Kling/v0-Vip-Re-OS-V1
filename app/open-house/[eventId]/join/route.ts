@@ -72,12 +72,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ even
     const r = reg as { id: string; contact_id: string | null; provider_join_url: string | null; registered_at: string | null } | null
     if (r?.contact_id && r.registered_at) {
       if (ev.virtual_provider === "youtube") {
-        const { error: evErr } = await supabase.from("event_attendance_evidence").insert({
-          brokerage_id: ev.brokerage_id, event_id: ev.id, contact_id: r.contact_id, provider: "youtube", provider_event: "watch_link_opened",
-          identity_match: "registration_token", occurred_at: new Date().toISOString(), dedupe_key: `yt-open:${r.id}:${new Date().toISOString().slice(0, 13)}`,
-        })
-        // Non-fatal (23505 = already recorded this hour). Logged, never swallowed — supabase-js RESOLVES a refused write.
-        if (evErr && evErr.code !== "23505") console.error("[open-house/join] watch-link evidence not recorded:", evErr.message)
+        // One watch-link open per registration per hour: the dedupe key is READ first (a repeat click in the hour is not new
+        // evidence), the UNIQUE index stays the race net.
+        const dedupeKey = `yt-open:${r.id}:${new Date().toISOString().slice(0, 13)}`
+        const { data: seen, error: seenErr } = await supabase.from("event_attendance_evidence").select("id").eq("event_id", ev.id).eq("dedupe_key", dedupeKey).maybeSingle()
+        if (seenErr) console.error("[open-house/join] watch-link evidence read failed:", seenErr.message)
+        if (!seen && !seenErr) {
+          const { error: evErr } = await supabase.from("event_attendance_evidence").insert({
+            brokerage_id: ev.brokerage_id, event_id: ev.id, contact_id: r.contact_id, provider: "youtube", provider_event: "watch_link_opened",
+            identity_match: "registration_token", occurred_at: new Date().toISOString(), dedupe_key: dedupeKey,
+          })
+          // Non-fatal (23505 = two clicks in flight). Logged, never swallowed — supabase-js RESOLVES a refused write.
+          if (evErr && evErr.code !== "23505") console.error("[open-house/join] watch-link evidence not recorded:", evErr.message)
+        }
       }
       const personal = ev.virtual_provider === "zoom" ? httpsOrNull(r.provider_join_url) : null
       if (personal) meetingUrl = personal

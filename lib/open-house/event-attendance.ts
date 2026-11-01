@@ -353,6 +353,11 @@ export async function recordZoomParticipantEvent(svc: Db, payload: unknown, deps
     email_normalized: normalizeEmail(p.email), identity_match: who.match, occurred_at: p.at, leave_reason: p.leaveReason,
     dedupe_key: dedupeKey(["zoom", p.meetingUuid ?? p.meetingId, p.kind, p.participantKey ?? p.registrantId ?? p.email ?? p.displayName, p.at]),
   }
+  // THE DEDUPE KEY IS READ BEFORE IT IS WRITTEN: Zoom redelivers a webhook it did not hear an ack for; a key already on file is a
+  // replay and is answered without a second insert (the UNIQUE index below stays the race net for two deliveries in flight).
+  const dup = await svc.from("event_attendance_evidence").select("id").eq("event_id", ev.id).eq("dedupe_key", row.dedupe_key).maybeSingle()
+  if (dup.error) return { handled: false, reason: `evidence read refused: ${dup.error.message}` }
+  if (dup.data) return { handled: true, replay: true, match: who.match, contactId: who.contactId, attended: false, reason: "already recorded (Zoom redelivery)" }
   const ins = await svc.from("event_attendance_evidence").insert(row).select("id").maybeSingle()
   if (ins.error) {
     if (ins.error.code === "23505") return { handled: true, replay: true, match: who.match, contactId: who.contactId, attended: false, reason: "already recorded (Zoom redelivery)" }
@@ -387,22 +392,31 @@ async function recomputeAttendance(
 ): Promise<{ attended: boolean; seconds: number; reason: string; agentNotified?: boolean }> {
   const rsvp = regs.byContact.get(contactId)
   if (!rsvp) return { attended: false, seconds: 0, reason: "no registration row" }
-  const { data: evs, error } = await svc.from("event_attendance_evidence").select("provider_event, occurred_at, participant_key")
+  const { data: evs, error } = await svc.from("event_attendance_evidence").select("provider_event, occurred_at, participant_key, provider_meeting_uuid, leave_reason")
     .eq("event_id", ev.id).eq("contact_id", contactId)
   if (error) return { attended: false, seconds: 0, reason: `evidence read refused: ${error.message}` }
-  const window = computeAttendanceWindow(((evs ?? []) as Array<Record<string, any>>)
+  const rows = (evs ?? []) as Array<Record<string, any>>
+  // A join is closed only by a leave from the SAME meeting instance: a re-started or recurring Zoom meeting keeps its meeting id
+  // and mints a new uuid, so the pairing key is instance + participant (provider_meeting_uuid is read for exactly this).
+  const window = computeAttendanceWindow(rows
     .filter((e) => e.provider_event === "participant_joined" || e.provider_event === "participant_left")
-    .map((e) => ({ kind: e.provider_event, at: e.occurred_at, participantKey: e.participant_key ?? null })), closeAt)
+    .map((e) => ({ kind: e.provider_event, at: e.occurred_at, participantKey: `${e.provider_meeting_uuid ?? "-"}:${e.participant_key ?? "_"}` })), closeAt)
+  // The last reason Zoom gave for a leave rides the verdict — "dropped by the network" and "left the meeting" are different
+  // facts for the agent who reads the attendance line.
+  const lastLeaveReason: string | null = rows
+    .filter((e) => e.provider_event === "participant_left" && typeof e.leave_reason === "string" && e.leave_reason.length)
+    .sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at)).pop()?.leave_reason ?? null
+  const withLeave = (reason: string) => (lastLeaveReason ? `${reason} (last leave: ${lastLeaveReason.slice(0, 80)})` : reason)
   const verdict = attendanceVerdict({ kind: ev.event_type ?? "", provider: ev.virtual_provider, matched: true, seconds: window.seconds })
   const progress = { first_joined_at: window.firstJoinedAt, last_left_at: window.lastLeftAt, attended_seconds: window.seconds }
   if (rsvp.attendance_verified_by || !verdict.attended) {
     const { error: pErr } = await svc.from("open_house_rsvp_tracking").update(progress).eq("id", rsvp.id).eq("brokerage_id", ev.brokerage_id)
     if (pErr) console.warn("[event-attendance] presence progress not stored:", pErr.message)
     if (rsvp.attendance_verified_by) await syncAttendeeDeparture(svc, ev, contactId, window.lastLeftAt)
-    return { attended: !!rsvp.attendance_verified_by, seconds: window.seconds, reason: rsvp.attendance_verified_by ? "already verified — presence updated" : verdict.reason }
+    return { attended: !!rsvp.attendance_verified_by, seconds: window.seconds, reason: withLeave(rsvp.attendance_verified_by ? "already verified — presence updated" : verdict.reason) }
   }
   const out = await verifyAttendance(svc, ev, contactId, rsvp, regs, window, deps)
-  return { attended: out.verified, seconds: window.seconds, reason: out.verified ? verdict.reason : out.reason, agentNotified: out.agentNotified }
+  return { attended: out.verified, seconds: window.seconds, reason: withLeave(out.verified ? verdict.reason : out.reason), agentNotified: out.agentNotified }
 }
 
 async function syncAttendeeDeparture(svc: Db, ev: EventRow, contactId: string, lastLeftAt: string | null): Promise<void> {
@@ -504,9 +518,12 @@ export async function finalizeEventAttendance(svc: Db, eventId: string, deps: At
     }
   }
   const { data: fresh } = await svc.from("open_house_rsvp_tracking").select("rsvp_status, attendance_verified_by, registered_at").eq("event_id", ev.id).eq("brokerage_id", ev.brokerage_id)
-  const { data: anon } = await svc.from("event_attendance_evidence").select("participant_key").eq("event_id", ev.id).eq("identity_match", "unmatched").eq("provider_event", "participant_joined")
+  // Unmatched joins are read WITH their normalised e-mail: an e-mail Zoom reported that matched no registrant is the one fact an
+  // agent can reconcile by hand (a registrant who joined under another address) — the outcome carries the count, never the addresses.
+  const { data: anon } = await svc.from("event_attendance_evidence").select("participant_key, email_normalized").eq("event_id", ev.id).eq("identity_match", "unmatched").eq("provider_event", "participant_joined")
   const outcome = eventOutcome({ kind: ev.event_type, provider: ev.virtual_provider, rsvps: (fresh ?? []) as never[], unmatchedJoins: new Set(((anon ?? []) as Array<{ participant_key?: string | null }>).map((a, i) => a.participant_key ?? `anon-${i}`)).size })
-  const meta = { ...((ev.provider_meta ?? {}) as Record<string, unknown>), attendance_outcome: { ...outcome, computed_at: new Date().toISOString() } }
+  const unmatchedWithEmail = new Set(((anon ?? []) as Array<{ email_normalized?: string | null }>).map((a) => a.email_normalized).filter((e): e is string => !!e)).size
+  const meta = { ...((ev.provider_meta ?? {}) as Record<string, unknown>), attendance_outcome: { ...outcome, unmatched_with_email: unmatchedWithEmail, computed_at: new Date().toISOString() } }
   const { error: oErr } = await svc.from("open_house_events").update({ provider_meta: meta }).eq("id", ev.id).eq("brokerage_id", ev.brokerage_id)
   if (oErr) console.warn("[event-attendance] outcome not stored on the event:", oErr.message)
   return { finalized: true, reason: verifiability === "verified" ? "verifiable host — no-shows marked" : `${ev.virtual_provider ?? "this host"} cannot verify attendance — no one is marked a no-show`, outcome, noShowsMarked, verifiedNow }
