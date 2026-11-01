@@ -11,6 +11,11 @@ cost-estimate endpoints. Those endpoints were read as documentation only, so no 
 `file:line` in this worktree (base `4d527cc3`). The earlier pass on the same vendor is
 `docs/commercial/CUSTOMER-360-PROVIDER-COMPARISON.md` §3.4 (wave 146D, read 2026-10-29). Where today's read differs from it, §8 says so.
 
+**Wave 148 (lane 148J, owner ruling 19, read 2026-11-01).** The owner asked whether DealMachine can be a **platform-paid**
+provider, so that no per-tenant SaaS licence is needed and no contact is paid for twice. §11 answers that question. Every page
+§2 lists was re-read on 2026-11-01 and is unchanged in text. Four DealMachine pages were read for the first time (§11.1). The
+field-by-field "one verified source per fact" matrix is `docs/commercial/CUSTOMER-360-PROVIDER-COMPARISON.md` §9.
+
 ## 1. Verdict
 
 **No adapter is built.** The owner's gate needs three conditions at once: a confirmed gap, permitted licensing and a compelling
@@ -41,6 +46,21 @@ benefit. Licensing fails on DealMachine's standard terms, so no code is written,
 
 **What would reopen this:** a signed DealMachine Order Form or enterprise licence that expressly overrides §2(a), §2(b), §2(e)(ii)
 and §5(b) for multi-tenant service-bureau use (§7). Until then, this belongs to the owner and counsel as **WAITING_EXTERNAL**.
+
+**Wave 148 — platform payment does not change the verdict (§11).**
+
+- **None of the blocking clauses depends on who pays.** §2(b) limits use to "the Customer's internal, lawful use only". §2(d) ties
+  logins to named Permitted Users bought on the Order Form. §2(e)(ii) forbids making the Services "available to any other party".
+  §5(b) takes a perpetual, sublicensable licence over the data we send. The platform paying for the account satisfies none of
+  them.
+- **DealMachine's own help centre adds a sixth blocker.** "If you are serving DealMachine API data inside your own customer-facing
+  app, we ask that you do not cache it." A tenant CRM that stores enriched contacts is exactly that.
+- **The agreement that would permit it has a name.** It is a DealMachine **enterprise data licence**, signed as an Order Form that
+  expressly overrides those clauses (§11.4). DealMachine sells it through "Data licensing and API access" (Talk to Sales).
+- **Even licensed, DealMachine would not be "one provider".** It would replace BatchData's legs at most. RentCast, PeopleData and
+  Versium each keep facts DealMachine does not sell, or that an owner ruling assigns elsewhere.
+- **Today's fabric already buys each fact once.** Adding DealMachine without removing a provider would *create* duplicate spend
+  (§11.5).
 
 ## 2. Sources read (all on 2026-10-31)
 
@@ -299,3 +319,153 @@ The modeled flags (`is_likely_to_move`, `has_likely_to_move`, `lease_ending`, `i
   signature, and ToS §11(m) lets DealMachine change the terms on posting.
 - **BatchData's $0.07 is UNVERIFIED.** It is a booked constant (`PROVIDER-COST-REPORT.md` §8). If BatchData's real rate is lower,
   the price advantage in §5 shrinks.
+- **Pro price, wave 148.** No page read on 2026-11-01 shows $149 / 20,000. The help centre's schedule is "$99 per 10,000 data
+  credits per month … up to 60,000", which would make 20,000 credits $198 (§11.6). The $0.00745 Pro figure in §5 is therefore
+  **unconfirmed**. The $0.0060 – $0.0099 range does not move.
+
+## 11. Wave 148 — DealMachine as a platform-paid provider (owner ruling 19)
+
+Owner, verbatim: "we can make the DealMachine a platform paid provider so we won't need a SaaS license especially if it gives us
+most in using one provider than having to spend twice on one contact for the same info." Ruling 19 adds the condition: only "IF
+its terms permit platform use for tenant work (verify; platform payment alone does not grant sublicensing)".
+
+### 11.1 What was read on 2026-11-01
+
+- **Re-read, unchanged.** The API corpus <https://api.docs.dealmachine.com/llms-full.txt> is byte-identical to the 2026-10-31 copy
+  (904,674 bytes), and so is its index. The Terms of Service (still effective 2026-07-14), the Privacy Policy, the pricing page and
+  the API quickstart guide are unchanged in their extracted text against the 2026-10-31 copies (a whitespace-normalised diff came
+  back empty).
+- **Read for the first time:**
+  - the help-centre article "DealMachine API and data enrichment: what it does, access, and pricing",
+    <https://help.dealmachine.com/en/articles/16819565-dealmachine-api-and-data-enrichment-what-it-does-access-and-pricing>
+    (`dateModified` 2026-10-29T18:35:44Z);
+  - the Enterprise page, <https://www.dealmachine.com/solutions/enterprise>;
+  - the Software API page, <https://www.dealmachine.com/solutions/software-api>;
+  - Talk to Sales, <https://dm-next.dealmachine.com/contact-sales>;
+  - the OAuth reference, <https://api.docs.dealmachine.com/api-reference/oauth/authorize>.
+
+### 11.2 Does platform payment make platform use permitted? No
+
+| Clause / source | Verbatim | Does platform payment satisfy it? |
+|---|---|---|
+| ToS §2(b) | "solely for the use by Permitted Users. Such right to use the Services is limited to the Customer's internal, lawful use only." | **No.** Serving tenant brokerages is their business, not the platform's internal use, whoever pays |
+| ToS definitions, "Permitted Users" (not quoted in 147D) | "any individual who is authorized by Customer …; who is included in the number of users listed on the relevant Order Form; to whom Customer … has supplied separate and specific login credentials …. Permitted Users may include, for example, Customer's employees, consultants, contractors, agents, and third parties with whom the Customer transacts business." | **No.** This is the closest opening: a tenant's agent is a "third party with whom the Customer transacts business". But every such person must be counted on the Order Form and get their own login (§2(d)). That is per-seat licensing per tenant user, which is the SaaS licence the owner wants to avoid. And the use must still be the platform's own internal use |
+| ToS §2(d) | Logins "shall not be shared or used by more than one Permitted User" | **No.** A platform service account fanning out to tenants is one login used for many |
+| ToS §2(e)(ii) | Customer shall not "rent, lease, lend, sell, license, sublicense, assign, publish, transfer, or otherwise make available the Services to any other party" | **No.** Payment is irrelevant to this clause. "Services" includes "data append", so skip-trace results shown to tenants are the Services made available |
+| ToS §2(e)(vii) | Not to "build or support … any services or technology competitive to the Services" | **No.** Our skip trace, lists, direct mail and prospecting overlap DealMachine's product |
+| ToS §2(a) | One account per customer unless "specifically authorized to have multiple accounts by Provider in writing" | **No.** Per-tenant accounts opened by the platform need written authorization |
+| ToS §5(b) | A "perpetual, irrevocable, transferrable, sublicensable license" over Customer Data | **No.** It covers what we send, not what we pay |
+| Help centre, "Storing and using the data" (new) | "You can store API-returned records in your own CRM … One exception: if you are serving DealMachine API data inside your own customer-facing app, we ask that you do not cache it." | **No.** Tenant contact and lead records, the Customer 360 and `enrichment_profile` are a customer-facing app that persists data |
+| Help centre, "Keeping records after you cancel" (new) | "If you need to go above 1,000,000 records per month, that moves to a data license — under a license you would not be able to keep using the records after cancelling." | It names the instrument: a **data license**. It also warns that under one, records stop being usable on cancellation, so a purge plan is mandatory |
+| Pricing page, Scale (new reading) | "For agencies and enterprises buying data in bulk" | **Not a grant.** It is marketing copy on the ordering page. §11(j) lets an Order Form override the ToS body only where it is "expressly stated", and this line states no multi-tenant or resale right |
+| ToS §11(j) | The ToS body prevails over an Order Form "unless expressly stated otherwise in the applicable Order Form" | The override must be express and written into a signed Order Form |
+
+**Four models, on the standard terms:**
+
+| Model | Platform-paid? | Per-tenant licence avoided? | Permitted? |
+|---|---|---|---|
+| A. One platform account serving all tenants | Yes | Yes | **No:** §2(b), §2(d), §2(e)(ii), the help-centre no-cache rule, and the isolation facts in §4.3 |
+| B. One account per tenant, opened and paid for by the platform | Yes | **No** (each tenant is a seat-priced account) | **No** without written authorization (§2(a)) |
+| C. Tenant-held account linked through OAuth ("Full OAuth 2.0 authorization code flow for third-party integrations") | No | **No** | Unproven. The only documented scope is `account:read`, and no `client_id` registration process is published, so data calls would need the tenant's `dm_sk_live_…` key. §2(e)(vii) and §5(b) still apply |
+| D. A negotiated enterprise data licence (§11.4) | Yes | Yes | **Possible.** It is the only route |
+
+### 11.3 Why platform payment alone cannot grant sublicensing
+
+A licence is a permission from the rights holder. Who pays is a commercial term inside that permission, not a source of it.
+§2(b) grants a "non-sublicensable" right. Any sublicence to tenants therefore has to come from DealMachine Operations Inc., in a
+signed writing that says so expressly (§11(j)). This is the ruling's own caveat, confirmed against the text.
+
+### 11.4 The agreement that would permit it
+
+**A DealMachine enterprise data licence, executed as a signed Order Form under the Terms of Service.** DealMachine offers it
+publicly: "Data licensing and API access: Bulk data, higher API limits, and licensing terms for what you need to build" (Talk to
+Sales), and "enterprise data licensing options" (Enterprise page). Per §11(j), the Order Form must **expressly**:
+
+1. grant multi-tenant, service-bureau (embedded / OEM) use for tenant brokerages' business, overriding §2(b) "internal use only",
+   §2(d) one login per Permitted User and §2(e)(ii);
+2. authorize the platform account structure: one platform organisation, or one per tenant, overriding §2(a);
+3. waive §2(e)(vii) (competitive services) for our product;
+4. narrow §5(b) to what is needed to provide the service, for tenant data we submit;
+5. permit storage on tenant contact and lead records and display to each tenant's authorised users, overriding the help-centre
+   "do not cache" request for a customer-facing app, with a defined retention period and purge on termination;
+6. scope tenants inside the account: per-tenant dedupe, `exclude_previously_exported`, activity log and export concurrency (§4.3),
+   or separate organisations;
+7. confirm that protected and proxy filters may be refused at our request (§6.1), and state the FCRA status of the modeled and
+   credit fields;
+8. price per record at our volume (§11.6).
+
+Without items 1 to 5, an adapter would breach the Terms on its first tenant call.
+
+### 11.5 "Spend twice on one contact": would DealMachine consolidate providers?
+
+The full matrix is `docs/commercial/CUSTOMER-360-PROVIDER-COMPARISON.md` §9. In summary:
+
+- **What DealMachine could replace, if licensed:** BatchData's property record, owner and skip-trace contact points, distress
+  lists and the DNC lookup. A DealMachine DNC answer is a monthly snapshot by DealMachine's own words, so `enforceTCPACompliance`
+  stays the authority. It could also replace part of RentCast's property record (structure, owner, tax, last sale).
+- **What it cannot replace:**
+  - RentCast's home value, which an owner ruling makes primary (`OWNER_ORDERED_CAPABILITIES`, `lib/ai-isa/property-lookup-rail.ts:451`);
+  - RentCast's rent estimate and market aggregates; no rent-estimate field appears in DealMachine's API corpus;
+  - the anonymous public-facts tax and HOA rung, which is RentCast's record by design (`property-lookup-rail.ts` header);
+  - PeopleData's person profile depth and email validation. DealMachine returns work profiles and a `has_deliverable_email`
+    filter, not a validation endpoint;
+  - Versium's online presence, business-identity crosswalk, free audience estimate and online-audience match;
+  - BatchData's property-change **push** and listing-transition suppression. DealMachine's webhooks are CRM events only (§3 row 8).
+- **Best case: four providers stay four.** DealMachine swaps in for BatchData, with a seat fee in place of pay-per-match, and the
+  push channel is lost.
+- **Duplicate spend is already prevented in code.** The cross-provider dedup rule (`lib/enrichment/provider-dedup.ts`, owner wave
+  144 ruling 10) holds it, together with:
+  - cheapest-first walks that stop at the first match (`CONTACT_PROVIDER_ROUTES`, `property-lookup-rail.ts:334`);
+  - gap-only buying (`contactPointsToBuy`, `lib/enrichment/identifier-guard.ts:60`; `versiumDemographicCategoriesNeeded`,
+    `lib/lead-pipeline/enrichment-column-map.ts:612`);
+  - freshness windows (`PROVIDER_FRESHNESS_DAYS`, PeopleData 90 days and Versium 180, `provider-dedup.ts:41`);
+  - the RentCast fact cache (record 30 days, AVM 14, markets 7, `lib/property/rentcast.ts:375`);
+  - BatchData reached for a home value only after a named RentCast miss.
+
+  The one way to *create* duplicate spend is to add DealMachine as a fifth source for facts already bought. That adds a fixed
+  seat fee and overlapping credits.
+
+### 11.6 Cost at our scale (no purchase)
+
+- **The help centre's published schedule** is "$99 per 10,000 data credits per month. You can upgrade in 10,000-credit
+  increments as needed, up to 60,000 data credits per month." Past 60,000, credits come in "100,000 increments at $599 per month
+  each, which require a 12-month commitment". That is $0.0099 per credit up to 60,000 and $0.00599 at Scale. The §5 range holds.
+- **Overage.** "there isn't a separate per-credit overage charge". This matches §8.
+- **Rate limits.** The default is 60 calls a minute and 5,000 a day. 10,000 a day costs "an added $100 per month on an annual
+  Scale Plan agreement".
+- **No trial.** "We can't offer free trials of this type of data (for legal reasons)." Measuring fill rate therefore means a paid
+  month ($99, cancel any time). That is a purchase, so it is the owner's decision and was not made.
+- **The break-even table in §5 is unchanged,** and so is the reason "useful" cost stays UNKNOWN: fill rate.
+
+### 11.7 Verdict and WAITING_EXTERNAL
+
+**No adapter, no migration (m930 unused) and no proof.** The licence condition fails. Platform payment changes none of the
+clauses in §11.2.
+
+WAITING_EXTERNAL (owner and counsel):
+
+- **The agreement, by name:** a DealMachine enterprise data licence, signed as an Order Form carrying items 1 to 8 of §11.4.
+- **The credential, only after the agreement:** `DEALMACHINE_API_KEY` (`dm_sk_live_…`, from <https://dealmachine.com/settings/developer>),
+  verified with the free `GET /v1/account` and `GET /v1/usage`. Add `DEALMACHINE_WEBHOOK_SECRET` only if prospect webhooks are
+  used.
+- **The design** if it reopens stays §7, unchanged.
+
+### 11.8 Facts that moved since wave 147D (2026-10-31)
+
+| Fact | 147D said | Read 2026-11-01 |
+|---|---|---|
+| Permitted Users | not quoted | They may include "third parties with whom the Customer transacts business". Each is still a counted, credentialed seat on the Order Form |
+| Caching in a customer-facing app | not recorded | "we ask that you do not cache it" (help centre) |
+| Data licence | "enterprise or licensing needs, reach out" | Above 1,000,000 records a month "moves to a data license". Under it, records are not usable after cancelling. Sales sells "Data licensing and API access" |
+| Pricing schedule | Basic $99 / 10k, Pro $149 / 20k, Scale $599 / 100k | $99 per 10,000 up to 60,000; Scale 100,000 at $599 with a 12-month commitment. $149 Pro is not on any page read today |
+| OAuth | "API keys and OAuth tokens … share the same activity log" | The only documented scope is `account:read`. No public `client_id` registration process |
+| Litigators | phones emptied for known litigators | "excluded from API, integration, CLI and MCP results. The list isn't updated live" |
+| Trials | not recorded | "We can't offer free trials of this type of data (for legal reasons)" |
+
+### 11.9 Blind spots (wave 148)
+
+- **Negotiated terms are not public.** An enterprise Order Form may differ materially from §11.4's list in either direction.
+- **The help-centre article is guidance, not the contract.** It is cited as DealMachine's stated expectation, and the contract is
+  the ToS plus any Order Form. It was modified on 2026-10-29 and can change without notice.
+- **This is not legal advice.** §11.2 is a procurement reading, and counsel reads before any signature.
+- **Fill rate and match rate are still unmeasured** (no key, no trial).

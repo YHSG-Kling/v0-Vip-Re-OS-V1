@@ -36,6 +36,9 @@ secondary source it used.
 
 The DealMachine column was added in wave 147 (lane 147D, owner ruling 17). It was read from DealMachine's own pages on
 2026-10-31. The full capability-by-capability evaluation, with the quoted terms, is `docs/commercial/DEALMACHINE-EVALUATION.md`.
+Wave 148 (lane 148J, owner ruling 19) re-read every one of those pages on 2026-11-01, unchanged in text. It evaluated DealMachine
+as a **platform-paid** provider (`DEALMACHINE-EVALUATION.md` §11). The field-by-field "one verified source per fact" matrix
+across RentCast, BatchData, Versium, PeopleData and DealMachine is §9 below.
 
 | Requirement (ruling 11 / 12) | Met by | Verified how | DealMachine (wave 147D, read 2026-10-31) |
 |---|---|---|---|
@@ -134,6 +137,26 @@ change or add to the rows above:
 At full plan use, DealMachine's per-credit price ($0.0060 – $0.0099) undercuts the booked BatchData skip trace ($0.07, UNVERIFIED).
 That benefit is measurable but blocked by the licence.
 
+**Re-evaluated in wave 148 as a platform-paid provider** (lane 148J, owner ruling 19, read 2026-11-01). The detail is in
+`docs/commercial/DEALMACHINE-EVALUATION.md` §11. **The verdict holds: no adapter.** What wave 148 adds:
+
+1. **Platform payment changes no blocking clause.** ToS §2(b) ("internal, lawful use only"), §2(d) (one login per counted
+   Permitted User), §2(e)(ii), §2(e)(vii) and §5(b) do not depend on who pays. The "Permitted Users" definition does admit "third
+   parties with whom the Customer transacts business". But each must be a counted, credentialed seat on the Order Form, which is
+   the per-tenant licence the owner wants to avoid (<https://www.dealmachine.com/terms-of-service>).
+2. **The help centre adds a no-cache rule.** "if you are serving DealMachine API data inside your own customer-facing app, we ask
+   that you do not cache it". It also says that above 1,000,000 records a month the account "moves to a data license", under
+   which records cannot be used after cancelling
+   (<https://help.dealmachine.com/en/articles/16819565-dealmachine-api-and-data-enrichment-what-it-does-access-and-pricing>,
+   modified 2026-10-29).
+3. **The agreement that would permit platform use is named.** It is a DealMachine enterprise data licence ("Data licensing and API
+   access", <https://dm-next.dealmachine.com/contact-sales>), signed as an Order Form that expressly overrides those clauses
+   (ToS §11(j)).
+4. **The price schedule has moved.** The help centre reads "$99 per 10,000 data credits per month … up to 60,000", then 100,000
+   increments at $599 with a 12-month commitment. The $149 Pro figure above is not on any page read on 2026-11-01. "We can't
+   offer free trials of this type of data (for legal reasons)."
+5. **Even licensed, DealMachine would replace BatchData's legs at most** (§9). It would not reduce the number of providers.
+
 ### 3.5 Real-estate predictive / engagement products found by research
 
 | Provider | What it is | Price | Source |
@@ -218,7 +241,7 @@ rate. This report does not invent the denominator.
 | BatchData Property Subscription | push. Subscription price is on the BatchData page; the per-record API rate is UNKNOWN | webhook once provisioned | UNKNOWN (contract) |
 | NCOA (optional) | $20 per file (TrueNCOA) | quarterly per tenant list | $20 ÷ movers found (UNKNOWN) |
 | FullContact / Celebrus / Revaluate / Likely / Offrs / SmartZip | not published | — | not computable |
-| DealMachine | $99 – $149 / seat / mo or $599 / 100k records. $0.0060 – $0.0099 per credit at full use; credits reset monthly; no automatic overage (read 2026-10-31) | — (no adapter: licence) | credit price ÷ contact fill rate (UNKNOWN). Below break-even (Basic 1,415 / Scale 8,558 records a month against BatchData's booked $0.07) the seat fee costs more than today's stack (`DEALMACHINE-EVALUATION.md` §5) |
+| DealMachine | $99 – $149 / seat / mo or $599 / 100k records. $0.0060 – $0.0099 per credit at full use; credits reset monthly; no automatic overage (read 2026-10-31) | — (no adapter: licence) | credit price ÷ contact fill rate (UNKNOWN). Below break-even (Basic 1,415 / Scale 8,558 records a month against BatchData's booked $0.07) the seat fee costs more than today's stack (`DEALMACHINE-EVALUATION.md` §5). Wave 148 (read 2026-11-01): the help centre's schedule is $99 per 10,000 credits up to 60,000, then $599 per 100,000 with a 12-month commitment; there are no free trials, so measuring the fill rate is a paid month (`DEALMACHINE-EVALUATION.md` §11.6) |
 
 The cheapest lever available without a new vendor is the PDL Person Changelog: free flat files that name which persistent IDs
 changed, and which fields. A monthly diff against `contacts.peopledata_id` would let the rail re-buy only profiles whose job or
@@ -240,7 +263,13 @@ for a worker, not a Vercel cron. **Proposal only — not built.** It needs an ow
    duplicates a capability we hold, publishes no price, conflicts with a ruling (duplicate sender, protected-class segments), or
    licenses its data for internal use only. DealMachine was re-evaluated in wave 147 (`DEALMACHINE-EVALUATION.md`, read
    2026-10-31) and is still not added. The blocker is the licence, not capability or price. It reopens only on a signed Order Form
-   that expressly grants multi-tenant use (WAITING_EXTERNAL, owner and counsel).
+   that expressly grants multi-tenant use (WAITING_EXTERNAL, owner and counsel). Wave 148 re-checked it as a **platform-paid**
+   provider (`DEALMACHINE-EVALUATION.md` §11). Paying for it at the platform level does not grant the right to serve tenants. The
+   instrument that would is a DealMachine enterprise data licence, signed as an Order Form. Even then it replaces BatchData's legs,
+   not the stack (§9).
+6. **One verified source per fact** (§9, wave 148). Every fact has one survivor provider, an ordered fallback, and a stop at the
+   first answer. Gap-only buying and freshness windows already keep a contact from being paid for twice. A new provider earns a
+   row only by replacing a survivor's row, never by sitting beside it.
 
 ## 8. Blind spots
 
@@ -253,3 +282,87 @@ for a worker, not a Vercel cron. **Proposal only — not built.** It needs an ow
   Melissa, and consumer CDPs (Segment, RudderStack). The last are unnecessary because first-party capture already lands in our
   own tables.
 - **The change rate is unmeasured,** so cost per useful update is a formula, not a number.
+- **§9 has no rights column on purpose.** Storage rights are in §4: Versium and PDL (2026-10-29), DealMachine (§4 and
+  `DEALMACHINE-EVALUATION.md` §11, 2026-11-01). **RentCast's and BatchData's licence terms were not re-read in waves 146–148,** so
+  no rights claim is made for them.
+- **§9 cites the code that orders and gates each fact.** Whether the stop-on-first-answer and gap-only rules hold at run time is
+  proved by `test:provider-cost-routing`, `test:enrichment-one-rail` and the enrichment guards, not by this document.
+
+## 9. One verified source per fact (wave 148, lane 148J)
+
+The owner's concern is "having to spend twice on one contact for the same info". The rule this table records is that **each fact
+has one survivor provider**. Fallbacks are asked only on a named miss, and a stored answer still inside its freshness window is
+never bought again. Survivors are cited at `file:line` on base `ebed6c44`. "Dup?" answers one question: if DealMachine were added
+as a fifth provider without removing a survivor, would we pay twice for this fact?
+
+**Shared mechanisms** (cited once here, then by name in the table):
+
+- **The router.** `CONTACT_PROVIDER_ROUTES` (`lib/ai-isa/property-lookup-rail.ts:334`) and `routeCapability` (`:473`) walk
+  cheapest-first, except the owner-ordered home value (`OWNER_ORDERED_CAPABILITIES`, `:451`).
+- **The dedup rule.** `lib/enrichment/provider-dedup.ts` (owner, wave 144): canonical record → field completeness → verified prior
+  data → freshness → required gap → cheaper provider → cost gate → append, with no silent overwrite.
+  - Freshness windows: `PROVIDER_FRESHNESS_DAYS` (`:41`), PeopleData 90 days and Versium 180.
+  - Gap-only contact points: `contactPointsToBuy` (`lib/enrichment/identifier-guard.ts:60`).
+  - Gap-only Versium categories: `versiumDemographicCategoriesNeeded` (`lib/lead-pipeline/enrichment-column-map.ts:612`).
+  - The RentCast fact cache: record 30 days, AVM 14, markets 7 (`lib/property/rentcast.ts:375`).
+
+### 9.1 Property facts
+
+| # | Fact | Survivor (one verified source) | Fallback / gap-fill | Freshness | Booked unit | DealMachine | Dup? |
+|---|---|---|---|---|---|---|---|
+| F1 | Structure: beds, baths, sqft, year built, lot, type | Lookup rail rungs `PROPERTY_LOOKUP_RUNG_ORDER` (`property-lookup-rail.ts:1008`): cache → tenant IDX → RentCast record → public records → BatchData | Versium gap-only (year built, dwelling type, purchase date) on the `property_facts` route (`:369`) | RentCast record cached 30 d; assessor facts change yearly | RentCast $0.074 / request | Yes (property refreshed daily) | **Yes** |
+| F2 | Tax bill, assessed value, HOA (public calculators) | RentCast property record, purpose `public_facts`. Never BatchData (rail header) | Public records | 30 d cache | RentCast $0.074 | Yes (annual tax, HOA) | **Yes** |
+| F3 | Home value (AVM point + range) | RentCast, **owner-ordered**: `requestPropertyValuation` (`lib/avm/provider-chain.ts:301`) | BatchData only after a named RentCast miss | AVM cached 14 d | RentCast $0.074 | `estimated_value` (no range documented) | **Yes**, and it would contradict the owner's order |
+| F4 | Comparable sales | RentCast `getRentcastComps` (`lib/property/rentcast.ts:1276`) | — | 14 d | RentCast $0.074 | `POST /v1/comps` | **Yes** |
+| F5 | Rent estimate / rental market | RentCast `searchRentcastRentalListings` (`lib/property/rentcast.ts:942`), `getRentcastMarketStats` (`:1111`) | — | markets 7 d | RentCast $0.074 | No field in the API corpus | No (RentCast only) |
+| F6 | Last sale, sale history | RentCast property detail (`getRentcastPropertyDetail`, `lib/property/rentcast.ts:859`) | BatchData record | 30 d | RentCast $0.074 | Yes (`last_sale_date`, `last_sale_amount`) | **Yes** |
+| F7 | Owner name, owner mailing address | RentCast property detail ("features, sale history, owner"); BatchData property search for the skip-trace key | — | 30 d | as F6 | Yes (owner name, mailing address) | **Yes** |
+| F8 | Mortgage, liens, equity | BatchData (equity, lien and tax-default signals in `BATCHDATA_SELLER_SIGNAL_SOURCES`, `lib/external/batchdata-seller-signals.ts:358`) | — | BatchData cadence UNKNOWN | BatchData list record | Yes (four mortgage slots, liens, equity) | **Yes** |
+| F9 | Distress / potential-seller signals | BatchData quickLists, the `motivated_seller_list` route (`property-lookup-rail.ts:373`) | — | polled | BatchData property-search record | Yes, but narrower (no suppression, no dated transitions) | **Yes** |
+| F10 | Property-change push (listing transitions, active-listing suppression) | BatchData smart-search webhook (`app/api/webhooks/batchdata-smart-search/route.ts`) | poll-and-diff | push, once provisioned | contract | **None.** DealMachine webhooks are CRM events | No; DealMachine cannot replace it |
+| F11 | Active listing status | The tenant's IDX / MLS (canonical). RentCast listing data is labelled property data, not a verified active listing (ruling 8) | RentCast listings, never cached | live | — | MLS status (12-month window) | No (neither is canonical; the MLS is) |
+| F12 | Mailing-address deliverability (CASS) | Lob US verification, `verifyUsAddress` (`lib/providers/lob/client.ts:96`), plus the send-time gate | — | per send | Lob AV (see `PROVIDER-COST-REPORT.md` D4) | `POST /v1/addresses/validate` | **Yes** |
+| F13 | Map / route display | `map_render`: Mapbox → Google (`property-lookup-rail.ts:394`) | Google Maps | per render | Mapbox static image | lat / long only | No |
+
+### 9.2 Person facts
+
+| # | Fact | Survivor (one verified source) | Fallback / gap-fill | Freshness | Booked unit | DealMachine | Dup? |
+|---|---|---|---|---|---|---|---|
+| F14 | Phone / email for an owner or person | `owner_contact` (`property-lookup-rail.ts:335`): Versium → BatchData → PeopleData, first match wins; gap-only (`contactPointsToBuy`) | the next provider on a miss | Versium unpublished; PDL monthly | $0.05 / $0.07 / $0.25 per match | Yes: `phones[]`, `emails[]`, monthly refresh, $0.0060–$0.0099 per person credit | **Yes**. This is the only fact where DealMachine is measurably cheaper, and the licence blocks it |
+| F15 | Reverse lookup (phone / email → who) | `reverse_contact` (`:346`): Versium → BatchData → PeopleData | as F14 | as F14 | as F14 | Enrich by phone / email | **Yes** |
+| F16 | Phone line type / carrier | BatchData skip-trace inline flags; Twilio Lookups `lookupPhone` (`lib/providers/messaging/index.ts:265`) | — | per lookup | — | type, carrier | **Yes** |
+| F17 | DNC / TCPA-litigator status | `dnc_tcpa` (`:354`), enforced by `enforceTCPACompliance` (`lib/communication/tcpa-gate.ts:132`) with a freshness check | — | per check | BatchData MCP call | A monthly-snapshot flag ("not a live registry check") and `POST /v1/phones/dnc`; litigators excluded | **Yes**, and weaker. The gate stays the authority |
+| F18 | Email deliverability | PeopleData email validation, `email_validation` (`:357`) | — | per check | PDL validate | `has_deliverable_email` filter only | No |
+| F19 | Person profile: employment, job and location history, socials | PeopleData `person_profile` (`:351`), 90-day window | — | monthly index | $0.25 / match | `employment` work profiles only | Partly |
+| F20 | Demographics / household (age band, income, marital, education) | Versium demographic append (gap-only categories); PeopleData. Protected attributes are stored for research only, never targeting | — | 180 d / 90 d | Versium credits | age, gender, marital, education, income, language: protected or proxy fields a licensed adapter must refuse as filters | **Yes**, and risky |
+| F21 | Online real-estate presence, own / rent, tenure, mortgage and refinance dates | Versium `online_presence` (`:407`), 180-day window | — | 180 d | 3 credits | `homeowner_status`, `is_likely_renter`, `has_recent_mortgage_application` (modeled) | Partly (modeled) |
+| F22 | Business identity crosswalk (B2B2C) | Versium `business_identity` (`:402`) | — | per match | 1 credit | No crosswalk | No (Versium only) |
+| F23 | Audience size estimate (free count) | Versium `audience_estimate` (`:413`), $0 | — | per call | $0 | Free count endpoints | Free overlap (no spend either way) |
+| F24 | Online audience match (hashed ad identifiers) | Versium `online_audience_match` (`:420`) | — | 180 d | 1 credit | None | No (Versium only) |
+| F25 | Modeled mover / renter flags (lease ending, new mover, likely to move, first-time buyer) | **None.** This is the gap (`lib/lead-pipeline/rental-graduation-sourcer.ts:16-31` documents the lease gap) | — | — | — | Yes. Licence-blocked; source and accuracy unpublished; *inferred* at best | Adds (licence-blocked). This is DealMachine's real addition |
+| F26 | Moved (change of address) | None built. USPS NCOA through a licensed processor, counsel first (§3.6) | — | weekly at USPS | $20 / file (TrueNCOA) | New-mover flag (modeled) | No; NCOA is the authoritative source |
+| F27 | Life events (probate, divorce filing, death) | BatchData declared fields (inherited / probate, recent divorce) + OSINT + the first-party watcher, mapped onto the life-event vocabulary (lane 148F) | — | polled | BatchData | `is_pre_probate`, intrafamily transfer, `marital_status` (modeled; never a filing) | **Yes**, and DealMachine's are modeled |
+| F28 | First-party behaviour | Our own tables + `lib/enrichment/first-party-intent-watcher.ts` | — | real time | $0 | None | No |
+| F29 | Agent production (recruiting) | The tenant's MLS, under that MLS's rules (not built) | — | — | — | Agent production filters (licence-blocked) | Adds (licence-blocked; the MLS stays canonical) |
+| F30 | Field / driving observations | First-party capture (not built; lane B's observation catalogue) | — | — | — | Driving for Dollars app (a second app) | Adds (licence-blocked; a second app) |
+
+### 9.3 Physical mail facts (with `docs/commercial/DIRECT-MAIL-PROVIDER-COMPARISON.md`)
+
+| # | Fact | Survivor (one verified source) | Fallback | Booked unit | DealMachine | AMcards | Dup? |
+|---|---|---|---|---|---|---|---|
+| F31 | Printed postcard / letter / self-mailer | Lob through `dispatchDirectMail` (`lib/providers/dispatch.ts:991`) | — | `DIRECT_MAIL_PIECE_COST_USD` (`lib/vendor-governance/cost-normalizer.ts:63`) | 4×6 postcards $0.70–$0.75 plus a seat | not its product | **Yes** (DealMachine), with no saving |
+| F32 | Folded greeting card in an envelope (handwriting style, signature) | **None.** The Lob notecard postcard stands in (`app/actions/reputation-kernel.ts:287`) | Lob notecard postcard | postcard $0.78 | None | Yes ($1.57 + postage as a member). Terms and value WAITING_EXTERNAL | No. This is the one gap a second mail provider would fill |
+
+**Counts.** These are derived from the "Dup?" column, whose cells all lead with one of five tokens: **Yes** / Partly / Free
+overlap / Adds / No. The counting rule is stated here so anyone can recount the rows. There are 32 facts in total: 13 property,
+17 person, 2 mail.
+
+- **Yes, DealMachine would duplicate a survivor: 16.** F1–F4, F6–F9, F12, F14–F17, F20, F27, F31.
+- **Partly: 2.** F19, F21.
+- **Free overlap (no spend either way): 1.** F23.
+- **Adds a fact no survivor holds: 3,** all licence-blocked. F25, F29, F30.
+- **No (DealMachine cannot serve or replace it): 10.** F5, F10, F11, F13, F18, F22, F24, F26, F28, F32.
+- **Facts with no built survivor: 5.** F25, F26, F29, F30, F32.
+
+A licensed DealMachine would therefore *swap in* for BatchData's rows (F7–F9, F14–F17 legs), not consolidate the stack. It would
+also remove the push channel (F10) that BatchData provides.
