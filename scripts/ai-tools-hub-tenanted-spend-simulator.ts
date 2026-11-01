@@ -162,8 +162,13 @@ const STUBS: Record<string, string> = {
   // ── what the REAL lib/ai/models.ts needs, for the modelIdentityFor unit ──
   // resolve-model is deliberately NOT stubbed: alias resolution is part of what
   // modelIdentityFor is being asked to get right.
+  // Both the barrel AND the module lib/ai/models.ts imports since the proxy-graph cuts (wave 148: models.ts imports
+  // compliance-engine / validator directly, so the stub must answer that specifier too — the real validator imports logAIUsage
+  // from the cost-tracking stub above, which deliberately has no such export; 2026-11-01 this proof went red on exactly that).
   "@/lib/compliance-rules": "export const evaluateContentCompliance = async () => ({ compliance_status: 'pass' })",
+  "@/lib/compliance-rules/compliance-engine": "export const evaluateContentCompliance = async () => ({ compliance_status: 'pass' })",
   "@/lib/them-first": "export const validateThemFirstContent = async () => ({ passed: true, score: 1 })",
+  "@/lib/them-first/validator": "export const validateThemFirstContent = async () => ({ passed: true, score: 1 })",
   "@/lib/kernel/ai-model": "export const resolveAIModel = async () => 'claude-sonnet'",
   "@/lib/usage/check-cap": "export const checkUsageCap = async () => ({ allowed: true, used: 0, limit: -1 })",
 }
