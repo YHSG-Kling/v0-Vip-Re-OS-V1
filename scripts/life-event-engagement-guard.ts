@@ -315,8 +315,11 @@ async function main() {
     const pb = src("lib/contacts/persona-builder.ts")
     const lifeRefs = pb.match(/\blifeEvents\b[^\n]*/g) ?? []
     ok(/lifeEventToneBrief\(input\.lifeEvents/.test(pb) && !/lifeEvents[^\n]*buildPersonaDerivationPrompt|evidence:[^\n]*lifeEvents/.test(pb) && lifeRefs.length > 0, "persona-builder reduces raw life events to lifeEventToneBrief before any prompt (no raw path into the study)", lifeRefs.join(" | "))
-    ok(/life_events:[\s\S]{0,200}mergeLifeEvents\(\[\],\s*data\.lead\.life_events/.test(src("lib/contact-promotion/contact-creator.ts")), "lead → contact promotion carries life_events through mergeLifeEvents (C20), not raw")
-    ok(!/life_events:[\s\S]{0,200}mergeLifeEvents\(\[\],\s*data\.lead\.life_events/.test(stripComments("life_events: data.lead.life_events ?? null,")), "POSITIVE CONTROL: the carry finder rejects the raw carry it replaced")
+    // The lead's array is the STORED side of the merge (a spelling the map does not know is kept untouched; only a prohibited token
+    // is dropped) — the incoming side would drop every spelling it cannot read (wave 148 integrator, after lane 148Z's first form).
+    const CARRY = /life_events:[\s\S]{0,200}mergeLifeEvents\(\s*data\.lead\.life_events(?:\s+as\s+unknown\[\])?,\s*\[\]/
+    ok(CARRY.test(src("lib/contact-promotion/contact-creator.ts")), "lead → contact promotion carries life_events through mergeLifeEvents as the STORED side (C20: canonicalised, unknown kept, nothing raw)")
+    ok(!CARRY.test(stripComments("life_events: data.lead.life_events ?? null,")) && !CARRY.test(stripComments("life_events: mergeLifeEvents([], data.lead.life_events as unknown[], { now }).events,")), "POSITIVE CONTROL: the carry finder rejects the raw carry it replaced AND the incoming-side form that drops unknown spellings")
   }
 
   console.log("\n  BLIND SPOTS (published):")
