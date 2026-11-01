@@ -1,29 +1,34 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
+import { isOnlineEvent } from "@/lib/open-house/event-registry"
 
 /**
- * THE VIRTUAL OPEN HOUSE JOIN DOOR (wave 147, lane 147Z — lane 147F "Still open": the live open_house_events.event_type CHECK
- * admits `virtual_open_house`, nothing produced one and nothing recorded who attended one; orphan doctrine §1.2 — build the
- * missing half). The producer is the ONE scheduling door, app/actions/open-house.ts createOpenHouse (eventType
- * "virtual_open_house" + an https joinUrl stored as the event's check_in_url). This door is the attendance half:
+ * THE ONLINE EVENT JOIN DOOR (wave 147, lane 147Z — built as the virtual open house's attendance half; wave 148, lane 148H — C22,
+ * owner ruling 20: "participant join/leave webhooks to verify attendance; an anonymous join click is NOT attendance").
  *
- *   GET /open-house/<eventId>/join?i=<invitationId>
- *     · the event must be a virtual open house with an https check-in URL — anything else is 404 (this door never forwards
- *       to a URL it did not read off a virtual event's own row, so it cannot be used as an open redirect);
- *     · with an invitation id, the invitation is re-read FOR THIS EVENT and this event's brokerage — the unguessable pair
- *       (eventId, invitationId) is the credential, the same model as the RSVP page
- *       (app/open-house/[eventId]/rsvp/[invitationId]/page.tsx) — and the invited contact's tracking row becomes
- *       `attended` (the reading every attendance reader already uses: lib/listing-health/health-scorer.ts, the listing's
- *       Marketing tab). Tenant from the EVENT row, never from the link;
- *     · then the visitor is forwarded to the meeting.
+ * A CLICK IS NOT ATTENDANCE. This door used to write open_house_rsvp_tracking 'attended' the moment an invited contact clicked —
+ * a person who clicked and closed the tab "attended". It now records only what a click IS, and forwards:
  *
- * What it does NOT do: an anonymous click (no invitation id) is forwarded but recorded nowhere — there is no identity to file
- * and no consent to claim; and it does not prove the visitor stayed in the meeting (a meeting-provider participant webhook
- * would; that integration does not exist — lane 147Z notes, WAITING_EXTERNAL).
+ *   GET /open-house/<eventId>/join?r=<registrationId>   (the personal link in the registration confirmation)
+ *     · the registration is re-read FOR THIS EVENT and this event's brokerage (the unguessable pair is the credential);
+ *     · a Zoom registrant is forwarded to THEIR OWN Zoom join link (provider_join_url — the link that carries their Zoom
+ *       registrant id, so the participant webhook can verify them); everyone else to the event's own https URL;
+ *     · a YouTube registrant's open is recorded as `watch_link_opened` evidence (identity: the registration token) — never
+ *       "watched": YouTube exposes no per-viewer identity.
+ *   GET /open-house/<eventId>/join?i=<invitationId>     (an invitation's link)
+ *     · the invitation is re-read for this event + brokerage and its clicked_at is stamped (a click, nothing more);
+ *     · a Zoom event that registers attendees sends the invitee to the event's REGISTRATION page first (/open-house/<id>/register
+ *       — same origin), so they register through the consented form and receive their own verifiable link.
+ *   Anything else (an anonymous click) is forwarded and recorded nowhere.
+ *
+ * Attendance is written ONLY by the verified doors the registry names (the kiosk, the agent walk-in, the Zoom participant webhook
+ * — lib/open-house/event-attendance.ts). The forward target is ALWAYS read off this event's own rows (check_in_url, or the
+ * registration's provider_join_url), https-only, never from the link — not an open redirect. Tenant from the EVENT row.
  */
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const httpsOrNull = (v: unknown): string | null => { try { const u = new URL(String(v ?? "")); return u.protocol === "https:" ? u.toString() : null } catch { return null } }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ eventId: string }> }) {
   const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
@@ -40,47 +45,61 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ even
   const supabase = createServiceClient()
   const { data: event, error: eventErr } = await supabase
     .from("open_house_events")
-    .select("id, brokerage_id, event_type, check_in_url")
+    .select("id, brokerage_id, event_type, virtual_provider, check_in_url, provider_meta, is_published")
     .eq("id", eventId)
     .maybeSingle()
   if (eventErr) {
     console.error("[open-house/join] event read failed:", eventErr.message)
-    return NextResponse.json({ error: "This open house could not be loaded" }, { status: 500 })
+    return NextResponse.json({ error: "This event could not be loaded" }, { status: 500 })
   }
-  const ev = event as { id: string; brokerage_id: string | null; event_type: string | null; check_in_url: string | null } | null
+  const ev = event as { id: string; brokerage_id: string | null; event_type: string | null; virtual_provider: string | null; check_in_url: string | null; provider_meta: Record<string, unknown> | null; is_published: boolean | null } | null
   let meetingUrl: string | null = null
   try { const u = new URL(String(ev?.check_in_url ?? "")); if (u.protocol === "https:") meetingUrl = u.toString() } catch { meetingUrl = null }
-  if (!ev || ev.event_type !== "virtual_open_house" || !meetingUrl || !ev.brokerage_id) {
+  if (!ev || !isOnlineEvent(ev.event_type, ev.virtual_provider) || !meetingUrl || !ev.brokerage_id) {
     return NextResponse.json({ error: "Not found" }, { status: 404 })
+  }
+
+  const registrationId = req.nextUrl.searchParams.get("r")
+  if (registrationId && UUID_RE.test(registrationId)) {
+    const { data: reg, error: regErr } = await supabase
+      .from("open_house_rsvp_tracking")
+      .select("id, contact_id, provider_join_url, registered_at")
+      .eq("id", registrationId)
+      .eq("event_id", ev.id)
+      .eq("brokerage_id", ev.brokerage_id)
+      .maybeSingle()
+    if (regErr) console.error("[open-house/join] registration read failed:", regErr.message)
+    const r = reg as { id: string; contact_id: string | null; provider_join_url: string | null; registered_at: string | null } | null
+    if (r?.contact_id && r.registered_at) {
+      if (ev.virtual_provider === "youtube") {
+        const { error: evErr } = await supabase.from("event_attendance_evidence").insert({
+          brokerage_id: ev.brokerage_id, event_id: ev.id, contact_id: r.contact_id, provider: "youtube", provider_event: "watch_link_opened",
+          identity_match: "registration_token", occurred_at: new Date().toISOString(), dedupe_key: `yt-open:${r.id}:${new Date().toISOString().slice(0, 13)}`,
+        })
+        // Non-fatal (23505 = already recorded this hour). Logged, never swallowed — supabase-js RESOLVES a refused write.
+        if (evErr && evErr.code !== "23505") console.error("[open-house/join] watch-link evidence not recorded:", evErr.message)
+      }
+      const personal = ev.virtual_provider === "zoom" ? httpsOrNull(r.provider_join_url) : null
+      if (personal) meetingUrl = personal
+    }
+    return NextResponse.redirect(meetingUrl, 302)
   }
 
   const invitationId = req.nextUrl.searchParams.get("i")
   if (invitationId && UUID_RE.test(invitationId)) {
-    const { data: invitation, error: invErr } = await supabase
+    const { data: stamped, error: invErr } = await supabase
       .from("open_house_invitations")
-      .select("id, contact_id, channel")
+      .update({ clicked_at: new Date().toISOString() })
       .eq("id", invitationId)
       .eq("event_id", ev.id)
       .eq("brokerage_id", ev.brokerage_id)
-      .maybeSingle()
-    if (invErr) console.error("[open-house/join] invitation read failed:", invErr.message)
-    const inv = invitation as { id: string; contact_id: string | null; channel: string | null } | null
-    if (inv?.contact_id) {
-      const { error: rsvpErr } = await supabase
-        .from("open_house_rsvp_tracking")
-        .upsert(
-          {
-            event_id: ev.id,
-            contact_id: inv.contact_id,
-            brokerage_id: ev.brokerage_id,
-            rsvp_status: "attended",
-            source: inv.channel === "sms" ? "sms" : "email",
-            rsvp_updated_at: new Date().toISOString(),
-          },
-          { onConflict: "event_id,contact_id" },
-        )
-      // Non-fatal: the visitor still reaches the meeting. Logged, never swallowed — supabase-js RESOLVES a refused write.
-      if (rsvpErr) console.error("[open-house/join] attendance upsert failed:", rsvpErr.message)
+      .select("id, contact_id")
+    // Non-fatal: the visitor still reaches the event. Logged, never swallowed.
+    if (invErr) console.error("[open-house/join] invitation click not recorded:", invErr.message)
+    const invited = Array.isArray(stamped) && stamped.length === 1
+    // A Zoom event that registers attendees: register first (the consented form mints their own verifiable Zoom link).
+    if (invited && ev.virtual_provider === "zoom" && (ev.provider_meta as { registration_enabled?: unknown } | null)?.registration_enabled === true && ev.is_published) {
+      return NextResponse.redirect(new URL(`/open-house/${ev.id}/register`, req.nextUrl.origin), 302)
     }
   }
 

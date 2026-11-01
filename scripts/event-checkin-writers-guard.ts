@@ -79,11 +79,31 @@ const DOORS = [
   { key: "walk_in", surface: "agent walk-in (mobile walk-in, convert-attendee)", file: "app/actions/open-house-kernel.ts", fn: "completeOpenHouseCheckInAction" },
   { key: "dashboard_steps", surface: "/dashboard/open-houses (the client composes the five kernel steps)", file: "app/actions/open-house-kernel.ts", fn: "createOpenHouseAttendeeFromContactAction", composedWith: ["resolveOrCreateOpenHouseContactAction", "attachOpenHouseSourceAttributionAction", "notifyAssignedAgentForOpenHouseLeadAction", "generateOpenHouseFollowupNextActionAction"] },
   { key: "mobile_known", surface: "mobile panel, a known contact", file: "app/actions/open-house-automation.ts", fn: "recordVisitor" },
+  // wave 148 (lane 148H — C22, owner ruling 20): an ONLINE event's attendance door — the Zoom participant webhook files a C8
+  // REGISTRANT (the Contact + consent were captured at registration, lib/open-house/event-attendance.ts registerForEvent) as an
+  // attendee only once their presence is VERIFIED. A join click is not a door.
+  { key: "zoom_verified", surface: "online events — Zoom participant webhook (/api/webhooks/zoom → recordZoomParticipantEvent)", file: "lib/open-house/event-attendance.ts", fn: "verifyAttendance" },
 ] as const
 /** Kernel writers the doors reach (a writer here is legitimate only because a declared door calls it). */
 const KERNEL_WRITERS = [{ file: "lib/kernel/open-house.ts", fn: "createOpenHouseAttendeeFromContact" }]
 /** Files whose top-level functions a door's calls resolve into (two levels). */
-const RESOLVE_FILES = ["lib/kernel/open-house.ts", "lib/open-house/instant-greeting.ts", "app/actions/open-house-kernel.ts", "app/actions/seller-open-house.ts", "app/actions/open-house-automation.ts", "app/api/open-house/attend/route.ts"]
+const RESOLVE_FILES = ["lib/kernel/open-house.ts", "lib/open-house/instant-greeting.ts", "app/actions/open-house-kernel.ts", "app/actions/seller-open-house.ts", "app/actions/open-house-automation.ts", "app/api/open-house/attend/route.ts", "lib/open-house/event-attendance.ts"]
+/** WAVE 148 (lane 148H): the event_type vocabulary the database WILL hold — the generated cache ∪ the newest migration that
+ *  re-defines the CHECK (lane stamp or APPLIED stamp on line 1). Asserts the RULE: before the integrator applies m924 and
+ *  regenerates the cache, a kind the migration admits is not "not a live CHECK value". */
+function eventTypeVocabulary(): string[] {
+  const dir = join(ROOT, "supabase/migrations")
+  const files = readdirSync(dir).filter((f) => /^m\d+.*\.sql$/.test(f)).sort((a, b) => Number(b.match(/^m(\d+)/)![1]) - Number(a.match(/^m(\d+)/)![1]))
+  let migrated: string[] = []
+  for (const f of files) {
+    const src = raw(`supabase/migrations/${f}`)
+    if (!/^-- WRITTEN, NOT APPLIED \(wave \d+, lane \d+[A-Z0-9]*\)|^-- ── APPLIED LIVE /.test(src.split("\n")[0] ?? "")) continue
+    const code = src.split("\n").map((l) => l.replace(/--.*$/, "")).join("\n")
+    const m = /ADD CONSTRAINT open_house_events_event_type_check\s+CHECK\s*\(([\s\S]*?)\);/i.exec(code)
+    if (m) { migrated = [...m[1].matchAll(/'([a-z_]+)'::text/g)].map((x) => x[1]); break }
+  }
+  return [...new Set([...(CHECK_VOCABULARIES.open_house_events?.event_type ?? []), ...migrated])]
+}
 
 const STAGES: Array<[string, RegExp]> = [
   ["participant", /\.from\(\s*["']open_house_attendees["']\s*\)\s*\.\s*insert\(|createOpenHouseAttendeeFromContact\(/],
@@ -164,21 +184,28 @@ function brokerOpenBranch(src: string): { ok: boolean; why: string } {
   return { ok: why.length === 0, why: why.join("; ") || "ok" }
 }
 
-/** The virtual join door: the event must be a virtual open house, the forward target comes ONLY from that event's own
- *  check_in_url (never from the link — not an open redirect), the invitation is re-read for this event AND this event's
- *  brokerage, and the attendance row is tenant-stamped from the event. */
+/** The online join door. WAVE 148 (lane 148H — owner ruling 20, "an anonymous join click is NOT attendance") RE-ASSERTS the
+ *  rule this check pinned at wave 147, when the click itself was written as 'attended' (the waypoint): the event must be an
+ *  ONLINE event; the forward target comes ONLY from this event's own rows — its check_in_url, or a registration's
+ *  provider_join_url read for THIS event + brokerage — https-only, never from the link (not an open redirect); the invitation is
+ *  re-read for this event AND its brokerage and only its CLICK is stamped; and the door writes NO attendance (attendance is the
+ *  verified doors' — the kiosk, the walk-in, the Zoom participant webhook). */
 function virtualJoinDoor(src: string): { ok: boolean; why: string } {
   const c = blankComments(src)
   const redirectTarget = /NextResponse\.redirect\(\s*([A-Za-z_$][\w$]*)/.exec(c)?.[1] ?? ""
   const assigns = redirectTarget ? [...c.matchAll(new RegExp(`\\b${redirectTarget}\\s*=(?!=)\\s*([^\\n;}]+)`, "g"))].map((m) => m[1]) : []
+  const personalFrom = [...c.matchAll(/\bpersonal\s*=(?!=)\s*([^\n;}]+)/g)].map((m) => m[1].trim())
   const why = [
     !/export\s+async\s+function\s+GET\s*\(/.test(c) && "no GET door",
-    !/event_type\s*!==\s*["']virtual_open_house["']/.test(c) && "does not require a virtual open house",
-    !(redirectTarget && assigns.length > 0 && assigns.every((a) => /^(null|u\.toString\(\))$/.test(a.trim()))) && `the forward target is not derived only from the event's check_in_url (${redirectTarget || "none"} ← ${assigns.join(" | ")})`,
+    !/!\s*isOnlineEvent\(\s*ev\.event_type\s*,\s*ev\.virtual_provider\s*\)/.test(c) && "does not require an online event",
+    !(redirectTarget && assigns.length > 0 && assigns.every((a) => /^(null|u\.toString\(\)|personal)$/.test(a.trim()))) && `the forward target is not derived only from the event's own rows (${redirectTarget || "none"} ← ${assigns.join(" | ")})`,
+    assigns.some((a) => a.trim() === "personal") && !(personalFrom.length > 0 && personalFrom.every((p) => /httpsOrNull\(\s*r\.provider_join_url\s*\)/.test(p))) && `the personal link is not the https provider_join_url of the registration (${personalFrom.join(" | ")})`,
+    assigns.some((a) => a.trim() === "personal") && !/\.from\(\s*["']open_house_rsvp_tracking["']\s*\)[\s\S]{0,300}\.eq\(\s*["']event_id["']\s*,\s*ev\.id\s*\)[\s\S]{0,80}\.eq\(\s*["']brokerage_id["']\s*,\s*ev\.brokerage_id\s*\)/.test(c) && "the registration is not re-read for this event and its brokerage",
     !/new URL\(\s*String\(\s*ev\?\.check_in_url/.test(c) && "the URL is not read off the event row",
     /searchParams\.get\([^)]*\)[\s\S]{0,40}redirect|redirect\([^)]*searchParams/.test(c) && "a link parameter reaches the redirect",
     !/\.from\(\s*["']open_house_invitations["']\s*\)[\s\S]{0,300}\.eq\(\s*["']event_id["']\s*,\s*ev\.id\s*\)[\s\S]{0,80}\.eq\(\s*["']brokerage_id["']\s*,\s*ev\.brokerage_id\s*\)/.test(c) && "the invitation is not re-read for this event and its brokerage",
-    !/\.from\(\s*["']open_house_rsvp_tracking["']\s*\)[\s\S]{0,300}brokerage_id:\s*ev\.brokerage_id[\s\S]{0,60}rsvp_status:\s*["']attended["']/.test(c) && "no tenant-stamped attended row",
+    !/\.from\(\s*["']open_house_invitations["']\s*\)\s*\.update\(\s*\{\s*clicked_at:/.test(c) && "the click is not recorded on the invitation",
+    /rsvp_status\s*:\s*["']attended["']|attendance_verified_by\s*:/.test(c) && "a CLICK is written as attendance",
   ].filter(Boolean) as string[]
   return { ok: why.length === 0, why: why.join("; ") || "ok" }
 }
@@ -189,7 +216,7 @@ async function main(): Promise<void> {
 
   // ── 1 ─────────────────────────────────────────────────────────────────────────────────────────
   console.log("\n── 1  event types × producers × accepting doors ──")
-  const types = CHECK_VOCABULARIES.open_house_events?.event_type ?? []
+  const types = eventTypeVocabulary()
   const LIVE_DEFAULT = "open_house" // measured live 2026-10-31 (information_schema.columns.column_default): 'open_house'::text — a FIXTURE, published
   const producers = writeSites(files, "open_house_events", /\.\s*(insert|upsert)\s*\(/)
   const produced = new Map<string, string[]>()
@@ -225,7 +252,10 @@ async function main(): Promise<void> {
       [brokerOpenBranch(fallThrough).why, brokerOpenBranch(consumerInBranch).why, brokerOpenBranch(noSelect).why, brokerOpenBranch(noConsentGate).why].join(" | "))
     const joinSrc = raw("app/open-house/[eventId]/join/route.ts")
     const vj = virtualJoinDoor(joinSrc)
-    check(`virtual_open_house: the join door records an invited contact's attendance (tenant from the event) and forwards ONLY to the event's own https URL (${vj.why})`, !!joinSrc && vj.ok)
+    // wave 148 (lane 148H — ruling 20): RE-ASSERTED. The wave-147 label was "records an invited contact's attendance" — the click
+    // itself was written as 'attended' (a waypoint the owner has now ruled out). The rule kept: tenant from the event, a forward
+    // target only from the event's own rows; the rule added: a click is recorded as a click, attendance only by a verified door.
+    check(`online events: the join door records the CLICK only (never attendance — ruling 20), tenant from the event, and forwards ONLY to the event's own https rows (${vj.why})`, !!joinSrc && vj.ok)
     // The join door's in-tree producer: the ONE invitation sender (the only code that knows the staged invitation id) mints
     // the join link for a virtual event, from the same (eventId, invitationId) credential the door re-reads.
     const sender = blankComments(raw("lib/communications/send-invitation.ts"))
@@ -233,10 +263,11 @@ async function main(): Promise<void> {
     check("virtual_open_house: the invitation sender mints the join link (eventId + invitationId) for a virtual event, in the email AND the text — the join door has its in-tree producer", mintsJoin(sender))
     check("POSITIVE CONTROL: a sender that never mints the join link is red", !mintsJoin(sender.replace(/\/join\?i=/g, "/rsvp/")))
     const openRedirect = joinSrc.replace(/return NextResponse\.redirect\(meetingUrl, 302\)/, `return NextResponse.redirect(req.nextUrl.searchParams.get("to") ?? meetingUrl, 302)`)
-    const anyEventInvite = joinSrc.replace(/\.eq\("event_id", ev\.id\)\n\s*\.eq\("brokerage_id", ev\.brokerage_id\)/, "")
-    check("POSITIVE CONTROL: a join door that forwards to a link parameter, and one that reads the invitation without the event + brokerage pair, are each red",
-      openRedirect !== joinSrc && !virtualJoinDoor(openRedirect).ok && anyEventInvite !== joinSrc && !virtualJoinDoor(anyEventInvite).ok,
-      [virtualJoinDoor(openRedirect).why, virtualJoinDoor(anyEventInvite).why].join(" | "))
+    const anyEventInvite = joinSrc.replace(/(\.from\("open_house_invitations"\)[\s\S]*?)\.eq\("event_id", ev\.id\)\n\s*\.eq\("brokerage_id", ev\.brokerage_id\)/, "$1")
+    const clickAsAttendance = joinSrc.replace(/\.update\(\{ clicked_at: new Date\(\)\.toISOString\(\) \}\)/, `.update({ clicked_at: new Date().toISOString() })\n      ; await supabase.from("open_house_rsvp_tracking").upsert({ event_id: ev.id, brokerage_id: ev.brokerage_id, rsvp_status: "attended" })`)
+    check("POSITIVE CONTROL: a join door that forwards to a link parameter, one that reads the invitation without the event + brokerage pair, and one that writes the click as 'attended' are each red",
+      openRedirect !== joinSrc && !virtualJoinDoor(openRedirect).ok && anyEventInvite !== joinSrc && !virtualJoinDoor(anyEventInvite).ok && clickAsAttendance !== joinSrc && !virtualJoinDoor(clickAsAttendance).ok,
+      [virtualJoinDoor(openRedirect).why, virtualJoinDoor(anyEventInvite).why, virtualJoinDoor(clickAsAttendance).why].join(" | "))
   }
 
   // ── 2 ─────────────────────────────────────────────────────────────────────────────────────────
@@ -364,20 +395,23 @@ async function main(): Promise<void> {
     const joinVisit = (ev: string, q: string) => joinRoute.GET(new NextRequest(`http://localhost/open-house/${ev}/join${q}`, { headers: { "x-forwarded-for": "10.14.7.2" } }), { params: Promise.resolve({ eventId: ev }) })
     const j1 = await joinVisit(EVV, `?i=${INV}`)
     const tracked = (tbl("open_house_rsvp_tracking") ?? []).filter((r) => r.event_id === EVV)
-    check("virtual_open_house (run): an invited contact's join is recorded as attended (tenant from the event) and forwarded to the event's meeting URL",
-      j1.status === 302 && j1.headers.get("location") === "https://meet.example.test/oh147" && tracked.length === 1 && tracked[0].contact_id === knownContact && tracked[0].rsvp_status === "attended" && tracked[0].brokerage_id === B,
-      JSON.stringify({ status: j1.status, loc: j1.headers.get("location"), tracked }).slice(0, 300))
+    const inv = (tbl("open_house_invitations") ?? []).find((r) => r.id === INV)
+    // wave 148 (lane 148H — ruling 20): RE-ASSERTED from "recorded as attended" (the waypoint) to the rule — the click is
+    // recorded on the invitation (tenant from the event) and is NOT attendance; the forward is unchanged.
+    check("virtual_open_house (run): an invited contact's click is recorded as a CLICK on their invitation, NOT as attendance, and forwarded to the event's meeting URL",
+      j1.status === 302 && j1.headers.get("location") === "https://meet.example.test/oh147" && !!inv?.clicked_at && !tracked.some((r) => r.rsvp_status === "attended"),
+      JSON.stringify({ status: j1.status, loc: j1.headers.get("location"), inv, tracked }).slice(0, 300))
     const j2 = await joinVisit(EVV, `?i=${INV_FOREIGN}`)
     const j3 = await joinVisit(EVB, `?i=${INV}`)
     const j4 = await joinVisit(EVV, `?to=https://evil.example.test`)
     check("POSITIVE CONTROL: an invitation from another brokerage records nothing; a non-virtual event is 404; a link parameter never moves the forward target",
-      j2.status === 302 && (tbl("open_house_rsvp_tracking") ?? []).filter((r) => r.event_id === EVV).length === 1 && j3.status === 404 && j4.headers.get("location") === "https://meet.example.test/oh147",
+      j2.status === 302 && !(tbl("open_house_invitations") ?? []).find((r) => r.id === INV_FOREIGN)?.clicked_at && !(tbl("open_house_rsvp_tracking") ?? []).some((r) => r.event_id === EVV && r.rsvp_status === "attended") && j3.status === 404 && j4.headers.get("location") === "https://meet.example.test/oh147",
       JSON.stringify({ j2: j2.status, j3: j3.status, j4: j4.headers.get("location") }))
   }
 
   console.log("\n[blind spots]")
   console.log("  · stage detection reads tokens in each door and the functions it calls two levels deep inside the open-house files; a stage delegated further (e.g. a reactor three hops away) is credited only through the event it emits")
-  console.log("  · 'broker_open' / 'virtual_open_house' are produced by createOpenHouse (wave 147, lane 147Z): a broker open's sign-ins are AGENTS (an attendee row + capture evidence, no consumer contact or consent); a virtual open house records attendance only for an INVITED contact who joins through /open-house/<id>/join — an anonymous joiner is forwarded and recorded nowhere, and staying in the meeting is unproven (no meeting-provider participant webhook exists — WAITING_EXTERNAL)")
+  console.log("  · 'broker_open' / 'virtual_open_house' are produced by createOpenHouse (wave 147, lane 147Z): a broker open's sign-ins are AGENTS (an attendee row + capture evidence, no consumer contact or consent); since wave 148 (lane 148H, ruling 20) a click on /open-house/<id>/join is only a CLICK — an ONLINE event's attendance is verified by the Zoom participant webhook for a C8 registrant (zoom_verified door; test:event-producer-registry proves it), and YouTube / external links stay unverifiable by design")
   console.log("  · the runtime step runs on memSupabase (no RLS, CHECK, FK or trigger); the live column default is a fixture measured 2026-10-31")
   console.log("  · C8: the public kiosk is on captureConsentedContact (wave 147, lane 147Z); the agent-side event-day / walk-in doors still resolve through the open-house kernel resolver (lane 147Z notes, Still open)")
   console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

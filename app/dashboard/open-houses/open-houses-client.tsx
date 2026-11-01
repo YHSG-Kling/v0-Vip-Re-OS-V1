@@ -44,6 +44,8 @@ import {
   sendOpenHouseInvites,
   cancelOpenHouse,
   getAgentListings,
+  approveEventMarketing,
+  setEventReplay,
   type OpenHouseEvent,
   type OpenHouseAttendee,
   type OpenHouseFeedback,
@@ -661,6 +663,27 @@ function ActionsTab({
 
   const canCancel = event.status === "scheduled" || event.status === "active" || event.status === "invitations_sent"
 
+  // C22 (wave 148, lane 148H): the kinds that register attendees carry an AI-drafted page held for approval, and a recording.
+  const needsRegistration = event.event_type === "virtual_open_house" || event.event_type === "webinar" || event.event_type === "education_session"
+  const marketing = (event.marketing_assets ?? {}) as Record<string, unknown>
+  const [approvePending, startApproveTransition] = useTransition()
+  const [replayPending, startReplayTransition] = useTransition()
+  const [replayDraft, setReplayDraft] = useState(event.replay_url ?? "")
+  const handleApprove = () => {
+    startApproveTransition(async () => {
+      const res = await approveEventMarketing(event.id)
+      if (res.success) sonnerToast.success("Registration page approved and published")
+      else sonnerToast.error(res.error ?? "Could not approve")
+    })
+  }
+  const handleReplay = () => {
+    startReplayTransition(async () => {
+      const res = await setEventReplay(event.id, replayDraft.trim())
+      if (res.success) sonnerToast.success(`Recording saved — sent to ${res.delivered ?? 0} registrant${res.delivered === 1 ? "" : "s"}`)
+      else sonnerToast.error(res.error ?? "Could not save the recording")
+    })
+  }
+
   const handleSendInvites = () => {
     startInviteTransition(async () => {
       const res = await sendOpenHouseInvites(event.id)
@@ -710,6 +733,36 @@ function ActionsTab({
           Send Invites
         </Button>
       </div>
+
+      {needsRegistration && (
+        <div className="rounded-lg border p-4 space-y-2">
+          <p className="text-sm font-medium">Registration page</p>
+          <p className="text-xs text-muted-foreground">
+            {event.is_published
+              ? "Approved and live. Registrants receive their own join link; attendance is recorded only when it can be verified."
+              : `Drafted by AI and waiting for your approval — nothing is public until you approve. Status: ${String(marketing.status ?? "not drafted")}.`}
+          </p>
+          {Array.isArray(marketing.fair_housing) && (marketing.fair_housing as unknown[]).length > 0 && (
+            <p className="text-xs text-muted-foreground">Fair-housing notes: {(marketing.fair_housing as Array<{ phrase?: string; field?: string }>).map((f) => `"${f.phrase}" (${f.field})`).join(", ")}</p>
+          )}
+          {!event.is_published && (
+            <Button size="sm" onClick={handleApprove} disabled={approvePending} className="gap-1.5">
+              {approvePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              Approve and publish
+            </Button>
+          )}
+          {event.is_published && (
+            <a className="text-xs underline" href={`/open-house/${event.id}/register`} target="_blank" rel="noreferrer">Open the registration page</a>
+          )}
+          <div className="flex gap-2 pt-2">
+            <Input placeholder="https:// recording link" value={replayDraft} onChange={(e) => setReplayDraft(e.target.value)} className="h-8 text-sm" />
+            <Button size="sm" variant="outline" onClick={handleReplay} disabled={replayPending || !replayDraft.trim()}>
+              {replayPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Send recording"}
+            </Button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">The recording goes once to each registrant — a thank-you to those who joined, a "sorry we missed you" to those who couldn't.</p>
+        </div>
+      )}
 
       {canCancel && (
         <div className="rounded-lg border border-destructive/20 p-4 space-y-2 bg-destructive/5">
@@ -777,7 +830,7 @@ function EventDetailSheet({
   const listing = event.listing
   const address = listing
     ? [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
-    : "Unlisted property"
+    : (event.title ?? "Unlisted property")
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -859,7 +912,12 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
     // wave 147 (lane 147Z): the event kind (the live open_house_events.event_type CHECK) and, for a virtual one, its https link.
     eventType: "open_house",
     joinUrl: "",
+    // wave 148 (lane 148H — C22): a webinar / education session's title (no listing) and an online event's host.
+    title: "",
+    virtualProvider: "zoom",
   })
+  const kindNeedsListing = form.eventType === "open_house" || form.eventType === "broker_open" || form.eventType === "virtual_open_house"
+  const kindIsOnline = form.eventType === "virtual_open_house" || form.eventType === "webinar" || (form.eventType === "education_session" && form.virtualProvider !== "in_person")
 
   // The dialog used to demand a pasted listing UUID ("Find the ID from your
   // Listings page"). getAgentListings existed for exactly this picker and was
@@ -885,8 +943,12 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
   })()
 
   const handleCreate = () => {
-    if (!form.listingId.trim() || !form.date) {
-      toast({ title: "Listing ID and date are required", variant: "destructive" })
+    if ((kindNeedsListing && !form.listingId.trim()) || !form.date) {
+      toast({ title: kindNeedsListing ? "Listing and date are required" : "Date is required", variant: "destructive" })
+      return
+    }
+    if (!kindNeedsListing && !form.title.trim()) {
+      toast({ title: "Give the session a title", variant: "destructive" })
       return
     }
     if (form.startTime && form.endTime) {
@@ -899,8 +961,12 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
     }
     startTransition(async () => {
       try {
+        const online = kindIsOnline
+        const host = online ? (form.virtualProvider === "in_person" ? "zoom" : form.virtualProvider) : undefined
         const res = await createOpenHouse({
-          listingId: form.listingId.trim(),
+          listingId: kindNeedsListing ? form.listingId.trim() : null,
+          title: form.title.trim() || undefined,
+          virtualProvider: host,
           date: form.date,
           startTime: form.startTime,
           endTime: form.endTime,
@@ -910,13 +976,14 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
           agentNotes: form.agentNotes || undefined,
           publicDescription: form.publicDescription || undefined,
           eventType: form.eventType,
-          joinUrl: form.eventType === "virtual_open_house" ? form.joinUrl.trim() : undefined,
+          joinUrl: online && host !== "zoom" ? form.joinUrl.trim() : undefined,
         })
         if (res.success && res.event) {
-          toast({ title: "Open house scheduled" })
+          const warn = ("warnings" in res && Array.isArray(res.warnings) ? res.warnings : []) as string[]
+          toast({ title: online ? "Event scheduled — review and approve its registration page in Actions" : "Open house scheduled", description: warn.length ? warn.join(" · ") : undefined })
           setEvents((prev) => [res.event as OpenHouseEvent, ...prev])
           setOpen(false)
-          setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "", eventType: "open_house", joinUrl: "" })
+          setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "", eventType: "open_house", joinUrl: "", title: "", virtualProvider: "zoom" })
         } else {
           toast({ title: res.error ?? "Failed to schedule open house", variant: "destructive" })
         }
@@ -957,7 +1024,7 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
               <DialogTitle>Schedule Open House</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 pt-2">
-              <div>
+              <div className={kindNeedsListing ? "" : "hidden"}>
                 <Label className="text-xs">Listing</Label>
                 {myListings.length > 0 ? (
                   <Select
@@ -997,11 +1064,34 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
                     <SelectItem value="open_house">Open house (public)</SelectItem>
                     <SelectItem value="broker_open">Broker open (agents only)</SelectItem>
                     <SelectItem value="virtual_open_house">Virtual open house</SelectItem>
+                    <SelectItem value="webinar">Webinar</SelectItem>
+                    <SelectItem value="education_session">Education session</SelectItem>
                   </SelectContent>
                 </Select>
-                {form.eventType === "virtual_open_house" && (
+                {!kindNeedsListing && (
                   <Input
-                    placeholder="https:// meeting link"
+                    placeholder="Title — e.g. First-time buyer basics"
+                    value={form.title}
+                    onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                    className="h-8 text-sm mt-2"
+                  />
+                )}
+                {(form.eventType === "virtual_open_house" || form.eventType === "webinar" || form.eventType === "education_session") && (
+                  <Select value={form.virtualProvider} onValueChange={(v) => setForm((f) => ({ ...f, virtualProvider: v }))}>
+                    <SelectTrigger className="h-8 text-sm mt-2">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {form.eventType === "education_session" && <SelectItem value="in_person">In person (sign-in kiosk)</SelectItem>}
+                      <SelectItem value="zoom">Zoom — personal links, verified attendance</SelectItem>
+                      <SelectItem value="youtube">YouTube Live — registration + replay (attendance not verifiable)</SelectItem>
+                      <SelectItem value="external_link">Other meeting link (attendance not verifiable)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+                {kindIsOnline && form.virtualProvider !== "zoom" && form.virtualProvider !== "in_person" && (
+                  <Input
+                    placeholder={form.virtualProvider === "youtube" ? "https:// YouTube Live link" : "https:// meeting link"}
                     value={form.joinUrl}
                     onChange={(e) => setForm((f) => ({ ...f, joinUrl: e.target.value }))}
                     className="h-8 text-sm mt-2"
@@ -1191,7 +1281,7 @@ function EventRow({ event, onClick }: { event: OpenHouseEvent; onClick: () => vo
   const listing = event.listing
   const address = listing
     ? [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
-    : "Unlisted property"
+    : (event.title ?? "Unlisted property")
 
   return (
     <button

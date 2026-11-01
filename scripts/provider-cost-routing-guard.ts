@@ -99,8 +99,15 @@ const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 // The label states the DERIVED count (a hard-coded "eleven" was a waypoint: it went false the moment a capability was added).
 // Wave 148 (lane 148E): + travel_time (Mapbox Matrix/Directions — the owner's "which providers do you need for commute?";
 // a single-provider PAID row at MAPBOX_SKU_USD.matrix_element, the constant the transport books). ANNOUNCED here on purpose.
-check(`${caps.length} capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, travel_time, business_identity, online_presence, audience_estimate, online_audience_match)`,
-  caps.sort().join(",") === "audience_estimate,business_identity,dnc_tcpa,email_validation,map_render,motivated_seller_list,online_audience_match,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact,travel_time")
+// Wave 148 (lane 148H — C22, owner ruling 20): + virtual_event_hosting (Zoom) + live_broadcast (YouTube) — the EVENT hosts, one
+// provider each, documented-free rows (the tenant's own connected account; FREE_CAPABILITIES carries each vendor statement).
+// (Integrator: both lanes extended this assertion; the list below is their union.)
+check(`${caps.length} capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, travel_time, business_identity, online_presence, audience_estimate, online_audience_match, virtual_event_hosting, live_broadcast)`,
+  caps.sort().join(",") === "audience_estimate,business_identity,dnc_tcpa,email_validation,live_broadcast,map_render,motivated_seller_list,online_audience_match,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact,travel_time,virtual_event_hosting")
+check("virtual_event_hosting is Zoom-only and live_broadcast YouTube-only — each a documented-free row (the tenant's own account), never a platform-paid vendor",
+  CONTACT_PROVIDER_ROUTES.virtual_event_hosting.length === 1 && CONTACT_PROVIDER_ROUTES.virtual_event_hosting[0].provider === "zoom"
+  && CONTACT_PROVIDER_ROUTES.live_broadcast.length === 1 && CONTACT_PROVIDER_ROUTES.live_broadcast[0].provider === "youtube"
+  && FREE_CAPABILITIES.has("virtual_event_hosting") && FREE_CAPABILITIES.has("live_broadcast"))
 const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
 // Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person email+phone
 // append, People Data Labs only when Versium misses"): Versium (an EXISTING vendor) leads both overlap

@@ -545,7 +545,9 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
   },
   {
     provider: "zoom",
-    eventKind: "recording-events",
+    // Wave 148 (lane 148H — C22): the SAME route also receives the participant join/leave + meeting.ended events that VERIFY
+    // event attendance (lib/open-house/event-attendance.ts) — one Zoom route, one secret, one row.
+    eventKind: "recording-and-participant-events",
     path: "/api/webhooks/zoom",
     routeFile: "app/api/webhooks/zoom/route.ts",
     scheme: "zoom-hmac-sha256",

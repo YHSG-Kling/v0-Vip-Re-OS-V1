@@ -293,7 +293,10 @@ export const BATCHDATA_FALLBACK_MISS_REASONS: ReadonlySet<RentcastMissReason> = 
 // PRIMARY of the property_valuation capability — the AVM chain now routes through this same table.
 // Wave 140 (lane 140I, owner: "MAPBOX IS REQUIRED … one map subsystem"): the MAP providers ride the SAME
 // router (map_render below) — the name stays (two importers; a rename is a rewrite), the union widens.
-export type ContactDataProvider = "versium" | "batchdata" | "peopledata" | "rentcast" | "mapbox" | "google_maps"
+// Wave 148 (lane 148H, C22; owner ruling 20 "we use Zoom … or YouTube Live?"): the EVENT hosts ride the SAME router — Zoom for
+// virtual_event_hosting (participant webhooks verify attendance), YouTube for the optional live_broadcast. Both are reached on the
+// TENANT's own connected account (ADAPTER_FACTS ledger tenant_account) — no platform spend, hence the documented-free rows below.
+export type ContactDataProvider = "versium" | "batchdata" | "peopledata" | "rentcast" | "mapbox" | "google_maps" | "zoom" | "youtube"
 
 /** The capabilities the two providers sell, named by the QUESTION a caller asks. */
 export type ProviderCapability =
@@ -311,13 +314,15 @@ export type ProviderCapability =
   | "online_presence"        // observed online real-estate activity + property/behaviour indicators for a known person (wave 142, lane 142D)
   | "audience_estimate"      // HOW MANY people match a geography + housing-fact lead-gen filter — a FREE COUNT with provenance, never a contact, never a purchase (wave 143, lane 143D; 144E: a count for any lawful lead-gen criteria, not look-alike research only)
   | "online_audience_match"  // WHICH online (ad-platform) identifiers belong to a person we already hold — hashed IDs APPENDED to the record; NOT targeting, never an e-mail/SMS address (wave 144, lane 144E)
+  | "virtual_event_hosting"  // host an online EVENT (virtual open house / webinar / online education session) with per-registrant join links + participant join/leave evidence (wave 148, lane 148H — C22)
+  | "live_broadcast"         // broadcast an event live with a replay (no per-viewer identity — attendance is never claimed from it) (wave 148, lane 148H — C22)
 
 export interface ProviderRouteEntry {
   provider: ContactDataProvider
   /** Documented per-unit USD (the constant the ledger books) — a cost ORDER, never an invoice. */
   unitCostUsd: number
   /** What the provider needs to be asked with. */
-  keyedBy: "property_address" | "person_identifier" | "phone" | "email" | "geography" | "coordinates"
+  keyedBy: "property_address" | "person_identifier" | "phone" | "email" | "geography" | "coordinates" | "event_schedule"
 }
 
 /** RENTCAST_USD_PER_REQUEST (lib/property/rentcast.ts), Foundation plan; $0.018 at Scale — ONE spelling
@@ -432,6 +437,16 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   online_audience_match: [
     { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
   ],
+  // Wave 148 (lane 148H — C22, owner ruling 20). ONE provider each, documented free (FREE_CAPABILITIES carries each statement):
+  // the meeting / registrant / broadcast calls run on the tenant's OWN connected account (lib/connections/zoom.ts — the exact-owner
+  // host cascade; the YouTube channel connection), so the platform books nothing per call. Walked by app/actions/open-house.ts
+  // createOpenHouse (routeCapability → ensureZoomMeetingForAppointment with registration) and lib/open-house/event-attendance.ts.
+  virtual_event_hosting: [
+    { provider: "zoom", unitCostUsd: 0, keyedBy: "event_schedule" },
+  ],
+  live_broadcast: [
+    { provider: "youtube", unitCostUsd: 0, keyedBy: "event_schedule" },
+  ],
 }
 
 /**
@@ -445,7 +460,10 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
 // pass re-asks the gap); it never blocks the failover of Versium's other capabilities.
 // Wave 148 (lane 148E): + travel_time — a buyer explanation without a drive time says "unknown" and offers to map it; a
 // Mapbox outage never blocks the failover of Mapbox's map_render capability.
-export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity", "audience_estimate", "online_audience_match", "travel_time"])
+// Wave 148 (lane 148H): + virtual_event_hosting / live_broadcast — an event whose host is down is still produced on the agent's own
+// meeting link (virtual_provider 'external_link', attendance honestly unverifiable); a host outage never blocks another capability.
+// (Integrator: the two lanes added their rows in the same statement; both kept.)
+export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity", "audience_estimate", "online_audience_match", "travel_time", "virtual_event_hosting", "live_broadcast"])
 
 /**
  * Capabilities whose route row is FREE (unit 0) — each carries the vendor statement that makes it free. Every OTHER
@@ -455,6 +473,8 @@ export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<
  */
 export const FREE_CAPABILITIES: ReadonlyMap<ProviderCapability, string> = new Map<ProviderCapability, string>([
   ["audience_estimate", "Versium B2C ListGen Estimates API — \"can be called as many times as requested without incurring in any charge\" (api-documentation.versium.com/reference/estimates-api, read 2026-10-23)"],
+  ["virtual_event_hosting", "Zoom REST API — no per-request charge is published; calls are bounded by ACCOUNT-PLAN rate limits (developers.zoom.us/docs/api/rate-limits, read 2026-11-01: limits applied per account by plan, meeting create/update capped per user per day) and run on the TENANT's own licensed Zoom account (ADAPTER_FACTS.zoom ledger tenant_account) — the platform books nothing"],
+  ["live_broadcast", "YouTube Live Streaming API (liveBroadcasts / liveStreams, part of the YouTube Data API v3) — calls spend the Google Cloud project's daily QUOTA UNITS, not money, on the TENANT's own connected channel (developers.google.com/youtube/v3/live/docs/liveBroadcasts, read 2026-11-01) — the platform books nothing"],
 ])
 
 /**

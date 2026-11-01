@@ -9,9 +9,12 @@
  * does not exist (it should — see scripts/526-create-open-house-system-v2.sql).
  */
 
+import { createHash } from "node:crypto"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { createServiceClient } from "@/lib/supabase/service"
+import { EVENT_PRODUCER_REGISTRY, isOnlineEvent, isVirtualProvider, type VirtualProvider } from "@/lib/open-house/event-registry"
+import { eventWindow } from "@/lib/open-house/event-attendance"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -30,6 +33,14 @@ export interface OpenHouseEvent {
   notes: string | null        // agent private notes
   max_attendees: number | null
   created_at: string
+  // C22 (wave 148, lane 148H): the kind, its title (webinars / education sessions have no listing), its online host, and the
+  // registration page's approval state + recording — read by the schedule dialog and the Actions tab.
+  event_type?: string | null
+  title?: string | null
+  virtual_provider?: string | null
+  is_published?: boolean | null
+  marketing_assets?: Record<string, unknown> | null
+  replay_url?: string | null
   // Joined
   listing?: {
     id: string
@@ -79,7 +90,8 @@ export interface OpenHouseFeedback {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function createOpenHouse(params: {
-  listingId: string
+  /** Required for every listing-anchored kind; a webinar / education session is not about one listing (m924). */
+  listingId?: string | null
   date: string          // ISO date string "YYYY-MM-DD"
   startTime: string     // "HH:MM"
   endTime: string       // "HH:MM"
@@ -98,38 +110,72 @@ export async function createOpenHouse(params: {
    */
   eventType?: string
   joinUrl?: string
+  /**
+   * WAVE 148 (lane 148H — C22, owner rulings 14 + 20). The ONE door now produces all FIVE kinds the registry declares
+   * (lib/open-house/event-registry.ts): + webinar and education_session (m924 — no listing). An ONLINE event names its host:
+   *   · zoom (the default for a virtual open house / webinar) — a REAL Zoom meeting with registration, routed through
+   *     routeCapability("virtual_event_hosting") and created on the tenant's own connected account (agent → team → brokerage);
+   *     every registrant gets a personal link and the participant webhook VERIFIES attendance;
+   *   · youtube — the agent's own YouTube Live URL (registration-gated watch link; attendance is never claimed — YouTube exposes
+   *     no per-viewer identity; creating the broadcast through the API is WAITING_EXTERNAL: the channel connection holds only the
+   *     youtube.upload scope);
+   *   · external_link — any other https meeting link; attendance honestly unverifiable.
+   * The registration page and invitation copy are drafted by AI and held for APPROVAL (approveEventMarketing) — nothing is
+   * published until a permitted approver says so.
+   */
+  title?: string
+  virtualProvider?: string
+  timezone?: string
 }) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    // The live open_house_events.event_type CHECK (scripts/check-vocabularies.ts) — one spelling, validated before any write.
-    const OPEN_HOUSE_EVENT_TYPES = ["open_house", "broker_open", "virtual_open_house"] as const
+    // The live open_house_events.event_type CHECK after m924 (scripts/check-vocabularies.ts) = the C22 registry's EVENT_KINDS — one
+    // spelling, validated before any write (scripts/event-producer-registry-guard.ts holds CHECK = registry = this list).
+    const OPEN_HOUSE_EVENT_TYPES = ["open_house", "broker_open", "virtual_open_house", "webinar", "education_session"] as const
     const eventType = (params.eventType ?? "open_house") as (typeof OPEN_HOUSE_EVENT_TYPES)[number]
     if (!(OPEN_HOUSE_EVENT_TYPES as readonly string[]).includes(eventType)) return { success: false, error: `Unknown event type "${params.eventType}"` }
+    const spec = EVENT_PRODUCER_REGISTRY[eventType]
+    const listingId = (params.listingId ?? "").trim() || null
+    if (spec.listing === "required" && !listingId) return { success: false, error: `A ${spec.label.toLowerCase()} is held at one of your listings — choose the listing` }
+    const title = (params.title ?? "").trim().slice(0, 200) || null
+    if (spec.listing === "none" && !title) return { success: false, error: `A ${spec.label.toLowerCase()} needs a title` }
+
+    // The host of an ONLINE event (education sessions are online only when a host is named).
+    const requested = (params.virtualProvider ?? "").trim()
+    const provider: VirtualProvider | null = spec.venue === "in_person" ? null
+      : isVirtualProvider(requested) ? requested
+      : spec.venue === "online" ? (params.joinUrl ? "external_link" : "zoom") : null
+    if (requested && !isVirtualProvider(requested)) return { success: false, error: `Unknown host "${requested}"` }
     let joinUrl: string | null = null
-    if (eventType === "virtual_open_house") {
+    if (provider === "external_link" || provider === "youtube") {
       try { const u = new URL(String(params.joinUrl ?? "")); if (u.protocol === "https:") joinUrl = u.toString() } catch { joinUrl = null }
-      if (!joinUrl) return { success: false, error: "A virtual open house needs its https join link" }
+      if (!joinUrl) return { success: false, error: provider === "youtube" ? "A YouTube Live event needs its https watch link" : "An online event needs its https join link" }
+      if (provider === "youtube" && !/^(www\.|m\.)?(youtube\.com|youtu\.be)$/i.test(new URL(joinUrl).hostname)) return { success: false, error: "That is not a YouTube link" }
     }
 
     const service = createServiceClient()
 
     // Verify listing belongs to caller's brokerage
-    const { data: listing } = await service
-      .from("listings")
-      .select("brokerage_id")
-      .eq("id", params.listingId)
-      .maybeSingle()
-
-    if (!listing || listing.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Listing not found or not authorized" }
+    let propertyAddress: string | null = null
+    if (listingId) {
+      const { data: listing, error: listingErr } = await service
+        .from("listings")
+        .select("brokerage_id, address, city, state")
+        .eq("id", listingId)
+        .maybeSingle()
+      if (listingErr) return { success: false, error: `Could not read the listing: ${listingErr.message}` }
+      if (!listing || listing.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Listing not found or not authorized" }
+      }
+      propertyAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ") || null
     }
 
     const { data: event, error } = await service
       .from("open_house_events")
       .insert({
-        listing_id: params.listingId,
+        listing_id: listingId,
         brokerage_id: ctx.brokerageId,
         agent_id: ctx.agentId ?? null,
         created_by: ctx.userId,
@@ -140,9 +186,13 @@ export async function createOpenHouse(params: {
         notes: params.agentNotes ?? null,
         description: params.publicDescription ?? null,
         status: "scheduled",
-        registration_required: eventType === "virtual_open_house",
+        registration_required: spec.registration.required,
         event_type: eventType,
-        ...(joinUrl ? { check_in_url: joinUrl, allow_walkins: false } : {}),
+        ...(title ? { title } : {}),
+        ...(propertyAddress ? { property_address: propertyAddress } : {}),
+        ...(params.timezone ? { timezone: params.timezone } : {}),
+        ...(provider ? { virtual_provider: provider, allow_walkins: false } : {}),
+        ...(joinUrl ? { check_in_url: joinUrl } : {}),
       })
       .select()
       .maybeSingle()
@@ -153,18 +203,176 @@ export async function createOpenHouse(params: {
     }
     if (!event) return { success: false, error: "Failed to create open house" }
 
-    // Send invites synchronously — fire-and-forget loses the request-scoped cookie context
-    if (params.sendInvites && event.id) {
+    const warnings: string[] = []
+    // ── ZOOM: capability → router → provider (law 3), a REAL meeting with registration, ledgered (law 5) ──
+    if (provider === "zoom") {
+      const hosted = await hostEventOnZoom(service, { event: event as Record<string, any>, userId: ctx.userId ?? null, brokerageId: ctx.brokerageId })
+      if (!hosted.ok) {
+        // Honest: the event exists (it can still take a pasted link), but no fabricated Zoom link stands in.
+        warnings.push(hosted.detail)
+      } else if (!hosted.registrationEnabled) {
+        warnings.push("Zoom created the meeting WITHOUT registration (the account cannot register attendees — Zoom answered approval_type 2). Registrants will join on the shared link and attendance can be verified only for people signed in to Zoom with the email they registered with.")
+      }
+    }
+
+    // ── The registration page + invitations: drafted by AI, held for approval (never published here) ──
+    if (spec.registration.required) {
+      const { draftEventMarketing } = await import("@/lib/open-house/event-marketing")
+      const drafted = await draftEventMarketing(service, (event as { id: string }).id)
+      if (!drafted.ok) warnings.push(`registration page copy not drafted: ${drafted.error}`)
+      else if (drafted.status === "needs_revision") warnings.push("the drafted copy needs your edits before it can be approved (see the fair-housing / missing-field notes)")
+    }
+
+    // Send invites synchronously — fire-and-forget loses the request-scoped cookie context. An event that requires registration
+    // waits for its approved copy (approveEventMarketing) — no invitation leaves before a person approves the words.
+    if (params.sendInvites && event.id && !spec.registration.required) {
       await sendOpenHouseInvites(event.id).catch((err) => {
         console.warn("[createOpenHouse] invite send failed (non-blocking):", err instanceof Error ? err.message : err)
       })
     }
 
     revalidatePath("/dashboard/open-houses")
-    return { success: true, event }
+    return { success: true, event, warnings }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error"
     return { success: false, error: msg }
+  }
+}
+
+/**
+ * Host one event on Zoom: routeCapability("virtual_event_hosting") (a Zoom in a failing cool-down is routed around — the event
+ * stays, honestly without a Zoom link), then the REAL meeting with registration on the tenant's own account, ledgered once per
+ * event. Never exported: a "use server" export is a public endpoint, and this is a step of createOpenHouse.
+ */
+async function hostEventOnZoom(
+  service: ReturnType<typeof createServiceClient>,
+  a: { event: Record<string, any>; userId: string | null; brokerageId: string },
+): Promise<{ ok: true; registrationEnabled: boolean } | { ok: false; detail: string }> {
+  const { routeCapability } = await import("@/lib/ai-isa/property-lookup-rail")
+  const { loadProviderHealth } = await import("@/lib/agentic-os/connector-gateway")
+  const route = routeCapability("virtual_event_hosting", { zoom: await loadProviderHealth("zoom") })
+  if (!route.providers.includes("zoom")) {
+    return { ok: false, detail: `Zoom is unavailable right now (${route.skipped.map((s) => s.reason).join("; ")}) — paste a meeting link instead, or retry later` }
+  }
+  const { data: me } = await service.from("users").select("team_id").eq("id", a.userId ?? "").maybeSingle()
+  const { start, end } = eventWindow(a.event as never)
+  if (!start) return { ok: false, detail: "the event has no start time Zoom can schedule" }
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { ensureZoomMeetingForAppointment } = await import("@/lib/connections/zoom")
+  const outcome = await withActionLedger(
+    {
+      brokerageId: a.brokerageId, action: "open_house.virtual_meeting.create", actor: { type: "user", userId: a.userId },
+      subject: { type: "open_house_event", id: a.event.id }, cycle: "zoom_meeting", channel: "zoom",
+      reasonCode: "HUMAN_REQUESTED", reasonDetail: `the agent scheduled a ${a.event.event_type} hosted on Zoom`, systemSource: "open_house_scheduler",
+      detail: { capability: "virtual_event_hosting", provider: "zoom" },
+    },
+    () => ensureZoomMeetingForAppointment(service, {
+      // A TENANT event hosts on the tenant cascade (agent → team → brokerage) — never the platform's own account.
+      host: { scope: "agent", agentUserId: a.userId, teamId: (me as { team_id?: string | null } | null)?.team_id ?? null, brokerageId: a.brokerageId },
+      topic: String(a.event.title ?? a.event.property_address ?? "Virtual open house").slice(0, 200),
+      startAt: start, endAt: end, timezoneName: a.event.timezone ?? null, registration: true,
+    }),
+    {
+      settle: (r) => (r.created ? { status: "executed", outcome: "zoom_meeting_created", provider: "zoom", providerRef: r.meetingId } : { status: "failed", outcome: r.reason, provider: "zoom", error: r.detail }),
+      replay: (claim) => ({ created: false as const, reason: "api_error" as const, detail: claim.kind === "refused" ? `the action ledger refused: ${claim.error}` : "a Zoom meeting was already requested for this event" }),
+    },
+  )
+  if (!outcome.created) return { ok: false, detail: outcome.detail }
+  const registrationEnabled = outcome.registrationEnabled === true
+  const { data: upd, error: updErr } = await service.from("open_house_events").update({
+    provider_meeting_id: outcome.meetingId,
+    check_in_url: outcome.joinUrl,
+    provider_meta: { host_owner_type: outcome.hostOwnerType, host_owner_id: outcome.hostOwnerId, registration_enabled: registrationEnabled, provider_join_url: outcome.joinUrl },
+  }).eq("id", a.event.id).eq("brokerage_id", a.brokerageId).select("id")
+  if (updErr || !Array.isArray(upd) || upd.length !== 1) return { ok: false, detail: `the Zoom meeting was created but not stored on the event: ${updErr?.message ?? "matched no row"}` }
+  return { ok: true, registrationEnabled }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APPROVE THE EVENT'S PAGE + INVITATIONS (C22 + C5) — the human's publication decision
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A permitted approver (lib/kernel/approval-authority.ts approverFor, asset kind "publication", scoped to the event's agent)
+ * approves the AI-drafted copy — optionally with their own edits, re-scanned for fair housing and the placeholders a send needs.
+ * Approval publishes the registration page (is_published). Refused with a reason; ledgered once per approval.
+ */
+export async function approveEventMarketing(eventId: string, edits?: Record<string, unknown>): Promise<{ success: boolean; error?: string; findings?: unknown[] }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { success: false, error: "Not authenticated" }
+    const service = createServiceClient()
+    const { data: ev, error } = await service.from("open_house_events").select("id, brokerage_id, agent_id, event_type, virtual_provider, marketing_assets").eq("id", eventId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (error) return { success: false, error: `Could not read the event: ${error.message}` }
+    if (!ev) return { success: false, error: "Event not found" }
+    const { approverFor } = await import("@/lib/kernel/approval-authority")
+    const decision = await approverFor({ brokerageId: ctx.brokerageId, assetKind: "publication", scope: { agentId: ev.agent_id ?? null }, client: service })
+    if (!decision.ok) return { success: false, error: decision.reason }
+    if (!decision.permittedUserIds.includes(ctx.userId)) return { success: false, error: `You are not an approver of this event's page: ${decision.reason}` }
+    const assets = (ev.marketing_assets ?? {}) as Record<string, any>
+    const { PUBLISHED_COPY_FIELDS, scanEventCopy } = await import("@/lib/open-house/event-marketing")
+    const base = (assets.draft ?? {}) as Record<string, unknown>
+    const merged: Record<string, unknown> = { ...base }
+    for (const f of [...PUBLISHED_COPY_FIELDS, "what_you_will_learn"] as const) if (edits && f in edits) merged[f] = edits[f]
+    const scan = scanEventCopy(merged, { online: isOnlineEvent(ev.event_type, ev.virtual_provider) })
+    if (scan.blocking) return { success: false, error: `Not approvable yet: ${[...scan.findings.filter((x) => x.severity === "high").map((x) => `fair housing — "${x.phrase}" in ${x.field} (${x.fix})`), ...scan.missing.map((m) => `missing ${m}`)].join("; ")}`, findings: scan.findings }
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const now = new Date().toISOString()
+    const r = await withActionLedger(
+      {
+        brokerageId: ctx.brokerageId, action: "open_house.event_marketing.approve", actor: { type: "user", userId: ctx.userId },
+        subject: { type: "open_house_event", id: ev.id }, idempotencyKey: `open_house.event_marketing.approve:${ev.id}:${createHash("sha256").update(JSON.stringify(merged)).digest("hex").slice(0, 24)}`,
+        reasonCode: "HUMAN_REQUESTED", reasonDetail: `approved as ${decision.tier}`, systemSource: "open_house_scheduler", detail: { warnings: scan.findings.length },
+      },
+      async () => {
+        // marketing_assets.status is the COPY's approval state (awaiting_approval | needs_revision | approved), not the event's
+        // open_house_events.status (which this update leaves alone) — built outside the update so the two are never confused.
+        const approvedAssets: Record<string, unknown> = { ...assets, approved: merged, fair_housing: scan.findings, approved_by: ctx.userId, approved_at: now }
+        approvedAssets.status = "approved"
+        const { data: upd, error: uErr } = await service.from("open_house_events").update({
+          marketing_assets: approvedAssets,
+          is_published: true, published_at: now,
+        }).eq("id", ev.id).eq("brokerage_id", ctx.brokerageId).select("id")
+        return uErr || !Array.isArray(upd) || upd.length !== 1 ? { ok: false as const, error: uErr?.message ?? "matched no row" } : { ok: true as const }
+      },
+      {
+        settle: (x) => (x.ok ? { status: "executed", outcome: "event_marketing_approved" } : { status: "failed", outcome: "approval_not_stored", error: x.error }),
+        replay: (claim) => (claim.kind === "refused" ? { ok: false as const, error: `the action ledger refused: ${claim.error}` } : { ok: true as const }),
+      },
+    )
+    if (!r.ok) return { success: false, error: r.error }
+    revalidatePath("/dashboard/open-houses")
+    return { success: true, findings: scan.findings }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
+  }
+}
+
+/**
+ * Record the event's recording (https) and deliver the promised replay to every registration, once each — only now that the asset
+ * exists (C22 deliverables; never "delivered" without it). Tenant from the session; the event must be the caller's brokerage's.
+ */
+export async function setEventReplay(eventId: string, replayUrl: string): Promise<{ success: boolean; error?: string; delivered?: number; skipped?: number }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+    let url: string | null = null
+    try { const u = new URL(String(replayUrl ?? "")); if (u.protocol === "https:") url = u.toString() } catch { url = null }
+    if (!url) return { success: false, error: "The recording needs an https link" }
+    const service = createServiceClient()
+    // The cancelOpenHouse scope: a broker / admin may act on any of the brokerage's events; an agent only on their own.
+    const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"
+    if (!isBrokerOrAdmin && !ctx.agentId) return { success: false, error: "Unauthorized" }
+    let q = service.from("open_house_events").update({ replay_url: url }).eq("id", eventId).eq("brokerage_id", ctx.brokerageId)
+    if (!isBrokerOrAdmin) q = q.eq("agent_id", ctx.agentId as string)
+    const { data: upd, error } = await q.select("id")
+    if (error) return { success: false, error: error.message }
+    if (!Array.isArray(upd) || upd.length !== 1) return { success: false, error: "Event not found" }
+    const { deliverEventReplay } = await import("@/lib/open-house/event-attendance")
+    const r = await deliverEventReplay(service, eventId)
+    return { success: true, delivered: r.delivered, skipped: r.skipped }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
 }
 
@@ -199,6 +407,12 @@ export async function getOpenHouses(): Promise<{
         notes,
         max_attendees,
         created_at,
+        event_type,
+        title,
+        virtual_provider,
+        is_published,
+        marketing_assets,
+        replay_url,
         listings (
           id,
           address,

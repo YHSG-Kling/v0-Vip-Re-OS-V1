@@ -6,14 +6,14 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 814 role-surfaces — BUILT 741 · PARTIAL 58 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 37; contact-portal pages: 30. Expected-coverage gaps: 0.
+**Totals:** 816 role-surfaces — BUILT 743 · PARTIAL 58 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 38; contact-portal pages: 30. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 
 | domain | platform staff | platform prospects · public | tenant admins | teams · team leads | agents | ISA | transaction coordinators | compliance officers | buyers · sellers · lifetime contacts | vendors · partners |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **website · landing pages · lead magnets** | B1 | B17 | B9 | B5 | B10 | · | B5 | B5 | · | · |
-| **lead acquisition** | B5 | B8 | B12 | B4 | B6 | B9 | B1 | B1 | · | · |
+| **lead acquisition** | B5 | B9 | B12 | B4 | B7 | B9 | B1 | B1 | · | · |
 | **dedup · enrichment · behavioural intent** | B3 | · | B7 P1 | B2 | B4 | B1 | · | · | · | · |
 | **listings** | B1 | B1 | B2 P1 S1 | B3 P1 S1 | B8 P1 S1 | S1 | · | · | · | · |
 | **properties** | · | B1 | B2 | B2 | B2 | · | · | · | B3 | · |
@@ -224,7 +224,7 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/api/webhooks/ce-provider/route.ts` | 14 | server | not configured | implemented-missing-owner-config | code | platform env CE_PROVIDER_WEBHOOK_SECRET | kept: honest configuration copy (derived) |
 | `app/api/webhooks/linkedin/route.ts` | 78, 102 | server | not configured | implemented-missing-owner-config | code | platform env LINKEDIN_CLIENT_SECRET | kept: honest configuration copy (derived) |
 | `app/api/webhooks/twitter/route.ts` | 29, 55 | server | not configured | implemented-missing-owner-config | code | platform env TWITTER_CONSUMER_SECRET | kept: honest configuration copy (derived) |
-| `app/api/webhooks/zoom/route.ts` | 40 | server | not configured | implemented-missing-owner-config | code | platform env ZOOM_WEBHOOK_SECRET_TOKEN | kept: honest configuration copy (derived) |
+| `app/api/webhooks/zoom/route.ts` | 42 | server | not configured | implemented-missing-owner-config | code | platform env ZOOM_WEBHOOK_SECRET_TOKEN | kept: honest configuration copy (derived) |
 | `app/api/workflow/trigger/route.ts` | 158 | server | not configured | implemented-missing-owner-config | code | platform env WORKFLOW_WEBHOOK_SECRET | kept: honest configuration copy (derived) |
 | `app/components/ai-image/generate-image-button.tsx` | 133 | ui | isn't configured | implemented-missing-owner-config | allow-list | the image-generation provider returns 503 when its platform key is unset | kept: honest refusal |
 | `app/components/dashboard/listings/lifecycle/investor-buybox-preview-card.tsx` | 61 | ui | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (unconfigured) | kept: honest configuration copy (derived) |
@@ -373,7 +373,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | vendor marketplace | ↳ from Platform Admin `/dashboard/superadmin/vendors` | `app/dashboard/superadmin/vendors/page.tsx` | lib/platform/require-capability.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Brokerages `/site/x` | `app/site/[slug]/page.tsx` | lib/video/public-video.ts · lib/kernel/tenant-creation.ts | BUILT |
 
-### platform prospects · public (37)
+### platform prospects · public (38)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -384,6 +384,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | lead acquisition | /home-value `/home-value` | `app/home-value/page.tsx` | app/actions/home-value.ts (getAgentBySlug, getPageConfigByAgentId, HomeValuePageConfig, …) | BUILT |
 | lead acquisition | /home-value/[agentSlug] `/home-value/[agentSlug]` | `app/home-value/[agentSlug]/page.tsx` | app/actions/property-evaluation.ts (evaluatePropertyAction) · app/actions/home-value-lead.ts (captureHomeValueLead) | BUILT |
 | lead acquisition | /home-value/result/[requestId] `/home-value/result/[requestId]` | `app/home-value/result/[requestId]/page.tsx` | app/actions/home-value.ts (getHomeValueResult, getListingAppointmentSlots, scheduleSellerListingAppointment) | BUILT |
+| lead acquisition | /open-house/[eventId]/register `/open-house/[eventId]/register` | `app/open-house/[eventId]/register/page.tsx` | fetch /api/open-house/register · lib/open-house/event-attendance.ts | BUILT |
 | lead acquisition | /open-house/[eventId]/rsvp/[invitationId] `/open-house/[eventId]/rsvp/[invitationId]` | `app/open-house/[eventId]/rsvp/[invitationId]/page.tsx` | app/actions/open-house-automation.ts (handleRSVP) | BUILT |
 | lead acquisition | /open-house/[eventId]/signin `/open-house/[eventId]/signin` | `app/open-house/[eventId]/signin/page.tsx` | app/actions/seller-open-house.ts (getOpenHouseEventPublic) · fetch /api/open-house/attend | BUILT |
 | lead acquisition | /open-house/feedback/[attendeeId] `/open-house/feedback/[attendeeId]` | `app/open-house/feedback/[attendeeId]/page.tsx` | app/actions/open-house-automation.ts (submitFeedback) | BUILT |
@@ -766,7 +767,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### agents (175)
+### agents (176)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -826,6 +827,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | lead acquisition | Home Value Tool `/dashboard/tools/home-value` | `app/dashboard/tools/home-value/page.tsx` | app/actions/home-value.ts (getPageConfig, savePageConfig, convertValuationRequestToContact, …) · app/actions/onboarding/ensure-agent-brokerage.ts (ensureAgentBrokerage) | BUILT |
 | lead acquisition | ↳ from Dashboard `/leads` | `app/leads/page.tsx` | app/actions/lead-intelligence.ts (getIntelligenceDashboardStats, getMotivatedSellers, getUnifiedLeadProfiles, …) · app/actions/lead-management.ts (getLeadsAdmin, enrichLead, rejectLead, …) | BUILT |
 | lead acquisition | ↳ from Dashboard `/leads/x` | `app/leads/[leadId]/page.tsx` | lib/auth/lead-visibility.ts · lib/lead-pipeline/lead-intelligence-signals.ts | BUILT |
+| lead acquisition | ↳ from Open Houses `/open-house/x/register` | `app/open-house/[eventId]/register/page.tsx` | fetch /api/open-house/register · lib/open-house/event-attendance.ts | BUILT |
 | listings | ↳ from Dashboard `/dashboard/listing-appointments/x` | `app/dashboard/listing-appointments/[runId]/page.tsx` | app/actions/listing-appointment-copilot.ts (getListingAppointmentPrepDetail, markListingApptPrepReady, ListingApptPrepDetail) · fetch /api/workflow/listing-presentation | BUILT |
 | listings | My Listings `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | BUILT |
 | listings | ↳ from My Listings `/dashboard/listings/ai-pricing` | `app/dashboard/listings/ai-pricing/page.tsx` | server-side read in the page tree | BUILT |

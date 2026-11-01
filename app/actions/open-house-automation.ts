@@ -977,6 +977,18 @@ export async function processEventFollowups(eventId: string, client?: any) {
     const { error: eventDoneErr } = await supabase.from("open_house_events").update({ status: "completed" }).eq("id", eventId)
     if (eventDoneErr) console.error(`[open-house] event NOT marked completed: ${eventDoneErr.message}`)
 
+    // C22 (wave 148, lane 148H): an ONLINE event's attendance is settled before anyone is followed up — still-open Zoom sessions
+    // closed at the meeting's end, the VERIFIED attendees filed as attendees (so the hand-off below sees them), registrants of a
+    // verifiable event marked no_show (never on an unverifiable host), the outcome stored, and the promised replay delivered once
+    // it exists. An in-person event returns at once (its sign-ins already are its attendance).
+    try {
+      const { finalizeEventAttendance, deliverEventReplay } = await import("@/lib/open-house/event-attendance")
+      const fin = await finalizeEventAttendance(supabase, eventId)
+      if (fin.finalized) await deliverEventReplay(supabase, eventId)
+    } catch (err) {
+      console.warn("[open-house] event attendance not finalized (follow-up continues):", err instanceof Error ? err.message : err)
+    }
+
     // Get all attendees
     const { data: attendees } = await supabase.from("open_house_attendees").select("*").eq("event_id", eventId)
 
