@@ -124,9 +124,9 @@ async function main() {
   const tenantSeat = (userId: string, userType: string, brokerageId: string | null = B) => ({ userId, userType, brokerageId })
   const cases: Case[] = [
     { name: "broker reads for research (tenant scope)", role: "broker", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-broker", "broker") }, expect: "ok" },
-    { name: "compliance officer reads for compliance_audit", role: "compliance", req: { brokerageId: B, contactId: C1, purpose: "compliance_audit", actor: tenantSeat("u-co", "compliance_officer") }, expect: "ok" },
-    { name: "tenant admin reads for persona_derivation", role: "tenant_admin", req: { brokerageId: B, contactId: C1, purpose: "persona_derivation", actor: tenantSeat("u-admin", "admin") }, expect: "ok" },
-    { name: "tenant admin is NOT a research reader (least privilege by purpose)", role: "tenant_admin", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-admin", "admin") }, expect: "role_not_admitted" },
+    { name: "compliance officer reads for compliance_audit", role: "compliance_officer", req: { brokerageId: B, contactId: C1, purpose: "compliance_audit", actor: tenantSeat("u-co", "compliance_officer") }, expect: "ok" },
+    { name: "tenant admin reads for persona_derivation", role: "admin", req: { brokerageId: B, contactId: C1, purpose: "persona_derivation", actor: tenantSeat("u-admin", "admin") }, expect: "ok" },
+    { name: "tenant admin is NOT a research reader (least privilege by purpose)", role: "admin", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-admin", "admin") }, expect: "role_not_admitted" },
     { name: "agent reads their OWN contact for persona_derivation (assigned scope)", role: "agent", req: { brokerageId: B, contactId: C1, purpose: "persona_derivation", actor: tenantSeat("u-agent", "agent") }, expect: "ok" },
     { name: "agent reads ANOTHER agent's contact → out_of_scope", role: "agent", req: { brokerageId: B, contactId: C4, purpose: "persona_derivation", actor: tenantSeat("u-agent", "agent") }, expect: "out_of_scope" },
     { name: "agent is NOT a research reader", role: "agent", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-agent", "agent") }, expect: "role_not_admitted" },
@@ -160,7 +160,7 @@ async function main() {
   check(`EVERY one of the ${cases.length} reads / refusals is ON THE LEDGER with its purpose and role class (evidenced)`, unlogged.length === 0, unlogged.map((u) => u.name).join("; "))
   const rolesSeen = new Set(cases.map((c) => c.role))
   check("every role the owner named was exercised (admin, platform, agent, team lead, broker, compliance, support + the autonomous study)",
-    ["tenant_admin", "platform_admin", "platform_support", "agent", "team_lead", "broker", "compliance", "tenant_support", "system"].every((r) => rolesSeen.has(r)))
+    ["admin", "platform_admin", "platform_support", "agent", "team_lead", "broker", "compliance_officer", "tenant_support", "system"].every((r) => rolesSeen.has(r)))
   // POSITIVE CONTROL for the logging check: the same predicate on a fake ledger with a missing row / a missing purpose fails.
   const fakeOk = (l: any[], before: number, purpose: string) => l.length === before + 1 && l[l.length - 1]?.detail?.purpose === purpose
   check("POSITIVE CONTROL — the logging check sees a missing row and a missing purpose", !fakeOk([{ detail: { purpose: "research" } }], 1, "research") && !fakeOk([{ detail: {} }], 0, "research") && fakeOk([{ detail: { purpose: "research" } }], 0, "research"))
@@ -177,7 +177,7 @@ async function main() {
     store.PROTECTED_RESEARCH_READER_USER_TYPES.has("broker") && store.PROTECTED_RESEARCH_READER_USER_TYPES.has("compliance_officer") && !store.PROTECTED_RESEARCH_READER_USER_TYPES.has("team_lead")
     && Object.values(store.PROTECTED_READ_MATRIX).every((row) => !("platform_marketing" in row)))
   console.log("\n  ROLE × PURPOSE MATRIX (rendered from PROTECTED_READ_MATRIX):")
-  const roleCols = ["agent", "team_lead", "broker", "tenant_admin", "compliance", "tenant_support", "platform_support", "platform_admin", "system"] as const
+  const roleCols = ["agent", "team_lead", "broker", "admin", "compliance_officer", "tenant_support", "platform_support", "platform_admin", "system"] as const
   console.log(`    | purpose | ${roleCols.join(" | ")} |`)
   for (const [p, row] of Object.entries(store.PROTECTED_READ_MATRIX)) console.log(`    | ${p} | ${roleCols.map((r) => (row as Record<string, string>)[r] ?? "—").join(" | ")} |`)
 

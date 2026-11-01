@@ -159,8 +159,16 @@ export const PROTECTED_RESEARCH_READER_USER_TYPES: ReadonlySet<string> = new Set
 
 /** The reader's role CLASS — resolved from the session seat (users.user_type / users.platform_role), or `system` for the
  *  autonomous persona study acting for one tenant. */
-export type ProtectedReaderRole =
-  | "platform_admin" | "platform_support" | "broker" | "compliance" | "tenant_admin" | "team_lead" | "agent" | "tenant_support" | "system"
+/**
+ * THE READER CLASSES — derived from users.user_type and users.platform_role by readerRoleOf, never a roster of their own
+ * (CLAUDE.md §6; scripts/admin-vocabulary-simulator.ts recognises this list by derivation). Where a class IS one user_type it
+ * carries that word (`admin`, `compliance_officer`, `agent`, `team_lead`, `system`); `broker` is the brokerage tier
+ * (broker / broker_admin / broker_owner); the three prefixed classes exist only because `support` is a word in BOTH columns
+ * (users.user_type 'support' = tenant support staff, users.platform_role 'support' = platform support) and the platform's
+ * admin class spans two platform_role values (superadmin, admin).
+ */
+export const PROTECTED_READER_ROLES = ["platform_admin", "platform_support", "broker", "compliance_officer", "admin", "team_lead", "agent", "tenant_support", "system"] as const
+export type ProtectedReaderRole = (typeof PROTECTED_READER_ROLES)[number]
 /** How far a role's read reaches: `assigned` = contacts.agent_id is the reader's agents row; `team` = the contact is on a team the
  *  reader leads (teams.team_lead_id → users) or is their own; `tenant` = the session brokerage; `platform` = any tenant, with a
  *  justification; `system` = the one tenant the autonomous study runs for. */
@@ -176,11 +184,11 @@ export type ProtectedReadScope = "assigned" | "team" | "tenant" | "platform" | "
  *   support_investigation       — support seats (tenant + platform) and platform admins, always with a justification.
  */
 export const PROTECTED_READ_MATRIX: Readonly<Record<ProtectedResearchReadPurpose, Readonly<Partial<Record<ProtectedReaderRole, ProtectedReadScope>>>>> = Object.freeze({
-  research: { broker: "tenant", compliance: "tenant", platform_admin: "platform" },
-  compliance_audit: { broker: "tenant", compliance: "tenant", platform_admin: "platform" },
-  data_subject_request: { broker: "tenant", compliance: "tenant", tenant_admin: "tenant", team_lead: "tenant", platform_admin: "platform", platform_support: "platform" },
-  customer_service: { agent: "assigned", team_lead: "team", broker: "tenant", tenant_admin: "tenant", compliance: "tenant", tenant_support: "tenant", platform_support: "platform" },
-  persona_derivation: { agent: "assigned", team_lead: "team", broker: "tenant", tenant_admin: "tenant", compliance: "tenant", system: "system" },
+  research: { broker: "tenant", compliance_officer: "tenant", platform_admin: "platform" },
+  compliance_audit: { broker: "tenant", compliance_officer: "tenant", platform_admin: "platform" },
+  data_subject_request: { broker: "tenant", compliance_officer: "tenant", admin: "tenant", team_lead: "tenant", platform_admin: "platform", platform_support: "platform" },
+  customer_service: { agent: "assigned", team_lead: "team", broker: "tenant", admin: "tenant", compliance_officer: "tenant", tenant_support: "tenant", platform_support: "platform" },
+  persona_derivation: { agent: "assigned", team_lead: "team", broker: "tenant", admin: "tenant", compliance_officer: "tenant", system: "system" },
   support_investigation: { tenant_support: "tenant", platform_support: "platform", platform_admin: "platform" },
 })
 
@@ -197,9 +205,9 @@ function readerRoleOf(actor: ProtectedAttributeReadRequest["actor"]): ProtectedR
   const pr = actor.platformRole ?? null
   if (isPlatformStaffRole(pr)) return pr === "support" ? "platform_support" : pr === "marketing" ? null : "platform_admin"
   const t = String(actor.userType ?? "")
-  if (t === "compliance_officer") return "compliance"
+  if (t === "compliance_officer") return "compliance_officer"
   if (t === "team_lead") return "team_lead"
-  if (t === "admin") return "tenant_admin"
+  if (t === "admin") return "admin"
   if (t === "agent") return "agent"
   if (t === "support") return "tenant_support"
   if (PROTECTED_RESEARCH_READER_USER_TYPES.has(t)) return "broker" // the roster minus the classes named above = the broker tier

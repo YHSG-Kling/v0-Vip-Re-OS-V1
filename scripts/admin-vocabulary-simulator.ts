@@ -165,7 +165,20 @@ const LEGACY_INPUT_SPELLINGS = [
   "superadmin",
 ] as const
 
-const KNOWN_ROLE_WORDS = new Set<string>([...STORABLE_USER_TYPES, ...LEGACY_INPUT_SPELLINGS])
+/**
+ * THE PROTECTED-READER CLASSES (wave 148, lane 148C — owner ruling 1). lib/enrichment/protected-research-store.ts classifies a
+ * reader by DERIVATION from users.user_type AND users.platform_role (readerRoleOf) — it is not a roster, and a class carries its
+ * user_type word wherever it is one (admin, compliance_officer, agent, team_lead, system). Three classes are prefixed because the
+ * word `support` is legal in BOTH columns (tenant support vs platform support) and the platform admin class spans two
+ * platform_role values. Read from the module's SOURCE (it imports server-only, so no runtime import here) — the same
+ * recognised-by-derivation discipline as the seat vocabulary below, with its own control.
+ */
+const PROTECTED_READER_CLASSES: readonly string[] = (() => {
+  const src = readFileSync(join(ROOT, "lib/enrichment/protected-research-store.ts"), "utf8")
+  const m = /export const PROTECTED_READER_ROLES = \[([^\]]+)\] as const/.exec(src)
+  return m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : []
+})()
+const KNOWN_ROLE_WORDS = new Set<string>([...STORABLE_USER_TYPES, ...LEGACY_INPUT_SPELLINGS, ...PROTECTED_READER_CLASSES])
 
 /**
  * The owner's TENANT admin-class roster.
@@ -641,6 +654,10 @@ function sourceLayer() {
     phantomScanned > 20)
   check(`the seat vocabulary is recognised by derivation, not by silence (seat arrays skipped: ${seatArraysSkipped}, must be > 0 while lib/ai-isa/user-type-tool-policy.ts declares USER_TYPE_SEATS)`,
     seatArraysSkipped > 0)
+  check(`the protected-reader classes are recognised by derivation, not by silence (${PROTECTED_READER_CLASSES.length} read from lib/enrichment/protected-research-store.ts PROTECTED_READER_ROLES; the two-column collision classes present)`,
+    PROTECTED_READER_CLASSES.length >= 9 && ["platform_support", "tenant_support", "platform_admin"].every((c) => PROTECTED_READER_CLASSES.includes(c)))
+  check("POSITIVE CONTROL: a reader class is not a blanket — a word the store never declares is still a phantom beside two admin words",
+    phantomRoles(["broker_admin", "team_lead", "platform_support", "reader_class_nobody_declared"]).join() === "reader_class_nobody_declared")
   // POSITIVE CONTROL: a role gate that smuggles a phantom beside two admin words is
   // still caught — the seat allowance cannot hide it.
   check("POSITIVE CONTROL: [broker_admin, team_lead, not_a_role_anywhere] is still a phantom hit",

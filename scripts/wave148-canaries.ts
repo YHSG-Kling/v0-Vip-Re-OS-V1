@@ -362,7 +362,7 @@ group("148C", "protected research → marketing-safe persona → compliant audie
     id: "148C·R1", label: "every role the owner named reads within least privilege; an ISA seat and a PROHIBITED purpose are refused — and both refusals are ledgered",
     run: async () => {
       const store = await import("../lib/enrichment/protected-research-store")
-      const named = ["tenant_admin", "platform_admin", "platform_support", "agent", "team_lead", "broker", "compliance", "tenant_support"]
+      const named = ["admin", "platform_admin", "platform_support", "agent", "team_lead", "broker", "compliance_officer", "tenant_support"]
       const admitted = new Set(Object.values(store.PROTECTED_READ_MATRIX).flatMap((row) => Object.keys(row)))
       const prohibitedRow = ["ad_audience", "ad_targeting", "steering", "eligibility", "scoring", "outreach_targeting"].some((p) => p in store.PROTECTED_READ_MATRIX)
       const db = personaWorld()
@@ -887,7 +887,9 @@ group("148H", "event producer registry, verified attendance, identity matched ca
       const tomb = eventCensus(["open_house"], { open_house: { ...R.EVENT_PRODUCER_REGISTRY.open_house, producer: { file: "x.ts", fn: "createOpenHouse" } } }, (f) => (f === "x.ts" ? stripComments("// export async function createOpenHouse() {} — tombstone\n") : code(f)))
       const unstorable = eventCensus(["open_house"], R.EVENT_PRODUCER_REGISTRY as never, code) // registry kinds the CHECK would not admit
       return {
-        positive: vocab.length === 5 && findings.length === 0,
+        // THE RULE, NOT A WAYPOINT (CLAUDE.md §2): the live CHECK and the registry name the SAME kinds — five when lane H
+        // landed, six after m926 (client_event), whatever the next migration says — and every one has its producer.
+        positive: vocab.length > 0 && [...vocab].sort().join() === [...R.EVENT_KINDS].sort().join() && findings.length === 0,
         negative: missing.some((f) => /community_bbq: no producer/.test(f)) && tomb.some((f) => /does not exist/.test(f)) && unstorable.some((f) => /does not admit/.test(f)),
         detail: JSON.stringify({ vocab, findings }),
       }
