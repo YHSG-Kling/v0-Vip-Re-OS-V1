@@ -120,21 +120,28 @@ export async function run() {
   const oh = c.track(memSupabase({
     open_house_events: [{ id: EV, brokerage_id: B, listing_id: OHL, agent_id: AG, status: "scheduled" }],
     listings: [{ id: OHL, brokerage_id: B, address: "5 Sign-In St" }],
-    agents: [{ id: AG, user_id: U, brokerage_id: B }, { id: AG2, user_id: U2, brokerage_id: B2 }],
+    // is_active: the one intake door (C8, wave 148) honours an event's agent as the owner only while that agent is active
+    // (lib/lead-assignment/contact-assignment.ts resolveAgentForContact) — the fixture models a working agent, as production does.
+    agents: [{ id: AG, user_id: U, brokerage_id: B, is_active: true }, { id: AG2, user_id: U2, brokerage_id: B2, is_active: true }],
     contacts: [], open_house_attendees: [], contact_consent_events: [], lifecycle_events: [], person_identities: [], person_identity_evidence: [],
   }, { uuidIds: true }), B, B2)
   setSvc(oh)
   const soh = await quiet(async () => import("../../app/actions/seller-open-house")) as unknown as Record<string, any>
+  // WAVE 148 (lane 148B, contract C15 — re-asserted by the integrator): the kiosk door takes THE one consent component's
+  // submission (booleans + door key; the wording is re-rendered server-side), never a hardcoded `tcpaConsent: true`
+  // (ruling 3: consent is never fabricated). The visitor ticks the service box; the no-consent case sends nothing.
+  const cc = await import("../../lib/kernel/compliance/consent-component")
+  const ticked = cc.consentSubmissionFor({ ...cc.EMPTY_CONSENT_VALUE, serviceDelivery: true }, { door: "open_house_kiosk", brandName: "Lane 147 Realty" })
   const ev0 = w.events.length
-  const ci = await quiet(async () => soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat.visitor.f147@example.test", phone: "8135550147", workingWithAgent: false, tcpaConsent: true })) as Record<string, any>
+  const ci = await quiet(async () => soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat.visitor.f147@example.test", phone: "8135550147", workingWithAgent: false, consent: ticked })) as Record<string, any>
   const att = tbl(oh, "open_house_attendees")[0] ?? {}, contact = tbl(oh, "contacts")[0] ?? {}, consent = tbl(oh, "contact_consent_events")[0] ?? {}
   const captured = [...tbl(oh, "lifecycle_events"), ...w.events.slice(ev0)].some((e) => /attendee/i.test(String(e.event_type ?? e.event ?? "")) && jsonOf(e).includes(String(contact.id)))
   c.rule("147F", "AN OPEN-HOUSE SIGN-IN STILL HAS ITS WRITERS (ruling 7: attendance, identity matching, consent, follow-up and event evidence): a consented sign-in → an attendee AND a Contact (the attendee stamped with it) → the consent row anchored to THAT contact → the contact and the attendee as person-identity evidence → the capture event recorded WITH the contact (what the arbiter's follow-up reader keys on)",
     ci.success === true && !!contact.id && att.contact_id === contact.id && contact.brokerage_id === B && consent.contact_id === contact.id && consent.consented === true
       && tbl(oh, "person_identity_evidence").some((e) => e.entity_type === "contact" && e.entity_id === contact.id) && tbl(oh, "person_identity_evidence").some((e) => e.entity_type === "open_house_attendee" && e.entity_id === att.id) && captured,
     `check-in ${ci.success ? "ok" : ci.error}; attendee→contact ${att.contact_id === contact.id}; consent anchored ${consent.contact_id === contact.id}; identity evidence ${tbl(oh, "person_identity_evidence").length}; capture event with the contact ${captured}`)
-  const again = await quiet(async () => soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat.visitor.f147@example.test", workingWithAgent: false, tcpaConsent: true })) as Record<string, any>
-  const noConsent = await quiet(async () => soh.checkInAttendee({ eventId: EV, name: "No Consent", email: "nc.f147@example.test", workingWithAgent: false, tcpaConsent: false })) as Record<string, any>
+  const again = await quiet(async () => soh.checkInAttendee({ eventId: EV, name: "Pat Visitor", email: "pat.visitor.f147@example.test", workingWithAgent: false, consent: ticked })) as Record<string, any>
+  const noConsent = await quiet(async () => soh.checkInAttendee({ eventId: EV, name: "No Consent", email: "nc.f147@example.test", workingWithAgent: false, consent: null })) as Record<string, any>
   c.rule("147F", "…THE SAME PERSON AGAIN IS THE SAME ATTENDEE, AND NO CONSENT FILES NOTHING: a second sign-in of the same email is a duplicate (one attendee, one contact); a sign-in without the consent box is refused and files no contact — POSITIVE CONTROL for the 'one contact' count: the consented sign-in above filed exactly one",
     again.duplicate === true && tbl(oh, "open_house_attendees").length === 1 && tbl(oh, "contacts").length === 1 && noConsent.success === false,
     `again → duplicate ${again.duplicate}; attendees ${tbl(oh, "open_house_attendees").length}, contacts ${tbl(oh, "contacts").length}; no consent → ${noConsent.success === false ? "refused" : "FILED"}`)

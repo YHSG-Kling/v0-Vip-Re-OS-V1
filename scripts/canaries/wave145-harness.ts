@@ -142,7 +142,9 @@ const REAL_CONSOLE = { log: console.log, warn: console.warn, error: console.erro
 let quietDepth = 0
 export async function quiet<T>(fn: () => Promise<T>): Promise<T> {
   quietDepth += 1
-  console.log = console.warn = console.error = console.info = () => {}
+  // CANARY_LOUD=1 keeps console.error / console.warn (a module's own refusal reason) while a step runs — a diagnostic switch for
+  // the integrator reading a red step; the default stays silent so a canary run reads as its verdict lines only.
+  if (process.env.CANARY_LOUD) { console.log = console.info = () => {} } else { console.log = console.warn = console.error = console.info = () => {} }
   try { return await fn() } finally { quietDepth -= 1; if (quietDepth === 0) Object.assign(console, REAL_CONSOLE) }
 }
 
