@@ -362,7 +362,9 @@ export async function setEventReplay(eventId: string, replayUrl: string): Promis
     if (!url) return { success: false, error: "The recording needs an https link" }
     const service = createServiceClient()
     // The cancelOpenHouse scope: a broker / admin may act on any of the brokerage's events; an agent only on their own.
-    const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"
+    // No `superadmin` user_type here: platform staff live in platform_role (CLAUDE.md §4; the one discriminator is
+    // lib/platform/platform-staff-roster.ts isPlatformSuperadminIdentity) and act on a tenant's event through impersonation.
+    const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin"
     if (!isBrokerOrAdmin && !ctx.agentId) return { success: false, error: "Unauthorized" }
     let q = service.from("open_house_events").update({ replay_url: url }).eq("id", eventId).eq("brokerage_id", ctx.brokerageId)
     if (!isBrokerOrAdmin) q = q.eq("agent_id", ctx.agentId as string)
