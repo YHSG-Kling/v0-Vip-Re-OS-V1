@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 148, lane 148H) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-01 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 148, lane 148H ──
 --
 -- m924 — C22 THE EVENT PRODUCER REGISTRY, storage half (owner ruling 14, 2026-11-01: "any event needs producers or one place
 -- all feeds into"; ruling 20: "we use Zoom so maybe use that for virtual open house? or YouTube Live?").

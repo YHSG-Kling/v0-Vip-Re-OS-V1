@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 148, lane 148G) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-01 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 148, lane 148G ──
 --
 -- m921 — lead_magnet_funnel_items: THE C21 FUNNEL PACKAGE'S ITEMS (wave 148, lane 148G — owner ruling 11, 2026-11-01:
 -- "the lead magnets first create the landing pages, forms … and then what the deliverables will need to be … it could be an

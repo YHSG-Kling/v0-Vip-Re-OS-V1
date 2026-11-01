@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 148, lane 148I) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-01 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 148, lane 148I ──
 --
 -- m928 — connector_healing_proposals.status: ONE VOCABULARY, ENFORCED, WITH C25's REVERSAL (owner ruling 15, 2026-11-01:
 -- "some coding self healing is acceptable as long as it doesn't break the rest of the OS such as configuration change of a

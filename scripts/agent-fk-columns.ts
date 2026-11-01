@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 241 agents(id) columns across 230 tables, 38 agent-ish users(id) columns across 36 tables, 176 contact_id tables.
+ * MEASURED AT GENERATION: 241 agents(id) columns across 230 tables, 38 agent-ish users(id) columns across 36 tables, 178 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-31
+ * generated: 2026-11-01
  * source: public.live_foreign_keys_json()
- * body-sha256: a5b737a895c8eba618a7aa2f28e3b77250eb9e612bd86474f85370d20275ac00
+ * body-sha256: 0f7ddb1f16f6e1b9d77ab3d06f07c6428e4786949549b1a6db8bdd6097cd850a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -340,6 +340,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "buyer_behavior_log",
   "buyer_behavior_predictions",
   "buyer_criteria_changes",
+  "buyer_criteria_utterances",
   "buyer_fatigue_scores",
   "buyer_financial_profiles",
   "buyer_intake_tokens",
@@ -385,6 +386,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "email_sends",
   "email_tracking",
   "embed_sessions",
+  "event_attendance_evidence",
   "external_behavior",
   "fair_housing_logs",
   "fatigue_alerts",

@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 472 tables, 899 columns.
+ * MEASURED AT GENERATION: 476 tables, 915 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-31
+ * generated: 2026-11-01
  * source: public.live_check_constraints_json()
- * body-sha256: c5afde709ad65475f7880943486915349098308ea71ad2046a6a7b0697d5eee2
+ * body-sha256: 114ecc7105ae895376606b8ccda43e3dbe3034ca1ae12d0d663b9d3023557814
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -398,6 +398,12 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["accepted", "applied", "proposed", "rejected", "superseded"],
     trigger: ["corrected", "dismissed", "feedback", "priority_change", "saved", "stated", "toured"],
   },
+  buyer_criteria_utterances: {
+    channel: ["agent", "ai_chat", "email", "mobile", "portal", "sms", "system", "voice"],
+    confidence: ["high", "low"],
+    consent_basis: ["agent_attested", "call_recording_disclosure", "inbound_message", "self_service_portal"],
+    source_kind: ["agent_entry", "call_transcript", "inbound_email", "inbound_sms", "intent_interface", "portal_turn", "system_import"],
+  },
   buyer_fatigue_scores: {
     engagement_trend: ["declining", "increasing", "stable", "stopped"],
     risk_level: ["critical", "fresh", "high", "moderate"],
@@ -577,6 +583,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   compliance_tasks: {
     status: ["complete", "overdue", "pending", "waived"],
+  },
+  connector_healing_proposals: {
+    status: ["applied", "pending", "rejected", "reverted"],
   },
   contact_memory: {
     entity_type: ["contact", "listing", "transaction"],
@@ -782,6 +791,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     action_type: ["acknowledged", "auto_retry", "escalated", "false_positive", "manual_retry", "resolved", "suppressed"],
     retry_result: ["failure", "pending", "success"],
   },
+  event_attendance_evidence: {
+    identity_match: ["email_exact", "host", "registrant_id", "registration_token", "unmatched"],
+    provider: ["youtube", "zoom"],
+    provider_event: ["meeting_ended", "participant_joined", "participant_left", "watch_link_opened"],
+  },
   event_processing_log: {
     status: ["failure", "skipped", "success"],
   },
@@ -862,6 +876,12 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     fulfilment: ["asset", "human"],
     kind: ["book", "checklist", "guide", "report", "valuation", "video"],
     status: ["failed", "producing", "ready", "staged", "superseded"],
+  },
+  lead_magnet_funnel_items: {
+    fulfilment: ["arrangement", "asset", "human"],
+    kind: ["book", "calculator", "calendar_link", "checklist", "consultation", "education_sequence", "guide", "mini_course", "personal_video", "portal_task", "report", "valuation", "video", "webinar"],
+    role: ["deliverable", "primary", "step"],
+    status: ["arranged", "failed", "planned", "producing", "ready", "staged", "withdrawn"],
   },
   lead_magnet_promises: {
     asset_kind: ["book", "checklist", "guide", "report", "valuation", "video"],
@@ -1209,20 +1229,22 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     interest_level: ["cold", "hot", "no_interest", "warm"],
   },
   open_house_events: {
-    event_type: ["broker_open", "open_house", "virtual_open_house"],
+    event_type: ["broker_open", "education_session", "open_house", "virtual_open_house", "webinar"],
     status: ["active", "cancelled", "completed", "draft", "marketing", "scheduled"],
+    virtual_provider: ["external_link", "youtube", "zoom"],
   },
   open_house_feedback: {
     price_opinion: ["good_value", "priced_right", "too_high"],
   },
   open_house_invitations: {
     channel: ["both", "email", "in_app", "sms"],
-    invitation_type: ["broker_preview", "open_house", "virtual_open_house"],
+    invitation_type: ["broker_preview", "education_session", "open_house", "virtual_open_house", "webinar"],
     rsvp_response: ["maybe", "no", "no_response", "yes"],
   },
   open_house_rsvp_tracking: {
+    attendance_verified_by: ["agent_walk_in", "kiosk_signin", "zoom_participant"],
     rsvp_status: ["attended", "invited", "maybe", "no", "no_show", "yes"],
-    source: ["ai_reception", "email", "qr_code", "sms", "walk_in"],
+    source: ["ai_reception", "email", "qr_code", "sms", "walk_in", "web_registration"],
   },
   orchestrator_tasks: {
     status: ["cancelled", "completed", "failed", "pending", "running"],
@@ -1724,6 +1746,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   transactions: {
     commission_final_source: ["cd_uploaded", "cda_signed"],
+    contract_closing_source: ["executed_amendment", "executed_contract"],
+    contract_closing_terms: ["on", "on_or_before"],
     deal_type: ["buyer", "dual", "seller"],
     legal_description_source: ["agent", "listing", "public_record", "rentcast"],
     source_family: ["contact_direct", "lead", "raw"],

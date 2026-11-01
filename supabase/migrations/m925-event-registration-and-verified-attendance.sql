@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 148, lane 148H) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-01 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 148, lane 148H ──
 --
 -- m925 — C22 REGISTRATION + VERIFIED ATTENDANCE (owner ruling 20, 2026-11-01: "Zoom … participant join/leave webhooks to verify
 -- attendance; an anonymous join click is not attendance"; ruling 12: every form carries identity + situation fields AND the

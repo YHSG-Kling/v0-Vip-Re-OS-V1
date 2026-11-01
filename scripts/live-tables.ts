@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 797 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 800 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-31
+ * generated: 2026-11-01
  * source: public.live_schema_json()
- * body-sha256: e8192311adbe817ca80a4fbbbdb931419025fdea60d1c0f27ebc385376e26552
+ * body-sha256: c26f83a3700b01fc54d05b38920b10fb80bb622d906668034484f0350cb09962
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -177,6 +177,7 @@ export const LIVE_TABLES: readonly string[] = [
   "buyer_behavior_predictions",
   "buyer_broker_agreements",
   "buyer_criteria_changes",
+  "buyer_criteria_utterances",
   "buyer_fatigue_scores",
   "buyer_financial_profiles",
   "buyer_intake_tokens",
@@ -340,6 +341,7 @@ export const LIVE_TABLES: readonly string[] = [
   "error_resolution_log",
   "error_stack_traces",
   "escalation_dashboard",
+  "event_attendance_evidence",
   "event_processing_log",
   "external_behavior",
   "facebook_custom_audiences",
@@ -397,6 +399,7 @@ export const LIVE_TABLES: readonly string[] = [
   "lead_imports",
   "lead_intelligence",
   "lead_magnet_deliverables",
+  "lead_magnet_funnel_items",
   "lead_magnet_promises",
   "lead_magnet_submissions",
   "lead_magnets",

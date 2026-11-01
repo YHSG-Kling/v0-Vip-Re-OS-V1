@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 148, lane 148I) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-01 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 148, lane 148I ──
 --
 -- m927 — THE CLOSING-DATE MODEL: the contract's deadline, the anticipated day and the actual day are THREE facts
 -- (owner ruling 21, 2026-11-01: "a closing date can also be worded as 'on or before' … lending/title/closing attorney

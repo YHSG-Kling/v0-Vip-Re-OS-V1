@@ -264,14 +264,16 @@ export async function GET(req: Request) {
     for (const provider of providers) {
       if (healingProposed >= HEAL_MAX_PER_RUN) break
       const failures = byProvider.get(provider)!
-      // Dedup: ANY non-final-applied proposal in the last 24h (pending / rejected / superseded)
-      // covers this signal. Includes rejected so a "false positive" admin reject is honored
-      // until the next 24h window; admins can still re-trigger by clearing the row.
+      // Dedup: ANY non-final-applied proposal in the last 24h (pending / rejected / reverted — the live CHECK's
+      // vocabulary since m928; `superseded` was a value no writer ever produced and left with that CHECK)
+      // covers this signal. Includes rejected so a "false positive" admin reject is honored until the next 24h
+      // window, and reverted so a version that failed its test is not re-proposed inside it; admins can still
+      // re-trigger by clearing the row.
       const { data: existing } = await svc
         .from('connector_healing_proposals')
         .select('id, status')
         .eq('connector', provider)
-        .in('status', ['pending', 'rejected', 'superseded'])
+        .in('status', ['pending', 'rejected', 'reverted'])
         .gte('detected_at', since24h)
         .limit(1)
         .maybeSingle()
