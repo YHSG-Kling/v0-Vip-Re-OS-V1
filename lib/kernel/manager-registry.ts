@@ -2772,7 +2772,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   network_benchmarks: "data_steward",  // m726 (wave 107F): k-anonymous platform benchmarks — no tenant / person column; written only by the network-intelligence cron
   person_identities: "data_steward",            // m697 (wave 102): ONE person per tenant per identity-gate key, under leads/contacts
   person_identity_evidence: "data_steward",     // m697 (wave 102): append-only ledger of every record resolved to a person
-  protected_research_attributes: "data_steward", // m864 (wave 145, lane 145F; owner ruling 12): segregated research-only store of vendor-modeled protected attributes (provenance, RLS: platform staff / same-tenant compliance_officer read, service-role write) — never read by ads / targeting / dispatch
+  protected_research_attributes: "data_steward", // m864 (wave 145, lane 145F; owner ruling 12): segregated research-only store of vendor-modeled protected attributes (provenance; service-role write). WAVE 148 (lane 148C, m914; owner ruling 1): the direct research_read policy is DROPPED and SELECT revoked from authenticated — every read goes through the ledgered reader readProtectedAttributes (lib/enrichment/protected-research-store.ts, PROTECTED_READ_MATRIX: role × purpose × scope, tenant from the session) — never read by ads / targeting / dispatch
   relationship_edges: "data_steward", // m698 (wave 102): the tenant-scoped typed relationship graph, derived at the survivor writers
   lead_imports: "ai_isa",
   lead_intelligence: "ai_isa",
