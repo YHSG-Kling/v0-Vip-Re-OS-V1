@@ -405,7 +405,9 @@ console.log("\n═══ 5. The detector still recognises every shape it was wri
     ["app/components/ai-copilot/inline-ai-reply-coach.tsx", /accepted\?\.success/],
     ["app/components/content-studio/LinkToVideoGenerator.tsx", /deleted\?\.success/],
     ["app/components/portal/PersonaPropertiesDashboard.tsx", /requested\?\.success/],
-    ["app/crm/components/os/buyer-match-panel.tsx", /requested\?\.error/],
+    // wave 148: the panel books through the canonical showing door (app/actions/showings.ts → { success, error }) and reads `.success`;
+    // the rule is "the outcome is read", not one spelling of it.
+    ["app/crm/components/os/buyer-match-panel.tsx", /requested(\?\.|\.)(success|error)/],
     ["app/crm/components/financial-verification-panel.tsx", /profile\.success/],
     ["app/dashboard/settings/required-documents/required-doc-row-actions.tsx", /r\.ok/],
     ["app/components/layout/impersonation-banner.tsx", /ended\.ok/],
