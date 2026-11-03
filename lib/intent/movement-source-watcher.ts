@@ -157,7 +157,7 @@ async function watchMovementSources(
     const res: SourceWatchResult = { key: ps.key, status: "polled", items: 0, raised: 0, replayed: 0, unchanged: 0, baselineSilent: 0, refused: 0, errors: [], freshness: { lastSuccessAt: null, promisedFreshnessMinutes: promised, stale: true, note: "" } }
     out.sources.push(res)
     try {
-      const live = ps.registryKeys.map((k) => movementSource(k)).filter((r) => r && r.status === "live")
+      const live = ps.registryKeys.map((k) => movementSource(k)).filter((src) => src && src.status === "live")
       if (live.length === 0) { res.status = "not_live"; res.freshness.note = "no live registry row — configuration-only / waiting-external sources are never polled"; continue }
       const st = await store.loadPoll(brokerageId, ps.key)
       if (!st.ok) { res.status = "state_unread"; res.errors.push(`poll state read refused: ${st.error} — skipped (an unread state is never a baseline)`); continue }
@@ -182,7 +182,7 @@ async function watchMovementSources(
       const prev = await store.loadItems(brokerageId, ps.key, [...byKey.keys()])
       if (!prev.ok) { res.status = "state_unread"; res.errors.push(`item state read refused: ${prev.error} — skipped`); continue }
       const baseline = !lastSuccess
-      const halfLife = Math.max(...live.map((r) => r!.halfLifeDays))
+      const halfLife = Math.max(...live.map((src) => src!.halfLifeDays))
       let blocked = false
       for (const [itemKey, it] of byKey) {
         const digest = materialDigest(it.material)
@@ -205,15 +205,15 @@ async function watchMovementSources(
         // The raise is keyed on WHAT changed and WHEN it was observed (item + digest + observation) — never on the previous digest,
         // so a lost item state replays instead of re-raising, while a return to an earlier value is a NEW observation and is raised.
         const transition: MovementSignalRecord = { ...built.record, idempotencyKey: `movement_poll:${brokerageId}:${ps.key}:${movementDigest(itemKey)}:${digest}:${it.observedAt ?? "undated"}` }
-        const r = await record(svc, transition, { ...(deps.movement ?? {}), ...(ps.route === false ? { route: false } : {}) })
-        if (r.status === "refused") {
+        const outcome = await record(svc, transition, { ...(deps.movement ?? {}), ...(ps.route === false ? { route: false } : {}) })
+        if (outcome.status === "refused") {
           // Not remembered: the change was not raised, so the next tick tries again (never "seen" without being signalled).
-          res.refused++; res.errors.push(`${itemKey}: ${r.code} — ${r.reason}`.slice(0, 300)); blocked = true
+          res.refused++; res.errors.push(`${itemKey}: ${outcome.code} — ${outcome.reason}`.slice(0, 300)); blocked = true
           continue
         }
-        if (r.status === "recorded") res.raised++
+        if (outcome.status === "recorded") res.raised++
         else res.replayed++
-        const saved = await store.saveItem(brokerageId, ps.key, { item_key: itemKey, digest, last_seen_at: at, last_changed_at: at, last_signal_id: r.id ?? null, ...(before === null ? { first_seen_at: at } : {}) })
+        const saved = await store.saveItem(brokerageId, ps.key, { item_key: itemKey, digest, last_seen_at: at, last_changed_at: at, last_signal_id: outcome.id ?? null, ...(before === null ? { first_seen_at: at } : {}) })
         if (!saved.ok) res.errors.push(`${itemKey}: item state not saved (${saved.error}) — the ledger key keeps the next run from raising it again`)
       }
       // A poll whose raises were refused did not fully succeed: last_success_at stays put so the freshness tells the truth.

@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1922 of 1997 pairs) — storing them would be
+ * overwhelming majority (1929 of 2004 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 2096 edges across 752 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1997 unordered
+ * MEASURED AT GENERATION: 2103 edges across 752 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2004 unordered
  * table pairs carry at least one FK; 75
  * carry more than one and are listed below. 20 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-01
+ * generated: 2026-11-03
  * source: public.live_foreign_keys_json()
- * body-sha256: eac4ee802cf6aaf2b13bb5f2c6527b0021326056b936107aff98c8750a351950
+ * body-sha256: d9544c1808c7398aae459ff96095d3db13fb6aab09093e4e3e7ccd0968df7d0d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -290,9 +290,9 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "cma_packages": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "cma_price_adjustments": { "cma_report_id": "cma_reports" },
   "cma_reports": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
-  "collaborative_search_members": { "collaborative_search_id": "collaborative_searches" },
+  "collaborative_search_members": { "brokerage_id": "brokerages", "collaborative_search_id": "collaborative_searches", "invited_by_user_id": "users" },
   "collaborative_search_properties": { "added_by_contact_id": "contacts", "collaborative_search_id": "collaborative_searches" },
-  "collaborative_searches": { "brokerage_id": "brokerages", "contact_id": "contacts", "created_by_contact_id": "contacts" },
+  "collaborative_searches": { "brokerage_id": "brokerages", "contact_id": "contacts", "created_by_contact_id": "contacts", "feedback_consent_by_user_id": "users" },
   "commission_adjustments": { "approval_decided_by": "users", "approved_by_agent_id": "agents", "brokerage_id": "brokerages", "concession_agent_id": "agents", "created_by_agent_id": "agents", "offer_id": "offers", "transaction_id": "transactions" },
   "commission_calculations": { "agent_id": "agents", "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "commission_distributions": { "adjusts_distribution_id": "commission_distributions", "agent_id": "agents", "brokerage_id": "brokerages", "commission_id": "agent_commissions", "corrected_by": "users", "referral_partner_id": "referral_partners", "rule_id": "commission_rules", "team_id": "teams", "transaction_id": "transactions" },
@@ -434,7 +434,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "keyword_intelligence": { "brokerage_id": "brokerages" },
   "knowledge_articles": { "author_id": "users", "brokerage_id": "brokerages" },
   "lead_behavioral_data": { "brokerage_id": "brokerages", "lead_id": "leads" },
-  "lead_capture_forms": { "agent_id": "agents", "brokerage_id": "brokerages" },
+  "lead_capture_forms": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by_user_id": "users", "qr_code_id": "qr_codes" },
   "lead_conversation_history": { "brokerage_id": "brokerages", "lead_id": "leads" },
   "lead_deduplication_log": { "brokerage_id": "brokerages", "lead_id": "leads" },
   "lead_engagement_scores": { "brokerage_id": "brokerages", "lead_id": "leads" },
@@ -638,7 +638,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "property_alert_results": { "alert_id": "property_alerts", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
   "property_alerts": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "property_consensus": { "collaborative_search_id": "collaborative_searches" },
-  "property_family_ratings": { "collaborative_search_id": "collaborative_searches" },
+  "property_family_ratings": { "brokerage_id": "brokerages", "collaborative_search_id": "collaborative_searches", "member_id": "collaborative_search_members" },
   "property_feedback": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
   "property_intelligence": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "property_interests": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts" },

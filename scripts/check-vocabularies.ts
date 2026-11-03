@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 477 tables, 921 columns.
+ * MEASURED AT GENERATION: 478 tables, 926 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-01
+ * generated: 2026-11-03
  * source: public.live_check_constraints_json()
- * body-sha256: e66e49cb7e350ad9ea9688cdaf90503ef244655798684a2821489c23c593d11e
+ * body-sha256: b8d7c1dd57cb367d1d08e5e2a32b977985425acb96b25346466c7d9def540292
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -508,8 +508,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["archived", "draft", "presented", "ready"],
   },
   collaborative_search_members: {
+    invite_channel: ["email", "link"],
     invite_status: ["accepted", "declined", "pending"],
     role: ["editor", "owner", "viewer"],
+    scope: ["feedback_only"],
   },
   collaborative_search_properties: {
     status: ["active", "removed", "shortlisted"],
@@ -601,7 +603,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     ai_autopilot_level: ["aggressive", "conservative", "moderate", "off"],
     buyer_stage: ["BUYER_CLOSED", "BUYER_CONTACT_CREATED", "BUYER_DISENGAGED", "BUYER_FINANCIALLY_VERIFIED", "BUYER_LIFETIME", "BUYER_OFFER_ELIGIBLE", "BUYER_OFFER_SUBMITTED", "BUYER_ON_HOLD", "BUYER_SEARCHING", "BUYER_SEARCH_CONFIGURED", "BUYER_TOURING", "BUYER_TOUR_ELIGIBLE", "BUYER_UNDER_CONTRACT"],
     contact_persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "investor", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
-    contact_type: ["both", "buyer", "lead", "lifetime_customer", "other", "prospect", "referral_partner", "seller", "sphere", "vendor"],
+    contact_type: ["both", "buyer", "lifetime_customer", "other", "referral_partner", "seller", "sphere", "vendor"],
     lead_temperature: ["cold", "hot", "warm"],
     lender_status: ["cash", "needs_pre_approval", "pre_approved", "unknown"],
     lifetime_segment: ["local_owner", "relocated"],
@@ -1001,6 +1003,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     go_live_confirmed_source: ["idx", "rentcast"],
     legal_description_source: ["agent", "listing", "public_record", "rentcast"],
     lifecycle_stage: ["AGENT_CONSULTATION", "APPOINTMENT_SET", "APPRAISAL", "CLOSED", "CLOSING_PREP", "CMA_GENERATION", "COMING_SOON_ACTIVE", "COMING_SOON_PREP", "FINANCING", "INSPECTION", "LEAD", "LEAD_ASSIGNED", "LIFETIME_CUSTOMER", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "LISTING_CANCELLED", "LISTING_EXPIRED", "LISTING_PRESENTATION_CREATED", "MEDIA_APPROVED", "MEDIA_CAPTURE", "MLS_ACTIVE", "MLS_DATE_CONFIRMED", "MLS_READY", "NEGOTIATION", "OFFERS_RECEIVED", "OPEN_HOUSE_EVENT", "OPEN_HOUSE_MARKETING", "PRESENTATION_DRIP_PREP", "PRESENTATION_VIDEO_GENERATED", "REPAIRS_IN_PROGRESS", "SELLER_DECISION", "SELLER_DECLINED", "SHOWINGS_ACTIVE", "UNDER_CONTRACT"],
+    lot_size_unit: ["acres", "square_feet"],
     mls_live_date_basis: ["feed_list_date", "first_observed"],
     property_type: ["commercial", "condo", "land", "multi_family", "other", "single_family", "townhouse"],
     status: ["active", "cancelled", "coming_soon", "draft", "expired", "listing_signed", "off_market", "pending", "sold", "withdrawn"],
@@ -1237,6 +1240,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     interest_level: ["cold", "hot", "no_interest", "warm"],
   },
   open_house_events: {
+    brand_owner: ["platform", "tenant"],
     event_type: ["broker_open", "client_event", "education_session", "open_house", "virtual_open_house", "webinar"],
     status: ["active", "cancelled", "completed", "draft", "marketing", "scheduled"],
     virtual_provider: ["external_link", "youtube", "zoom"],
@@ -1437,6 +1441,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     listing_type: ["rent", "sale"],
     paused_by: ["agent", "buyer", "system"],
     source: ["agent_created", "buyer_adjusted", "system_generated", "text_conversation", "voice_conversation"],
+  },
+  property_family_ratings: {
+    vote: ["dislike", "like", "love", "neutral", "pass"],
   },
   property_interests: {
     alert_frequency: ["daily", "instant", "paused", "twice_daily", "weekly"],
