@@ -316,6 +316,38 @@ export async function executeSequenceStep(
     if (decision === "send_and_claim") claimFirstTouch = true
   }
 
+  // ── Step 5c: THE ARBITER OWNS THE TIMING (wave 149, lane 149C — owner ruling 7, contract C29) ──
+  // "Nothing fixed in communications." The step's authored delay (delay_days / delay_hours) is the sequence AUTHOR'S
+  // PROPOSAL of when this touch could go — it is no longer the decision. When a later step falls due, the arbiter decides from
+  // the person's evidence whether now is right or the touch waits a bounded time (followup_policy.arbiter.maxDeferDays bounds
+  // it; once spent, no wait is offered). The first step is the speed-to-lead / welcome baton above (ruling 16) and is not
+  // re-asked. An outage / refusal / spent budget / the arbiter switched off keeps the author's timing (the step sends).
+  // Every hard gate (authority, TCPA, de-confliction, suppression, quiet hours) still decides at dispatch.
+  if (!isFirstStep) {
+    const subject = contactId ? { type: "contact" as const, id: contactId } : enrollment.lead_id ? { type: "lead" as const, id: enrollment.lead_id as string } : null
+    if (subject) {
+      const { arbitratePlannedTouch } = await import("@/lib/ai-isa/followup-arbiter")
+      const arb = await arbitratePlannedTouch(supabase, {
+        brokerageId, planner: "sequence_step", subject, now: new Date(),
+        options: [{ id: "send_now", kind: "communication", channels: [], why: [`step ${nextStepNumber} of the tenant's sequence (${step.channel}) is due on its author's spacing (${step.delay_days ?? 0}d ${step.delay_hours ?? 0}h after the previous step)`] }],
+        planned: "send_now",
+        moment: { key: "sequence_step_due", intent: `A ${step.channel} step the tenant wrote is due for this person — decide whether now is right, or hold it a bounded time.` },
+        relationship: { type: subject.type, persona: null, hasAssignedAgent: false },
+        blindSpots: ["the person's recent touches across other senders are not read here — the de-confliction gate at dispatch decides frequency"],
+      })
+      if (arb.decision.kind === "wait" && arb.decision.waitHours !== null) {
+        const retryAt = new Date(Date.now() + arb.decision.waitHours * 3_600_000).toISOString()
+        const { data: held, error: holdErr } = await supabase.from("sequence_enrollments")
+          .update({ next_step_at: retryAt }).eq("id", enrollmentId).eq("brokerage_id", brokerageId).select("id")
+        if (holdErr || (held ?? []).length === 0) {
+          // The hold could not be saved — fail closed for THIS tick (never send against the arbiter's wait); the cron re-picks it.
+          console.error(`[step-executor] arbiter hold NOT saved for enrollment ${enrollmentId}: ${holdErr?.message ?? "matched no row"}`)
+        }
+        return { status: "skipped", reason: `the arbiter held this step until ${retryAt}: ${arb.decision.rationale}`.slice(0, 500) }
+      }
+    }
+  }
+
   // ── Step 6: Load recipient (contact OR lead) + agent ───────────────────────
   let contact: Record<string, any> | null = null
   let agentUserId: string | null = null

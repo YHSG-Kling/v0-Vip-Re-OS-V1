@@ -9,7 +9,7 @@ import { loadFollowupPolicy } from '@/lib/ai-isa/followup-policy'
 import { resolvePolicyRef } from '@/lib/kernel/tenant-policy'
 import { arbitrateCadence, countArbiterWaits, recordArbitration } from '@/lib/ai-isa/followup-arbiter'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
-import { adaptiveReengagementHook, cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
+import { adaptiveReengagementHook, cohortFromEnrichment, reengagementAngleForAttempt, REENGAGEMENT_ANGLES, asReengagementAngle } from '@/lib/ai-isa/adaptive-reengagement'
 import { conversionVerdictForRow, excludeConvertedLeads } from '@/lib/contact-promotion/conversion-finality'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
@@ -204,13 +204,23 @@ export async function runGhostReengagement(
       if (phaseInfo.escalateOnEntry && lead.reengagement_status !== 'long_horizon') {
         const { error: longHorizonErr } = await supabase.from('leads').update({ reengagement_status: 'long_horizon' }).eq('id', leadId)
         if (longHorizonErr) console.error(`[ghost-reengagement] lead NOT moved to long_horizon: ${longHorizonErr.message}`)
-        const { escalateExhaustedGhostLead } = await import('@/lib/ai-isa/ghost-escalation')
-        await escalateExhaustedGhostLead(supabase, {
-          leadId,
-          brokerageId,
-          attempts,
-          firstName: lead.first_name ?? null,
+        // WAVE 149 (C29): the FYI is the ARBITER's call (decideGhostEscalation — the planner proposes it, the FYI is the fallback).
+        const { decideGhostEscalation, escalateExhaustedGhostLead } = await import('@/lib/ai-isa/ghost-escalation')
+        const lastActivityIso = lead.last_activity_at as string | null
+        const esc = await decideGhostEscalation(supabase, {
+          leadId, brokerageId, attempts, now: today,
+          leadTemperature: (lead.lead_temperature as string | null) ?? null,
+          leadScore: typeof lead.lead_score === 'number' ? lead.lead_score : null,
+          hoursSinceLastActivity: lastActivityIso ? Math.max(0, Math.round((today.getTime() - new Date(lastActivityIso).getTime()) / 3_600_000)) : null,
         })
+        if (esc.escalate) {
+          await escalateExhaustedGhostLead(supabase, {
+            leadId,
+            brokerageId,
+            attempts,
+            firstName: lead.first_name ?? null,
+          })
+        }
       }
 
       // ── PAUSE CHECK: under_contract ───────────────────────────────────────
@@ -280,18 +290,25 @@ export async function runGhostReengagement(
       const inPhase1 = cadence.phase === 1
       const daysSinceStart = cadence.daysSinceStart
 
-      if (!cadence.shouldSend) {
-        skipped++
-        continue
-      }
-
-      // ── THE ARBITER (wave 143, lane 143E) — "managers check intent and determine the proper follow-up". The cadence
-      //    above is the ENVELOPE: it says a send is DUE on this tenant's schedule. For a due send the arbiter chooses
-      //    send-now or a bounded wait from the evidence (temperature, score, timeline, attempts, what they asked for) — it
-      //    can never pull a send forward (these leads consented to nothing), never go inside the fatigue floor, and stops
-      //    deferring after policy.arbiter.maxDeferDays. Its rationale is a ledger row; a model outage / refusal / spent
-      //    budget leaves the deterministic send exactly as it was. ──
+      // ── THE ARBITER (wave 143, lane 143E; WAVE 149 lane 149C, owner ruling 7 / C29) — the spacing above is the PLANNER'S
+      //    GUIDANCE, not a gate: arbitrateCadence decides from the evidence whether now is right (a due touch may wait; a lead
+      //    who was active since our last touch may be answered before the guidance's day), HOW to open (the adaptive angles,
+      //    adaptive-reengagement.ts) and whether the touch is the newsletter downshift (next-best-touch.ts). It never goes
+      //    inside the fatigue floor, never widens a lead's channels (email + mail only) and stops deferring after
+      //    policy.arbiter.maxDeferDays. Its rationale is a ledger row; a model outage / refusal / spent budget leaves the
+      //    guidance's verdict exactly as it was (send when due, hold when not). ──
+      let chosenAngle: ReturnType<typeof asReengagementAngle> = null
+      let newsletterChosen = false
+      let arbiterRationale: string | null = null
       {
+        // next-best-touch's PROPOSAL for the seasonal phase (never ordered by age group — owner ruling 18, wave 145): the one
+        // neutral default order, rotated off email. It is offered to the arbiter as an option; its verdict is the fallback.
+        let newsletterProposal: { suggested: boolean; reason: string } | null = null
+        if (cadence.phase === 3 && lead.email && lead.email_verified === true && lead.email_opt_out !== true) {
+          const { permittedLeadChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
+          const nba = decideNextChannel({ permitted: permittedLeadChannels({ emailUsable: true, mailingVerified: false }), lastChannel: 'email' })
+          newsletterProposal = { suggested: nba.channel === 'newsletter', reason: nba.reason }
+        }
         const nowMs = today.getTime()
         const hoursSince = (iso: string | null | undefined) => (iso ? Math.max(0, Math.round((nowMs - new Date(iso).getTime()) / 3_600_000)) : null)
         const deferred = await countArbiterWaits(supabase, { brokerageId, subject: { type: 'lead', id: leadId }, now: today, policy: followup.policy })
@@ -312,6 +329,10 @@ export async function runGhostReengagement(
             preferences: [],
           },
           budget: arbiterBudget,
+          proposals: {
+            angles: { suggested: reengagementAngleForAttempt(attempts + 1), offered: REENGAGEMENT_ANGLES },
+            newsletter: newsletterProposal,
+          },
         })
         if (arb.decision) {
           const rec = await recordArbitration(supabase, { brokerageId, subject: { type: 'lead', id: leadId }, decision: arb.decision, now: today, policyRef: followupPolicyRef, systemSource: 'ghost_reengagement' })
@@ -321,6 +342,9 @@ export async function runGhostReengagement(
           skipped++
           continue
         }
+        chosenAngle = asReengagementAngle(arb.angle)
+        newsletterChosen = arb.newsletter === true
+        arbiterRationale = arb.decision?.rationale ?? null
       }
 
       // ── SEND ──────────────────────────────────────────────────────────────
@@ -344,12 +368,9 @@ export async function runGhostReengagement(
       //    SEASONAL phase (a year+ cold), the manager STOPS pestering with 1:1 emails and HANDS
       //    the relationship to the passive newsletter (Campaign Orchestrator owns it) so value
       //    keeps flowing for whenever they're ready. Phase 1/2 stay on 1:1 email (still warming).
+      //    WAVE 149 (C29): the downshift is the ARBITER's choice (newsletterChosen) — next-best-touch proposed it above.
       if (cadence.phase === 3 && lead.email && lead.email_verified === true && lead.email_opt_out !== true) {
-        const { permittedLeadChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
-        // Never ordered by age group (owner ruling 18, wave 145): the one neutral default order, rotated off email.
-        const permitted = permittedLeadChannels({ emailUsable: true, mailingVerified: false })
-        const nba = decideNextChannel({ permitted, lastChannel: 'email' })
-        if (nba.channel === 'newsletter') {
+        if (newsletterChosen) {
           const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
           await publishManagerSignal({
             brokerageId,
@@ -360,7 +381,7 @@ export async function runGhostReengagement(
             entityType: 'lead',
             entityId: leadId,
             contactId: lead.contact_id ?? null,
-            payload: { audience: 'lead', lead_id: leadId, channel_reason: nba.reason },
+            payload: { audience: 'lead', lead_id: leadId, channel_reason: arbiterRationale ?? 'the arbiter chose the newsletter downshift' },
           }, supabase)
           const { error: attemptCountErr } = await supabase.from('leads').update({
             reengagement_attempt_count: (lead.reengagement_attempt_count ?? 0) + 1,
@@ -435,6 +456,8 @@ export async function runGhostReengagement(
       const adaptive = adaptiveReengagementHook({
         attempt: newCount,
         enrichment: lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null,
+        // WAVE 149 (C29): the arbiter's chosen opening (the attempt's angle was only its suggestion).
+        angle: chosenAngle,
       })
       const reengageBody = `${adaptive.hook}\n\n${reengageCopy.body}`
 

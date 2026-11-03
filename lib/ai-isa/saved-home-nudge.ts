@@ -3,7 +3,7 @@
 // THE SAVED-HOME WATCH — a buyer's saved/matched homes are LIVING, and when one changes the AI
 // team reaches out PERSONALLY (the AI ISA, persona-aware, with the agent's avatar/voice on the
 // highest-emotion moments). RealScout sends a generic alert; we send a 20-second note from the
-// buyer's own agent. PURE: classify a change into the nudge the ISA personalizes. No I/O.
+// buyer's own agent. The classifier is PURE (no I/O); decideSavedHomeNudge (wave 149, C29) hands its pick to the arbiter.
 //
 // Honest + them-first: every nudge drives back to OUR portal, never a stark number, always a
 // reason to talk to the agent. The owner's no-spam rule holds — these fire on a REAL change to a
@@ -104,6 +104,43 @@ function classifySavedHomeNudgeUnruled(kind: string): SavedHomeNudge | null {
     default:
       return null
   }
+}
+
+/** What the router does with a saved-home change, once the arbiter decided. */
+export type SavedHomeNudgeRoute = "avatar_reel" | "written_note" | "agent" | "hold"
+
+/**
+ * WAVE 149 (lane 149C, owner ruling 7 / contract C29 — lane 148Z Still open: saved-home-nudge onto the arbiter). The classifier
+ * above is the PLANNER: it knows what changed and which moments are worth a personal video. It no longer decides alone — it
+ * proposes, and the ARBITER chooses from this buyer's evidence: a personal avatar reel from their agent (only where the
+ * classifier allows one — never for under contract), a short written note to their portal, the agent personally, or a bounded
+ * hold (a buyer touched an hour ago does not need a second note now). The classifier's own pick is the fallback, so an outage
+ * keeps the old routing. Ledgered as followup.decision.* (planner `saved_home_nudge`). Never throws.
+ */
+export async function decideSavedHomeNudge(
+  svc: { from: (t: string) => any },
+  params: { brokerageId: string; contactId: string; nudge: SavedHomeNudge; hasAssignedAgent?: boolean; hoursSinceAnyTouch?: number | null; now?: Date },
+  deps: { decide?: import("./followup-arbiter").ArbiterDecide; record?: boolean } = {},
+): Promise<{ route: SavedHomeNudgeRoute; rationale: string; source: "ai" | "deterministic"; waitHours: number | null }> {
+  const { arbitratePlannedTouch } = await import("./followup-arbiter")
+  const n = params.nudge
+  const options = [
+    ...(n.avatarWorthy ? [{ id: "avatar_reel", kind: "video" as const, channels: ["email" as const, "in_app" as const], why: [`${n.headline} — one of the highest-emotion moments; a 20-second personal video from their own agent`] }] : []),
+    { id: "written_note", kind: "communication" as const, channels: ["email" as const, "in_app" as const], why: [`${n.headline} — a short, warm note that brings them back to their portal (${n.urgency} urgency)`] },
+    { id: "agent", kind: "agent_intervention" as const, channels: ["human_task" as const], why: ["their agent reaches out personally — when the moment needs a conversation, not a message"] },
+  ]
+  const r = await arbitratePlannedTouch(svc, {
+    brokerageId: params.brokerageId, planner: "saved_home_nudge", subject: { type: "contact", id: params.contactId }, now: params.now ?? new Date(),
+    options, planned: n.avatarWorthy ? "avatar_reel" : "written_note",
+    // A time-critical change (a price drop, back on market) is answered now; a lower-urgency one may wait.
+    offerWait: n.urgency !== "high",
+    moment: { key: `saved_home_${n.kind}`, intent: `A home this buyer saved changed (${n.kind.replace(/_/g, " ")}). Decide how — and whether now — their team lets them know. ${n.angle}` },
+    relationship: { type: "contact", persona: "buyer", hasAssignedAgent: params.hasAssignedAgent ?? false },
+    history: { hoursSinceAnyTouch: params.hoursSinceAnyTouch ?? null },
+    urgency: n.urgency === "high" ? "high" : "normal",
+  }, deps)
+  const route: SavedHomeNudgeRoute = r.decision.kind === "wait" ? "hold" : r.decision.kind === "agent_intervention" ? "agent" : r.decision.kind === "video" && n.avatarWorthy ? "avatar_reel" : "written_note"
+  return { route, rationale: r.decision.rationale, source: r.decision.source, waitHours: r.decision.waitHours }
 }
 
 /** The nudge kinds, enumerated.

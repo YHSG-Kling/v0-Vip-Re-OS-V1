@@ -3,6 +3,11 @@
 // CONTRACT C24 — THE UNATTENDED ANSWER (wave 148, lane 148I; owner ruling 16, 2026-11-01):
 //   "if the human hasn't responded and too much time has elapsed, then AI can answer for them. Remember, the OS is supposed
 //    to be autonomous as much as the OS can."
+// WAVE 149 (lane 149C, owner ruling 8 — "the AI may answer when a human doesn't, through the arbiter"): after the locks below
+// clear, the ARBITER (lib/ai-isa/followup-arbiter.ts arbitratePlannedTouch, brief ARBITER_UNATTENDED_SYSTEM) decides how the team
+// answers: a written answer on the channel the client used — text, EMAIL or the PORTAL (no longer text only) — that answer plus a
+// personal video update from their agent (the Asset Manager's reel rail), or a person after all. The written answer is the
+// fallback, so an outage keeps C24's behaviour.
 //
 // WHERE IT SITS. A text the arbiter handed to a PERSON (the responder's reply-coach draft / an agent task — contract C13)
 // opens an `awaiting_human` completion (C14). When that window passes with no human action, the owning manager's supervision
@@ -154,6 +159,28 @@ export const UNATTENDED_ANSWER_SYSTEM = [
   "VOICE — first person plural on behalf of the agent's team (\"we\"), the client's first name if given, kind and calm; acknowledge what they asked before answering.",
 ].join("\n")
 
+/**
+ * WAVE 149 (lane 149C, owner ruling 8 — "the AI may answer when a human doesn't, through the arbiter, which can use any prompt in
+ * the OS"): THE ARBITER'S DECISION BRIEF for the moment the person's window has passed. The deterministic locks above (scope,
+ * never-topics, risk, do-not-contact, AI paused, a texter met in that message, delegated authority) have ALREADY cleared — the
+ * arbiter decides HOW the team answers in the person's place: a written answer on the channel the client used, the written
+ * answer plus a personal video update from their agent (the Asset Manager's reel rail — its own expert prompts write the
+ * script; gated, sent on completion), or a person after all. Validated by the same closed-menu validator as every decision.
+ * @proofSeam the guard asserts every section; production hands it to arbitratePlannedTouch inside respondWhenHumanSilent.
+ */
+export const ARBITER_UNATTENDED_SYSTEM = [
+  "ROLE. You are the response judgment of a licensed real-estate team's AI desk lead. A client wrote to their agent, the reply was handed to the agent first, and the agent's window has passed with no answer. You decide how the team answers in the agent's place so the client is never left waiting — kind, specific, never salesy.",
+  "BUSINESS CONTEXT. The question is one the platform already cleared as answerable without a person: the deal's status, verified information, a common question or the next steps. Money, approvals, signatures, legal questions, complaints and distress never reach you. The client is often anxious mid-transaction; a fast, calm, accurate answer protects the agent's reputation.",
+  "FACTS YOU MAY RELY ON — ONLY the JSON given: moment (the channel the client used and the topic it was read as), evidence.relationship (whether an agent owns them), evidence.history, evidence.blindSpots (each is UNKNOWN, never 'fine'), the options with their reasons, and tenant_guidance. Never invent a fact, a date or a promise.",
+  "THE DECISION YOU OWN — exactly ONE option id: 'answer_written' (a short written answer on the channel they used — the default for most questions); 'answer_with_video' when offered (the same written answer now, plus a short personal video update from their agent for a moment that deserves a face: a milestone reached, a closing approaching, reassurance after a delay — never for a quick factual question); or 'hold_for_person' (the agent answers after all — when the evidence says this relationship needs the agent's own voice, e.g. a long personal history or a blind spot on the deal). You do NOT write the words: the answer's own expert brief does that from verified facts, and a screen refuses any draft that names money, approves, signs or advises on law.",
+  "ESCALATION RULE. Choose 'hold_for_person' when you are unsure, when a blind spot hides the deal's state, or when a machine-written answer could embarrass the agent. A slow human answer beats a confident wrong one — but silence is never an option you may choose.",
+  "COMPLIANCE BOUNDARY. Service communication to a client about their own matter: no advertising claims, no steering, nothing about anyone else's deal. Consent, quiet hours, suppression and the channel's own gates decide at the send and cannot be changed by you.",
+  "OUTPUT CONTRACT. Reply with JSON only: {\"optionId\": one menu id, \"channel\": one of that option's channels or null, \"format\": null, \"waitHours\": null, \"rationale\": 1-3 plain sentences a broker would accept, \"evidence\": [the top-level evidence keys you relied on, e.g. \"moment\", \"relationship\"], \"confidence\": 0..1}.",
+].join("\n")
+
+/** The channels an unattended answer can travel on, and their send path (C24 × ruling 8). Anything else → the person is reminded. */
+const UNATTENDED_CHANNEL_OF: Readonly<Record<string, "sms" | "email" | "in_app">> = Object.freeze({ sms: "sms", text: "sms", email: "email", in_app: "in_app", portal: "in_app" })
+
 // ── 4. The runtime ───────────────────────────────────────────────────────────────────────────────
 
 interface UnattendedComposeOutput { topic: UnattendedTopic; answer: string; facts_used: number[]; hands_back_to_agent: boolean; refuse: boolean; refuse_reason: string | null }
@@ -167,6 +194,13 @@ interface UnattendedDeps {
   safety?: (text: string) => string[]
   facts?: typeof loadVerifiedFacts
   sendSms?: (p: { brokerageId: string; contactId: string; conversationId: string; agentId: string | null; recordId: string; text: string }) => Promise<{ sent: boolean; providerRef?: string | null; messageId?: string | null; error?: string }>
+  /** Wave 149 (ruling 8): the email + portal send paths (default lib/communications/inbound-reply-executors.ts). */
+  sendEmail?: (p: { brokerageId: string; contactId: string; conversationId: string; agentId: string | null; recordId: string; text: string; subject?: string | null }) => Promise<{ sent: boolean; providerRef?: string | null; messageId?: string | null; error?: string }>
+  postPortal?: (p: { brokerageId: string; contactId: string; agentId: string | null; recordId: string; text: string }) => Promise<{ sent: boolean; providerRef?: string | null; messageId?: string | null; error?: string }>
+  /** Wave 149 (ruling 8): the arbiter's model call (default: followup-arbiter's routed decision). */
+  decide?: import("@/lib/ai-isa/followup-arbiter").ArbiterDecide
+  /** Wave 149 (ruling 8): the personal video hand-off (default: the `contact_reel_handoff` signal to the Asset Manager). */
+  requestVideo?: (svc: Svc, p: { brokerageId: string; contactId: string; topic: string; answer: string }) => Promise<{ requested: boolean; reason?: string }>
   notify?: (svc: Svc, p: { brokerageId: string; userId: string; title: string; body: string; contactId: string }) => Promise<void>
   ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
 }
@@ -190,7 +224,10 @@ async function respondWhenHumanSilent(svc: Svc, c: CompletionRow, deps: Unattend
     if (!m) return { answered: false, reason: "the inbound message is not in this brokerage" }
     const msg = m as { id: string; conversation_id: string | null; contact_id: string | null; body: string | null; metadata: Record<string, unknown> | null }
     const channel = typeof msg.metadata?.channel === "string" ? (msg.metadata.channel as string) : typeof c.context.channel === "string" ? (c.context.channel as string) : "sms"
-    if (channel !== "sms") return { answered: false, reason: `no unattended send path for ${channel} — the person is reminded instead` }
+    // Wave 149 (ruling 8): every channel the arbiter may answer on — text, email, the portal. Anything else (a DM, a public
+    // comment, a voice call) has no unattended path here: the person is reminded instead (said, never silently dropped).
+    const answerChannel = UNATTENDED_CHANNEL_OF[channel.toLowerCase()] ?? null
+    if (!answerChannel) return { answered: false, reason: `no unattended send path for ${channel} — the person is reminded instead` }
     if (!msg.contact_id || !msg.conversation_id) return { answered: false, reason: "an unidentified sender — never answered unattended" }
 
     const cls = classifyUnattendedQuestion(msg.body)
@@ -209,6 +246,30 @@ async function respondWhenHumanSilent(svc: Svc, c: CompletionRow, deps: Unattend
     if (!authority.allowed) return { answered: false, reason: authority.reason ?? "the tenant's delegated authority does not cover an unattended answer" }
 
     const { facts, blindSpots } = await (deps.facts ?? loadVerifiedFacts)(svc, c.brokerage_id, person.id)
+
+    // ── WAVE 149 (ruling 8): THE ARBITER decides how the team answers in the person's place (contract C29 — one judgment door).
+    // Locks above have cleared; the menu is closed: a written answer on the client's channel, that answer plus a personal video
+    // update from their agent (only with an agent to front it, and only for a status / next-steps moment), or a person after all.
+    // The written answer is the fallback (an outage keeps C24's behaviour). Never approval / signature / money / legal — those
+    // never reach this point.
+    const videoOffered = !!person.agent_id && (cls.topic === "status" || cls.topic === "next_steps")
+    const { arbitratePlannedTouch } = await import("@/lib/ai-isa/followup-arbiter")
+    const arb = await arbitratePlannedTouch(svc, {
+      brokerageId: c.brokerage_id, planner: "unattended_answer", subject: { type: "contact", id: person.id }, now,
+      options: [
+        { id: "answer_written", kind: "communication", channels: [answerChannel], why: [`a short ${cls.topic.replace(/_/g, " ")} answer from verified facts on the channel they used (${answerChannel})`] },
+        ...(videoOffered ? [{ id: "answer_with_video", kind: "video" as const, channels: [answerChannel], why: ["the same written answer now, plus a short personal video update from their agent (gated; sent when it is ready)"] }] : []),
+        { id: "hold_for_person", kind: "agent_intervention", channels: ["human_task"], why: ["their agent answers after all — the AI does not speak for them this time"] },
+      ],
+      planned: "answer_written", offerWait: false, system: ARBITER_UNATTENDED_SYSTEM,
+      moment: { key: `unattended_${cls.topic}`, intent: `The client wrote on ${answerChannel}; their agent's window passed with no reply. Decide how the team answers for them (topic: ${cls.topic.replace(/_/g, " ")}).` },
+      relationship: { type: "contact", persona: null, hasAssignedAgent: !!person.agent_id },
+      history: { lastChannel: answerChannel },
+      blindSpots: facts.length === 0 ? ["no open deal is on file for this person", ...blindSpots] : blindSpots,
+    }, { decide: deps.decide })
+    if (arb.decision.kind === "agent_intervention") return { answered: false, reason: `the arbiter kept this for a person: ${arb.decision.rationale}`.slice(0, 400), topic: cls.topic }
+    const withVideo = arb.decision.kind === "video" && videoOffered
+
     const prompt = [
       `CLIENT FIRST NAME: ${person.first_name ?? "(not on file)"}`,
       `THEIR MESSAGE (verbatim): """${String(msg.body ?? "").slice(0, 600)}"""`,
@@ -239,16 +300,22 @@ async function respondWhenHumanSilent(svc: Svc, c: CompletionRow, deps: Unattend
         brokerageId: c.brokerage_id, action: "inbound.unattended.answer", actor: { type: "manager", managerKey: "ai_isa" },
         subject: { type: "contact", id: person.id }, reasonCode: "CONVERSATION_RESPONSE",
         reasonDetail: `the person's window passed with no reply (completion ${c.id}) — answered a ${cls.topic.replace(/_/g, " ")} question within delegated authority`.slice(0, 500),
-        cycle: `unattended:${c.id}`, channel: "sms", riskClass: "COMMUNICATION", systemSource: "unattended_answer", policyKey: "autonomy_tier:ai_isa",
-        detail: { contract: "C24", completion_id: c.id, record_id: recordId, topic: cls.topic, facts_used: used, blind_spots: blindSpots, hands_back_to_agent: !!o.hands_back_to_agent },
+        cycle: `unattended:${c.id}`, channel: answerChannel, riskClass: "COMMUNICATION", systemSource: "unattended_answer", policyKey: "autonomy_tier:ai_isa",
+        detail: { contract: "C24", completion_id: c.id, record_id: recordId, topic: cls.topic, facts_used: used, blind_spots: blindSpots, hands_back_to_agent: !!o.hands_back_to_agent, arbiter: { option: arb.choice, source: arb.decision.source, rationale: arb.decision.rationale, recorded: arb.recorded } },
       },
       async () => {
-        const sendSms = deps.sendSms ?? (async (p) => (await import("./inbound-reply-executors")).sendInboundSmsReply(svc as never, p))
-        const s = await sendSms({ brokerageId: c.brokerage_id, contactId: person.id, conversationId: msg.conversation_id!, agentId: person.agent_id, recordId, text: answer })
+        const executors = async () => await import("./inbound-reply-executors")
+        const base = { brokerageId: c.brokerage_id, contactId: person.id, agentId: person.agent_id, recordId, text: answer }
+        const s = answerChannel === "email"
+          ? await (deps.sendEmail ?? (async (p) => (await executors()).sendInboundEmailReply(svc as never, p)))({ ...base, conversationId: msg.conversation_id!, subject: typeof msg.metadata?.subject === "string" ? (msg.metadata.subject as string) : null })
+          : answerChannel === "in_app"
+            ? await (deps.postPortal ?? (async (p) => (await executors()).postInboundPortalReply(svc as never, p)))(base)
+            : await (deps.sendSms ?? (async (p) => (await executors()).sendInboundSmsReply(svc as never, p)))({ ...base, conversationId: msg.conversation_id! })
         const { OVERDUE_HOURS } = await import("@/lib/outcomes/reconciliation")
+        const overdue = (OVERDUE_HOURS as Record<string, number>)[answerChannel === "in_app" ? "sms" : answerChannel] ?? 6
         result = s.sent
-          ? { answered: true, reason: `answered for the person after their window (${cls.topic})`, topic: cls.topic, providerRef: s.providerRef ?? null, channel: "sms", outboundMessageId: s.messageId ?? null, deliveryDueAt: new Date(now.getTime() + OVERDUE_HOURS.sms * 3_600_000).toISOString(), answer, factsUsed: used, costUsd: out.costUsd }
-          : { answered: false, reason: `the text did not go (${s.error ?? "refused"})`, topic: cls.topic, costUsd: out.costUsd }
+          ? { answered: true, reason: `answered for the person after their window (${cls.topic}, ${answerChannel}${withVideo ? " + a personal video update requested" : ""})`, topic: cls.topic, providerRef: s.providerRef ?? null, channel: answerChannel, outboundMessageId: s.messageId ?? null, deliveryDueAt: s.providerRef ? new Date(now.getTime() + overdue * 3_600_000).toISOString() : null, answer, factsUsed: used, costUsd: out.costUsd }
+          : { answered: false, reason: `the ${answerChannel === "sms" ? "text" : answerChannel === "email" ? "email" : "portal reply"} did not go (${s.error ?? "refused"})`, topic: cls.topic, costUsd: out.costUsd }
         return result
       },
       {
@@ -257,6 +324,12 @@ async function respondWhenHumanSilent(svc: Svc, c: CompletionRow, deps: Unattend
       },
       { client: svc as never },
     )
+    if (result.answered && withVideo) {
+      // Ruling 8: the personal video update rides the EXISTING reel rail (the Asset Manager commissions a situational reel
+      // fronted by the agent — gated, compliance-first — and the Campaign Orchestrator sends it on completion). A refusal is said.
+      const v = await (deps.requestVideo ?? defaultRequestVideo)(svc, { brokerageId: c.brokerage_id, contactId: person.id, topic: cls.topic, answer })
+      result = { ...result, reason: v.requested ? result.reason : `${result.reason}; the video update was not requested (${v.reason ?? "refused"})` }
+    }
     if (result.answered) {
       // The person it was handed to hears what was said for them (and their draft is no longer needed).
       const agentUserId = typeof c.context.agent_user_id === "string" ? (c.context.agent_user_id as string) : null
@@ -302,6 +375,22 @@ async function defaultCompose(p: { brokerageId: string; system: string; prompt: 
   })
   const r = await generateObjectRouted({ feature: "ai_isa_response", brokerageId: p.brokerageId, system: p.system, prompt: p.prompt, schema, maxTokens: 400, temperature: 0.3 })
   return { object: r.object as UnattendedComposeOutput }
+}
+
+/** The personal video hand-off: the ISA → Asset Manager `contact_reel_handoff` signal the engage path already publishes (the
+ *  handler fronts a situational reel with the assigned agent's avatar; deduped per open signal; gated). */
+async function defaultRequestVideo(svc: Svc, p: { brokerageId: string; contactId: string; topic: string; answer: string }): Promise<{ requested: boolean; reason?: string }> {
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    const r = await publishManagerSignal({
+      brokerageId: p.brokerageId, fromManager: "ai_isa", toManager: "asset_manager", signalType: "contact_reel_handoff",
+      message: `Answered a client's ${p.topic.replace(/_/g, " ")} question while their agent was away — front a short personal video update with the assigned agent.`,
+      entityType: "contact", entityId: p.contactId, contactId: p.contactId,
+    }, svc as never)
+    return r.ok ? { requested: true } : { requested: false, reason: r.reason ?? "the hand-off was refused" }
+  } catch (e) {
+    return { requested: false, reason: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 async function defaultNotify(svc: Svc, p: { brokerageId: string; userId: string; title: string; body: string; contactId: string }): Promise<void> {

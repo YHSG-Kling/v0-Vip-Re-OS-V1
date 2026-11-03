@@ -154,7 +154,13 @@ check("the reactor never auto-dispatches the under_contract promo video",
   /if \(eventType !== "under_contract"\) \{[\s\S]{0,300}dispatchListingPromoVideo\(/.test(REACTOR))
 check("…while the saved-home path can still note it (a portal message, never a reel): the classifier rules under_contract non-avatar",
   /NO_VIDEO_NUDGE_KINDS[^=]*=\s*\["under_contract"\]/.test(NUDGE) && /NO_VIDEO_NUDGE_KINDS as readonly string\[\]\)\.includes\(nudge\.kind\)\) return \{ \.\.\.nudge, avatarWorthy: false \}/.test(NUDGE))
-check("…and routeSavedHomeNudge picks the bus from that flag alone", /const toManager = nudge\.avatarWorthy \? "asset_manager" : "campaign_orchestrator"/.test(SIGNALS))
+// RE-ASSERTED (wave 149, lane 149C — owner ruling 7 / C29): the bus is now picked from the ARBITER's route (decideSavedHomeNudge),
+// so the waypoint "picks the bus from that flag alone" moved. The RULE is unchanged and asserted on both halves: a reel can only be
+// OFFERED when the classifier says avatarWorthy, the route can only BE a reel when avatarWorthy, and the router sends the reel bus
+// only on that route — so under_contract (avatarWorthy=false, above) can never reach the Asset Manager.
+check("…and a reel is reachable ONLY through the avatarWorthy flag: offered only when avatarWorthy, routed only when avatarWorthy, and the router picks the reel bus only on that route",
+  /\.\.\.\(n\.avatarWorthy \? \[\{ id: "avatar_reel"/.test(NUDGE) && /r\.decision\.kind === "video" && n\.avatarWorthy \? "avatar_reel"/.test(NUDGE) &&
+  /const reel = decided\.route === "avatar_reel"/.test(SIGNALS) && /const toManager = reel \? "asset_manager" : "campaign_orchestrator"/.test(SIGNALS))
 
 console.log("\n── 10 · brand-voice cascade: one vocabulary across the video lane (§6, wave 60E) ──")
 // BEFORE this lane: generate-script.ts's tone came only from

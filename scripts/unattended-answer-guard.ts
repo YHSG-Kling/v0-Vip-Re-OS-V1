@@ -64,12 +64,15 @@ async function main() {
   const CLEAN_ANSWER = "Hi Dana — thanks for checking in! Your purchase of 12 Elm St is pending and on track for an expected closing on or before December 15. Your agent will follow up with anything new."
   const composeSaying = (answer: string) => async () => ({ object: { topic: "status" as const, answer, facts_used: [1, 2], hands_back_to_agent: true, refuse: false, refuse_reason: null }, costUsd: 0.0004 })
   const okCompose = composeSaying(CLEAN_ANSWER)
+  // Wave 149 (lane 149C, ruling 8): the answerer now asks the ARBITER how to answer — a stubbed model that picks the written answer
+  // (the C24 behaviour this proof was written for). scripts/arbiter-timing-guard.ts §D drives the other choices.
+  const ARB_WRITTEN = async () => ({ optionId: "answer_written", channel: null, format: null, waitHours: null, rationale: "A short written answer from verified facts fits this status question.", evidence: ["moment"], confidence: 0.9 })
   const harness = (body: string, contact: Partial<Row> = {}, over: Partial<AnswererDeps> = {}) => {
     const db = world(body, contact)
     const sent: Array<Record<string, unknown>> = [], composed: string[] = [], told: Array<Record<string, unknown>> = []
     const compose = over.compose ?? okCompose
     const deps: AnswererDeps = {
-      now: NOW, facts, authority: async () => ({ allowed: true, reason: null }), safety: () => [],
+      now: NOW, facts, authority: async () => ({ allowed: true, reason: null }), safety: () => [], decide: ARB_WRITTEN,
       sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "SM-unattended-1", messageId: "out-1" } },
       notify: async (_s, p) => { told.push(p) },
       ...over,
@@ -176,8 +179,22 @@ async function main() {
     check("a composed answer naming money is refused by the screen → nothing sent", !rz.answered && dirty.sent.length === 0 && /screen/.test(rz.reason))
     const early = harness("Any update?"); const re = await early.run(comp({ due_at: new Date(NOW.getTime() + 600_000).toISOString() }))
     check("POSITIVE CONTROL: inside the person's window nothing happens", !re.answered && early.sent.length === 0)
-    const email = harness("Any update?"); email.db.tables.messages[0].metadata = { channel: "email" }; const rm = await email.run(comp({ context: { record_id: "m-1", channel: "email", agent_user_id: U1 } }))
-    check("a channel with no unattended send path (email) → the person is reminded instead (said)", !rm.answered && email.sent.length === 0 && /no unattended send path/.test(rm.reason))
+    // RE-ASSERTED (wave 149, lane 149C — owner ruling 8: "the AI may answer when a human doesn't, through the arbiter", C24 on every
+    // channel the arbiter may use). The 148I waypoint was "email → reminded"; the RULE is "a channel with no unattended send path →
+    // the person is reminded". Email and the portal now HAVE a path (the email chokepoint / the portal thread), so email is answered
+    // on its own channel, and the rule is proven on a channel that still has none (a social DM).
+    const emailed: Array<Record<string, unknown>> = []
+    const email = harness("Any update?", {}, { sendEmail: async (p) => { emailed.push(p); return { sent: true, providerRef: "EM-u-1", messageId: "out-e" } } }); email.db.tables.messages[0].metadata = { channel: "email" }; const rm = await email.run(comp({ context: { record_id: "m-1", channel: "email", agent_user_id: U1 } }))
+    check("RULING 8: an EMAIL is answered unattended on the email path (never as a text)", rm.answered && emailed.length === 1 && email.sent.length === 0 && rm.channel === "email", rm.reason)
+    const dm = harness("Any update?"); dm.db.tables.messages[0].metadata = { channel: "facebook_dm" }; const rdm = await dm.run(comp({ context: { record_id: "m-1", channel: "facebook_dm", agent_user_id: U1 } }))
+    check("a channel with no unattended send path (a social DM) → the person is reminded instead (said)", !rdm.answered && dm.sent.length === 0 && /no unattended send path/.test(rdm.reason))
+    const posted: Array<Record<string, unknown>> = []
+    const portal = harness("Any update?", {}, { postPortal: async (p) => { posted.push(p); return { sent: true, providerRef: null, messageId: "pm-1" } } }); portal.db.tables.messages[0].metadata = { channel: "in_app" }; const rp = await portal.run(comp({ context: { record_id: "m-1", channel: "in_app", agent_user_id: U1 } }))
+    check("RULING 8: a PORTAL message is answered in the portal thread (no provider → the row is the evidence, no delivery window)", rp.answered && posted.length === 1 && rp.channel === "in_app" && !rp.providerRef && !rp.deliveryDueAt, rp.reason)
+    const keep = harness("Any update?", {}, { decide: async () => ({ optionId: "hold_for_person", channel: null, format: null, waitHours: null, rationale: "This relationship needs the agent's own voice right now.", evidence: ["relationship"], confidence: 0.8 }) }); const rk = await keep.run()
+    check("RULING 8: the ARBITER may keep it for a person — nothing composed, nothing sent, the reason said", !rk.answered && keep.composed.length === 0 && keep.sent.length === 0 && /kept this for a person/.test(rk.reason), rk.reason)
+    const down = harness("Any update?", {}, { decide: async () => { throw new Error("gateway down") } }); const rdn = await down.run()
+    check("POSITIVE CONTROL: with the arbiter's model down the written answer is the fallback (C24 behaviour preserved)", rdn.answered && down.sent.length === 1, rdn.reason)
     const failSend = harness("Any update?", {}, { sendSms: async () => ({ sent: false, error: "TCPA consent missing" }) }); const rs = await failSend.run()
     check("the SMS chokepoint's refusal (consent, quiet hours, suppression) is honoured and named", !rs.answered && /TCPA/.test(rs.reason))
   }
@@ -194,7 +211,7 @@ async function main() {
     const db = world("Any update on where we are with the house?")
     const id = await openHuman(db)
     const sent: unknown[] = [], told: string[] = []
-    const answerers = ua.unattendedAnswerers({ now: NOW, facts, authority: async () => ({ allowed: true, reason: null }), safety: () => [], compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "SM-sup-1", messageId: "out-2" } }, notify: async () => {} })
+    const answerers = ua.unattendedAnswerers({ now: NOW, decide: ARB_WRITTEN, facts, authority: async () => ({ allowed: true, reason: null }), safety: () => [], compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "SM-sup-1", messageId: "out-2" } }, notify: async () => {} })
     const sup = await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: id, trigger: "workflow" }, { schedule, engine, notify: async (_s, _c, x) => { told.push(x); return { notified: 1 } }, silentAnswerers: answerers })
     const row = db.tables.manager_completions[0]
     check("the FIRST stall of a reply handed to a person is ANSWERED (verdict remediated, C24)", sup.verdict === "remediated" && sent.length === 1, sup.reason)
@@ -210,7 +227,7 @@ async function main() {
     const db = world("Can you approve the counter offer?")
     const id = await openHuman(db)
     const told: string[] = [], sent: unknown[] = []
-    const sup = await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: id, trigger: "workflow" }, { schedule, engine, notify: async (_s, _c, x) => { told.push(x); return { notified: 1 } }, silentAnswerers: ua.unattendedAnswerers({ now: NOW, facts, authority: async () => ({ allowed: true, reason: null }), compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "x" } } }) })
+    const sup = await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: id, trigger: "workflow" }, { schedule, engine, notify: async (_s, _c, x) => { told.push(x); return { notified: 1 } }, silentAnswerers: ua.unattendedAnswerers({ now: NOW, decide: ARB_WRITTEN, facts, authority: async () => ({ allowed: true, reason: null }), compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "x" } } }) })
     check("a forbidden topic is NOT answered: the person is reminded, with why the AI did not answer", sent.length === 0 && told.length >= 1 && /did not answer for them/.test(told[0]) && /approval/.test(told[0]), told[0])
     check("…the obligation stays a person's (escalated / stalled), never closed", ["escalated", "stalled"].includes(db.tables.manager_completions[0].status), `${sup.verdict} / ${db.tables.manager_completions[0].status}`)
   }
@@ -219,7 +236,7 @@ async function main() {
     const id = await openHuman(db)
     db.tables.manager_completions[0].attempts = 1
     const sent: unknown[] = []
-    await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: id, trigger: "cron" }, { schedule, engine, notify: async () => ({ notified: 1 }), silentAnswerers: ua.unattendedAnswerers({ now: NOW, facts, authority: async () => ({ allowed: true, reason: null }), compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "x" } } }) })
+    await ct.superviseCompletion(db as never, { brokerageId: B1, completionId: id, trigger: "cron" }, { schedule, engine, notify: async () => ({ notified: 1 }), silentAnswerers: ua.unattendedAnswerers({ now: NOW, decide: ARB_WRITTEN, facts, authority: async () => ({ allowed: true, reason: null }), compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "x" } } }) })
     check("a SECOND stall never answers (the first stall is the AI's one turn; then the admins)", sent.length === 0)
   }
   {
@@ -233,7 +250,7 @@ async function main() {
     const db = world("When do we close?")
     const id = await openHuman(db)
     const sent: unknown[] = []
-    const r = await ct.reconcileOpenCompletions(db as never, B1, { now: NOW }, { schedule, engine, notify: async () => ({ notified: 1 }), silentAnswerers: ua.unattendedAnswerers({ now: NOW, facts, authority: async () => ({ allowed: true, reason: null }), safety: () => [], compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "SM-cron-1" } }, notify: async () => {} }) })
+    const r = await ct.reconcileOpenCompletions(db as never, B1, { now: NOW }, { schedule, engine, notify: async () => ({ notified: 1 }), silentAnswerers: ua.unattendedAnswerers({ now: NOW, decide: ARB_WRITTEN, facts, authority: async () => ({ allowed: true, reason: null }), safety: () => [], compose: okCompose, sendSms: async (p) => { sent.push(p); return { sent: true, providerRef: "SM-cron-1" } }, notify: async () => {} }) })
     const row = db.tables.manager_completions.find((x) => x.id === id)
     check("the cron NET recovers what the timer missed with the SAME answerer — stamped recovered_by = cron", r.recovered === 1 && sent.length === 1 && row?.recovered_by === "cron", JSON.stringify(r))
   }

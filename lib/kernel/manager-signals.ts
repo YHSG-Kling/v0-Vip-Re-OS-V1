@@ -257,8 +257,29 @@ export async function routeSavedHomeNudge(
   const { classifySavedHomeNudge } = await import("@/lib/ai-isa/saved-home-nudge")
   const nudge = classifySavedHomeNudge(params.nudgeKind)
   if (!nudge || !params.contactId) return false
-  const toManager = nudge.avatarWorthy ? "asset_manager" : "campaign_orchestrator"
-  const signalType = nudge.avatarWorthy ? "saved_home_reel_handoff" : "saved_home_message"
+  // WAVE 149 (lane 149C, C29): the classifier PROPOSES; the arbiter decides reel / written note / the agent / a bounded hold
+  // (decideSavedHomeNudge — the classifier's pick is the fallback, so an outage keeps the old routing).
+  const { decideSavedHomeNudge } = await import("@/lib/ai-isa/saved-home-nudge")
+  const { data: who, error: whoErr } = await ctx.supabase.from("contacts").select("agent_id, last_contacted_at").eq("id", params.contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+  if (whoErr) console.warn(`[routeSavedHomeNudge] contact read refused (${whoErr.message}) — the arbiter decides without it`)
+  const person = (who ?? null) as { agent_id?: string | null; last_contacted_at?: string | null } | null
+  const lastTouch = person?.last_contacted_at ? Date.parse(person.last_contacted_at) : NaN
+  const decided = await decideSavedHomeNudge(ctx.supabase, {
+    brokerageId: ctx.brokerageId, contactId: params.contactId, nudge, hasAssignedAgent: !!person?.agent_id,
+    hoursSinceAnyTouch: Number.isFinite(lastTouch) ? Math.max(0, Math.round((Date.now() - lastTouch) / 3_600_000)) : null,
+  })
+  if (decided.route === "hold") return false
+  if (decided.route === "agent") {
+    const { routeToAgent } = await import("@/lib/ai-isa/followup-arbiter")
+    return routeToAgent(ctx.supabase, {
+      brokerageId: ctx.brokerageId, contactId: params.contactId, agentId: person?.agent_id ?? null, now: new Date(),
+      title: `A home your buyer saved changed — ${nudge.headline}`,
+      description: `${params.propertyAddress ?? "A saved home"}: ${nudge.kind.replace(/_/g, " ")}. The AI follow-up judged this needs your personal touch. Why: ${decided.rationale}`,
+    })
+  }
+  const reel = decided.route === "avatar_reel"
+  const toManager = reel ? "asset_manager" : "campaign_orchestrator"
+  const signalType = reel ? "saved_home_reel_handoff" : "saved_home_message"
   const res = await publishManagerSignal({
     brokerageId: ctx.brokerageId, fromManager: "shopping_agent", toManager, signalType,
     message: `${params.propertyAddress ?? "A saved home"} — personal ${nudge.kind} nudge for a buyer who saved it.`,

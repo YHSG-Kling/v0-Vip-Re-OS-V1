@@ -135,6 +135,8 @@ const LEAD_NURTURE_EMAIL_ENTITY_TYPE = "lead_nurture_video"
 export async function proposeLeadNurture(
   args: ProposeLeadNurtureArgs,
   client?: Svc,
+  /** Wave 149 (C29): the arbiter's test seams (the model call; whether the decision row is written). */
+  deps: { decide?: import("./followup-arbiter").ArbiterDecide; record?: boolean } = {},
 ): Promise<LeadNurtureResult> {
   const { createServiceClient } = await import("@/lib/supabase/service")
   const supabase: Svc = client ?? createServiceClient()
@@ -149,7 +151,7 @@ export async function proposeLeadNurture(
   // Defensive re-read — only the verification columns + the guard columns. We
   // never act on a lead that doesn't exist, isn't ISA-owned, or has converted
   // to a contact (that's the listing_concierge path, not lead nurture).
-  const { data: lead } = await supabase
+  const { data: lead, error: leadErr } = await supabase
     .from("leads")
     .select(
       "id, ai_isa_owner, contact_id, first_name, last_name, " +
@@ -159,6 +161,7 @@ export async function proposeLeadNurture(
     .eq("id", args.leadId)
     .eq("brokerage_id", args.brokerageId)
     .maybeSingle()
+  if (leadErr) { result.actions.push(`the lead could not be read (${leadErr.message}) — nothing proposed`); return result }
 
   const l = lead as
     | (LeadNurtureInput & {
@@ -173,8 +176,47 @@ export async function proposeLeadNurture(
   // Not ISA-owned, missing, or already a contact → not this module's job.
   if (!l || l.ai_isa_owner !== true || l.contact_id) return result
 
-  const channels = chooseLeadNurtureChannels(l)
-  result.channels = channels
+  const eligible = chooseLeadNurtureChannels(l)
+  result.channels = eligible
+
+  // ── WAVE 149 (lane 149C, owner ruling 7 / contract C29 — lane 148Z Still open: lead-nurture onto the arbiter) ──
+  // The verification gate above says which channels are PERMITTED (never widened). Which of them carries this hot seller's
+  // nurture now — the reel email, the postcard, both, the agent personally, or a bounded hold — is the ARBITER's call from
+  // the evidence. Both permitted channels is the planner's fallback (the pre-149 behaviour); every channel still proposes a
+  // GATED deliverable a human approves.
+  const channels: LeadNurtureChannels = { ...eligible }
+  if (eligible.email || eligible.postcard) {
+    const { arbitratePlannedTouch } = await import("./followup-arbiter")
+    const score = typeof args.intentScore === "number" ? Math.round(args.intentScore * (args.intentScore <= 1 ? 100 : 1)) : null
+    const options = [
+      ...(eligible.email ? [{ id: "email_reel", kind: "video" as const, channels: ["email" as const], why: ["a short personal 'thinking of selling?' reel to the verified email"] }] : []),
+      ...(eligible.postcard ? [{ id: "postcard", kind: "communication" as const, channels: ["direct_mail" as const], why: ["a printed postcard with a tracked QR to the verified mailing address"] }] : []),
+      ...(eligible.email && eligible.postcard ? [{ id: "both", kind: "communication" as const, channels: [], why: ["the reel email AND the postcard — two independent, verified channels"] }] : []),
+      { id: "agent", kind: "agent_intervention" as const, channels: ["human_task" as const], why: ["a person reaches out — when the seller signal needs a conversation"] },
+    ]
+    const arb = await arbitratePlannedTouch(supabase as never, {
+      brokerageId: args.brokerageId, planner: "lead_nurture", subject: { type: "lead", id: args.leadId }, now: new Date(),
+      options, planned: eligible.email && eligible.postcard ? "both" : eligible.email ? "email_reel" : "postcard",
+      moment: { key: "seller_intent_hot", intent: "A lead (not yet a contact — email and mail only) shows rising seller intent. Decide how the team helps now, or whether to hold." },
+      relationship: { type: "lead", persona: null, hasAssignedAgent: false },
+      intent: score === null ? null : { score, trend: "rising" },
+      blindSpots: ["a lead has consented to nothing beyond verified email / verified mail — the menu is that rule"],
+    }, deps)
+    const pick = arb.choice
+    channels.email = eligible.email && (pick === "email_reel" || pick === "both")
+    channels.postcard = eligible.postcard && (pick === "postcard" || pick === "both")
+    result.actions.push(`arbiter (${arb.decision.source}) chose ${pick}: ${arb.decision.rationale}`.slice(0, 400))
+    if (arb.decision.kind === "agent_intervention") {
+      // Leads belong to the brokerage (CLAUDE.md §5): the brokerage's admins hear about it — the same bell ghost-escalation rings.
+      const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+      const told = await notifyBrokerageAdmins(supabase as never, args.brokerageId, {
+        type: "lead_personal_followup", title: "A hot seller lead could use a personal touch",
+        body: `The AI follow-up judged a person should reach out to this lead. Why: ${arb.decision.rationale}`.slice(0, 900),
+        entityType: "lead", entityId: args.leadId, priority: "medium",
+      }).catch(() => 0)
+      result.actions.push(told > 0 ? `told ${told} brokerage admin(s) a person should reach out` : "no brokerage admin could be told — the hand-off reached nobody (said, never pretended)")
+    }
+  }
 
   // ── EMAIL channel — Director reel + gated EMAIL delivery proposal ──────────
   if (channels.email) {

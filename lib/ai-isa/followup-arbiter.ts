@@ -1048,32 +1048,74 @@ export interface CadenceArbitrationInput {
     preferences: Array<{ key: string; value: string }>
   }
   budget?: ArbiterBudget
+  /**
+   * WAVE 149 (lane 149C, owner ruling 7 / contract C29): what the OTHER planners propose for this touch — options the model
+   * weighs, never orders. `angles` = lib/ai-isa/adaptive-reengagement.ts's opening angles (its attempt-indexed pick is the
+   * SUGGESTION, the fallback when the model does not answer); `newsletter` = lib/ai-isa/next-best-touch.ts's downshift to the
+   * passive newsletter (its decideNextChannel verdict is the suggestion). Omitted = a single send option (long-term-nurture).
+   */
+  proposals?: {
+    angles?: { suggested: string; offered: readonly string[] } | null
+    newsletter?: { suggested: boolean; reason: string } | null
+  }
 }
 
 export interface CadenceArbitration {
-  /** true = release the deterministic send now; false = hold it (the runner skips this lead this run). */
+  /** true = release the send now; false = hold it (the runner skips this lead this run). */
   sendNow: boolean
   decision: ArbiterDecision | null
-  /** Why the arbiter was not consulted (cadence says wait / the fatigue floor / etc.), when it was not. */
+  /** Why the arbiter was not consulted (the spacing guidance holds with nothing new / the fatigue floor), when it was not. */
   skippedReason: string | null
+  /** Wave 149 (C29): the opening angle the arbiter chose among `proposals.angles` (null = none was offered). */
+  angle?: string | null
+  /** Wave 149 (C29): true when the arbiter chose the newsletter downshift (`proposals.newsletter`) over a 1:1 send. */
+  newsletter?: boolean
 }
 
+/** The option id of a 1:1 send carrying a given opening angle (a stable spelling the runner parses back). */
+const SEND_ANGLE_PREFIX = "send_now:"
+
 /**
- * The arbiter's say over a DUE cadence send. The cadence ENVELOPE stays deterministic: a lead the cadence does not release
- * is never pulled forward (these people have consented to nothing — CLAUDE.md §5), and a lead inside the fatigue floor is
- * held without asking. For a due send the model chooses `send_now` or a bounded `wait` from the evidence; once the send has
- * been overdue for policy.arbiter.maxDeferDays the wait option is withdrawn so a lead is never deferred forever.
+ * The arbiter's say over a cadence touch. WAVE 149 (lane 149C, owner ruling 7 — "nothing fixed in communications … the arbiter
+ * or the manager decides timing, channel and content from the situation"; contract C29): the tenant's spacing (Mon/Wed/Fri,
+ * the 30- / 90-day spacing — followup_policy.reengagement) is no longer a GATE in front of the judgment, it is the PLANNER'S
+ * GUIDANCE inside it: when the guidance says a touch is due the planner proposes `send_now`; when it says "not yet" the planner
+ * proposes `wait` — and in BOTH cases the model decides from the evidence whenever there is something to decide on:
+ *   · due                               → the model chooses send (which angle / the newsletter) or a bounded wait;
+ *   · not due, and the lead DID something since our last touch (fresh activity) → the model may answer that evidence now
+ *     (send) or keep waiting — the guidance's `wait` is the fallback, so an outage never sends early;
+ *   · not due and nothing new           → the guidance stands without a model call (no evidence = nothing to judge; the
+ *     sweep's budget is kept for people with evidence) — recorded as the skip reason, never as a schedule.
+ * What stays DETERMINISTIC and is never asked: the fatigue floor (policy.guardrails.minHoursBetweenTouches — a floor, never a
+ * schedule), every stop condition (reengagement-policy.ts ghostReengagementStopReason), consent / channel rules (leads: email +
+ * mail only, CLAUDE.md §5) and the dispatcher's gates. Once a person has been held policy.arbiter.maxDeferDays the wait option is
+ * withdrawn so nobody is deferred forever.
  */
 export async function arbitrateCadence(a: CadenceArbitrationInput, deps: { decide?: ArbiterDecide } = {}): Promise<CadenceArbitration> {
-  if (!a.cadence.shouldSend) return { sendNow: false, decision: null, skippedReason: `the cadence does not release a send (${a.cadence.reason})` }
   const floor = a.policy.guardrails.minHoursBetweenTouches
   if (a.facts.hoursSinceLastOutreach !== null && a.facts.hoursSinceLastOutreach < floor) {
-    return { sendNow: false, decision: null, skippedReason: `inside the ${floor}h fatigue floor (last outreach ${a.facts.hoursSinceLastOutreach}h ago)` }
+    return { sendNow: false, decision: null, skippedReason: `inside the ${floor}h fatigue floor (last outreach ${a.facts.hoursSinceLastOutreach}h ago)`, angle: null, newsletter: false }
   }
-  const send: ArbiterOption = { id: "send_now", kind: "communication", channels: [], why: [`the tenant's cadence releases a send (${a.cadence.reason}, phase ${a.cadence.phase}, day ${a.cadence.daysSinceStart})`] }
-  const wait: ArbiterOption = { id: "wait", kind: "wait", channels: [], why: ["hold the send for a bounded time if the evidence says now is the wrong moment"] }
+  // "Fresh" = the lead's own activity is at least an hour newer than our last touch (our send stamps last_activity_at too).
+  const freshActivity = a.facts.hoursSinceLastActivity !== null && (a.facts.hoursSinceLastOutreach === null || a.facts.hoursSinceLastActivity + 1 <= a.facts.hoursSinceLastOutreach)
+  if (!a.cadence.shouldSend && !freshActivity) {
+    return { sendNow: false, decision: null, skippedReason: `the tenant's spacing guidance holds and nothing new happened since the last touch (${a.cadence.reason})`, angle: null, newsletter: false }
+  }
+  const guidance = a.cadence.shouldSend
+    ? `the tenant's spacing guidance says a touch is due (${a.cadence.reason}, phase ${a.cadence.phase}, day ${a.cadence.daysSinceStart})`
+    : `the tenant's spacing guidance says not yet (${a.cadence.reason}) — but the lead was active ${a.facts.hoursSinceLastActivity}h ago, after our last touch`
+  const angles = a.proposals?.angles && a.proposals.angles.offered.length > 0 ? a.proposals.angles : null
+  const sends: ArbiterOption[] = angles
+    ? [...new Set(angles.offered)].map((ang) => ({ id: `${SEND_ANGLE_PREFIX}${ang}`, kind: "communication" as const, channels: [], why: [guidance, ang === angles.suggested ? `the adaptive planner's suggested opening angle for attempt ${a.facts.attempts + 1}: ${ang.replace(/_/g, " ")}` : `a different opening angle: ${ang.replace(/_/g, " ")}`] }))
+    : [{ id: "send_now", kind: "communication", channels: [], why: [guidance] }]
+  const newsletter: ArbiterOption | null = a.proposals?.newsletter
+    ? { id: "newsletter_handoff", kind: "communication", channels: [], why: [guidance, `hand the relationship to the passive newsletter instead of another 1:1 note${a.proposals.newsletter.suggested ? ` (the next-best-touch planner's pick: ${a.proposals.newsletter.reason})` : ""}`] }
+    : null
+  const wait: ArbiterOption = { id: "wait", kind: "wait", channels: [], why: ["hold for a bounded time if the evidence says now is the wrong moment"] }
   const overdue = a.facts.daysDeferred >= a.policy.arbiter.maxDeferDays
-  const menu: ArbiterMenu = { menu: overdue ? [send] : [send, wait], locked: null }
+  const menu: ArbiterMenu = { menu: [...sends, ...(newsletter ? [newsletter] : []), ...(overdue ? [] : [wait])], locked: null }
+  const suggestedSend = sends.find((s) => s.id === `${SEND_ANGLE_PREFIX}${angles?.suggested}`) ?? sends[0]
+  const send: ArbiterOption = !a.cadence.shouldSend && !overdue ? wait : newsletter && a.proposals?.newsletter?.suggested ? newsletter : suggestedSend
   const factsForModel: ArbiterFacts = {
     subject: "lead",
     relationship: { type: "lead", persona: a.facts.leadTemperature, hasAssignedAgent: false },
@@ -1083,11 +1125,125 @@ export async function arbitrateCadence(a: CadenceArbitrationInput, deps: { decid
     preferences: a.facts.preferences.filter((p) => ARBITER_MEMORY_KEYS.includes(p.key)),
     fatigueRisk: null,
     localHour: null,
-    moment: { key: `reengagement_phase_${a.cadence.phase}`, intent: `Re-engage a lead who has gone quiet (attempt ${a.facts.attempts + 1}); the tenant's cadence says a touch is due.`, daysSinceOpen: a.facts.daysDeferred },
+    moment: { key: `reengagement_phase_${a.cadence.phase}`, intent: `Re-engage a lead who has gone quiet (attempt ${a.facts.attempts + 1}); ${a.cadence.shouldSend ? "the tenant's spacing guidance says a touch is due" : "the spacing guidance says not yet, but the lead has been active since our last touch"} — decide whether now is right, and how to open.`, daysSinceOpen: a.facts.daysDeferred },
     blindSpots: [],
   }
   const decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts: factsForModel, menu, planned: send, policy: a.policy, budget: a.budget }, deps)
-  return { sendNow: decision.kind !== "wait", decision, skippedReason: null }
+  const angle = decision.optionId.startsWith(SEND_ANGLE_PREFIX) ? decision.optionId.slice(SEND_ANGLE_PREFIX.length) : null
+  return { sendNow: decision.kind !== "wait", decision, skippedReason: null, angle, newsletter: decision.optionId === "newsletter_handoff" }
+}
+
+// ── WAVE 149 (lane 149C, contract C29) — EVERY PLANNER PROPOSES, THE ARBITER DECIDES ──────────────────────────────────────
+
+/**
+ * THE SIX PLANNER ENTRY POINTS (lane 148Z Still open, 143E-SO-03 — "adaptive-reengagement, next-best-touch, stale-contact-detector,
+ * saved-home-nudge, ghost-escalation, lead-nurture onto the arbiter") and the ONE arbiter door each one's proposal now passes.
+ * Each planner keeps its own knowledge (what the angle is, which channel the person replies to, who is stale, what changed on a
+ * saved home, when the active cadence is spent, which verified channel a hot seller has) and hands it to the arbiter as OPTIONS
+ * with its own verdict as the fallback; the arbiter decides timing, channel and content. scripts/arbiter-timing-guard.ts reads
+ * this table and proves every `door` calls its `via` in stripped source.
+ * @proofSeam the census guard reads the table; production reads no field of it (each door calls the arbiter directly).
+ */
+export const ARBITER_PLANNER_ENTRY_POINTS = Object.freeze({
+  adaptive_reengagement: { planner: "lib/ai-isa/adaptive-reengagement.ts", door: "lib/ai-isa/ghost-reengagement.ts", via: "arbitrateCadence", what: "the attempt's opening angle is a SUGGESTION among the angles offered (proposals.angles)" },
+  next_best_touch: { planner: "lib/ai-isa/next-best-touch.ts", door: "lib/ai-isa/ghost-reengagement.ts", via: "arbitrateCadence", what: "the newsletter downshift is an option (proposals.newsletter); for contacts the picker is the fallback behind arbitrateAndRecordExperience in app/actions/ai-isa/engage-contact.ts" },
+  stale_contact_detector: { planner: "lib/ai-isa/stale-contact-detector.ts", door: "app/actions/ai-isa/engage-contact.ts", via: "arbitrateAndRecordExperience", what: "the detector names CANDIDATES (app/api/cron/stale-contact-monitor/route.ts → initiateAIISAContactEngagement → engageContact); the touch is the arbiter's" },
+  saved_home_nudge: { planner: "lib/ai-isa/saved-home-nudge.ts", door: "lib/ai-isa/saved-home-nudge.ts", via: "arbitratePlannedTouch", what: "decideSavedHomeNudge: a personal reel, a written note or the agent — the classifier's pick is the fallback" },
+  ghost_escalation: { planner: "lib/ai-isa/ghost-escalation.ts", door: "lib/ai-isa/ghost-escalation.ts", via: "arbitratePlannedTouch", what: "decideGhostEscalation: tell a person (offer a personal call) or let the quiet nurture continue — the FYI is the fallback" },
+  lead_nurture: { planner: "lib/ai-isa/lead-nurture.ts", door: "lib/ai-isa/lead-nurture.ts", via: "arbitratePlannedTouch", what: "proposeLeadNurture: which verified channel(s) carry the hot-seller nurture, or the agent, or a bounded wait — both channels is the fallback" },
+  // Beyond the six (C29 "every outbound touch … funnel step"): a tenant-authored sequence step's delay is its author's proposal.
+  sequence_step: { planner: "lib/campaign-sequences/enrollment-engine.ts", door: "lib/campaign-sequences/step-executor.ts", via: "arbitratePlannedTouch", what: "a due step (after the first) sends now or waits a bounded time — the author's spacing is the fallback" },
+  // Owner ruling 8 (C24 extended): when the person's window passes, the arbiter decides how the team answers for them.
+  unattended_answer: { planner: "lib/communications/unattended-answer.ts", door: "lib/communications/unattended-answer.ts", via: "arbitratePlannedTouch", what: "a written answer on the client's channel (text / email / portal), that answer plus a personal video update, or a person after all — the written answer is the fallback" },
+} as const)
+export type PlannerEntryPoint = keyof typeof ARBITER_PLANNER_ENTRY_POINTS
+
+export interface PlannedTouchInput {
+  brokerageId: string
+  planner: PlannerEntryPoint
+  subject: { type: "lead" | "contact"; id: string }
+  now: Date
+  /** The planner's CLOSED menu (its own knowledge as options) — the model can never pick off it. */
+  options: ArbiterOption[]
+  /** The planner's own verdict: what happens when the model does not answer (outage, refusal, spent budget, arbiter off). */
+  planned: string
+  /** What this moment is (the prompt's cue). */
+  moment: { key: string; intent: string }
+  relationship?: ArbiterFacts["relationship"]
+  intent?: ArbiterFacts["intent"]
+  history?: Partial<ArbiterFacts["history"]>
+  urgency?: ArbiterFacts["urgency"]
+  blindSpots?: string[]
+  /** Offer a bounded wait (default true). Withdrawn once the person was held policy.arbiter.maxDeferDays days, or the waits are unreadable. */
+  offerWait?: boolean
+  policy?: FollowupPolicy
+  budget?: ArbiterBudget
+  /** The decision prompt (default ARBITER_SYSTEM). */
+  system?: string | null
+}
+
+export interface PlannedTouchArbitration {
+  /** The option id the arbiter chose (or the planner's, on a fallback). */
+  choice: string
+  decision: ArbiterDecision
+  /** The decision row on the action ledger (LAW 5) — false = it could not be written (said, never pretended). */
+  recorded: boolean
+  ledgerError?: string
+}
+
+/**
+ * THE ONE DOOR A PLANNER'S PROPOSAL PASSES (contract C29). The planner builds the options from what it knows, names its own
+ * verdict, and the arbiter decides (arbitrateFollowUp — the same closed-menu validator as every other decision: an option off
+ * the menu, an uncited reason or a confidence under the tenant's floor keeps the planner's verdict). A bounded `wait` is offered
+ * unless the planner says the moment cannot wait. Every decision is ledgered (followup.decision.*, one row per planner per subject
+ * per day). Never throws.
+ */
+export async function arbitratePlannedTouch(
+  svc: { from: (t: string) => any },
+  a: PlannedTouchInput,
+  deps: { decide?: ArbiterDecide; record?: boolean } = {},
+): Promise<PlannedTouchArbitration> {
+  let policy = a.policy
+  if (!policy) {
+    try { policy = (await (await import("./followup-policy")).loadFollowupPolicy(svc as never, a.brokerageId)).policy }
+    catch { policy = (await import("./followup-policy")).platformFollowupPolicy() }
+  }
+  const options = a.options.filter((o) => o.kind !== "wait")
+  let withWait = a.offerWait !== false
+  if (withWait) {
+    const held = await countArbiterWaits(svc, { brokerageId: a.brokerageId, subject: a.subject, now: a.now, policy }).catch(() => null)
+    if (held === null || held >= policy.arbiter.maxDeferDays) withWait = false
+  }
+  const wait: ArbiterOption = { id: "wait", kind: "wait", channels: [], why: ["hold for a bounded time if the evidence says now is the wrong moment"] }
+  const menu: ArbiterMenu = { menu: [...options, ...(withWait ? [wait] : [])], locked: null }
+  const planned = menu.menu.find((o) => o.id === a.planned) ?? options[0] ?? wait
+  const facts: ArbiterFacts = {
+    subject: a.subject.type,
+    relationship: a.relationship ?? { type: a.subject.type, persona: null, hasAssignedAgent: false },
+    intent: a.intent ?? null,
+    history: { hoursSinceAnyTouch: null, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: null, portalEducationViews: null, ...(a.history ?? {}) },
+    journey: { transactionStage: null, nextMilestone: null, openLessons: null, nextLesson: null },
+    preferences: [],
+    fatigueRisk: null,
+    localHour: null,
+    moment: { key: a.moment.key, intent: a.moment.intent, daysSinceOpen: 0 },
+    blindSpots: [...(a.blindSpots ?? [])],
+    ...(a.urgency ? { urgency: a.urgency } : {}),
+  }
+  let decision: ArbiterDecision
+  try {
+    decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned, policy, budget: a.budget, system: a.system ?? null }, { decide: deps.decide })
+  } catch (e) {
+    decision = { optionId: planned.id, kind: planned.kind, channel: planned.channels[0] ?? null, format: null, waitHours: null, rationale: `The planner's verdict stands: the arbiter threw (${e instanceof Error ? e.message : String(e)}).`, evidence: [], confidence: 1, source: "deterministic", fallbackReason: "arbiter threw", menu: menu.menu.map((o) => o.id) }
+  }
+  let recorded = false
+  let ledgerError: string | undefined
+  if (deps.record !== false) {
+    const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner })
+    recorded = r.recorded
+    ledgerError = r.error
+  }
+  return { choice: decision.optionId, decision, recorded, ...(ledgerError ? { ledgerError } : {}) }
 }
 
 // ── speed-to-lead, the LEAD half (owner ruling 16, wave 145) ──────────────────────────────────
@@ -1185,7 +1341,11 @@ export async function countArbiterWaits(
 /** Evidence for a decision that has no ledger row of its own (the cadence): one non-action row, idempotent per subject per day. */
 export async function recordArbitration(
   svc: unknown,
-  a: { brokerageId: string; subject: { type: "lead" | "contact"; id: string }; decision: ArbiterDecision; now: Date; policyRef: string | null; systemSource: string },
+  a: {
+    brokerageId: string; subject: { type: "lead" | "contact"; id: string }; decision: ArbiterDecision; now: Date; policyRef: string | null; systemSource: string
+    /** Wave 149 (C29): a planner's own scope in the idempotency cycle, so two planners deciding about one person the same day are two rows. */
+    cycleScope?: string | null
+  },
 ): Promise<{ recorded: boolean; error?: string }> {
   try {
     const { recordNonAction } = await import("@/lib/kernel/action-ledger")
@@ -1194,7 +1354,7 @@ export async function recordArbitration(
       brokerageId: a.brokerageId, domain: "followup", decision: wait ? "wait" : "send_touch",
       actor: { type: "manager", managerKey: "ai_isa" }, subject: a.subject,
       reasonCode: wait ? "WAIT_COOLDOWN" : "NURTURE_TOUCH", reasonDetail: a.decision.rationale.slice(0, 500),
-      cycle: `arb:${a.subject.type}:${a.subject.id}:${a.now.toISOString().slice(0, 10)}`,
+      cycle: `arb:${a.cycleScope ? `${a.cycleScope}:` : ""}${a.subject.type}:${a.subject.id}:${a.now.toISOString().slice(0, 10)}`,
       systemSource: a.systemSource, policyKey: "followup_policy",
       until: wait && a.decision.waitHours !== null ? new Date(a.now.getTime() + a.decision.waitHours * 3_600_000).toISOString() : null,
       detail: arbitrationLedgerDetail(a.decision, a.policyRef),
