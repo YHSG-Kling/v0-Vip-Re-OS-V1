@@ -31,6 +31,11 @@ secondary source it used.
    It is the authoritative "moved" signal for people we already have a business relationship with, at **$20 per file**
    (TrueNCOA). USPS limits its use to correcting mailing lists, and that limit has to be squared with a multi-tenant platform
    before anything is built (§3.6).
+5. **Wave 149 (lane 149I, read 2026-11-03): one cheaper person-contact provider was found, and it is WAITING_EXTERNAL** (§10).
+   Tracerfy with RentCast is the target pair: bulk skip trace at $0.02 a hit with misses free, and DNC on the same balance. Its
+   standard terms allow "lawful delivery to Customer's contracted end users". Platform rights still need written confirmation,
+   and the hit rate needs a measured test, before any adapter. DataZapp is not added: no licence grant is stated, and its extra
+   fields are mostly protected. Verdict 1 stands until §10.8 has run.
 
 ## 2. Requirements, and which source meets each
 
@@ -270,6 +275,14 @@ for a worker, not a Vercel cron. **Proposal only — not built.** It needs an ow
 6. **One verified source per fact** (§9, wave 148). Every fact has one survivor provider, an ordered fallback, and a stop at the
    first answer. Gap-only buying and freshness windows already keep a contact from being paid for twice. A new provider earns a
    row only by replacing a survivor's row, never by sitting beside it.
+7. **Wave 149 (§10): the path to one person-side provider.** Steps 1 and 2 cost nothing to start.
+   1. Get Tracerfy's written platform and storage confirmation, and add the tenant-Terms flow-down. Both are owner items.
+   2. Prove the adapter against Tracerfy's free sandbox.
+   3. Run a bounded, measured hit-rate test. It is a purchase, so it is the owner's decision.
+   4. Only if Tracerfy wins on usable answers per dollar, make it the batch rung of `owner_contact` and the `dnc_tcpa` provider.
+      It replaces the batch rung; it never sits beside it. Versium keeps the real-time rung. PeopleData keeps the employment
+      profile. BatchData's skip-trace leg then has nothing to do and retires, with a tombstone naming its survivor.
+   Do not add DataZapp (§10.2).
 
 ## 8. Blind spots
 
@@ -366,3 +379,261 @@ overlap / Adds / No. The counting rule is stated here so anyone can recount the 
 
 A licensed DealMachine would therefore *swap in* for BatchData's rows (F7–F9, F14–F17 legs), not consolidate the stack. It would
 also remove the push channel (F10) that BatchData provides.
+
+## 10. DataZapp and Tracerfy at 50,000 consumers a month (wave 149, lane 149I)
+
+Owner ruling 19 (2026-11-03): evaluate DataZapp, "tracerfly.com" and AMcards against Versium, PeopleData, BatchData, RentCast
+and DealMachine at about **50,000 consumers a month**. "The ideal is one or two providers that together are accurate and lower
+the cost of Customer 360." AMcards is in `docs/commercial/DIRECT-MAIL-PROVIDER-COMPARISON.md` §11.
+
+**Method.** Every vendor fact below was read from the vendor's own pages on **2026-11-03**, unless another date is given. Research
+used web fetch and Exa, read-only. No account, no sign-up, no API key, no match report, no sandbox call and no purchase. A figure
+that could not be confirmed on a vendor page is written **unconfirmed**. Match rates are **not published as numbers by any
+vendor** in this section, so the 50,000 model (§10.5) is a formula with labelled ASSUMED hit rates, never an estimate dressed as a
+fact. Survivors in this repo are cited at `file:line` on base `08712fef`.
+
+### 10.0 Verdict (pyramid: the answer first)
+
+1. **Recommended target pair: Tracerfy + RentCast.** Tracerfy becomes the one person-contact provider for the **batched**
+   Customer-360 fill: phones, emails, DNC / TCPA-litigator scrub and phone intelligence on one credit balance. Misses are free,
+   and the bulk price is $0.02 a hit. RentCast is already the property survivor, and it stays one: structure, owner, sale history
+   (which gives length of residence) and the owner-ordered AVM (home value). Together they cover the facts the 360 buys most often.
+   At the assumed 60 % hit rate they cost about **$2,024 a month for 50,000 consumers, against $3,824 – $8,324 for today's stack**
+   on published prices (§10.5).
+2. **Tracerfy is adopted in principle only. No adapter is built, and it is WAITING_EXTERNAL (§10.9).** Tracerfy's standard terms
+   come closer to platform use than any vendor evaluated in waves 146–149. Data is "licensed for Customer's internal business use
+   and lawful delivery to Customer's contracted end users". There is a written flow-down duty for end users. Its own API guidance
+   says "Cache results to avoid redundant requests". But white-label use is "Contact sales … with a contract". The accuracy claim
+   is a vendor range (70 – 95 %), not a match rate. And the cheap price applies to **batches only**: an instant single lookup costs
+   five times as much. Two things must happen first: written confirmation of the platform and storage rights, and a measured
+   hit-rate test. The test is a purchase, so it is the owner's decision.
+3. **DataZapp is not added.** Its published prices are the lowest for household demographics ($0.0075 per attribute) and
+   competitive for email and phone append ($0.02 – $0.03 per match). But its Terms grant no licence in writing. The words
+   "licence", "resale", "platform" and "storage" all appear in neither a grant nor a prohibition. Its API needs a $1,000 prepaid
+   balance with $1,000 minimum refills. Its demographic set is mostly protected-class or FCRA-adjacent fields (ethnicity,
+   religious, party leaning, `CREDIT_RANGE`). The facts it would add without those fields are already covered by RentCast plus
+   Tracerfy. DataZapp stays the **named fallback for email append only**, used if the measured test shows weak Tracerfy email fill.
+4. **Versium, PeopleData and BatchData's skip-trace leg become fallbacks, to be retired after measurement.** They are not removed
+   now (extend before replacing, LAW 1). Versium keeps the **real-time single-contact** rung, where it is cheaper than Tracerfy's
+   instant lookup. It also keeps the free audience estimate (F23) and the online audience match (F24). PeopleData keeps the
+   employment profile (F19), which no other vendor sells. DealMachine stays out: it is licence-blocked (§3.4).
+5. **"tracerfly.com" did not resolve** from this session (DNS `ENOTFOUND`, and Exa's crawl failed too). The vendor evaluated is
+   **Tracerfy** (<https://www.tracerfy.com>), whose name is one letter away. It sells skip tracing with an MCP server, which
+   matches the brief's "MCP/API". **The owner should confirm this is the vendor meant.**
+
+### 10.1 Sources read (2026-11-03)
+
+| Vendor | URL | What it gave |
+|---|---|---|
+| DataZapp pricing | <https://www.datazapp.com/pricing> | Pay as you go and $1k / $2k prepay columns; "No Monthly Subscriptions, No Contracts"; custom pricing above 250,000 records |
+| DataZapp API | <https://www.datazapp.com/apis/> | Per-API prices; prepaid-only ($125 test for up to 2 weeks, then a $1,000 minimum deposit and $1,000 minimum refills); API enabled by sales on request |
+| DataZapp phone append | <https://www.datazapp.com/phone-append/> | Volume table: $0.03 up to 50,000; $0.025 for 50,000 – 100,000; $0.02 for 100,000 – 250,000; "400 million+ records" |
+| DataZapp email append | <https://www.datazapp.com/email-append/> | "accuracy typically ranges from 75% to 87%"; "up to 98% deliverability"; free match report |
+| DataZapp FAQ | <https://www.datazapp.com/faq/> | "Our data averages 70% to 85% accuracy"; API for email, phone, phone scrub and reverse email; no free trial |
+| DataZapp demographic API | <https://knowledgebase.datazapp.com/apis/demography-append-api/> | 41 output columns (listed in §10.2) |
+| DataZapp demographic pricing | <https://www.datazapp.com/demographic-append-services/> | Household attributes at $0.0075 each |
+| DataZapp email append API | <https://knowledgebase.datazapp.com/2024/06/20/email-append-api/> | "the matched emails are not verified; we recommend using our email verification API"; batch `Data` array; `Matched` flag; `OrderAmount` |
+| DataZapp phone scrub API | <https://knowledgebase.datazapp.com/2024/06/21/phone-scrub-api/> | 1 request per second, up to 500 phones per request; "does not detect disconnected phone numbers"; "does not guarantee legal compliance" |
+| DataZapp Terms | <https://www.datazapp.com/termsandcondition/> | No effective date; terms may change "at any time … We do not and will not assume any obligation to notify you" |
+| Tracerfy pricing | <https://www.tracerfy.com/pricing> | Credit table; Growth $700 for 50,000 credits, Scale $1,500 for 125,000, Business $3,000 for 300,000 |
+| Tracerfy API docs | <https://www.tracerfy.com/skip-tracing-api-documentation/> | Endpoints, rate limits, free mock sandbox `mock.tracerfy.com`, `hit` / `credits_deducted`, MCP tools |
+| Tracerfy MCP | <https://www.tracerfy.com/mcp/> | "Same pricing … pay per hit. Misses cost zero"; no MCP surcharge |
+| Tracerfy property API | <https://www.tracerfy.com/property-data-api> | "$0.20 per successful lookup (10 credits)" |
+| Tracerfy FAQ | <https://www.tracerfy.com/faqs> | "70% to 95% accuracy per batch"; white-label "Contact sales … custom pricing with a contract"; individual owners only, no LLCs |
+| Tracerfy Terms of Service | <https://www.tracerfy.com/terms-of-service> | **Effective 2026-01-03**; §§1–17 (quoted in §10.6) |
+| Versium pricing | <https://versium.com/pricing> | Re-read: unchanged from §3.3 |
+| PeopleData pricing | <https://www.peopledatalabs.com/pricing/person> | Re-read: "Starting at $98/mo", 350 records a month; per-credit tiers **not rendered** on the page today |
+| BatchData pricing | <https://batchdata.io/pricing> | Property plans from $1,000 a month for 100,000 records; skip-trace plans from $2,000 a month for 100,000 records; "Commit Annually" |
+| RentCast API | <https://www.rentcast.io/api> | Plans: Developer $0 (50 requests), Foundation $74 (1,000), Growth $199 (5,000), Scale $449 (25,000), with overage of $0.20 / $0.06 / $0.03 / $0.015 a request; "Flexible Licensing Terms" |
+| DealMachine pricing | <https://www.dealmachine.com/pricing> | Scale "$599 / package / mo", each package 100K records and 10 seats; Basic / Pro seat prices **not rendered** today (they render live from a slider) |
+
+### 10.2 DataZapp — what it is
+
+| Dimension | Fact (read 2026-11-03) | Source |
+|---|---|---|
+| Product | Self-serve append and list house: email, phone / cell, name, age / DOB, demographic, homeownership flag, reverse email / HEM / phone / IP, email verification, phone scrub; consumer, voter, donor, homeowner and property lists; "AI-modeled intent signals like solar intenders, home-seller score" | <https://www.datazapp.com/>, <https://www.datazapp.com/pricing> |
+| Price, contact | Email append $0.03 a match (prepay as low as $0.02); phone append $0.03 (≤ 50k), $0.025 (50k – 100k), $0.02 (100k – 250k); "no extra charge to receive only Do Not Call (DNC)–scrubbed phone numbers" | pricing, phone-append |
+| Price, demographic | "Starts at $0.005 / Demographic"; household attributes (presence of child, homeownership, length of residence, dwelling type, home value) $0.0075 each. **The seller-score price is unconfirmed** | apis, demographic-append-services |
+| Price, other | Phone scrub and email verification $0.005; reverse IP / reverse phone $0.03 a matched record; property owner data $0.04 ($0.035 prepay); recent home buyers $0.055 (prepay column) | apis, pricing |
+| Minimums | Web: $125 minimum order on pay as you go. API: prepaid only, a $125 test for up to 2 weeks, then a $1,000 minimum deposit and $1,000 minimum refills ("no exceptions") | pricing, apis |
+| API | HTTPS POST, JSON, `ApiKey` in the body, a batch `Data` array. Enabled by sales staff on an emailed request. Phone scrub: 1 request a second, ≤ 500 phones a request | apis; knowledgebase |
+| Match rate | **Unconfirmed.** No numeric match rate is published. "Accuracy" is a vendor claim (70 – 85 % overall; email 75 – 87 %). The email page's customer match-rate table did not render | faq, email-append |
+| Freshness | "regularly updated", "refreshed, multi-sourced". **No cadence published (unconfirmed)** | email-append, phone-append |
+| Demographic fields (41) | Age, Education, Marital_Status, Gender, **Ethnicity**, Income, Occupation, Presence_of_Child, NumberOfChildren, Home_Owner, LOR, Dwelling_Type, Home_Value, pets, interests, charitable causes, **Religious**, **Party-Leaning_D / _R**, Political_Donor, Unregistered_Voter, Signal_Accredited_Investor, Signal_High_Networth, Signal_Seller_Score (0x – 4x), Signal_Solar_Intenders, Loan_Amount_Range, HomePurchase_Range, NLTV, **CREDIT_RANGE**, EST_LoanBalance_Range | demography-append-api |
+| Licence | **No licence grant is stated.** The Terms say only that "Licensee agrees to use the leads in a manner that strictly complies with all applicable … laws" (CAN-SPAM, DNC, TSR, TCPA). They say nothing on resale, use on behalf of clients, platform or white-label use, storage or retention, or termination of rights. The knowledge base says APIs "allow you to automate or white-label the process of getting data from Datazapp". That is a marketing sentence, not a grant | termsandcondition; <https://knowledgebase.datazapp.com/apis/> |
+| Change of terms | "We may modify any of the terms … at any time … We do not and will not assume any obligation to notify you". No effective date | termsandcondition |
+
+**Assessment.** DataZapp is cheap and published, and its batch API fits a nightly job. Three things keep it out of the 360. First,
+silence in the Terms is not a grant. A platform storing appended fields on tenant profiles needs it in writing, and that is the
+same gap §4 records for Versium and PeopleData. Second, the fields it would add that RentCast and Tracerfy do not already cover
+are mostly the ones our classifier must withhold from targeting. Ethnicity, religion, party leaning and presence of children are
+protected or proxy attributes. `CREDIT_RANGE`, `NLTV` and the loan-balance ranges are credit-like attributes that DataZapp does
+not position as FCRA-compliant. We do no screening, but storing them invites misuse. Third, there is no published match rate, and
+there is no free test through the API (the $125 test deposit is a purchase). **Not added.** It is named as the email-append
+fallback (§10.0 item 3).
+
+### 10.3 Tracerfy — what it is
+
+| Dimension | Fact (read 2026-11-03) | Source |
+|---|---|---|
+| Product | US residential skip tracing and property data: Normal Trace (owner name + address → phones, emails), Advanced Trace (address only; it finds the owner), Enhanced Trace (owner, contacts, address history, up to 2 relatives), Parcel (APN) trace, Phone Intelligence (line type, carrier, last-seen, DNC / TCPA flags, state DNC codes), DNC scrub (federal, state, TCPA litigator), Property Monitors (daily / weekly new matches with webhook), Property Data + TraceAI lists (5 propensity scores: sell, refinance, roof, HVAC, solar, "Each score returns the exact factors that fired") | pricing; features |
+| Price | 1 credit = $0.02 pay as you go. Normal Trace 1 credit a hit ($0.02); Advanced 2 ($0.04); Enhanced 15 ($0.30); Phone Intelligence 5 ($0.10); Parcel 5 ($0.10); DNC 1 a phone checked ($0.02, charged whatever the result); Property Data + TraceAI 5 a delivered record ($0.10); Property Monitors 25 a new lead ($0.50); property lookup "$0.20 per successful lookup (10 credits)" | pricing; property-data-api |
+| Instant (single) lookup | **5 credits a lookup** (the docs' sandbox sample shows `"credits_deducted": 5`, and the 402 text says "Instant trace requires 5 credits per lookup"). That is $0.10 pay as you go, $0.07 on Growth and $0.06 on Scale. The Growth plan lists "Up to 10,000 instant trace lookup" against "Up to 50,000 normal trace (bulk)" | API docs; pricing |
+| Plans | Growth $700 / mo for 50,000 credits ($0.014); Scale $1,500 for 125,000 ($0.012); Business $3,000 for 300,000; Custom Enterprise above 300,000. Plan credits "reset each billing cycle"; purchased credits "never expire" | pricing |
+| Misses | Skip trace, property lookup and parcel: "charge only when we return contact info, misses cost zero". DNC is charged per phone | pricing FAQ; ToS §12 |
+| API / MCP | REST with a Bearer key, on every account, at "the same per-hit pricing". A free hosted sandbox (`mock.tracerfy.com`) mirrors the API with deterministic fake data and "magic values" for 402 / 403 / 429 / 500 paths. The MCP server exposes `start_trace_queue`, `trace_lookup`, `enhanced_trace_lookup`, `parcel_lookup`, `phone_verification`, `dnc_check`, `lead_lookup`, `preview_lead_list` (free), `execute_lead_list`, `check_balance`; "Tracerfy never hosts or runs your AI model" | API docs; mcp |
+| Rate limits | Batch trace 10 submissions per 5 minutes; instant / enhanced / phone / APN / property lookup 500 a minute (shared); DNC scrub 10 per 5 minutes; DNC instant 120 a minute (v2). ToS §4 calls "Submitting single-row API calls instead of batching records into bulk uploads" **API abuse** | API docs; ToS §4 |
+| Coverage | "150M+ U.S. Properties Covered"; "built for tracing individually owned properties only" (no LLCs or corporations) | pricing; faqs |
+| Accuracy / match rate | "70% to 95% accuracy per batch" (FAQ). ToS §5: "Data accuracy estimates (70-95%) are approximate and not guaranteed". **A match (hit) rate is unconfirmed** | faqs; ToS §5 |
+| Freshness | **Unconfirmed.** "derived from public records and third-party sources"; no cadence published | ToS §5 |
+| DNC in trace results | The sandbox sample carries `dnc` / `tcpa` booleans per phone. ToS §2 says "Skip tracing results do NOT automatically include DNC scrubbing". **We treat a trace's flag as unverified.** The scrub (or our own `enforceTCPACompliance`, `lib/communication/tcpa-gate.ts:132`) stays the authority | API docs; ToS §2 |
+| FCRA | Not a consumer reporting agency. No credit, employment, insurance, tenant-screening or housing decisions. Enhanced fields (relatives, employer, public-record indicators) are "possible matches" | ToS §1, §5 |
+
+**Assessment.** Tracerfy is the cheapest verified per-hit contact source for the batched 360 fill. It bundles the DNC / litigator
+scrub and phone intelligence the `dnc_tcpa` route buys from BatchData today. It has the only free, real-shaped sandbox among the
+evaluated vendors, which would let an adapter be built and proved with **no** spend once the rights clear. Its limits are just as
+concrete. (a) The $0.02 price is for **bulk queues**. The rail's real-time single-contact gap fill would pay $0.10, more than
+Versium's $0.02 – $0.05 a matched output, so Versium keeps that rung. (b) It covers individual owners only, so an LLC owner falls
+through to BatchData. (c) No match rate or freshness is published. (d) It sells no employment profile and no hashed ad
+identifiers.
+
+### 10.4 The current stack, re-read (2026-11-03)
+
+| Provider | Price on the page today | Change since the last read |
+|---|---|---|
+| Versium | Pay as you go $0.075 – $0.05 a match credit ($125 minimum a file, no API); credit packages from $250 at $0.05 – $0.02 (API + MCP, never expire); subscriptions from $5,000 / yr at "<$0.02" (> 250,000 credits a year) | none (§3.3, 2026-10-29) |
+| PeopleData | Free 100 credits; Pro "Starting at $98/mo" (350 records); bulk custom; annual "Save 20%". **Per-credit tiers unconfirmed today** (not rendered); the $0.28 / $0.265 / $0.25 tiers are the 2026-10-23 read (`PROVIDER-COST-REPORT.md` §3.3) | tiers not re-confirmed |
+| BatchData | Property: Growth $1,000 / mo (100,000 records), Professional $2,500 (300,000), Scale $5,000 (750,000), Enterprise $10,000 (3,000,000), "Pay Monthly Commit Annually". Skip trace: $2,000 / mo (100,000), $5,000 (300,000), $10,000 (750,000), $20,000 (3,000,000). A matched-record skip-trace tier: $3,000 / mo (100,000 matched), $7,500, $15,000, $30,000. Add-ons: Demographics $400 / mo, Contact Enrichment $5,000 / mo, BatchRank $2,500 / mo, Permit Summary $1,250 / mo | **new:** plan prices are now published (§8 of `PROVIDER-COST-REPORT.md` recorded the per-record rate as UNKNOWN). They are annual commitments, not per-record |
+| RentCast | Developer $0 / 50; Foundation $74 / 1,000; Growth $199 / 5,000; Scale $449 / 25,000; overage $0.20 / $0.06 / $0.03 / $0.015 a request. "We offer flexible licensing terms which allow you to use our property data for any use case that is not specifically prohibited under our Terms of Use" (the Terms themselves were **not read**, §8) | the repo books $0.074 a request (§9.1). At 50,000 a month on Scale the effective rate is **$0.0165** (§10.5) |
+| DealMachine | Scale $599 / package / mo (100K records, 10 seats). Basic / Pro seat prices not rendered. Mail postcards 4×6 $0.75 / $0.70 | none material (§3.4, 2026-11-01) |
+
+### 10.5 The 50,000-consumers-a-month model
+
+**Scenario.** 50,000 consumers a month reach the Customer-360 gap fill, each with a name and a mailing or property address. Each
+needs: (1) a phone and an email; (2) DNC status on the phone we would dial; (3) owner-occupancy, length of residence and home
+value; (4) property facts. Gap-only and freshness rules (§9) already remove anything held inside its window. The 50,000 is
+therefore **attempted** records **after** dedupe.
+
+**Hit rate.** h is the share of attempted records that come back with a usable answer. It is **unconfirmed for every vendor**.
+The table shows h = 40 %, 60 % and 80 % as **ASSUMED** values, so that the ordering can be seen. These are not estimates. "Cost per
+verified usable person" means cost ÷ (50,000 × h × u), where u is the share of hits with a non-DNC mobile or a deliverable email.
+u is also **unconfirmed** (it needs the measured test, §10.8).
+
+| Leg | Provider (published price) | h = 40 % | h = 60 % | h = 80 % | Notes |
+|---|---|---|---|---|---|
+| Contact (phone + email) | **Tracerfy** Normal Trace, bulk, $0.02 a hit (the Growth plan's $700 flat is cheaper above 35,000 hits) | $400 | $600 | $700 | one hit returns phones and emails; misses free |
+| Contact | Tracerfy instant lookup, 5 credits ($0.10) | $2,000 | $3,000 | $4,000 | real-time path only; **not** the batch path |
+| Contact | DataZapp email + phone, separate matches, $0.025 – $0.03 each | $1,000 – $1,200 | $1,500 – $1,800 | $2,000 – $2,400 | assumes email and phone each hit at h; prepay "as low as $0.02" would lower this; $1,000 prepaid floor |
+| Contact | Versium Contact Append, 1 credit a matched output (email 1, phone 1), $0.02 – $0.05 | $800 – $2,000 | $1,200 – $3,000 | $1,600 – $4,000 | today's first rung (`property-lookup-rail.ts:344`) |
+| Contact | BatchData skip trace plan, $2,000 / mo flat (100,000; annual) | $2,000 | $2,000 | $2,000 | today's second rung (`:345`); flat whatever h is |
+| Contact | PeopleData at $0.28 (Pro entry) | $5,600 | $8,400 | $11,200 | person profile; tiers unconfirmed today |
+| Contact | DealMachine Scale $599 / 100k credits (property + person) | $599 | $599 | $599 | **licence-blocked** (§3.4); shown for completeness |
+| DNC on one phone a hit | Tracerfy DNC scrub $0.02 a phone checked | $400 | $600 | $800 | charged per phone, not per hit |
+| DNC | DataZapp | $0 extra | $0 extra | $0 extra | "no extra charge … DNC–scrubbed phone numbers"; the authority stays our TCPA gate |
+| Owner-occupancy, LOR, home value | **RentCast** property record + AVM (owner, sale history → LOR; AVM → value); Tracerfy's `property_owner` flag | $0 extra | $0 extra | $0 extra | already bought by leg 4 |
+| Same | DataZapp 3 household attributes × $0.0075 | $450 | $675 | $900 | Home_Owner, LOR, Home_Value |
+| Same | Versium Full Demographic, 3 credits × $0.02 – $0.05 | $1,200 – $3,000 | $1,800 – $4,500 | $2,400 – $6,000 | also carries Online Presence – Real Estate (F21) |
+| Property facts (one request each) | **RentCast** Scale $449 for 25,000 + 25,000 × $0.015 = **$824** | $824 | $824 | $824 | independent of h; the cache (30 d / 14 d) only lowers it |
+
+**Combinations, at h = 60 % (ASSUMED):**
+
+| Combination | Monthly cost | Providers on the person side |
+|---|---|---|
+| Today (Versium contact + Versium Full Demographic + RentCast; DNC via BatchData MCP, cost unconfirmed) | **$3,824 – $8,324**, plus any BatchData plan held for fallbacks | 3 (Versium, BatchData, PeopleData) |
+| **Tracerfy (bulk contact + DNC) + RentCast** | **$600 + $600 + $824 = $2,024** on pay as you go. Trace and DNC draw on one balance: 60,000 credits, so a Growth plan ($700 for 50,000) plus 10,000 credits pay as you go would make it $900 + $824 = $1,724 | **1** |
+| Tracerfy + DataZapp (demographic) + RentCast | $2,024 + $675 = $2,699 | 2 (DataZapp adds only fields RentCast already gives, or protected ones) |
+| DataZapp (contact + demographic) + RentCast | $1,500 – $1,800 + $675 + $824 = $2,999 – $3,299 | 1 (no stated licence) |
+
+**What the model shows, and what it does not.** The ordering holds for any h from 40 % to 80 %: Tracerfy bulk is the cheapest
+licensable contact leg, and RentCast already pays for the property-derived "demographics". The saving disappears on the real-time
+path: at $0.10 a Tracerfy instant lookup costs more than Versium. That is why Versium keeps the real-time rung. The model **does
+not** show accuracy. Two vendors at the same h can differ completely in u (dialable, current, the right person). Only a measured
+head-to-head on the same consented records can rank them. Cost per verified usable person is therefore a formula until §10.8 runs.
+
+### 10.6 Licensing, storage and tenant isolation
+
+| Vendor | Licence on standard terms | Storage / caching | Platform / end users | Read |
+|---|---|---|---|---|
+| **Tracerfy** | ToS §13: "limited, non-exclusive, non-transferable license"; "Data obtained through Tracerfy is licensed for Customer's internal business use and lawful delivery to Customer's contracted end users only" | No retention or deletion clause found. ToS §4 lists "Cache results to avoid redundant requests" as a **best practice**. The pricing page lists "Lead Storage – Access your skip traced data anytime" | ToS §3: "If Customer makes Tracerfy data available to its … clients, systems, or end users, Customer must impose equivalent restrictions that prohibit resale, unlawful outreach, FCRA-regulated use, harassment". Prohibited: "Reselling, redistributing, or sharing data with third parties"; "Offering Tracerfy data as a standalone data feed, database, directory, sublicensed product". FAQ: white-label "Contact sales … custom pricing with a contract" | <https://www.tracerfy.com/terms-of-service> (effective 2026-01-03); <https://www.tracerfy.com/faqs> |
+| **DataZapp** | **None stated** ("Licensee agrees to use the leads in a manner that strictly complies with … laws") | Not addressed ("YOU ARE RESPONSIBLE FOR BACKING-UP YOUR OWN MATERIALS") | Not addressed. Assignment needs "prior written consent of DataZapp.com" | <https://www.datazapp.com/termsandcondition/> (no date) |
+| Versium | Forbids caching and building a database; service-bureau use forbidden; destroy on termination | forbidden (§3.3(j)) | forbidden (§3.3(g)) | §4 (2026-10-29) |
+| PeopleData | Cached Data no longer than necessary; one End User; delete on termination | restricted | "own clients … on Customer's platform" | §4 (secondary source) |
+| DealMachine | Internal use only; non-sublicensable | no-cache for customer-facing apps | blocked | §3.4 / §4 |
+| RentCast | "any use case that is not specifically prohibited under our Terms of Use"; no attribution | **Terms not read** | Terms not read | <https://www.rentcast.io/api> |
+| BatchData | **Not read** in waves 146–149 | — | — | §8 |
+
+**Reading.** Tracerfy's standard terms are the only ones evaluated that expressly contemplate delivering data to the customer's
+**contracted end users**, which is what a tenant is: a subscriber under our Terms. They say so with a written flow-down duty rather
+than a prohibition. Storing results on the tenant's own contact profile is "lawful delivery" to that tenant, not resale to a third
+party. **That is a procurement reading, not counsel's.** The white-label FAQ line implies Tracerfy expects a contract for
+platform use. So the rights are **likely but unconfirmed**, and the adapter waits (§10.9).
+
+**Tenant isolation.** No vendor offers per-tenant sub-accounts. Tracerfy ToS §4 calls "Using multiple accounts to circumvent rate
+limits" abuse, and its 404 / 403 on another account's resource is an **account** boundary, not a tenant boundary. Isolation stays
+ours: one platform account, a brokerage-pinned queue row per batch, results written only to the tenant that asked (session
+tenant, CLAUDE.md §4), and the vendor's `meta.request_id` stored as evidence in `withActionLedger`. Our flow-down obligation (ToS
+§3) has to be carried by the tenant Terms of Service: no resale, no FCRA use, no harassment. **This is an owner / counsel item.**
+
+### 10.7 Field overlap against §9 (which survivor rows a licensed Tracerfy would take)
+
+| Fact (§9) | Survivor today | Tracerfy | DataZapp | Effect if Tracerfy is licensed |
+|---|---|---|---|---|
+| F14 owner / person phone + email | Versium → BatchData → PeopleData | Normal / Advanced trace | email + phone append | Tracerfy **first on the batch path**; Versium first on the real-time path; BatchData then PeopleData on a miss |
+| F15 reverse lookup | Versium → BatchData → PeopleData | not sold (no reverse phone / email endpoint found) | reverse phone / email $0.03 | unchanged |
+| F16 line type / carrier | BatchData flags; Twilio Lookups | Phone Intelligence $0.10 | phone scrub type | unchanged (Twilio is per lookup and already wired) |
+| F17 DNC / TCPA litigator | `dnc_tcpa` → BatchData MCP; `enforceTCPACompliance` decides | DNC scrub $0.02 a phone (federal, state, litigator) | DNC-scrubbed phones, $0 | Tracerfy becomes the `dnc_tcpa` provider; **the gate stays the authority** |
+| F7 owner name / mailing | RentCast; BatchData | Advanced trace returns owner + mailing | property owner data (list) | unchanged (RentCast) |
+| F20 demographics | Versium; PeopleData | age / DOB / deceased in a trace | 41 columns (mostly protected) | unchanged; nothing protected is added |
+| F21 online presence / tenure | Versium | none | Home_Owner, LOR, seller score (modeled) | unchanged |
+| F9 distress / seller signals | BatchData quickLists | TraceAI lists with 5 explainable propensity scores ($0.10 a record) | Signal_Seller_Score (modeled) | unchanged; a TraceAI score is *inferred* (C20) |
+| F10 property-change push | BatchData smart-search webhook | Property Monitors ($0.50 a new lead, webhook) | none | unchanged; a possible second source only after measurement |
+| F19 employment profile | PeopleData | none | Occupation (field) | unchanged (PeopleData only) |
+| F24 hashed ad identifiers | Versium | none | reverse HEM | unchanged (Versium only) |
+
+**Avoidable duplicate enrichment.** A licensed Tracerfy would remove **two** paid duplicates on the batch path. The first is
+F14: Versium and BatchData are both asked for the same owner phone and email whenever Versium misses. The second is F17: DNC
+bought from BatchData after a contact leg has already been paid. It adds no third duplicate, provided the router entry replaces
+the batch rung rather than sitting beside it (§7 item 6). DataZapp would **add** a duplicate (F20 / F21 beside Versium) with
+nothing gained that is not protected. That is the second reason it is not added.
+
+### 10.8 The measured test that would confirm it (owner decision; it is a purchase)
+
+The ranking question is u, not price. The cheapest valid test:
+
+1. **Free first:** build and prove the adapter shape against Tracerfy's mock sandbox (`mock.tracerfy.com`, deterministic fake
+   data, no credits). This proves the integration, **not** the data. It is still not done here, because the brief says no adapter
+   before the rights are confirmed.
+2. **Paid, bounded:** one Tracerfy pay-as-you-go top-up. Its credits never expire. Misses are free, but there are **no refunds**
+   (ToS §9). Run it on a fixed sample of platform-owned or consented records whose correct phone and email we already hold, through
+   the bulk queue. Measure h, u (dialable non-DNC mobile or deliverable email that is the right person), staleness, and the
+   disagreement rate with the stored Versium / BatchData answers. Optionally run the same sample through DataZapp's $125 API test
+   for email fill. Never send a tenant's contacts to a vendor that is not yet licensed.
+3. **Decision rule:** Tracerfy replaces the batch rung of `owner_contact` and the `dnc_tcpa` provider only if its u per dollar
+   beats Versium's on that sample. Otherwise the stack stays as it is, and this section records why.
+
+### 10.9 WAITING_EXTERNAL
+
+| Item | Provider | Where | How verified |
+|---|---|---|---|
+| Confirmation that "tracerfly.com" means Tracerfy | Owner | — | The owner names the vendor. tracerfly.com did not resolve from this session (DNS `ENOTFOUND`); the session's network allow-list may also need it |
+| Written platform-use confirmation | Tracerfy (sales@tracerfy.com, per <https://www.tracerfy.com/pricing>) | A signed order or a written reply | It must confirm four things: (a) storage of trace results on each tenant's contact profiles, retained after termination or under a defined purge; (b) delivery to tenants as "contracted end users" under our flow-down terms; (c) one platform account serving many tenants with no per-tenant account; (d) no white-label surcharge, or its price |
+| Tenant Terms flow-down | Owner / counsel | VIPAgents tenant Terms of Service | The equivalent restrictions of Tracerfy ToS §3 (no resale, no FCRA use, no harassment, no unlawful outreach) appear in the subscriber agreement |
+| Measured test | Owner | §10.8 | The owner approves a bounded top-up and the sample |
+| Credential (requested **only** after the four above) | Tracerfy | Profile → Settings → API Key (<https://www.tracerfy.com/faqs>) | `TRACERFY_API_KEY`. Verified with a free `check_balance` and one sandbox-identical call. No value is in code or env docs, deliberately. **No adapter is built** |
+| DataZapp written licence (only if the email-fallback role is ever wanted) | DataZapp (info@datazapp.com, (888) 374-3282) | A written licence | It must grant storage, platform use and the exclusion of protected / credit-like fields at the API. Credential `DATAZAPP_API_KEY` (sent in the request body as `ApiKey`), **not requested** |
+
+### 10.10 Blind spots
+
+- **No account, no sandbox call, no match report.** Every capability comes from vendor documentation. The sandbox would prove
+  shape, not truth.
+- **No vendor publishes a numeric match rate.** Every "accuracy" figure quoted here is a vendor claim, and the model's h is an
+  assumption. The ranking can flip on u.
+- **Real-time volume is unmeasured.** How many of the 50,000 must be answered instantly, at $0.10 (Tracerfy) against $0.02 – $0.05
+  (Versium), is unknown. A high real-time share erodes the saving.
+- **Phones per hit are unknown,** so the DNC line assumes one scrubbed phone per hit (the phone we would dial).
+- **The Tracerfy ToS sandbox sample and §2 disagree** on whether trace results carry DNC flags. We treat a trace's flag as
+  unverified either way.
+- **RentCast's and BatchData's Terms of Use were not read** (carried from §8). The RentCast line is the API page's own sentence.
+- **The DealMachine Basic / Pro and PeopleData per-credit prices did not render** on 2026-11-03. The rows cite the last dated read.
+- **This is not legal advice.** All licence readings are procurement readings, and counsel reads before any signature. DataZapp
+  can change its Terms without notice. Tracerfy notifies "via email or prominent notice".

@@ -37,6 +37,14 @@ on base `ebed6c44`. A price that comes from a secondary source is labelled **rep
    signed DPA that narrows the content licence to providing the service (§9); and (b) the owner's decision on a measured pilot.
    No credential is requested. If the work reopens, the adapter would read `AMCARDS_ACCESS_TOKEN` (§9).
 
+6. **Wave 149 (lane 149I, owner ruling 19, read 2026-11-03): a handwritten-card provider is not justified now** (§11).
+   AMcards' prices are unchanged. A member card still costs about 2.6× a Lob color letter, the licence questions in §5 are still
+   open, and the outcome value is still unmeasured. Ruling 19 says that if no handwritten-card provider is justified, the platform
+   adjusts to another branded format through existing providers. That format is the **personal letter**: a Lob color letter in an
+   envelope, with the tenant's brand, a handwriting-style typeface and the agent's signature. It is sent through the existing
+   `dispatchDirectMail` door, which already sends color letters (`lib/providers/dispatch.ts:1347`). §11 specifies what exists and
+   what to add. AMcards stays WAITING_EXTERNAL. No adapter is built.
+
 ## 2. Sources read (2026-11-01)
 
 | Source | URL | Notes |
@@ -221,3 +229,103 @@ These rules apply only if the §9 conditions clear. No new rail, no second dispa
   terms show no effective date and can change at any time.
 - **Delivery quality and speed are unmeasured.** Neither vendor publishes a delivery-time distribution, and no piece was sent.
 - **The value is unmeasured** (§8). The cost comparison is exact on Lob's side and estimated on AMcards' postage.
+
+## 11. Wave 149 — is a handwritten-card provider justified? (lane 149I, read 2026-11-03)
+
+Owner ruling 19 (2026-11-03): "if no handwritten-card provider is justified, adjust to another branded direct-mail format through
+existing providers. No purchases." Every vendor fact below was re-read on **2026-11-03**. No account, no access token, no card and
+no purchase. Survivors are cited at `file:line` on base `08712fef`.
+
+### 11.1 What changed since 2026-11-01
+
+| Source | Fact (2026-11-03) | Change |
+|---|---|---|
+| <https://amcards.com/pricing/> | Pay as you go "$0 Monthly Membership", "$3.82/card (plus postage)". Membership "$29 Monthly Membership", "Savings of over 50% Off Cards Retail ( $1.57 + Postage )", "NO CONTRACTS" | none |
+| <https://amcards.com/signup/199-license/> | "$199 one-time, then $39/month"; "BONUS: $40 In Credits Per Month"; "All Credits Roll Over For 12 Months" | **new to this report**: a licensed tier. Its per-card price is not stated on the page (**unconfirmed**) |
+| <https://amcards.com/signup/pro/> | "$495 one-time, then $39/month". The page lists a "System License: $199", "Back of Card Branding: $125", "The ability to have your handwriting as a font $175". "United States only" | **new to this report**: the agent's own handwriting as a font is a paid, per-account option |
+| <https://amcards.com/> | Zapier, Salesforce AppExchange, a Follow Up Boss embedded app, "API Access to Use Contacts from Other CRMs" | integrations are per-agent account connections, not a platform licence |
+| <https://help.followupboss.com/hc/en-us/articles/4402371465111-AMcards> (third-party help page, not AMcards') | "Cards will be delivered in 2-5 business days"; message "maximum of 700 characters"; OWN vs SHARED account | a delivery window, **reported** (secondary) |
+| <https://help.lob.com/print-and-mail/ready-to-get-started/pricing-details> | Prices "take effect on 11/01/2026": letter, color, First Class $1.226 / $0.936 / $0.896 (Developer / Startup / Growth); 4×6 postcard $0.909 / $0.649 / $0.619; custom return envelope $0.05 | none (§6) |
+| <https://help.lob.com/print-and-mail/designing-mail/mail-piece-design-specs/letter-add-ons> | Card affix: "The minimum send quantity is 5,000 cards per letter campaign"; "Static, non-personalized artwork"; "We do not support … Dynamic, personalized artwork designs that are unique to the recipient"; $250 / day setup if fewer than 5,000 card-affix letters in a print day. Custom envelopes: "limited customization" of the #10 outer envelope; card-affix letters "cannot be sent with custom envelopes" | **new to this report**: Lob's "cards" are promotional inserts, **not** a greeting card. They cannot serve 1:1 notes |
+
+### 11.2 Verdict: AMcards is not justified now
+
+Ruling 19's test is "justified". Each condition §1 set is re-checked here:
+
+| Condition | 2026-11-01 | 2026-11-03 | Holds? |
+|---|---|---|---|
+| A real product gap (a folded card in an envelope) | confirmed | unchanged. Lob's only "card" is a 5,000-minimum static insert (§11.1) | gap stands |
+| Terms permit platform use | not confirmed (the Content clause needs "prior written consent"; a sub-licensable licence over what we submit; DPA unpublished) | unchanged. The new license tiers are per-account system licences, not platform terms | **no** |
+| Cost | member ≈ $2.39 a card (reported $0.82 postage) | unchanged | 2.55× a Lob Startup color letter ($0.936), 3.7× a 4×6 postcard |
+| Value measured | no | no (a pilot is a purchase) | **no** |
+
+**Not justified.** Two of the four conditions fail, and the cost premium buys an envelope and a fold that a Lob letter gets mostly
+right at 39 % of the price. Ruling 19 therefore points to the alternative.
+
+### 11.3 The branded format through the existing provider: the personal letter
+
+**Definition.** A **personal letter** is one sheet, color, First Class, mailed in an envelope. It carries the tenant's letterhead
+(logo, colours, brokerage line, website), and the person's name and a short note set in a handwriting-style typeface. It closes
+with the agent's scanned signature and a hand-feel "P.S." line. It is private in the envelope, which is the one thing the notecard
+postcard lacks. It is personal in tone, and it is a lawful, ordinary letter. It is **never** presented as handwritten by a person
+when it is printed: the copy says "a note from <agent>", not "handwritten by".
+
+**What exists today (no code needed to send one):**
+
+| Piece | Survivor | State |
+|---|---|---|
+| Color letter in an envelope through the one door | `dispatchDirectMail` letter branch, `lob.letters.create({ file, merge_variables, color })` (`lib/providers/dispatch.ts:1347`); pieceType `"letter"` and `color` (`:1033`, `:1050`) | BUILT |
+| Every gate (autonomy, suppression, CASS, de-confliction, the fair-housing backstop on merge copy, budget) and the ledger `comms.direct_mail.send` | `lib/providers/dispatch.ts:1061` onward (§3) | BUILT |
+| Booked unit | `DIRECT_MAIL_PIECE_COST_USD.letter = 1.2` (`lib/vendor-governance/cost-normalizer.ts:63`). That sits at or above Lob's published color First Class letter on every plan ($0.896 – $1.226), so the budget pre-flight cannot under-reserve | BUILT (conservative) |
+| Delivery evidence | `/api/webhooks/lob-events` (§3) | BUILT |
+| The arbiter tells formats apart | `ARBITER_FORMATS` includes `printed_letter` and `handwritten_card`; the direct-mail channel carries both (`lib/ai-isa/followup-arbiter.ts:115`, `:120`) | BUILT |
+| Piece vocabulary | `CAMPAIGN_PIECE_TYPES` includes `handwritten_letter` and `thank_you_note` (`lib/direct-mail/piece-type.ts:23`) | BUILT |
+
+**What to add (specified; NOT built in this lane, because each item is configuration or another lane's file):**
+
+1. **Route the `handwritten_card` format to the letter, with the postcard as the fallback.** Today the thank-you path sends a
+   postcard with `LOB_NOTECARD_ID` (`app/actions/reputation-kernel.ts:287` onward, the `templateId` read near `:316`). It should
+   send `pieceType: "letter", color: true` with a personal-letter template id, and fall back to today's notecard postcard only
+   when that template is not configured. That file is outside lane 149I's domain. The exact change is in the lane notes under
+   Outside-lane.
+2. **A personal-letter template (configuration, platform-owned).** One Lob HTML letter template, with merge variables for tenant
+   brand, recipient name, note body, agent name, signature image URL and website. The template id is held in an env var whose
+   proposed name is `LOB_PERSONAL_LETTER_TEMPLATE_ID`. That is a **name only**: no value, and no Vercel change. Whether Lob
+   renders a hosted handwriting web font in an HTML letter is **unconfirmed** (the Lob template font docs were not read). If it
+   does not, the typeface is embedded as an image of the rendered note, which the template's PDF path accepts.
+3. **The note itself.** It is written by the existing draft writer under the prompt standard: kind, specific to the moment
+   (closing, review, referral appreciation, home anniversary), never naming a private or inferred life event (the C20 screen).
+   The words pass through the same fair-housing backstop on merge copy. Timing comes from the arbiter (C29), never a fixed
+   schedule.
+4. **Lifecycle moments that should offer it:** closing and review thank-you (`reputation-kernel.ts`), referral appreciation (today
+   a manual card, `lib/kernel/referral-appreciation.ts:84`), and a home anniversary note beside the equity email. Each is chosen as
+   a format by the arbiter, never a second scheduler. The birthday stays on its current consented channel. A birth date never
+   becomes a mail trigger outside the arbiter (`followup-arbiter.ts` age-data rule).
+5. **Readiness.** The capability `handwritten_note_send` (`lib/agentic-os/app-capability-registry.ts:203`, `requires: { platform:
+   ["lob"] }`) is unchanged: same provider, same door.
+
+**Cost at volume** (Lob Startup, color letter First Class, $0.936; the plan fee is already carried once direct mail is sold):
+
+| Personal notes a month | Lob personal letter | AMcards member (≈ $2.39, reported postage) | Lob notecard postcard (4×6, $0.649) |
+|---|---|---|---|
+| 100 | $93.60 | ≈ $268 | $64.90 |
+| 500 | $468 | ≈ $1,224 | $324.50 |
+| 1,000 | $936 | ≈ $2,419 | $649 |
+
+### 11.4 WAITING_EXTERNAL (unchanged from §9)
+
+AMcards stays WAITING_EXTERNAL by name. Three things are needed first: written authorization for platform use, a signed DPA that
+narrows the content licence, and the owner's pilot decision. Only after them would the credential be requested:
+`AMCARDS_ACCESS_TOKEN`. There is no adapter, no credential read and no AMcards host in code. The personal letter needs no new
+vendor. Its only external item is the platform's Lob template, held by name in `LOB_PERSONAL_LETTER_TEMPLATE_ID`: configuration,
+no value.
+
+### 11.5 Blind spots
+
+- **The handwriting typeface in a Lob HTML letter is unverified.** Lob's font guidance was not read, so the template may need the
+  rendered-image fallback.
+- **The window envelope.** A Lob letter mails in a #10 window envelope. Custom envelopes are "limited customization", and their
+  price did not render. So "private in an envelope" holds, but "looks like a greeting card" does not.
+- **Delivery time is unmeasured** for both vendors. The AMcards 2 – 5 day figure is a third-party help page.
+- **Response lift is unmeasured.** The arbiter's format attribution (`printed_letter` against `postcard` against
+  `handwritten_card`) is the instrument, once both formats are sent.
