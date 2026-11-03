@@ -6,13 +6,13 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 816 role-surfaces — BUILT 743 · PARTIAL 58 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 38; contact-portal pages: 30. Expected-coverage gaps: 0.
+**Totals:** 817 role-surfaces — BUILT 744 · PARTIAL 58 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 39; contact-portal pages: 30. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 
 | domain | platform staff | platform prospects · public | tenant admins | teams · team leads | agents | ISA | transaction coordinators | compliance officers | buyers · sellers · lifetime contacts | vendors · partners |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **website · landing pages · lead magnets** | B1 | B17 | B9 | B5 | B10 | · | B5 | B5 | · | · |
+| **website · landing pages · lead magnets** | B1 | B18 | B9 | B5 | B10 | · | B5 | B5 | · | · |
 | **lead acquisition** | B5 | B9 | B12 | B4 | B7 | B9 | B1 | B1 | · | · |
 | **dedup · enrichment · behavioural intent** | B3 | · | B7 P1 | B2 | B4 | B1 | · | · | · | · |
 | **listings** | B1 | B1 | B2 P1 S1 | B3 P1 S1 | B8 P1 S1 | S1 | · | · | · | · |
@@ -153,7 +153,7 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/actions/buyer-offer/handle-multi-offer.ts` | 166 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
 | `app/actions/buyer-offer/track-offer-lifecycle.ts` | 102 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
 | `app/actions/buyer-offers.ts` | 83 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
-| `app/actions/collaborative-search.ts` | 50, 189, 241, 268, 354, 380, 407, 443, 495, 571 | server | not configured | implemented-missing-owner-config | code | platform env COLLABORATIVE_SEARCH_ENABLED | kept: honest configuration copy (derived) |
+| `app/actions/collaborative-search.ts` | 49, 188, 240, 278, 298, 321, 346, 406, 476, 606 | server | not configured | implemented-missing-owner-config | code | platform env COLLABORATIVE_SEARCH_ENABLED | kept: honest configuration copy (derived) |
 | `app/actions/contact-quick-actions.ts` | 108 | server | not configured | implemented-missing-owner-config | code | platform env LOB_API_KEY | kept: honest configuration copy (derived) |
 | `app/actions/crm-connect.ts` | 120 | server | not configured | implemented-missing-owner-config | allow-list | secret storage (SECRETS_ENCRYPTION_KEY) is not configured, so an API secret cannot be stored safely | kept: honest refusal |
 | `app/actions/data-health.ts` | 134, 360 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
@@ -373,7 +373,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | vendor marketplace | ↳ from Platform Admin `/dashboard/superadmin/vendors` | `app/dashboard/superadmin/vendors/page.tsx` | lib/platform/require-capability.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Brokerages `/site/x` | `app/site/[slug]/page.tsx` | lib/video/public-video.ts · lib/kernel/tenant-creation.ts | BUILT |
 
-### platform prospects · public (38)
+### platform prospects · public (39)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -397,7 +397,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | portals · dashboards · login · onboarding | /login `/login` | `app/login/page.tsx` | app/actions/tenant-sso.ts (checkSsoDomainAction) · app/actions/auth.ts (loginUser) | BUILT |
 | portals · dashboards · login · onboarding | /signup `/signup` | `app/signup/page.tsx` | lib/platform/territory-marketplace.ts | BUILT |
 | portals · dashboards · login · onboarding | /vendor-invite/[token] `/vendor-invite/[token]` | `app/vendor-invite/[token]/page.tsx` | app/actions/vendor-invite.ts (acceptVendorInviteAction) | BUILT |
-| properties | /search/join `/search/join` | `app/search/join/page.tsx` | app/actions/collaborative-search.ts (acceptInvitation) | BUILT |
+| properties | /search/join `/search/join` | `app/search/join/page.tsx` | app/actions/collaborative-search.ts (acceptInvitation, submitFamilyOpinionAction) | BUILT |
 | website · landing pages · lead magnets | / `/` | `app/page.tsx` (redirects → app/login/page.tsx) | app/actions/tenant-sso.ts (checkSsoDomainAction) · app/actions/auth.ts (loginUser) | BUILT |
 | website · landing pages · lead magnets | /blog/[slug] `/blog/[slug]` | `app/blog/[slug]/page.tsx` | fetch /api/blog/track-view · fetch /api/blog/track-share | BUILT |
 | website · landing pages · lead magnets | /demo `/demo` | `app/demo/page.tsx` | app/actions/superadmin/platform-growth.ts (requestPlatformDemoAction) · fetch /api/platform/prospect-chat | BUILT |
@@ -409,6 +409,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | /pricing `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | /privacy/request `/privacy/request` | `app/privacy/request/page.tsx` | app/actions/privacy/data-subject-requests.ts (submitDataSubjectRequestAction, DSARType) | BUILT |
 | website · landing pages · lead magnets | /site/[slug] `/site/[slug]` | `app/site/[slug]/page.tsx` | lib/video/public-video.ts · lib/kernel/tenant-creation.ts | BUILT |
+| website · landing pages · lead magnets | /site/[slug]/events/[eventId] `/site/[slug]/events/[eventId]` | `app/site/[slug]/events/[eventId]/page.tsx` | fetch /api/open-house/register · lib/kernel/tenant-creation.ts | BUILT |
 | website · landing pages · lead magnets | /site/[slug]/lm/[formSlug] `/site/[slug]/lm/[formSlug]` | `app/site/[slug]/lm/[formSlug]/page.tsx` | app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) · lib/kernel/tenant-creation.ts | BUILT |
 | website · landing pages · lead magnets | /team/[slug] `/team/[slug]` | `app/team/[slug]/page.tsx` | server-side read in the page tree | BUILT |
 | website · landing pages · lead magnets | /trust `/trust` | `app/trust/page.tsx` | lib/platform/product-brand.ts | BUILT |
@@ -1119,7 +1120,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | portals · dashboards · login · onboarding | portal ·/team `/portal/[contactId]/team` | `app/portal/[contactId]/team/page.tsx` | app/actions/multi-persona.ts (getAgentReviews) · lib/kernel/portal.ts | BUILT |
 | properties | portal ·/properties `/portal/[contactId]/properties` | `app/portal/[contactId]/properties/page.tsx` | app/actions/idx-search.ts (smartSearch, saveProperty, unsaveProperty) · app/actions/calculators.ts (analyzeInvestmentProperty, compareMortgageScenarios) | BUILT |
 | properties | portal ·/properties/[propertyId] `/portal/[contactId]/properties/[propertyId]` | `app/portal/[contactId]/properties/[propertyId]/page.tsx` | app/actions/smart-insights.ts (getSmartInsights, isPropertySaved, getCommuteDestinations, …) · app/actions/buyer-offer-tools.ts (signalAffordabilityChecked, requestOfferHelp, requestPreApprovalRefresh) | BUILT |
-| properties | portal ·/search `/portal/[contactId]/search` | `app/portal/[contactId]/search/page.tsx` | app/actions/buyer-search/conversational-search.ts (buyerConversationTurnAction, buyerHomeFeedbackAction, decideCriteriaChangeAction, …) · app/actions/portal-nl-search.ts (portalNaturalSearchAction, PortalSearchResult) | BUILT |
+| properties | portal ·/search `/portal/[contactId]/search` | `app/portal/[contactId]/search/page.tsx` | app/actions/buyer-search/conversational-search.ts (buyerConversationTurnAction, buyerHomeFeedbackAction, decideCriteriaChangeAction, …) · app/actions/collaborative-search.ts (shareHomesWithFamilyAction, loadFamilyFeedbackAction, setFamilyFeedbackUseAction, …) | BUILT |
 | settings · people · support | portal ·/help `/portal/[contactId]/help` | `app/portal/[contactId]/help/page.tsx` | server-side read in the page tree | BUILT |
 | settings · people · support | portal ·/settings `/portal/[contactId]/settings` | `app/portal/[contactId]/settings/page.tsx` | lib/video/multilingual-reel.ts · lib/contacts/accessibility-preferences.ts | BUILT |
 | transactions | portal ·/my-offer `/portal/[contactId]/my-offer` | `app/portal/[contactId]/my-offer/page.tsx` | server-side read in the page tree | BUILT |
