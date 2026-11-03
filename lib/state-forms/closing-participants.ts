@@ -79,6 +79,14 @@ export interface StateClosingPolicy {
     note: string
   }
   sources:    PolicySource[]
+  /**
+   * C33 (wave 149, lane 149G — owner ruling 17: "early closing needs no executed amendment unless state law requires
+   * it"). PRESENT ONLY when a cited source says this state requires an executed amendment (or another signed
+   * instrument) before a deal closes EARLIER than an "on or before" contract date. ABSENT = no sourced requirement
+   * — never "the law requires nothing", and never a guess. No state carries it today: none of the sources above
+   * addresses an early closing, and no source was verified that does. Adding one = the source beside it, here.
+   */
+  earlierClosing?: { requiresExecutedAmendment: true; summary: string; source: PolicySource }
 }
 
 const P = (p: StateClosingPolicy): StateClosingPolicy => p
@@ -281,6 +289,63 @@ export function assessClosingParticipants(input: {
     conflicts.push(`The brokerage's default closing entity is '${entity}', but ${policy.stateName} requires a licensed attorney to conduct the closing (${policy.sources[0].title}).`)
   }
   return { state, status: "verified", policy, gaps, conflicts, conventionHint: null, question: null }
+}
+
+const SETTLEMENT_WHO: Readonly<Record<string, string>> = {
+  escrow_company: "an escrow company", title_company: "a title company", attorney: "an attorney",
+  mixed: "a title company, an escrow company or an attorney (it varies)",
+}
+
+/**
+ * PURE — WHO CONDUCTS THE CLOSING and WHAT THE STATE SAYS ABOUT AN EARLIER CLOSING, for the closing-date model
+ * (lib/transactions/closing-dates.ts) — read off THIS table, the one sourced state survivor (wave 149, lane 149G).
+ *
+ *   · a sourced policy above → `attorney_required` / `attorney_customary`, with the source's title and URL;
+ *   · no sourced policy, but the published closing CONVENTION (lib/offers/regional-closing-costs.ts) says an attorney
+ *     closes → `attorney_reported` — labelled a convention, never law;
+ *   · otherwise the convention's title / escrow model → `title_or_escrow_typically`; no recognisable state → `unknown`.
+ *
+ * `earlierClosing` is the state's sourced rule on an early closing under "on or before", or `null` — and `null` is
+ * said as "no sourced requirement", never as "none exists". It is the ONLY way a state can make an earlier closing
+ * need an executed amendment in the OS (owner ruling 17); nothing is inferred from the attorney tier.
+ *
+ * Replaces lib/transactions/closing-dates.ts ATTORNEY_CLOSING_REPORTED (wave 148, lane 148I — a second, secondary-sourced
+ * state list; tombstone there).
+ */
+export function closingStateNote(stateInput: string | null | undefined, policies: Readonly<Record<string, StateClosingPolicy>> = STATE_CLOSING_POLICIES): {
+  state: string | null
+  conductedBy: "attorney_required" | "attorney_customary" | "attorney_reported" | "title_or_escrow_typically" | "unknown"
+  basis: "sourced_policy" | "published_convention" | "none"
+  source: { title: string; url: string } | null
+  earlierClosing: StateClosingPolicy["earlierClosing"] | null
+  note: string
+} {
+  const state = normalizeStateCode(stateInput)
+  if (!state) return { state: null, conductedBy: "unknown", basis: "none", source: null, earlierClosing: null, note: "The property's state is not on file — who conducts the closing (a closing attorney, title or escrow) depends on the state; record the address with its state and confirm with them before any date moves." }
+  const policy = policies[state] ?? null
+  const earlier = policy?.earlierClosing ?? null
+  const earlierNote = earlier
+    ? ` ${policy!.stateName} requires an executed amendment for an earlier closing: ${earlier.summary} (${earlier.source.title}).`
+    : ""
+  if (policy) {
+    const src = policy.sources[0] ?? null
+    const customary = policy.involvement === "customary"
+    return {
+      state, conductedBy: customary ? "attorney_customary" : "attorney_required", basis: "sourced_policy",
+      source: src ? { title: src.title, url: src.url } : null, earlierClosing: earlier,
+      note: `${policy.stateName}: ${policy.summary}${src ? ` (${src.title})` : ""} The closing attorney confirms whether and when an earlier closing can happen.${earlierNote}`,
+    }
+  }
+  const conv = getRegionalConventions(state)
+  if (conv?.attorneyClosing) {
+    return { state, conductedBy: "attorney_reported", basis: "published_convention", source: null, earlierClosing: null,
+      note: `${conv.stateName}: published closing conventions (not law) say an attorney customarily conducts the closing — confirm with the closing attorney or title company who conducts this one.` }
+  }
+  if (conv) {
+    return { state, conductedBy: "title_or_escrow_typically", basis: "published_convention", source: null, earlierClosing: null,
+      note: `In ${conv.stateName} ${SETTLEMENT_WHO[conv.settlementModel] ?? "a title or escrow company"} typically conducts the closing (a published convention, not law; practice varies by county) — they, with the lender, confirm whether an earlier day works.` }
+  }
+  return { state, conductedBy: "unknown", basis: "none", source: null, earlierClosing: null, note: `${state} is not a state the OS has closing conventions for — confirm who conducts the closing before any date moves.` }
 }
 
 /** Days since the policy table was verified; the runner reports a stale table rather than trusting it forever. */

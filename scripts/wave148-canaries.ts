@@ -1031,7 +1031,9 @@ group("148I", "manual status with reason + proof, on-or-before closing, the AI a
       const unread = C.resolveClosingDates({ status: "pending", contract_closing_date: "2026-12-15" })
       return {
         positive: open.contractual?.terms === "on_or_before" && open.wording === "On or before 2026-12-15" && open.anticipated?.date === "2026-12-10" && open.actual === null && closed.actual?.date === "2026-12-09" && closed.anticipated === null,
-        negative: unread.contractual?.terms === null && unread.notes.some((n) => /treated as needing an executed amendment/.test(n)),
+        // RE-ASSERTED (wave 149, lane 149G — owner ruling 17): an unread wording is UNKNOWN — it no longer defaults to
+        // "treated as needing an executed amendment" (that note demanded an amendment the contract may not require).
+        negative: unread.contractual?.terms === null && unread.earlierClosing?.requiresExecutedAmendment === "unknown" && !unread.notes.some((n) => /treated as needing an executed amendment/.test(n)) && unread.notes.some((n) => /has not been read yet/.test(n)),
         detail: JSON.stringify({ open: open.wording, closed: closed.actual, unread: unread.notes }),
       }
     },

@@ -335,6 +335,12 @@ const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
  * at CLOSING_DAY_DEADLINE_LOCAL_HOUR in the tenant's zone (the table opens in the morning; a CDA that
  * arrives that afternoon is late); a full timestamp is taken as given. An EARLIER brokerage / title
  * requirement (hours before closing) wins by subtraction. No source → no deadline, said.
+ *
+ * AN EARLIER ANTICIPATED CLOSING (wave 149, lane 149G — owner ruling 17 / C33): under "on or before" the deal may close
+ * BEFORE the contract's date, and a proposed earlier day moves only `estimated_close_date` (lib/transactions/closing-dates.ts
+ * — the contract's `close_date` is never overwritten by a proposal). Without a title appointment, the EARLIER of the two
+ * therefore governs — the CDA must be at the table for the day the deal may actually close; a LATER estimate never pushes
+ * the deadline past the contract's day (that needs an executed extension, which moves close_date itself).
  */
 export function resolveClosingDeadline(input: {
   closingScheduledDate?: string | null
@@ -343,28 +349,26 @@ export function resolveClosingDeadline(input: {
   timeZone: string
   earlierCutoffHours?: number | null
 }): { dueAt: string | null; basis: "closing_scheduled_date" | "close_date" | "estimated_close_date" | "none"; dateOnly: boolean } {
-  const candidates: Array<["closing_scheduled_date" | "close_date" | "estimated_close_date", string | null | undefined]> = [
-    ["closing_scheduled_date", input.closingScheduledDate],
-    ["close_date", input.closeDate],
-    ["estimated_close_date", input.estimatedCloseDate],
-  ]
-  for (const [basis, raw] of candidates) {
+  const read = (raw: string | null | undefined): { ms: number; dateOnly: boolean } | null => {
     const value = typeof raw === "string" ? raw.trim() : ""
-    if (!value) continue
-    let ms: number | null = null
-    let dateOnly = false
+    if (!value) return null
     if (DATE_ONLY_RE.test(value)) {
-      dateOnly = true
       const [y, m, d] = value.split("-").map(Number)
-      ms = zonedInstant(y, m, d, CLOSING_DAY_DEADLINE_LOCAL_HOUR, input.timeZone)
-    } else {
-      const parsed = Date.parse(value)
-      ms = Number.isNaN(parsed) ? null : parsed
+      const ms = zonedInstant(y, m, d, CLOSING_DAY_DEADLINE_LOCAL_HOUR, input.timeZone)
+      return ms == null ? null : { ms, dateOnly: true }
     }
-    if (ms == null) continue
-    const cutoff = typeof input.earlierCutoffHours === "number" && Number.isFinite(input.earlierCutoffHours) && input.earlierCutoffHours > 0 ? input.earlierCutoffHours : 0
-    return { dueAt: new Date(ms - cutoff * 3_600_000).toISOString(), basis, dateOnly }
+    const parsed = Date.parse(value)
+    return Number.isNaN(parsed) ? null : { ms: parsed, dateOnly: false }
   }
+  const cutoff = typeof input.earlierCutoffHours === "number" && Number.isFinite(input.earlierCutoffHours) && input.earlierCutoffHours > 0 ? input.earlierCutoffHours : 0
+  const out = (basis: "closing_scheduled_date" | "close_date" | "estimated_close_date", v: { ms: number; dateOnly: boolean }) =>
+    ({ dueAt: new Date(v.ms - cutoff * 3_600_000).toISOString(), basis, dateOnly: v.dateOnly })
+  const scheduled = read(input.closingScheduledDate)
+  if (scheduled) return out("closing_scheduled_date", scheduled)
+  const close = read(input.closeDate), estimate = read(input.estimatedCloseDate)
+  if (close && estimate && estimate.ms < close.ms) return out("estimated_close_date", estimate)
+  if (close) return out("close_date", close)
+  if (estimate) return out("estimated_close_date", estimate)
   return { dueAt: null, basis: "none", dateOnly: false }
 }
 

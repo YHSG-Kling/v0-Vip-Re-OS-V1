@@ -32,8 +32,10 @@ import {
 type StatusEntityPolicy = { label: string; table: string; column: string; values: readonly string[]; labels: Readonly<Record<string, string>>; policy: Readonly<Record<string, StatusValuePolicy>>; manualDoor: string | null }
 const STATUS_ENTITY_KEYS = Object.keys(STATUS_ENTITIES) as StatusEntity[]
 import {
-  resolveClosingDates, applyClosingDateChange, ATTORNEY_CLOSING_REPORTED, CLOSING_DATE_TERMS,
+  resolveClosingDates, applyClosingDateChange, CLOSING_DATE_TERMS,
 } from "../lib/transactions/closing-dates"
+// wave 149, lane 149G: ATTORNEY_CLOSING_REPORTED (closing-dates.ts) merged onto the sourced state survivor — tombstone there.
+import { STATE_CLOSING_POLICIES } from "../lib/state-forms/closing-participants"
 
 // The pure deciders are module-private; the guard drives them through the PRODUCT paths that reach them:
 /** one blocker through the stage override's own partition */
@@ -286,17 +288,21 @@ async function main() {
   const eOn = await assess({ ...base, contract_closing_terms: "on" }, "2026-12-08")
   const eUnread = await assess({ ...base, contract_closing_terms: null }, "2026-12-08")
   check("'on or before' + an earlier day → within the contract, NO amendment (coordination still listed)", eOnOrBefore.withinContract === true && !eOnOrBefore.requiresExecutedAmendment && eOnOrBefore.coordinate.length >= 2)
-  check("'on' (a fixed day) + an earlier day → needs an EXECUTED amendment", eOn.withinContract === false && eOn.requiresExecutedAmendment)
-  check("wording not read + an earlier day → 'unknown', treated as needing an amendment (fail closed)", eUnread.withinContract === "unknown" && eUnread.requiresExecutedAmendment)
+  check("'on' (a fixed day) + an earlier day → needs an EXECUTED amendment", eOn.withinContract === false && eOn.requiresExecutedAmendment === true)
+  // RE-ASSERTED (wave 149, lane 149G — owner ruling 17: "early closing needs no executed amendment unless state law requires
+  // it"): an unread wording is UNKNOWN — read it off the contract — never a default "needs an amendment" (the wave-148 rule).
+  check("wording not read + an earlier day → 'unknown' — neither a default amendment nor 'fine' (owner ruling 17)", eUnread.withinContract === "unknown" && eUnread.requiresExecutedAmendment === "unknown" && eUnread.amendmentBasis === "wording_unread")
   const late = await assess({ ...base, contract_closing_terms: "on_or_before" }, "2026-12-20")
   const lateOn = await assess({ ...base, contract_closing_terms: "on" }, "2026-12-20")
-  check("a LATER day needs an executed extension under either wording", late.direction === "later" && late.requiresExecutedAmendment && lateOn.requiresExecutedAmendment)
+  check("a LATER day needs an executed extension under either wording", late.direction === "later" && late.requiresExecutedAmendment === true && lateOn.requiresExecutedAmendment === true)
   check("a proposed day is NEVER an executed amendment (the explanation says so)", /not an executed amendment/.test(eOnOrBefore.explanation))
   check("a financed deal names the lender + the TRID 3-business-day Closing Disclosure", eOnOrBefore.coordinate.some((c) => /lender/.test(c) && /3 business days/.test(c)))
   const cash = await assess({ ...base, financing_type: "cash", contract_closing_terms: "on_or_before" }, "2026-12-08")
   check("POSITIVE CONTROL: a cash deal does not list the lender", !cash.coordinate.some((c) => /lender/.test(c)))
-  check("state note: GA → the closing attorney (commonly reported); CA → title / escrow; unknown → ask", closingStateNote("GA").conductedBy === "attorney_commonly" && closingStateNote("CA").conductedBy === "title_or_escrow_typically" && closingStateNote(null).conductedBy === "unknown")
-  check("the attorney tiers are 2-letter codes and do not overlap (a reminder of whom to ask, never a legal determination)", [...ATTORNEY_CLOSING_REPORTED.commonly, ...ATTORNEY_CLOSING_REPORTED.reported].every((s) => /^[A-Z]{2}$/.test(s)) && !ATTORNEY_CLOSING_REPORTED.commonly.some((s) => ATTORNEY_CLOSING_REPORTED.reported.includes(s)) && /never claims the law|not a legal determination|NOT from statute/i.test(raw("lib/transactions/closing-dates.ts")))
+  // RE-ASSERTED (wave 149, lane 149G — one state survivor): the note derives from lib/state-forms/closing-participants.ts —
+  // a SOURCED policy names its source; a published convention is labelled "not law"; no state → ask.
+  check("state note: GA → the closing attorney (sourced policy, with its source); CA → title / escrow (a convention); unknown → ask", closingStateNote("GA").conductedBy === "attorney_required" && closingStateNote("GA").basis === "sourced_policy" && !!closingStateNote("GA").source && closingStateNote("CA").conductedBy === "title_or_escrow_typically" && closingStateNote("CA").basis === "published_convention" && closingStateNote(null).conductedBy === "unknown")
+  check("every sourced state's note carries its source; a convention's note says 'not law' (a reminder of whom to ask, never a legal determination)", Object.keys(STATE_CLOSING_POLICIES).every((s) => closingStateNote(s).basis === "sourced_policy" && !!closingStateNote(s).source?.url) && /not law/.test(closingStateNote("CA").note) && !/ATTORNEY_CLOSING_REPORTED\s*[:=]/.test(code("lib/transactions/closing-dates.ts")))
   {
     const T = "71717171-0000-4000-8000-000000000001", B = "11111111-1111-4111-8111-111111111111"
     const seed = () => memSupabase({ transactions: [{ id: T, brokerage_id: B, ...base, contract_closing_terms: "on", contract_closing_amendment_ref: null, actual_close_date: null, updated_at: "v1" }] })

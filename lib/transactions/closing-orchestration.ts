@@ -41,6 +41,7 @@ import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 import { resolveMilestoneIdentity } from "./milestone-identity"
 import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 import { resolveCdaMode } from "./cda-closing-policy"
+import { readinessClosingDay } from "./closing-dates"
 import {
   readHazardInsurance,
   hazardSeverity,
@@ -77,6 +78,12 @@ interface TransactionContext {
   brokerageId:         string
   agentId:             string | null
   contractDate:        string | null
+  /**
+   * THE READINESS DAY the closing detectors measure against (wave 149, lane 149G — C33): the EARLIEST credible closing
+   * day — the title appointment, an earlier anticipated day, or the contract's date (lib/transactions/closing-dates.ts
+   * readinessClosingDay). Under "on or before" a deal may close early; CTC / walkthrough / wire / CDA must be ready for
+   * THAT day, not the contract's later deadline. Equal to transactions.close_date when nothing earlier is on file.
+   */
   closeDate:           string | null
   propertyAddress:     string | null
   /** Resolved from transaction_milestones where milestone_type='earnest_money_due' */
@@ -479,7 +486,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
   // never invented.
   const { data: txns, error: txnsError } = await svc
     .from("transactions")
-    .select("id, brokerage_id, agent_id, contract_date, close_date, property_address, deal_type, inspection_deadline, appraisal_deadline, financing_deadline")
+    .select("id, brokerage_id, agent_id, contract_date, close_date, estimated_close_date, contract_closing_date, property_address, deal_type, inspection_deadline, appraisal_deadline, financing_deadline")
     .not("status", "in", "(closed,cancelled,terminated)")
     .not("contract_date", "is", null)
     .order("close_date", { ascending: true, nullsFirst: false })
@@ -642,7 +649,11 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       brokerageId:       t.brokerage_id,
       agentId:           t.agent_id,
       contractDate:      t.contract_date,
-      closeDate:         t.close_date,
+      closeDate:         readinessClosingDay({
+        close_date: t.close_date, contract_closing_date: (t as { contract_closing_date?: string | null }).contract_closing_date ?? null,
+        estimated_close_date: (t as { estimated_close_date?: string | null }).estimated_close_date ?? null,
+        scheduled_closing_date: evidence.titleEscrow?.closing_scheduled_date ?? null,
+      })?.date ?? t.close_date,
       propertyAddress:   t.property_address,
       earnestMoneyDueAt: emMile?.target_date ?? null,
       dealType:          t.deal_type ?? null,

@@ -284,20 +284,29 @@ export async function getClosingDates(transactionId: string): Promise<
     row = base.data as Record<string, string | null> | null
   }
   if (!row) return { ok: false, error: "Transaction not found" }
-  const dates = resolveClosingDates(row)
+  // The title / escrow appointment is the ANTICIPATED day's best basis (resolveClosingDates' `title_schedule`) — wave 148
+  // modelled it but this door never read it (wave 149, lane 149G). Tenant-pinned; a refused read is said, not hidden.
+  const sched = await svc.from("transaction_title_escrow").select("closing_scheduled_date")
+    .eq("transaction_id", transactionId).eq("brokerage_id", gate.brokerageId).not("closing_scheduled_date", "is", null)
+    .order("closing_scheduled_date", { ascending: true }).limit(1)
+  const scheduled = !sched.error ? ((sched.data ?? []) as Array<{ closing_scheduled_date: string | null }>)[0]?.closing_scheduled_date ?? null : null
+  const dates = resolveClosingDates({ ...row, scheduled_closing_date: scheduled })
   if (full.error) dates.notes.push(`The closing-date model columns are not readable yet (${full.error.message}) — showing the dates the deal already carries.`)
+  if (sched.error) dates.notes.push(`The title / escrow appointment could not be read (${sched.error.message}) — the expected day shown does not include it.`)
   return { ok: true, dates }
 }
 
 /**
  * Record a closing-date change under its rule (lib/transactions/closing-dates.ts applyClosingDateChange): a PROPOSED day
  * moves the anticipated date only — never the contract; an EXECUTED amendment changes the contractual deadline and needs
- * its reference; the contract's wording (on / on or before) is read off the executed contract with its reference. Reason
- * always. Tenant and actor from the session (requireTransactionActor) — never the body.
+ * its reference; the contract's wording (on / on or before) is read off the executed contract with its reference; on a
+ * closed deal the actual day is confirmed from the settlement statement (wave 149, lane 149G — C33). An earlier day under
+ * "on or before" needs NO amendment (owner ruling 17) — the assessment says so. Reason always. Tenant and actor from the
+ * session (requireTransactionActor) — never the body.
  */
 export async function recordClosingDateChange(params: {
   transactionId: string
-  kind: "anticipated" | "executed_amendment" | "contract_wording"
+  kind: import("@/lib/transactions/closing-dates").ClosingDateChangeKind
   date?: string | null
   terms?: "on" | "on_or_before" | null
   reason: string

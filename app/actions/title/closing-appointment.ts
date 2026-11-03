@@ -10,8 +10,15 @@
  * writes transactions.close_date. What the title company DOES own is the settlement appointment: the time and the
  * place on that date. It PROPOSES them, and the deal's agent confirms with the clients — the proposal lands as the
  * agent's task on the deal (the existing tasks rail every agent surface reads), ledgered (LAW 5:
- * transaction.closing_appointment.propose) with its evidence. A proposed time on ANOTHER day is refused with the
- * reason: that is a date change, an amendment for the transaction coordinator.
+ * transaction.closing_appointment.propose) with its evidence.
+ *
+ * ANOTHER DAY (wave 149, lane 149G — owner ruling 17 / C33, REVERSING wave 147's "any other day is an amendment"): the
+ * day is judged by the ONE closing-date assessment (lib/transactions/closing-dates.ts assessClosingDateChange) against
+ * the contract's wording. An EARLIER day under "on or before" is within the contract — NO amendment (unless the state's
+ * sourced rule requires one) — so it is proposed like the contract's day, the agent's task naming what must be ready.
+ * An earlier day while the wording is unread is proposed too, flagged "confirm the wording on the executed contract"
+ * (a proposal moves nothing). A later day, or an earlier day the contract fixes ("on"), or one a state rule requires
+ * an amendment for, is refused with the reason: that is an amendment / extension for the transaction coordinator.
  *
  * GATE FIRST (CLAUDE.md §4): the deal is read through the caller's OWN RLS session (public.transactions' SELECT
  * policies admit a vendor party only on an assigned deal), and the caller must hold a TITLE seat — a title-category
@@ -26,22 +33,30 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type ClosingAppointmentState = { ok: boolean; message: string } | null
-export interface ClosingAppointmentDeal { id: string; propertyAddress: string | null; closeDate: string }
+/** `closeDate` = the CONTRACT's closing day; `terms` = how the contract words it (null = not yet recorded). */
+export interface ClosingAppointmentDeal { id: string; propertyAddress: string | null; closeDate: string; terms: "on" | "on_or_before" | null }
 export interface ClosingAppointmentProposal { id: string; transactionId: string | null; title: string; description: string | null; status: string | null; dueDate: string | null; createdAt: string | null }
 
 const SOURCE = "title_closing_appointment"
 
-type TitleGate = { ok: true; userId: string; seatName: string | null; deal: { id: string; brokerage_id: string; agent_id: string | null; close_date: string | null; property_address: string | null } } | { ok: false; error: string }
+type TitleDeal = {
+  id: string; brokerage_id: string; agent_id: string | null; close_date: string | null; property_address: string | null
+  // the closing-date model (m927, applied) — read so the day is judged against the contract's wording, not a bare date
+  status?: string | null; contract_closing_date?: string | null; contract_closing_terms?: string | null; contract_closing_source?: string | null
+  estimated_close_date?: string | null; property_state?: string | null; financing_type?: string | null
+}
+type TitleGate = { ok: true; userId: string; seatName: string | null; deal: TitleDeal } | { ok: false; error: string }
+const TITLE_DEAL_COLS = "id, brokerage_id, agent_id, close_date, property_address, status, contract_closing_date, contract_closing_terms, contract_closing_source, estimated_close_date, property_state, financing_type"
 
 async function requireTitlePartyOnDeal(transactionId: string): Promise<TitleGate> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Sign in to propose a closing appointment." }
   const { data: deal, error } = await supabase.from("transactions")
-    .select("id, brokerage_id, agent_id, close_date, property_address").eq("id", String(transactionId ?? "")).maybeSingle()
+    .select(TITLE_DEAL_COLS).eq("id", String(transactionId ?? "")).maybeSingle()
   if (error) return { ok: false, error: `Could not read the deal: ${error.message}` }
   if (!deal) return { ok: false, error: "That deal is not one you are a party to." }
-  const d = deal as { id: string; brokerage_id: string; agent_id: string | null; close_date: string | null; property_address: string | null }
+  const d = deal as unknown as TitleDeal
   const svc = createServiceClient()
   const { vendorSeatsForUser } = await import("@/lib/kernel/lender-linkage")
   const seats = (await vendorSeatsForUser(svc, user.id)).filter((s) => s.category === "title" && s.brokerageId === d.brokerage_id)
@@ -69,10 +84,13 @@ export async function listClosingDealsForTitle(): Promise<{ ok: true; deals: Clo
   if (tErr) return { ok: false, error: `Could not verify your title seat: ${tErr.message}` }
   for (const r of (tcu ?? []) as Array<{ brokerage_id: string | null }>) if (r.brokerage_id) brokerageIds.add(r.brokerage_id)
   if (brokerageIds.size === 0) return { ok: true, deals: [] }
-  const { data, error } = await supabase.from("transactions").select("id, property_address, close_date")
+  const { data, error } = await supabase.from("transactions").select("id, property_address, close_date, contract_closing_date, contract_closing_terms")
     .in("brokerage_id", [...brokerageIds]).not("close_date", "is", null).gte("close_date", new Date().toISOString().slice(0, 10)).order("close_date", { ascending: true }).limit(50)
   if (error) return { ok: false, error: error.message }
-  return { ok: true, deals: ((data ?? []) as Array<{ id: string; property_address: string | null; close_date: string }>).map((r) => ({ id: r.id, propertyAddress: r.property_address, closeDate: r.close_date })) }
+  return { ok: true, deals: ((data ?? []) as Array<{ id: string; property_address: string | null; close_date: string; contract_closing_date: string | null; contract_closing_terms: string | null }>).map((r) => ({
+    id: r.id, propertyAddress: r.property_address, closeDate: (r.contract_closing_date ?? r.close_date).slice(0, 10),
+    terms: r.contract_closing_terms === "on" || r.contract_closing_terms === "on_or_before" ? r.contract_closing_terms : null,
+  })) }
 }
 
 /** The proposals this caller made (newest first), read back from the agent's task rail. */
@@ -101,9 +119,22 @@ export async function proposeClosingAppointment(_prev: ClosingAppointmentState, 
   if (!gate.ok) return { ok: false, message: gate.error }
   if (!gate.deal.close_date) return { ok: false, message: "This deal has no closing date on the contract yet — the transaction coordinator sets it first." }
   if (!gate.deal.agent_id) return { ok: false, message: "This deal has no agent attached to confirm with the clients — ask the brokerage to assign one." }
-  const date = String(formData.get("date") ?? gate.deal.close_date).slice(0, 10)
-  if (date !== gate.deal.close_date.slice(0, 10)) {
-    return { ok: false, message: `The contract closes on ${gate.deal.close_date.slice(0, 10)}. A different day is a date change — an amendment the deal's transaction coordinator handles, not an appointment.` }
+  const contractDay = (gate.deal.contract_closing_date ?? gate.deal.close_date).slice(0, 10)
+  const date = String(formData.get("date") || contractDay).slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, message: "Give the appointment day (YYYY-MM-DD)." }
+  if (date < new Date().toISOString().slice(0, 10)) return { ok: false, message: "That day has passed — propose a day from today on." }
+  // THE DAY, judged by the ONE closing-date assessment (C33 / owner ruling 17) — never a bare "same day or amendment".
+  let dayNote = ""
+  if (date !== contractDay) {
+    const { assessClosingDateChange } = await import("@/lib/transactions/closing-dates")
+    const a = assessClosingDateChange(gate.deal, { date, kind: "anticipated" })
+    if (a.requiresExecutedAmendment === true) {
+      const what = a.amendmentBasis === "contract_deadline_passed" ? "an extension every party signs" : a.amendmentBasis === "state_rule" ? "an executed amendment this state requires" : "an amendment every party signs (the contract fixes the day)"
+      return { ok: false, message: `The contract closes ${gate.deal.contract_closing_terms === "on_or_before" ? "on or before" : "on"} ${contractDay}. ${date} needs ${what} — the deal's transaction coordinator handles that, not an appointment.` }
+    }
+    dayNote = a.requiresExecutedAmendment === "unknown"
+      ? ` This is EARLIER than the contract's ${contractDay}, and how the contract words its date has not been recorded yet — confirm on the executed contract that it reads "on or before" (then no amendment is needed; a fixed "on" day needs one), and record the wording on the deal.`
+      : ` This is EARLIER than the contract's "on or before ${contractDay}" — no amendment is needed, but ${a.coordinate.join("; ")} must all be ready; record the expected day on the deal once everyone agrees.`
   }
 
   const svc = createServiceClient()
@@ -118,13 +149,13 @@ export async function proposeClosingAppointment(_prev: ClosingAppointmentState, 
       subject: { type: "transaction", id: gate.deal.id },
       reasonDetail: `title partner proposed the settlement appointment ${date} ${time} at ${location}`.slice(0, 400),
       idempotencyKey: `closing_appt:${gate.deal.id}:${fingerprint}`, riskClass: "LOW_RISK_WRITE", channel: "title_portal",
-      detail: { date, time, location, close_date: gate.deal.close_date, proposed_by_seat: who },
+      detail: { date, time, location, close_date: gate.deal.close_date, contract_closing_date: contractDay, contract_closing_terms: gate.deal.contract_closing_terms ?? null, earlier_than_contract: date < contractDay, proposed_by_seat: who },
     },
     async () => {
       const { data, error } = await svc.from("tasks").insert({
         brokerage_id: gate.deal.brokerage_id, transaction_id: gate.deal.id, assigned_to_agent_id: gate.deal.agent_id, assignee_type: "agent",
         title: `Confirm the closing appointment ${who} proposed — ${date} ${time}`.slice(0, 250),
-        description: `${who} proposes the settlement appointment for ${where}: ${date} at ${time}, ${location}.${note ? ` Note: ${note}` : ""} The closing date itself is unchanged (it is a contract term). Confirm the time with your clients and the other side, then reply to the title company.`.slice(0, 2000),
+        description: `${who} proposes the settlement appointment for ${where}: ${date} at ${time}, ${location}.${note ? ` Note: ${note}` : ""} The contract's closing date is unchanged (it is a contract term).${dayNote} Confirm the time with your clients and the other side, then reply to the title company.`.slice(0, 2000),
         due_date: date, priority: "high", status: "pending", source: SOURCE, auto_generated: false,
         tags: [SOURCE, `proposed_by:${gate.userId}`], created_at: new Date().toISOString(),
       }).select("id").single()

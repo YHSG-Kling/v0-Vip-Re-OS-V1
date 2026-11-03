@@ -20,7 +20,12 @@ export const dynamic = 'force-dynamic'
  * brokerage's transaction, never a free-standing title-side record. What the title company owns is the settlement
  * APPOINTMENT on that date — time and place. Lane 147H built that writer: app/actions/title/closing-appointment.ts
  * proposeClosingAppointment, gated to the deal's title party, lands the proposal as the deal agent's task (the agent
- * confirms with the clients) under withActionLedger, and refuses a different day as the amendment it is.
+ * confirms with the clients) under withActionLedger.
+ *
+ * WAVE 149 (lane 149G — owner ruling 17 / C33, REVERSING "a different day is an amendment"): under an "on or before"
+ * contract an EARLIER day is within the contract and needs no executed amendment unless the state's sourced rule says
+ * so — the door proposes it (lib/transactions/closing-dates.ts assessClosingDateChange judges the day). A later day, or a
+ * day the contract fixes ("on"), is still refused as the amendment / extension it is.
  */
 export default async function NewClosingPage() {
   const supabase = await createClient()
@@ -45,9 +50,10 @@ export default async function NewClosingPage() {
           <div className="flex items-start gap-3 rounded-lg border bg-muted p-4" role="note">
             <Info className="w-5 h-5 text-foreground shrink-0 mt-0.5" />
             <p className="text-sm text-foreground">
-              The closing date is part of the signed contract and stays on the deal. Propose the time and place for that
-              day; the deal&apos;s agent confirms it with the clients. To move the date itself, ask the transaction coordinator —
-              that is an amendment.
+              The closing date is part of the signed contract and stays on the deal. Propose the time and place; the
+              deal&apos;s agent confirms it with the clients. When the contract says &quot;on or before&quot; you may propose an
+              earlier day — that needs no amendment. A later day, or a different day when the contract fixes the day, is
+              an amendment for the transaction coordinator.
             </p>
           </div>
           {!deals.ok ? (
