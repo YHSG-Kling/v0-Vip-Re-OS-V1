@@ -296,8 +296,10 @@ export async function promoteLeadToContactService(
     // BEST EFFORT, like every step in this tail: the contact exists and the lead
     // is deactivated. A refused plan is a warning, never a rollback.
     {
+      // The MODULE, not the barrel (lib/agent-orchestration/index.ts re-exports this one file): the barrel was the
+      // 1301st first-party module on app/crm/page.tsx (wave 149; budget 1300). Same names, same door.
       const { generateAgentActionPlan, persistAgentActionPlan } =
-        await import("@/lib/agent-orchestration")
+        await import("@/lib/agent-orchestration/action-plan-generator")
       const planned = await generateAgentActionPlan(
         contactResult.contactId,
         lead.agent_id,

@@ -496,6 +496,14 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             <Button size="sm" variant="ghost" asChild>
               <Link href={`/portal/${contactId}/messages`}>Message My Agent</Link>
             </Button>
+            {/* Wave 149 (149B): the buyer's own assistant (app/portal/[contactId]/assistant — answers from their own
+                deal) had no link anywhere; and C28 "ask family what they think" lives on the search page. */}
+            <Button size="sm" variant="ghost" asChild>
+              <Link href={`/portal/${contactId}/assistant`}>Ask My Assistant</Link>
+            </Button>
+            <Button size="sm" variant="ghost" asChild>
+              <Link href={`/portal/${contactId}/search`}>Ask Family What They Think</Link>
+            </Button>
           </div>
         </div>
 

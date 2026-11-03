@@ -29,6 +29,7 @@
  */
 
 import { parseNaturalLanguageQuery } from "./intent-parser"
+import type { LotMinimum } from "./explanation-evidence"
 
 // ─── Criteria shape ──────────────────────────────────────────────────────────
 
@@ -441,14 +442,69 @@ export interface LifestyleAsk {
   target: string | null
   /** A stated time limit for a commute ("under 30 minutes" → 30), else null. */
   maxMinutes: number | null
-  /** Wave 148 (148E): a stated minimum lot for an acreage ask ("2 acres" → 2), else null/absent. */
+  /** Wave 148 (148E): a stated minimum lot for an acreage ask ("2 acres" → 2), else null/absent.
+   *  Wave 149 (149B, C27): DERIVED from `lotMinimum` (its value in acres) — kept for the readers that already take
+   *  acres; never set without a buyer-stated `lotMinimum`. */
   minAcres?: number | null
+  /** Wave 149 (149B, C27 — owner ruling 5 "the buyer decides the yard and acreage minimum"): the minimum the BUYER
+   *  stated, in their unit, with their words; null/absent = they have not said one, and none is invented. */
+  lotMinimum?: LotMinimum | null
   /** The buyer's literal words — the proof the ask was STATED. */
   evidence: string
 }
 
 /** Neutral amenities a buyer may name. Schools and places of worship are deliberately absent. */
 const AMENITY_WORDS = "parks?|trails?|greenbelt|grocery(?: stores?)?|coffee(?: shops?)?|restaurants?|shops|shopping|downtown|transit|the train|train station|light rail|the beach|beach|the lake|lake|gym|hospital"
+
+const LOT_FRACTION_WORDS: Record<string, number> = { "half": 0.5, "a half": 0.5, "quarter": 0.25, "a quarter": 0.25, "three quarters": 0.75, "three-quarters": 0.75, "an": 1, "a": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "ten": 10 }
+
+/**
+ * PURE (wave 149, lane 149B, C27 — owner ruling 5). The lot MINIMUM the buyer stated in this sentence, or null.
+ *
+ *   "at least 2 acres" · "2+ acres" · "half an acre" · "a quarter-acre lot" · "an acre or more" · "1/2 acre"
+ *   · "a 10,000 sq ft lot" · "lot of at least 8000 square feet"
+ *
+ * Read ONLY from a number or a plain fraction beside its unit. Square feet count only when the sentence is about the
+ * LOT / yard / land (so "2,000 sq ft home" is never a lot minimum). A MAXIMUM ("under an acre", "no more than", "at
+ * most") is not a minimum and returns null. A hedge ("about", "or so", "roughly", "-ish", "maybe") keeps the value
+ * with confidence "low" — worth a gentle confirm, never a reason to change the number. "A big yard" returns null:
+ * how big is the buyer's to say, and the AI asks.
+ */
+function statedLotMinimum(sentence: string): LotMinimum | null {
+  const s = String(sentence ?? "")
+  if (!s.trim()) return null
+  const hedged = /\b(about|around|roughly|approximately|or so|maybe|ish)\b|-ish\b/i.test(s)
+  const confidence = hedged ? "low" as const : "high" as const
+  const isMaximum = (at: number) => /\b(under|less than|no more than|at most|max(?:imum)?|not more than|smaller than|below)\s*(?:an?\s+|the\s+)?$/i.test(s.slice(Math.max(0, at - 24), at))
+  const literalAt = (i: number, len: number) => s.slice(Math.max(0, i - 24), Math.min(s.length, i + len + 16)).trim()
+
+  const acres = /(\d+(?:\.\d+)?|\d+\s*\/\s*\d+|three[- ]quarters|a half|half|a quarter|quarter|an|one|two|three|four|five|ten)\s*(?:\+|plus)?\s*(?:-|\s)?(?:an?\s+|of\s+an?\s+)?(?:or more\s+)?acres?\b/i.exec(s)
+  if (acres) {
+    const tok = acres[1].toLowerCase().replace(/\s+/g, " ").trim()
+    let value: number | null = null
+    if (/^\d+(?:\.\d+)?$/.test(tok)) value = Number(tok)
+    else if (/^\d+ ?\/ ?\d+$/.test(tok)) { const [n, d] = tok.split("/").map((x) => Number(x.trim())); value = d ? n / d : null }
+    else value = LOT_FRACTION_WORDS[tok] ?? null
+    if (value != null && value > 0 && value <= 10_000 && !isMaximum(acres.index)) {
+      return { value, unit: "acres", stated_by: "buyer", literal: literalAt(acres.index, acres[0].length), confidence }
+    }
+    return null
+  }
+  if (/\b(lot|yard|land|parcel|acreage)\b/i.test(s)) {
+    const sq = /(\d{1,3}(?:,\d{3})+|\d{3,7})\s*(?:\+|plus)?\s*(?:sq\.?\s*ft\.?|sqft|square[- ]f(?:ee|oo)t|sf)(?![a-z])/i.exec(s)
+    if (sq) {
+      const after = s.slice(sq.index + sq[0].length, sq.index + sq[0].length + 14)
+      const before = s.slice(Math.max(0, sq.index - 30), sq.index)
+      const aboutLot = /^\s*(lot|yard|parcel|of land)\b/i.test(after) || /\b(lot|yard|parcel|land)\b[^.]{0,20}$/i.test(before)
+      const aboutHouse = /^\s*(home|house|homes|houses|living|of living|interior|floor)\b/i.test(after)
+      const value = Number(sq[1].replace(/,/g, ""))
+      if (aboutLot && !aboutHouse && value > 0 && !isMaximum(sq.index)) {
+        return { value, unit: "sqft", stated_by: "buyer", literal: literalAt(sq.index, sq[0].length), confidence }
+      }
+    }
+  }
+  return null
+}
 
 function clip(sentence: string): string {
   return sentence.length > 160 ? `${sentence.slice(0, 157)}…` : sentence
@@ -468,7 +524,8 @@ export function extractLifestyleAsks(text: string): LifestyleAsk[] {
     else out.push(a)
   }
   for (const sentence of buyerUtterances(text ?? "")) {
-    for (const part of sentence.split(/,\s*|\s+but\s+|\s+and\s+(?=(?:more|less|a |an |lots|no |not )\b)/i)) {
+    // (149B: a thousands comma — "10,000 sq ft" — is not a clause break)
+    for (const part of sentence.split(/,(?!\d{3}\b)\s*|\s+but\s+|\s+and\s+(?=(?:more|less|a |an |lots|no |not )\b)/i)) {
       const s = part.trim()
       if (!s) continue
       const ev = clip(sentence)
@@ -514,11 +571,16 @@ export function extractLifestyleAsks(text: string): LifestyleAsk[] {
 
       // Wave 148 (lane 148E — owner: "outdoor space is a home with acreage"): ACREAGE is its own ask (label "acreage",
       // answered in acres from the lot size; "2 acres" keeps the stated minimum), distinct from a bigger yard.
-      const acresStated = /\b(\d+(?:\.\d+)?)\s*\+?\s*(?:or more\s+)?acres?\b/i.exec(s)
+      // Wave 149 (149B, C27): the minimum is read ONLY from what the buyer said (statedLotMinimum) — a number or a plain
+      // fraction with its unit, acres or square feet of LOT — and never set from a phrase like "a big yard".
+      const lotMinimum = statedLotMinimum(s)
+      const acresStated = lotMinimum && lotMinimum.unit === "acres" ? lotMinimum : null
       if (/\b(less yard|smaller yard|small yard|low[- ]maintenance yard|no yard|less (?:lawn|grass)|tiny yard)\b/i.test(s)) {
         push({ kind: "outdoor_space", label: "outdoor space", direction: "less", target: null, maxMinutes: null, evidence: ev })
       } else if (acresStated || /\b(acreage|acres|some land|a little land|room to roam|horse property|hobby farm|small farm)\b/i.test(s)) {
-        push({ kind: "outdoor_space", label: "acreage", direction: "more", target: null, maxMinutes: null, minAcres: acresStated ? Number(acresStated[1]) : null, evidence: ev })
+        push({ kind: "outdoor_space", label: "acreage", direction: "more", target: null, maxMinutes: null, minAcres: acresStated ? acresStated.value : null, lotMinimum: acresStated, evidence: ev })
+      } else if (lotMinimum) {
+        push({ kind: "outdoor_space", label: "outdoor space", direction: "more", target: null, maxMinutes: null, minAcres: lotMinimum.value / 43_560, lotMinimum, evidence: ev })
       } else if (/\b(more yard|bigger yard|big yard|large yard|lots of yard|room for a garden|big lot|large lot|outdoor space|private (?:back)?yard|fenced (?:back)?yard|a (?:back)?yard)\b/i.test(s)) {
         push({ kind: "outdoor_space", label: "outdoor space", direction: "more", target: null, maxMinutes: null, evidence: ev })
       }

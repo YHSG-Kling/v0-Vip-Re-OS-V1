@@ -12,6 +12,7 @@ import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
 import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
 import { FitBadge } from "@/app/components/portal/FitBadge"
 import { SavedSearchControls } from "./SavedSearchControls"
+import { ShareWithFamilyCard } from "./ShareWithFamilyCard"
 // Personas that support family/collaborative search: ONE list, lib/portal/persona-config.ts offersFamilySearch
 // (wave 148, lane 148K — the local const that lived here merged onto it; the settings page asks the same predicate).
 import { DEFAULT_PORTAL_PERSONA, offersFamilySearch } from "@/lib/portal/persona-config"
@@ -60,7 +61,7 @@ export default async function SearchPage({
     // `property_interests` which holds search criteria).
     supabase
       .from("saved_properties")
-      .select("id, listing_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons")
+      .select("id, listing_id, external_property_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
@@ -423,6 +424,16 @@ export default async function SearchPage({
           </CardContent>
         </Card>
       </div>
+
+      {/* C28 (wave 149, lane 149B — owner ruling 6): EVERY buyer can share the homes they saved with a family member for
+          their opinion. Not persona-gated: the persona decides the layout (the fuller family-consensus board below), never
+          whether a buyer may ask someone they trust. */}
+      <ShareWithFamilyCard
+        contactId={contactId}
+        homes={savedProperties
+          .map((s: any) => ({ ref: String(s.listing_id ?? s.external_property_id ?? ""), label: [s.property_address, s.city].filter(Boolean).join(", ") || "A saved home" }))
+          .filter((h: { ref: string }) => h.ref)}
+      />
 
       {/* Collaborative Search (for applicable personas) */}
       {showCollaborativeSearch && (

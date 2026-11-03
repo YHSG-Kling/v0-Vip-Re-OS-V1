@@ -2,7 +2,6 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { v4 as uuidv4 } from "uuid"
 
 const COLLAB_SEARCH_AVAILABLE = process.env.COLLABORATIVE_SEARCH_ENABLED !== 'false'
 
@@ -259,183 +258,87 @@ export async function updateSearchCriteria(searchId: string, criteria: Record<st
 
 // ==================== MEMBER INVITATIONS ====================
 
+/**
+ * Invite a family member to give their opinion on the homes already on this shared list.
+ *
+ * WAVE 149 (lane 149B, C28) — REWRITTEN onto the one share door. What stood here inserted a member through the RLS
+ * client with NO gate on who was inviting (the member_write policy admitted anyone whose JWT email matched ANY member
+ * row), stored the invite token in PLAINTEXT with no expiry, and emailed it without a suppression check. It now proves
+ * the caller is the search's own buyer (requireContactAccess on the search's contact, contact-self only), and shares
+ * the list's current homes through lib/portal/collaborative-share.ts shareCollection: hashed, expiring, revocable
+ * credential, scope feedback_only, suppression first. `role` is accepted for the old signature and ignored — a
+ * collaborator's only scope is feedback_only.
+ */
 export async function inviteFamilyMember(
   searchId: string,
   email: string,
   name: string,
-  role: "editor" | "viewer" = "viewer",
+  _role: "editor" | "viewer" = "viewer",
 ) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
-  const supabase = await createClient()
-
-  // Check if already invited
-  const { data: existing } = await supabase
-    .from("collaborative_search_members")
-    .select("id")
-    .eq("collaborative_search_id", searchId)
-    .eq("email", email)
-    .single()
-
-  if (existing) {
-    return { error: "This person has already been invited" }
-  }
-
-  const inviteToken = uuidv4()
-
-  const { data, error } = await supabase
-    .from("collaborative_search_members")
-    .insert({
-      collaborative_search_id: searchId,
-      email,
-      name,
-      role,
-      invite_token: inviteToken,
-      invite_status: "pending",
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("[v0] Error inviting member:", error)
-    return { error: error.message }
-  }
-
-  // Send email invitation with link containing invite_token
-  const { sendCollaborativeSearchInvite } = await import("@/lib/services/communication.service")
-  
-  // Get inviter name.
-  //
-  // AMBIGUOUS EMBED — the `!collaborative_searches_contact_id_fkey` hint is
-  // load-bearing. `collaborative_searches` has TWO foreign keys to `contacts`
-  // (collaborative_searches_contact_id_fkey on contact_id, and
-  // collaborative_searches_created_by_contact_id_fkey on created_by_contact_id), so
-  // the bare `contacts(...)` this replaces was unresolvable and PostgREST refused the
-  // whole request with PGRST201. With no `error` destructure that arrived as
-  // `search = null`, so EVERY invitation email in this system has gone out signed
-  // "A colleague" instead of the person who sent it.
-  //
-  // WHICH PARTY, and why the obvious-looking one is wrong: the old select asked for
-  // `created_by_contact_id` alongside, which reads as though the creator lives there.
-  // It does not. NOTHING in this repo ever writes `created_by_contact_id` — grep it;
-  // the only writer of a collaborative_searches row is createCollaborativeSearch
-  // above, which sets `contact_id` and then immediately enrols that same contact as
-  // the OWNER member. The column is dormant, so embedding through it would have
-  // resolved to null on every row and left the "A colleague" bug in place while
-  // looking fixed. `contact_id` is the contact who owns the search and is therefore
-  // the person doing the inviting.
-  const { data: search, error: searchError } = await supabase
-    .from("collaborative_searches")
-    .select("contact_id, contacts!collaborative_searches_contact_id_fkey(first_name, last_name)")
-    .eq("id", searchId)
-    .single()
-
-  // The invite row is already written at this point, so a failure here must not
-  // abort — but it must not be silently dressed up as "A colleague" either.
-  if (searchError) {
-    console.error("[collaborative-search] could not resolve the inviter's name:", searchError.message)
-  }
-
-  const contactObj = (search?.contacts as any)
-  const inviterName = contactObj?.first_name
-    ? `${contactObj.first_name} ${contactObj.last_name}`
-    : "A colleague"
-
-  await sendCollaborativeSearchInvite({
-    email,
-    inviterName,
-    inviteToken,
-    searchId,
-  })
-
-  return { data, inviteToken }
+  const owner = await gateSearchOwner(searchId)
+  if (!owner.ok) return { error: owner.error }
+  const { data: homes, error } = await owner.svc.from("collaborative_search_properties")
+    .select("property_mls_id").eq("collaborative_search_id", searchId).eq("status", "active")
+  if (error) return { error: error.message }
+  const refs = ((homes ?? []) as Array<{ property_mls_id: string }>).map((h) => h.property_mls_id)
+  if (!refs.length) return { error: "Add a home to this list first — your family member is invited to give their opinion on the homes you share." }
+  const r = await shareHomesWithFamilyAction({ contactId: owner.contactId, listingRefs: refs, collaborator: { name, email } })
+  if (!r.ok) return { error: r.error }
+  return { data: { id: r.memberId }, delivery: r.delivery, link: r.link, notes: r.notes }
 }
 
-export async function acceptInvitation(token: string) {
-  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("collaborative_search_members")
-    .update({
-      invite_status: "accepted",
-      accepted_at: new Date().toISOString(),
-    })
-    .eq("invite_token", token)
-    .eq("invite_status", "pending")
-    .select(`
-      *,
-      collaborative_searches(*)
-    `)
-    .single()
-
-  if (error) {
-    console.error("[v0] Error accepting invitation:", error)
-    return { error: "Invalid or expired invitation" }
-  }
-
-  return { data }
-}
-
+/**
+ * Close a family member's access. WAVE 149 (149B): what stood here DELETED the member through the RLS client with no
+ * gate on the caller and no row count — and the delete cascaded their opinions away from the buyer. Now: the search's
+ * own buyer (or their brokerage staff) only, and the member's link is REVOKED (their opinions stay with the buyer).
+ * SURVIVOR: lib/portal/collaborative-share.ts revokeCollaborator.
+ */
 export async function removeMember(searchId: string, memberId: string) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("collaborative_search_members")
-    .delete()
-    .eq("id", memberId)
-    .eq("collaborative_search_id", searchId)
-    .neq("role", "owner") // Can't remove owner
-
-  if (error) {
-    console.error("[v0] Error removing member:", error)
-    return { error: error.message }
-  }
-
-  return { success: true }
+  const owner = await gateSearchOwner(searchId, { staffMay: true })
+  if (!owner.ok) return { error: owner.error }
+  const { revokeCollaborator } = await import("@/lib/portal/collaborative-share")
+  const r = await revokeCollaborator(owner.svc, { brokerageId: owner.brokerageId, contactId: owner.contactId, memberId })
+  return r.ok ? { success: true } : { error: r.error }
 }
 
 // ==================== PROPERTY MANAGEMENT ====================
 
+/**
+ * Add one of the buyer's saved homes to their shared list. WAVE 149 (149B): the facts a collaborator sees were the
+ * `propertyData` the CLIENT posted, into the RLS client, with no gate. Now the search's own buyer only, and the facts
+ * are re-read from the buyer's saved row under the tenant (sharedFactsFromSaved — public listing facts, never the
+ * buyer's notes or scores). `propertyData` / `addedByEmail` / `notes` stay in the signature and are not trusted.
+ */
 export async function addPropertyToSearch(
   searchId: string,
   propertyId: string,
-  propertyData: Record<string, any>,
-  addedByEmail: string,
-  notes?: string,
+  _propertyData: Record<string, any>,
+  _addedByEmail: string,
+  _notes?: string,
 ) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
-  const supabase = await createClient()
-
-  // Check if already added
-  const { data: existing } = await supabase
-    .from("collaborative_search_properties")
-    .select("id")
-    .eq("collaborative_search_id", searchId)
-    .eq("property_mls_id", propertyId)
-    .single()
-
-  if (existing) {
-    return { error: "Property already added to this search" }
-  }
-
-  const { data, error } = await supabase
-    .from("collaborative_search_properties")
-    .insert({
-      collaborative_search_id: searchId,
-      property_mls_id: propertyId, // real column (was phantom property_id)
-      property_data: propertyData,
-      added_by_email: addedByEmail,
-      notes,
-    })
-    .select()
-    .single()
-
+  const owner = await gateSearchOwner(searchId)
+  if (!owner.ok) return { error: owner.error }
+  const { sharedFactsFromSaved, savedRef } = await import("@/lib/portal/collaborative-share")
+  const { data: saved, error: savedError } = await owner.svc.from("saved_properties")
+    .select("listing_id, external_property_id, property_address, city, state, list_price, bedrooms, bathrooms, sqft, primary_photo_url, property_type, dismissed")
+    .eq("contact_id", owner.contactId).eq("brokerage_id", owner.brokerageId)
+  if (savedError) return { error: savedError.message }
+  const row = ((saved ?? []) as Array<Record<string, any>>).find((r) => savedRef(r) === propertyId && !r.dismissed)
+  if (!row) return { error: "Only homes you've saved can be shared — save it first." }
+  const { data: existing, error: existingError } = await owner.svc.from("collaborative_search_properties")
+    .select("id").eq("collaborative_search_id", searchId).eq("property_mls_id", propertyId).maybeSingle()
+  if (existingError) return { error: existingError.message }
+  if (existing) return { error: "Property already added to this search" }
+  const { data, error } = await owner.svc.from("collaborative_search_properties")
+    .insert({ collaborative_search_id: searchId, property_mls_id: propertyId, property_data: sharedFactsFromSaved(row), added_by_contact_id: owner.contactId, status: "active" })
+    .select().single()
   if (error) {
-    console.error("[v0] Error adding property to search:", error)
+    console.error("[collaborative-search] Error adding property to search:", error.message)
     return { error: error.message }
   }
-
   return { data }
 }
 
@@ -482,10 +385,18 @@ export async function getSearchProperties(searchId: string) {
 
 // ==================== RATINGS & VOTING ====================
 
+/**
+ * The BUYER's own vote on a shared home. WAVE 149 (149B): `memberEmail` came from the request body into the RLS
+ * client, so a vote could be cast as anyone. Now the search's own buyer only, recorded under the buyer's contact email
+ * read from the database, keyed on the shared home's row id (property_family_ratings.property_id is a uuid). The
+ * dashboard passes the listing ref (property_mls_id); it is resolved to the shared row here. A collaborator votes
+ * through submitFamilyOpinionAction (their token proves who they are). Consensus is recomputed here — the trigger the
+ * old comment promised does not exist (pg_trigger, 2026-11-03).
+ */
 export async function rateProperty(
   searchId: string,
   propertyId: string,
-  memberEmail: string,
+  _memberEmail: string,
   rating: number,
   vote: "love" | "like" | "neutral" | "dislike" | "pass",
   pros?: string[],
@@ -493,35 +404,29 @@ export async function rateProperty(
   comments?: string,
 ) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("property_family_ratings")
-    .upsert(
-      {
-        collaborative_search_id: searchId,
-        property_id: propertyId,
-        member_email: memberEmail,
-        rating,
-        vote,
-        pros: pros || [],
-        cons: cons || [],
-        comments,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "collaborative_search_id,property_id,member_email",
-      },
-    )
-    .select()
-    .single()
-
+  const owner = await gateSearchOwner(searchId)
+  if (!owner.ok) return { error: owner.error }
+  const { FAMILY_VOTES, consensusOf } = await import("@/lib/portal/collaborative-share")
+  if (!(FAMILY_VOTES as readonly string[]).includes(vote)) return { error: "That vote isn't one I know." }
+  const { data: homes, error: homeError } = await owner.svc.from("collaborative_search_properties")
+    .select("id, property_mls_id").eq("collaborative_search_id", searchId)
+  if (homeError) return { error: homeError.message }
+  const home = ((homes ?? []) as Array<{ id: string; property_mls_id: string }>).find((h) => h.id === propertyId || h.property_mls_id === propertyId)
+  if (!home) return { error: "That home isn't on this shared list." }
+  const { data: me, error: meError } = await owner.svc.from("contacts").select("email").eq("id", owner.contactId).eq("brokerage_id", owner.brokerageId).maybeSingle()
+  if (meError || !me?.email) return { error: "Your vote couldn't be recorded — your contact email is missing." }
+  const now = new Date().toISOString()
+  const { data, error } = await owner.svc.from("property_family_ratings").upsert({
+    collaborative_search_id: searchId, property_id: home.id, member_email: String(me.email).toLowerCase(), brokerage_id: owner.brokerageId,
+    rating: Number.isFinite(rating) && rating >= 1 && rating <= 5 ? Math.round(rating) : null, vote, pros: pros || [], cons: cons || [], notes: comments ?? null, updated_at: now,
+  }, { onConflict: "collaborative_search_id,property_id,member_email" }).select().single()
   if (error) {
-    console.error("[v0] Error rating property:", error)
+    console.error("[collaborative-search] Error rating property:", error.message)
     return { error: error.message }
   }
-
-  // Consensus is updated automatically by trigger
+  const { data: all } = await owner.svc.from("property_family_ratings").select("rating").eq("collaborative_search_id", searchId).eq("property_id", home.id)
+  const { error: consError } = await owner.svc.from("property_consensus").upsert({ collaborative_search_id: searchId, property_id: home.id, ...consensusOf((all ?? []) as Array<{ rating: number | null }>), updated_at: now }, { onConflict: "collaborative_search_id,property_id" })
+  if (consError) console.error("[collaborative-search] consensus not refreshed:", consError.message)
   return { data }
 }
 
@@ -646,4 +551,168 @@ export async function trackPortalActivity(
     return { recorded: false, reason: error.message }
   }
   return { recorded: true }
+}
+
+// ==================== C28 — SHARE HOMES WITH FAMILY (wave 149, lane 149B) ====================
+//
+// Owner ruling 6: "the buyer shares the homes they were searching and brings in a family member to give their opinion
+// on the selected properties." The rules live in lib/portal/collaborative-share.ts; these are the doors. Every export
+// is a public endpoint (CLAUDE.md §4): the BUYER doors gate on requireContactAccess (tenant from the gate, never the
+// body); the COLLABORATOR doors take only the share token, which the module hash-matches, expiry- and revocation-checks.
+
+type ServiceClient = ReturnType<typeof import("@/lib/supabase/service").createServiceClient>
+
+/** The search's OWNING buyer (read from the row — searchId is caller-supplied), then the shared gate. */
+async function gateSearchOwner(searchId: string, opts: { staffMay?: boolean } = {}):
+  Promise<{ ok: true; svc: ServiceClient; brokerageId: string; contactId: string; userId: string } | { ok: false; error: string }> {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: search, error } = await svc.from("collaborative_searches").select("id, contact_id, brokerage_id").eq("id", searchId).maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  if (!search?.contact_id) return { ok: false, error: "Search not found." }
+  const { requireContactAccess, accessRefusal } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(search.contact_id as string)
+  if (!access.ok) return { ok: false, error: accessRefusal(access.error) }
+  if (search.brokerage_id !== access.brokerageId) return { ok: false, error: "Forbidden" }
+  if (!access.isContactSelf && !opts.staffMay) return { ok: false, error: "Only the buyer can share their homes or vote on them." }
+  return { ok: true, svc, brokerageId: access.brokerageId, contactId: search.contact_id as string, userId: access.userId }
+}
+
+async function gateBuyerSelf(contactId: string, opts: { staffMay?: boolean } = {}):
+  Promise<{ ok: true; svc: ServiceClient; brokerageId: string; userId: string } | { ok: false; error: string }> {
+  const { requireContactAccess, accessRefusal } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) return { ok: false, error: accessRefusal(access.error) }
+  if (!access.isContactSelf && !opts.staffMay) return { ok: false, error: "Only the buyer can decide this." }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  return { ok: true, svc: createServiceClient(), brokerageId: access.brokerageId, userId: access.userId }
+}
+
+function shareLink(token: string): string {
+  const base = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+  return `${base}/search/join?token=${encodeURIComponent(token)}`
+}
+
+export type ShareHomesOutcome =
+  | { ok: true; searchId: string; memberId: string; sharedCount: number; delivery: "email" | "link"; link: string; notes: string[] }
+  | { ok: false; error: string }
+
+/** C28 shareCollection — the buyer picks saved homes and one family member (email or mobile); scope feedback_only. */
+export async function shareHomesWithFamilyAction(input: {
+  contactId: string
+  listingRefs: string[]
+  collaborator: { name: string; email?: string | null; phone?: string | null }
+}): Promise<ShareHomesOutcome> {
+  if (!COLLAB_SEARCH_AVAILABLE) return { ok: false, error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
+  const g = await gateBuyerSelf(input.contactId)
+  if (!g.ok) return g
+  const { shareCollection, COLLABORATOR_SCOPE } = await import("@/lib/portal/collaborative-share")
+  const { checkSuppression } = await import("@/lib/kernel/compliance/check-suppression")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { data: me } = await g.svc.from("contacts").select("first_name, last_name").eq("id", input.contactId).eq("brokerage_id", g.brokerageId).maybeSingle()
+  const inviterName = [me?.first_name, me?.last_name].filter(Boolean).join(" ").trim() || "Someone close to you"
+  const at = new Date().toISOString()
+  const r = await withActionLedger(
+    {
+      brokerageId: g.brokerageId,
+      action: "portal.family_search.share",
+      actor: { type: "user", userId: g.userId },
+      subject: { type: "contact", id: input.contactId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `buyer shared ${(input.listingRefs ?? []).length} saved home(s) with a family member for their opinion`,
+      idempotencyKey: `portal.family_search.share:${input.contactId}:${(input.collaborator?.email ?? input.collaborator?.phone ?? "").toLowerCase()}:${at.slice(0, 16)}`,
+      channel: "portal",
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "buyer_portal_family_search",
+      detail: { homes: (input.listingRefs ?? []).length, channel: input.collaborator?.email ? "email" : "link", scope: COLLABORATOR_SCOPE },
+    },
+    () => shareCollection(g.svc, {
+      brokerageId: g.brokerageId, buyerContactId: input.contactId, actorUserId: g.userId,
+      listingRefs: input.listingRefs ?? [], collaborator: input.collaborator ?? { name: "" }, scope: COLLABORATOR_SCOPE,
+    }, {
+      checkSuppression: (p) => checkSuppression({ brokerageId: p.brokerageId, email: p.email ?? null, phone: p.phone ?? null, channel: p.channel }, { client: g.svc }),
+      sendEmailInvite: async (p) => {
+        try {
+          const { sendCollaborativeSearchInvite } = await import("@/lib/services/communication.service")
+          const sent: any = await sendCollaborativeSearchInvite({ email: p.email, inviterName, inviteToken: p.token, searchId: p.searchId })
+          return sent && sent.success === false ? { ok: false, error: sent.error ?? "the sender refused" } : { ok: true }
+        } catch (e) {
+          return { ok: false, error: (e as Error)?.message ?? "the sender failed" }
+        }
+      },
+    }),
+    {
+      settle: (x) => x.ok ? { status: "executed", outcome: `shared_${x.delivery}` } : { status: "failed", outcome: "share_refused", error: x.error },
+      replay: (claim) => ({ ok: false as const, error: claim.kind === "refused" ? claim.error : "That share is already on its way." }),
+    },
+  )
+  if (!r.ok) return r
+  revalidatePath(`/portal/${input.contactId}/search`)
+  return { ok: true, searchId: r.searchId, memberId: r.memberId, sharedCount: r.sharedHomeIds.length, delivery: r.delivery, link: shareLink(r.token), notes: r.notes }
+}
+
+/**
+ * The collaborator opens the shared homes (token only) — the invitation's acceptance IS the first open. Returns ONLY
+ * the shared homes and their own opinions.
+ *
+ * WAVE 149 (149B, C28) — same export, completed: what stood here matched the PLAINTEXT
+ * `collaborative_search_members.invite_token` through the RLS client, flipped the row to accepted and returned the
+ * member + the WHOLE search row (the buyer's criteria included), and its caller (app/search/join/page.tsx) then sent
+ * the family member to the homepage with nothing to see. Tokens are SHA-256 hashes now (m937), checked for scope,
+ * expiry and revocation (lib/portal/collaborative-share.ts collaboratorView).
+ */
+export async function acceptInvitation(token: string) {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { collaboratorView } = await import("@/lib/portal/collaborative-share")
+  return collaboratorView(createServiceClient(), String(token ?? ""))
+}
+
+/** The collaborator's opinion on one shared home (token only — the member is the one the token proves). */
+export async function submitFamilyOpinionAction(input: { token: string; sharedHomeId: string; vote: "love" | "like" | "neutral" | "dislike" | "pass"; comment?: string | null }) {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { recordCollaboratorOpinion } = await import("@/lib/portal/collaborative-share")
+  const svc = createServiceClient()
+  return recordCollaboratorOpinion(svc, String(input?.token ?? ""), { sharedHomeId: String(input?.sharedHomeId ?? ""), vote: input?.vote, comment: input?.comment ?? null }, {
+    tellShoppingAgent: async (p) => {
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      const r = await publishManagerSignal({
+        brokerageId: p.brokerageId, fromManager: "ai_isa", toManager: "shopping_agent", signalType: "family_feedback_received",
+        message: p.message, entityType: "contact", entityId: p.contactId, contactId: p.contactId, payload: p.payload,
+      }, svc)
+      if (!r.ok) console.error("[collaborative-search] shopping agent signal refused:", r.reason)
+      return r.ok
+    },
+  })
+}
+
+/** The buyer's (or their agent's) view of everything family said, by name, per home. */
+export async function loadFamilyFeedbackAction(contactId: string) {
+  const g = await gateBuyerSelf(contactId, { staffMay: true })
+  if (!g.ok) return g
+  const { buyerFeedbackDigest } = await import("@/lib/portal/collaborative-share")
+  return buyerFeedbackDigest(g.svc, { brokerageId: g.brokerageId, contactId })
+}
+
+/** The buyer's say: may family opinions shape the Shopping Agent's suggestions? The buyer only; ledgered. */
+export async function setFamilyFeedbackUseAction(input: { contactId: string; allow: boolean }) {
+  const g = await gateBuyerSelf(input.contactId)
+  if (!g.ok) return g
+  const { setFamilyFeedbackForShoppingAgent } = await import("@/lib/portal/collaborative-share")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const at = new Date().toISOString()
+  const allow = input.allow === true
+  return withActionLedger(
+    {
+      brokerageId: g.brokerageId, action: "portal.family_search.feedback_consent", actor: { type: "user", userId: g.userId },
+      subject: { type: "contact", id: input.contactId }, reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: allow ? "buyer allowed family opinions to shape the Shopping Agent" : "buyer kept family opinions to themselves",
+      idempotencyKey: `portal.family_search.feedback_consent:${input.contactId}:${allow}:${at.slice(0, 16)}`,
+      channel: "portal", riskClass: "LOW_RISK_WRITE", systemSource: "buyer_portal_family_search", detail: { allow },
+    },
+    () => setFamilyFeedbackForShoppingAgent(g.svc, { brokerageId: g.brokerageId, contactId: input.contactId, allow, actorUserId: g.userId }),
+    {
+      settle: (x) => x.ok ? { status: "executed", outcome: allow ? "allowed" : "withheld" } : { status: "failed", outcome: "consent_refused", error: x.error },
+      replay: (claim) => (claim.kind === "replay" ? { ok: true as const } : { ok: false as const, error: claim.kind === "refused" ? claim.error : "Already saving." }),
+    },
+  )
 }

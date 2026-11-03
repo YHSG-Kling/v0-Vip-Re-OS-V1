@@ -161,7 +161,11 @@ async function main() {
   const bare = gen.explainCriteriaFit({ price: 640000, bedrooms: 3, bathrooms: 2, property_type: "single_family", city: "Frisco", lot_size: 500 } as never, criteria as never, null)
   check("UNKNOWNS NEVER FACTS: with no evidence, commute / walkability / quiet are UNKNOWN; an ambiguous lot unit (500) is UNKNOWN, never converted", ["commute", "nearby_amenity", "quiet_setting", "outdoor_space"].every((k) => bare.unknowns.some((u) => u.field === `lifestyle:${k}`)) && bare.unknowns.some((u) => u.field === "lifestyle:outdoor_space" && /acres or square feet/.test(u.detail)))
   const small = gen.explainCriteriaFit({ price: 500000, lot_size: 0.18, city: "Frisco" } as never, { ...conv.emptyCriteria(), lifestyle: extractLifestyleAsks("less yard please") } as never, null)
-  check("an in-house lot of 0.18 (no unit recorded) reads as acres only because it cannot be square feet — and SAYS so", small.matches.some((m) => m.field === "lifestyle:outdoor_space" && /0\.18 acre/.test(m.detail) && /doesn't record the unit/.test(m.evidence?.caveat ?? "")))
+  // Wave 149 (lane 149B — owner ruling 5, C27: "the buyer decides the yard and acreage minimum; AI clarifies, never invents
+  // a minimum"): this pinned a WAYPOINT — "less yard" MATCHED a 0.18-acre lot against the platform's invented 0.2-acre bar
+  // (SMALL_LOT_ACRES, now tombstoned). THE RULE, re-asserted: the lot is still read in acres only because it cannot be
+  // square feet, and SAYS so — and with no size the buyer stated it is a FACT (fit.facts), not a platform verdict.
+  check("an in-house lot of 0.18 (no unit recorded) reads as acres only because it cannot be square feet — and SAYS so; no stated size → a fact, never a platform verdict", (small.facts ?? []).some((m) => m.field === "lifestyle:outdoor_space" && /0\.18 acre/.test(m.detail) && /doesn't record the unit/.test(m.evidence?.caveat ?? "")) && !small.matches.some((m) => m.field === "lifestyle:outdoor_space"))
   const noMap = gen.explainCriteriaFit(ranch as never, criteria as never, { ...evidence, travel: [{ ...evidence.travel[0], map: null }] })
   check("POSITIVE CONTROL: a drive time with no drawn route carries NO map", !([...noMap.matches, ...noMap.misses].find((i) => i.field === "lifestyle:commute")?.evidence?.map))
 

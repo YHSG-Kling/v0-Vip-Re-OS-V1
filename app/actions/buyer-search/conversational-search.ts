@@ -542,6 +542,9 @@ export async function explainHomeForBuyerAction(input: { contactId: string; list
       agentOffer: string
       /** Why a drive time / walkability / spacing could not be measured (no coordinates, provider unconfigured, …). */
       evidenceNotes: string[]
+      /** C28 (wave 149, lane 149B): what family said about THIS home — present ONLY when the buyer allowed family
+       *  opinions to shape the Shopping Agent; otherwise empty (never "nobody said anything"). */
+      familySaid: Array<{ by: string | null; vote: string | null; comment: string | null }>
     }
   | { ok: false; error: string }
 > {
@@ -585,8 +588,14 @@ export async function explainHomeForBuyerAction(input: { contactId: string; list
   const claims = claimsFromFit(fit, source)
   const facts = { price: l.price, bedrooms: l.bedrooms, bathrooms: l.bathrooms, square_feet: l.square_feet, property_type: l.property_type, city: l.city, year_built: l.year_built }
   const told = await narrateFitExplanation({ brokerageId: g.brokerageId, userId: g.actorUserId, listingLabel: label, fit, facts, claims, voice: { agentName: brand.agentName, brokerageName: brand.brokerageName, source } })
+  // C28: the Shopping Agent reads family opinions ONLY on the buyer's say-so (familyFeedbackForShoppingAgent returns []
+  // without consent, and on any unreadable consent — fail closed).
+  const { familyFeedbackForShoppingAgent } = await import("@/lib/portal/collaborative-share")
+  const family = await familyFeedbackForShoppingAgent(g.svc, { brokerageId: g.brokerageId, contactId: input.contactId })
+  const familySaid = family.opinions.filter((o) => o.listingRef === input.listingId).map((o) => ({ by: o.by, vote: o.vote, comment: o.comment }))
   return {
     ok: true, headline: told.headline, narrative: told.narrative, unknownsSentence: told.unknownsSentence, fit, via: told.via, note: told.note,
     claims, sourceLabel: source.label, followUpQuestion: told.followUpQuestion, agentOffer: told.agentOffer, evidenceNotes: evidence?.notes ?? [],
+    familySaid,
   }
 }

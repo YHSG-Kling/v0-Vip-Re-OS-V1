@@ -1,28 +1,29 @@
 /**
  * app/search/join/page.tsx
  *
- * The landing page for a collaborative-search invitation.
+ * THE COLLABORATOR'S VIEW (C28 — wave 149, lane 149B, owner ruling 6): "the buyer shares the homes they were searching
+ * and brings in a family member to give their opinion on the selected properties."
  *
- * WHY THIS EXISTS: sendCollaborativeSearchInvite (lib/services/communication.service.tsx)
- * has always mailed invitees a link to `/search/join?token=…` — and that route did
- * not exist, so every family-search invitation this product ever sent landed on a
- * 404 and `acceptInvitation` had no caller anywhere. This is that caller.
+ * WHAT STOOD HERE: the invitation's landing page accepted a PLAINTEXT token and then sent the family member to the
+ * homepage — they were "in" a search they could not see, so no opinion could ever be given (all five family-search
+ * tables held zero rows, live 2026-11-03).
  *
- * AUTH: the invite token IS the credential — an invitee is by definition someone
- * without an account on this brokerage. acceptInvitation only matches a row whose
- * invite_token equals the token AND whose invite_status is still 'pending', so a
- * replayed or bogus token cannot flip anything.
+ * NOW: the token is the credential (an invitee has no account on this tenant). The server action hash-matches it,
+ * checks scope feedback_only, expiry and revocation, and returns ONLY the shared homes' public listing facts and this
+ * person's own opinions — never the buyer's criteria, CRM fields, documents, messages, other members or any other portal
+ * data. No tenant, contact or user id is read from the URL.
  */
 
-import Link from "next/link"
 import { acceptInvitation } from "@/app/actions/collaborative-search"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { FamilyOpinionForm } from "./family-opinion-form"
 
 export const dynamic = "force-dynamic"
 
 export const metadata = {
-  title: "Join a family home search | VIP Real Estate AI OS",
-  description: "Accept your invitation to collaborate on a property search.",
+  title: "Homes shared with you",
+  description: "Give your opinion on the homes someone close to you is considering.",
+  robots: { index: false, follow: false },
 }
 
 export default async function JoinCollaborativeSearchPage({
@@ -36,50 +37,59 @@ export default async function JoinCollaborativeSearchPage({
     return (
       <Shell title="This link is incomplete">
         <p className="text-sm text-muted-foreground">
-          The invitation link is missing its token. Open the link straight from the email you were
-          sent, or ask whoever invited you to send it again.
+          The link is missing part of its address. Open it straight from the message you were sent, or ask the person who
+          shared these homes to send it again.
         </p>
       </Shell>
     )
   }
 
   const result = await acceptInvitation(token)
-
-  if ((result as any).error || !(result as any).data) {
+  if (!result.ok) {
     return (
-      <Shell title="We couldn't accept this invitation">
-        <p className="text-sm text-muted-foreground">
-          {(result as any).error ?? "This invitation could not be accepted."}
-        </p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Invitations expire, and each one can only be accepted once. If you have already joined,
-          use the link in the most recent email. Otherwise ask for a fresh invitation.
-        </p>
+      <Shell title="We couldn't open these homes">
+        <p className="text-sm text-muted-foreground">{result.error}</p>
       </Shell>
     )
   }
 
-  const member = (result as any).data
-  const search = member.collaborative_searches
-
+  const { view } = result
+  const who = view.buyerFirstName ?? "Someone close to you"
   return (
-    <Shell title="You're in">
-      <p className="text-sm">
-        You&apos;ve joined{" "}
-        <span className="font-medium">{search?.name ?? "the family home search"}</span> as{" "}
-        <span className="font-medium">{member.role ?? "a member"}</span>.
+    <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold">{who} would love your opinion</h1>
+        <p className="text-sm text-muted-foreground">
+          {view.collaboratorName ? `Hi ${view.collaboratorName} — ` : ""}these are the homes {who} is considering. Tell them how
+          each one feels to you. Only {who} sees what you say{view.homes.length ? "" : " — there are no homes on the list right now"}.
+        </p>
+      </header>
+      {view.homes.map((h) => (
+        <Card key={h.id}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">{h.facts.address ?? "A shared home"}</CardTitle>
+            <CardDescription>
+              {[h.facts.city, h.facts.state].filter(Boolean).join(", ")}
+              {h.facts.price != null ? ` · $${h.facts.price.toLocaleString("en-US")}` : ""}
+              {h.facts.beds != null ? ` · ${h.facts.beds} bd` : ""}
+              {h.facts.baths != null ? ` · ${h.facts.baths} ba` : ""}
+              {h.facts.sqft != null ? ` · ${h.facts.sqft.toLocaleString("en-US")} sq ft` : ""}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {h.facts.photo && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={h.facts.photo} alt={`Photo of ${h.facts.address ?? "the home"}`} className="h-48 w-full rounded-md object-cover" />
+            )}
+            <FamilyOpinionForm token={token} sharedHomeId={h.id} initialVote={h.myVote} initialComment={h.myComment} />
+          </CardContent>
+        </Card>
+      ))}
+      <p className="text-xs text-muted-foreground">
+        This link only shows the homes that were shared with you. It doesn't sign you up for anything, and {who} can close it
+        at any time.
       </p>
-      {search?.description && (
-        <p className="mt-2 text-sm text-muted-foreground">{search.description}</p>
-      )}
-      <p className="mt-4 text-sm text-muted-foreground">
-        The person who invited you will see you on the search right away. They can share
-        properties with you from their portal, and your votes count toward the family consensus.
-      </p>
-      <Link href="/" className="mt-4 inline-block text-sm font-medium underline">
-        Go to the homepage
-      </Link>
-    </Shell>
+    </div>
   )
 }
 
@@ -89,7 +99,7 @@ function Shell({ title, children }: { title: string; children: React.ReactNode }
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>{title}</CardTitle>
-          <CardDescription>Family home search</CardDescription>
+          <CardDescription>Homes shared with you</CardDescription>
         </CardHeader>
         <CardContent>{children}</CardContent>
       </Card>

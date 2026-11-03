@@ -580,8 +580,9 @@ export async function handleLeadAssigned(params: {
     // is deactivated. A refused plan is a warning, never a rollback of a
     // successful assignment.
     {
+      // The MODULE, not the barrel (see lib/contact-promotion/promote-lead-to-contact.ts — proxy-graph budget, wave 149).
       const { generateAgentActionPlan, persistAgentActionPlan } =
-        await import('@/lib/agent-orchestration')
+        await import('@/lib/agent-orchestration/action-plan-generator')
       const planned = await generateAgentActionPlan(contact.id, agentId, brokerageId, supabase)
       if (!planned.ok) {
         console.warn(

@@ -180,7 +180,10 @@ async function main() {
   // ("yard is UNKNOWN") that the wave-148 evidence rule correctly moves. THE RULE, re-asserted: with no travel evidence the
   // commute stays UNKNOWN; the yard is answered ONLY from the listing's lot size, in acres, with the unit basis stated
   // (lot_size has no recorded unit — 0.18 can only be acres, and the caveat says it was read from the size of the number).
-  check("12 Elm: commute stays UNKNOWN (no travel evidence); the yard is answered only from the lot size, in acres, unit basis stated", elm.unknowns.some((u) => u.field === "lifestyle:commute") && [...elm.matches, ...elm.misses].some((m) => m.field === "lifestyle:outdoor_space" && /0\.18 acre/.test(m.detail) && /doesn't record the unit/.test(m.evidence?.caveat ?? "")))
+  check("12 Elm: commute stays UNKNOWN (no travel evidence); the yard is answered only from the lot size, in acres, unit basis stated", elm.unknowns.some((u) => u.field === "lifestyle:commute") && [...elm.matches, ...elm.misses, ...(elm.facts ?? [])].some((m) => m.field === "lifestyle:outdoor_space" && /0\.18 acre/.test(m.detail) && /doesn't record the unit/.test(m.evidence?.caveat ?? "")))
+  // Wave 149 (lane 149B — owner ruling 5, C27): "less yard" with no size the buyer stated is no longer judged against the
+  // platform's invented 0.2-acre bar — the lot lands in fit.facts (stated, evidence-backed, no verdict). Same RULE: the yard
+  // is answered only from the lot size, in acres, unit basis stated.
   const oak = fits[1].fit
   check("9 Oak: over budget and short a bedroom → two misses with the facts", oak.misses.some((m) => m.field === "maxPrice" && /\$40k over/.test(m.detail)) && oak.misses.some((m) => m.field === "minBeds"))
   check("9 Oak: no remarks → natural light UNKNOWN; HOA dues null → HOA UNKNOWN (absence of data is not a 'no')", oak.unknowns.some((u) => u.field === "lifestyle:natural_light") && oak.unknowns.some((u) => u.field === "dealBreakers"))

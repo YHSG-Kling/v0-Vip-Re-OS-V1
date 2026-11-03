@@ -331,6 +331,7 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
                   <ul className="space-y-0.5 text-xs">
                     {m.fit.matches.map((f, k) => <li key={`m${k}`} className="flex gap-1.5 text-emerald-800"><Check className="mt-0.5 h-3 w-3 shrink-0" /><span><span className="font-medium">{f.ask}:</span> {f.detail}</span></li>)}
                     {m.fit.misses.map((f, k) => <li key={`x${k}`} className="flex gap-1.5 text-destructive"><X className="mt-0.5 h-3 w-3 shrink-0" /><span><span className="font-medium">{f.ask}:</span> {f.detail}</span></li>)}
+                    {(m.fit.facts ?? []).map((f, k) => <li key={`f${k}`} className="flex gap-1.5"><HelpCircle className="mt-0.5 h-3 w-3 shrink-0" /><span><span className="font-medium">{f.ask}:</span> {f.detail}</span></li>)}
                     {m.fit.unknowns.map((f, k) => <li key={`u${k}`} className="flex gap-1.5 text-muted-foreground"><HelpCircle className="mt-0.5 h-3 w-3 shrink-0" /><span><span className="font-medium">{f.ask}:</span> unknown — {f.detail}</span></li>)}
                   </ul>
                 )}

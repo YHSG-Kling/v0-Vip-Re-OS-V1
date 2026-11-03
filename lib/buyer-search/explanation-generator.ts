@@ -19,6 +19,9 @@ import {
   lotFactsFrom,
   formatAcres,
   formatDistance,
+  validLotMinimum,
+  lotMinimumAcres,
+  formatLotMinimum,
   type EvidenceSource,
   type FitEvidence,
   type HomeLocationEvidence,
@@ -545,6 +548,9 @@ export interface CriteriaFit {
   matches: FitItem[]
   misses: FitItem[]
   unknowns: FitItem[]
+  /** Wave 149 (149B, C27): measured facts with NO verdict because the buyer has not given the bar (the lot with no
+   *  stated minimum). Evidence-backed; the buyer decides. Optional for older serialised fits. */
+  facts?: FitItem[]
 }
 
 /** The listing facts the fit reads — platform rows carry more of them than an external feed row. */
@@ -602,12 +608,13 @@ type Bucketed = { bucket: keyof CriteriaFit; item: FitItem }
 // The thresholds below are the plain-language bars the explanation uses to say "fits" or "doesn't"; the FIGURE is
 // always shown beside the verdict so the buyer judges for themselves.
 
-/** Acres a home needs for an "acreage" ask (unless the buyer stated their own minimum). */
-const ACREAGE_MIN_ACRES = 1
-/** A "more yard / outdoor space" ask: a lot this large reads as roomy; under the small bar it does not. */
-const ROOMY_LOT_ACRES = 0.25
-/** A "less yard" ask: at or under this a yard is easy to keep up. */
-const SMALL_LOT_ACRES = 0.2
+// TOMBSTONE (wave 149, lane 149B — owner ruling 5, C27): three platform-invented yard bars stood here —
+// ACREAGE_MIN_ACRES = 1 ("acreage" meant ≥ 1 acre unless the buyer said otherwise), ROOMY_LOT_ACRES = 0.25 (a "bigger
+// yard" ask matched at a quarter acre) and SMALL_LOT_ACRES = 0.2 (a "less yard" ask matched at a fifth of an acre).
+// Owner: "The buyer decides the yard and acreage minimum. AI clarifies, never invents a minimum." The verdict now
+// comes ONLY from the buyer's stated minimum (LifestyleAsk.lotMinimum — conversation-criteria.ts statedLotMinimum);
+// without one the lot is stated as a FACT (fit.facts — acres, sq ft, source, limits) and the buyer is asked how much
+// yard or land feels right. Survivor of the comparison: the outdoor_space case below.
 /** Straight-line metres that read as "an easy walk" (≈ 15 minutes at an average pace). */
 const WALKABLE_METERS = 1200
 /** Quiet / privacy bars: the nearest other mapped building, and how close a major road or mainline rail runs. */
@@ -694,20 +701,23 @@ function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProve
       const evidence: FitEvidence = { source: lot.source, confidence: lot.basis === 'reported_sqft' ? 'high' : 'medium', figures: { acres, ...(lot.sqft ? { lot_sqft: Math.round(lot.sqft) } : {}) }, caveat }
       const withFeatures = (s: string) => (features ? `${s}; ${features}` : s)
       const lotBrief = (tail: string) => `${acreLot(lot.acres!)}${tail}`
-      if (ask.label === 'acreage') {
-        const min = ask.minAcres && ask.minAcres > 0 ? ask.minAcres : ACREAGE_MIN_ACRES
+      // C27: the BUYER's minimum decides (converted to acres — conversion is allowed, inventing is not). A legacy row's
+      // `minAcres` was only ever set from a stated number (148E's parser), so it is read as the buyer's when no
+      // `lotMinimum` rides the ask.
+      const stated = validLotMinimum(ask.lotMinimum) ? ask.lotMinimum
+        : ask.minAcres && ask.minAcres > 0 ? { value: ask.minAcres, unit: 'acres' as const, stated_by: 'buyer' as const, literal: ask.evidence, confidence: 'high' as const } : null
+      if (stated && ask.direction !== 'less') {
+        const min = lotMinimumAcres(stated)
+        const said = formatLotMinimum(stated)
         return lot.acres >= min
-          ? proven('matches', withFeatures(`The lot is ${sizeText} — real room to spread out`), evidence, lotBrief(' with real room to spread out'))
-          : proven('misses', withFeatures(`The lot is ${sizeText} — under the ${formatAcres(min)} you're after`), evidence, lotBrief(`, under the ${formatAcres(min)} you're after`))
+          ? proven('matches', withFeatures(`The lot is ${sizeText} — at or above the ${said} you said`), evidence, lotBrief(`, at or above the ${said} you said`))
+          : proven('misses', withFeatures(`The lot is ${sizeText} — under the ${said} you said`), evidence, lotBrief(`, under the ${said} you said`))
       }
-      if (ask.direction === 'less') {
-        return lot.acres <= SMALL_LOT_ACRES
-          ? proven('matches', withFeatures(`A ${sizeText} lot — an easy yard to keep up`), evidence, lotBrief(', an easy yard to keep up'))
-          : proven('misses', withFeatures(`A ${sizeText} lot — more yard than you said you want to look after`), evidence, lotBrief(', more yard than you wanted to keep up'))
-      }
-      return lot.acres >= ROOMY_LOT_ACRES
-        ? proven('matches', withFeatures(`A ${sizeText} lot — room outside to garden, play or just breathe`), evidence, lotBrief(' with room outside to garden, play or just breathe'))
-        : proven('misses', withFeatures(`A ${sizeText} lot — a compact yard`), evidence, lotBrief(', a compact yard'))
+      // No bar the buyer gave → the lot is a FACT, not a verdict, and the buyer is asked (never a platform minimum).
+      const question = ask.direction === 'less'
+        ? "how much yard feels easy to keep up is yours to say — tell me a size and I'll check every home against it"
+        : "how much yard or land feels right is yours to say — tell me a size (half an acre, 2 acres, 10,000 sq ft) and I'll check every home against it"
+      return { bucket: 'facts', item: { field, ask: askText, detail: withFeatures(`The lot is ${sizeText}; ${question}`), source: evidence.source === 'listing' ? 'listing' : 'provider', provenance: prov, evidence, brief: lotBrief('') } }
     }
     case 'quiet_setting': {
       const hit = remarksMention(l.public_remarks, QUIET_IN_REMARKS)
@@ -808,8 +818,8 @@ function dealBreakerFit(db: string, l: ListingFitFacts, prov: CriteriaProvenance
  * Said asks are listed before inferred ones in each bucket.
  */
 export function explainCriteriaFit(listing: ListingFitFacts, criteria: BuyerCriteria, evidence: HomeLocationEvidence | null = null): CriteriaFit {
-  const fit: CriteriaFit = { matches: [], misses: [], unknowns: [] }
-  const add = (b: Bucketed) => fit[b.bucket].push(b.item)
+  const fit: CriteriaFit = { matches: [], misses: [], unknowns: [], facts: [] }
+  const add = (b: Bucketed) => (fit[b.bucket] ??= []).push(b.item)
   const p = (f: CriteriaField) => provenanceOf(criteria, f)
   const it = (bucket: keyof CriteriaFit, field: CriteriaField, ask: string, detail: string, source: FitSource) =>
     add({ bucket, item: { field, ask, detail, source, provenance: p(field) } })
@@ -855,7 +865,7 @@ export function explainCriteriaFit(listing: ListingFitFacts, criteria: BuyerCrit
   for (const ask of criteria.lifestyle ?? []) add(lifestyleFit(ask, listing, p('lifestyle'), evidence))
 
   const rank = (i: FitItem) => (i.provenance === 'said' ? 0 : i.provenance === 'inferred' ? 1 : 2)
-  for (const k of ['matches', 'misses', 'unknowns'] as const) fit[k].sort((a, b) => rank(a) - rank(b))
+  for (const k of ['matches', 'misses', 'unknowns', 'facts'] as const) (fit[k] ??= []).sort((a, b) => rank(a) - rank(b))
   return fit
 }
 
@@ -919,6 +929,7 @@ function chooseFollowUp(fit: CriteriaFit): string {
   if (commute) return 'Would you like me to map the drive at the time you usually leave?'
   if (unknown('quiet_setting')) return 'Would you like me to look at how close the next homes sit and how near the busy roads run?'
   if (unknown('nearby_amenity')) return "Would you like me to map what's within an easy walk of the front door?"
+  if ((fit.facts ?? []).some((f) => f.field === 'lifestyle:outdoor_space')) return "How much yard or land would feel right to you? Give me a size in acres or square feet and I'll check every home against your number."
   if (unknown('outdoor_space')) return 'Would you like me to ask for the lot survey so you can see exactly where the yard ends?'
   if (unknown('natural_light')) return 'Would you like me to ask the listing agent which rooms get the best light, and when?'
   if (fit.misses.length > 0) return `Is "${fit.misses[0].ask.toLowerCase()}" a deal-breaker for you, or could the rest make up for it?`
@@ -957,6 +968,8 @@ export function composeNeighbourlyExplanation(
   const extra = fit.matches.filter((m) => !lead.includes(m) && m.source === 'provider').slice(0, 2)
   const TOPIC: Record<string, string> = { 'lifestyle:commute': 'your commute', 'lifestyle:nearby_amenity': 'getting around on foot', 'lifestyle:quiet_setting': 'peace and quiet', 'lifestyle:outdoor_space': 'outdoor space' }
   for (const m of extra) parts.push(`Good to know for ${TOPIC[m.field as string] ?? lower(m.ask)}: ${m.brief ?? lower(m.detail)}.`)
+  const lotFact = (fit.facts ?? []).find((f) => f.field === 'lifestyle:outdoor_space')
+  if (lotFact) parts.push(`On the yard: this one sits on ${lotFact.brief ?? lower(lotFact.detail)}.`)
   if (fit.misses.length > 0) {
     const more = fit.misses.length - 1
     parts.push(`One honest heads-up: ${fit.misses[0].brief ?? lower(fit.misses[0].detail)}${more > 0 ? `, and ${more} more ${more === 1 ? "thing doesn't" : "things don't"} line up` : ''}.`)

@@ -212,7 +212,7 @@ export async function recordStatedCriteriaTurn(
       literal: input.text,
       interpretation: {
         criteria: parsed.criteria,
-        lifestyle: parsed.lifestyle.map((l) => ({ kind: l.kind, label: l.label, direction: l.direction, target: l.target, maxMinutes: l.maxMinutes, minAcres: l.minAcres ?? null, evidence: l.evidence })),
+        lifestyle: parsed.lifestyle.map((l) => ({ kind: l.kind, label: l.label, direction: l.direction, target: l.target, maxMinutes: l.maxMinutes, minAcres: l.minAcres ?? null, lotMinimum: l.lotMinimum ?? null, evidence: l.evidence })),
         deal_breakers: parsed.dealBreakers,
         priority: parsed.priority,
         gaps: parsed.gaps,

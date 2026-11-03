@@ -151,6 +151,44 @@ export function formatAcres(acres: number): string {
   return `${v} ${Number(v) === 1 || acres < 1 ? "acre" : "acres"}`
 }
 
+// ─── C27 — THE BUYER-STATED LOT MINIMUM (wave 149, lane 149B, owner ruling 5) ─────────────────────
+//
+// Owner: "The buyer decides the yard and acreage minimum. AI clarifies, never invents a minimum." A minimum exists
+// ONLY when the buyer said one, in their unit, with their words kept; the AI may ask what they mean and may convert
+// units, and nothing else. No platform-default bar ("1 acre is acreage", "0.25 acre is roomy") decides a fit.
+
+export const LOT_UNITS = ["acres", "sqft"] as const
+export type LotUnit = (typeof LOT_UNITS)[number]
+
+export interface LotMinimum {
+  value: number
+  unit: LotUnit
+  /** Always the buyer — the type admits nothing else, and validLotMinimum refuses anything else at runtime. */
+  stated_by: "buyer"
+  /** The buyer's own words the value was read from ("at least half an acre"). */
+  literal: string
+  /** high = a number and a unit, plainly; low = hedged ("about an acre or so") — worth a gentle confirm. */
+  confidence: "high" | "low"
+}
+
+/** PURE. The contract check (C27): a minimum is the buyer's, positive, in a known unit, with their words. */
+export function validLotMinimum(v: unknown): v is LotMinimum {
+  const m = v as Partial<LotMinimum> | null | undefined
+  return !!m && m.stated_by === "buyer" && typeof m.value === "number" && Number.isFinite(m.value) && m.value > 0
+    && (LOT_UNITS as readonly string[]).includes(String(m.unit)) && typeof m.literal === "string" && m.literal.trim().length > 0
+    && (m.confidence === "high" || m.confidence === "low")
+}
+
+/** PURE. The minimum in acres (conversion is allowed; inventing is not). */
+export function lotMinimumAcres(m: LotMinimum): number {
+  return m.unit === "acres" ? m.value : m.value / SQFT_PER_ACRE
+}
+
+/** PURE. The minimum said back in the BUYER's unit ("2 acres", "10,000 sq ft"). */
+export function formatLotMinimum(m: LotMinimum): string {
+  return m.unit === "acres" ? formatAcres(m.value) : `${Math.round(m.value).toLocaleString("en-US")} sq ft`
+}
+
 export interface LotFacts {
   acres: number | null
   sqft: number | null
@@ -252,6 +290,9 @@ export function claimsFromFit(fit: CriteriaFit, source: ListingSourceLabel): Exp
   for (const m of fit.matches) out.push(claimOf(m, "match", source.kind))
   for (const m of fit.misses) out.push(claimOf(m, "miss", source.kind))
   for (const u of fit.unknowns) out.push(claimOf(u, "unknown", source.kind))
+  // C27 (wave 149): a measured fact the buyer has not given a bar for (the lot, with no stated minimum) — evidence-backed,
+  // no verdict. The verdict is the buyer's to give.
+  for (const f of fit.facts ?? []) out.push(claimOf(f, "fact", source.kind))
   return out
 }
 
