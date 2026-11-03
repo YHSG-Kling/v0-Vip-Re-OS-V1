@@ -31,9 +31,11 @@
 import {
   classifyPublicMovementText, movementDigest, movementSignalFromCalculatorRow, movementSignalFromFirstPartyChange, movementSignalFromIntentFact,
   movementSignalFromLifeEvent, movementSignalFromPublicPost, movementSignalFromSellerSignalRow, movementSource, recordMovementSignal, reconcileMovementOutcomes, CALCULATOR_MOVEMENT_SOURCE,
+  movementSignalFromContentView, movementSignalFromHomeDashboardView, movementSignalFromCriteriaRevisions, CRITERIA_REPEAT_MIN,
   type MovementBuild, type MovementClassify, type MovementDeps, type MovementRecordResult, type MovementSignalRecord, type MovementSubject,
 } from "@/lib/intent/movement-signals"
 import { canonicalLifeEventType, normalizeLifeEvent } from "@/lib/enrichment/life-event-vocabulary"
+import { opportunityKindsForTopic } from "@/lib/intent/opportunity-discovery"
 
 type Svc = { from: (t: string) => any }
 const MIN_MS = 60_000
@@ -284,6 +286,99 @@ export const STORED_CALCULATOR_SOURCE: MovementPollSource = {
   },
 }
 
+// ── WAVE 149 (lane 149H, owner ruling 18): three first-party families that were WRITTEN and never READ as movement evidence ──────
+// (orphan doctrine: build the missing reader). Same rules as above: stored rows only, tenant-pinned, every error read. A visit /
+// view is dedupe-bucketed by calendar month so a person who keeps returning is one observation per month, never one per click —
+// a dedupe granularity, not an outreach schedule (the arbiter decides whether and when anything is sent).
+
+const monthOf = (iso: unknown) => (typeof iso === "string" ? iso.slice(0, 7) : "undated")
+
+/** blog_post_views — the tenant's own articles read by an identified contact (topic from the post; the contact re-checked in-tenant). */
+const STORED_CONTENT_VIEWS_SOURCE: MovementPollSource = {
+  key: "stored:blog_post_views", registryKeys: ["fp_content_engagement"], cadenceMinutes: 15,
+  async fetch({ svc, brokerageId, now, lastSuccessAt }) {
+    const { data, error } = await svc.from("blog_post_views").select("id, blog_post_id, viewer_contact_id, viewed_at")
+      .eq("brokerage_id", brokerageId).not("viewer_contact_id", "is", null).gte("viewed_at", readSince(now, lastSuccessAt)).order("viewed_at", { ascending: true }).limit(500)
+    if (error) return { ok: false, error: `blog_post_views read refused: ${error.message}` }
+    const views = (data ?? []) as Array<{ id: string; blog_post_id: string | null; viewer_contact_id: string | null; viewed_at: string | null }>
+    if (views.length === 0) return { ok: true, items: [] }
+    const postIds = [...new Set(views.map((v) => v.blog_post_id).filter((x): x is string => !!x))]
+    const { data: posts, error: pErr } = await svc.from("blog_posts").select("id, category, title").eq("brokerage_id", brokerageId).in("id", postIds)
+    if (pErr) return { ok: false, error: `blog_posts read refused: ${pErr.message}` }
+    // The tracking call is public: a contact id is believed only when that contact is THIS tenant's (a foreign or invented id is dropped).
+    const contactIds = [...new Set(views.map((v) => v.viewer_contact_id).filter((x): x is string => !!x))]
+    const { data: cs, error: cErr } = await svc.from("contacts").select("id").eq("brokerage_id", brokerageId).in("id", contactIds)
+    if (cErr) return { ok: false, error: `contacts read refused: ${cErr.message}` }
+    const mine = new Set(((cs ?? []) as Array<{ id: string }>).map((c) => c.id))
+    const topic = new Map(((posts ?? []) as Array<{ id: string; category: string | null; title: string | null }>).map((p) => [p.id, `${p.category ?? ""} ${p.title ?? ""}`]))
+    const latest = new Map<string, (typeof views)[number] & { topic: string }>()
+    for (const v of views) {
+      if (!v.viewer_contact_id || !mine.has(v.viewer_contact_id) || !v.blog_post_id || !topic.has(v.blog_post_id)) continue
+      const t = topic.get(v.blog_post_id) as string
+      const kinds = opportunityKindsForTopic(t)
+      if (kinds.length === 0) continue
+      const k = `contact:${v.viewer_contact_id}:content:${kinds.join("+")}`
+      const cur = latest.get(k)
+      if (!cur || String(v.viewed_at ?? "") > String(cur.viewed_at ?? "")) latest.set(k, { ...v, topic: t })
+    }
+    return {
+      ok: true,
+      items: [...latest.entries()].map(([itemKey, v]) => ({
+        itemKey, material: { kinds: itemKey.split(":content:")[1], month: monthOf(v.viewed_at) }, observedAt: v.viewed_at,
+        toSignal: () => movementSignalFromContentView(brokerageId, { id: v.id, viewer_contact_id: v.viewer_contact_id, viewed_at: v.viewed_at, topic: v.topic }),
+      })),
+    }
+  },
+}
+
+/** client_portal_activity — a signed-in homeowner opening their home dashboard (value, equity, market activity). */
+const STORED_HOME_DASHBOARD_SOURCE: MovementPollSource = {
+  key: "stored:client_portal_activity:home_dashboard", registryKeys: ["fp_home_dashboard_view"], cadenceMinutes: 15,
+  async fetch({ svc, brokerageId, now, lastSuccessAt }) {
+    const { data, error } = await svc.from("client_portal_activity").select("id, contact_id, created_at, metadata")
+      .eq("brokerage_id", brokerageId).eq("activity_type", "portal_module_viewed").gte("created_at", readSince(now, lastSuccessAt)).order("created_at", { ascending: true }).limit(500)
+    if (error) return { ok: false, error: `client_portal_activity read refused: ${error.message}` }
+    const latest = new Map<string, Record<string, any>>()
+    for (const r of (data ?? []) as Array<Record<string, any>>) {
+      if (!r.contact_id || (r.metadata as { module?: unknown } | null)?.module !== "seller_home") continue
+      const k = `contact:${r.contact_id}:home_dashboard`
+      const cur = latest.get(k)
+      if (!cur || String(r.created_at ?? "") > String(cur.created_at ?? "")) latest.set(k, r)
+    }
+    return {
+      ok: true,
+      items: [...latest.entries()].map(([itemKey, r]) => ({
+        itemKey, material: { month: monthOf(r.created_at) }, observedAt: typeof r.created_at === "string" ? r.created_at : null,
+        toSignal: () => movementSignalFromHomeDashboardView(brokerageId, r as never),
+      })),
+    }
+  },
+}
+
+/** buyer_criteria_changes — a buyer REVISING what they told us they want, more than once (provenance 'said'), over the source's half-life. */
+const STORED_CRITERIA_CHANGES_SOURCE: MovementPollSource = {
+  key: "stored:buyer_criteria_changes", registryKeys: ["fp_criteria_revisions"], cadenceMinutes: 15,
+  async fetch({ svc, brokerageId, now }) {
+    const halfLife = movementSource("fp_criteria_revisions")?.halfLifeDays ?? 30
+    const { data, error } = await svc.from("buyer_criteria_changes").select("id, contact_id, field, provenance, status, created_at")
+      .eq("brokerage_id", brokerageId).eq("provenance", "said").gte("created_at", new Date(now.getTime() - halfLife * DAY_MS).toISOString()).order("created_at", { ascending: true }).limit(1000)
+    if (error) return { ok: false, error: `buyer_criteria_changes read refused: ${error.message}` }
+    const by = new Map<string, Array<Record<string, any>>>()
+    for (const r of (data ?? []) as Array<Record<string, any>>) if (r.contact_id) by.set(r.contact_id, [...(by.get(r.contact_id) ?? []), r])
+    return {
+      ok: true,
+      items: [...by.entries()].map(([contactId, rows]) => {
+        const said = rows.filter((r) => r.status !== "rejected")
+        const newest = said.map((r) => String(r.created_at ?? "")).sort().pop() ?? null
+        return {
+          itemKey: `contact:${contactId}:criteria`, material: { repeated: said.length >= CRITERIA_REPEAT_MIN, month: monthOf(newest) }, observedAt: newest,
+          toSignal: () => movementSignalFromCriteriaRevisions(brokerageId, contactId, rows as never),
+        }
+      }),
+    }
+  },
+}
+
 /** The acquisition SourceKeys whose POSTS bear on a move → their registry rows. */
 const POST_SOURCE_REGISTRY: Readonly<Record<string, string>> = Object.freeze({
   agent_seeking_phrase_intent: "pp_agent_seeking_phrase", facebook_recommend_realtor: "pp_facebook_recommend_realtor",
@@ -402,7 +497,10 @@ const LEDGER_ROUTED_FACTS_SOURCE: MovementPollSource = {
 
 /** The sources the watcher polls by default — every one reads a stored sweep output or a door's durable event; none calls a vendor. */
 function movementPollSources(opts: { classify?: MovementClassify } = {}): MovementPollSource[] {
-  return [STORED_SELLER_SIGNALS_SOURCE, STORED_CALCULATOR_SOURCE, acquisitionPostsSource({ classify: opts.classify }), LEDGER_ROUTED_FACTS_SOURCE]
+  return [
+    STORED_SELLER_SIGNALS_SOURCE, STORED_CALCULATOR_SOURCE, acquisitionPostsSource({ classify: opts.classify }), LEDGER_ROUTED_FACTS_SOURCE,
+    STORED_CONTENT_VIEWS_SOURCE, STORED_HOME_DASHBOARD_SOURCE, STORED_CRITERIA_CHANGES_SOURCE,
+  ]
 }
 
 /**

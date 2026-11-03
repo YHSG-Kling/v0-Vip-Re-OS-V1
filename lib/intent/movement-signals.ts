@@ -58,6 +58,11 @@ import {
   type EpistemicClass, type MovementRelevance, type MovementSourceKind, type NeighbourlyHelper, type ResearchStrategy,
 } from "@/lib/intent/movement-source-registry"
 
+import {
+  OPPORTUNITY_COMBINATION_BRIEF, OPPORTUNITY_INTENT, opportunityKindsForTopic, opportunityMenu, opportunityTag, readOpportunities, stageAtLeast,
+  type OpportunityMenu, type OpportunityObservation, type OpportunityReading,
+} from "@/lib/intent/opportunity-discovery"
+
 export * from "@/lib/intent/movement-source-registry"
 
 type Svc = { from: (t: string) => any }
@@ -315,6 +320,51 @@ export function movementSignalFromCalculatorRow(brokerageId: string, row: { id: 
   return buildMovementSignal({
     brokerageId, subject, sourceKey: key, eventRelevance: src.relevance[0], identity: "record_key", capturedBy: "automation", observedAt: at,
     evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `calculator_history:${row.id}`, retrievedAt: at }, summary: `ran the ${String(row.calculator_type).replace(/_/g, " ")} calculator in their portal` },
+  })
+}
+
+// WAVE 149 (lane 149H, owner ruling 18) — three first-party families that were written and never read as movement evidence. Each
+// adapter is weak or moderate alone on purpose; lib/intent/opportunity-discovery.ts never lets one observation raise anything.
+
+/** A tenant article read by a contact (blog_post_views) → C9. INFERRED: the tracking call is unauthenticated, and reading is
+ *  interest, not a plan. The decision is read from the POST's own topic (category + title), tagged `opportunity:<kind>`. */
+export function movementSignalFromContentView(brokerageId: string, row: { id: string; viewer_contact_id?: string | null; viewed_at?: string | null; topic?: string | null }): MovementBuild {
+  if (!row.viewer_contact_id) return { ok: false, code: "anonymous_first_party", reason: "an anonymous view is never a person" }
+  const kinds = opportunityKindsForTopic(row.topic)
+  if (kinds.length === 0) return { ok: false, code: "relevance_not_offered_by_source", reason: "the article is not about a home decision" }
+  const at = row.viewed_at ?? new Date().toISOString()
+  return buildMovementSignal({
+    brokerageId, subject: { type: "contact", id: row.viewer_contact_id }, sourceKey: "fp_content_engagement",
+    eventRelevance: kinds.length === 1 && kinds[0] === "move" ? "relocation" : "property_event", intents: [...new Set(kinds.map((k) => OPPORTUNITY_INTENT[k]))],
+    identity: "record_key", capturedBy: "automation", observedAt: at,
+    evidence: { confidence: "inferred", basis: [`blog_post_views:${row.id}`], method: "read the tenant's own article on a home-decision topic (the topic is the post's, never the person's)", summary: `read the tenant's article on ${kinds.join(" / ")}`, fields: kinds.map(opportunityTag) },
+  })
+}
+
+/** A signed-in homeowner opened their home dashboard (client_portal_activity portal_module_viewed, module seller_home) → C9 (verified). */
+export function movementSignalFromHomeDashboardView(brokerageId: string, row: { id: string; contact_id?: string | null; created_at?: string | null }): MovementBuild {
+  if (!row.contact_id) return { ok: false, code: "anonymous_first_party", reason: "a portal view with no person" }
+  const at = row.created_at ?? new Date().toISOString()
+  return buildMovementSignal({
+    brokerageId, subject: { type: "contact", id: row.contact_id }, sourceKey: "fp_home_dashboard_view", eventRelevance: "property_event", identity: "record_key", capturedBy: "automation", observedAt: at, side: "seller",
+    evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `client_portal_activity:${row.id}`, retrievedAt: at }, summary: "opened their home dashboard (home value, equity, market activity) in their own portal" },
+  })
+}
+
+/** "Repeated" means at least this many stated changes — a definition, not a schedule. */
+export const CRITERIA_REPEAT_MIN = 2
+
+/** A buyer's REPEATED stated criteria changes (buyer_criteria_changes, provenance 'said') → ONE C9 record (verified: their own rows). */
+export function movementSignalFromCriteriaRevisions(brokerageId: string, contactId: string, rows: ReadonlyArray<{ id: string; field?: string | null; provenance?: string | null; status?: string | null; created_at?: string | null }>): MovementBuild {
+  if (!contactId) return { ok: false, code: "anonymous_first_party", reason: "criteria changes with no buyer" }
+  const said = rows.filter((r) => r.provenance === "said" && r.status !== "rejected" && typeof r.created_at === "string")
+  if (said.length < CRITERIA_REPEAT_MIN) return { ok: false, code: "bad_evidence", reason: `${said.length} stated change(s) — one change is never a pattern (needs ${CRITERIA_REPEAT_MIN})` }
+  const at = said.map((r) => r.created_at as string).sort().pop() as string
+  const fields = [...new Set(said.map((r) => String(r.field ?? "criteria")))].sort()
+  return buildMovementSignal({
+    brokerageId, subject: { type: "contact", id: contactId }, sourceKey: "fp_criteria_revisions", eventRelevance: "property_event", intents: ["home_purchase"], side: "buyer",
+    identity: "record_key", capturedBy: "automation", observedAt: at,
+    evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `buyer_criteria_changes:${movementDigest(said.map((r) => r.id).sort().join(","))}`, retrievedAt: at }, summary: `revised their home search ${said.length} times (${fields.join(", ")})` },
   })
 }
 
@@ -643,6 +693,8 @@ export const MOVEMENT_DECISION_SYSTEM = [
   "THE DECISION YOU OWN: choose exactly one action from `allowed` — RESEARCH (corroborate with the cheapest strategy that can close the gap; free and first-party before paid), OFFER_HELP (hand to the follow-up arbiter, which picks the experience and channel under consent, do-not-contact, quiet hours and frequency — you never write the message), WAIT (hold until new evidence arrives; no timer), or HUMAN (a person handles it). Name the helper keys (from `helpers`) and research keys (from `research`) that fit.",
   "PRIVACY AND COMPLIANCE BOUNDARY: divorce, probate / a death, financial hardship and household or life-stage changes are a person's own business. They are NEVER the subject of a message, never a segment, never an audience — and (owner ruling 17) they are never simply handed to a person and forgotten either: when OFFER_HELP is allowed for such a moment, the follow-up arbiter decides how to warm engagement without mentioning the event (quiet monitoring, helpful education, appropriate outreach, or a person) — it is about them and how they feel right now. Never reason from race, colour, religion, sex, disability, familial status, national origin, marital status or age. Fair-housing copy rules apply to public marketing, not to this internal decision — but no decision may steer, exclude or target anyone by a protected trait.",
   "ESCALATION RULE: choose HUMAN when the evidence is contradictory or name-only, or when anything suggests distress, danger, a dispute or a complaint — a person with judgment, not a reflex. A sensitive topic with corroborated, confirmed evidence is not by itself a reason for HUMAN: OFFER_HELP hands it to the arbiter's empathetic branch, WAIT keeps watching quietly. When unsure between OFFER_HELP and WAIT, choose WAIT.",
+  // WAVE 149 (lane 149H, owner ruling 18): the same model reads the per-decision opportunity reading — no second model call.
+  OPPORTUNITY_COMBINATION_BRIEF,
   "OUTPUT CONTRACT — JSON only: {action: one of the allowed actions, rationale: 1-3 plain sentences a broker would accept, helper_keys: string[], research_keys: string[], evidence: string[] (contribution ids you relied on), confidence: number 0..1}.",
 ].join("\n")
 
@@ -678,7 +730,7 @@ function deterministicMovementAction(combo: MovementCombination, allowed: Moveme
 
 /** The model chooses INSIDE the closed menu; anything it cannot or may not answer falls to the policy's answer, with the reason. */
 async function decideMovementNextAction(
-  a: { brokerageId: string; subjectClass: MovementSubjectClass; combination: MovementCombination; allowed: MovementAllowed },
+  a: { brokerageId: string; subjectClass: MovementSubjectClass; combination: MovementCombination; allowed: MovementAllowed; opportunity?: OpportunityReading | null },
   deps: { decide?: MovementDecide } = {},
 ): Promise<MovementDecision> {
   const { combination: combo, allowed } = a
@@ -700,6 +752,8 @@ async function decideMovementNextAction(
         not_allowed: (MOVEMENT_NEXT_ACTIONS.filter((x) => !allowed.allowed.includes(x))).map((x) => ({ action: x, why: allowed.why[x] ?? "not permitted" })),
         helpers: allowed.helpers.map((h) => ({ key: h.key, title: h.title, offer: h.offer, never: h.never })),
         research: allowed.research.map((s) => ({ key: s.key, cost_class: s.costClass, what: s.what })),
+        // WAVE 149 (149H): the per-decision reading (kinds of evidence only — never a source name, an event or a person).
+        opportunity: a.opportunity ? { primary: a.opportunity.primary ? { kind: a.opportunity.primary.kind, stage: a.opportunity.primary.stage } : null, readings: a.opportunity.assessments.map((x) => x.reason), sensitive: a.opportunity.sensitive } : null,
       }),
     })
   } catch (e) {
@@ -775,6 +829,20 @@ const scorable = (row: MovementRow): ScorableMovement & { outreach: MovementOutr
   id: row.id, sourceKey: row.source_key, eventRelevance: row.event_relevance, confidence: row.confidence, identity: row.identity_match,
   observedAt: row.observed_at, evidence: row.evidence, protectedProxy: row.protected_proxy, outreach: row.outreach,
 })
+
+/** PURE. A stored row → the opportunity reader's observation (lib/intent/opportunity-discovery.ts). */
+const observationOf = (row: MovementRow): OpportunityObservation => ({
+  id: row.id, sourceKey: row.source_key, relevance: row.event_relevance, confidence: row.confidence, identity: row.identity_match, observedAt: row.observed_at,
+  intents: row.intents ?? null, fields: (row.evidence as { fields?: readonly string[] } | null)?.fields ?? null, lifeEvent: row.life_event ?? null, protectedProxy: row.protected_proxy,
+})
+
+/** PURE. Research already planned for these rows (their decision's research_keys at decided_at) — the reuse half of rule 7. */
+const priorResearchOf = (rows: readonly MovementRow[]): Array<{ key: string; at: string }> =>
+  rows.flatMap((r) => {
+    const d = r as MovementRow & { decision?: { research_keys?: unknown } | null; decided_at?: string | null }
+    const keys = Array.isArray(d.decision?.research_keys) ? (d.decision.research_keys as unknown[]).filter((k): k is string => typeof k === "string") : []
+    return d.decided_at ? keys.map((key) => ({ key, at: d.decided_at as string })) : []
+  })
 
 /** The ledger WHY of a movement action (the m693 vocabulary — no new code, no CHECK owed). */
 function movementReasonCode(rel: MovementRelevance | null): "SELLER_FOLLOWUP_INTENT_INCREASE" | "BUYER_PROPERTY_MATCH" | "NURTURE_TOUCH" | "NO_ACTION_NEEDED" {
@@ -987,6 +1055,7 @@ async function evaluateMovementSubject(svc: Svc, a: { brokerageId: string; subje
     if (own.length === 0) return { status: "nothing_to_decide", reason: "no open movement evidence inside the window" }
     const combination = scoreMovementCombination(ev.rows.map(scorable), { now, weights: ev.weights })
     const allowed = allowedMovementActions(combination, ev.rows.map(scorable), { subjectClass: cls.cls })
+    const opportunity = readOpportunities(ev.rows.map(observationOf), { now })
     const ids = own.map((r) => r.id).sort()
     const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
     const manager = cls.cls === "lifetime" ? "sphere_of_influence" : cls.cls === "lead" || cls.cls === "contact" ? "ai_isa" : "data_steward"
@@ -997,10 +1066,10 @@ async function evaluateMovementSubject(svc: Svc, a: { brokerageId: string; subje
         brokerageId: a.brokerageId, action: "intent.movement_signal.decide", actor: { type: "manager", managerKey: manager }, subject: subjectRef,
         idempotencyKey: `movement_decide:${a.brokerageId}:${subjectKey(a.subject)}:${movementDigest(ids.join(","))}`, reasonCode: movementReasonCode(combination.dominantRelevance),
         reasonDetail: combination.explanation.slice(0, 500), systemSource: "movement_signals", policyKey: "followup_policy",
-        detail: { score: combination.score, band: combination.band, dominant: combination.dominantRelevance, kinds: combination.independentKinds, caps: combination.caps, allowed: allowed.allowed, why: allowed.why, evidence_ids: ids, blind_spots: ev.blind },
+        detail: { score: combination.score, band: combination.band, dominant: combination.dominantRelevance, kinds: combination.independentKinds, caps: combination.caps, allowed: allowed.allowed, why: allowed.why, evidence_ids: ids, blind_spots: ev.blind, opportunity: opportunity.primary ? { kind: opportunity.primary.kind, stage: opportunity.primary.stage } : null },
       },
       async () => {
-        const decision = await decideMovementNextAction({ brokerageId: a.brokerageId, subjectClass: cls.cls, combination, allowed }, { decide: deps.decide })
+        const decision = await decideMovementNextAction({ brokerageId: a.brokerageId, subjectClass: cls.cls, combination, allowed, opportunity }, { decide: deps.decide })
         const routed = await actOnMovementDecision(svc, { brokerageId: a.brokerageId, cls, combination, decision, rows: own, now }, deps)
         const { data: upd, error: uErr } = await svc.from("movement_signals")
           .update({ next_action: decision.action, decided_by: manager, decided_at: now.toISOString(), updated_at: now.toISOString(), decision: { source: decision.source, rationale: decision.rationale, helper_keys: decision.helperKeys, research_keys: decision.researchKeys, evidence: decision.evidence, confidence: decision.confidence, fallback_reason: decision.fallbackReason, score: combination.score, band: combination.band, explanation: combination.explanation.slice(0, 2000), routed } })
@@ -1156,7 +1225,13 @@ export async function reconcileMovementOutcomes(svc: Svc, brokerageId: string, d
 
 // ── THE ARBITER'S HOOK — lib/ai-isa/followup-arbiter.ts loadLifeChangeSignals calls this (one-line wiring, lane 147G) ───────────
 
-export interface ArbiterMovementContext { signals: LifeChangeSignal[]; helpers: NeighbourlyHelper[]; explanation: string | null; blindSpot: string | null }
+/**
+ * WAVE 149 (lane 149H, owner ruling 18): THE SIGNAL MENU the arbiter consumes — the per-decision opportunity reading and the closed
+ * menu over the five engagement modes (quiet_monitoring / research / helpful_education / appropriate_outreach / human), each with
+ * its status and why. Lane 149C owns how the arbiter times what it picks; this is the input shape.
+ */
+export interface ArbiterOpportunityContext { reading: OpportunityReading; menu: OpportunityMenu }
+export interface ArbiterMovementContext { signals: LifeChangeSignal[]; helpers: NeighbourlyHelper[]; explanation: string | null; blindSpot: string | null; opportunity?: ArbiterOpportunityContext | null }
 
 /**
  * The movement evidence for ONE contact, combined, in the arbiter's own shape: at most one LifeChangeSignal for the dominant
@@ -1167,8 +1242,11 @@ export interface ArbiterMovementContext { signals: LifeChangeSignal[]; helpers: 
  * seam contract + C9): the dominant relevance becomes a LifeChangeSignal only when at least one VERIFIED or REPORTED record
  * carries it — an inferred-only combination is evidence for research, never a life change the follow-up acts on.
  */
-export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: string; contactId: string; now: Date; windowDays?: number; sinceIso?: string }): Promise<ArbiterMovementContext> {
-  const empty = (blindSpot: string | null): ArbiterMovementContext => ({ signals: [], helpers: [], explanation: null, blindSpot })
+export async function movementSignalsForArbiter(
+  svc: Svc,
+  a: { brokerageId: string; contactId: string; now: Date; windowDays?: number; sinceIso?: string; autonomy?: "autonomous" | "supervised" | "unknown"; paidResearchAffordable?: boolean | null },
+): Promise<ArbiterMovementContext> {
+  const empty = (blindSpot: string | null): ArbiterMovementContext => ({ signals: [], helpers: [], explanation: null, blindSpot, opportunity: null })
   try {
     if (!a.brokerageId || !a.contactId) return empty("movement: no tenant or contact")
     const sinceMs = a.sinceIso ? Date.parse(a.sinceIso) : typeof a.windowDays === "number" ? a.now.getTime() - a.windowDays * DAY_MS : NaN
@@ -1186,7 +1264,19 @@ export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: stri
     const decisive = ev.rows.filter((r) => r.event_relevance === dom)
     // The epistemic gate: an inference (alone) never reads as a life change — the arbiter acts only on what a record verifies or reports.
     const grounded = decisive.filter((r) => r.confidence === "verified" || r.confidence === "reported")
-    const t = dom && combo.band !== "none" && grounded.length > 0 ? lifeChangeTypeFor({ relevance: dom, side: grounded[0]?.side, intents: grounded[0]?.intents as IntentKind[], verified: grounded.some((r) => r.confidence === "verified") }) : null
+    // WAVE 149 (149H, ruling 18): A SINGLE OBSERVATION NEVER RAISES INTENT. The life change reaches the arbiter only when the
+    // per-decision reading is at least `emerging` (two independent sources, one grounded) or the person said so (`stated`);
+    // otherwise the menu below is quiet monitoring / research and the blind spot says why.
+    const reading = readOpportunities(ev.rows.map(observationOf), { now: a.now })
+    const raised = !!reading.primary && stageAtLeast(reading.primary.stage, "emerging")
+    const primaryIds = new Set(reading.primary?.evidenceIds ?? [])
+    const menu = opportunityMenu(reading, {
+      personIdentified: true,
+      outreachPermitted: ev.rows.some((r) => primaryIds.has(r.id) && r.outreach !== "none" && r.outreach !== "address_correction_only"),
+      autonomy: a.autonomy ?? "unknown", paidResearchAffordable: a.paidResearchAffordable ?? null,
+      priorResearch: priorResearchOf(ev.rows),
+    })
+    const t = raised && dom && combo.band !== "none" && grounded.length > 0 ? lifeChangeTypeFor({ relevance: dom, side: grounded[0]?.side, intents: grounded[0]?.intents as IntentKind[], verified: grounded.some((r) => r.confidence === "verified") }) : null
     const newest = grounded.reduce((m, r) => Math.max(m, Date.parse(r.observed_at) || 0), 0)
     // WAVE 148 (148F, ruling 17): the signal says HOW GOOD its evidence is — the arbiter's life-event branch offers automated, event-
     // agnostic help only on grounded evidence with a confirmed identity (never a name-only match), and names the canonical event so
@@ -1194,8 +1284,12 @@ export async function movementSignalsForArbiter(svc: Svc, a: { brokerageId: stri
     const identityConfirmed = grounded.some((r) => r.identity_match === "record_key" || r.identity_match === "verified_match")
     const lifeEvent = grounded.map((r) => canonicalLifeEventType(r.life_event ?? null)).find((x): x is LifeEventType => !!x) ?? null
     const signals: LifeChangeSignal[] = t ? [{ type: t.responderType, kind: t.kind, strength: combo.score, daysAgo: newest ? Math.max(0, Math.floor((a.now.getTime() - newest) / DAY_MS)) : 0, evidence: { grounded: true, identityConfirmed, lifeEvent, source: "movement_signals" } }] : []
-    const blind = [...ev.blind, ...(dom && combo.band !== "none" && grounded.length === 0 ? [`the ${dom.replace(/_/g, " ")} evidence is inferred only — research, not a life change`] : [])]
-    return { signals, helpers: signals.length > 0 ? allowed.helpers : [], explanation: combo.explanation, blindSpot: blind.length ? `movement: ${blind.join("; ")}` : null }
+    const blind = [
+      ...ev.blind,
+      ...(dom && combo.band !== "none" && grounded.length === 0 ? [`the ${dom.replace(/_/g, " ")} evidence is inferred only — research, not a life change`] : []),
+      ...(!raised && reading.primary && grounded.length > 0 ? [`the reading is only "${reading.primary.stage.replace(/_/g, " ")}" — a single observation never raises intent (quiet monitoring / research)`] : []),
+    ]
+    return { signals, helpers: signals.length > 0 ? allowed.helpers : [], explanation: combo.explanation, blindSpot: blind.length ? `movement: ${blind.join("; ")}` : null, opportunity: { reading, menu } }
   } catch (e) {
     return empty(`movement: ${(e as Error)?.message ?? String(e)}`)
   }
