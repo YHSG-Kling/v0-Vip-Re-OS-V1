@@ -214,22 +214,38 @@ export async function draftLeadMagnetWithAiAction(input: { concept: string; magn
  * follow-up policy, attribution, learning. A DRAFT: publishLeadMagnetAction (C5) runs the C21 publish gate. Tenant, agent and
  * creator come from the SESSION only (CLAUDE.md §4).
  */
-export async function createMagnetFunnelAction(input: { audience: string; benefit: string; outcome: string; area?: string | null; territory?: { zip?: string | null; city?: string | null; state?: string | null } | null; preferred_deliverables?: string[] | null; webinar_at?: string | null; webinar_join_url?: string | null; sequence_id?: string | null }) {
+/**
+ * C30 — THE CREATE BUTTON (owner ruling 9): the AI asks the questions it needs, then builds the WHOLE package — the magnet
+ * first, the landing page on the tenant's own website with the situation's qualifying questions, then the funnel + QR. Call
+ * it with the answers so far: `needsAnswers` returns the next questions (nothing is written); a complete set builds a DRAFT
+ * (a person publishes it). Session-gated: tenant, agent and creator come from getAgentContext — never from the input (§4).
+ *
+ * EXTENDED, NOT REPLACED (LAW 1 — wave 149, lane 149D): this is the wave-148 "Build the funnel" door (C21), grown into the C30
+ * package door — the same ordered build (createMagnetFunnel, now magnet → page → funnel) reached through createLeadMagnetPackage,
+ * which first decides the MAGNET and asks what it needs. The wave-148 brief (audience / benefit / outcome) is still accepted:
+ * the audience becomes the persona description and the benefit the agent's own topic, so an old caller is asked only what is
+ * missing (never a second door).
+ */
+export async function createMagnetFunnelAction(input: { persona?: string | null; persona_description?: string | null; side?: string | null; area?: string | null; topic_key?: string | null; topic?: string | null; deliverable?: string | null; audience?: string | null; benefit?: string | null; outcome?: string | null } = {}) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.agentId || !ctx.userId) return { success: false as const, error: "Not authenticated" }
-    const { createMagnetFunnel, FUNNEL_DELIVERABLE_KINDS } = await import("@/lib/lead-magnets/magnet-funnel")
-    const preferred = (input.preferred_deliverables ?? []).filter((k): k is (typeof FUNNEL_DELIVERABLE_KINDS)[number] => (FUNNEL_DELIVERABLE_KINDS as readonly string[]).includes(k))
-    const r = await createMagnetFunnel({
-      brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId,
-      audience: input.audience, benefit: input.benefit, outcome: input.outcome, area: input.area ?? null, territory: input.territory ?? null,
-      preferredDeliverables: preferred, schedule: { webinar_at: input.webinar_at ?? null, webinar_join_url: input.webinar_join_url ?? null }, sequenceId: input.sequence_id ?? null,
+    const s = (v: unknown, max = 200) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null)
+    const side = input.side === "buyer" || input.side === "seller" || input.side === "both" ? input.side : null
+    const { createLeadMagnetPackage } = await import("@/lib/lead-magnets/lead-magnet-package")
+    const r = await createLeadMagnetPackage({
+      brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId, origin: "create_button",
+      answers: {
+        persona: s(input.persona, 60) ?? (s(input.audience) ? "other" : null), persona_description: s(input.persona_description) ?? s(input.audience), side,
+        area: s(input.area, 120), topic_key: s(input.topic_key, 160) ?? (s(input.benefit) ? "own" : null), topic: s(input.topic) ?? s(input.benefit), deliverable: s(input.deliverable, 30),
+      },
       baseUrl: process.env.NEXT_PUBLIC_APP_URL ?? null, actor: { userType: ctx.role ?? null },
     })
+    if (!r.ok && (r.stage === "questions" || r.stage === "magnet")) return { success: false as const, needsAnswers: true as const, questions: r.questions ?? [], error: r.error }
     if (!r.ok) return { success: false as const, error: r.error, stage: r.stage }
-    return { success: true as const, funnel: r.package }
+    return { success: true as const, package: r.package }
   } catch (err: any) {
-    return { success: false as const, error: err?.message ?? "Failed to build the funnel" }
+    return { success: false as const, error: err?.message ?? "Failed to build the lead-magnet package" }
   }
 }
 

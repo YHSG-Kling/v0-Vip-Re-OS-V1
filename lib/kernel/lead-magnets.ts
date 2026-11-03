@@ -394,6 +394,20 @@ export function defaultFieldsForType(
   return base
 }
 
+/**
+ * Wave 149 (lane 149D, m942): the creating USER for lead_capture_forms.created_by_user_id. `createdBy` is meant to be a users.id
+ * in this tenant; a caller that hands an agents.id is crossed via agents.user_id (§3 — the two are disjoint, and a raw agents.id
+ * in a users FK would refuse the whole insert). Unresolvable / a refused read → null (said), never a guess.
+ */
+async function resolveCreatorUserId(supabase: Svc, brokerageId: string, createdBy: string): Promise<string | null> {
+  const { data: u, error: uErr } = await supabase.from("users").select("id").eq("id", createdBy).eq("brokerage_id", brokerageId).maybeSingle()
+  if (uErr) { console.warn("[createLeadMagnet] creator users read refused — created_by_user_id left null:", uErr.message); return null }
+  if (u?.id) return u.id as string
+  const { data: a, error: aErr } = await supabase.from("agents").select("user_id").eq("id", createdBy).eq("brokerage_id", brokerageId).maybeSingle()
+  if (aErr) { console.warn("[createLeadMagnet] creator agents read refused — created_by_user_id left null:", aErr.message); return null }
+  return (a?.user_id as string | null | undefined) ?? null
+}
+
 // ============================================================================
 // KERNEL COMMAND 1: createLeadMagnet
 // ============================================================================
@@ -420,6 +434,7 @@ export async function createLeadMagnet(
   const lifecycle: LeadMagnetLifecycle = { state: liveAtInsert ? "published" : "draft", created_at: nowIso, published_at: liveAtInsert ? nowIso : null, approved_by: liveAtInsert ? input.createdBy : null }
   const settings: Record<string, unknown> = { ...(input.settings ?? {}), lifecycle }
   const authoredBy = (settings.authoring as { by?: string } | undefined)?.by === "ai" ? "ai" : "human"
+  const creatorUserId = await resolveCreatorUserId(supabase, input.brokerageId, input.createdBy)
 
   // 1. Create the lead_capture_form
   const { data: form, error: formError } = await supabase
@@ -430,6 +445,10 @@ export async function createLeadMagnet(
       fields,
       brokerage_id: input.brokerageId,
       agent_id: input.agentId,
+      // Wave 149 (lane 149D, owner ruling 10 — m942): the USER who created the magnet (users.id; agents.id is disjoint, §3).
+      // A solo agent, a team or a brokerage — the creator owns what they create; assignment follows agent_id. Resolved, never
+      // trusted raw: a caller that passes an agents.id (launch-war-room does) is crossed via agents.user_id, so the FK holds.
+      created_by_user_id: creatorUserId,
       tcpa_disclosure_text: input.tcpaDisclosureText ?? "By submitting this form, you consent to receive communications from us. You may opt out at any time.",
       thank_you_message: input.thankYouMessage ?? "Thank you! We'll be in touch shortly.",
       redirect_url: input.redirectUrl ?? null,

@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createLeadMagnetAction, publishLeadMagnetAction, draftLeadMagnetWithAiAction, startBookProjectAction, createMagnetFunnelAction } from "@/app/actions/lead-magnets-actions"
+import { createLeadMagnetAction, publishLeadMagnetAction, draftLeadMagnetWithAiAction, startBookProjectAction } from "@/app/actions/lead-magnets-actions"
+import { LeadMagnetPackageCreate } from "./LeadMagnetPackageCreate"
 import { generateLeadMagnetCopyAction } from "@/app/actions/marketing/lead-magnet-copy"
 import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
 import type { LandingContent } from "@/lib/marketing/lead-magnet-copy"
@@ -96,12 +97,6 @@ export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcep
   const [concept, setConcept] = useState(initialConcept ?? "")
   const [isDrafting, setIsDrafting] = useState(false)
   const [draftNote, setDraftNote] = useState<string | null>(null)
-  // Wave 148 (C21): the funnel brief — audience, benefit, outcome.
-  const [funnelAudience, setFunnelAudience] = useState("")
-  const [funnelBenefit, setFunnelBenefit] = useState("")
-  const [funnelOutcome, setFunnelOutcome] = useState("")
-  const [isBuildingFunnel, setIsBuildingFunnel] = useState(false)
-  const [funnelNote, setFunnelNote] = useState<string | null>(null)
   // Wave 142: WHO FILLS a custom form (merged from the retired admin Forms Manager) — "" = unspecified.
   const [defaultContactType, setDefaultContactType] = useState("")
   // Wave 142: THE BOOK — a whole AI-written, fact-checked, fair-housing-reviewed book as the deliverable.
@@ -152,27 +147,9 @@ export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcep
     })()
   }
 
-  function handleBuildFunnel() {
-    setError(null)
-    setFunnelNote(null)
-    if ([funnelAudience, funnelBenefit, funnelOutcome].some((v) => v.trim().length < 3)) { setError("Describe the audience, the benefit and the outcome first."); return }
-    setIsBuildingFunnel(true)
-    ;(async () => {
-      try {
-        const res = await createMagnetFunnelAction({ audience: funnelAudience.trim(), benefit: funnelBenefit.trim(), outcome: funnelOutcome.trim(), area: area.trim() || null })
-        if (!res.success) { setError(res.error ?? "The funnel was not built"); return }
-        const f = res.funnel
-        const promised = f.deliverables.filter((d) => d.promised).map((d) => d.title)
-        const later = f.deliverables.filter((d) => !d.promised).map((d) => `${d.title} (${d.status})`)
-        setFunnelNote(`Funnel drafted — the page promises: ${promised.join(", ")}.${later.length ? ` Not promised yet: ${later.join(", ")}.` : ""} Review and publish it.`)
-        onDrafted?.(f.landing_page.form_id, f.landing_page.slug)
-      } catch (err: any) {
-        setError(err?.message ?? "The funnel was not built")
-      } finally {
-        setIsBuildingFunnel(false)
-      }
-    })()
-  }
+  // TOMBSTONE (wave 149, lane 149D — C30): handleBuildFunnel and its audience / benefit / outcome state moved into
+  // ./LeadMagnetPackageCreate.tsx (the Create door asks the situation questions, then builds magnet → page → funnel).
+
 
   function handleGenerateCopy() {
     setError(null)
@@ -389,22 +366,9 @@ export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcep
           </div>
           {draftNote && <p className="text-xs text-green-700">{draftNote}</p>}
 
-          {/* Wave 148 (lane 148G — owner ruling 11, contract C21): a COMPLETE FUNNEL, not a book — landing page in your site, the
-              form, deliverables of any kind (staged allowed, promised only when ready or truthfully arranged), thank-you, follow-up. */}
-          <div className="space-y-2 pt-2 border-t">
-            <p className="text-xs font-medium flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary" /> Or build the whole funnel</p>
-            <p className="text-[11px] text-muted-foreground">Say who it is for, what they get and the outcome they want. The AI designs the page, the form, the deliverables (a checklist, a short video, a mini-course, a consultation…) and the thank-you — as a draft you approve.</p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <Input aria-label="Funnel audience" value={funnelAudience} onChange={(e) => setFunnelAudience(e.target.value)} placeholder="Audience — e.g. renters ready to buy" />
-              <Input aria-label="Funnel benefit" value={funnelBenefit} onChange={(e) => setFunnelBenefit(e.target.value)} placeholder="Benefit — what they get" />
-              <Input aria-label="Funnel outcome" value={funnelOutcome} onChange={(e) => setFunnelOutcome(e.target.value)} placeholder="Outcome — what they want" />
-            </div>
-            <Button type="button" variant="outline" size="sm" onClick={handleBuildFunnel} disabled={isBuildingFunnel || isDrafting || isGenerating || isStartingBook}>
-              {isBuildingFunnel ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
-              Build the funnel
-            </Button>
-            {funnelNote && <p className="text-xs text-muted-foreground" role="status">{funnelNote}</p>}
-          </div>
+          {/* Wave 149 (lane 149D — owner ruling 9, contract C30): the COMPLETE PACKAGE in the owner's order — the magnet first,
+              then the landing page on your site with the situation's questions, then the funnel + QR. The AI asks first. */}
+          <LeadMagnetPackageCreate onBuilt={(formId, slug) => onDrafted?.(formId, slug)} />
 
           {/* Wave 142: a WHOLE BOOK as the deliverable — researched, outlined, written, fact-checked, edited, laid out as a PDF you review. */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t">

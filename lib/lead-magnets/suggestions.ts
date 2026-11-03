@@ -260,6 +260,8 @@ interface SuggestionRunResult {
   /** Wave 142: how many signals each intelligence source yielded (0 is honest — a source that could not be read says so in `sourceNotes`). */
   sources?: Record<TopicSignal["source"], number>
   sourceNotes?: string[]
+  /** Wave 149 (C30): what the arbiter decided for each new opportunity it was handed (built form id / wait / ask the agent). */
+  arbitrated?: Array<{ key: string; action: string; reason: string | null }>
   error?: string
 }
 
@@ -269,8 +271,9 @@ export interface SuggestionReaders {
   topicBank?: (svc: Svc, brokerageId: string) => Promise<Array<{ id: string; topic_title: string; value_angle: string | null; categories: string[]; engagement_score: number; is_brokerage_local: boolean }>>
 }
 
-/** Read the three intelligence sources for a tenant (all pinned to brokerageId). Never throws. */
-async function readTopicSignals(svc: Svc, brokerageId: string, now: Date, readers: SuggestionReaders): Promise<{ signals: TopicSignal[]; counts: Record<TopicSignal["source"], number>; notes: string[] }> {
+/** Read the three intelligence sources for a tenant (all pinned to brokerageId). Never throws.
+ *  Wave 149 (149D, C30): exported — the lead-magnet PACKAGE chooses its magnet topic from the same signals (one reader). */
+export async function readTopicSignals(svc: Svc, brokerageId: string, now: Date, readers: SuggestionReaders): Promise<{ signals: TopicSignal[]; counts: Record<TopicSignal["source"], number>; notes: string[] }> {
   const signals: TopicSignal[] = []
   const notes: string[] = []
   const counts: Record<TopicSignal["source"], number> = { topic_bank: 0, competitor_intel: 0, keyword: 0, ai_search_gap: 0 }
@@ -344,7 +347,12 @@ async function readTopicSignals(svc: Svc, brokerageId: string, now: Date, reader
 export async function runLeadMagnetSuggestions(
   svc: Svc,
   brokerageId: string,
-  opts: { now?: Date; publish?: boolean; readers?: SuggestionReaders } = {},
+  opts: {
+    now?: Date; publish?: boolean; readers?: SuggestionReaders
+    /** Wave 149 (149D, C30 / ruling 9): hand up to `max` NEW opportunities to the arbiter, which decides whether a package is
+     *  needed now (build a DRAFT · wait · ask the agent). Opt-in: the per-tenant cron passes it; the on-demand idea list does not. */
+    arbitrate?: { max: number; deps?: import("./lead-magnet-package").OpportunityDeps }
+  } = {},
 ): Promise<SuggestionRunResult> {
   if (!brokerageId) return { ok: false, suggestions: [], published: 0, deduped: 0, error: "no brokerage" }
   const now = opts.now ?? new Date()
@@ -405,6 +413,7 @@ export async function runLeadMagnetSuggestions(
 
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     let published = 0, deduped = 0
+    const fresh: LeadMagnetSuggestion[] = []
     for (const s of suggestions) {
       if (openKeys.has(s.key)) { deduped++; continue }
       const r = await publishManagerSignal({
@@ -414,10 +423,20 @@ export async function runLeadMagnetSuggestions(
         payload: { key: s.key, kind: s.kind, magnetType: s.magnetType, concept: s.concept, why: s.why, evidence: s.evidence, magnetId: s.magnetId },
         dedupe: false,
       }, svc as any)
-      if (r.ok) published++
+      if (r.ok) { published++; fresh.push(s) }
       else console.warn(`[lead-magnet-suggestions] signal not published (${s.key}): ${r.reason}`)
     }
-    return { ok: true, suggestions, published, deduped, sources: intel.counts, sourceNotes: intel.notes }
+    // OPPORTUNITY DISCOVERY FEEDS THE ARBITER (C30): what, for whom, why — with the evidence. Ideas about an existing magnet
+    // (underperformer / test) are refreshes, not new packages; they stay on the feed for a person.
+    const arbitrated: Array<{ key: string; action: string; reason: string | null }> = []
+    if (opts.arbitrate && opts.arbitrate.max > 0) {
+      const { arbitrateLeadMagnetOpportunity, opportunityFromSuggestion } = await import("./lead-magnet-package")
+      for (const s of fresh.filter((x) => !x.magnetId).slice(0, opts.arbitrate.max)) {
+        const o = await arbitrateLeadMagnetOpportunity(svc as never, { brokerageId, opportunity: opportunityFromSuggestion(s, territories[0] ?? null) }, { now, ...(opts.arbitrate.deps ?? {}) })
+        arbitrated.push({ key: s.key, action: o.action, reason: o.action === "built" ? o.package.form_id : o.reason })
+      }
+    }
+    return { ok: true, suggestions, published, deduped, sources: intel.counts, sourceNotes: intel.notes, arbitrated }
   } catch (e) {
     return { ok: false, suggestions: [], published: 0, deduped: 0, error: (e as Error)?.message ?? String(e) }
   }

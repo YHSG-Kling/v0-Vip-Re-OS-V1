@@ -120,6 +120,8 @@ export interface DeliverableDeps {
   produceVideo?: (svc: Db, a: DeliverableProductionInput & { agentUserId: string | null }) => Promise<ProducedDeliverable>
   /** The funnel producers' own seams for the DEFAULT checklist / video path. */
   funnel?: FunnelDeps
+  /** C30 (wave 149): the primary asset produced FIRST by produceMagnetAssetFirst — recorded instead of re-produced (same kind only). */
+  preProduced?: { kind: PromiseAssetKind; produced: ProducedDeliverable } | null
 }
 
 type DeliverableResult =
@@ -152,7 +154,7 @@ const defaultProduceGuide: NonNullable<DeliverableDeps["produceGuide"]> = async 
   const area = ((a.settings ?? {}) as { area?: unknown }).area
   const prepared = await prepareMagnetDelivery({
     brokerageId: a.brokerageId, contactId: null, agentUserId: a.agentUserId,
-    magnetType: a.magnetType as Parameters<typeof prepareMagnetDelivery>[0]["magnetType"], magnetId: a.formId, book,
+    magnetType: a.magnetType as Parameters<typeof prepareMagnetDelivery>[0]["magnetType"], magnetId: a.formId || null, book,
     ctx: { area: typeof area === "string" ? area : null },
   }, svc as never)
   const url = httpsUrl(prepared.pdfUrl)
@@ -232,6 +234,47 @@ export function deliverableAsPreparedAsset(d: DeliverableRow | null): PreparedAs
 
 // ── PRODUCE ──────────────────────────────────────────────────────────────────
 
+/** The ONE producer dispatch per deliverable kind (C11). Used by produceLeadMagnetDeliverable and, for the C30 package, BEFORE
+ *  the page exists (produceMagnetAssetFirst). Never throws. */
+async function runDeliverableProducer(svc: Db, spec: DeliverableSpec, input: DeliverableProductionInput, deps: DeliverableDeps): Promise<ProducedDeliverable> {
+  const owner = await agentUserIdOf(svc, input.brokerageId, input.agentId)
+  if (owner.error) return { status: "failed", reason: owner.error }
+  if (spec.kind === "valuation") {
+    return owner.userId
+      ? { status: "ready", title: "Your precise home value (agent-prepared CMA)", validation: { ok: true, checks: ["human_fulfilment_assigned"], fulfilled_by_user_id: owner.userId }, payload: { fulfilment: "an agent prepares each value from that person's address (C4 awaiting_human)" } }
+      : { status: "failed", reason: "an agent-prepared value needs an assigned agent with a user seat — none on this magnet" }
+  }
+  if (spec.kind === "report") {
+    return (deps.produceReport ? deps.produceReport(svc, { ...input, agentUserId: owner.userId }) : defaultProduceReport(svc, { ...input, agentUserId: owner.userId }, deps.report))
+      .catch((e: unknown) => ({ status: "failed" as const, reason: `the report producer threw: ${e instanceof Error ? e.message : String(e)}` }))
+  }
+  if (spec.kind === "checklist" || spec.kind === "video") {
+    const produce = spec.kind === "checklist" ? (deps.produceChecklist ?? defaultProduceFunnelKind("checklist", deps.funnel)) : (deps.produceVideo ?? defaultProduceFunnelKind("video", deps.funnel))
+    return produce(svc, { ...input, agentUserId: owner.userId })
+      .catch((e: unknown) => ({ status: "failed" as const, reason: `the ${spec.kind} producer threw: ${e instanceof Error ? e.message : String(e)}` }))
+  }
+  return (deps.produceGuide ?? defaultProduceGuide)(svc, { ...input, agentUserId: owner.userId, kind: spec.kind === "book" ? "book" : "guide" })
+    .catch((e: unknown) => ({ status: "failed" as const, reason: `the guide producer threw: ${e instanceof Error ? e.message : String(e)}` }))
+}
+
+/**
+ * C30 (wave 149, lane 149D — owner ruling 9: "the package WRITES THE LEAD MAGNET FIRST … THEN creates the landing page … THEN
+ * the funnel"). Produce the magnet's PRIMARY asset before any lead_capture_forms row exists, through the same dispatch C11
+ * uses. The result is handed to createLeadMagnet as `deps.preProduced`, so the C11 record is still written WITH the form
+ * (one unit — m898's trigger, the publish gate and every reader are unchanged) but the asset itself came first. A book is
+ * never pre-produced (it is the separate publishing capability and needs its distributed project). Never throws.
+ */
+export async function produceMagnetAssetFirst(svc: Db, input: Omit<DeliverableProductionInput, "formId">, deps: DeliverableDeps = {}): Promise<{ kind: PromiseAssetKind; produced: ProducedDeliverable } | null> {
+  const spec = deliverableSpecFor(input.magnetType, input.settings)
+  if (!spec || spec.kind === "book") return null
+  try {
+    const produced = await runDeliverableProducer(svc, spec, { ...input, formId: "" }, deps)
+    return { kind: spec.kind, produced }
+  } catch (e) {
+    return { kind: spec.kind, produced: { status: "failed", reason: `produceMagnetAssetFirst threw: ${e instanceof Error ? e.message : String(e)}` } }
+  }
+}
+
 /**
  * Produce a magnet's deliverable NOW: record a `producing` row (a new version), run the kind's producer, and settle it to
  * ready / staged / failed. A previously ready version is superseded only when the new one is ready (one ready per magnet —
@@ -254,25 +297,12 @@ export async function produceLeadMagnetDeliverable(svc: Db, input: DeliverablePr
     if (ins.error || !ins.data) return { ok: false, required: true, recorded: false, error: `the deliverable record was not written: ${ins.error?.message ?? "no row returned"}` }
     const row = ins.data as DeliverableRow
 
-    // PRODUCE.
-    const owner = await agentUserIdOf(svc, input.brokerageId, input.agentId)
+    // PRODUCE — or, for a C30 package, RECORD the asset that was already produced FIRST (owner ruling 9: the magnet before the
+    // page). The pre-produced asset came from THIS module's own producer dispatch (produceMagnetAssetFirst), so it is the
+    // same asset C11 would have made; it is settled through the same validation below.
     let out: ProducedDeliverable
-    if (owner.error) out = { status: "failed", reason: owner.error }
-    else if (spec.kind === "valuation") {
-      out = owner.userId
-        ? { status: "ready", title: "Your precise home value (agent-prepared CMA)", validation: { ok: true, checks: ["human_fulfilment_assigned"], fulfilled_by_user_id: owner.userId }, payload: { fulfilment: "an agent prepares each value from that person's address (C4 awaiting_human)" } }
-        : { status: "failed", reason: "an agent-prepared value needs an assigned agent with a user seat — none on this magnet" }
-    } else if (spec.kind === "report") {
-      out = await (deps.produceReport ? deps.produceReport(svc, { ...input, agentUserId: owner.userId }) : defaultProduceReport(svc, { ...input, agentUserId: owner.userId }, deps.report))
-        .catch((e: unknown) => ({ status: "failed" as const, reason: `the report producer threw: ${e instanceof Error ? e.message : String(e)}` }))
-    } else if (spec.kind === "checklist" || spec.kind === "video") {
-      const produce = spec.kind === "checklist" ? (deps.produceChecklist ?? defaultProduceFunnelKind("checklist", deps.funnel)) : (deps.produceVideo ?? defaultProduceFunnelKind("video", deps.funnel))
-      out = await produce(svc, { ...input, agentUserId: owner.userId })
-        .catch((e: unknown) => ({ status: "failed" as const, reason: `the ${spec.kind} producer threw: ${e instanceof Error ? e.message : String(e)}` }))
-    } else {
-      out = await (deps.produceGuide ?? defaultProduceGuide)(svc, { ...input, agentUserId: owner.userId, kind: spec.kind === "book" ? "book" : "guide" })
-        .catch((e: unknown) => ({ status: "failed" as const, reason: `the guide producer threw: ${e instanceof Error ? e.message : String(e)}` }))
-    }
+    if (deps.preProduced && deps.preProduced.kind === spec.kind) out = deps.preProduced.produced
+    else out = await runDeliverableProducer(svc, spec, input, deps)
     // A READY asset must be hosted (human fulfilment excepted) and validated — m898's shape CHECK says the same.
     if (out.status === "ready" && spec.fulfilment === "asset" && (!httpsUrl(out.assetUrl) || !out.coverNote)) out = { status: "failed", reason: "the producer reported ready without a hosted asset and its cover note" }
 

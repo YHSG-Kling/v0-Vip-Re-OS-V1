@@ -99,7 +99,9 @@ export async function GET(req: NextRequest) {
         // lead_magnet_suggestion signal, deduped per idea key (lib/lead-magnets/suggestions.ts). Rides this
         // cron rather than a new one; a tenant with no landing-copy page is reached on demand from the page.
         const { runLeadMagnetSuggestions } = await import("@/lib/lead-magnets/suggestions")
-        const ideas = await runLeadMagnetSuggestions(supabase, brokerageId, {})
+        // Wave 149 (149D, C30 / ruling 9): ONE new opportunity per tenant per sweep goes to the arbiter, which decides whether
+        // a package is needed now (a DRAFT a person publishes · wait · ask the agent) — no fixed cadence, no auto-publish.
+        const ideas = await runLeadMagnetSuggestions(supabase, brokerageId, { arbitrate: { max: 1, deps: { baseUrl: process.env.NEXT_PUBLIC_APP_URL ?? null } } })
         signals += ideas.published
         // 4 — THE BOOK SAFETY NET (wave 142, lane 142E): an AI-written lead-magnet book is driven by the review
         // surface's auto-continue (app/components/features/lead-magnets/BookProjectPanel.tsx); a project that sat

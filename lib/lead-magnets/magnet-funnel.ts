@@ -109,8 +109,12 @@ export interface FunnelFormField extends LeadMagnetField {
   purpose: "identity" | "situation" | "qualifier"
 }
 
-/** The situation questions the planner may choose from (it cannot invent a field name). */
-export const SITUATION_KEYS = ["timeline", "move_side", "current_home", "area_of_interest", "property_address", "biggest_question"] as const
+/** The situation questions the planner may choose from (it cannot invent a field name).
+ *  TOMBSTONE (wave 149, lane 149D — owner ruling 16): `biggest_question` ("What is the one question you most want answered?",
+ *  a REQUIRED open textarea on every funnel form) is GONE — a generic open question is exactly what ruling 16 forbids. Its job
+ *  (what this person needs) is done by the situation's own questions: THE QUALIFYING QUESTIONS section below
+ *  situationQuestionsFor (per persona / side, selects only), merged in composeFunnelPlan below. */
+export const SITUATION_KEYS = ["timeline", "move_side", "current_home", "area_of_interest", "property_address"] as const
 type SituationKey = (typeof SITUATION_KEYS)[number]
 const SITUATION_FIELDS: Readonly<Record<SituationKey, FunnelFormField>> = Object.freeze({
   timeline: { name: "timeline", label: "When are you hoping to make a move?", type: "select", required: false, purpose: "situation", options: FUNNEL_TIMELINE_OPTIONS.map((o) => o.label), maps_to: { column: "contacts.timeline", values: Object.fromEntries(FUNNEL_TIMELINE_OPTIONS.map((o) => [o.label, o.value])) } },
@@ -118,13 +122,150 @@ const SITUATION_FIELDS: Readonly<Record<SituationKey, FunnelFormField>> = Object
   current_home: { name: "current_home", label: "Do you currently own or rent?", type: "select", required: false, purpose: "situation", options: ["Own", "Rent", "Something else"] },
   area_of_interest: { name: "area_of_interest", label: "Which area are you most interested in?", type: "text", required: false, purpose: "situation" },
   property_address: { name: "property_address", label: "Your property address (if you own)", type: "text", required: false, purpose: "situation" },
-  biggest_question: { name: "biggest_question", label: "What is the one question you most want answered?", type: "textarea", required: false, purpose: "situation" },
 })
-/** Every funnel form carries these situation facts (ruling 12 — the specific data about the person requesting the magnet). */
-const REQUIRED_SITUATION: readonly SituationKey[] = ["timeline", "move_side", "biggest_question"]
+/** Every funnel form carries the timeline bucket (ruling 12); the buy / sell question only when the situation does not already
+ *  say the side (a probate heir is not asked whether they are buying). */
+const REQUIRED_SITUATION: readonly SituationKey[] = ["timeline"]
+
+// ── THE QUALIFYING QUESTIONS A LEAD-MAGNET FORM ASKS — PER SITUATION (wave 149, lane 149D — owner ruling 16, 2026-11-03:
+// "Registration 'other question' is not an open question — it asks the question(s) that pertain to the situation the form
+// collects. Same for every form's qualifying questions").
+//
+// WHAT THIS REPLACES (tombstone, CLAUDE.md §1.3 — the functionality lives here now): lib/lead-magnets/magnet-funnel.ts carried
+// one REQUIRED open question on every funnel form — `biggest_question` ("What is the one question you most want answered?",
+// a textarea). That is exactly the generic open question ruling 16 forbids. Its job — learning what the person needs so the
+// agent can truly help — is done here by questions that BELONG to the person's situation (a probate heir is asked about the
+// estate's stage; a first-time buyer about financing readiness), each a short select so the answer is usable, mappable and
+// light on friction (market-landing: every extra field costs conversion; 3–5 is the lead-capture norm).
+//
+// PERSONAS (owner ruling 1 + 2, wave 149): EVERY persona is allowed and this cannot change. A persona is the person's
+// SITUATION, so the OS can speak to their pain points. The keys below are the kernel portal's persona keys
+// (lib/portal/persona-config.ts PERSONA_CONFIGS — the layout authority; scripts/lead-magnet-package-guard.ts holds every one of
+// them to a question set) plus the campaign spellings (persona-layers campaignPersona: first_time, relocated, …) as ALIASES —
+// one canonical key per situation (§6), never a second vocabulary. An unknown persona is never refused: it falls back to the
+// buyer / seller set for its side.
+//
+// WORDING (the only place fair housing applies — the preamble's correction): the questions describe the SITUATION and the
+// HOME, never a protected characteristic or its proxy (no age, marital / family status, children, religion, origin,
+// disability, sex, source of income). A sensitive situation is never named on the form (a divorcing owner is asked whether a
+// settlement timeline applies; a probate heir about their role with the property) — kind, never intrusive, never exploiting
+// hardship. lib/lead-magnets/magnet-funnel.ts PROTECTED_QUESTION screens every one of these (the proof runs it over the bank).
+//
+// PURE. No I/O. Lives in THIS module (not a sibling file) so no app entry's first-party graph grows (test:proxy-graph-budget —
+// app/crm/page.tsx reaches this module through promised-deliverables and sits at its 1300 cap).
+
+export type SituationSide = "buyer" | "seller" | "both"
+
+/** A situation question: a select (the answer is a usable fact, never an essay). `key` is the form field name. */
+export interface SituationQuestion { key: string; label: string; options: string[] }
+
+/** The canonical situation keys (= lib/portal/persona-config.ts PERSONA_CONFIGS keys, + foreclosure, + other). */
+export const SITUATION_PERSONAS = [
+  "first_time_buyer", "military_buyer", "luxury_buyer", "investor", "first_time_seller", "motivated_seller", "divorce",
+  "probate", "senior", "relocating", "luxury_seller", "fsbo", "expired", "upsizers", "empty_nester", "remote_seller",
+  "foreclosure", "other",
+] as const
+export type SituationPersona = (typeof SITUATION_PERSONAS)[number]
+
+/** Other spellings of the same situation (the campaign / research vocabularies) → the ONE canonical key (§6). */
+export const SITUATION_PERSONA_ALIASES: Readonly<Record<string, SituationPersona>> = Object.freeze({
+  first_time: "first_time_buyer", first_time_home_buyer: "first_time_buyer", ftb: "first_time_buyer",
+  military: "military_buyer", va_buyer: "military_buyer",
+  luxury: "luxury_buyer",
+  relocated: "relocating", relocation: "relocating",
+  upsize: "upsizers", upsizer: "upsizers", move_up: "upsizers",
+  downsize: "empty_nester", downsizer: "empty_nester", downsizing: "empty_nester",
+  out_of_state_seller: "remote_seller",
+  pre_foreclosure: "foreclosure", distressed: "foreclosure",
+  estate: "probate", inherited: "probate",
+  for_sale_by_owner: "fsbo",
+  expired_listing: "expired",
+})
+
+/** PURE. Any persona spelling → the canonical situation key; an unknown one is `other` (never refused). */
+export function canonicalSituation(persona: string | null | undefined): SituationPersona {
+  const k = String(persona ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_")
+  if ((SITUATION_PERSONAS as readonly string[]).includes(k)) return k as SituationPersona
+  return SITUATION_PERSONA_ALIASES[k] ?? "other"
+}
+
+/** The side a situation speaks to (a persona that can be either asks the side). */
+export const SITUATION_SIDE: Readonly<Record<SituationPersona, SituationSide | null>> = Object.freeze({
+  first_time_buyer: "buyer", military_buyer: "buyer", luxury_buyer: "buyer", investor: "buyer", relocating: "buyer", upsizers: "both",
+  first_time_seller: "seller", motivated_seller: "seller", divorce: "seller", probate: "seller", luxury_seller: "seller", fsbo: "seller",
+  expired: "seller", remote_seller: "seller", foreclosure: "seller", senior: "both", empty_nester: "both", other: null,
+})
+
+/** The human label of each situation (the Create door's choices). */
+export const SITUATION_LABELS: Readonly<Record<SituationPersona, string>> = Object.freeze({
+  first_time_buyer: "First-time buyers", military_buyer: "Military and VA buyers", luxury_buyer: "Luxury buyers", investor: "Investors",
+  first_time_seller: "First-time sellers", motivated_seller: "Sellers who need to move soon", divorce: "Owners selling during a separation",
+  probate: "Families handling an inherited or estate property", senior: "Owners planning their next chapter", relocating: "People relocating to the area",
+  luxury_seller: "Luxury sellers", fsbo: "Owners selling on their own (FSBO)", expired: "Owners whose listing expired", upsizers: "Owners who need more space",
+  empty_nester: "Owners who want less space", remote_seller: "Owners selling from out of town", foreclosure: "Owners facing a payment deadline",
+  other: "Someone else (describe them)",
+})
+
+const CONDITION: SituationQuestion = { key: "home_condition", label: "What condition is the home in?", options: ["Move-in ready", "Needs minor work", "Needs major work", "Not sure"] }
+const BUY_FIRST: SituationQuestion = { key: "buy_before_sell", label: "Do you need to sell your current home before you buy the next one?", options: ["Yes", "No", "Not sure yet"] }
+const FINANCING: SituationQuestion = { key: "financing_stage", label: "Where are you with financing?", options: ["Haven't started", "Talking to a lender", "Pre-approved", "Paying cash"] }
+const SELL_SUCCESS: SituationQuestion = { key: "sale_priority", label: "What would make this sale a success for you?", options: ["The best price", "A smooth, quick sale", "Timing it with my next move", "Fewer showings and less disruption"] }
+
+/** The bank: 1–3 situation questions per situation (the timeline / side / own-rent / address fields are added by the funnel). */
+export const SITUATION_QUESTIONS: Readonly<Record<SituationPersona, readonly SituationQuestion[]>> = Object.freeze({
+  first_time_buyer: [FINANCING, { key: "first_hurdle", label: "What feels like the biggest hurdle right now?", options: ["Saving for the down payment", "Understanding the steps", "Choosing the right area", "Competing with other offers"] }],
+  military_buyer: [{ key: "va_loan", label: "Are you planning to use a VA home loan?", options: ["Yes", "Maybe — I'd like to learn more", "No"] }, { key: "report_date", label: "Is your move tied to a report or start date?", options: ["Yes, I have a date", "Not yet", "No"] }],
+  luxury_buyer: [{ key: "home_priority", label: "What matters most in your next home?", options: ["Privacy and space", "Location and views", "Architecture and finishes", "Room to host"] }, { key: "showing_preference", label: "How would you like to see homes?", options: ["Private showings only", "Open to either", "Virtual first"] }],
+  investor: [{ key: "investment_focus", label: "What kind of investment are you focused on?", options: ["Long-term rental", "Short-term rental", "Fix and flip", "Small multifamily"] }, { key: "investment_financing", label: "How are you planning to finance it?", options: ["Cash", "Conventional loan", "Investor (DSCR) loan", "Not sure yet"] }],
+  first_time_seller: [SELL_SUCCESS, BUY_FIRST],
+  motivated_seller: [{ key: "most_helpful", label: "What would help most right now?", options: ["A firm price range", "Selling as-is", "Help with repairs", "Comparing a cash offer"] }, CONDITION],
+  divorce: [{ key: "settlement_timeline", label: "Does the sale need to follow a settlement or court timeline?", options: ["Yes", "No", "Not sure yet"] }, { key: "owners_on_title", label: "Will more than one owner need to sign and receive updates?", options: ["Yes, more than one owner", "Just me", "Not sure"] }],
+  probate: [{ key: "property_role", label: "What is your role with the property?", options: ["Executor or administrator", "Heir or beneficiary", "Attorney or advisor", "Other"] }, { key: "estate_stage", label: "Where is the estate in the process?", options: ["Just getting started", "Court approval pending", "Authority to sell granted", "Not sure"] }, CONDITION],
+  senior: [{ key: "next_home_priority", label: "What matters most in your next home?", options: ["Less upkeep", "Single-level living", "Closer to the people and places I care about", "Lower monthly costs"] }, { key: "moving_help", label: "Would help sorting, moving or storing belongings be useful?", options: ["Yes, a lot", "A little", "No"] }],
+  relocating: [{ key: "search_mode", label: "How would you like to find your home?", options: ["Remotely, before I arrive", "I'll visit first", "Renting first, buying later"] }, { key: "timing_driver", label: "What is setting your timing?", options: ["A job start date", "A lease ending", "Flexible"] }, FINANCING],
+  luxury_seller: [{ key: "marketing_preference", label: "How would you like your home marketed?", options: ["Full marketing", "Discreet / off-market", "Not sure yet"] }, SELL_SUCCESS],
+  fsbo: [{ key: "fsbo_duration", label: "How long have you been selling on your own?", options: ["Just started", "A few weeks", "A few months or more"] }, { key: "most_helpful", label: "What would help most?", options: ["Pricing it right", "Getting more buyers to see it", "Handling offers and paperwork", "Comparing my options"] }],
+  expired: [{ key: "held_back", label: "What do you think held the last listing back?", options: ["Price", "Marketing", "Condition", "Timing"] }, { key: "still_selling", label: "Are you still hoping to sell?", options: ["Yes, soon", "Yes, later", "Not sure"] }],
+  upsizers: [{ key: "need_more", label: "What do you need more of?", options: ["Bedrooms", "Office space", "Outdoor space", "Storage or garage"] }, BUY_FIRST],
+  empty_nester: [{ key: "next_home_priority", label: "What matters most in your next home?", options: ["Less upkeep", "Single-level living", "A lock-and-leave home", "Lower monthly costs"] }, BUY_FIRST],
+  remote_seller: [{ key: "occupancy", label: "Is the home lived in right now?", options: ["Vacant", "Rented to a tenant", "I live there part of the year"] }, { key: "on_site_help", label: "What help do you need on site?", options: ["Repairs and prep", "Cleaning and staging", "Showings and access", "All of it"] }],
+  foreclosure: [{ key: "most_helpful", label: "What would help most right now?", options: ["Understanding my options", "Selling before a deadline", "A confidential conversation"] }, { key: "deadline", label: "Is there a date you are working against?", options: ["Yes", "No", "Not sure"] }],
+  other: [],
+})
+
+/** The side-only fallbacks (an `other` persona, or a persona the business adds before its own set exists). */
+export const SITUATION_SIDE_QUESTIONS: Readonly<Record<SituationSide, readonly SituationQuestion[]>> = Object.freeze({
+  buyer: [FINANCING, { key: "home_priority", label: "What matters most in your next home?", options: ["Location", "Space", "Monthly cost", "Condition / move-in ready"] }],
+  seller: [SELL_SUCCESS, CONDITION],
+  both: [BUY_FIRST, FINANCING],
+})
+
+/**
+ * PURE. The situation questions for a persona (canonicalised) and side, as form fields. Never empty for a known side: an
+ * `other` persona gets its side's set (so no form falls back to an open question).
+ * Module-private: the C30 proof screens the bank itself (SITUATION_QUESTIONS / SITUATION_SIDE_QUESTIONS) and the forms it builds.
+ */
+function situationQuestionsFor(persona: string | null | undefined, side: SituationSide | null | undefined): Array<LeadMagnetField & { purpose: "situation" }> {
+  const s = canonicalSituation(persona)
+  const own = SITUATION_QUESTIONS[s]
+  const effectiveSide = side ?? SITUATION_SIDE[s] ?? "both"
+  const set = own.length ? own : SITUATION_SIDE_QUESTIONS[effectiveSide]
+  return set.map((q) => ({ name: q.key, label: q.label, type: "select", required: false, options: [...q.options], purpose: "situation" as const }))
+}
+
+/**
+ * A GENERIC open question (ruling 16): "any other questions?", "what can we help with?", "tell us more", "anything else",
+ * "your one question". A form never asks one — the situation questions above do that job. Used by the funnel to refuse a
+ * planner's extra question of this shape.
+ */
+export const GENERIC_OPEN_QUESTION = /\b(any (other )?questions?|other questions?|questions? (for us|you have|do you have)|what (can|could) (we|i) help|how can (we|i) help|tell us (more|about yourself)|anything else|comments?\b|one question|what('s| is) on your mind|message\b)/i
+
+/** At most this many situation + qualifier questions beside identity (market-landing: every field costs conversion). */
+const MAX_SITUATION_FIELDS = 6
 
 /** A question the form may never ask: protected characteristics or their proxies (fair housing applies to the form too). */
-const PROTECTED_QUESTION = /\b(age|how old|born|birth|retire(e|d)|married|marital|divorc|spouse|partner'?s|children|kids|family size|pregnan|expecting|relig|church|mosque|temple|synagogue|race|ethnic|nationality|national origin|citizen|immigra|disab|wheelchair|handicap|gender|sex\b|orientation|section 8|voucher|veteran)\b/i
+/** @proofSeam exported (wave 149) so the C30 proof runs the screen over every situation question. */
+export const PROTECTED_QUESTION = /\b(age|how old|born|birth|retire(e|d)|married|marital|divorc|spouse|partner'?s|children|kids|family size|pregnan|expecting|relig|church|mosque|temple|synagogue|race|ethnic|nationality|national origin|citizen|immigra|disab|wheelchair|handicap|gender|sex\b|orientation|section 8|voucher|veteran)\b/i
 
 // ── C15 / OWNER (the form contract) ──────────────────────────────────────────
 
@@ -163,6 +304,13 @@ export interface MagnetFunnelBrief {
   /** The public origin (the configured app URL); absent → the landing path is returned relative and said. */
   baseUrl?: string | null
   actor?: { platformRole?: string | null; userType?: string | null } | null
+  /** Wave 149 (C30): the person's SITUATION persona (any persona — every one is allowed; canonicalised by canonicalSituation below). */
+  persona?: string | null
+  /** Wave 149 (C30): the side the magnet speaks to (contact intent vocabulary: buyer | seller | both). */
+  side?: "buyer" | "seller" | "both" | null
+  /** Wave 149 (C30, owner ruling 9): THE MAGNET, decided FIRST — the topic (from the topic bank, a frequently asked question or
+   *  a content gap) that attracts this persona, with its evidence. lib/lead-magnets/lead-magnet-package.ts chooses it. */
+  magnet?: { topic: string; source: string; valueProposition: string; question?: string | null; evidence?: Record<string, unknown> } | null
 }
 
 // ── THE PLANNER (expert creative prompt + typed contract) ─────────────────────
@@ -209,8 +357,12 @@ helpful expert in town. You think like a great copywriter and a great teacher at
 with an expert in every area: compliance, video, documents, calendars and the AI ISA all carry out what you design.
 
 MANDATE
-Design ONE complete funnel from the creator's brief (audience, benefit, outcome): the landing page inside the brokerage's own
-website, the form (identity + the situation facts that let the agent truly help this person), the deliverables — of ANY kind:
+Design ONE complete package IN THIS ORDER (owner ruling 9): FIRST the lead magnet itself — built on the MAGNET block's topic
+(a topic from the tenant's topic bank, a question people are asking a lot, or a content gap) because it attracts this
+persona: its concept, its value proposition and the primary asset or experience; THEN the landing page inside the tenant's
+own website with a form that asks the questions belonging to this person's SITUATION; THEN the funnel around it. From the
+creator's brief (audience, benefit, outcome): the landing page, the form (identity + the situation facts that let the agent
+truly help this person), the deliverables — of ANY kind:
 a designed checklist, a short education video, a market report, a mini-course, a calculator, a live session, a consultation —
 the thank-you moment, the optional steps (a personal video, a calendar offer, a portal task, an education sequence), the
 follow-up intent and the learning hypothesis. Not a book: books are a separate publishing capability.
@@ -237,10 +389,14 @@ CREATIVE BRIEF
 - Value ladder: the PRIMARY deliverable is the quick win (consumable in under 10 minutes — a checklist, a short video, a
   focused guide or report); secondary deliverables deepen trust (a mini-course, a calculator, a session, a consultation).
 - Match the awareness stage: unaware → a story and a question; most-aware → a clear offer and a button.
-- The thank-you page is the second conversion: confirm the win, set the expectation for what arrives and when, and offer ONE
-  natural next step (often the consultation or the calendar offer) — never a hard sell.
-- Form friction is a cost: identity plus at most the situation facts that change how the agent helps (timeline bucket, buying /
-  selling, their one question). Every extra question must earn its place.
+- The thank-you page is the second conversion: confirm the win, say WHAT arrives (the primary now; anything else when the agent
+  and the AI ISA judge it helpful), and offer ONE natural next step (often the consultation or the calendar offer) — never a
+  hard sell. NO TIMETABLE (owner ruling 7): never "day 3 you'll get…", "every week", "in 7 days", a drip calendar or a
+  numbered schedule — follow-up timing, channel and content are decided per person by the AI ISA's arbiter, never by the page.
+- Form friction is a cost: identity plus at most the situation facts that change how the agent helps (timeline bucket, and
+  the side only if the persona does not already say it). The OS adds the situation's own qualifying questions — never an
+  open "any questions?" / "tell us more" box (owner ruling 16); an extra question is a short choice that belongs to THIS
+  situation. Every extra question must earn its place.
 - Name the principle you use (reciprocity, specificity, commitment) in "why", so the agent can defend the choice.
 - No dark patterns: no fake scarcity, no countdowns, no invented social proof.
 
@@ -283,6 +439,15 @@ function buildMagnetFunnelPlannerPrompt(brief: MagnetFunnelBrief, ctx: FunnelCon
     `AGENT: ${ctx.agentFirstName ?? "the agent"}`,
     `AREA: ${brief.area ?? brief.territory?.city ?? "the brokerage's market"}`,
     "",
+    ...(brief.magnet ? [
+      "MAGNET (decided first — build the package on THIS):",
+      `- Topic: ${brief.magnet.topic}`,
+      `- Where it came from: ${brief.magnet.source}`,
+      ...(brief.magnet.question ? [`- The question people keep asking: ${brief.magnet.question}`] : []),
+      `- Value proposition: ${brief.magnet.valueProposition}`,
+      "",
+    ] : []),
+    ...(brief.persona ? [`PERSONA (the person's situation): ${brief.persona}${brief.side ? ` · side: ${brief.side}` : ""}`, ""] : []),
     "BRIEF:",
     `- Audience: ${brief.audience}`,
     `- Benefit they get: ${brief.benefit}`,
@@ -339,6 +504,10 @@ const line = (v: unknown, max = 220): string | null => {
 }
 const fhHigh = (text: string) => detectFairHousingViolations(text).filter((h) => h.severity === "high").map((h) => h.phrase)
 const INVENTED_FIGURE = /[$%]|\b\d{2,}\b/
+/** A FIXED TIMETABLE in public copy (owner ruling 7 — "nothing fixed in communications"; C29): a day-numbered drip, a weekly
+ *  cadence, a countdown. Obligations keep their own wording (an arrangement's "within one business day" is the promise a task
+ *  enforces, written by assessArrangement — never by the model, never screened here). @proofSeam exported for the C30 proof. */
+export const FIXED_SCHEDULE = /\b(day\s*\d+|days?\s+\d+\s*[-–]\s*\d+|every\s+(day|week|month|other\s+day|\d+\s+days?)|(in|within|after)\s+\d+\s*(days?|weeks?|hours?)|tomorrow|next\s+week|weekly|daily|\d+[- ]day\s+(course|series|challenge|plan|sequence)|drip)\b/i
 const keyOf = (s: string, taken: Set<string>) => { let base = s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "item"; let k = base, i = 2; while (taken.has(k)) k = `${base}_${i++}`; taken.add(k); return k }
 
 /** The deterministic primary per magnet type (the C11 producer that already exists for it). */
@@ -374,6 +543,8 @@ function composeFunnelPlan(brief: MagnetFunnelBrief, ctx: FunnelContext, draft: 
     if (!s) return fallback
     const hit = fhHigh(s)
     if (hit.length) { dropped.push(`${label}: fair-housing finding (${hit.join(", ")}) — baseline line used`); return fallback }
+    // Wave 149 (owner ruling 7 / C29): a public line never carries a fixed timetable — the arbiter decides timing per person.
+    if (FIXED_SCHEDULE.test(s)) { dropped.push(`${label}: a fixed timetable ("${s.match(FIXED_SCHEDULE)?.[0]}") — timing is the arbiter's, baseline line used`); return fallback }
     return s
   }
   const copy = {
@@ -397,13 +568,25 @@ function composeFunnelPlan(brief: MagnetFunnelBrief, ctx: FunnelContext, draft: 
     { name: "phone", label: "Phone", type: "tel", required: false, purpose: "identity" },
   ]
   identity.forEach(add)
+  // Wave 149 (ruling 16): the side is asked only when the situation does not already say it.
+  const situation = canonicalSituation(brief.persona)
+  const knownSide = brief.side ?? SITUATION_SIDE[situation]
   const situationKeys = new Set<SituationKey>([...REQUIRED_SITUATION, ...((d?.situation_keys ?? []) as SituationKey[]).filter((k) => (SITUATION_KEYS as readonly string[]).includes(k))])
+  if (!knownSide || knownSide === "both") situationKeys.add("move_side")
+  else situationKeys.delete("move_side")
   if (magnetType === "home_valuation") situationKeys.add("property_address")
   for (const k of SITUATION_KEYS) if (situationKeys.has(k)) add({ ...SITUATION_FIELDS[k], ...(k === "property_address" && magnetType === "home_valuation" ? { required: true } : {}) })
+  // THE SITUATION'S OWN QUALIFYING QUESTIONS (ruling 16 — never a generic open question; every persona has a set).
+  for (const q of situationQuestionsFor(brief.persona, knownSide ?? null)) {
+    if (PROTECTED_QUESTION.test(q.label) || q.options?.some((o) => PROTECTED_QUESTION.test(o))) { dropped.push(`situation question "${q.label}" failed the protected-characteristic screen — not asked`); continue }
+    add(q)
+  }
   for (const q of (d?.extra_questions ?? []).slice(0, 2)) {
     const label = line(q.label, 80)
     if (!label) continue
     if (PROTECTED_QUESTION.test(label) || fhHigh(label).length) { dropped.push(`extra question "${label}" asks about a protected characteristic or its proxy — never on the form`); continue }
+    if (q.type === "textarea" || GENERIC_OPEN_QUESTION.test(label)) { dropped.push(`extra question "${label}" is a generic open question — the situation's own questions ask what matters (ruling 16)`); continue }
+    if (fields.filter((f) => f.purpose !== "identity").length >= MAX_SITUATION_FIELDS) { dropped.push(`extra question "${label}" — the form already asks ${MAX_SITUATION_FIELDS} situation questions (friction is a cost)`); continue }
     const options = q.type === "select" ? (q.options ?? []).map((o) => line(o, 60)).filter((o): o is string => !!o && !PROTECTED_QUESTION.test(o)).slice(0, 8) : undefined
     if (q.type === "select" && (!options || options.length < 2)) continue
     add({ name: keyOf(label, new Set(taken)), label, type: q.type, required: false, purpose: "qualifier", ...(options ? { options } : {}) })
@@ -822,9 +1005,16 @@ export interface MagnetFunnelPackage {
   publishable: { ok: true; promised: number } | { ok: false; blockers: string[] }
   from_ai: boolean
   notes: string[]
+  /** Wave 149 (C30, ruling 9): the stages in the order they completed — magnet → landing_page → funnel. */
+  order: FunnelStageStamp[]
 }
 
 export type MagnetFunnelResult = { ok: true; package: MagnetFunnelPackage } | { ok: false; stage: "input" | "entitlement" | "plan" | "landing_page" | "items" | "ledger"; error: string; notes?: string[] }
+
+/** THE PACKAGE ORDER (owner ruling 9, contract C30) — one spelling; lib/lead-magnets/lead-magnet-package.ts and the proof read it. */
+export const FUNNEL_PACKAGE_ORDER = ["magnet", "landing_page", "funnel"] as const
+export type FunnelStage = (typeof FUNNEL_PACKAGE_ORDER)[number]
+export interface FunnelStageStamp { stage: FunnelStage; seq: number; at: string; detail: Record<string, unknown> }
 
 interface SettledItem extends PlannedItem { status: FunnelItemStatus; promised: boolean; arrangement: Arrangement | null; produced: ProducedDeliverable | null; reason: string | null }
 
@@ -885,33 +1075,30 @@ export async function createMagnetFunnel(brief: MagnetFunnelBrief, deps: FunnelD
     const funnelId = globalThis.crypto.randomUUID() // Web Crypto (Node ≥ 19, edge) — no node:crypto import in a module the kernel graph reaches
     const assetBrief = (it: PlannedItem): AssetBrief => ({ brokerageId, agentUserId: ctx.agentUserId, agentId: brief.agentId, actorUserId: brief.createdBy, title: it.title, outline: it.outline, audience: brief.audience, benefit: brief.benefit, outcome: brief.outcome, area: brief.area ?? null, brandName: ctx.brandName, agentFirstName: ctx.agentFirstName, discriminator: `funnel:${funnelId}:${it.key}`, territory: brief.territory ?? null })
 
-    // 4 · THE SECONDARIES — produced or arranged BEFORE the page exists, so the page promises only what is real.
-    const settled: SettledItem[] = []
-    for (const it of composed.items) {
-      if (it.role === "primary") continue
-      if (it.fulfilment === "asset") {
-        const produced = await produceFunnelAsset(svc, it.kind, assetBrief(it), deps)
-        const status: FunnelItemStatus = produced.status === "ready" ? "ready" : produced.status === "staged" ? "staged" : "failed"
-        // a STAGED asset is a bonus once approved — never promised before it is ready
-        settled.push({ ...it, status, promised: status === "ready", arrangement: null, produced, reason: produced.status === "ready" ? null : (produced.reason ?? null), title: produced.title ?? it.title })
-        if (status === "staged") notes.push(`${it.title}: staged for approval (${produced.reason ?? "awaiting its approver"}) — delivered as a bonus once approved, never promised before`)
-        if (status === "failed") notes.push(`${it.title}: not produced — ${produced.reason ?? "unknown"} — not promised`)
-      } else {
-        const a = assessArrangement(it.kind, ctx, now)
-        if (a.status === "arranged") {
-          const promised = it.role === "deliverable" || it.kind === "calendar_link" || it.kind === "education_sequence"
-          settled.push({ ...it, status: "arranged", promised: promised && !!a.promiseLine, arrangement: a.arrangement, produced: null, reason: null, promiseLine: a.promiseLine || it.promiseLine })
-        } else {
-          settled.push({ ...it, status: "planned", promised: false, arrangement: null, produced: null, reason: a.reason })
-          notes.push(`${it.title}: not promised — ${a.reason}`)
-        }
-      }
-    }
+    // THE ORDER (owner ruling 9, C30): 1 the MAGNET → 2 the LANDING PAGE + situation form → 3 the FUNNEL. Each stage is stamped
+    // as it completes (package.order) and the stamps are recorded on the ledger row, so the order is evidence, not a comment.
+    const order: FunnelStageStamp[] = []
+    const stamp = (stage: FunnelStage, detail: Record<string, unknown>) => order.push({ stage, seq: order.length + 1, at: new Date().toISOString(), detail })
     const primaryPlan = composed.items.find((i) => i.role === "primary")!
-    const truthfulBullets = [primaryPlan.promiseLine, ...settled.filter((s) => s.promised && s.promiseLine).map((s) => s.promiseLine)].slice(0, 5)
-
-    // 5 · THE LANDING PAGE + FORM + PRIMARY ASSET — one unit through the AI-draft survivor (createLeadMagnet + C11 inside).
     const primarySpec: FunnelPrimarySpec = { key: primaryPlan.key, kind: primaryPlan.kind as FunnelPrimaryKind, fulfilment: primaryPlan.fulfilment === "human" ? "human" : "asset", title: primaryPlan.title, outline: primaryPlan.outline, brief: { audience: brief.audience, benefit: brief.benefit, outcome: brief.outcome, area: brief.area ?? null, territory: brief.territory ?? null }, funnel_id: funnelId }
+
+    // STAGE 1 · THE MAGNET — its concept and value proposition are the plan's (built on brief.magnet's topic); its PRIMARY
+    // asset is produced NOW, before any page exists, through C11's own producer dispatch (the same asset C11 would make).
+    const { produceMagnetAssetFirst } = await import("./deliverable-asset")
+    const first = await produceMagnetAssetFirst(svc, { brokerageId, magnetType: composed.magnetType, title: primaryPlan.title, agentId: brief.agentId, settings: { funnel: { id: funnelId, primary: primarySpec } }, actorUserId: brief.createdBy }, deps.deliverable ?? {})
+    if (first && first.produced.status !== "ready") notes.push(`the magnet's ${first.kind} was produced first and is ${first.produced.status}${first.produced.reason ? ` — ${first.produced.reason}` : ""}; the page stays unpublishable until it is ready (C11)`)
+    stamp("magnet", { topic: brief.magnet?.topic ?? composed.bigPromise, source: brief.magnet?.source ?? "brief", value_proposition: brief.magnet?.valueProposition ?? composed.bigPromise, persona: brief.persona ?? null, primary_kind: primaryPlan.kind, primary_status: first?.produced.status ?? (primaryPlan.fulfilment === "human" ? "human_fulfilment" : "none") })
+
+    // The page's "what you get" lines: the magnet + the ARRANGEMENTS the plan commits to (assessArrangement is pure over facts
+    // already read — nothing is produced for them). Secondary ASSETS are made in stage 3, after the page; a ready one is a
+    // BONUS (never promised by a page written before it existed).
+    const arrangedFor = new Map<string, ArrangementVerdict>()
+    for (const it of composed.items) if (it.role !== "primary" && it.fulfilment !== "asset") arrangedFor.set(it.key, assessArrangement(it.kind, ctx, now))
+    const promisesArrangement = (it: PlannedItem, a: ArrangementVerdict | undefined) => a?.status === "arranged" && !!a.promiseLine && (it.role === "deliverable" || it.kind === "calendar_link" || it.kind === "education_sequence")
+    const truthfulBullets = [primaryPlan.promiseLine, ...composed.items.filter((it) => promisesArrangement(it, arrangedFor.get(it.key))).map((it) => (arrangedFor.get(it.key) as { promiseLine: string }).promiseLine)].slice(0, 5)
+
+    // STAGE 2 · THE LANDING PAGE + the situation form — through the AI-draft survivor (createLeadMagnet; the C11 record of the
+    // magnet produced in stage 1 is written WITH the form, one unit).
     const consent: FunnelConsentSpec = { contract: "C15", purposes: { service_delivery: { required: true, covers: `deliver ${primaryPlan.title} and what this page offers` }, marketing: { required: false } }, channels: ["email", "sms", "voice", "direct_mail"], wording: "rendered_by_c15", creator_user_id: brief.createdBy, owner_agent_id: brief.agentId }
     const owner: FunnelOwner = { agent_id: brief.agentId, agent_user_id: ctx.agentUserId, creator_user_id: brief.createdBy, assignment: "captureFormSubmission files a new contact to this form's agent and claims an unowned one; the agent's seat fronts the follow-up" }
     const followUpPolicy = {
@@ -940,10 +1127,35 @@ export async function createMagnetFunnel(brief: MagnetFunnelBrief, deps: FunnelD
       // attempt 0 is the composed copy; a rewrite after a fair-housing finding falls to the safe baseline + the truthful bullets
       // and is escalated to the human reviewer by the survivor (never shipped unreviewed)
       generator: async (req) => (req.attempt ? null : copy),
-      client: svc as never, deliverable: deps.deliverable, brand: deps.draftBrand, now,
+      client: svc as never, deliverable: { ...(deps.deliverable ?? {}), preProduced: first }, brand: deps.draftBrand, now,
     })
     if (!drafted.success || !drafted.magnetId || !drafted.slug) return { ok: false, stage: "landing_page", error: drafted.error ?? "the landing page was not created", notes }
     const formId = drafted.magnetId
+    stamp("landing_page", { form_id: formId, slug: drafted.slug, fields: composed.fields.map((f) => f.name), situation_questions: composed.fields.filter((f) => f.purpose === "situation").length, bullets: truthfulBullets.length })
+
+    // STAGE 3 · THE FUNNEL — the secondary deliverables and steps, made AFTER the page: assets produced now (a ready one is a
+    // bonus, a staged one a bonus once approved, a failed one recorded), arrangements recorded as the page already states them.
+    const settled: SettledItem[] = []
+    for (const it of composed.items) {
+      if (it.role === "primary") continue
+      if (it.fulfilment === "asset") {
+        const produced = await produceFunnelAsset(svc, it.kind, assetBrief(it), deps)
+        const status: FunnelItemStatus = produced.status === "ready" ? "ready" : produced.status === "staged" ? "staged" : "failed"
+        settled.push({ ...it, status, promised: false, arrangement: null, produced, reason: produced.status === "ready" ? null : (produced.reason ?? null), title: produced.title ?? it.title })
+        if (status === "ready") notes.push(`${it.title}: ready — made after the page, so it goes out as a BONUS with the magnet (the page promises only what existed when it was written)`)
+        if (status === "staged") notes.push(`${it.title}: staged for approval (${produced.reason ?? "awaiting its approver"}) — delivered as a bonus once approved, never promised before`)
+        if (status === "failed") notes.push(`${it.title}: not produced — ${produced.reason ?? "unknown"} — not promised`)
+      } else {
+        const a = arrangedFor.get(it.key) ?? assessArrangement(it.kind, ctx, now)
+        if (a.status === "arranged") {
+          settled.push({ ...it, status: "arranged", promised: promisesArrangement(it, a), arrangement: a.arrangement, produced: null, reason: null, promiseLine: a.promiseLine || it.promiseLine })
+        } else {
+          settled.push({ ...it, status: "planned", promised: false, arrangement: null, produced: null, reason: a.reason })
+          notes.push(`${it.title}: not promised — ${a.reason}`)
+        }
+      }
+    }
+    stamp("funnel", { items: settled.length, promised: settled.filter((s) => s.promised).length, bonus: settled.filter((s) => !s.promised && (s.status === "ready" || s.status === "staged")).length })
 
     // 6 · THE FUNNEL'S ITEMS — recorded under the action ledger; a magnet never exists without them.
     let primaryRow: { status: FunnelItemStatus; asset_url: string | null; document_id: string | null; deliverable_id: string | null; error: string | null } = { status: "failed", asset_url: null, document_id: null, deliverable_id: null, error: drafted.deliverable?.reason ?? "the primary deliverable was not recorded" }
@@ -971,7 +1183,7 @@ export async function createMagnetFunnel(brief: MagnetFunnelBrief, deps: FunnelD
         subject: { type: "lead_capture_form", id: formId }, reasonCode: "HUMAN_REQUESTED",
         reasonDetail: `lead-magnet funnel for "${brief.audience}" — ${rows.length} items (${rows.filter((r) => r.promised).length} promised)`,
         riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
-        detail: { funnel_id: funnelId, from_ai: composed.fromAi, feature: "lead_magnet_draft", items: rows.map((r) => ({ key: r.item_key, kind: r.kind, role: r.role, status: r.status, promised: r.promised })), dropped: composed.dropped.length },
+        detail: { funnel_id: funnelId, from_ai: composed.fromAi, feature: "lead_magnet_draft", order: order.map((o) => ({ stage: o.stage, seq: o.seq, at: o.at })), items: rows.map((r) => ({ key: r.item_key, kind: r.kind, role: r.role, status: r.status, promised: r.promised })), dropped: composed.dropped.length },
       },
       async () => {
         const { data, error } = await svc.from("lead_magnet_funnel_items").insert(rows).select("id")
@@ -1011,7 +1223,7 @@ export async function createMagnetFunnel(brief: MagnetFunnelBrief, deps: FunnelD
         thank_you: { headline: composed.thankYou.headline, message: composed.thankYou.message, next_step_line: composed.thankYou.nextStepLine, what_arrives: truthfulBullets },
         personal_video: step("personal_video"), calendar_link: step("calendar_link"), portal_task: step("portal_task"), education_sequence: step("education_sequence"),
         follow_up_policy: followUpPolicy, attribution: { ...attribution, landing_url: url }, learning,
-        publishable: funnelPublishVerdict(items), from_ai: composed.fromAi,
+        publishable: funnelPublishVerdict(items), from_ai: composed.fromAi, order,
         notes: [...notes, ...(drafted.fallbackReason ? [drafted.fallbackReason] : [])],
       },
     }
