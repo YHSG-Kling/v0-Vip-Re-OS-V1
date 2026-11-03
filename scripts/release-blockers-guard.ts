@@ -48,6 +48,7 @@ import { claimOf } from "./migration-status"
 import { walkTs } from "./runtime-roots"
 import { makeWalker } from "./app-import-graph"
 import { WEBHOOK_CONTRACT } from "../lib/providers/webhook-contract"
+import { readDeploymentFacts, deployBuildOpen, installOf, lockDrift, installParityOpen } from "./release-rules"
 
 const ROOT = process.cwd()
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -332,12 +333,10 @@ check(`D5 every launch configuration name above is read by the runtime (${CONFIG
 // E · THE DEPLOYMENT BUILD (Vercel)
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[E · the deployment build — what Vercel runs is the single pass]")
-const vercelHeap = Number((vercel.buildCommand ?? "").match(/max-old-space-size=(\d+)/)?.[1] ?? 0)
-const ciCap = Number(read(".github/workflows/build.yml").match(/BUILD_HEAP_MB \|\| '(\d+)'/)?.[1] ?? 0)
-/** PURE — the rule: Vercel's single pass must run with at least the compile heap CI's full pass needs; the CI default
- *  (the cap the bracket recorded aborting at the ~90% give-up line) is the floor, so at or below it the deploy is OPEN. */
-const deployBuildOpen = (vh: number, cap: number) => !(vh > cap)
-const singlePass = /next build --webpack/.test(vercel.buildCommand ?? "") && !/experimental-build-mode/.test(vercel.buildCommand ?? "")
+// The O3/O4 rules and the facts they read moved VERBATIM to scripts/release-rules.ts (wave 149, lane 149I2) so block O of
+// scripts/production-readiness-guard.ts derives the same obligations by the same rule — one canonical path, never a copy.
+const deploy = readDeploymentFacts(ROOT)
+const { vercelHeap, ciCap, singlePass } = deploy
 obligations.push({ id: "O3", kind: "owner-config", open: deployBuildOpen(vercelHeap, ciCap), what: `the Vercel deployment build — vercel.json runs the ${singlePass ? "single" : "split"} pass at ${vercelHeap} MB, at or below the CI compile cap that aborts (${ciCap} MB, ~12.9 GB committed demand measured 2026-10-31)`, where: "Vercel → Project → Settings → Build & Development → Build Machine (a larger machine), then raise vercel.json's heap to match (a code change after the owner picks the machine) — ACTIVATION-CHECKLIST §1.9" })
 check(`E1 the deployment-build obligation is derived, not pinned (vercel ${vercelHeap} MB vs CI cap ${ciCap} MB → ${deployBuildOpen(vercelHeap, ciCap) ? "OPEN" : "clear"})`, vercelHeap > 0 && ciCap > 0)
 check("E1 POSITIVE CONTROL — 10240 vs 14336 is OPEN; 16384 vs 14336 clears", deployBuildOpen(10240, 14336) && !deployBuildOpen(16384, 14336))
@@ -348,44 +347,11 @@ check("E1 POSITIVE CONTROL — 10240 vs 14336 is OPEN; 16384 vs 14336 clears", d
 // must be the one CI uses, frozen (no --no-frozen-lockfile), and its lockfile must cover every package.json dependency at
 // the same specifier. Derived every run — never pinned. (PRODUCTION-ARCHITECTURE §15.3 F-1, an owner decision since
 // wave 143: choose one package manager, keep its lockfile as the only one, freeze it.)
-type Deps = Record<string, string>
-/** PURE — which package manager an install command runs, and whether it is frozen. */
-function installOf(cmd: string): { pm: "npm" | "pnpm" | "yarn" | "unknown"; frozen: boolean } {
-  const pm = /\bpnpm\s+(i|install)\b/.test(cmd) ? "pnpm" : /\bnpm\s+ci\b/.test(cmd) ? "npm" : /\byarn\b/.test(cmd) ? "yarn" : /\bnpm\s+(i|install)\b/.test(cmd) ? "npm" : "unknown"
-  const frozen = pm === "npm" ? /\bnpm\s+ci\b/.test(cmd) : pm === "pnpm" ? /--frozen-lockfile\b/.test(cmd) && !/--no-frozen-lockfile/.test(cmd) : /--frozen-lockfile|--immutable/.test(cmd)
-  return { pm, frozen }
-}
-/** PURE — the package.json dependencies a lockfile's root importer does not lock at the same specifier. */
-function lockDrift(pkgDeps: Deps, locked: Deps): { absent: string[]; drifted: string[] } {
-  const absent = Object.keys(pkgDeps).filter((k) => !(k in locked))
-  const drifted = Object.keys(pkgDeps).filter((k) => k in locked && locked[k] !== pkgDeps[k])
-  return { absent, drifted }
-}
-const pkgAll = JSON.parse(read("package.json")) as { dependencies?: Deps; devDependencies?: Deps; engines?: { node?: string } }
-const pkgDeps: Deps = { ...(pkgAll.dependencies ?? {}), ...(pkgAll.devDependencies ?? {}) }
-const npmLocked: Deps = (() => { const root = lock.packages?.[""] as { dependencies?: Deps; devDependencies?: Deps } | undefined; return { ...(root?.dependencies ?? {}), ...(root?.devDependencies ?? {}) } })()
-const pnpmLocked: Deps = (() => {
-  if (!has("pnpm-lock.yaml")) return {}
-  const imp = (parseYaml(read("pnpm-lock.yaml")) as { importers?: Record<string, { dependencies?: Record<string, { specifier: string }>; devDependencies?: Record<string, { specifier: string }> }> }).importers?.["."]
-  const out: Deps = {}
-  for (const [k, v] of Object.entries({ ...(imp?.dependencies ?? {}), ...(imp?.devDependencies ?? {}) })) out[k] = v.specifier
-  return out
-})()
-// The run: blocks only (YAML comments in the action mention other commands in prose).
-const nodeDeps = parseYaml(read(".github/actions/node-deps/action.yml")) as { runs?: { steps?: Array<{ run?: string }> } }
-const ciInstall = installOf((nodeDeps.runs?.steps ?? []).map((s) => s.run ?? "").join("\n"))
-const vInstallCmd = `${vercel.installCommand ?? ""} ${vercel.buildCommand ?? ""}`
-const vInstall = installOf(vInstallCmd)
-const vLocked = vInstall.pm === "pnpm" ? pnpmLocked : vInstall.pm === "npm" ? npmLocked : {}
-const vDrift = lockDrift(pkgDeps, vLocked)
-const ciDrift = lockDrift(pkgDeps, npmLocked)
-/** PURE — the install-parity rule. */
-const installParityOpen = (ci: { pm: string; frozen: boolean }, v: { pm: string; frozen: boolean }, drift: { absent: string[]; drifted: string[] }) =>
-  !(ci.pm === v.pm && v.frozen && drift.absent.length === 0 && drift.drifted.length === 0)
-const o4Open = installParityOpen(ciInstall, vInstall, vDrift)
+// The rules (installOf / lockDrift / installParityOpen) and the facts moved to scripts/release-rules.ts (see §E above).
+const { pkgDeps, ciInstall, vInstall, vDrift, ciDrift, o4Open } = deploy
 console.log(`    CI installs: ${ciInstall.pm}${ciInstall.frozen ? " (frozen: npm ci)" : " (NOT frozen)"} — package-lock covers package.json: ${ciDrift.absent.length} absent, ${ciDrift.drifted.length} drifted`)
 console.log(`    Vercel installs: ${vInstall.pm}${vInstall.frozen ? " (frozen)" : " (NOT frozen)"} — its lockfile vs package.json (${Object.keys(pkgDeps).length} deps): ${vDrift.absent.length} absent${vDrift.absent.length ? ` (${vDrift.absent.slice(0, 13).join(", ")})` : ""}, ${vDrift.drifted.length} drifted${vDrift.drifted.length ? ` (${vDrift.drifted.slice(0, 7).join(", ")})` : ""}`)
-console.log(`    Node major: package.json engines ${pkgAll.engines?.node ?? "unset"}; CI node-deps default 22; the Vercel project's Node setting is not readable from the repository (names only)`)
+console.log(`    Node major: package.json engines ${deploy.engineNode ?? "unset"}; CI node-deps default 22; the Vercel project's Node setting is not readable from the repository (names only)`)
 obligations.push({ id: "O4", kind: "owner-decision", open: o4Open, what: `the Vercel INSTALL is not the install CI certifies — vercel.json runs ${vInstall.pm}${vInstall.frozen ? "" : " unfrozen"} against a lockfile missing ${vDrift.absent.length} and drifting ${vDrift.drifted.length} of package.json's ${Object.keys(pkgDeps).length} dependencies, while CI runs ${ciInstall.pm}${ciInstall.frozen ? " ci (frozen)" : ""}`, where: "PRODUCTION-ARCHITECTURE §15.3 F-1 (owner: one package manager, one lockfile, frozen) — then vercel.json installCommand/buildCommand (a code change) — ACTIVATION-CHECKLIST §1.10" })
 check(`E2 install parity is derived, not pinned (CI ${ciInstall.pm}${ciInstall.frozen ? " frozen" : ""} · Vercel ${vInstall.pm}${vInstall.frozen ? " frozen" : " unfrozen"} · drift ${vDrift.absent.length}+${vDrift.drifted.length} → ${o4Open ? "OPEN" : "clear"}); CI's own lockfile covers package.json`,
   ciInstall.pm === "npm" && ciInstall.frozen && ciDrift.absent.length === 0 && ciDrift.drifted.length === 0 && o4Open === installParityOpen(ciInstall, vInstall, vDrift),
