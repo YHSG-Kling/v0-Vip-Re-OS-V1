@@ -160,12 +160,8 @@ export async function buildRAGContext(
     ...rest,
   })
 
-  if (results.length === 0) {
-    return ''
-  }
-
   // Build context string
-  let context = 'Relevant Knowledge Base Content:\n\n'
+  let context = results.length > 0 ? 'Relevant Knowledge Base Content:\n\n' : ''
   let tokenEstimate = 0
 
   for (const result of results) {
@@ -178,6 +174,32 @@ export async function buildRAGContext(
 
     context += section
     tokenEstimate += sectionTokens
+  }
+
+  // RULING 13 (wave 149, lane 149E): every piece of OS copy is findable by the OS's own AI search — not only the two KB
+  // tables. The tenant's blog posts, social posts, lead-magnet pages and published video pages join the context through
+  // the federated reader (lib/knowledge/embedding-service.ts searchOsCopy), within the remaining token budget. Tenant from the SESSION; the
+  // session client keeps RLS in force. Best-effort: a refused source degrades the answer, never withholds it.
+  const remainingChars = (maxTokens - tokenEstimate) * 4
+  if (remainingChars > 400) {
+    try {
+      const { brokerageId } = await getAgentContext()
+      if (brokerageId) {
+        const { searchOsCopy, renderOsCopyContext } = await import('@/lib/knowledge/embedding-service')
+        const supabase = await createClient()
+        const copy = await searchOsCopy(supabase, {
+          brokerageId,
+          query,
+          limit: maxResults,
+          sources: ['blog_posts', 'social_posts', 'lead_capture_forms', 'ai_video_projects'],
+        })
+        if (copy.refused.length > 0) console.error('[KnowledgeSearch] OS copy sources refused:', copy.refused.join('; '))
+        const block = renderOsCopyContext(copy.hits, remainingChars)
+        if (block) context += (context ? '\n' : '') + block
+      }
+    } catch (err) {
+      console.error('[KnowledgeSearch] OS copy search failed:', err instanceof Error ? err.message : err)
+    }
   }
 
   return context

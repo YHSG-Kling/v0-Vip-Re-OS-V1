@@ -66,10 +66,41 @@ export function chooseTerritoryGrain(hint: TerritoryHint, evidence: { streetComp
   return { territory: null, reason: "no ZIP, no city + state and no address — a market report cannot be territory-specific without one" }
 }
 
-/** The territory a tenant's report is about: the caller's hint → the tenant's active farm territory → the brokerage's own address. */
+interface SettingsTerritoryRow { city: string | null; state: string | null; zip_code: string | null; is_primary?: boolean | null; active?: boolean | null }
+
+/** PURE. The tenant's top settings territory (Settings → Territories rows): a primary row's city first, then the city with the most zips. Held to parity with loadTenantMarkets by scripts/search-visibility-guard.ts §D (through resolveReportTerritory). */
+function topSettingsTerritory(rows: ReadonlyArray<SettingsTerritoryRow>): { state: string; city: string; zips: string[] } | null {
+  const by = new Map<string, { state: string; city: string; zips: Set<string>; primary: boolean }>()
+  for (const r of rows) {
+    if (r.active === false) continue
+    const state = String(r.state ?? "").trim(), city = String(r.city ?? "").trim()
+    if (!state || !city) continue
+    const key = `${state.toUpperCase()}:${city.toLowerCase()}`
+    const e = by.get(key) ?? { state: state.toUpperCase(), city, zips: new Set<string>(), primary: false }
+    const zip = String(r.zip_code ?? "").trim()
+    if (/^\d{5}$/.test(zip)) e.zips.add(zip)
+    if (r.is_primary) e.primary = true
+    by.set(key, e)
+  }
+  const best = [...by.values()].sort((a, b) => Number(b.primary) - Number(a.primary) || b.zips.size - a.zips.size || `${a.state}:${a.city.toLowerCase()}`.localeCompare(`${b.state}:${b.city.toLowerCase()}`))[0]
+  return best ? { state: best.state, city: best.city, zips: [...best.zips].sort() } : null
+}
+
+/** The territory a tenant's report is about: the caller's hint → the tenant's top SETTINGS territory (ruling 14) → the tenant's active farm territory → the brokerage's own address. */
 export async function resolveReportTerritory(svc: Db, input: { brokerageId: string; agentId?: string | null; hint?: TerritoryHint | null }): Promise<{ hint: TerritoryHint | null; basis: string; error: string | null }> {
   const h = input.hint ?? null
   if (h && ((h.zip ?? "").trim() || ((h.city ?? "").trim() && (h.state ?? "").trim()) || (h.address ?? "").trim())) return { hint: h, basis: "magnet_settings", error: null }
+  // RULING 14 (wave 149, lane 149E): the tenant's market comes from the territories they entered in SETTINGS
+  // (subscriber_service_areas — Settings → Territories). It used to be skipped straight to a prospecting farm and then the
+  // office address. The primary (or largest) settings territory wins; a farm and the office address remain the labelled
+  // fallbacks below. The selection (`topSettingsTerritory`) is the SAME rule lib/geo/tenant-markets.ts deriveTenantMarkets
+  // sorts by — primary first, then the city with the most zips, city/state case-insensitive. It is written here rather than
+  // imported so the voice / CRM entries that reach this module do not grow their proxy graph (test:proxy-graph-budget);
+  // scripts/search-visibility-guard.ts §D holds the two to the same answer.
+  const { data: areas, error: aErr } = await svc.from("subscriber_service_areas").select("city, state, zip_code, is_primary, active").eq("brokerage_id", input.brokerageId).eq("active", true).limit(200)
+  if (aErr) return { hint: null, basis: "none", error: `subscriber_service_areas read refused: ${aErr.message ?? "unknown"}` }
+  const top = topSettingsTerritory((areas ?? []) as SettingsTerritoryRow[])
+  if (top) return { hint: { zip: top.zips.length === 1 ? top.zips[0] : null, city: top.city, state: top.state, label: null }, basis: `settings_territory:${top.state}:${top.city}`, error: null }
   let q = svc.from("farm_territories").select("id, name, city, state, zip_codes, agent_id, is_active").eq("brokerage_id", input.brokerageId).eq("is_active", true).limit(5)
   const { data: farms, error: fErr } = await q
   if (fErr) return { hint: null, basis: "none", error: `farm_territories read refused: ${fErr.message ?? "unknown"}` }

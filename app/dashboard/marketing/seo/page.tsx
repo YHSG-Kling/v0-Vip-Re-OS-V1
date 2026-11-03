@@ -19,6 +19,9 @@ import type { ShareObservationRow } from "@/lib/geo/citation-share"
 import {
   allowedScopes, resolveScope, emptyScopeMessage, type CitationScope,
 } from "@/lib/geo/citation-scope"
+import { loadTenantMarkets, primaryMarketLabel } from "@/lib/geo/tenant-markets"
+import { loadSearchVisibility } from "@/lib/geo/search-visibility"
+import { SearchVisibilityCard } from "./search-visibility-card"
 
 export const metadata = {
   title: "SEO / GEO | Marketing",
@@ -64,14 +67,11 @@ export default async function SeoGeoPage({
 
   const activeTab: TabKey = (TABS.some((t) => t.key === tab) ? tab : "keywords") as TabKey
 
-  // Brokerage territory — the default market for keyword + competitor tools.
-  const { data: brokerage } = await supabase
-    .from("brokerages")
-    .select("city, state")
-    .eq("id", brokerageId)
-    .maybeSingle()
-  const defaultTerritory =
-    brokerage?.city && brokerage?.state ? `${brokerage.city}, ${brokerage.state}` : undefined
+  // The default market for keyword + competitor tools — RULING 14 (wave 149, lane 149E): derived from the territories the
+  // tenant entered in Settings (lib/geo/tenant-markets.ts — subscriber_service_areas ∪ lead_scraping_markets), with a
+  // farm territory or the office address only as a labelled fallback. This used to read brokerages.city/state alone.
+  const tenantMarkets = await loadTenantMarkets(supabase, brokerageId)
+  const defaultTerritory = primaryMarketLabel(tenantMarkets)
 
   return (
     <div className="space-y-6 p-6">
@@ -264,6 +264,14 @@ async function GeoTab({
     ? []
     : ((landingRows ?? []) as LandingCitationRow[])
 
+  // C31 SEARCH VISIBILITY (wave 149, lane 149E — ruling 13): every source the OS can measure, each with its evidence, and
+  // the ones it cannot (Google positions) said by name — never an invented rank. Same scope rule: the tenant filter always
+  // applies and the agent/team scope only narrows the citation reads.
+  const visibility = await loadSearchVisibility(supabase, brokerageId, {
+    scope: active.column === "agent_id" && active.value ? { column: "agent_id", value: active.value }
+      : active.column === "team_id" && active.value ? { column: "team_id", value: active.value } : null,
+  })
+
   const scopeBar =
     choices.length > 1 ? (
       <div className="flex gap-1">
@@ -290,6 +298,7 @@ async function GeoTab({
     return (
       <div className="space-y-4">
         {scopeBar}
+        <SearchVisibilityCard visibility={visibility} />
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
@@ -326,6 +335,7 @@ async function GeoTab({
   return (
     <div className="space-y-4">
       {scopeBar}
+      <SearchVisibilityCard visibility={visibility} />
       <CitationShareCard rows={shareRows} />
       <AiCitationVisibilityCard observations={observations} />
       <LandingCitationCard observations={landingObservations} />

@@ -111,6 +111,40 @@ export async function GET() {
       })
   } catch { /* video pages alone still serve */ }
 
+  // RULING 13 (wave 149, lane 149E): every PUBLIC surface the sitemap lists is listed here too, so an AI system reading
+  // llms.txt finds the same copy a crawler finds through sitemap.xml — the lead-magnet landing pages, the tenant websites
+  // and the team sites were in the sitemap and missing here. The route list both must carry is PUBLIC_COPY_ROUTES
+  // (lib/knowledge/embedding-service.ts), held by scripts/search-visibility-guard.ts.
+  let magnetPages: LlmsTxtPage[] = []
+  let sitePages: LlmsTxtPage[] = []
+  let teamPages: LlmsTxtPage[] = []
+  try {
+    const svc = createServiceClient()
+    const [{ data: magnets }, { data: sites }, { data: teams }] = await Promise.all([
+      svc.from("lead_capture_forms").select("slug, name, magnet_type")
+        .eq("is_active", true).not("slug", "is", null)
+        .order("updated_at", { ascending: false }).limit(300),
+      svc.from("brokerages").select("slug, name, city, state")
+        .not("slug", "is", null).is("deleted_at", null).limit(300),
+      svc.from("teams").select("public_slug, name")
+        .not("public_slug", "is", null).is("deleted_at", null).limit(300),
+    ])
+    magnetPages = ((magnets ?? []) as Array<{ slug: string; name: string | null; magnet_type: string | null }>)
+      .map((m) => ({
+        title: m.name || "Resource",
+        url: `${base}/lm/${m.slug}`,
+        summary: m.magnet_type ? `Free ${m.magnet_type.replace(/_/g, " ")} from a local real-estate professional.` : "Free resource from a local real-estate professional.",
+      }))
+    sitePages = ((sites ?? []) as Array<{ slug: string; name: string | null; city: string | null; state: string | null }>)
+      .map((b) => ({
+        title: b.name || "Real-estate website",
+        url: `${base}/site/${b.slug}`,
+        summary: [b.city, b.state].filter(Boolean).join(", ") ? `Real-estate services in ${[b.city, b.state].filter(Boolean).join(", ")}.` : "Real-estate services.",
+      }))
+    teamPages = ((teams ?? []) as Array<{ public_slug: string; name: string | null }>)
+      .map((t) => ({ title: t.name || "Real-estate team", url: `${base}/team/${t.public_slug}`, summary: "Real-estate team website." }))
+  } catch { /* the sections above still serve */ }
+
   // The platform's name is a SETTING (product_brand), never hardcoded.
   const brand = await loadProductBrand(createServiceClient())
   const body = buildLlmsTxt({
@@ -121,6 +155,9 @@ export async function GET() {
       { heading: "Active listings", pages: listingPages },
       { heading: "Articles", pages: blogPages },
       { heading: "Agents", pages: agentPages },
+      { heading: "Guides and resources", pages: magnetPages },
+      { heading: "Real-estate websites", pages: sitePages },
+      { heading: "Team websites", pages: teamPages },
     ],
   })
 
