@@ -45,8 +45,11 @@ export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
       ...CONTACT_TYPES,
     ],
     synonyms: {
-      'new lead': 'lead', 'cold lead': 'lead', 'web lead': 'lead', 'internet lead': 'lead',
-      'potential client': 'prospect', 'potential': 'prospect', 'possible client': 'prospect',
+      // TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): `'new lead' | 'cold lead' | 'web lead' | 'internet lead' → 'lead'`
+      // and `'potential client' | 'potential' | 'possible client' → 'prospect'` stood here. Neither target is a contact_type any
+      // more ('lead' is the acquisition-ladder TABLE, 'prospect' a PLATFORM person) and neither states an intent, so they are
+      // not re-pointed: normalizeEnumValue returns { value: null } and the row is filed with contact_type NULL ("intent not yet
+      // known") — the same measured decision as the 'client' trio below. Intent survivors: lib/contact-types.ts CONTACT_INTENTS.
       // TOMBSTONE (§1). `'active client' | 'current client' | 'customer' → 'client'`
       // stood here. m563 removed 'client' from contacts_contact_type_check, so all
       // three had become synonyms pointing at a value the DATABASE REFUSES (23514) —

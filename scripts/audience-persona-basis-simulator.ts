@@ -23,14 +23,18 @@
  *   · a protected-characteristic persona used to EXCLUDE or SUPPRESS an
  *     audience (`exclusion_*` source-rule types)                 → REFUSED.
  *
+ * RE-ASSERTED — WAVE 149, LANE 149A (owner ruling 2026-11-03: "Every persona is allowed and this can't change"):
+ * the wave-148Z edits to this file (inclusion refusing senior / probate / divorce / military, 13 → 9, four
+ * templates off the shelf) asserted a restriction the owner REVERSED; they are reverted to the rule below, which
+ * is the owner's. The exclusion arm and every fail-closed check are unchanged.
+ *
  * WHAT IS PROVEN, AND IN BOTH DIRECTIONS:
  *   1. the canonical persona vocabulary is ONE vocabulary (CLAUDE.md §6) — the TS
  *      union, the runtime roster and the live CHECK agree;
- *   2. the inclusion set is every NEEDS-BASED persona (owner ruling 1, 2026-11-01,
- *      wave 148Z — reversing the 2026-08-23 admission of the four protected
- *      personas for ad audiences) — INCLUDING the delta: each of the four is shown
- *      to be still classified protected and refused as protected_characteristic,
- *      so the reversal is measured rather than asserted;
+ *   2. the inclusion set is every persona that names a SITUATION, and the four the
+ *      ruling turned admit both gates now — INCLUDING the delta: each of the four
+ *      is shown to be one the PRE-RULING derivation would have refused, so the
+ *      reversal is measured rather than asserted;
  *   3. the EXCLUSION refusal is derived from the same classifier, never listed,
  *      and refuses at both gates — with a positive control that a NON-protected
  *      persona may still be excluded (a gate that refuses every exclusion is not
@@ -158,29 +162,24 @@ function main() {
       === JSON.stringify(["divorce", "military", "probate", "senior"]),
     independentlyProtected.join(","))
 
-  // THE RULE, AS A DERIVATION (wave 148Z — owner ruling 1, 2026-11-01, reversing the 2026-08-23 admission for ad
-  // audiences): inclusion refuses the protected-token personas AND the catch-all; it admits every needs-based persona.
-  // Re-asserted as the RULE (the set is re-derived here from PROTECTED_CLASS_TOKENS), not as a waypoint count — this
-  // check read "exactly the null basis" while the 2026-08-23 ruling stood (CLAUDE.md §2).
-  check("ADS_INELIGIBLE_PERSONAS (inclusion) = the protected-token personas + the null basis (ruling 1 reverses 2026-08-23)",
-    JSON.stringify([...ADS_INELIGIBLE_PERSONAS].sort()) === JSON.stringify([...independentlyProtected, UNRESOLVED_PERSONA].sort()),
+  // THE RULING, AS A COUNT. Inclusion refuses ONE persona and it is the catch-all.
+  check("ADS_INELIGIBLE_PERSONAS (inclusion) is exactly the null basis — the four are IN, per the ruling",
+    JSON.stringify([...ADS_INELIGIBLE_PERSONAS]) === JSON.stringify([UNRESOLVED_PERSONA]),
     `ineligible=${ADS_INELIGIBLE_PERSONAS.join(",")}`)
-  check("ADS_ELIGIBLE_PERSONAS is every NEEDS-BASED canonical persona (all minus the protected ones and the catch-all)",
-    ADS_ELIGIBLE_PERSONAS.length === CAMPAIGN_PERSONAS.length - independentlyProtected.length - 1
-    && independentlyProtected.every((p) => !(ADS_ELIGIBLE_PERSONAS as readonly string[]).includes(p)),
+  check("ADS_ELIGIBLE_PERSONAS is every canonical persona EXCEPT the catch-all (all but one)",
+    ADS_ELIGIBLE_PERSONAS.length === CAMPAIGN_PERSONAS.length - 1
+    && independentlyProtected.every((p) => (ADS_ELIGIBLE_PERSONAS as readonly string[]).includes(p)),
     `eligible=${ADS_ELIGIBLE_PERSONAS.join(",")}`)
 
-  // THE MEASURED DELTA (CLAUDE.md §2 — a count that moves is the finding). The ADS_ELIGIBLE count moves 13 → 9 with
-  // the four the classifier calls protected — and ONLY those four: the classifier still classifies them protected
-  // (the vocabulary was not gutted to move a number) and each refusal carries the protected_characteristic kind.
+  // THE MEASURED DELTA (CLAUDE.md §2 — a count that moves is the finding). Each of
+  // the four is proved to be one the PRE-RULING derivation refused: the classifier
+  // still classifies it protected, and the inclusion gate now admits it anyway.
+  // That is the reversal, stated as a difference rather than as a claim.
   check("DELTA — all four are STILL classified protected by the classifier (the vocabulary was not gutted)",
     independentlyProtected.every((p) => protectedClassReasonFor(p) !== null))
-  check("DELTA — the inclusion gate refuses exactly those four, as protected_characteristic, naming the NEED alternative",
-    independentlyProtected.length === 4
-    && independentlyProtected.every((p) => {
-      const v = personaAdsEligibility(p as CampaignPersona, "inclusion")
-      return !v.eligible && v.refusalKind === "protected_characteristic" && /NEED/.test(v.reason ?? "") && /ruling 1/.test(v.reason ?? "")
-    }))
+  check("DELTA — and the pre-ruling derivation (protected ⇒ ineligible) would have refused exactly those four,",
+    independentlyProtected.every((p) => !(ADS_INELIGIBLE_PERSONAS as readonly string[]).includes(p))
+    && independentlyProtected.length === 4)
 
   check("EXCLUSION_INELIGIBLE_PERSONAS = the protected-token personas + the null basis (independently re-derived)",
     JSON.stringify([...EXCLUSION_INELIGIBLE_PERSONAS].sort())
@@ -235,16 +234,7 @@ function main() {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[3 · INCLUSION — ADMITS every needs-based persona; the four protected ones REFUSE (ruling 1, 2026-11-01)]")
-
-  for (const p of independentlyProtected) {
-    const rule = { type: PERSONA_SEGMENT_TYPE, filters: { personas: [p] } }
-    const msg = throws(() => assertAudiencePersonaBasis(rule, `${p} audience`)) ?? ""
-    check(`"${p}" as a STAFF-chosen INCLUSION basis → the persona gate REFUSES, naming the persona, the audience and the rule`,
-      msg.includes("REFUSED") && msg.includes(`"${p}"`) && msg.includes(`${p} audience`) && /PROTECTED CHARACTERISTIC/.test(msg))
-  }
-  check("POSITIVE CONTROL — the inclusion refusal is not refuse-everything: a needs-based persona (downsize) still builds",
-    throws(() => assertAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["downsize"] } }, "x")) === null)
+  console.log("\n[3 · INCLUSION — ADMITS every situation persona, the four the owner ruled IN included]")
 
   for (const p of ADS_ELIGIBLE_PERSONAS) {
     const rule = { type: PERSONA_SEGMENT_TYPE, filters: { personas: [p] } }
@@ -268,10 +258,10 @@ function main() {
       const r = resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["upsize", "downsize", "upsize"] } })
       return r.ok && JSON.stringify(r.personas) === JSON.stringify(["upsize", "downsize"])
     })())
-  check("a MIXED list of a needs-based persona and a protected persona REFUSES WHOLE (one protected entry poisons the basis)",
+  check("a MIXED list of a situation persona and a ruled-in protected persona resolves WHOLE",
     (() => {
       const r = resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["first_time", "senior"] } })
-      return !r.ok && r.refusalKind === "protected_characteristic"
+      return r.ok && JSON.stringify(r.personas) === JSON.stringify(["first_time", "senior"])
     })())
   check("ONE bad persona still poisons the whole basis — a mixed list with the catch-all refuses",
     !resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["first_time", "other"] } }).ok)
@@ -310,11 +300,9 @@ function main() {
   check("POSITIVE CONTROL — the ordinary exclusion audience (no persona basis at all) is untouched",
     throws(() => assertAudiencePersonaBasis({ type: "exclusion_active_pipeline", filters: {} }, "x")) === null
     && throws(() => assertAudienceSegmentationAllowed({ type: "exclusion_active_pipeline", filters: {} }, "x")) === null)
-  check("a protected persona refuses on BOTH operations, a needs-based one is admitted on both (ruling 1 — the operation no longer flips it)",
-    !resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["senior"] } }).ok
-    && !resolveAudiencePersonaBasis({ type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }).ok
-    && resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["fsbo"] } }).ok
-    && resolveAudiencePersonaBasis({ type: "exclusion_active_pipeline", filters: { personas: ["fsbo"] } }).ok)
+  check("the SAME persona flips verdict with the OPERATION and nothing else (one rule, one field changed)",
+    resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["senior"] } }).ok
+    && !resolveAudiencePersonaBasis({ type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }).ok)
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[4b · THE RAW PROVIDER ATTRIBUTE PATH IS UNTOUCHED — the regression this lane risked]")
@@ -510,18 +498,17 @@ function main() {
     `templates=${personaTemplates.length} eligible=${ADS_ELIGIBLE_PERSONAS.length}`)
   check("NO template exists for any ads-ineligible persona",
     ADS_INELIGIBLE_PERSONAS.every((p) => !FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)))
-  check("the four protected personas SHIP NO template since ruling 1 (the reversal reached the operator's shelf, not just the gate)",
-    independentlyProtected.every((p) => !FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)),
-    independentlyProtected.filter((p) => FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)).join(",") || "none present")
-  check("…and every persona template that IS shipped is an INCLUSION basis on a needs-based persona, never an exclusion rule type",
-    personaTemplates.length > 0 && personaTemplates.every((t) => {
+  check("the four the owner ruled IN now SHIP a template (the ruling reached the operator's shelf, not just the gate)",
+    independentlyProtected.every((p) => FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)),
+    independentlyProtected.filter((p) => !FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)).join(",") || "all four present")
+  check("…and each of those four templates is an INCLUSION basis, never an exclusion rule type",
+    independentlyProtected.every((p) => {
+      const t = FB_AUDIENCE_TEMPLATES.find((x) => x.id === `persona_${p}`)
       // ASKS THE RULE, not the shelf label. `category: "exclusion"` is deleted
       // (§6) — SURVIVOR: audienceUseOf(t.sourceRule), the same function every
       // gate reads, which is why this assertion is now checking the thing that
       // actually decides the operation.
-      const personas = ((t.sourceRule as { filters?: { personas?: unknown } }).filters?.personas ?? []) as string[]
-      return t.sourceRule.type === PERSONA_SEGMENT_TYPE && audienceUseOf(t.sourceRule) !== "exclusion"
-        && personas.every((p) => !independentlyProtected.includes(p as CampaignPersona))
+      return !!t && t.sourceRule.type === PERSONA_SEGMENT_TYPE && audienceUseOf(t.sourceRule) !== "exclusion"
     }))
   check("NO shipped template anywhere in the catalog combines an exclusion rule type with a persona basis",
     FB_AUDIENCE_TEMPLATES.every((t) => !(audienceUseOf(t.sourceRule) === "exclusion" && declaresPersonaBasis(t.sourceRule))))
@@ -574,8 +561,8 @@ function main() {
     expired:     "SITUATION — listing expired unsold.",
     foreclosure: "SITUATION — facing foreclosure; sourced from public filings on the parcel.",
     investor:    "SITUATION — buying for investment (portfolio, rental, flip). Owner-ruled a persona 2026-08-31 ('investor is a persona and not a contact type'); NOT a protected class, so eligible on BOTH operations.",
-    probate:     "SITUATION — settling an estate that includes a property. (Owner-ruled ads-eligible 2026-08-23; refused as an ad-audience basis since ruling 1, 2026-11-01 — reach the NEED: home value / selling.)",
-    divorce:     "SITUATION — dividing a marital home. (Owner-ruled ads-eligible 2026-08-23; refused as an ad-audience basis since ruling 1, 2026-11-01 — reach the NEED: home value / equity planning.)",
+    probate:     "SITUATION — settling an estate that includes a property. (Owner-ruled ads-eligible 2026-08-23.)",
+    divorce:     "SITUATION — dividing a marital home. (Owner-ruled ads-eligible 2026-08-23.)",
     senior:      "FLAG — the LABEL is an age band, a characteristic; the SITUATION it stands for is a later-life move. Owner ruled it a situation persona and the template copy names the transition, not the age. Recorded, not changed: renaming it is a live-CHECK migration another lane owns.",
     military:    "FLAG — the LABEL is a status, not a situation; the SITUATION it stands for is a PCS move / VA financing. Owner ruled it a situation persona. Same recording, same reason.",
     luxury:      "FLAG — NOT a situation and NOT a contact type either: it is a PRICE TIER, a fact about the inventory rather than about what brought the person to market. It is the one member that fits the owner's definition least well. Unresolved: it is live in the CHECK and has two drifted DB spellings (luxury_buyer, luxury_seller) mapping onto it.",
@@ -595,9 +582,9 @@ function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ AUDIENCE_PERSONA_BASIS_PASS — an audience is segmented on persona; every NEEDS-BASED")
-  console.log("    persona may INCLUDE and choose wording; a protected-characteristic persona may neither")
-  console.log("    INCLUDE (owner ruling 1, 2026-11-01) nor SUPPRESS; raw demographic attributes stay refused.")
+  console.log(" ✅ AUDIENCE_PERSONA_BASIS_PASS — an audience is segmented on persona; all 14 minus")
+  console.log("    the catch-all may INCLUDE and choose wording; a protected-characteristic persona")
+  console.log("    may not SUPPRESS an audience; raw demographic attributes stay refused on the ads lane.")
 }
 
 main()

@@ -328,6 +328,10 @@ group("148B", "one consent component, suppression sync, one intake door", [
 
 // ═════════════════════════════════════════════════════════════════════════════
 // 148C — protected-attribute research → marketing-safe personas → compliant audiences (owner ruling 1)
+// RE-ASSERTED — wave 149, lane 149A (owner ruling 2026-11-03, "Every persona is allowed and this can't change"): the three
+// persona / audience canaries below asserted the wave-148 "needs-based only" restriction the owner REVERSED. They now assert
+// the owner's rule — the positive and negative halves flipped with it: a situation persona IS a campaign persona and an
+// audience basis; research still never becomes a need; discriminatory WORDING and proxy tags are still refused.
 // ═════════════════════════════════════════════════════════════════════════════
 const PB = "00000000-0000-4000-8000-0000000000b1", PAG1 = "00000000-0000-4000-8000-00000000a001", PTEAM = "00000000-0000-4000-8000-00000000c001"
 const PC1 = "00000000-0000-4000-8000-000000000c01", PC3 = "00000000-0000-4000-8000-000000000c03"
@@ -381,7 +385,7 @@ group("148C", "protected research → marketing-safe persona → compliant audie
     },
   },
   {
-    id: "148C·R1", label: "derivePersona: campaignPersona is NEVER probate/military/divorce/senior — a hostile model's senior/research needs are cut; a staff 'senior' is never mapped",
+    id: "148C·R1", label: "derivePersona: a hostile model's unknown / research-cited needs are cut; a staff 'senior' IS honoured as the campaign persona (every persona allowed) and never overwritten",
     run: async () => {
       const builder = await import("../lib/contacts/persona-builder")
       const layers = await import("../lib/contacts/persona-layers")
@@ -399,19 +403,19 @@ group("148C", "protected research → marketing-safe persona → compliant audie
         const actor = { userId: "u-agent", userType: "agent", brokerageId: PB }
         const r1 = await builder.derivePersona(db, { brokerageId: PB, contactId: PC1, actor, agentId: PAG1 } as never, { now: NOW, generate: async () => hostile })
         const r3 = await builder.derivePersona(db, { brokerageId: PB, contactId: PC3, actor, agentId: PAG1 } as never, { now: NOW, generate: async () => "{}" })
-        const protectedSet = new Set<string>(layers.PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS)
         const cp1 = r1.persona?.marketing.campaignPersona ?? null
         const c3 = rows(db, "contacts").find((c) => c.id === PC3)
+        const seniorNeed = (layers.MARKETING_NEEDS as Record<string, { campaignPersona: string | null }>).later_life_housing?.campaignPersona
         return {
-          positive: r1.ok && r1.marketingSafe && cp1 !== null && !protectedSet.has(cp1) && sorted([...protectedSet]) === sorted(["divorce", "military", "probate", "senior"]),
-          negative: !(r1.persona?.marketing.needs ?? []).some((n) => n.evidenceRefs.some((id) => /^R1-/.test(id))) && r3.ok && r3.persona?.marketing.campaignPersona === null && c3?.contact_persona === "senior",
+          positive: r1.ok && r1.marketingSafe && cp1 === "relocated" && r3.ok && r3.persona?.marketing.campaignPersona === "senior" && c3?.contact_persona === "senior" && seniorNeed === "senior",
+          negative: !(r1.persona?.marketing.needs ?? []).some((n) => n.evidenceRefs.some((id) => /^R1-/.test(id)) || (n.need as string) === "senior_living"),
           detail: JSON.stringify({ cp1, needs: r1.persona?.marketing.needs.map((n) => n.need), r3: r3.persona?.marketing.campaignPersona, notes: r1.notes, err: (r1 as any).error }),
         }
       })
     },
   },
   {
-    id: "148C·R1", label: "assertMarketingSafePersona: a needs-based persona passes; a protected campaign persona or a 'perfect for families' headline is refused",
+    id: "148C·R1", label: "assertMarketingSafePersona: a relocation persona AND a 'senior' campaign persona pass (every persona allowed); a 'perfect for families' headline or a research-cited need is refused",
     run: async () => {
       const L = await import("../lib/contacts/persona-layers")
       const spec = L.MARKETING_NEEDS.relocation_research
@@ -424,20 +428,21 @@ group("148C", "protected research → marketing-safe persona → compliant audie
       const senior = L.assertMarketingSafePersona({ ...safe, campaignPersona: "senior" } as never)
       const families = L.assertMarketingSafePersona({ ...safe, headline: "Perfect for families like yours" } as never)
       const researchCited = L.assertMarketingSafePersona({ ...safe, needs: [{ ...safe.needs[0], evidenceRefs: ["R1-1"] }] } as never)
-      return { positive: a.ok, negative: !senior.ok && !families.ok && !researchCited.ok, detail: JSON.stringify({ a: a.violations, senior: senior.violations, families: families.violations }) }
+      return { positive: a.ok && senior.ok, negative: !families.ok && !researchCited.ok, detail: JSON.stringify({ a: a.violations, senior: senior.violations, families: families.violations }) }
     },
   },
   {
-    id: "148C·R1", label: "audiences: proxy tags ('young-families', 'church-goers') and a derived 'senior' audience are refused at selection; 'acreage buyers' and derived 'relocated' pass",
+    id: "148C·R1", label: "audiences: proxy tags ('young-families', 'church-goers') and a 'senior' SUPPRESSION list are refused; 'acreage buyers', derived 'relocated' and derived 'senior' audiences pass",
     run: async () => {
       const proxy = await import("../lib/compliance-rules/audience-compliance")
       const basis = await import("../lib/ads/audience-persona-basis")
       const okRule = basis.resolveAudiencePersonaBasis({ type: "persona_segment", basis: "derived_persona", filters: { personas: ["relocated"] } })
       const seniorRule = basis.resolveAudiencePersonaBasis({ type: "persona_segment", basis: "derived_persona", filters: { personas: ["senior"] } })
+      const seniorExcl = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["senior"] } }, "exclusion")
       return {
-        positive: proxy.audienceProxyHits("acreage buyers").length === 0 && okRule.ok,
-        negative: proxy.audienceProxyHits("young-families").length > 0 && proxy.audienceProxyHits("church-goers").length > 0 && !seniorRule.ok && (seniorRule as any).refusalKind === "protected_characteristic",
-        detail: JSON.stringify({ okRule, seniorRule }),
+        positive: proxy.audienceProxyHits("acreage buyers").length === 0 && okRule.ok && seniorRule.ok,
+        negative: proxy.audienceProxyHits("young-families").length > 0 && proxy.audienceProxyHits("church-goers").length > 0 && !seniorExcl.ok && (seniorExcl as any).refusalKind === "protected_characteristic",
+        detail: JSON.stringify({ okRule, seniorRule, seniorExcl }),
       }
     },
   },

@@ -352,7 +352,7 @@ async function main(): Promise<void> {
   // contact_persona='investor' (m589).
   check("resolveContactType feeds the portal gate a CANONICAL type (never a raw lead_type)",
     resolveContactType("investor", "motivated_seller") === "buyer" &&
-    resolveContactType(null, "unknown") === "prospect")
+    resolveContactType(null, "unknown") === null) // wave 149A (owner ruling 3): unknown intent → NULL, never 'prospect'
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

@@ -470,7 +470,7 @@ const { data: buyerContacts } = await supabase
   .from("contacts")
   .select("id, first_name, last_name")
   .eq("brokerage_id", userRow.brokerage_id)
-  .in("contact_type", ["buyer", "lead"])
+  .in("contact_type", ["buyer", "both"]) // buyer-side intent, the bulk matcher's filter (owner ruling 3, wave 149A — 'lead' is not a contact type)
   .in("status", ["active", "qualified", "nurture"])
   .is("deleted_at", null)
   .order("first_name", { ascending: true })

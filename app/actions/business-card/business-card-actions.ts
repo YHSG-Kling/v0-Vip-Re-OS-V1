@@ -611,10 +611,11 @@ async function routeClassifiedCard(args: {
     email: confident.email ?? null,
     phone: confident.phone ?? null,
     address: confident.address ?? null,
-    // 'prospect' is the live contacts.contact_type CHECK value for a not-yet-
-    // qualified potential client (scripts/check-vocabularies.ts:538) — leaving
-    // it unset for 'contact' keeps captureContact's own default.
-    contact_type: cardSubjectType === "potential_contact" ? "prospect" : undefined,
+    // TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): a potential_contact card was filed contact_type 'prospect'.
+    // 'prospect' is a PLATFORM person (platform_prospects), never a tenant contact type, and a card states no intent — so
+    // contact_type is left NULL for both card classes; the potential-contact class survives on business_card_scans.
+    // card_subject_type and the business_card_potential_contact_candidate signal (unchanged).
+    contact_type: undefined,
     notes: [
       confident.title || confident.company
         ? `From their card: ${[confident.title, confident.company].filter(Boolean).join(" @ ")}.`

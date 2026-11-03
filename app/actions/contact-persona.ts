@@ -91,3 +91,31 @@ export async function loadContactPersona(input: { contactId: string }) {
   if (legacy.error) return { ok: false as const, error: `persona unreadable: ${legacy.error.message}` }
   return { ok: true as const, layered: false, note: `five-layer columns unavailable (${full.error.message}) — the five-layer persona migration is not applied yet`, persona: (legacy.data ?? null) as Record<string, unknown> | null }
 }
+
+/**
+ * C26 (wave 149, lane 149A — owner ruling 2026-11-03: "Every persona is allowed"). Build the platform custom audience of the
+ * contacts tagged with this persona, on the existing Ads Manager survivor (lib/ads/persona-audience.ts createPersonaAudience →
+ * lib/kernel/ads.ts createAudienceSegment). Tenant and creator from the SESSION; the feature entitlement is the same one the Ads
+ * dashboard's createAudience asks. The audience is created as a DRAFT — the upload is the human-approved sync on the Ads door.
+ */
+export async function createContactPersonaAudience(input: { persona: string; platform?: string; derived?: boolean; lookalike?: boolean }) {
+  const id = await resolveCallerIdentity()
+  if (!id.ok) return { ok: false as const, error: id.error }
+  if (!id.brokerageId) return { ok: false as const, error: "A persona audience is built inside your own tenant — this account is not linked to one." }
+  const { mayUseFeature } = await import("@/lib/billing/billing-access")
+  const access = await mayUseFeature(id.userId, "ads_audiences")
+  if (!access.allowed) return { ok: false as const, error: access.reason || "Feature access denied" }
+  const { createPersonaAudience } = await import("@/lib/ads/persona-audience")
+  const res = await createPersonaAudience({
+    tenant: { brokerageId: id.brokerageId },
+    creator: { userId: id.userId },
+    persona: String(input?.persona ?? ""),
+    platform: String(input?.platform ?? "facebook"),
+    derived: !!input?.derived,
+    lookalike: !!input?.lookalike,
+  })
+  if (!res.ok) return { ok: false as const, error: res.error ?? "the audience was not created", refusalKind: res.refusalKind ?? null }
+  const { incrementFeatureUsage } = await import("@/lib/kernel/0.1-feature-access")
+  await incrementFeatureUsage(id.userId, "ads_audiences")
+  return { ok: true as const, audienceId: res.audienceId!, audienceName: res.plan?.audienceName ?? null, platformNote: res.plan?.platformNote ?? null, nextStep: res.nextStep ?? null }
+}

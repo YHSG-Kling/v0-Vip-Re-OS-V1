@@ -35,8 +35,9 @@ import { LEAD_SOURCES, LEAD_SOURCE_LABELS } from "@/lib/constants"
 // COMPILE ERROR rather than a menu item that fails on submit — which is the whole
 // point of typing them off the vocabulary instead of retyping it.
 const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
-  lead:              "Lead",
-  prospect:          "Prospect",
+  // TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): `lead: "Lead"` and `prospect: "Prospect"` stood here. Intent is
+  // Buyer / Seller / Buyer & Seller; a lead is the acquisition ladder's table and a prospect a PLATFORM person — the
+  // derivation made both a compile error the moment lib/contact-types.ts dropped them, which is the point.
   // TOMBSTONE (§1): `client: "Client"` stood here. Removed by m563 — a represented
   // client picks the side they are on (Buyer / Seller / Buyer & Seller / Investor);
   // the representation itself is contacts.status, not a contact_type.
@@ -63,7 +64,7 @@ const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
 // m593 retires the value and lib/contact-types.ts drops it, the label entry
 // above becomes a compile error and goes too.
 const CONTACT_TYPE_ORDER: readonly ContactType[] = [
-  "buyer", "seller", "both", "lead", "prospect",
+  "buyer", "seller", "both",
   "referral_partner", "vendor", "sphere", "lifetime_customer", "other",
 ]
 

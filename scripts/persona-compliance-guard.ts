@@ -5,6 +5,15 @@
  * person's persona so users can create ads and posts, etc. around that persona. The admin, platform, agent, team lead, broker,
  * compliance, support, etc. should be able to read."
  *
+ * RE-ASSERTED TO THE OWNER'S RULE — WAVE 149, LANE 149A (owner ruling 2026-11-03): "Every persona is allowed and this can't
+ * change." Fair housing and steering apply to the WORDING of an ad / post and to the ad platform's housing rules — never to which
+ * persona exists or which persona an audience is built on. The wave-148 checks that asserted the REVERSED rule (a protected
+ * persona refused as an audience basis, the m913 needs-based CHECK naming the four) now assert the owner's rule, and every
+ * positive control flipped with it: a situation persona IS an eligible audience basis (staff-chosen AND derived), the persona
+ * copy may name the situation, m934 drops the needs-based CHECK — while ad WORDING is still scanned, Meta / Google delivery rules
+ * still refuse age / gender / ZIP / lookalike, a protected persona still may not SUPPRESS a housing audience, and the C26 upload is
+ * still consent- and suppression-floored (section 6).
+ *
  * WHAT IS EXECUTED (on the in-memory client, through the REAL modules — only `server-only`, the service-client factory and the
  * model are stubbed; the model is injected per case so a HOSTILE answer can be fed to the firewall):
  *   1  the READER: every role the owner named reads through the role × purpose × scope matrix — admitted where the matrix says,
@@ -15,9 +24,10 @@
  *      model answer (unknown need, research-cited need, "perfect for families", "top schools", "church", "spanish-speaking", a
  *      research VALUE) is cut element by element; the persisted row keeps the five layers apart and holds no research value; the
  *      needs-based persona is written to contacts.contact_persona and a derived-persona audience on it passes every gate.
- *   3  a PROTECTED PROXY NEVER REACHES AN AUDIENCE: research-only evidence yields no audience-eligible persona and no
- *      contact_persona write; a staff-entered protected persona is never mapped or overwritten; a derived-persona audience on a
- *      protected persona is refused; proxy words in an audience rule are refused at SELECTION.
+ *   3  RESEARCH NEVER BECOMES A NEED, BUT EVERY SITUATION PERSONA IS AN AUDIENCE: research-only evidence yields no audience-
+ *      eligible persona and no contact_persona write; a staff-entered situation persona (senior) is HONOURED (mapped to its need,
+ *      never overwritten); staff-chosen and derived audiences on every persona resolve; a protected persona on an EXCLUSION slot
+ *      is still refused; proxy words in a free-text audience rule are refused at SELECTION.
  *   4  DELIVERY: proxy interests, ZIP targeting (Meta + Google), Google age / gender narrowing and an ungated targeted audience
  *      are violations; the launch assembler re-gates the targeted slot (look-alike, proxy rule, raw platform id refused; a
  *      governed needs-based audience delivered).
@@ -114,6 +124,7 @@ async function main() {
   const proxy = await import("../lib/compliance-rules/audience-compliance")
   const payload = await import("../lib/ads/connectors/ad-payload")
   const fh = await import("../lib/compliance-rules/fair-housing-patterns")
+  const templates = await import("../lib/ads/fb-audience-templates")
 
   // ── 1 ──────────────────────────────────────────────────────────────────────
   console.log("\n[1 — the reader: every named role, through role × purpose × scope; every read and refusal logged with its purpose]")
@@ -244,21 +255,30 @@ async function main() {
   check("…and the study escalates for a human to ASK (insufficient_evidence) rather than guess", res2.persona?.escalate === "insufficient_evidence")
   const res3 = await builder.derivePersona(db, { brokerageId: B, contactId: C3, actor: agentSeat, agentId: AG1 }, { now: NOW, generate: async () => "{}" })
   const c3 = rows(db, "contacts").find((c) => c.id === C3)
-  check("a STAFF-ENTERED protected persona (senior) is never mapped to a marketing need and never overwritten",
-    res3.ok && (res3.persona?.firewall.withheldFromMarketing ?? []).some((w) => /senior/.test(w)) && c3?.contact_persona === "senior" && res3.persona?.marketing.campaignPersona === null)
+  // WAVE 149 (149A) — RE-ASSERTED to the owner's rule: this check read "a STAFF-ENTERED protected persona (senior) is never mapped
+  // to a marketing need" (the reversed 148C rule). The rule now: the staff-entered situation persona is HONOURED — it maps to its
+  // need, it is the campaign persona, and it is never overwritten by the study.
+  check("a STAFF-ENTERED situation persona (senior) is HONOURED: mapped to its need (later_life_housing), the campaign persona, never overwritten",
+    res3.ok && !(res3.persona?.firewall.withheldFromMarketing ?? []).some((w) => /senior/.test(w)) && c3?.contact_persona === "senior"
+    && res3.persona?.marketing.campaignPersona === "senior" && (res3.persona?.marketing.needs ?? []).some((n) => n.need === "later_life_housing"), JSON.stringify(res3.persona?.marketing))
   const derivedSenior = basis.resolveAudiencePersonaBasis({ type: "persona_segment", basis: "derived_persona", filters: { personas: ["senior"] } })
-  check("a DERIVED-persona audience on a protected-characteristic persona is REFUSED (protected_characteristic)", !derivedSenior.ok && derivedSenior.refusalKind === "protected_characteristic")
-  // WAVE 148Z: the recorded owner decision is TAKEN (ruling 22 → ruling 1 applies to staff-chosen personas): this check read
-  // "the 2026-08-23 staff path is NOT silently reversed" while the decision was open — a waypoint. The rule now: a STAFF
-  // persona audience (no derived basis) on a protected persona is refused exactly like a derived one, and the refusal says
-  // the reversal out loud; a needs-based staff persona still builds (positive control — not refuse-every-persona).
-  const staffSenior = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["senior"] } })
-  check("a STAFF-chosen persona audience on a protected persona is REFUSED too (ruling 1 reverses 2026-08-23 — said in the refusal)",
-    !staffSenior.ok && staffSenior.refusalKind === "protected_characteristic" && /2026-08-23/.test(staffSenior.refusal))
-  check("POSITIVE CONTROL — a needs-based STAFF persona audience (downsize) still resolves",
-    basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["downsize"] } }).ok)
-  check("PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS is COMPUTED by the classifier (probate, military, divorce, senior — investor is not)",
-    [...layers.PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS].sort().join(",") === "divorce,military,probate,senior" && !layers.PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS.includes("investor" as never))
+  check("a DERIVED-persona audience on a situation persona (senior) RESOLVES — the 148C derived-basis refusal is gone", derivedSenior.ok, JSON.stringify(derivedSenior))
+  // WAVE 149 (149A) — RE-ASSERTED: 148Z asserted "a STAFF persona audience on a protected persona is refused". The owner reversed
+  // it ("Every persona is allowed and this can't change"): every canonical persona but `other` is an inclusion basis, staff-chosen
+  // or derived. The exclusion arm stays (a persona may not SUPPRESS a housing audience) — positive control that the gate still sees.
+  const everyPersona = ["first_time", "relocated", "luxury", "fsbo", "probate", "upsize", "downsize", "military", "divorce", "senior", "expired", "foreclosure", "investor"]
+  const refusedStaff = everyPersona.filter((p) => !basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: [p] } }).ok)
+  check(`EVERY situation persona is a staff-chosen audience basis (${everyPersona.length}: first_time … probate, military, divorce, senior … investor)`, refusedStaff.length === 0, refusedStaff.join(","))
+  check("ADS_ELIGIBLE_PERSONAS is every canonical persona but the catch-all (13) and the persona-template shelf carries one template each",
+    [...basis.ADS_ELIGIBLE_PERSONAS].sort().join(",") === [...everyPersona].sort().join(",") && basis.ADS_INELIGIBLE_PERSONAS.join(",") === "other"
+    && everyPersona.every((p) => templates.FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)), `${basis.ADS_ELIGIBLE_PERSONAS.length}`)
+  check("POSITIVE CONTROL — `other` (no situation) is still refused as a basis (no_basis), so the census is not refuse-nothing",
+    (() => { const r = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["other"] } }); return !r.ok && r.refusalKind === "no_basis" })())
+  const exclSenior = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["senior"] } }, "exclusion")
+  check("POSITIVE CONTROL — a protected persona on an EXCLUSION (suppression) slot is still refused (withholding delivery, unchanged)",
+    !exclSenior.ok && exclSenior.refusalKind === "protected_characteristic")
+  check("EXCLUSION_INELIGIBLE_PERSONAS is COMPUTED by the classifier (divorce, military, other, probate, senior — investor is not)",
+    [...basis.EXCLUSION_INELIGIBLE_PERSONAS].sort().join(",") === "divorce,military,other,probate,senior")
   const proxyRules = [
     { type: "contact_list", filters: { contact_tags: ["young-families"] } },
     { type: "contact_list", filters: { contact_tags: ["spanish-speakers"] } },
@@ -320,7 +340,9 @@ async function main() {
   const prx = await asm.assembleAdFromCampaign("camp-proxy", ldb as never)
   check("an audience whose rule selects by a PROXY is refused at delivery even though it already synced", !prx.ok && /protected class/.test(prx.error ?? ""), prx.error)
   const sen = await asm.assembleAdFromCampaign("camp-senior", ldb as never)
-  check("a derived-persona audience edited onto a protected persona is refused at delivery", !sen.ok && /PROTECTED CHARACTERISTIC/.test(sen.error ?? ""), sen.error)
+  // WAVE 149 (149A) — RE-ASSERTED: read "a derived-persona audience edited onto a protected persona is refused at delivery".
+  check("POSITIVE — a derived situation-persona audience (senior) is DELIVERED, inclusion gated (every persona is allowed)",
+    sen.ok && sen.input?.targeting.inclusionGovernance === "gated" && payload.validateAdReadiness(sen.input!).ready, sen.ok ? "" : sen.error)
   const rawBad = await asm.assembleAdFromCampaign("camp-raw-bad", ldb as never)
   check("a RAW platform audience id that is not a governed audience of this tenant is refused (the ungoverned door is closed)", !rawBad.ok && /not a governed audience/.test(rawBad.error ?? ""), rawBad.error)
   const rawOk = await asm.assembleAdFromCampaign("camp-raw-ok", ldb as never)
@@ -348,7 +370,17 @@ async function main() {
   check("m913 + m914 carry a valid line-1 stamp (the lane stamp, or APPLIED LIVE once applied — the rule, not the waypoint)", stampOk(m913) && stampOk(m914))
   const sql913 = m913.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
   const listed = [...(sql913.match(/NOT IN \(([^)]*)\)/)?.[1] ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort()
-  check("m913's needs-based CHECK names EXACTLY the classifier's protected-characteristic personas (derived, compared — never a pinned list)", listed.join(",") === [...layers.PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS].sort().join(","), listed.join(","))
+  // WAVE 149 (149A) — RE-ASSERTED: this compared m913's needs-based CHECK to the protected set (the reversed rule). The rule now:
+  // no migration after m913 leaves that CHECK standing — m934 DROPS it, and no later file re-adds it.
+  const NEEDS_CHECK = /ADD CONSTRAINT\s+client_detailed_personas_marketing_needs_based_check/
+  check("POSITIVE CONTROL — the CHECK finder sees m913's ADD of the needs-based CHECK (stripped SQL)", NEEDS_CHECK.test(sql913) && listed.length === 4, listed.join(","))
+  const migs = readdirSync(join(ROOT, "supabase/migrations")).filter((n) => /^m\d+/.test(n)).sort((a, b) => Number(a.match(/^m(\d+)/)![1]) - Number(b.match(/^m(\d+)/)![1]))
+  const sqlOf = (n: string) => raw(`supabase/migrations/${n}`).split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+  const m934 = migs.find((n) => /^m934-/.test(n))
+  const readds = migs.filter((n) => Number(n.match(/^m(\d+)/)![1]) > 934 && NEEDS_CHECK.test(sqlOf(n)))
+  check("m934 DROPS client_detailed_personas_marketing_needs_based_check (lane stamp or APPLIED LIVE on line 1) and no later migration re-adds it",
+    !!m934 && /DROP CONSTRAINT IF EXISTS client_detailed_personas_marketing_needs_based_check/.test(sqlOf(m934)) && !NEEDS_CHECK.test(sqlOf(m934))
+    && (/^-- WRITTEN, NOT APPLIED \(wave 149, lane 149A\)/.test(raw(`supabase/migrations/${m934}`)) || /^-- ── APPLIED LIVE /.test(raw(`supabase/migrations/${m934}`))) && readds.length === 0, readds.join(","))
   check("m913 adds the five layers + service profile + derivation, holds 'marketing persona only when safe' and 'no research value' in the database",
     ["stated_needs", "behavioural_evidence", "inferred_interests", "research_layer", "marketing_persona", "marketing_safe", "service_profile", "derivation", "derived_at"].every((c) => new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\b`).test(sql913))
     && /marketing_persona IS NULL OR marketing_safe = true/.test(sql913) && /jsonb_path_exists\(research_layer/.test(sql913))
@@ -358,12 +390,67 @@ async function main() {
   const sections = [/Persona Strategist/, /MANDATE/, /FACTS YOU MAY RELY ON/, /NEVER INVENT/, /COMPLIANCE BOUNDARY/, /3604\(c\)/, /ESCALATION/, /CREATIVE BRIEF/, /OUTPUT CONTRACT/, /Alpha Realty/, /LAYER 1 — RESEARCH ATTRIBUTES \(SERVICE-ONLY/]
   const missing = sections.filter((re) => !re.test(prompt.system + "\n" + prompt.prompt))
   check(`the persona prompt carries every section of the wave-148 standard (${sections.length}: role, mandate, facts, never-invent, compliance, escalation, creative brief, typed contract, brand, the Layer-1 fence)`, missing.length === 0, missing.map(String).join(" "))
-  check("POSITIVE CONTROL — the firewall's three screens each see their own shape (classifier: 'children'; proxy: 'young families'; copy pattern: 'perfect for families')",
-    !!pcs.protectedClassReasonFor("children nearby") && !!proxy.audienceProxyReasonFor("young families") && fh.detectFairHousingViolations("perfect for families").length > 0)
+  // WAVE 149 (149A) — RE-ASSERTED: the copy screen is the COPY SCANS (fair-housing patterns + proxy terms) + the research-value
+  // leak; the field-token classifier no longer screens copy (it refused every situation word). Positive controls both ways.
+  check("POSITIVE CONTROL — the copy screens each see their own shape (proxy: 'young families'; copy pattern: 'perfect for families', 'ideal for retirees')",
+    !!proxy.audienceProxyReasonFor("young families") && fh.detectFairHousingViolations("perfect for families").length > 0 && fh.detectFairHousingViolations("ideal for retirees").length > 0)
+  const situationCopy = layers.derivePersonaDeterministic({ view: null, criteria: null, research: [] }).marketing
+  const withHooks = (hooks: Record<string, string>) => ({ ...situationCopy, needs: [], campaignPersona: "probate" as const, messaging: { ...situationCopy.messaging, angles: [], educationTopics: [], platformHooks: hooks } })
+  check("the persona copy MAY NAME THE SITUATION: probate / PCS-orders / VA-loan / separation / later-life hooks pass the final check (every persona is allowed)",
+    layers.assertMarketingSafePersona(withHooks({ facebook: "Handling a probate sale? Here is how it usually works.", instagram: "Got PCS orders? Buying before you arrive.", linkedin: "VA loan benefits, explained plainly.", tiktok: "Working out what happens to the house in a separation?" }) as never).ok)
+  check("…while discriminatory WORDING still fails it ('Perfect for families', 'ideal for retirees')",
+    !layers.assertMarketingSafePersona(withHooks({ facebook: "Perfect for families like yours" }) as never).ok && !layers.assertMarketingSafePersona(withHooks({ facebook: "Ideal for retirees who want quiet" }) as never).ok)
   const doorFiles = ["app/actions/contact-persona.ts", "app/crm/contacts/[contactId]/components/persona-panel.tsx"]
   check("the contact-card door is a session-gated 'use server' module (every export async, actor from resolveCallerIdentity) and the panel is mounted on the contact page",
     /^"use server"/.test(raw(doorFiles[0])) && !/export\s+(?!async\s+function)(const|function|let|class)\s/.test(src(doorFiles[0])) && /resolveCallerIdentity\(\)/.test(src(doorFiles[0]))
     && /<PersonaPanel contactId=\{contactId\} \/>/.test(src("app/crm/contacts/[contactId]/page.tsx")))
+
+  // ── 6 ──────────────────────────────────────────────────────────────────────
+  console.log("\n[6 — C26 createPersonaAudience on the Ads Manager survivor: tagged + consented + unsuppressed, attributed, ledgered]")
+  const pa = await import("../lib/ads/persona-audience")
+  const kads = await import("../lib/kernel/ads")
+  const plans = everyPersona.map((p) => pa.planPersonaAudience({ persona: p, platform: "facebook" }))
+  check(`planPersonaAudience admits EVERY situation persona on Meta (${everyPersona.length}) and names it from the template shelf`,
+    plans.every((p) => p.ok && p.audienceType === "persona_segment" && /^Persona — /.test(p.audienceName)), JSON.stringify(plans.filter((p) => !p.ok)))
+  const lk = pa.planPersonaAudience({ persona: "first_time", platform: "facebook", lookalike: true })
+  check("a LOOKALIKE of a persona audience is explained provider-specifically (Meta Special Ad Category), never built", !lk.ok && lk.refusalKind === "platform_housing_rule" && /Special Ad Category/.test(lk.refusal))
+  const li = pa.planPersonaAudience({ persona: "first_time", platform: "linkedin" })
+  check("an unsupported platform (LinkedIn) is explained provider-specifically (no connector, what to add), not refused as a persona", !li.ok && li.refusalKind === "platform_unsupported" && /LinkedIn/.test(li.refusal) && /connector/.test(li.refusal))
+  check("POSITIVE CONTROL — `other` and a non-canonical spelling are the only persona refusals", !pa.planPersonaAudience({ persona: "other", platform: "facebook" }).ok && !pa.planPersonaAudience({ persona: "first_time_buyer", platform: "facebook" }).ok)
+  const adb = memSupabase({
+    contacts: [
+      { id: "ct-ft1", brokerage_id: B, email: "ft1@x.test", tcpa_consent: true, contact_persona: "first_time" },
+      { id: "ct-ft2", brokerage_id: B, email: "ft2@x.test", tcpa_consent: true, contact_persona: "first_time_buyer" },
+      { id: "ct-ft3", brokerage_id: B, email: "ft3@x.test", tcpa_consent: false, contact_persona: "first_time" },
+      { id: "ct-ft4", brokerage_id: B, email: "ft4@x.test", tcpa_consent: true, contact_persona: "first_time", email_unsubscribed: true },
+      { id: "ct-ft5", brokerage_id: B, email: "ft5@x.test", tcpa_consent: true, contact_persona: "first_time" },
+      { id: "ct-pr1", brokerage_id: B, email: "pr1@x.test", tcpa_consent: true, contact_persona: "probate" },
+      { id: "ct-ft6", brokerage_id: B2, email: "ft6@x.test", tcpa_consent: true, contact_persona: "first_time" },
+    ],
+    contact_suppression_list: [{ id: "sup-1", brokerage_id: B, email: "FT5@x.test", channel: "email", suppression_reason: "unsubscribe" }],
+  })
+  G.__148C.svc = adb
+  const made = await pa.createPersonaAudience({ tenant: { brokerageId: B }, creator: { userId: "u-agent" }, persona: "first_time", platform: "facebook" })
+  const audRow = rows(adb, "facebook_custom_audiences").find((r) => r.id === made.audienceId)
+  check("createPersonaAudience creates the DRAFT persona audience on the survivor (facebook_custom_audiences via createAudienceSegment), tenant-pinned",
+    made.ok && !!audRow && audRow.brokerage_id === B && audRow.audience_type === "persona_segment" && audRow.status === "draft" && audRow.target_platform === "facebook", JSON.stringify(made))
+  check("ATTRIBUTION: the creating user is on the audience (agent_user_id, users-class) and on the result; the action is ledgered",
+    audRow?.agent_user_id === "u-agent" && made.attribution?.creatorUserId === "u-agent" && made.attribution?.persona === "first_time"
+    && rows(adb, "agent_action_ledger").some((l) => l.action === "ads.persona_audience.create" && l.status === "executed"), JSON.stringify(rows(adb, "agent_action_ledger").map((l) => [l.action, l.status])))
+  const prev = await kads.previewAudienceResolution({ ctx: { brokerageId: B, userId: "u-agent", agentId: "" }, audienceId: made.audienceId! })
+  const resolved = (prev as { audience?: { resolvedCount?: number | null } }).audience?.resolvedCount
+  check("the upload population is the TAGGED (both spellings) + CONSENTED + UNSUPPRESSED contacts of THIS tenant only: 2 of the 6 first-time rows",
+    prev.success && resolved === 2, JSON.stringify(prev))
+  const probateMade = await pa.createPersonaAudience({ tenant: { brokerageId: B }, creator: { userId: "u-agent" }, persona: "probate", platform: "google", derived: true })
+  check("POSITIVE — a situation persona (probate) builds too, on Google Customer Match, with the derived basis as provenance",
+    probateMade.ok && rows(adb, "facebook_custom_audiences").some((r) => r.id === probateMade.audienceId && r.target_platform === "google" && r.source_rule?.basis === "derived_persona"), JSON.stringify(probateMade))
+  const noTenant = await pa.createPersonaAudience({ tenant: { brokerageId: "" }, creator: { userId: "u-agent" }, persona: "first_time", platform: "facebook" })
+  check("fails closed without a session tenant (nothing created)", !noTenant.ok)
+  const supSrc = src("lib/kernel/ads.ts")
+  check("census: the population floor reads contact_suppression_list and the email opt-out flags, and refuses on an unreadable list (stripped source)",
+    /from\("contact_suppression_list"\)/.test(supSrc) && /email_unsubscribed/.test(supSrc) && /Refusing rather than uploading people who may have revoked/.test(supSrc))
+  check("census: the C26 session door is async, session-tenanted and entitlement-gated (app/actions/contact-persona.ts createContactPersonaAudience)",
+    /export async function createContactPersonaAudience/.test(src(doorFiles[0])) && /mayUseFeature\(id\.userId, "ads_audiences"\)/.test(src(doorFiles[0])) && /tenant: \{ brokerageId: id\.brokerageId \}/.test(src(doorFiles[0])))
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed${fail === 0 ? " ✅ PERSONA_COMPLIANCE_PASS" : ""}`)
   if (fail > 0) { console.log(fails.map((f) => `  - ${f}`).join("\n")); process.exit(1) }

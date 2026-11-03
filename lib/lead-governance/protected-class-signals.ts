@@ -808,13 +808,13 @@ export function labelProtectedClassFields(
  * is the second, independent refusal on the same shape, which is what "defence
  * in depth" has meant at these four doors since the gate was built.
  *
- * ── 2026-11-01 (wave 148Z): THE INCLUSION ADMISSION IS REVERSED — IN THE PERSONA GATE ──
- * Owner ruling 1 holds a STAFF-chosen persona audience to the needs-based rule, so
- * `lib/ads/audience-persona-basis.ts personaAdsEligibility` now refuses senior /
- * probate / divorce / military on INCLUSION too. This carve-out is kept so the
- * token gate does not report a canonical persona at the persona key a second
- * time in its own words: the persona gate, wired beside this one at all four
- * doors, owns that verdict and names the needs-based alternative.
+ * ── TOMBSTONE (wave 149, lane 149A — owner ruling 2026-11-03) ──────────────
+ * Wave 148Z recorded here that the persona gate refused senior / probate /
+ * divorce / military on INCLUSION ("needs-based only"). That refusal is REMOVED
+ * (no survivor — "Every persona is allowed and this can't change"); the
+ * 2026-08-23 inclusion admission above is in force again in BOTH gates. This
+ * carve-out is unchanged: a canonical persona at the persona key of an
+ * INCLUSION rule passes; the exclusion arm still refuses.
  */
 function isCanonicalPersonaBasisValue(prefix: string, value: string): boolean {
   if (!/(?:^|\.)personas(?:\[\d+\])?$/.test(prefix)) return false

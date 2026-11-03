@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 // Wave 148 (lane 148B): the import rides THE one contact door (which runs resolveAgentForContact itself).
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { normalizeContactIntent, type ContactIntent } from "@/lib/contact-types"
 import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,7 +69,10 @@ import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 
 // Types inlined here — canonical home for lead domain types (no upward imports)
 export type LeadScore = 'hot' | 'warm' | 'cold' | 'unqualified'
-export type LeadIntent = 'buying' | 'selling' | 'both' | 'renting' | 'investing' | 'unknown'
+// WAVE 149 (lane 149A — owner ruling 3): intent is buyer | seller | both. TOMBSTONE: 'buying' | 'selling' | 'renting' |
+// 'investing' | 'unknown' stood here — a second spelling of intent (leads.lead_type is written 'buyer' / 'seller', so a
+// `lead_type = 'buying'` filter matched nothing) plus a persona ('investing' → contact_persona 'investor') and two non-intents.
+export type LeadIntent = ContactIntent
 export type LeadStatus = 'new' | 'contacted' | 'qualified' | 'nurturing' | 'converted' | 'lost' | 'inactive'
 export type LeadSource = 'website' | 'referral' | 'social_media' | 'paid_ads' | 'open_house' | 'cold_call' | 'zillow' | 'realtor' | 'other'
 export type Lead = {
@@ -183,7 +187,11 @@ export async function serviceGetLeads(
     )
   }
   if (params?.score) query = query.eq("lead_score", params.score)
-  if (params?.intent) query = query.eq("lead_type", params.intent)
+  if (params?.intent) {
+    // ONE intent reader (lib/contact-types.ts): a legacy 'buying' from an old client still filters on the stored 'buyer'.
+    const intent = normalizeContactIntent(params.intent)
+    if (intent) query = query.eq("lead_type", intent)
+  }
   if (params?.status) query = query.eq("status", params.status)
   if (params?.source) query = query.eq("source", params.source)
 
@@ -347,6 +355,8 @@ export async function serviceImportLeads(
   for (const lead of leads) {
     const incomingStatus = (lead.status ?? "new").toString().toLowerCase()
     const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
+    // Owner ruling 3 (wave 149A): the import's stated intent, read through the ONE intent reader — buyer | seller | both, else NULL.
+    const importedIntent = normalizeContactIntent((lead.lead_type as string | null | undefined) ?? lead.intent ?? null)
 
     // OWNER RULING, verbatim: "invitation from a lead converting to a contact makes
     // sense for status qualified but any other new contacts coming in from forms,
@@ -388,7 +398,9 @@ export async function serviceImportLeads(
         creatorUserId: null,
         source: sourceLabel,
         source_family: "contact_direct",
-        contact_type: "lead",
+        // TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): `contact_type: "lead"` stood here. The imported row's intent
+        // is read from what the import says (buyer / buying / seller / both …) through the ONE intent reader; unknown → NULL.
+        ...(importedIntent ? { contact_type: importedIntent } : {}),
         status: storedStatus,
         ai_isa_enabled: aiIsaEnabled,
         first_name: lead.first_name ?? null,

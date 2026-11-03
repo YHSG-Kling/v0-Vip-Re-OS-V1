@@ -91,7 +91,7 @@ export async function matchBuyersForListing(params: {
       .from('contacts')
       .select('id, first_name, last_name, notes, created_at, contact_type, status')
       .eq('brokerage_id', ctx.brokerageId)
-      .in('contact_type', ['buyer', 'lead'])
+      .in('contact_type', ['buyer', 'both']) // buyer-side intent (lib/contact-types.ts BUYER_SIDE_CONTACT_TYPES); 'lead' is not a contact type (owner ruling 3, wave 149A)
       .in('status', ['active', 'qualified', 'nurture'])
       .is('deleted_at', null)
       .order('created_at', { ascending: false })

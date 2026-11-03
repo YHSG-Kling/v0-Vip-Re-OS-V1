@@ -1155,10 +1155,10 @@ export default function LeadsPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Intents</SelectItem>
-                  <SelectItem value="buying">Buying</SelectItem>
-                  <SelectItem value="selling">Selling</SelectItem>
-                  <SelectItem value="distress">Distress</SelectItem>
-                  <SelectItem value="investor">Investor</SelectItem>
+                  {/* Owner ruling 3 (wave 149A): intent is buyer | seller | both — distress / investor are personas. */}
+                  <SelectItem value="buyer">Buyer</SelectItem>
+                  <SelectItem value="seller">Seller</SelectItem>
+                  <SelectItem value="both">Buyer &amp; seller</SelectItem>
                 </SelectContent>
               </Select>
 

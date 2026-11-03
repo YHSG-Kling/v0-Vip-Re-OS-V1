@@ -175,7 +175,7 @@ async function resolveDmContact(
       brokerage_id: brokerageId,
       first_name: "Social",
       last_name: "Lead",
-      contact_type: "lead",
+      // contact_type omitted (NULL — intent not yet known): 'lead' is not a contact type (owner ruling 3, wave 149A, m935).
       source,
       metadata: { [psidField]: ev.senderId },
     })

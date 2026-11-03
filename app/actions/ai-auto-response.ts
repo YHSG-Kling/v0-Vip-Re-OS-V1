@@ -211,7 +211,7 @@ async function generateSmartReply(context: {
     model: resolveModel("openai/gpt-4o-mini"),
     prompt: `You are ${context.agentName}, a professional real estate agent. Write a ${context.tone} reply.
 
-Contact: ${context.contactName} (${context.contactType || "prospect"})
+Contact: ${context.contactName} (${context.contactType || "intent not yet known"})
 ${context.contactMemory ? `${context.contactMemory}\n` : ""}${recentHistory ? `Recent conversation:\n${recentHistory}\n` : ""}Their latest message: "${context.lastMessage}"
 
 Rules:

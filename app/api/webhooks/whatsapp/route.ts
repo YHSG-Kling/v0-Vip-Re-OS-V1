@@ -215,7 +215,7 @@ async function handleInboundWhatsapp(params: {
         brokerage_id: brokerageId,
         first_name: "WhatsApp",
         last_name: "Lead",
-        contact_type: "lead",
+        // contact_type omitted (NULL — intent not yet known): 'lead' is not a contact type (owner ruling 3, wave 149A, m935).
         source: "whatsapp_business",
         phone: `+${phoneDigits}`,
         metadata: { whatsapp_id: params.senderWaId },

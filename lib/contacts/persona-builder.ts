@@ -5,16 +5,18 @@
 //
 // WAVE 148 (lane 148C — owner ruling 1, 2026-11-01: "the read of protected or prohibited can be used to determine the person's
 // persona so users can create ads and posts, etc. around that persona"). EXTENDED, not twinned (LAW 1): this file now owns
-// `derivePersona` — the AI studies the permitted records and builds a CUSTOMER-SERVICE profile and a NEEDS-BASED, MARKETING-SAFE
-// persona, keeping the five layers separate (lib/contacts/persona-layers.ts holds the model, the prompt and the firewall):
+// `derivePersona` — the AI studies the permitted records and builds a CUSTOMER-SERVICE profile and a MARKETING persona
+// (the person's situation + needs — any canonical persona since wave 149A; its wording copy-scanned), keeping the five layers separate (lib/contacts/persona-layers.ts holds the model, the prompt and the firewall):
 //   1 research attributes  — read through the purpose-gated reader (purpose persona_derivation, ledgered); shape SERVICE only;
 //                            persisted as NAMES + classes, never values.
 //   2 stated needs · 3 behavioural evidence · 4 inferred interests — from customer360For (lib/enrichment/customer-360.ts) and the
 //                            buyer-criteria store (lib/buyer-search/buyer-criteria.ts loadBuyerCriteria); nothing re-derived that
 //                            PeopleData / the canonical record already hold.
-//   5 marketing persona    — built from 2–4 only, firewalled, then (when confident and needs-based) written to
+//   5 marketing persona    — built from 2–4 only, its wording screened by the copy scans, then (when confident) written to
 //                            contacts.contact_persona so the EXISTING persona_segment audiences (lib/kernel/ads.ts syncAudience)
-//                            select the person — never over a staff-entered persona, never a protected-characteristic persona.
+//                            select the person — never over a staff-entered persona. ANY canonical persona (wave 149, lane 149A,
+//                            owner ruling 2026-11-03 "every persona is allowed"; TOMBSTONE: 148C's "never a protected-characteristic
+//                            persona" / "needs-based only" rule is removed — the restriction was the defect, it has no survivor).
 //
 // WHAT THE ENRICHMENT-TIME BUILD USED TO DO, AND WHY IT STOPPED (orphan doctrine — the facts moved to their survivors):
 //   · it COPIED age / marital status / children / household income / occupation / education into client_detailed_personas.demographics
@@ -114,6 +116,9 @@ const PAINS_FOR_NEED: Readonly<Record<MarketingNeed, readonly string[]>> = {
   luxury_property: ["limited_comparable_inventory"], selling_on_own: ["pricing_uncertainty", "paperwork_complexity"], relisting_after_expired: ["stalled_listing"],
   distressed_property_options: ["time_pressure"], home_value_curiosity: ["value_uncertainty"], equity_planning: ["current_rate_lock_in"],
   expressed_criteria: ["inventory_match"], acreage_and_land: ["usable_land_uncertainty"], new_construction: ["builder_contract_complexity"],
+  // wave 149 (lane 149A): the four situation personas, by their PROCESS pain points (never the event named back to the person).
+  estate_property_sale: ["court_and_title_steps", "preparing_a_property_for_sale"], military_relocation: ["short_relocation_window", "va_financing_questions"],
+  separation_home_decisions: ["shared_ownership_valuation", "keep_or_sell_decision"], later_life_housing: ["low_maintenance_layout", "move_or_stay_costs"],
 }
 
 export interface DerivePersonaInput {
@@ -259,7 +264,7 @@ export async function derivePersona(
         derived_at: now,
       }
 
-      // ── layer 5 → the existing audience path: contacts.contact_persona (needs-based, confident, never over a staff value) ──
+      // ── layer 5 → the existing audience path: contacts.contact_persona (confident, any canonical persona, never over a staff value) ──
       let contactPersonaWritten: string | null = null
       const cp = persona.marketing.campaignPersona
       if (safe.ok && cp && persona.marketing.audienceEligible) {

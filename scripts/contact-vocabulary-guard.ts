@@ -47,7 +47,7 @@
  * a fixture containing the defect it exists to catch, and must still see it.
  * The denominator (files scanned) is printed beside the count.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -97,9 +97,29 @@ check(`the live contacts.contact_type CHECK is non-empty (${liveContactType.leng
   liveContactType.length > 0,
   "an empty vocabulary would make every assertion below vacuously true")
 
-check("CONTACT_TYPES is EXACTLY the live contacts.contact_type CHECK",
-  same(CONTACT_TYPES, liveContactType),
-  `code=[${[...CONTACT_TYPES].sort().join(",")}] db=[${[...liveContactType].sort().join(",")}]`)
+// RE-ASSERTED (wave 149, lane 149A — owner ruling 3): the code may lead the cache by exactly ONE written-not-applied migration.
+// The RULE is "code = the CHECK the database will hold": the live cache, or — while the newest migration that rewrites
+// contacts_contact_type_check still carries its lane stamp on line 1 (not yet applied, cache not yet regenerated) — the ARRAY
+// that migration writes. Once the integrator applies it (APPLIED LIVE stamp) and regenerates the cache, only the cache counts.
+const pendingContactTypeCheck = ((): { file: string; values: string[] } | null => {
+  const dir = join(ROOT, "supabase/migrations")
+  const files = readdirSync(dir).filter((n) => /^m\d+.*\.sql$/.test(n)).sort((a, b) => Number(a.match(/^m(\d+)/)![1]) - Number(b.match(/^m(\d+)/)![1]))
+  let last: { file: string; text: string } | null = null
+  for (const f of files) {
+    const text = readFileSync(join(dir, f), "utf8")
+    const sql = text.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+    if (/ADD CONSTRAINT\s+contacts_contact_type_check/.test(sql)) last = { file: f, text }
+  }
+  if (!last || !/^-- WRITTEN, NOT APPLIED /.test(last.text.split("\n")[0] ?? "")) return null
+  const sql = last.text.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+  const arr = sql.match(/ADD CONSTRAINT\s+contacts_contact_type_check[\s\S]*?ARRAY\[([^\]]*)\]/)?.[1] ?? ""
+  return { file: last.file, values: [...arr.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]) }
+})()
+check("CONTACT_TYPES is EXACTLY the contacts.contact_type CHECK the database holds (the live cache, or the one pending written migration)",
+  same(CONTACT_TYPES, liveContactType) || (!!pendingContactTypeCheck && same(CONTACT_TYPES, pendingContactTypeCheck.values)),
+  `code=[${[...CONTACT_TYPES].sort().join(",")}] db=[${[...liveContactType].sort().join(",")}] pending=${pendingContactTypeCheck ? `${pendingContactTypeCheck.file}:[${pendingContactTypeCheck.values.sort().join(",")}]` : "none"}`)
+check("POSITIVE CONTROL — a vocabulary that matches NEITHER the cache nor the pending migration is caught",
+  !(same([...CONTACT_TYPES, "prospect_typo"], liveContactType) || (!!pendingContactTypeCheck && same([...CONTACT_TYPES, "prospect_typo"], pendingContactTypeCheck.values))))
 
 check("campaign_sequences.contact_type is a SUBSET of contacts.contact_type (one vocabulary, two grains)",
   liveSequenceType.every((v) => (CONTACT_TYPES as readonly string[]).includes(v)),

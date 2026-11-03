@@ -12,9 +12,13 @@
  * and the lead was never promoted. resolveContactType now clamps every outcome to a
  * canonical contact_type.
  *
- * Layer 1 (pure): resolveContactType always returns a canonical contact_type; the
- *   'unknown' lead_type → 'prospect' (the bug), and the rich motivation_types the
+ * Layer 1 (pure): resolveContactType always returns a canonical contact_type OR NULL; the
+ *   'unknown' lead_type → NULL ("intent not yet known"), and the rich motivation_types the
  *   pipeline writes map correctly.
+ * RE-ASSERTED — wave 149, lane 149A (owner ruling 3: intent is buyer | seller | both; 'prospect'
+ *   is a PLATFORM person, never a tenant contact type; m935 drops 'lead' / 'prospect'): the clamp
+ *   target was the WAYPOINT 'prospect'; the RULE — never the refused literal 'unknown', always a
+ *   value the CHECK stores — now lands on NULL, which the nullable column admits. 'both' is 'both'.
  * Layer 2 (live, gated): CONTACT_TYPES matches the live CHECK constraint EXACTLY (no
  *   code↔DB drift), and a direct insert proves 'unknown' is rejected while the
  *   resolved 'prospect' is accepted. Reverse-delete; cleanup == 0.
@@ -51,15 +55,18 @@ function pureLayer(): void {
   for (const mt of MOTIVATION_TYPES) {
     for (const lt of LEAD_TYPES) {
       const r = resolveContactType(mt, lt)
-      check(`resolveContactType(${JSON.stringify(mt)}, ${JSON.stringify(lt)}) = ${r} ∈ canonical`, CANON.has(r))
+      check(`resolveContactType(${JSON.stringify(mt)}, ${JSON.stringify(lt)}) = ${r} ∈ canonical ∪ {null}`, r === null || CANON.has(r))
     }
   }
 
   console.log("\n[Layer 1 · the bug case + correct mappings]")
-  check("THE BUG: ('search_intent','unknown') → 'prospect' (was the rejected 'unknown')",
-    resolveContactType("search_intent", "unknown") === "prospect")
-  check("(null,'unknown') → 'prospect'", resolveContactType(null, "unknown") === "prospect")
-  check("(null,null) → 'prospect'", resolveContactType(null, null) === "prospect")
+  check("THE BUG: ('search_intent','unknown') → NULL (was the rejected 'unknown'; never the platform word 'prospect')",
+    resolveContactType("search_intent", "unknown") === null)
+  check("(null,'unknown') → NULL", resolveContactType(null, "unknown") === null)
+  check("(null,null) → NULL", resolveContactType(null, null) === null)
+  check("POSITIVE CONTROL — neither 'prospect' nor 'lead' is a storable contact type any more (owner ruling 3)",
+    !CANON.has("prospect") && !CANON.has("lead"))
+  check("('both', null) → 'both' — a dual intent is never collapsed to one side", resolveContactType("both", null) === "both")
   check("('motivated_seller','unknown') → 'seller' (motivation wins)", resolveContactType("motivated_seller", "unknown") === "seller")
   check("('fsbo_seller',null) → 'seller'", resolveContactType("fsbo_seller", null) === "seller")
   check("('relocation_buyer',null) → 'buyer'", resolveContactType("relocation_buyer", null) === "buyer")
@@ -108,16 +115,16 @@ async function liveLayer(): Promise<void> {
 
   // pg_constraint isn't reachable via PostgREST, so we assert the code↔DB contract by
   // PROBING inserts: every canonical CONTACT_TYPES value must be accepted, the literal
-  // 'unknown' must be rejected, and the resolved 'prospect' must be accepted.
+  // 'unknown' must be rejected, and the resolved NULL must be accepted.
   const tag = `lct-sim-${randomUUID().slice(0, 8)}`
   const brokerageId = randomUUID()
   const okId = randomUUID()
   try {
     await svc.from("brokerages").insert({ id: brokerageId, name: `${tag} (contact-type test)` })
 
-    // 'prospect' (the resolved value for unknown) must be ACCEPTED.
-    const okIns = await svc.from("contacts").insert({ id: okId, brokerage_id: brokerageId, first_name: tag, contact_type: "prospect" })
-    check("resolved 'prospect' is accepted by the contacts CHECK constraint", !okIns.error)
+    // NULL (the resolved value for unknown) must be ACCEPTED.
+    const okIns = await svc.from("contacts").insert({ id: okId, brokerage_id: brokerageId, first_name: tag, contact_type: null })
+    check("resolved NULL is accepted by the contacts CHECK constraint", !okIns.error)
 
     // The pre-fix literal 'unknown' must be REJECTED — proving the silent-drop was real.
     const badIns = await svc.from("contacts").insert({ id: randomUUID(), brokerage_id: brokerageId, first_name: tag, contact_type: "unknown" })
@@ -136,10 +143,10 @@ async function liveLayer(): Promise<void> {
 
     // lead_temperature: 'cold' (canonical) accepted, 'cool' (4-band leak) rejected.
     const coldId = randomUUID()
-    const coldIns = await svc.from("contacts").insert({ id: coldId, brokerage_id: brokerageId, first_name: tag, contact_type: "prospect", lead_temperature: "cold" })
+    const coldIns = await svc.from("contacts").insert({ id: coldId, brokerage_id: brokerageId, first_name: tag, contact_type: null, lead_temperature: "cold" })
     check("lead_temperature 'cold' (canonical) is accepted", !coldIns.error)
     await svc.from("contacts").delete().eq("id", coldId)
-    const coolIns = await svc.from("contacts").insert({ id: randomUUID(), brokerage_id: brokerageId, first_name: tag, contact_type: "prospect", lead_temperature: "cool" })
+    const coolIns = await svc.from("contacts").insert({ id: randomUUID(), brokerage_id: brokerageId, first_name: tag, contact_type: null, lead_temperature: "cool" })
     check("lead_temperature 'cool' is REJECTED (the 4-band leak the fix prevents)", !!coolIns.error)
   } finally {
     await svc.from("contacts").delete().eq("brokerage_id", brokerageId)

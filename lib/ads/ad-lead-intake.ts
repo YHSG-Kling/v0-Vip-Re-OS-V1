@@ -60,7 +60,7 @@ export async function ingestConsentedAdLead(
   // INSERT, the enrichment queue call and the separate record-half call that stood here were a SECOND upsert of a consented
   // person. Merged onto THE one survivor — lib/contact-pipeline/contact-capture.ts captureConsentedContact (C8) →
   // captureContact — riding THIS intake's injected client (the webhook's / reconciler's service client). Preserved: the
-  // tenant is the page credential's (the caller resolved it), contact_type 'lead', source `ad_lead_form:<platform>`, the
+  // tenant is the page credential's (the caller resolved it), contact_type NULL (intent not yet known — owner ruling 3), source `ad_lead_form:<platform>`, the
   // agent hint, idempotency per provider submission (Meta leadgen id → C8's key, so a webhook retry records nothing twice),
   // the consent IP, enrichment, the welcome, the AI ISA desk.
   //
@@ -83,7 +83,8 @@ export async function ingestConsentedAdLead(
     brokerageId: input.brokerageId,
     ownerAgentId: input.agentId ?? null,
     source: `ad_lead_form:${input.platform ?? "meta"}`,
-    contact_type: "lead",
+    // TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): `contact_type: "lead"` stood here. 'lead' is the acquisition
+    // ladder's TABLE, not an intent; an ad-form submitter's intent is not yet known, so contact_type stays NULL (omitted).
     first_name: input.firstName?.trim() || null,
     last_name: input.lastName?.trim() || null,
     email: input.email?.trim().toLowerCase() || null,

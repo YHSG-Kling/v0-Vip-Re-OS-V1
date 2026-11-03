@@ -3,8 +3,13 @@
  * Exported separately from server actions to comply with "use server" restrictions
  */
 
+import type { ContactIntent } from "@/lib/contact-types"
+
 export type LeadScore = 1 | 2 | 3 | 4 | 5
-export type LeadIntent = "buying" | "selling" | "distress" | "investor"
+// WAVE 149 (lane 149A — owner ruling 3): intent is buyer | seller | both. TOMBSTONE: "buying" | "selling" | "distress" |
+// "investor" stood here — a second intent spelling (the stored leads.lead_type is 'buyer' / 'seller', so the filter matched
+// nothing) plus two situations: distress is the foreclosure PERSONA, investor the investor PERSONA (contacts.contact_persona).
+export type LeadIntent = ContactIntent
 export type LeadStatus = "new" | "enriched" | "qualified" | "converted" | "rejected"
 export type LeadSource = "scraped" | "website_form" | "ghl" | "manual"
 

@@ -39,8 +39,10 @@ export interface ContactCreationData {
 
 /**
  * The ISA qualified the lead by intent; that intent IS the contact type going
- * forward (canonical contact_type vocabulary): buyer/seller; 'both' maps to
- * buyer. 'investor' maps to BUYER too — owner ruling 2026-08-31, verbatim:
+ * forward (canonical contact_type vocabulary): buyer / seller / both. 'both' is
+ * 'both' since wave 149 (lane 149A, owner ruling 3 — intent is buyer | seller | both):
+ * it used to collapse to 'buyer', so a dual-intent person woke only the Shopping
+ * Agent until lib/kernel/dual-intent-linker.ts patched it after the fact. 'investor' maps to BUYER — owner ruling 2026-08-31, verbatim:
  * "investor is a persona and not a contact type" — the investing lands on
  * contact_persona='investor' (m589) via resolveContactPersona below, and m593
  * (APPLIED 2026-08-31) retired 'investor' from contacts_contact_type_check.
@@ -56,7 +58,7 @@ export function motivationToContactType(m: string | null | undefined): string | 
   if (lower.includes('landlord')) return 'seller'
   if (lower.includes('investor')) return 'buyer'
   if (lower.includes('seller')) return 'seller'
-  if (lower.includes('both')) return 'buyer'
+  if (lower.includes('both')) return 'both'
   if (lower.includes('buyer')) return 'buyer'
   return null
 }
@@ -72,15 +74,18 @@ export type ContactType = (typeof CONTACT_TYPES)[number]
  * resolveContactType — the lead→contact type decision, guaranteed to return a
  * CANONICAL contact_type. motivation_type wins (qualified intent), then lead_type;
  * the final fallback runs lead_type through the Data Steward normalizer (exact +
- * synonym, e.g. 'fsbo'→'seller') and defaults to 'prospect' when nothing resolves —
- * a raw lead_type of 'unknown' (a real pipeline value) becomes 'prospect', never the
- * literal 'unknown' the CHECK constraint would reject. Without this clamp, every
- * unknown-intent scraped lead failed to convert.
+ * synonym, e.g. 'fsbo'→'seller') and returns NULL when nothing resolves — a raw
+ * lead_type of 'unknown' (a real pipeline value) becomes contact_type NULL ("intent
+ * not yet known"), never the literal 'unknown' the CHECK constraint would reject.
+ * Without this clamp, every unknown-intent scraped lead failed to convert.
+ * TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): the fallback was 'prospect'.
+ * A prospect is a PLATFORM person (platform_prospects), never a tenant contact's type,
+ * and it stated no intent; NULL is the honest value and the CHECK admits it.
  */
 export function resolveContactType(
   motivationType: string | null | undefined,
   leadType: string | null | undefined,
-): ContactType {
+): ContactType | null {
   const fromMotivation = motivationToContactType(motivationType)
   if (fromMotivation) return fromMotivation as ContactType
   const fromLeadType = motivationToContactType(leadType)
@@ -104,7 +109,7 @@ export function resolveContactType(
   // a value outside the CHECK is refused entirely (23514) and the lead is never
   // promoted at all.
   if (normalized && isStorableContactType(normalized)) return normalized
-  return 'prospect'
+  return null
 }
 
 export async function createContactFromLead(

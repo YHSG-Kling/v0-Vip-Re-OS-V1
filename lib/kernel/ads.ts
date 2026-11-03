@@ -164,9 +164,9 @@ export interface SourceRule {
    */
   type: SourceRuleType
   /**
-   * WAVE 148 (lane 148C, owner ruling 1): `"derived_persona"` declares that the persona basis comes from the DERIVED,
-   * marketing-safe persona layer (lib/contacts/persona-builder.ts derivePersona → contacts.contact_persona). Such an audience is
-   * needs-based by rule: lib/ads/audience-persona-basis.ts refuses a protected-characteristic persona on it at define AND populate.
+   * PROVENANCE: `"derived_persona"` records that the persona basis came from the DERIVED persona layer
+   * (lib/contacts/persona-builder.ts derivePersona → contacts.contact_persona). Wave 149 (lane 149A, owner ruling 2026-11-03)
+   * removed the wave-148 refusal it used to trigger (TOMBSTONE in lib/ads/audience-persona-basis.ts) — every persona is allowed.
    */
   basis?: "derived_persona"
   filters: {
@@ -183,10 +183,9 @@ export interface SourceRule {
      * check is `resolveAudiencePersonaBasis`, which runs at DEFINE time and again
      * at POPULATE time and refuses anything it cannot resolve.
      *
-     * Personas that are a PROTECTED CHARACTERISTIC (senior, probate, divorce, military) are admitted
-     * as an INCLUSION basis by the owner's 2026-08-23 situation-persona ruling, REFUSED on an
-     * exclusion slot, and REFUSED whenever `basis` is "derived_persona" (wave 148, lane 148C — a
-     * derived persona is needs-based by rule) — see lib/ads/audience-persona-basis.ts.
+     * EVERY canonical persona but `other` is an INCLUSION basis (owner rulings 2026-08-23 and
+     * 2026-11-03, "every persona is allowed"); a protected-characteristic persona (senior, probate,
+     * divorce, military) is REFUSED only on an exclusion slot — see lib/ads/audience-persona-basis.ts.
      */
     personas?: string[]
     engagement_type?: string
@@ -377,6 +376,10 @@ export interface CreateAudienceSegmentInput {
    *  routes a lookalike on this column (syncAudience) and told the operator to "link a synced audience to seed" — nothing ever
    *  wrote it, so every lookalike was refused at sync. Required for audienceType 'lookalike'; refused on any other type. */
   lookalikeSeedAudienceId?: string | null
+  /** Wave 149 (lane 149A, C26): the platform the audience is built for (facebook_custom_audiences.target_platform CHECK —
+   *  facebook | google | instagram | linkedin | stackadapt | tiktok). Omitted = the column default (syncAudience reads it, falling
+   *  back to facebook). */
+  targetPlatform?: "facebook" | "instagram" | "google" | "linkedin" | "stackadapt" | "tiktok"
 }
 
 // TOMBSTONE (§1.3, 2026-08-31, lane M4): `LoadAdPerformanceInput` deleted —
@@ -690,7 +693,10 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
       .from("ad_campaigns")
       .insert({
         brokerage_id: ctx.brokerageId,
-        agent_user_id: ctx.agentId,
+        // USERS-class column (ad_campaigns.agent_user_id → users, scripts/schema-fk-map.ts). This wrote ctx.agentId — an
+        // agents.id, a DISJOINT id space (CLAUDE.md §3, 23503) — so every campaign created by a seat WITH an agents row was
+        // refused by the FK (wave 149, lane 149A). The creating user is the session user.
+        agent_user_id: ctx.userId,
         team_id: null,
         marketing_campaign_id: marketingCampaignId || null,
         created_by: ctx.userId,
@@ -1003,7 +1009,7 @@ async function resolveAudiencePopulation(args: {
     .from("contacts")
     // enrichment_profile: the appended online-audience identifiers (wave 144, lane 144E Outside-lane 1) — read by the
     // custom-audience upload for match keys only; the gates that decide WHO is in the audience are unchanged.
-    .select("id, email, phone, first_name, last_name, enrichment_profile")
+    .select("id, email, phone, first_name, last_name, enrichment_profile, email_unsubscribed, email_opt_out")
     .eq("brokerage_id", brokerageId)
     .not("email", "is", null)
     // CONSENT GATE: an ad-platform custom audience may only contain contacts who
@@ -1141,10 +1147,42 @@ async function resolveAudiencePopulation(args: {
     }
   }
 
+  // ── THE SUPPRESSION FLOOR (wave 149, lane 149A — contract C26 "consent + suppression") ─────────────────────────────────
+  // Consent was the only floor: a contact who unsubscribed from marketing email or sits on the tenant's C16 suppression list
+  // (contact_suppression_list — the ONE list every revocation lands in, lib/kernel/compliance/check-suppression.ts) was still
+  // hashed and uploaded to Meta / Google. Both now leave the upload. One bulk read for the tenant (the per-send checker is
+  // per-contact); FAIL CLOSED — an unreadable list refuses the sync rather than uploading people who may have revoked.
+  const rows = (contacts ?? []) as unknown as Array<AudienceContactRow & { email_unsubscribed?: boolean | null; email_opt_out?: boolean | null }>
+  const { data: suppressed, error: suppressedError } = await supabase
+    .from("contact_suppression_list")
+    .select("contact_id, email")
+    .eq("brokerage_id", brokerageId)
+    .limit(20000)
+  if (suppressedError) {
+    return {
+      ok: false,
+      narrowing,
+      errorKind: "read",
+      error:
+        `[audience-source-rule] could not resolve audience "${audienceLabel}": reading contact_suppression_list failed ` +
+        `(${suppressedError.message}). Refusing rather than uploading people who may have revoked.`,
+    }
+  }
+  const suppressedIds = new Set<string>()
+  const suppressedEmails = new Set<string>()
+  for (const r of (suppressed ?? []) as Array<{ contact_id?: string | null; email?: string | null }>) {
+    if (r.contact_id) suppressedIds.add(r.contact_id)
+    if (r.email) suppressedEmails.add(r.email.trim().toLowerCase())
+  }
+  const kept = rows.filter((c) =>
+    !c.email_unsubscribed && !c.email_opt_out
+    && !suppressedIds.has(c.id)
+    && !(c.email && suppressedEmails.has(c.email.trim().toLowerCase())))
+
   return {
     ok: true,
     narrowing,
-    contacts: (contacts ?? []) as unknown as AudienceContactRow[],
+    contacts: kept.map(({ email_unsubscribed: _u, email_opt_out: _o, ...c }) => c as AudienceContactRow),
     personaSpellings,
   }
 }
@@ -1705,6 +1743,10 @@ export async function createAudienceSegment(input: CreateAudienceSegmentInput): 
         consent_basis: consentBasis,
         status: "draft",
         lookalike_seed_audience_id: seedId,
+        // ATTRIBUTION (wave 149, lane 149A — C26): the CREATING user (users-class FK). The column existed with no writer on
+        // this door, so no audience could say who built it. Solo agent, team or brokerage alike: the creator owns it.
+        agent_user_id: ctx.userId,
+        ...(input.targetPlatform ? { target_platform: input.targetPlatform } : {}),
       })
       .select()
       .maybeSingle()

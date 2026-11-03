@@ -202,8 +202,14 @@ check("the SPHERE/UNKNOWN branch returns before falling through", sphereUnknownB
 
 // potential_contact must still be REACHABLE (not accidentally deleted) — the positive
 // control for the contact_type distinction the ruling permits.
-check("potential_contact still maps to contacts.contact_type='prospect' on the surviving captureContact call",
-  src.includes('contact_type: cardSubjectType === "potential_contact" ? "prospect"'))
+// RE-ASSERTED (wave 149, lane 149A — owner ruling 3, m935): this pinned the WAYPOINT `contact_type: … ? "prospect"`. 'prospect'
+// is a PLATFORM person, never a tenant contact type, and a card states no intent. The RULE: a potential_contact card still
+// reaches the surviving captureContact call (the class is kept on the scan row + its signal), and no contact is typed 'prospect'.
+check("potential_contact still reaches the surviving captureContact call, and no card writes contact_type 'prospect' (owner ruling 3)",
+  /captureContact\(/.test(src) && !/contact_type:\s*[^,\n]*["']prospect["']/.test(src)
+  && /business_card_potential_contact_candidate/.test(readFileSync(join(process.cwd(), "lib/kernel/signal-registry.ts"), "utf8")))
+check("POSITIVE CONTROL — the 'prospect' finder sees the retired shape",
+  /contact_type:\s*[^,\n]*["']prospect["']/.test('contact_type: cardSubjectType === "potential_contact" ? "prospect" : undefined,'))
 
 // ── 3 · routing — every class has a manager route + registered handled signal ──
 console.log("\n[3 · every card_subject_type has a manager route]")

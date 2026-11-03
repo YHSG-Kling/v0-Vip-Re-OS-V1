@@ -8,13 +8,28 @@
 // PURE — no I/O, no `server-only` — so scripts/contact-vocabulary-guard.ts can
 // import it directly and hold it against the live database.
 //
-// ── WHAT THE DATABASE ADMITS (project hrvaqgvukzxfskkcrwbt, after m563) ──────
+// ── CONTACT INTENT IS buyer | seller | both — NOTHING ELSE (owner ruling 3, 2026-11-03; wave 149, lane 149A) ──
+// VERBATIM: "Intent is more the contact persona's situation." — contact INTENT is buyer, seller or both; `prospect` is a
+// PLATFORM person (a potential VIPAgents subscriber, platform_prospects), never a tenant lead type; the tenant acquisition
+// ladder is raw lead → lead → contact (raw_scraped_leads → leads → contacts), so `lead` is a TABLE, never a contact's type.
+//
+// THE CANONICAL INTENT FIELD is `contacts.contact_type` restricted to CONTACT_INTENTS (and `leads.lead_type` on the lead row,
+// read through `normalizeContactIntent`). `contact_type` also carries RELATIONSHIP classes that are NOT intent
+// (lifetime_customer, sphere, vendor, referral_partner, other) — kept, because they answer "who is this person to us", which
+// intent does not. A contact whose intent is not yet known has contact_type NULL ("we have not learned it"), never a made-up
+// label. The situation itself (first-time buyer, probate, relocation …) is the PERSONA (contacts.contact_persona).
+//
+// TOMBSTONE (149A, m935): 'lead' and 'prospect' leave CONTACT_TYPES and the live CHECK. No survivor VALUE — each one stood for
+// "intent unknown" (→ NULL) on a tenant contact; the platform-prospect concept already lives in `platform_prospects`
+// (lib/platform/**). Backfill in m935: a linked lead's buyer/seller/both lead_type, else NULL.
+//
+// ── WHAT THE DATABASE ADMITS (project hrvaqgvukzxfskkcrwbt; before m935 — m935 drops 'lead' and 'prospect') ──
 //
 //   contacts_contact_type_check CHECK (contact_type = ANY (ARRAY[
 //     'lead','prospect','lifetime_customer','sphere','vendor',
-//     'referral_partner','investor','buyer','seller','both','other']))
+//     'referral_partner','buyer','seller','both','other']))
 //
-// ELEVEN values. m563 removed the twelfth, 'client', on the OWNER RULING:
+// (ELEVEN values at m563; 'investor' left in m593; 'lead' / 'prospect' leave in m935 → EIGHT.) m563 removed the twelfth, 'client', on the OWNER RULING:
 // "client isn't a type". That ruling REVERSES what m539 and this file built two
 // waves earlier — m539 deliberately KEPT 'client' while collapsing the lifetime
 // spellings, and 'client' was the first member of both rosters below. It is
@@ -49,10 +64,11 @@
 // TOMBSTONE: app/lib/contact-types.ts was a byte-identical copy of this file's
 // first eight lines with no importer anywhere. Deleted; this file is the survivor.
 
-/** Every contact_type the live `contacts_contact_type_check` admits (m563). */
+/** Every contact_type the live `contacts_contact_type_check` admits (m935: the three intents + five relationship classes). */
 export const CONTACT_TYPES = [
-  "lead",
-  "prospect",
+  // TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): 'lead' and 'prospect' stood here. A lead is a TABLE on the
+  // acquisition ladder (leads), not a contact's type; a prospect is a PLATFORM person (platform_prospects). Neither is an
+  // intent. No survivor value: a contact whose intent is unknown carries contact_type NULL.
   // TOMBSTONE (§1): 'client' stood here and was REMOVED by m563 on the owner
   // ruling "client isn't a type". It has NO single survivor value — see the
   // header — so it is not re-pointed anywhere; the representation fact it
@@ -73,6 +89,34 @@ export const CONTACT_TYPES = [
 ] as const
 
 export type ContactType = (typeof CONTACT_TYPES)[number]
+
+/** CONTACT INTENT — owner ruling 3 (2026-11-03): buyer, seller or both. Nothing else is an intent. */
+export const CONTACT_INTENTS = ["buyer", "seller", "both"] as const satisfies readonly ContactType[]
+export type ContactIntent = (typeof CONTACT_INTENTS)[number]
+
+/** The contact_type values that are a RELATIONSHIP class, not an intent (who the person is to us). */
+export const RELATIONSHIP_CONTACT_TYPES = ["lifetime_customer", "sphere", "vendor", "referral_partner", "other"] as const satisfies readonly ContactType[]
+
+/**
+ * The ONE intent reader for every spelling a writer has used ("buying" / "selling" on the lead desk, "buyer and seller" in an
+ * import, a lead_type of "buyer"). Returns null when the value states no intent ("unknown", "prospect", "lead", "investor" — an
+ * investor is a PERSONA — "distress" — a situation). Readers that hold a contact_type use `contactIntentOf`.
+ */
+const INTENT_SPELLINGS: Readonly<Record<string, ContactIntent>> = Object.freeze({
+  buyer: "buyer", buying: "buyer", buy: "buyer", purchaser: "buyer", "home buyer": "buyer", homebuyer: "buyer",
+  seller: "seller", selling: "seller", sell: "seller", "home seller": "seller",
+  both: "both", "buyer and seller": "both", "buyer/seller": "both", "buy and sell": "both", "buying and selling": "both", dual: "both",
+})
+export function normalizeContactIntent(raw: string | null | undefined): ContactIntent | null {
+  const t = String(raw ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ")
+  return t ? INTENT_SPELLINGS[t] ?? null : null
+}
+
+/** PURE — the intent a stored contact_type carries, or null (a relationship class, NULL, or an unreadable spelling). */
+export function contactIntentOf(contactType: string | null | undefined): ContactIntent | null {
+  const c = canonicalContactType(contactType)
+  return c !== null && (CONTACT_INTENTS as readonly string[]).includes(c) ? (c as ContactIntent) : null
+}
 
 const CONTACT_TYPE_SET = new Set<string>(CONTACT_TYPES)
 

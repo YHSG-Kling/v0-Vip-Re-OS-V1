@@ -10,8 +10,10 @@
  *   deriveContactPersona          → "Study this person" (the AI persona study; its marketing layer is firewalled)
  *   readContactResearchAttributes → "Read research attributes" (purpose + justification; the reader decides by role × purpose ×
  *                                   scope, ledgers both outcomes, and its refusal is shown in words)
- * and the existing ads door (lib/ads/facebook-audience-sync.ts createAudience) → "Create custom audience" on the DERIVED
- * persona (basis derived_persona — needs-based by rule; the define / populate / delivery gates still run).
+ * and the C26 door (app/actions/contact-persona.ts createContactPersonaAudience → lib/ads/persona-audience.ts, on the Ads Manager
+ * survivor) → "Create custom audience" on the DERIVED persona — ANY situation persona (wave 149, lane 149A, owner ruling
+ * 2026-11-03 "every persona is allowed"; the wave-148 "needs-based by rule" basis refusal is removed). Consent, suppression and
+ * the platform's housing delivery rules still run.
  *
  * The layers are shown SEPARATELY on purpose: what the person said, what they did, what is inferred (with confidence), and the
  * marketing-safe persona are different kinds of knowledge, and the research layer never sits beside the marketing persona.
@@ -22,9 +24,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, UserRoundSearch, ShieldCheck, Megaphone } from "lucide-react"
-import { loadContactPersona, deriveContactPersona, readContactResearchAttributes } from "@/app/actions/contact-persona"
-import { createAudience } from "@/lib/ads/facebook-audience-sync"
-import { DERIVED_PERSONA_BASIS } from "@/lib/ads/audience-persona-basis"
+import { loadContactPersona, deriveContactPersona, readContactResearchAttributes, createContactPersonaAudience } from "@/app/actions/contact-persona"
 import { MARKETING_NEEDS } from "@/lib/contacts/persona-layers"
 
 type Evidence = { id: string; source: string; summary: string; supports: string | null; confidence: number }
@@ -79,14 +79,8 @@ export function PersonaPanel({ contactId }: { contactId: string }) {
   const createPersonaAudience = () => startTransition(async () => {
     if (!marketing?.campaignPersona) return
     setNote(null)
-    const res = await createAudience("", {
-      brokerageId: "", agentId: "",
-      audienceName: `Persona — ${marketing.headline}`,
-      audienceType: "persona_segment",
-      sourceRule: { type: "persona_segment", basis: DERIVED_PERSONA_BASIS, filters: { personas: [marketing.campaignPersona] } },
-      consentBasis: "contacts with marketing consent on record (contact_consent_events); derived needs-based persona",
-    })
-    setNote(res.success ? "Custom audience created as a draft — review and sync it in Ads." : `Audience refused: ${res.error ?? "unknown"}`)
+    const res = await createContactPersonaAudience({ persona: marketing.campaignPersona, platform: "facebook", derived: true })
+    setNote(res.ok ? `Custom audience "${res.audienceName ?? marketing.headline}" created as a draft — review, approve and sync it in Ads.` : `Audience not created: ${res.error}`)
   })
 
   const layer = (title: string, items: Evidence[] | undefined) => (
@@ -130,7 +124,7 @@ export function PersonaPanel({ contactId }: { contactId: string }) {
               <div className="space-y-2 rounded-md border p-3">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="h-4 w-4 text-primary" />
-                  <p className="text-xs font-medium">Marketing-safe persona: {marketing.headline}</p>
+                  <p className="text-xs font-medium">Marketing persona: {marketing.headline}</p>
                   {marketing.campaignPersona && <Badge variant="secondary">{marketing.campaignPersona}</Badge>}
                 </div>
                 {marketing.needs.map((n) => <p key={n.need} className="text-xs text-muted-foreground">{(MARKETING_NEEDS as Record<string, { label: string }>)[n.need]?.label ?? n.need.replace(/_/g, " ")} — {Math.round(n.confidence * 100)}% · {n.why}</p>)}

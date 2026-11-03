@@ -3,8 +3,11 @@
 // FAIR HOUSING ON AUDIENCE SELECTION AND DELIVERY — THE PROXY VOCABULARY (wave 148, lane 148C).
 //
 // OWNER RULING 1 (2026-11-01), verbatim: "the read of protected or prohibited can be used to determine the person's persona so
-// users can create ads and posts, etc. around that persona." The persona handed to marketing is needs-based, and "audiences
-// built from personas are custom audiences that compliance checks on selection and delivery, not only wording".
+// users can create ads and posts, etc. around that persona." Wave 148 read it as "the persona handed to marketing is
+// needs-based"; OWNER RULING 2026-11-03 (wave 149, lane 149A) REVERSED that reading: "Every persona is allowed and this can't
+// change." This list is NOT a persona rule and never refuses a canonical persona (protected-class-signals.ts carves the
+// `personas` key out); it screens free-text WORDING — a typed tag, an interest, a line of copy — for proxy language
+// ("young-families", "church-goers"), which is the wording + platform-delivery side the owner kept.
 //
 // WHAT WAS MISSING (measured at ebed6c44). The copy gate (fair-housing-patterns.ts) reads WORDING. The audience gate
 // (lib/lead-governance/protected-class-signals.ts `protectedClassSegmentationIn`) reads a segmentation rule through the

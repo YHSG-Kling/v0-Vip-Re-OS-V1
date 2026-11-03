@@ -177,7 +177,7 @@ async function handleInboundDm(params: {
         brokerage_id: brokerageId,
         first_name: "Twitter",
         last_name: "Lead",
-        contact_type: "lead",
+        // contact_type omitted (NULL — intent not yet known): 'lead' is not a contact type (owner ruling 3, wave 149A, m935).
         source: "twitter_dm",
         metadata: { twitter_user_id: params.senderId },
       })

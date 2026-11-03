@@ -63,8 +63,10 @@ function testPure() {
   // never mis-bucketed as seller.
   check("an 'investor' motivation maps to 'buyer' (persona carries the investing; never mis-bucketed as seller)",
     motivationToContactType("investor") === "buyer", String(motivationToContactType("investor")))
-  check("a 'both' motivation maps to 'buyer' (dual buyer/seller preserved; persona='both' set by creator)",
-    motivationToContactType("both") === "buyer", String(motivationToContactType("both")))
+  // RE-ASSERTED (wave 149, lane 149A — owner ruling 3: intent is buyer | seller | both): the dual intent is 'both' itself,
+  // never collapsed to 'buyer' (which woke only the Shopping Agent until the dual-intent linker patched it after the fact).
+  check("a 'both' motivation maps to 'both' (the dual intent preserved as the intent)",
+    motivationToContactType("both") === "both", String(motivationToContactType("both")))
   check("a null motivation maps to null (caller falls back to lead_type)",
     motivationToContactType(null) === null)
 }

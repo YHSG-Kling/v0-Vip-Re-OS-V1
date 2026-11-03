@@ -3,9 +3,15 @@
 // THE FIVE-LAYER PERSONA MODEL, ITS EXPERT PROMPT AND ITS MARKETING FIREWALL (wave 148, lane 148C — owner ruling 1, 2026-11-01).
 //
 // OWNER, verbatim: "the read of protected or prohibited can be used to determine the person's persona so users can create ads and
-// posts, etc. around that persona." The spec's reading of it, which this module enforces: the persona handed to marketing is
-// MARKETING-SAFE — needs-based (relocation research, first-home guidance, investor interest, downsizing, expressed criteria),
-// never a protected characteristic or its proxy — and five layers stay SEPARATE:
+// posts, etc. around that persona." And (2026-11-03, wave 149 — lane 149A, the reversal): "Every persona is allowed and this
+// can't change." A persona describes the person's SITUATION (first_time, relocated, luxury, fsbo, probate, upsize, downsize,
+// military, divorce, senior, expired, foreclosure, investor …) so the OS can speak to their pain points and help.
+// TOMBSTONE (149A): wave 148C made the marketing persona "needs-based only — never a protected characteristic" (the four
+// situation personas senior / probate / divorce / military could never be the campaign persona, and the field-token
+// classifier screened every word of messaging). REMOVED with no survivor — the restriction was the defect. The marketing
+// persona may name ANY situation persona. What stays, because it is the law on WORDING: every word of messaging passes the
+// copy scans (lib/compliance-rules/fair-housing-patterns.ts + the proxy-term screen in lib/compliance-rules/audience-compliance.ts)
+// and no Layer-1 research VALUE is ever echoed. Five layers stay SEPARATE:
 //
 //   1 research_attributes   — the original provider / research attributes (protected included). READ through the purpose-gated
 //                             reader (lib/enrichment/protected-research-store.ts, purpose persona_derivation). They may shape the
@@ -17,8 +23,8 @@
 //                             decayed behaviour score, a first-party action intent.
 //   4 inferred_interests    — what a provider or our own computation SUGGESTS, each with a confidence (provider append, platform
 //                             derived, inferred criteria) — append is not intent (customer-360's rule).
-//   5 marketing_persona     — the needs-based persona, built ONLY from layers 2–4, screened by the firewall below; the one layer an
-//                             ad, a post or a custom audience may read.
+//   5 marketing_persona     — the situation persona + its needs, built ONLY from layers 2–4, its WORDING screened by the copy scans
+//                             below; the one layer an ad, a post or a custom audience reads.
 //
 // INVENT NOTHING THE RECORDS HOLD (requirement 5). Every evidence item points at its canonical source (table.column / provider /
 // the customer-360 slice); the service profile's channel, language, time and accessibility come from the contact's own columns
@@ -26,18 +32,17 @@
 //
 // AI EXPLAINS, DETERMINISTIC SERVICES GATE. The model studies the layers and proposes a service profile and a persona; every
 // proposal is validated here: needs from the ONE vocabulary (MARKETING_NEEDS), each citing evidence of layers 2–4 that exists, the
-// confidence capped by that evidence, every word screened by the field-token classifier (protected-class-signals.ts), the audience
-// proxy vocabulary (lib/compliance-rules/audience-compliance.ts) and the copy patterns (fair-housing-patterns.ts), and no research
-// VALUE may surface in any text. A refused element is DROPPED and recorded — the persona never fails open. With no model (or a
+// confidence capped by that evidence, every word screened by the copy scans — the fair-housing copy patterns
+// (fair-housing-patterns.ts) and the proxy-term screen (lib/compliance-rules/audience-compliance.ts) — and no research VALUE may
+// surface in any text. A refused element is DROPPED and recorded — the persona never fails open. With no model (or a
 // refused answer) the deterministic floor below is the persona.
 //
 // PURE. No database, no client, no network, no server-only import — so scripts/persona-compliance-guard.ts drives every rule on
 // fixtures, and the I/O half (persona-builder.ts) cannot grow a rule this half does not hold.
 
-import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
 import { audienceProxyHits } from "@/lib/compliance-rules/audience-compliance"
 import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
-import { CAMPAIGN_PERSONAS, normalizeContactPersona, type CampaignPersona } from "@/lib/campaigns/contact-sources"
+import { isCampaignPersona, normalizeContactPersona, type CampaignPersona } from "@/lib/campaigns/contact-sources"
 import type { Customer360 } from "@/lib/enrichment/customer-360"
 import type { BuyerCriteria } from "@/lib/buyer-search/buyer-criteria"
 
@@ -46,7 +51,7 @@ export const PERSONA_LAYERS = ["research_attributes", "stated_needs", "behaviour
 type EvidenceLayer = "stated_needs" | "behavioural_evidence" | "inferred_interests"
 
 /** Bump when the prompt or the output contract changes — stored on every derivation. */
-export const PERSONA_PROMPT_VERSION = "persona-derivation:v1 (wave 148C)"
+export const PERSONA_PROMPT_VERSION = "persona-derivation:v2 (wave 149A — every persona allowed)"
 /** A marketing persona reaches an audience (contacts.contact_persona, persona_segment) only at or above this confidence. */
 export const AUDIENCE_MIN_CONFIDENCE = 0.6
 
@@ -56,11 +61,14 @@ export type MarketingNeed =
   | "relocation_research" | "first_home_guidance" | "investor_interest" | "downsizing" | "more_space" | "luxury_property"
   | "selling_on_own" | "relisting_after_expired" | "distressed_property_options" | "home_value_curiosity" | "equity_planning"
   | "expressed_criteria" | "acreage_and_land" | "new_construction"
+  // wave 149 (lane 149A, owner ruling 2026-11-03): the four situation personas wave 148 kept out of marketing.
+  | "estate_property_sale" | "military_relocation" | "separation_home_decisions" | "later_life_housing"
 
 interface NeedSpec {
   label: string
-  /** The canonical situation persona this need selects in a persona_segment audience — needs-based members only (never one the
-   *  classifier calls protected; asserted at load). null = the need shapes copy and content but selects no persona audience. */
+  /** The canonical situation persona this need selects in a persona_segment audience — ANY canonical persona (owner ruling
+   *  2026-11-03, "every persona is allowed"; asserted canonical at load). null = the need shapes copy and content but selects no
+   *  persona audience. */
   campaignPersona: CampaignPersona | null
   angles: readonly string[]
   educationTopics: readonly string[]
@@ -68,9 +76,9 @@ interface NeedSpec {
 }
 
 /**
- * THE needs a marketing persona may carry. A need describes what the person is trying to DO or LEARN, or the PROPERTY they want —
- * never who they are. Every key, label, angle, topic and hook is screened at module load by the same firewall the AI's answers
- * pass (a vocabulary that could not pass its own gate would be a second, unchecked spelling — CLAUDE.md §6).
+ * THE needs a marketing persona may carry. A need describes the person's SITUATION — what they are trying to DO or LEARN, or the
+ * PROPERTY they want — so the copy can speak to their pain points. Every key, label, angle, topic and hook is screened at module
+ * load by the same copy scans the AI's answers pass (a vocabulary that could not pass its own gate would be a second, unchecked spelling — CLAUDE.md §6).
  */
 export const MARKETING_NEEDS: Readonly<Record<MarketingNeed, NeedSpec>> = Object.freeze({
   relocation_research: {
@@ -157,35 +165,63 @@ export const MARKETING_NEEDS: Readonly<Record<MarketingNeed, NeedSpec>> = Object
     educationTopics: ["Builder contracts explained", "New-build inspections"],
     hooks: { facebook: "Considering a new build? The questions to ask the builder.", instagram: "Brand new homes: incentives and upgrades compared.", linkedin: "Evaluating builder incentives with clear eyes.", tiktok: "Touring a new build: what I look at first." },
   },
+  // ── wave 149 (lane 149A, owner ruling 2026-11-03): the four situation personas, each written to its pain points. The wording is
+  // invitational ("if you are …"), never a presumption about one person, and passes the same copy scans as every other need.
+  estate_property_sale: {
+    label: "Selling an estate or inherited property", campaignPersona: "probate",
+    angles: ["What the probate sale process involves, step by step, at a gentle pace", "Preparing, valuing and selling a home you are responsible for as an executor or heir"],
+    educationTopics: ["How a probate property sale works", "Court confirmation and timelines explained", "Clearing out and preparing an estate home"],
+    hooks: { facebook: "Handling a loved one's home? Here is how the probate sale process usually works.", instagram: "An estate home, step by step: valuing, preparing and selling without rushing.", linkedin: "A practical guide for executors responsible for selling real property.", tiktok: "Executor of an estate with a house to sell? Start here." },
+  },
+  military_relocation: {
+    label: "Military relocation and VA financing", campaignPersona: "military",
+    angles: ["PCS orders and a short timeline: buying, selling or renting out from a distance", "VA loan benefits explained plainly, from eligibility to closing"],
+    educationTopics: ["Using a VA home loan", "Buying or selling on a PCS timeline", "Keeping the home as a rental after a move"],
+    hooks: { facebook: "Got PCS orders? What would make this move easier on you?", instagram: "Moving on orders: how to buy before you arrive.", linkedin: "VA financing and PCS timing: a clear, practical guide.", tiktok: "New orders, new duty station. Here is how the house part works." },
+  },
+  separation_home_decisions: {
+    label: "Home decisions during a separation", campaignPersona: "divorce",
+    angles: ["Keep, buy out or sell: the options for a shared home laid out calmly", "A neutral, confidential valuation both parties can rely on"],
+    educationTopics: ["Valuing a shared home fairly", "Buy-out versus sale: the trade-offs", "Starting over with the next home"],
+    hooks: { facebook: "Working out what happens to the house? Your options, explained without pressure.", instagram: "A shared home, a clear plan: keep, buy out or sell.", linkedin: "A neutral guide to valuing and selling a jointly owned home.", tiktok: "What happens to the house? Here are the three usual paths." },
+  },
+  later_life_housing: {
+    label: "Later-life housing options", campaignPersona: "senior",
+    angles: ["Single-level living, low upkeep and staying close to what matters", "Aging in place or moving: the costs and choices compared honestly"],
+    educationTopics: ["Features that make a home easier to live in for years", "Reverse mortgage for purchase (HECM) overview", "Verified age-qualified communities explained"],
+    hooks: { facebook: "Thinking about the home that will suit you for the next twenty years? What matters most?", instagram: "Single-level, low-upkeep homes worth a look.", linkedin: "Aging in place versus moving: a balanced look at the numbers.", tiktok: "Stay or move? How I would think about the next home." },
+  },
 })
 
 const NEED_KEYS = Object.keys(MARKETING_NEEDS) as MarketingNeed[]
 const isMarketingNeed = (v: unknown): v is MarketingNeed => typeof v === "string" && (NEED_KEYS as string[]).includes(v)
 
-/**
- * The canonical personas that NAME a protected characteristic (senior, probate, divorce, military — COMPUTED by the one
- * classifier, never listed). A derived persona never carries one and a derived-persona audience refuses one
- * (lib/ads/audience-persona-basis.ts); m913's CHECK holds the same set and the guard compares the two.
- */
-export const PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS: readonly CampaignPersona[] = Object.freeze(
-  CAMPAIGN_PERSONAS.filter((p) => protectedClassReasonFor(p) !== null),
-)
+// TOMBSTONE (wave 149, lane 149A — owner ruling 2026-11-03): `PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS` stood here — the four
+// situation personas a derived persona could never carry and a derived-persona audience refused. The marketing lane no longer
+// asks the question ("every persona is allowed"). SURVIVOR for the one place a protected persona still matters — a housing
+// audience that SUPPRESSES people — is `EXCLUSION_INELIGIBLE_PERSONAS` (lib/ads/audience-persona-basis.ts), computed by the same
+// classifier.
 
-/** Maps a stored canonical situation persona onto the need it expresses. The four protected-characteristic personas and `other`
- *  map to NOTHING: a protected situation may shape service, never a marketing need (ruling 1). */
+/** Maps a stored canonical situation persona onto the need it expresses — every canonical persona but `other` has one since wave
+ *  149 (owner ruling 2026-11-03); the 148C rule "a protected situation may shape service, never a marketing need" is reversed. */
 const NEED_FOR_PERSONA: Readonly<Partial<Record<CampaignPersona, MarketingNeed>>> = Object.freeze(
   Object.fromEntries(NEED_KEYS.filter((k) => MARKETING_NEEDS[k].campaignPersona).map((k) => [MARKETING_NEEDS[k].campaignPersona as CampaignPersona, k])),
 )
 
 // ─── THE FIREWALL ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** PURE. Why this marketing / persisted text may not stand, or null. Three screens + the research-value leak check. */
+/** PURE. Why this marketing / persisted text may not stand, or null. The copy scans (fair-housing copy patterns + proxy terms)
+ *  + the research-value leak check. */
 function textViolation(text: string, researchValues: readonly string[] = []): string | null {
   const t = String(text ?? "")
   if (!t.trim()) return null
   // The REASON never echoes the refused text or its term: the text may carry a research value (a modeled religion is also a proxy
   // word), and a refusal record is persisted on the persona row (derivation.firewall) — it names the SCREEN and the CLASS only.
-  if (protectedClassReasonFor(t)) return "protected-class term (field-token classifier, protected-class-signals.ts) — a characteristic of a person, never marketing copy"
+  // TOMBSTONE (wave 149, lane 149A): the FIELD-token classifier (protected-class-signals.ts protectedClassReasonFor) screened copy
+  // here and refused every situation word ("probate", "military", "divorce", "senior", "veteran") — so copy could not name the
+  // situation the owner's personas exist to speak to. It is a classifier of provider FIELD NAMES, not a copy scan; the survivors
+  // that judge WORDING are the two screens below (lib/compliance-rules/**), which catch "ideal for retirees", "no children",
+  // "walk to church", demographic and proxy wording.
   const hits = audienceProxyHits(t)
   if (hits.length > 0) return `audience proxy for ${hits[0].proxyFor.replace(/_/g, " ")} (lib/compliance-rules/audience-compliance.ts) — describe the need or the property instead`
   const fh = detectFairHousingViolations(t)
@@ -203,7 +239,7 @@ for (const k of NEED_KEYS) {
   const spec = MARKETING_NEEDS[k]
   const bad = [k, spec.label, ...spec.angles, ...spec.educationTopics, ...Object.values(spec.hooks)].map((s) => [s, textViolation(s)] as const).find(([, v]) => v)
   if (bad) throw new Error(`[persona-layers] MARKETING_NEEDS.${k} fails its own firewall ("${bad[0]}": ${bad[1]})`)
-  if (spec.campaignPersona && protectedClassReasonFor(spec.campaignPersona)) throw new Error(`[persona-layers] MARKETING_NEEDS.${k} maps to a protected-characteristic persona (${spec.campaignPersona})`)
+  if (spec.campaignPersona && !isCampaignPersona(spec.campaignPersona)) throw new Error(`[persona-layers] MARKETING_NEEDS.${k} maps to a non-canonical persona (${spec.campaignPersona})`)
 }
 
 // ─── EVIDENCE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -266,14 +302,13 @@ function buildPersonaEvidence(src: PersonaSources): { stated: PersonaEvidence[];
     out[layer].push({ id: `${prefix}-${n}`, layer, confidence: e.confidence ?? BASE_CONF[layer], ...e })
   }
   const v = src.view
-  // (a) the stored situation persona — its provenance decides the layer; a protected one is service context only.
+  // (a) the stored situation persona — its provenance decides the layer. Every canonical persona maps to a need (wave 149).
   const personaField = v?.fields["lifecycle.contact_persona"]
   const storedRaw = typeof personaField?.value === "string" ? personaField.value : null
   const stored = normalizeContactPersona(storedRaw)
   if (stored && storedRaw !== (src.ownPriorPersona ?? null) && stored !== "other") {
     const need = NEED_FOR_PERSONA[stored] ?? null
-    if (!need) withheld.push(`contacts.contact_persona=${stored} names a protected characteristic — it may shape service, never a marketing need (ruling 1)`)
-    else push(STATED_BASES.has(personaField?.basis ?? "") ? "stated_needs" : "inferred_interests", { source: "contacts.contact_persona", summary: `recorded situation: ${MARKETING_NEEDS[need].label.toLowerCase()}`, supports: need, observedAt: personaField?.observedAt ?? null, confidence: STATED_BASES.has(personaField?.basis ?? "") ? 0.85 : 0.5 })
+    if (need) push(STATED_BASES.has(personaField?.basis ?? "") ? "stated_needs" : "inferred_interests", { source: "contacts.contact_persona", summary: `recorded situation: ${MARKETING_NEEDS[need].label.toLowerCase()}`, supports: need, observedAt: personaField?.observedAt ?? null, confidence: STATED_BASES.has(personaField?.basis ?? "") ? 0.85 : 0.5 })
   }
   // (b) buyer criteria — "said" fields are stated needs (the buyer's literal words), the rest inferred.
   const c = src.criteria
@@ -335,7 +370,7 @@ export interface MarketingSafePersona {
   headline: string
   primaryNeed: MarketingNeed | null
   needs: PersonaNeed[]
-  /** The needs-based situation persona this person may be reached under (contacts.contact_persona / persona_segment). */
+  /** The situation persona this person may be reached under (contacts.contact_persona / persona_segment) — any canonical one. */
   campaignPersona: CampaignPersona | null
   audienceEligible: boolean
   messaging: { angles: string[]; educationTopics: string[]; tone: string; platformHooks: Partial<Record<"facebook" | "instagram" | "linkedin" | "tiktok", string>>; avoid: string[] }
@@ -452,11 +487,11 @@ export function buildPersonaDerivationPrompt(input: PersonaPromptInput): { syste
     "",
     "YOUR MANDATE — two products from one study:",
     "1. A CUSTOMER-SERVICE PROFILE: how this person would most like to be helped — pace, detail, what to explain first, what to ask next. It may be shaped by every layer, including LAYER 1, but it never NAMES a protected characteristic or repeats a Layer-1 value.",
-    "2. A MARKETING-SAFE PERSONA: the person's NEEDS (what they are trying to do or learn, or the property they want), chosen ONLY from the needs vocabulary, each citing evidence ids from LAYERS 2–4. This persona is what ads, posts and custom audiences read.",
+    "2. A MARKETING PERSONA: the person's SITUATION and NEEDS (what they are trying to do or learn, or the property they want — including an estate sale, a military move, a separation or a later-life move when the evidence shows it), chosen ONLY from the needs vocabulary, each citing evidence ids from LAYERS 2–4. This persona is what ads, posts and custom audiences read; every persona is allowed.",
     "",
     "FACTS YOU MAY RELY ON: only the evidence lines given, by id. NEVER INVENT: no fact, need, preference or confidence the evidence does not carry; when something is unknown, say it is unknown and put the question in openQuestions. Do not restate canonical facts the record already holds (channel, language, contact time, accessibility) — they are attached for you.",
     "",
-    "COMPLIANCE BOUNDARY (Fair Housing Act 42 U.S.C. § 3604(c); HUD v. Meta; state classes): the marketing persona and every word of messaging must never reference, imply or proxy race, colour, national origin or language-as-identity, religion, sex, sexual orientation or gender identity, familial status (children, pregnancy, household composition, schools), disability, age or life stage, marital status, military status or source of income. No school-quality claims, no 'perfect for …', no houses of worship, no neighbourhood demographics. A need is never derived from a Layer-1 attribute; Layer 1 may only make the SERVICE more considerate. Never name or allude to a life event (bereavement, divorce, illness, a new baby) anywhere — warmth, not surveillance.",
+    "COMPLIANCE BOUNDARY — it is about WORDING (Fair Housing Act 42 U.S.C. § 3604(c)) and the ad platform's housing rules, not about which persona exists: messaging may speak to the situation (an estate sale, PCS orders, a separation, a later-life move) but must never state or imply a PREFERENCE, LIMITATION or EXCLUSION by race, colour, national origin, religion, sex, sexual orientation or gender identity, familial status, disability, age, marital status, military status or source of income. No school-quality claims, no 'perfect for …', no 'ideal for retirees', no houses of worship as selling points, no neighbourhood demographics. Write invitationally ('if you are handling an estate …'), never as a presumption about this one person; never exploit hardship; never name or allude to THIS person's private life event in a message to them (ruling 17 — warmth, not surveillance). A need is never derived from a Layer-1 attribute; Layer 1 may only make the SERVICE more considerate.",
     "",
     "ESCALATION: if Layers 2–3 are empty, return no needs and escalate \"insufficient_evidence\". If the evidence shows a sensitive situation the person has not invited us into, keep it out of everything and escalate \"human_review_sensitive_situation\".",
     "",
@@ -569,7 +604,9 @@ export function validatePersonaDerivation(
 export function assertMarketingSafePersona(p: MarketingSafePersona, researchValues: readonly string[] = []): { ok: boolean; violations: string[] } {
   const v: string[] = []
   for (const n of p.needs) if (!isMarketingNeed(n.need)) v.push(`need ${String(n.need)} is outside the vocabulary`)
-  if (p.campaignPersona && PROTECTED_CHARACTERISTIC_CAMPAIGN_PERSONAS.includes(p.campaignPersona)) v.push(`campaign persona ${p.campaignPersona} names a protected characteristic`)
+  // TOMBSTONE (wave 149, lane 149A): "campaign persona names a protected characteristic" was a violation here (148C) — reversed
+  // by the owner ("every persona is allowed"); the persona only has to be canonical.
+  if (p.campaignPersona && !isCampaignPersona(p.campaignPersona)) v.push(`campaign persona ${String(p.campaignPersona)} is not a canonical persona`)
   if (p.needs.some((n) => n.evidenceRefs.some((id) => /^R1-/.test(id)))) v.push("a need cites research-layer evidence")
   const texts = [p.headline, p.messaging.tone, ...p.messaging.angles, ...p.messaging.educationTopics, ...Object.values(p.messaging.platformHooks), ...p.needs.map((n) => n.why)]
   for (const t of texts) { const why = textViolation(String(t ?? ""), researchValues); if (why) v.push(why) }
