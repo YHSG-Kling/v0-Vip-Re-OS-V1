@@ -25,6 +25,9 @@
  *      runtime actually reads.
  *   E  THE DEPLOYMENT BUILD: vercel.json's single pass runs below the CI compile cap the bracket recorded aborting, so a
  *      Vercel deployment is an OWNER item (build machine + heap) regardless of the CI gate. Printed, never hidden.
+ *      (wave 149, lane 149K) E2 — CI ≠ VERCEL, THE INSTALL: O4 is derived from whether Vercel installs the SAME lockfile
+ *      CI certifies, frozen (package manager, frozen flag, lockfile coverage of package.json). A17 — the bracket carries
+ *      the first green matrix run's per-half compile and generate durations, read from the job logs.
  *
  * Every absence/refusal assertion carries a POSITIVE CONTROL (CLAUDE.md §2). Source scans read STRIPPED source.
  * BLIND SPOTS (published): the CI result of the matrix itself is GitHub's, not this repo's (the first run is the heap
@@ -178,6 +181,27 @@ check("A15 POSITIVE CONTROL — a one-part \"matrix\" (app/**) is the whole grap
 const bracket = read(".github/workflows/build.yml").replace(/\n\s*#\s?/g, " ")
 check("A16 the bracket records lever (d) as implemented, says the unchanged full pass is NOT re-run, and states what a partial generate cannot prove",
   /2026-11-01, wave 148 lane 148A: LEVER \(d\) IMPLEMENTED/.test(bracket) && /NOT re-run on ubuntu-latest/.test(bracket) && /CANNOT — produce a deployable \.next/.test(bracket))
+// wave 149, lane 149K — the matrix has run green, so the bracket must carry its MEASUREMENT, read from the job logs: one row
+// per matrix half with the compile step and the generate step in seconds. RULE (not a waypoint): every half the matrix
+// names has a measured row, and compile > generate for each (the wave-148 report called the 136 s / 130 s generate steps
+// "compile steps" — a row that swaps them is refused), and the entry says whether a heap reading exists.
+/** PURE — per-half measured rows of the bracket entry that records the first green matrix run. */
+function measuredHalves(text: string): Map<string, { compile: number; generate: number }> {
+  const entry = text.split(/──\s+/).find((e) => /THE FIRST GREEN MATRIX RUNS/.test(e)) ?? ""
+  const rows = new Map<string, { compile: number; generate: number }>()
+  for (const m of entry.matchAll(/half (\w+):\s+compile step (\d+) s[\s\S]*?generate step (\d+) s/g)) rows.set(m[1], { compile: Number(m[2]), generate: Number(m[3]) })
+  return rows
+}
+const measured = measuredHalves(bracket)
+const halfNames = matrix.map((m) => m.half)
+const badRows = halfNames.filter((h) => { const r = measured.get(h); return !r || !(r.compile > r.generate && r.generate > 0) })
+const firstGreenEntry = bracket.split(/──\s+/).find((e) => /THE FIRST GREEN MATRIX RUNS/.test(e)) ?? ""
+check(`A17 the bracket records the first green matrix run per half, compile and generate separately (${halfNames.map((h) => `${h} ${measured.get(h)?.compile ?? "?"}/${measured.get(h)?.generate ?? "?"} s`).join(" · ")}) and states the heap reading (or its absence)`,
+  badRows.length === 0 && /run \d{8,}/.test(firstGreenEntry) && /HEAP:/.test(firstGreenEntry), badRows.length ? `unmeasured or swapped: ${badRows.join(", ")}` : "")
+const swapped = measuredHalves("── THE FIRST GREEN MATRIX RUNS half dashboard: compile step 136 s · generate step 719 s half rest: compile step 130 s · generate step 734 s")
+const missingRest = measuredHalves("── THE FIRST GREEN MATRIX RUNS half dashboard: compile step 719 s · generate step 136 s")
+check("A17 POSITIVE CONTROL — generate seconds recorded as compile are refused, and a half with no row is caught",
+  ["dashboard", "rest"].some((h) => { const r = swapped.get(h); return !r || !(r.compile > r.generate) }) && !missingRest.has("rest") && measuredHalves("").size === 0)
 
 // ═════════════════════════════════════════════════════════════════════════════
 // B · O1 — THE STORAGE POLICIES
@@ -281,7 +305,7 @@ const ctSrc = stripComments(read("lib/kernel/completion-tracking.ts"))
 check(`D2 Vercel Workflow: next.config exports withWorkflow(…); every workflows/*.ts (${wfFiles.length}) declares "use workflow"; the durable timer starts only where the VERCEL runtime is present and otherwise leaves the row to the cron net`,
   /export default withWorkflow\(/.test(nextCfg) && wfFiles.length > 0 && wfFiles.every((f) => /["']use workflow["']/.test(read(`workflows/${f}`)))
   && /if \(!process\.env\.VERCEL\) return \{ scheduled: false/.test(ctSrc) && runtimeEnv.has("VERCEL"))
-const vercel = JSON.parse(read("vercel.json")) as { buildCommand?: string; crons?: Array<{ path: string }> }
+const vercel = JSON.parse(read("vercel.json")) as { buildCommand?: string; installCommand?: string; crons?: Array<{ path: string }> }
 const cronRoutes = (vercel.crons ?? []).map((c) => `app${c.path}/route.ts`)
 check(`D3 the cron door: vercel.json schedules ${(vercel.crons ?? []).map((c) => c.path).join(", ")}; each route exists and the dispatcher reads CRON_SECRET (fail-closed census: test:cron-auth-fail-closed)`,
   cronRoutes.length > 0 && cronRoutes.every(has) && runtimeEnv.has("CRON_SECRET"))
@@ -318,6 +342,61 @@ obligations.push({ id: "O3", kind: "owner-config", open: deployBuildOpen(vercelH
 check(`E1 the deployment-build obligation is derived, not pinned (vercel ${vercelHeap} MB vs CI cap ${ciCap} MB → ${deployBuildOpen(vercelHeap, ciCap) ? "OPEN" : "clear"})`, vercelHeap > 0 && ciCap > 0)
 check("E1 POSITIVE CONTROL — 10240 vs 14336 is OPEN; 16384 vs 14336 clears", deployBuildOpen(10240, 14336) && !deployBuildOpen(16384, 14336))
 
+// wave 149, lane 149K — CI ≠ VERCEL, THE INSTALL. CI certifies the tree `npm ci` installs from package-lock.json
+// (.github/actions/node-deps). Vercel installs with vercel.json's installCommand. A green CI build certifies the Vercel
+// deployment only if Vercel installs the SAME lockfile, frozen. RULE: the package manager Vercel's install command names
+// must be the one CI uses, frozen (no --no-frozen-lockfile), and its lockfile must cover every package.json dependency at
+// the same specifier. Derived every run — never pinned. (PRODUCTION-ARCHITECTURE §15.3 F-1, an owner decision since
+// wave 143: choose one package manager, keep its lockfile as the only one, freeze it.)
+type Deps = Record<string, string>
+/** PURE — which package manager an install command runs, and whether it is frozen. */
+function installOf(cmd: string): { pm: "npm" | "pnpm" | "yarn" | "unknown"; frozen: boolean } {
+  const pm = /\bpnpm\s+(i|install)\b/.test(cmd) ? "pnpm" : /\bnpm\s+ci\b/.test(cmd) ? "npm" : /\byarn\b/.test(cmd) ? "yarn" : /\bnpm\s+(i|install)\b/.test(cmd) ? "npm" : "unknown"
+  const frozen = pm === "npm" ? /\bnpm\s+ci\b/.test(cmd) : pm === "pnpm" ? /--frozen-lockfile\b/.test(cmd) && !/--no-frozen-lockfile/.test(cmd) : /--frozen-lockfile|--immutable/.test(cmd)
+  return { pm, frozen }
+}
+/** PURE — the package.json dependencies a lockfile's root importer does not lock at the same specifier. */
+function lockDrift(pkgDeps: Deps, locked: Deps): { absent: string[]; drifted: string[] } {
+  const absent = Object.keys(pkgDeps).filter((k) => !(k in locked))
+  const drifted = Object.keys(pkgDeps).filter((k) => k in locked && locked[k] !== pkgDeps[k])
+  return { absent, drifted }
+}
+const pkgAll = JSON.parse(read("package.json")) as { dependencies?: Deps; devDependencies?: Deps; engines?: { node?: string } }
+const pkgDeps: Deps = { ...(pkgAll.dependencies ?? {}), ...(pkgAll.devDependencies ?? {}) }
+const npmLocked: Deps = (() => { const root = lock.packages?.[""] as { dependencies?: Deps; devDependencies?: Deps } | undefined; return { ...(root?.dependencies ?? {}), ...(root?.devDependencies ?? {}) } })()
+const pnpmLocked: Deps = (() => {
+  if (!has("pnpm-lock.yaml")) return {}
+  const imp = (parseYaml(read("pnpm-lock.yaml")) as { importers?: Record<string, { dependencies?: Record<string, { specifier: string }>; devDependencies?: Record<string, { specifier: string }> }> }).importers?.["."]
+  const out: Deps = {}
+  for (const [k, v] of Object.entries({ ...(imp?.dependencies ?? {}), ...(imp?.devDependencies ?? {}) })) out[k] = v.specifier
+  return out
+})()
+// The run: blocks only (YAML comments in the action mention other commands in prose).
+const nodeDeps = parseYaml(read(".github/actions/node-deps/action.yml")) as { runs?: { steps?: Array<{ run?: string }> } }
+const ciInstall = installOf((nodeDeps.runs?.steps ?? []).map((s) => s.run ?? "").join("\n"))
+const vInstallCmd = `${vercel.installCommand ?? ""} ${vercel.buildCommand ?? ""}`
+const vInstall = installOf(vInstallCmd)
+const vLocked = vInstall.pm === "pnpm" ? pnpmLocked : vInstall.pm === "npm" ? npmLocked : {}
+const vDrift = lockDrift(pkgDeps, vLocked)
+const ciDrift = lockDrift(pkgDeps, npmLocked)
+/** PURE — the install-parity rule. */
+const installParityOpen = (ci: { pm: string; frozen: boolean }, v: { pm: string; frozen: boolean }, drift: { absent: string[]; drifted: string[] }) =>
+  !(ci.pm === v.pm && v.frozen && drift.absent.length === 0 && drift.drifted.length === 0)
+const o4Open = installParityOpen(ciInstall, vInstall, vDrift)
+console.log(`    CI installs: ${ciInstall.pm}${ciInstall.frozen ? " (frozen: npm ci)" : " (NOT frozen)"} — package-lock covers package.json: ${ciDrift.absent.length} absent, ${ciDrift.drifted.length} drifted`)
+console.log(`    Vercel installs: ${vInstall.pm}${vInstall.frozen ? " (frozen)" : " (NOT frozen)"} — its lockfile vs package.json (${Object.keys(pkgDeps).length} deps): ${vDrift.absent.length} absent${vDrift.absent.length ? ` (${vDrift.absent.slice(0, 13).join(", ")})` : ""}, ${vDrift.drifted.length} drifted${vDrift.drifted.length ? ` (${vDrift.drifted.slice(0, 7).join(", ")})` : ""}`)
+console.log(`    Node major: package.json engines ${pkgAll.engines?.node ?? "unset"}; CI node-deps default 22; the Vercel project's Node setting is not readable from the repository (names only)`)
+obligations.push({ id: "O4", kind: "owner-decision", open: o4Open, what: `the Vercel INSTALL is not the install CI certifies — vercel.json runs ${vInstall.pm}${vInstall.frozen ? "" : " unfrozen"} against a lockfile missing ${vDrift.absent.length} and drifting ${vDrift.drifted.length} of package.json's ${Object.keys(pkgDeps).length} dependencies, while CI runs ${ciInstall.pm}${ciInstall.frozen ? " ci (frozen)" : ""}`, where: "PRODUCTION-ARCHITECTURE §15.3 F-1 (owner: one package manager, one lockfile, frozen) — then vercel.json installCommand/buildCommand (a code change) — ACTIVATION-CHECKLIST §1.10" })
+check(`E2 install parity is derived, not pinned (CI ${ciInstall.pm}${ciInstall.frozen ? " frozen" : ""} · Vercel ${vInstall.pm}${vInstall.frozen ? " frozen" : " unfrozen"} · drift ${vDrift.absent.length}+${vDrift.drifted.length} → ${o4Open ? "OPEN" : "clear"}); CI's own lockfile covers package.json`,
+  ciInstall.pm === "npm" && ciInstall.frozen && ciDrift.absent.length === 0 && ciDrift.drifted.length === 0 && o4Open === installParityOpen(ciInstall, vInstall, vDrift),
+  ciDrift.absent.length || ciDrift.drifted.length ? `package-lock.json itself drifts: ${[...ciDrift.absent, ...ciDrift.drifted].join(", ")}` : "")
+check("E2 POSITIVE CONTROL — an unfrozen install, a different package manager and a lockfile missing a dependency are each OPEN; npm ci over a covering lockfile clears",
+  installParityOpen({ pm: "npm", frozen: true }, installOf("pnpm install --no-frozen-lockfile"), { absent: [], drifted: [] })
+  && installParityOpen({ pm: "npm", frozen: true }, installOf("pnpm install --frozen-lockfile"), { absent: [], drifted: [] })
+  && installParityOpen({ pm: "npm", frozen: true }, installOf("npm ci"), lockDrift({ twilio: "^5" }, {}))
+  && !installParityOpen({ pm: "npm", frozen: true }, installOf("npm ci"), lockDrift({ twilio: "^5" }, { twilio: "^5" }))
+  && installOf("npm install").frozen === false)
+
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[release blockers]")
 for (const o of obligations) console.log(`    ${o.open ? "RELEASE-BLOCKING" : "discharged      "} ${o.id} [${o.kind}] ${o.what} — ${o.where}`)
@@ -328,6 +407,8 @@ console.log("  · module counts are first-party only (packages, runtime chunks a
 console.log("  · live state (storage verdict, seed census) is the owner's SQL to read; this guard reads the stamps / status lines that record it")
 console.log("  · a name read through process.env[<computed>] is credited from the literals of the module that computes it — a heuristic, not a data-flow proof")
 console.log("  · presence of a name in the Vercel project is not readable from the repository (ACTIVATION-CHECKLIST §1 — names only)")
+console.log("  · E2 compares root-importer SPECIFIERS only (package.json vs the lockfile's importer) — a transitive resolution difference between npm and pnpm under one specifier is not measured")
+console.log("  · the Vercel project's Node major, build machine type, plan (per-minute cron, maxDuration 600) and Deployment Protection are project settings, not repository facts — lane 149K read them once via the read-only Vercel MCP (notes), this guard cannot")
 console.log(`\nRELEASE BLOCKERS: ${open.length} owner obligation(s) open${open.length ? ` — ${open.map((o) => o.id).join(", ")}` : ""}`)
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

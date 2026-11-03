@@ -600,6 +600,28 @@ jobs:
       #   UNVERIFIED IN CI until the first matrix run: partial manifests under `generate`. A generate failure
       #   that names a route of the OTHER half (ENOENT under .next/server/app/<other half>) is the partial
       #   build's limit, not a code defect — record it here and keep the compile half of the gate.
+      #
+      # ── 2026-11-03, wave 149 lane 149K: THE FIRST GREEN MATRIX RUNS, READ FROM THE JOB LOGS (not from a report).
+      # FIRST GREEN: run 41362289231 (commit b5cba43d, 2026-11-01 23:28Z) — both halves success, verdict success;
+      #   the phases step took dashboard 850 s, rest 818 s (job-step timestamps; the per-phase split was not read).
+      # THE MEASURED RUN: run 41372063834 (commit 08712fef, 2026-11-02 01:21Z), ubuntu-latest, 15 GiB RAM, swap
+      #   3 GiB + the 8 GiB swapfile this workflow adds; compile cap 14336 MB, generate cap 10240 MB; next 16.2.7:
+      #   half dashboard: compile step 719 s · server compiler 452.9 s · client compiler 46.5 s · "Compiled
+      #                   successfully in 8.3min" · generate step 136 s · 105 static pages in 100 s
+      #   half rest:      compile step 734 s · server compiler 453.6 s · client compiler 34.2 s · "Compiled
+      #                   successfully in 8.1min" · generate step 130 s · 304 static pages in 93 s
+      #   (the compile step also holds page-data collection + build traces: ~195 s dashboard, ~223 s rest.)
+      #   CORRECTION: "136 s / 130 s" are the GENERATE step durations; the wave-148 report called them compile steps.
+      #   The compile steps were 719 s / 734 s — each half's server compile alone (~453 s) is the largest phase.
+      # HEAP: NOT PRINTED. Neither log carries a Mark-Compact / Scavenge line or "Ineffective mark-compacts" — V8
+      #   prints GC lines only on the way to an abort (or with --trace-gc, which this workflow does not set), so a
+      #   green run leaves no heap reading. The ~61–69%-of-cap prediction above is therefore STILL UNMEASURED; what is
+      #   measured is that both halves finished under the 14336 cap with no GC distress. To read it on a green run,
+      #   the phases action would have to print peak RSS (e.g. `/usr/bin/time -v`'s "Maximum resident set size") —
+      #   proposed, not added. Near-identical server compile times (452.9 s vs 453.6 s) for 325 vs 645 routes say
+      #   the ~1782 shared modules, not the route count, dominate each half.
+      # WHAT IT DOES NOT CHANGE: Vercel still runs the single pass at 10240 (vercel.json) — no Vercel build of this
+      #   tree exists. scripts/release-blockers-guard.ts A17 parses the two rows above (compile > generate per half).
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '14336' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
