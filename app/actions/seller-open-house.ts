@@ -605,31 +605,17 @@ export async function createOpenHouseEvent(params: {
 
   const serviceClient = createServiceClient()
 
-  const { data: event, error } = await serviceClient
-    .from("open_house_events")
-    .insert({
-      listing_id: params.listingId,
-      brokerage_id: auth.brokerageId,
-      // NOT `?? auth.userId` (m361). open_house_events.agent_id FKs agents
-      // (verified live), so the substitution was FK-rejected and the open house
-      // was never created. created_by on the next line is the users id and is
-      // correct — the row wants BOTH classes, which is precisely why one of
-      // them must not be a guess.
-      agent_id: auth.agentId,
-      created_by: auth.userId,
-      event_date: params.eventDate,
-      start_time: params.startTime,
-      end_time: params.endTime,
-      description: params.description ?? null,
-      max_attendees: params.maxAttendees ?? null,
-      status: "scheduled",
-      registration_required: false,
-    })
-    .select()
-    .maybeSingle()
-
-  if (error) return { success: false, error: error.message }
-  if (!event) return { success: false, error: "Failed to create event" }
+  // WAVE 149 (149F — lane 148H Still open 4): THE ONE WRITER. TOMBSTONE: this door's own open_house_events insert literal stood
+  // here; SURVIVOR lib/kernel/open-house.ts produceEventRow (same tenant, same agent/creator classes — agent_id is
+  // agents.id, NOT `?? auth.userId` (m361); created_by is users.id — plus the registry's registration rule for the kind).
+  const { produceEventRow } = await import("@/lib/kernel/open-house")
+  const produced = await produceEventRow(serviceClient, {
+    brokerageId: auth.brokerageId, agentId: auth.agentId ?? null, createdByUserId: auth.userId ?? null, kind: "open_house",
+    listingId: params.listingId, date: params.eventDate, startTime: params.startTime, endTime: params.endTime,
+    publicDescription: params.description ?? null, maxAttendees: params.maxAttendees ?? null,
+  })
+  if (!produced.ok) return { success: false, error: produced.error }
+  const event = produced.event
 
   // Portal fan-out: the seller sees "Open house scheduled" on their portal.
   const { data: ohListing } = await serviceClient

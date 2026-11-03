@@ -228,9 +228,12 @@ async function main(): Promise<void> {
   check("the verdict: a webinar needs 300 s — 299 s is not attendance, 300 s is", !reg.attendanceVerdict({ kind: "webinar", provider: "zoom", matched: true, seconds: 299 }).attended && reg.attendanceVerdict({ kind: "webinar", provider: "zoom", matched: true, seconds: 300 }).verifiedBy === "zoom_participant")
   check("the verdict: YouTube or an external link is never attendance, however long", !reg.attendanceVerdict({ kind: "webinar", provider: "youtube", matched: true, seconds: 9999 }).attended && !reg.attendanceVerdict({ kind: "virtual_open_house", provider: "external_link", matched: true, seconds: 9999 }).attended)
   check("the verdict: an unmatched participant is never attendance", !reg.attendanceVerdict({ kind: "webinar", provider: "zoom", matched: false, seconds: 9999 }).attended)
-  check("the agent is told about a verified attendee with a near timeline or a question — never about a click, never about a quiet verified attendee",
+  // WAVE 149 (149F, ruling 16): re-asserted from "a question in their own words" (a free-text box the owner ruled out) to the RULE —
+  // the agent is told when the person ASKED THE HOST for something on the kind's own closed questions (`requests`).
+  check("the agent is told about a verified attendee with a near timeline or a request to the host — never about a click, never about a quiet verified attendee",
     reg.shouldNotifyAgent({ verified: true, engagementRatio: 0.2, situation: { timeline: "1-3_months" }, audience: "consumer" }).notify
-    && reg.shouldNotifyAgent({ verified: true, engagementRatio: 0.2, situation: { question: "Can I buy with 5% down?" }, audience: "consumer" }).notify
+    && reg.shouldNotifyAgent({ verified: true, engagementRatio: 0.2, situation: { requests: ["one_on_one_consultation"] }, audience: "consumer" }).notify
+    && !reg.shouldNotifyAgent({ verified: true, engagementRatio: 0.2, situation: { requests: [] }, audience: "consumer" }).notify
     && !reg.shouldNotifyAgent({ verified: false, engagementRatio: 1, situation: { timeline: "immediate" }, audience: "consumer" }).notify
     && !reg.shouldNotifyAgent({ verified: true, engagementRatio: 0.3, situation: { timeline: "12+_months" }, audience: "consumer" }).notify)
   const outYT = reg.eventOutcome({ kind: "webinar", provider: "youtube", rsvps: [{ rsvp_status: "yes", attendance_verified_by: null, registered_at: T(0) }], unmatchedJoins: 0 })
@@ -244,7 +247,7 @@ async function main(): Promise<void> {
     && /registrationEnabled:\s*zoomRegistrationEnabled\(\s*res\.data\.settings\?\.approval_type\s*\)/.test(stripped("lib/connections/zoom.ts")))
   const goodDraft = {
     headline: "Buying your first home", registration_intro: "Join us.", what_you_will_learn: ["a"], invitation_subject: "s", invitation_body: "b", invitation_sms: "Join us. Reply STOP to opt out.",
-    confirmation_subject: "s", confirmation_body: "See you {{date_time}} — {{join_link}}", replay_attended_subject: "s", replay_attended_body: "Here: {{replay_link}}", replay_missed_subject: "s", replay_missed_body: "Here: {{replay_link}}", social_post: "p", self_check: "",
+    confirmation_subject: "s", confirmation_body: "See you {{date_time}} — {{join_link}}", reminder_subject: "s", reminder_body: "Soon: {{date_time}} — {{join_link}}", replay_attended_subject: "s", replay_attended_body: "Here: {{replay_link}}", replay_missed_subject: "s", replay_missed_body: "Here: {{replay_link}}", social_post: "p", self_check: "",
   }
   check("a clean draft is approvable", !mk.scanEventCopy(goodDraft, { online: true }).blocking)
   check("POSITIVE CONTROL: 'perfect for families' in a public field blocks approval (fair housing on public copy)", mk.scanEventCopy({ ...goodDraft, registration_intro: "This home is perfect for families." }, { online: true }).blocking)
@@ -290,14 +293,16 @@ async function main(): Promise<void> {
     // WAVE 148Z: the registration form posts the ONE consent component's submission (C15) — built here by the same pure contract.
     const CC = await import("../lib/kernel/compliance/consent-component")
     const C15SUB = (service: boolean) => CC.consentSubmissionFor({ ...CC.EMPTY_CONSENT_VALUE, serviceDelivery: service, marketing: { ...CC.EMPTY_CONSENT_VALUE.marketing } }, { door: "event_registration", brandName: "our brokerage", offered: ["email", "sms"] })
-    const base = { eventId: EV, firstName: "Ana", lastName: "Lopez", email: "ana@example.test", phone: "8135550148", situation: { intent: "buying", timeline: "1-3_months", workingWithAgent: false, question: "How much do I need for a down payment?" }, consent: C15SUB(true), evidence: { ip: "10.14.8.1", userAgent: "guard" } }
+    const base = { eventId: EV, firstName: "Ana", lastName: "Lopez", email: "ana@example.test", phone: "8135550148", situation: { intent: "buyer", timeline: "1-3_months", workingWithAgent: false, interests: ["budget_and_down_payment"], requests: ["one_on_one_consultation"] }, consent: C15SUB(true), evidence: { ip: "10.14.8.1", userAgent: "guard" } }
     const r1 = await A.registerForEvent(svc as never, base, regDeps)
     const contact = tbl("contacts")[0], rsvp = tbl("open_house_rsvp_tracking")[0]
     check("register → ONE Contact through C8, assigned to the event's agent, typed by the stated intent", r1.ok === true && tbl("contacts").length === 1 && contact?.brokerage_id === B && contact?.agent_id === AG && contact?.contact_type === "buyer", JSON.stringify({ r1, contact }).slice(0, 400))
     // WAVE 148Z: the registration consent is the ONE component's (C15) — re-asserted from "event_registration:v1" (the retired
     // per-form wording) to the rule: every row this registration wrote carries the C15 version for the event_registration door.
     check("…its consent rows anchored to the contact with the ONE component's wording version (C15, event_registration door — service on email + phone)", tbl("contact_consent_events").filter((c) => c.contact_id === contact?.id).length >= 2 && tbl("contact_consent_events").filter((c) => c.contact_id === contact?.id).every((c) => /^c15:[^:]+:event_registration$/.test(String(c.consent_text_version ?? ""))), JSON.stringify(tbl("contact_consent_events").map((c) => ({ v: c.consent_text_version, ch: c.channels }))).slice(0, 300))
-    check("…ONE registration row: tenant from the event, the situation verbatim, the creating user, registered_at, the C8 consent id", !!rsvp && rsvp.brokerage_id === B && rsvp.rsvp_status === "yes" && rsvp.source === "web_registration" && rsvp.situation?.timeline === "1-3_months" && rsvp.situation?.question === base.situation.question && rsvp.created_by_user_id === U && !!rsvp.registered_at, String(JSON.stringify(rsvp)).slice(0, 400))
+    // WAVE 149 (149F, ruling 16): re-asserted from "the situation verbatim (a free-text question)" to the RULE — the situation as the
+    // kind's OWN closed questions admit it (sanitizeEventSituation); no free text is stored.
+    check("…ONE registration row: tenant from the event, the situation as the kind's own questions admit it, the creating user, registered_at, the C8 consent id", !!rsvp && rsvp.brokerage_id === B && rsvp.rsvp_status === "yes" && rsvp.source === "web_registration" && rsvp.situation?.timeline === "1-3_months" && JSON.stringify(rsvp.situation?.requests) === JSON.stringify(base.situation.requests) && !("question" in (rsvp.situation ?? {})) && rsvp.created_by_user_id === U && !!rsvp.registered_at, String(JSON.stringify(rsvp)).slice(0, 400))
     check("…the person's own Zoom registrant + personal https link stored (the key attendance is verified on)", rsvp?.provider_registrant_id === "REG-ANA" && /^https:\/\/zoom\.us\/w\//.test(rsvp?.provider_join_url ?? "") && r1.ok && r1.zoomRegistered)
     check("…and ONE confirmation, in the approved words, carrying the personal join path", sent.length === 1 && sent[0].to === "ana@example.test" && r1.ok && !!r1.joinPath && r1.joinPath.includes(`/open-house/${EV}/join?r=`), JSON.stringify(sent).slice(0, 300))
     const r2 = await A.registerForEvent(svc as never, { ...base, email: "ANA@example.test", situation: { ...base.situation, timeline: "immediate" } }, regDeps)
@@ -305,6 +310,8 @@ async function main(): Promise<void> {
       r2.ok === true && r2.replay === true && tbl("contacts").length === 1 && tbl("open_house_rsvp_tracking").length === 1 && sent.length === 1 && zoomCalls.length === 1, JSON.stringify({ r2, contacts: tbl("contacts").length, rsvps: tbl("open_house_rsvp_tracking").length, sent: sent.length, zoomCalls }))
     const r3 = await A.registerForEvent(svc as never, { ...base, firstName: "Bo", lastName: "Chen", email: "bo@example.test", phone: null, situation: { intent: "learning" } }, regDeps)
     check("POSITIVE CONTROL: a different person IS a second contact (the counter above can move)", r3.ok === true && tbl("contacts").length === 2 && tbl("open_house_rsvp_tracking").length === 2)
+    // WAVE 149 (149F, ruling 3): a retired intent spelling ("learning") files NO contact type — never `prospect` (a platform word).
+    check("ruling 3: an unknown intent files no contact_type — never 'prospect'", tbl("contacts").filter((c) => c.email === "bo@example.test").every((c) => c.contact_type !== "prospect"), JSON.stringify(tbl("contacts").map((c) => c.contact_type)))
     const before = tbl("contacts").length
     const noConsent = await A.registerForEvent(svc as never, { ...base, email: "nc@example.test", consent: C15SUB(false) }, regDeps)
     const unpublished = await A.registerForEvent(svc as never, { ...base, eventId: EVD, email: "draft@example.test" }, regDeps)
@@ -338,7 +345,7 @@ async function main(): Promise<void> {
       l.handled === true && l.attended === true && anaRsvp?.rsvp_status === "attended" && anaRsvp?.attendance_verified_by === "zoom_participant" && anaRsvp?.attended_seconds === 420 && anaAtt.length === 1 && anaAtt[0].brokerage_id === B, JSON.stringify({ l, anaRsvp, anaAtt }).slice(0, 400))
     check("…the arbiter's reader is told (OPEN_HOUSE_ATTENDEE_CAPTURED with contactId + eventId, verified_by zoom_participant) and person identity linked",
       seen.emitted.length === 1 && seen.emitted[0].contactId === contact.id && seen.emitted[0].metadata?.eventId === EV && seen.emitted[0].metadata?.verified_by === "zoom_participant" && seen.linked.length === 1)
-    check("…and the agent is notified — the registrant stated a 1–3 month timeline and asked a question (appropriate)", seen.notified.length === 1 && seen.notified[0].agent_id === AG)
+    check("…and the agent is notified — the registrant stated a 1–3 month timeline and asked the host for a conversation (appropriate)", seen.notified.length === 1 && seen.notified[0].agent_id === AG)
     const evidenceBefore = tbl("event_attendance_evidence").length
     const redelivery = await A.recordZoomParticipantEvent(svc as never, zp("meeting.participant_left", { user_id: "901", user_name: "Ana", email: "", registrant_id: "REG-ANA", participant_uuid: "ana-1", leave_time: T(8), leave_reason: "left the meeting" }), attDeps)
     check("a Zoom REDELIVERY is a no-op (dedupe key): no new evidence, no second attendee, no second fan-out", redelivery.handled === true && (redelivery as any).replay === true && tbl("event_attendance_evidence").length === evidenceBefore && tbl("open_house_attendees").length === 1 && seen.emitted.length === 1)

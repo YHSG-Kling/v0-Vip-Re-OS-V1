@@ -289,12 +289,16 @@ export async function runLaunchWarRoom(
       // would make PostgREST refuse the ENTIRE row (PGRST204), not just that field.
       const { data: existOH } = await supabase.from("open_house_events").select("id").eq("listing_id", l.id).limit(1).maybeSingle()
       if (!existOH) {
-        const { error } = await supabase.from("open_house_events").insert({
-          brokerage_id: brokerageId, listing_id: l.id, agent_id: agentRowId,
-          title: `Open House — ${l.address} (set a date)`, property_address: l.address,
-          status: "draft", is_published: false, registration_required: true, allow_walkins: true,
+        // WAVE 149 (149F — lane 148H Still open 4): THE ONE WRITER. TOMBSTONE: an own insert literal stood here (it also stamped
+        // registration_required: true on a kiosk kind, which the registry says is signed in at the door). SURVIVOR:
+        // lib/kernel/open-house.ts produceEventRow — an undated DRAFT (no fabricated event_date), the agent dates it.
+        const { produceEventRow } = await import("@/lib/kernel/open-house")
+        const proposed = await produceEventRow(supabase as never, {
+          brokerageId, agentId: agentRowId, createdByUserId: agentUserId ?? null, kind: "open_house", listingId: l.id,
+          date: null, draft: true, title: `Open House — ${l.address} (set a date)`, allowWalkins: true,
         })
-        if (!error) { result.openHousesProposed += 1; staged.openHouseProposed = true }
+        if (proposed.ok) { result.openHousesProposed += 1; staged.openHouseProposed = true }
+        else console.warn(`[launch-war-room] open house draft not proposed for ${l.id}: ${proposed.error}`)
       }
     }
 

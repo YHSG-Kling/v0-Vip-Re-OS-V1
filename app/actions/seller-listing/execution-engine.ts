@@ -1179,18 +1179,14 @@ export async function markAgreementSigned(params: {
   if (ohSocialErr) console.error(`[execution-engine] open-house social post NOT created: ${ohSocialErr.message}`)
 
   // INSERT open_house_events for open_house_event_date
-  const { error: ohEventErr } = await supabase.from("open_house_events").insert({
-    brokerage_id:          brokerageId,
-    listing_id:            listingId,
-    agent_id:              await resolveAgentId(supabase as any, userId),
-    created_by:            userId,
-    event_date:            eventDate.toISOString(),
-    event_type:            "open_house",
-    status:                "scheduled",
-    registration_required: false,
-    created_at:            new Date().toISOString(),
+  // WAVE 149 (149F — lane 148H Still open 4): THE ONE WRITER. TOMBSTONE: an own open_house_events insert literal stood here;
+  // SURVIVOR lib/kernel/open-house.ts produceEventRow (same tenant + listing, the creator, the registry's kind rules).
+  const { produceEventRow } = await import("@/lib/kernel/open-house")
+  const ohProduced = await produceEventRow(supabase as never, {
+    brokerageId, agentId: await resolveAgentId(supabase as any, userId), createdByUserId: userId, kind: "open_house",
+    listingId, date: eventDate.toISOString().slice(0, 10),
   })
-  if (ohEventErr) console.error(`[execution-engine] open-house event NOT created for the listing: ${ohEventErr.message}`)
+  if (!ohProduced.ok) console.error(`[execution-engine] open-house event NOT created for the listing: ${ohProduced.error}`)
   }
 
   // ── 7. transitionLifecycle + processKernelEvent ───────────────────────────

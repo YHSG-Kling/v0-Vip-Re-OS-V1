@@ -13,8 +13,9 @@ import { createHash } from "node:crypto"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { createServiceClient } from "@/lib/supabase/service"
-import { EVENT_PRODUCER_REGISTRY, isOnlineEvent, isVirtualProvider, type VirtualProvider } from "@/lib/open-house/event-registry"
+import { EVENT_PRODUCER_REGISTRY, isEventKind, isOnlineEvent, isVirtualProvider, type VirtualProvider } from "@/lib/open-house/event-registry"
 import { eventWindow } from "@/lib/open-house/event-attendance"
+import { produceEventRow } from "@/lib/kernel/open-house"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -126,6 +127,10 @@ export async function createOpenHouse(params: {
   title?: string
   virtualProvider?: string
   timezone?: string
+  /** Wave 149 (149F): a listing-less IN-PERSON kind's venue (a client gathering, an office seminar). */
+  venueAddress?: string
+  /** Wave 149 (149F, C32): platform staff scheduling the PLATFORM's own event (honoured only for a platform_role, never a tenant). */
+  platformEvent?: boolean
 }) {
   try {
     const ctx = await getAgentContext()
@@ -158,51 +163,30 @@ export async function createOpenHouse(params: {
 
     const service = createServiceClient()
 
-    // Verify listing belongs to caller's brokerage
-    let propertyAddress: string | null = null
-    if (listingId) {
-      const { data: listing, error: listingErr } = await service
-        .from("listings")
-        .select("brokerage_id, address, city, state")
-        .eq("id", listingId)
-        .maybeSingle()
-      if (listingErr) return { success: false, error: `Could not read the listing: ${listingErr.message}` }
-      if (!listing || listing.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Listing not found or not authorized" }
-      }
-      propertyAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ") || null
+    // C32 (wave 149, lane 149F — owner ruling 15): an event is the TENANT's (its brand on every surface) unless PLATFORM STAFF,
+    // acting as themselves (never through an impersonation grant), schedule the platform's own event. The request may ASK
+    // (`platformEvent`); only the session's platform_role can make it so. A tenant user asking gets a tenant event.
+    let brandOwner: "platform" | undefined
+    if (params.platformEvent === true && !ctx.isImpersonating && ctx.userId) {
+      const { data: me, error: meErr } = await service.from("users").select("platform_role").eq("id", ctx.userId).maybeSingle()
+      if (meErr) return { success: false, error: `Could not confirm who is hosting: ${meErr.message}` }
+      const { isPlatformStaffRole } = await import("@/lib/platform/platform-staff-roster")
+      if (isPlatformStaffRole((me as { platform_role?: string | null } | null)?.platform_role ?? null)) brandOwner = "platform"
     }
 
-    const { data: event, error } = await service
-      .from("open_house_events")
-      .insert({
-        listing_id: listingId,
-        brokerage_id: ctx.brokerageId,
-        agent_id: ctx.agentId ?? null,
-        created_by: ctx.userId,
-        event_date: params.date,
-        start_time: params.startTime,
-        end_time: params.endTime,
-        max_attendees: params.maxAttendees ?? null,
-        notes: params.agentNotes ?? null,
-        description: params.publicDescription ?? null,
-        status: "scheduled",
-        registration_required: spec.registration.required,
-        event_type: eventType,
-        ...(title ? { title } : {}),
-        ...(propertyAddress ? { property_address: propertyAddress } : {}),
-        ...(params.timezone ? { timezone: params.timezone } : {}),
-        ...(provider ? { virtual_provider: provider, allow_walkins: false } : {}),
-        ...(joinUrl ? { check_in_url: joinUrl } : {}),
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) {
-      console.error("[createOpenHouse] insert error:", error.message)
-      return { success: false, error: error.message }
+    // THE ONE WRITER (lib/kernel/open-house.ts): the listing re-proven to be this tenant's, the creator stamped.
+    const produced = await produceEventRow(service, {
+      brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? null, createdByUserId: ctx.userId ?? null, kind: eventType, listingId,
+      date: params.date, startTime: params.startTime, endTime: params.endTime, title, publicDescription: params.publicDescription ?? null,
+      agentNotes: params.agentNotes ?? null, maxAttendees: params.maxAttendees ?? null, timezone: params.timezone ?? null,
+      virtualProvider: provider, checkInUrl: joinUrl, venueAddress: spec.listing === "none" && spec.venue !== "online" ? params.venueAddress ?? null : null,
+      brandOwner,
+    })
+    if (!produced.ok) {
+      console.error("[createOpenHouse] insert error:", produced.error)
+      return { success: false, error: produced.error }
     }
-    if (!event) return { success: false, error: "Failed to create open house" }
+    const event = produced.event
 
     const warnings: string[] = []
     // ── ZOOM: capability → router → provider (law 3), a REAL meeting with registration, ledgered (law 5) ──
@@ -298,14 +282,18 @@ async function hostEventOnZoom(
  * approves the AI-drafted copy — optionally with their own edits, re-scanned for fair housing and the placeholders a send needs.
  * Approval publishes the registration page (is_published). Refused with a reason; ledgered once per approval.
  */
-export async function approveEventMarketing(eventId: string, edits?: Record<string, unknown>): Promise<{ success: boolean; error?: string; findings?: unknown[] }> {
+export async function approveEventMarketing(eventId: string, edits?: Record<string, unknown>): Promise<{ success: boolean; error?: string; findings?: unknown[]; qr?: { scanUrl: string; targetUrl: string; imageUrl: string }; qrError?: string }> {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { success: false, error: "Not authenticated" }
     const service = createServiceClient()
-    const { data: ev, error } = await service.from("open_house_events").select("id, brokerage_id, agent_id, event_type, virtual_provider, marketing_assets").eq("id", eventId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const { data: ev, error } = await service.from("open_house_events").select("id, brokerage_id, agent_id, created_by, listing_id, event_type, virtual_provider, marketing_assets").eq("id", eventId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (error) return { success: false, error: `Could not read the event: ${error.message}` }
     if (!ev) return { success: false, error: "Event not found" }
+    // C32: the scan knows whose brand the copy must carry (the cascade's reader, which reads brand_owner tolerantly).
+    const { resolveEventBrand, HANDOUT_COPY_FIELDS } = await import("@/lib/open-house/event-marketing")
+    const brand = await resolveEventBrand(service, ev)
+    const promisesHandout = isEventKind(ev.event_type) && EVENT_PRODUCER_REGISTRY[ev.event_type].deliverables.includes("session_handout")
     const { approverFor } = await import("@/lib/kernel/approval-authority")
     const decision = await approverFor({ brokerageId: ctx.brokerageId, assetKind: "publication", scope: { agentId: ev.agent_id ?? null }, client: service })
     if (!decision.ok) return { success: false, error: decision.reason }
@@ -314,9 +302,9 @@ export async function approveEventMarketing(eventId: string, edits?: Record<stri
     const { PUBLISHED_COPY_FIELDS, scanEventCopy } = await import("@/lib/open-house/event-marketing")
     const base = (assets.draft ?? {}) as Record<string, unknown>
     const merged: Record<string, unknown> = { ...base }
-    for (const f of [...PUBLISHED_COPY_FIELDS, "what_you_will_learn"] as const) if (edits && f in edits) merged[f] = edits[f]
-    const scan = scanEventCopy(merged, { online: isOnlineEvent(ev.event_type, ev.virtual_provider) })
-    if (scan.blocking) return { success: false, error: `Not approvable yet: ${[...scan.findings.filter((x) => x.severity === "high").map((x) => `fair housing — "${x.phrase}" in ${x.field} (${x.fix})`), ...scan.missing.map((m) => `missing ${m}`)].join("; ")}`, findings: scan.findings }
+    for (const f of [...PUBLISHED_COPY_FIELDS, ...HANDOUT_COPY_FIELDS, "what_you_will_learn"] as const) if (edits && f in edits) merged[f] = edits[f]
+    const scan = scanEventCopy(merged, { online: isOnlineEvent(ev.event_type, ev.virtual_provider), brandOwner: brand.owner, promisesHandout })
+    if (scan.blocking) return { success: false, error: `Not approvable yet: ${[...scan.findings.filter((x) => x.severity === "high").map((x) => `"${x.phrase}" in ${x.field} (${x.fix})`), ...scan.missing.map((m) => `missing ${m}`)].join("; ")}`, findings: scan.findings }
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
     const now = new Date().toISOString()
     const r = await withActionLedger(
@@ -342,8 +330,11 @@ export async function approveEventMarketing(eventId: string, edits?: Record<stri
       },
     )
     if (!r.ok) return { success: false, error: r.error }
+    // RULING 11: the published event carries a QR code to its registration page on the TENANT's website (the one QR minter).
+    const { ensureEventQr } = await import("@/lib/open-house/event-marketing")
+    const qr = await ensureEventQr(service, ev)
     revalidatePath("/dashboard/open-houses")
-    return { success: true, findings: scan.findings }
+    return { success: true, findings: scan.findings, ...(qr.ok ? { qr: { scanUrl: qr.scanUrl, targetUrl: qr.targetUrl, imageUrl: qr.imageUrl } } : { qrError: qr.error }) }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
@@ -376,6 +367,82 @@ export async function setEventReplay(eventId: string, replayUrl: string): Promis
     return { success: true, delivered: r.delivered, skipped: r.skipped }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
+  }
+}
+
+/**
+ * WAVE 149 (149F — lane 148H Still open 3): record the session HANDOUT (https) and deliver it to every registration, once each —
+ * only now that it exists. Same scope as setEventReplay (tenant from the session; an agent only on their own events). Needs m948's
+ * open_house_events.handout_url: before it is applied the write is refused and said, and nothing is sent.
+ */
+export async function setEventHandout(eventId: string, handoutUrl: string): Promise<{ success: boolean; error?: string; delivered?: number; skipped?: number }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+    let url: string | null = null
+    try { const u = new URL(String(handoutUrl ?? "")); if (u.protocol === "https:") url = u.toString() } catch { url = null }
+    if (!url) return { success: false, error: "The handout needs an https link" }
+    const service = createServiceClient()
+    const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin"
+    if (!isBrokerOrAdmin && !ctx.agentId) return { success: false, error: "Unauthorized" }
+    let q = service.from("open_house_events").update({ handout_url: url }).eq("id", eventId).eq("brokerage_id", ctx.brokerageId)
+    if (!isBrokerOrAdmin) q = q.eq("agent_id", ctx.agentId as string)
+    const { data: upd, error } = await q.select("id")
+    if (error) return { success: false, error: `The handout link was not stored: ${error.message}` }
+    if (!Array.isArray(upd) || upd.length !== 1) return { success: false, error: "Event not found" }
+    const { deliverEventHandout } = await import("@/lib/open-house/event-attendance")
+    const r = await deliverEventHandout(service, eventId)
+    return { success: true, delivered: r.delivered, skipped: r.skipped }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE SPHERE'S EVENTS (wave 149, lane 149F — survivor of ai-sphere-management.ts aiGenerateEventInvitation, tombstoned there)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The sphere panel's event kinds → the C22 kinds (one vocabulary). `open_house_vip` is the listing's own open house — not here. */
+const SPHERE_EVENT_KIND = { client_appreciation: "client_event", holiday_party: "client_event", educational_seminar: "education_session", market_update: "webinar" } as const
+
+/**
+ * A client gathering, a seminar or a market update for the agent's sphere — a REAL event through THE scheduling door above
+ * (session tenant + host; the registry's rules; THE writer), so it is stored, registered (C15), attended (kiosk / Zoom), followed
+ * up (the arbiter) and branded as the tenant (C32). Its registration page, invitation and reminder are drafted by AI in the
+ * tenant's brand and held for a person's approval; publication mints the QR to the page on the tenant's website.
+ */
+export async function aiGenerateEventInvitation(params: {
+  eventType?: keyof typeof SPHERE_EVENT_KIND
+  /** "YYYY-MM-DDTHH:MM" (the dialog's datetime-local). */
+  startsAt: string
+  /** "HH:MM" — when it ends (the agent's, never a default length). */
+  endTime: string
+  title: string
+  location?: string
+  description?: string
+}): Promise<{ success: boolean; error?: string; data?: { eventId: string; kind: string; manageUrl: string; note: string; warnings: string[] } }> {
+  const kind = SPHERE_EVENT_KIND[params.eventType ?? "client_appreciation"] ?? "client_event"
+  const date = String(params.startsAt ?? "").slice(0, 10)
+  const startTime = /T(\d{2}:\d{2})/.exec(String(params.startsAt ?? ""))?.[1] ?? ""
+  const endTime = /^\d{2}:\d{2}/.test(String(params.endTime ?? "")) ? String(params.endTime).slice(0, 5) : ""
+  if (!String(params.title ?? "").trim() || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !startTime || !endTime) {
+    return { success: false, error: "An event needs a name, a start date and time, and an end time" }
+  }
+  const location = String(params.location ?? "").trim()
+  let joinUrl: string | undefined
+  if (kind === "webinar" && location) { try { const u = new URL(location); if (u.protocol === "https:") joinUrl = u.toString() } catch { joinUrl = undefined } }
+  const r = await createOpenHouse({
+    eventType: kind, title: String(params.title).trim(), date, startTime, endTime, publicDescription: params.description?.trim() || undefined,
+    ...(kind === "webinar" ? (joinUrl ? { virtualProvider: "external_link", joinUrl } : {}) : { venueAddress: location || undefined }),
+  })
+  if (!r.success || !r.event) return { success: false, error: r.error ?? "The event was not created" }
+  return {
+    success: true,
+    data: {
+      eventId: (r.event as { id: string }).id, kind, manageUrl: "/dashboard/open-houses",
+      note: "The event is created. Its registration page, invitation and reminder are drafted in your brand and waiting for your approval in Open Houses — publishing them also creates the QR code to the registration page.",
+      warnings: (r as { warnings?: string[] }).warnings ?? [],
+    },
   }
 }
 

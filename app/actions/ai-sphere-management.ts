@@ -427,68 +427,12 @@ For each segment provide:
 // AI EVENT INVITATION GENERATOR
 // ============================================================================
 
-export async function aiGenerateEventInvitation(params: {
-  agentId: string
-  eventType: "client_appreciation" | "market_update" | "holiday_party" | "educational_seminar" | "open_house_vip"
-  eventDetails: {
-    title: string
-    date: string
-    location: string
-    description?: string
-  }
-  targetSegment?: string
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("id, users(first_name, last_name)")
-      .eq("id", params.agentId)
-      .single()
-    // Agent identity lives on the joined users row (agents.user_id → users), NOT on agents — selecting
-    // first_name/last_name off agents directly errors the query (silent null), so the host was blank.
-    const u = (agent?.users ?? null) as { first_name?: string; last_name?: string } | null
-    const hostName = `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim() || "your agent"
-
-    const { object: invitation } = await generateObject({
-      model: "openai/gpt-4o",
-      schema: z.object({
-        emailSubject: z.string(),
-        emailBody: z.string(),
-        textInvite: z.string(),
-        socialPost: z.string(),
-        rsvpFollowUp: z.object({
-          yesResponse: z.string(),
-          noResponse: z.string(),
-          noReplyFollowUp: z.string(),
-        }),
-        eventHashtag: z.string(),
-      }),
-      prompt: `Create invitation content for this client event:
-
-Event: ${params.eventDetails.title}
-Type: ${params.eventType}
-Date: ${params.eventDetails.date}
-Location: ${params.eventDetails.location}
-Description: ${params.eventDetails.description || ""}
-Host: ${hostName}
-Target audience: ${params.targetSegment || "All lifetime customers and sphere"}
-
-Generate:
-1. Email invitation with compelling subject line
-2. Short text message invite (under 160 chars)
-3. Social media announcement post
-4. RSVP follow-up messages for yes/no/no-reply
-5. Event hashtag`,
-    })
-
-    return { success: true, data: invitation }
-  } catch (error) {
-    return handleError(error, "aiGenerateEventInvitation")
-  }
-}
+// WAVE 149 (lane 149F — lane 148H Still open 5, lane 148Z "client_event copy"; owner ruling 15 / C32; orphan doctrine §1.3):
+// TOMBSTONE — `aiGenerateEventInvitation` stood here. It drafted free-standing invitation copy (a one-line gpt-4o prompt: subject /
+// text / social / RSVP replies / hashtag) for "client_appreciation / holiday_party / market_update / educational_seminar /
+// open_house_vip" events that NOTHING stored, registered or verified — a second event-copy producer beside C22's, with no tenant
+// brand and no fair-housing scan (and its only caller read fields it never returned, so every result rendered empty).
+// SURVIVOR: app/actions/open-house.ts aiGenerateEventInvitation (MOVED there, same name, now a REAL event) — through THE scheduling door (createOpenHouse → the one
+// writer lib/kernel/open-house.ts), kind client_event / education_session / webinar, its copy drafted in the tenant's
+// brand by lib/open-house/event-marketing.ts EVENT_MARKETING_SYSTEM and held for approval. It lives beside its door, not here:
+// this file is reached by app/crm/page.tsx (aiOptimizeReferralAsk), which must not pull the event stack (test:proxy-graph-budget).

@@ -173,29 +173,17 @@ export async function stageOpenHouse(
     return { success: false, error: "Listing not found in your brokerage" }
   }
 
-  // Direct insert into open_house_events (the canonical createOpenHouse
-  // in app/actions/open-house.ts uses getAgentContext which only works in
-  // auth-cookie context — but the columns + kernel-event flow are the same).
-  const { data, error } = await svc
-    .from("open_house_events")
-    .insert({
-      listing_id: intake.listingId,
-      brokerage_id: ctx.brokerageId,
-      agent_id: listing.agent_id ?? null,
-      created_by: ctx.userId,
-      event_date: intake.date,
-      start_time: intake.startTime,
-      end_time: intake.endTime,
-      max_attendees: intake.maxAttendees ?? null,
-      notes: intake.notes ?? null,
-      description: intake.publicDescription ?? null,
-      status: "scheduled",
-      registration_required: false,
-    })
-    .select("id, event_date, start_time, end_time")
-    .maybeSingle()
-
-  if (error || !data) return { success: false, error: error?.message ?? "Open house insert failed" }
+  // WAVE 149 (149F — lane 148H Still open 4): THE ONE WRITER. TOMBSTONE: a direct insert stood here because the session door
+  // (createOpenHouse, getAgentContext) cannot run on the ElevenLabs webhook (no cookies). SURVIVOR: lib/kernel/open-house.ts
+  // produceEventRow — the same insert every door uses, tenant from this wizard's resolved agent context (ctx), listing re-proven.
+  const { produceEventRow } = await import("@/lib/kernel/open-house")
+  const produced = await produceEventRow(svc, {
+    brokerageId: ctx.brokerageId, agentId: listing.agent_id ?? null, createdByUserId: ctx.userId ?? null, kind: "open_house",
+    listingId: intake.listingId, date: intake.date, startTime: intake.startTime, endTime: intake.endTime,
+    maxAttendees: intake.maxAttendees ?? null, agentNotes: intake.notes ?? null, publicDescription: intake.publicDescription ?? null,
+  })
+  if (!produced.ok) return { success: false, error: produced.error }
+  const data = produced.event as { id: string; event_date: string; start_time: string; end_time: string }
 
   return {
     success: true,

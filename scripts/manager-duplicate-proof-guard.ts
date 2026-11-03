@@ -62,15 +62,15 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
   approveSocialPost: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "both wired — listing-media.ts:329 (listing social panel) and social-media-automation.ts:464 (command center, social dashboard); app/actions/social* is lane 146E's domain and the approval door is contract C5 (approverFor)." },
   checkCompliance: { verdict: "kept", class: "homonym", survivor: null, dependency: "different functions: ai-content-generation.tsx:1953 fair-housing-scans generated TEXT and writes ai_generated_content.compliance_*; link-to-video.ts:251 runs an AI compliance review of a VIDEO SCRIPT (used twice in its own file). Neither covers the other; the text scan's caller is the content composer (routing, not retirement)." },
   checkInAttendee: { verdict: "retired", retiredTwins: [{
-    twin: "app/actions/open-house-automation.ts", survivor: "app/actions/seller-open-house.ts:661",
+    twin: "app/actions/open-house-automation.ts", survivor: "app/actions/seller-open-house.ts:647",
     steps: {
       file_function: "app/actions/open-house-automation.ts:1651 checkInAttendee (wave-146 base bf67aa63)",
       intended_behaviour: "record an open-house attendee check-in against the event's brokerage",
-      candidate_survivor: "app/actions/seller-open-house.ts:661 checkInAttendee — the kiosk check-in the event-day tab calls",
+      candidate_survivor: "app/actions/seller-open-house.ts:647 checkInAttendee — the kiosk check-in the event-day tab calls",
       survivor_covers: "same open_house_attendees insert with the event-derived brokerage and the (event, email) dedupe, plus: refuses a completed / cancelled event, REQUIRES TCPA consent, records it on contact_consent_events, emits OPEN_HOUSE_ATTENDEE_CAPTURED",
       callers_migrated: "the twin had 0 importers (named / dynamic / namespace / barrel, runtime and scripts) and no string-keyed mention — nothing to migrate",
       unique_behaviour: "two behaviours only, both deliberately NOT merged: tcpa_consent defaulted to TRUE when optInFollowUp was omitted (consent without an affirmative act — the survivor refuses it) and an interest level stamped at sign-in (the survivor leaves it NULL by design; the follow-up path scores interest). mapInterestLevelText stays (recordVisitor uses it)",
-      retired_with_tombstone: "open-house-automation.ts DIGITAL CHECK-IN block — tombstone names app/actions/seller-open-house.ts:661",
+      retired_with_tombstone: "open-house-automation.ts DIGITAL CHECK-IN block — tombstone names app/actions/seller-open-house.ts:647",
       guards_rerun: RERUN,
     } }] },
   completeMilestone: { verdict: "kept", class: "money_legal", survivor: "lib/kernel/transactions.ts:913 completeTransactionMilestone", dependency: "both twins are unwired (copilot.ts:425 user-client update by id; transactions.ts:165 → TransactionService). The kernel command is the convergence target. Wave 146 (146Z): its tenant predicate LANDED — the update is pinned to brokerage_id + transaction_id and COUNTED (0 rows = refused), so it is now a provable survivor. KEPT this wave, not retired: the wired agent door is app/actions/transaction-milestones.ts completeMilestoneAction → lib/transactions/milestone-service.ts (a third spelling outside app/actions), and converging the three onto one door is a deal-domain consequential change for deal_coordinator — the eight steps are written there, not guessed here." },

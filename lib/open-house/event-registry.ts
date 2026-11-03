@@ -61,19 +61,171 @@ export type IdentityMatch = (typeof IDENTITY_MATCHES)[number]
  */
 export const EVENT_TIMELINE_BUCKETS = ["immediate", "1-3_months", "3-6_months", "6-12_months", "12+_months", "researching"] as const
 export type EventTimelineBucket = (typeof EVENT_TIMELINE_BUCKETS)[number]
-export const EVENT_INTENTS = ["buying", "selling", "buying_and_selling", "investing", "learning"] as const
+/**
+ * WAVE 149 (lane 149F — owner ruling 3, "Contact INTENT is buyer, seller or both — nothing else"). The registration's intent is
+ * the contacts.contact_type intent vocabulary itself (lib/contact-pipeline/contact-capture.ts situationFromBody SITUATION_INTENTS —
+ * ONE spelling, CLAUDE.md §6). TOMBSTONE: `buying | selling | buying_and_selling | investing | learning` and its translation table
+ * stood here; "learning" was filed as contact_type `prospect` — a PLATFORM word (a potential subscriber), never a tenant lead type.
+ * "Not sure yet" is now simply no intent (null): the person's situation is carried by the questions below, never a made-up label.
+ */
+export const EVENT_INTENTS = ["buyer", "seller", "both"] as const
 export type EventIntent = (typeof EVENT_INTENTS)[number]
-/** Intent → the contacts.contact_type a NEW contact is filed as (live CHECK values; a merge never overwrites a stored type). */
-export const CONTACT_TYPE_FOR_INTENT: Readonly<Record<EventIntent, string>> = Object.freeze({
-  buying: "buyer", selling: "seller", buying_and_selling: "both", investing: "buyer", learning: "prospect",
-})
+/** Intent → the contacts.contact_type a NEW contact is filed as — the identity (one vocabulary); a merge never overwrites a stored type. */
+export const CONTACT_TYPE_FOR_INTENT: Readonly<Record<EventIntent, EventIntent>> = Object.freeze({ buyer: "buyer", seller: "seller", both: "both" })
 
+/**
+ * WAVE 149 (lane 149F — owner ruling 16, "Registration 'other question' is not an open question — it asks the question(s) that
+ * pertain to the situation the form collects"). TOMBSTONE: `question: string` ("Anything you'd like answered?", a free-text box)
+ * stood in EventSituation; every kind now asks CLOSED, situation-specific questions declared below (REGISTRATION_QUESTIONS) —
+ * what they want covered (`interests`), what they would like the host to do for them (`requests`), and for a client gathering the
+ * RSVP facts a host needs (`guests`, `accessibility`). The agent is told about a verified attendee who REQUESTED something
+ * (shouldNotifyAgent), never because a text box was long enough.
+ */
 export interface EventSituation {
   intent: EventIntent | null
   timeline: EventTimelineBucket | null
   workingWithAgent: boolean | null
-  /** In their own words — what they want answered (kept verbatim, never re-written). */
-  question: string | null
+  /** What they most want covered — values from this kind's `interests` question only. */
+  interests: string[] | null
+  /** What they asked the host to do for them — values from this kind's `requests` question only (the agent's cue to act). */
+  requests: string[] | null
+  /** A client gathering: how many guests they bring (0–4). */
+  guests: number | null
+  /** A client gathering: they asked for an accessibility accommodation (the host reaches out — the form never asks why). */
+  accessibility: boolean | null
+}
+
+interface RegistrationChoice { value: string; label: string }
+interface RegistrationQuestion {
+  key: keyof EventSituation
+  prompt: string
+  kind: "single" | "multiple" | "yes_no" | "count"
+  options: readonly RegistrationChoice[]
+}
+
+const Q_INTENT = (prompt: string): RegistrationQuestion => ({ key: "intent", prompt, kind: "single", options: [
+  { value: "buyer", label: "Buying" }, { value: "seller", label: "Selling" }, { value: "both", label: "Selling and buying" },
+] })
+const Q_TIMELINE: RegistrationQuestion = { key: "timeline", prompt: "When might you make a move?", kind: "single", options: [
+  { value: "immediate", label: "Ready now" }, { value: "1-3_months", label: "In 1–3 months" }, { value: "3-6_months", label: "In 3–6 months" },
+  { value: "6-12_months", label: "In 6–12 months" }, { value: "12+_months", label: "A year or more out" }, { value: "researching", label: "No date yet — researching" },
+] }
+const Q_AGENT: RegistrationQuestion = { key: "workingWithAgent", prompt: "Are you already working with an agent?", kind: "yes_no", options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }] }
+const Q_SESSION_INTERESTS: RegistrationQuestion = { key: "interests", prompt: "What do you most want covered?", kind: "multiple", options: [
+  { value: "budget_and_down_payment", label: "Budget and down payment" }, { value: "financing_and_rates", label: "Financing and rates" },
+  { value: "pricing_a_home", label: "What a home is worth" }, { value: "preparing_to_sell", label: "Preparing a home to sell" },
+  { value: "the_buying_process", label: "How buying works, step by step" }, { value: "local_market", label: "What the local market is doing" },
+] }
+const Q_SESSION_REQUESTS: RegistrationQuestion = { key: "requests", prompt: "After the session, would you like…", kind: "multiple", options: [
+  { value: "home_value_estimate", label: "An estimate of my home's value" }, { value: "one_on_one_consultation", label: "A one-on-one conversation" },
+  { value: "lender_introduction", label: "An introduction to a lender" },
+] }
+
+/**
+ * PER KIND, the questions its registration asks — each one closed and about the situation THIS event serves. The kiosk kinds
+ * (open_house, broker_open) are signed in at the door (the kiosk asks its own fields), so they carry none here.
+ * @proofSeam scripts/event-branding-guard.ts proves every registration kind has situation questions and none is free text
+ */
+export const REGISTRATION_QUESTIONS: Readonly<Record<EventKind, readonly RegistrationQuestion[]>> = Object.freeze({
+  open_house: [],
+  broker_open: [],
+  virtual_open_house: [
+    Q_INTENT("Is this home part of a move you're planning?"),
+    Q_TIMELINE,
+    Q_AGENT,
+    { key: "interests", prompt: "What would you most like to see on the tour?", kind: "multiple", options: [
+      { value: "layout_and_rooms", label: "The layout and the rooms" }, { value: "outdoor_space_and_lot", label: "The yard, lot and outdoor space" },
+      { value: "condition_and_updates", label: "Condition, updates and systems" }, { value: "neighbourhood_and_commute", label: "The area and the commute" },
+      { value: "price_and_costs", label: "Price, taxes and running costs" },
+    ] },
+    { key: "requests", prompt: "Would you like the host to…", kind: "multiple", options: [
+      { value: "private_showing", label: "Arrange a private showing" }, { value: "documents_and_disclosures", label: "Send the disclosures and documents" },
+      { value: "lender_introduction", label: "Introduce a lender" },
+    ] },
+  ],
+  webinar: [Q_INTENT("Which describes your plans best?"), Q_TIMELINE, Q_AGENT, Q_SESSION_INTERESTS, Q_SESSION_REQUESTS],
+  education_session: [Q_INTENT("Which describes your plans best?"), Q_TIMELINE, Q_AGENT, Q_SESSION_INTERESTS, Q_SESSION_REQUESTS],
+  // A thank-you gathering never asks a past client their buying situation — only what the host needs to welcome them.
+  client_event: [
+    { key: "guests", prompt: "How many guests are you bringing?", kind: "count", options: [
+      { value: "0", label: "Just me" }, { value: "1", label: "1 guest" }, { value: "2", label: "2 guests" }, { value: "3", label: "3 guests" }, { value: "4", label: "4 guests" },
+    ] },
+    { key: "accessibility", prompt: "Would you like us to reach out about an accessibility accommodation?", kind: "yes_no", options: [{ value: "yes", label: "Yes, please" }, { value: "no", label: "No, thank you" }] },
+  ],
+})
+
+/**
+ * PURE — keep only answers the kind's own questions admit (a forged body adds nothing: an unknown key or value is dropped, and no
+ * free text survives).
+ */
+export function sanitizeEventSituation(kind: string | null | undefined, raw: Partial<Record<string, unknown>> | null | undefined): EventSituation {
+  const out: EventSituation = { intent: null, timeline: null, workingWithAgent: null, interests: null, requests: null, guests: null, accessibility: null }
+  if (!isEventKind(kind)) return out
+  const r = raw ?? {}
+  const set = (k: keyof EventSituation, v: unknown) => { (out as unknown as Record<string, unknown>)[k] = v }
+  for (const q of REGISTRATION_QUESTIONS[kind]) {
+    const v = r[q.key]
+    const allowed = new Set(q.options.map((o) => o.value))
+    if (q.kind === "single" && typeof v === "string" && allowed.has(v)) set(q.key, v)
+    else if (q.kind === "multiple" && Array.isArray(v)) {
+      const picked = [...new Set(v.filter((x): x is string => typeof x === "string" && allowed.has(x)))]
+      set(q.key, picked.length ? picked : null)
+    } else if (q.kind === "yes_no" && (typeof v === "boolean" || v === "yes" || v === "no")) set(q.key, v === true || v === "yes")
+    else if (q.kind === "count") {
+      const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : NaN
+      if (Number.isInteger(n) && allowed.has(String(n))) set(q.key, n)
+    }
+  }
+  return out
+}
+
+// ─── C32 TENANT-BRANDED EVENTS (wave 149, lane 149F — owner ruling 15) ─────────────────────────────────────────────────────
+//
+// OWNER (2026-11-03): "Event marketing cannot use 'VIPAgents' — it is the tenant's brand name; the branded registration page is
+// tenant-branded unless it is the platform's own event." Every event surface (registration page, invitation, confirmation,
+// reminder, replay / handout notes, social post, QR) carries the CREATING tenant's brand — the solo agent's, the team's or the
+// brokerage's, resolved through THE brand cascade (lib/branding/resolve-brand-context.ts) — and the platform's name appears only
+// on an event the platform itself hosts (open_house_events.brand_owner = 'platform', m947; set only by platform staff).
+
+/** open_house_events.brand_owner (m947 CHECK). Absent / unreadable = 'tenant' (the safe answer: the platform name never leaks). */
+const EVENT_BRAND_OWNERS = ["tenant", "platform"] as const
+export type EventBrandOwner = (typeof EVENT_BRAND_OWNERS)[number]
+export function eventBrandOwner(v: unknown): EventBrandOwner { return v === "platform" ? "platform" : "tenant" }
+
+/**
+ * The platform's own names as they could appear in copy — the product brand (lib/platform/product-brand.ts DEFAULT_PRODUCT_BRAND
+ * "VIP Agents", the configured name passed in), its domain, and the legacy OS name global_settings.app_name defaults to
+ * ('VIP Real Estate OS', live column default read 2026-11-03).
+ * @proofSeam scripts/event-branding-guard.ts plants each spelling as a positive control
+ */
+export const PLATFORM_BRAND_PATTERNS: readonly RegExp[] = [/\bvip\s*-?\s*agents\b(\.ai)?/i, /\bvipagents\b/i, /\bvip\s+real\s+estate\s+os\b/i, /\bvip[-\s]?re[-\s]?os\b/i]
+
+/** PURE — every platform-brand spelling in a text (extra = the configured product name, when the platform renamed itself). */
+export function platformBrandHits(text: string | null | undefined, extra: readonly string[] = []): string[] {
+  const t = String(text ?? "")
+  if (!t) return []
+  const hits = new Set<string>()
+  for (const re of PLATFORM_BRAND_PATTERNS) { const m = re.exec(t); if (m) hits.add(m[0]) }
+  for (const name of extra) {
+    const n = name.trim()
+    if (n.length >= 3 && t.toLowerCase().includes(n.toLowerCase())) hits.add(n)
+  }
+  return [...hits]
+}
+
+/** The brand a tenant event's copy must carry, and the facts it may use (never invented: absent is null). */
+export interface EventBrand {
+  owner: EventBrandOwner
+  /** The name on the piece: team > brokerage of record (a solo agent's tenant row IS their business name). */
+  displayName: string
+  /** The legal entity the consent names (resolveConsentBrand — the brokerage, else the agent). */
+  brokerageName: string
+  agentName: string | null
+  website: string | null
+  logoUrl: string | null
+  primaryColor: string | null
+  /** The EHO line from the cascade — fair housing on the page footer. */
+  fairHousingLine: string | null
 }
 
 export type EventDeliverable = "property_packet" | "comparable_homes" | "replay_recording" | "session_handout"
@@ -131,7 +283,7 @@ const WALK_IN: DoorRef = { file: "app/actions/open-house-kernel.ts", fn: "comple
 const ZOOM_WEBHOOK: DoorRef = { file: "app/api/webhooks/zoom/route.ts", fn: "POST" }
 const FOLLOW_UP: DoorRef = { file: "app/actions/open-house-automation.ts", fn: "processEventFollowups" }
 const CONSUMER_IDENTITY = ["first_name", "last_name", "email", "phone"] as const
-const SITUATION: readonly (keyof EventSituation)[] = ["intent", "timeline", "workingWithAgent", "question"]
+const SITUATION: readonly (keyof EventSituation)[] = ["intent", "timeline", "workingWithAgent", "interests", "requests"]
 const OUTCOME = { recordedOn: "open_house_rsvp_tracking", attendeeRow: "open_house_attendees", evidence: "event_attendance_evidence" } as const
 
 export const EVENT_PRODUCER_REGISTRY: Readonly<Record<EventKind, EventProducerSpec>> = Object.freeze({
@@ -198,7 +350,7 @@ export const EVENT_PRODUCER_REGISTRY: Readonly<Record<EventKind, EventProducerSp
     kind: "client_event", label: "Client appreciation event", audience: "consumer", venue: "in_person", listing: "none",
     producer: SCHEDULER,
     // Registered (an RSVP count matters for a party) through the C15 form; never asks a past client their buying situation.
-    registration: { required: true, door: REGISTRATION, form: "c15_consented", consentPurposes: ["event_followup"], identityFields: CONSUMER_IDENTITY, situationFields: [], assignsToCreator: true },
+    registration: { required: true, door: REGISTRATION, form: "c15_consented", consentPurposes: ["event_followup"], identityFields: CONSUMER_IDENTITY, situationFields: ["guests", "accessibility"], assignsToCreator: true },
     attendance: { verifiedBy: ["kiosk_signin", "agent_walk_in"], checkInDoors: [KIOSK, WALK_IN], providers: {}, minVerifiedSeconds: null },
     capability: { hosting: null, broadcast: null },
     deliverables: [],
@@ -345,9 +497,9 @@ export function shouldNotifyAgent(input: { verified: boolean; engagementRatio: n
   if (input.audience === "cooperating_agent") return { notify: true, reason: "a cooperating agent previewed the listing — the listing agent hears about colleagues directly" }
   const s = input.situation ?? {}
   if (s.timeline === "immediate" || s.timeline === "1-3_months") return { notify: true, reason: `stated timeline ${s.timeline}` }
-  if (typeof s.question === "string" && s.question.trim().length >= 8) return { notify: true, reason: "they asked a question in their own words" }
+  if (Array.isArray(s.requests) && s.requests.length > 0) return { notify: true, reason: `they asked the host to: ${s.requests.join(", ").replace(/_/g, " ")}` }
   if (typeof input.engagementRatio === "number" && input.engagementRatio >= 0.75) return { notify: true, reason: `stayed for ${Math.round(input.engagementRatio * 100)}% of the session` }
-  return { notify: false, reason: "verified attendance with no near timeline, question or deep engagement — the AI ISA nurtures; the agent sees it on the outcome" }
+  return { notify: false, reason: "verified attendance with no near timeline, request or deep engagement — the AI ISA nurtures; the agent sees it on the outcome" }
 }
 
 /** One per-(event, contact) row's attendance state, as the outcome rollup reads it. */

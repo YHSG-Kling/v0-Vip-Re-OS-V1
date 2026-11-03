@@ -38,6 +38,7 @@ import {
   getAgentListings,
   approveEventMarketing,
   setEventReplay,
+  setEventHandout,
   type OpenHouseEvent,
   type OpenHouseAttendee,
   type OpenHouseFeedback,
@@ -670,11 +671,26 @@ function ActionsTab({
   const [approvePending, startApproveTransition] = useTransition()
   const [replayPending, startReplayTransition] = useTransition()
   const [replayDraft, setReplayDraft] = useState(event.replay_url ?? "")
+  // Wave 149 (149F): the promised session handout (webinars / education sessions) and the published page's QR (ruling 11).
+  const promisesHandout = event.event_type === "webinar" || event.event_type === "education_session"
+  const [handoutPending, startHandoutTransition] = useTransition()
+  const [handoutDraft, setHandoutDraft] = useState("")
+  const [qr, setQr] = useState<{ imageUrl: string; targetUrl: string } | null>(null)
   const handleApprove = () => {
     startApproveTransition(async () => {
       const res = await approveEventMarketing(event.id)
-      if (res.success) sonnerToast.success("Registration page approved and published")
-      else sonnerToast.error(res.error ?? "Could not approve")
+      if (res.success) {
+        sonnerToast.success("Registration page approved and published")
+        if (res.qr) setQr({ imageUrl: res.qr.imageUrl, targetUrl: res.qr.targetUrl })
+        else if (res.qrError) sonnerToast.error(`QR code not created: ${res.qrError}`)
+      } else sonnerToast.error(res.error ?? "Could not approve")
+    })
+  }
+  const handleHandout = () => {
+    startHandoutTransition(async () => {
+      const res = await setEventHandout(event.id, handoutDraft.trim())
+      if (res.success) sonnerToast.success(`Handout saved — sent to ${res.delivered ?? 0} registrant${res.delivered === 1 ? "" : "s"}`)
+      else sonnerToast.error(res.error ?? "Could not save the handout")
     })
   }
   const handleReplay = () => {
@@ -762,6 +778,21 @@ function ActionsTab({
             </Button>
           </div>
           <p className="text-[10px] text-muted-foreground">The recording goes once to each registrant — a thank-you to those who joined, a "sorry we missed you" to those who couldn't.</p>
+          {promisesHandout && (
+            <div className="flex gap-2 pt-2">
+              <Input placeholder="https:// handout link" value={handoutDraft} onChange={(e) => setHandoutDraft(e.target.value)} className="h-8 text-sm" />
+              <Button size="sm" variant="outline" onClick={handleHandout} disabled={handoutPending || !handoutDraft.trim()}>
+                {handoutPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Send handout"}
+              </Button>
+            </div>
+          )}
+          {qr && (
+            <div className="flex items-center gap-3 pt-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={qr.imageUrl} alt="QR code to the registration page" className="h-24 w-24 rounded border border-border bg-white p-1" />
+              <a className="text-xs underline break-all" href={qr.targetUrl} target="_blank" rel="noreferrer">{qr.targetUrl}</a>
+            </div>
+          )}
         </div>
       )}
 

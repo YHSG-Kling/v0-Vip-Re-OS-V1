@@ -31,6 +31,7 @@ import { generateTextRouted } from "@/lib/ai/models"
 // the inconsistency. The queue call is best-effort and already awaited/voided,
 // so deferring the import costs nothing.
 import { KernelEvent } from "./events"
+import { EVENT_PRODUCER_REGISTRY, isEventKind, isVirtualProvider, type EventKind, type VirtualProvider } from "@/lib/open-house/event-registry"
 import type { WelcomeOrigin } from "@/lib/contact-promotion/welcome-situation"
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -704,4 +705,111 @@ export async function generateOpenHouseFollowupNextAction(input: {
       error: error?.message || "Unknown error",
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ONE open_house_events WRITER (wave 149, lane 149F — lane 148H Still open 4; orphan doctrine §1.1, CLAUDE.md law 2 "one
+// canonical path"). Every producer of an event row — the dashboard door (app/actions/open-house.ts createOpenHouse), the
+// listing Open House tab (app/actions/seller-open-house.ts createOpenHouseEvent), the acquisition card
+// (app/actions/open-house-automation.ts createOpenHouseEvent / scheduleOpenHouse), the listing-agreement plan
+// (app/actions/seller-listing/execution-engine.ts), the launch war room's undated draft (lib/kernel/launch-war-room.ts) and the
+// voice wizard's staging (lib/wizard-staging/content-staging.ts) — inserts through THIS function. Before wave 149 each of the six
+// wrote its own insert literal: none stamped the kind's registration rule from the registry, two stamped no creator, and none
+// could ever produce the tenant brand rule below. scripts/event-branding-guard.ts holds the census: no `.from("open_house_events")
+// .insert(` anywhere else in app/ or lib/ (stripped source; positive control planted).
+//
+// NOT "use server" (no export here is an endpoint): every caller has ALREADY resolved the tenant — from the SESSION (the
+// dashboard doors) or from the RECORD it acts on (a listing the caller's tenant owns; the webhook's agent context) — and passes
+// it in. The listing, when named, is re-proven to belong to that tenant here (fail closed).
+
+
+
+interface ProduceEventInput {
+  /** The tenant (brokerages.id — a solo agent, a team or a brokerage), resolved by the caller from the session or the record. */
+  brokerageId: string
+  /** agents.id of the host (nullable — a broker-created event); never a users.id (CLAUDE.md §3 — disjoint id spaces). */
+  agentId: string | null
+  /** users.id of the creating user — ruling 10: what a user creates is tied to their user id. */
+  createdByUserId: string | null
+  kind?: EventKind
+  listingId?: string | null
+  /** YYYY-MM-DD; null ONLY for an undated draft (m543's CHECK: event_date nullable only when status = 'draft'). */
+  date: string | null
+  startTime?: string | null
+  endTime?: string | null
+  title?: string | null
+  publicDescription?: string | null
+  agentNotes?: string | null
+  maxAttendees?: number | null
+  timezone?: string | null
+  virtualProvider?: VirtualProvider | null
+  checkInUrl?: string | null
+  /** A listing-less in-person kind's venue (a client gathering's address, an office seminar). */
+  venueAddress?: string | null
+  /** An undated proposal the agent dates and publishes later (the launch war room). */
+  draft?: boolean
+  /** Walk-ins at an in-person event (default true in person, false online). */
+  allowWalkins?: boolean
+  /** C32: 'platform' ONLY when the caller proved platform staff are hosting the platform's own event; omitted = the tenant's. */
+  brandOwner?: "platform"
+}
+
+type ProduceEventResult = { ok: true; event: Record<string, any>; propertyAddress: string | null } | { ok: false; error: string }
+
+/** The one insert. Validates against the registry (kind, listing anchor, host), proves the listing's tenant, stamps the creator. */
+export async function produceEventRow(svc: { from: (table: string) => any }, input: ProduceEventInput): Promise<ProduceEventResult> {
+  if (!input.brokerageId) return { ok: false, error: "No tenant — the event was not created" }
+  const kind: EventKind = input.kind ?? "open_house"
+  if (!isEventKind(kind)) return { ok: false, error: `Unknown event type "${String(input.kind)}"` }
+  const spec = EVENT_PRODUCER_REGISTRY[kind]
+  const listingId = (input.listingId ?? "").trim() || null
+  if (spec.listing === "required" && !listingId) return { ok: false, error: `A ${spec.label.toLowerCase()} is held at one of your listings — choose the listing` }
+  const title = (input.title ?? "").trim().slice(0, 200) || null
+  if (spec.listing === "none" && !title) return { ok: false, error: `A ${spec.label.toLowerCase()} needs a title` }
+  if (!input.draft && !input.date) return { ok: false, error: "An event needs a date (only an undated draft may wait for one)" }
+  if (input.virtualProvider && !isVirtualProvider(input.virtualProvider)) return { ok: false, error: `Unknown host "${String(input.virtualProvider)}"` }
+  if (spec.venue === "in_person" && input.virtualProvider) return { ok: false, error: `A ${spec.label.toLowerCase()} is held in person` }
+
+  let propertyAddress: string | null = null
+  if (listingId) {
+    const { data: listing, error } = await svc.from("listings").select("brokerage_id, address, city, state").eq("id", listingId).maybeSingle()
+    if (error) return { ok: false, error: `Could not read the listing: ${error.message}` }
+    if (!listing || (listing as { brokerage_id?: string }).brokerage_id !== input.brokerageId) return { ok: false, error: "Listing not found or not authorized" }
+    const l = listing as { address?: string | null; city?: string | null; state?: string | null }
+    propertyAddress = [l.address, l.city, l.state].filter(Boolean).join(", ") || null
+  } else if (input.venueAddress?.trim()) {
+    propertyAddress = input.venueAddress.trim().slice(0, 300)
+  }
+
+  const online = !!input.virtualProvider
+  const { data: event, error } = await svc.from("open_house_events").insert({
+    brokerage_id: input.brokerageId,
+    listing_id: listingId,
+    agent_id: input.agentId ?? null,
+    created_by: input.createdByUserId ?? null,
+    event_type: kind,
+    // Absent facts are OMITTED (the column default / NULL stands) — an explicit null on a defaulted column is a refusal.
+    ...(input.date ? { event_date: input.date } : {}),
+    ...(input.startTime ? { start_time: input.startTime } : {}),
+    ...(input.endTime ? { end_time: input.endTime } : {}),
+    status: input.draft ? "draft" : "scheduled",
+    registration_required: spec.registration.required,
+    is_published: false,
+    allow_walkins: input.allowWalkins ?? !online,
+    max_attendees: input.maxAttendees ?? null,
+    notes: input.agentNotes ?? null,
+    description: input.publicDescription ?? null,
+    ...(title ? { title } : {}),
+    ...(propertyAddress ? { property_address: propertyAddress } : {}),
+    ...(input.timezone ? { timezone: input.timezone } : {}),
+    ...(input.virtualProvider ? { virtual_provider: input.virtualProvider } : {}),
+    ...(input.checkInUrl ? { check_in_url: input.checkInUrl } : {}),
+    // m947's column is written ONLY for the platform's own event: a tenant row relies on the column DEFAULT 'tenant', so this
+    // insert never names a column that may not exist yet (PGRST204 refuses the whole row — CLAUDE.md §3).
+    ...(input.brandOwner === "platform" ? { brand_owner: "platform" } : {}),
+  }).select().maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  if (!event) return { ok: false, error: "The event was not created" }
+  return { ok: true, event: event as Record<string, any>, propertyAddress }
 }

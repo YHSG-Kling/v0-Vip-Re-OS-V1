@@ -26,66 +26,25 @@ import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 
 export async function scheduleOpenHouse(params: {
   listingId: string
-  agentId: string
+  /** @deprecated ignored — the host is the SESSION's agent (CLAUDE.md §4: never a body-supplied identity). */
+  agentId?: string
   startTime: string
   endTime: string
   description?: string
 }) {
+  // WAVE 149 (149F — lane 148H Still open 4): ONE PRODUCER. TOMBSTONE: this door's own open_house_events insert stood here — the
+  // tenant read off the LISTING on the caller's session client and the host taken from the BODY's agentId (a "use server" export
+  // is a public endpoint: any caller could name any agent). SURVIVOR: app/actions/open-house.ts createOpenHouse (session tenant +
+  // session agent, the registry's rules, THE writer lib/kernel/open-house.ts produceEventRow). The ISO start/end are split
+  // into the event's date + wall-clock times, exactly what the one door takes.
   try {
-    const supabase = await createClient()
-
-    // THE TENANT IS THE LISTING'S, RESOLVED THROUGH THE RECORD — not the
-    // caller's. See the worked rationale at app/actions/open-house.ts:481-498:
-    // an open house is filed against `listing_id`, so the event belongs to
-    // whichever brokerage owns that listing, and resolving it from the record
-    // is also what the DB-side triggers compute.
-    //
-    // This insert stamped nothing at all, so it filed open_house_events rows
-    // with a NULL brokerage_id into a table every other writer stamps
-    // (open-house.ts:111, seller-open-house.ts:523,
-    // seller-listing/execution-engine.ts:854,
-    // lib/wizard-staging/content-staging.ts:192). `NULL = <uuid>` is NULL and
-    // never true, so those rows are invisible to every reader that narrows with
-    // .eq("brokerage_id", …) — including verifyEventOwnership() in
-    // seller-open-house.ts, which is what gates the RSVP and QR flows.
-    //
-    // `params.agentId` is passed through untouched: open_house_events.agent_id
-    // FKs agents(id), a disjoint id space from brokerages(id). The two must
-    // never be bridged.
-    const { data: listing, error: listingErr } = await supabase
-      .from("listings")
-      .select("brokerage_id")
-      .eq("id", params.listingId)
-      .maybeSingle()
-
-    if (listingErr) throw listingErr
-    if (!listing?.brokerage_id) {
-      return {
-        success: false,
-        error: "Listing not found, or it has no brokerage on record — the open house was not created.",
-      }
-    }
-
-    const { data, error } = await supabase
-      .from("open_house_events")
-      .insert({
-        listing_id: params.listingId,
-        brokerage_id: listing.brokerage_id,
-        agent_id: params.agentId,
-        event_date: params.startTime.split("T")[0],
-        start_time: params.startTime,
-        end_time: params.endTime,
-        description: params.description,
-        status: "scheduled",
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-    if (!data) throw new Error("Failed to create open house event")
-
+    const date = String(params.startTime ?? "").slice(0, 10)
+    const hhmm = (iso: string) => (/T(\d{2}:\d{2})/.exec(String(iso ?? ""))?.[1] ?? "")
+    const { createOpenHouse } = await import("@/app/actions/open-house")
+    const r = await createOpenHouse({ listingId: params.listingId, date, startTime: hhmm(params.startTime), endTime: hhmm(params.endTime), publicDescription: params.description })
+    if (!r.success) return { success: false, error: r.error ?? "The open house was not created" }
     revalidatePath("/dashboard")
-    return { success: true, openHouse: data }
+    return { success: true, openHouse: r.event }
   } catch (error) {
     return handleError(error, "scheduleOpenHouse")
   }
@@ -988,9 +947,16 @@ export async function processEventFollowups(eventId: string, client?: any) {
     // verifiable event marked no_show (never on an unverifiable host), the outcome stored, and the promised replay delivered once
     // it exists. An in-person event returns at once (its sign-ins already are its attendance).
     try {
-      const { finalizeEventAttendance, deliverEventReplay } = await import("@/lib/open-house/event-attendance")
+      const { finalizeEventAttendance, deliverEventReplay, deliverEventHandout } = await import("@/lib/open-house/event-attendance")
       const fin = await finalizeEventAttendance(supabase, eventId)
       if (fin.finalized) await deliverEventReplay(supabase, eventId)
+      // Wave 149 (149F): the promised handout (once it exists), then the ARBITER's no-show decision (C29 — no fixed nudge).
+      await deliverEventHandout(supabase, eventId)
+      if (fin.finalized) {
+        const { arbitrateEventTouches } = await import("@/lib/open-house/event-touches")
+        const t = await arbitrateEventTouches(supabase, eventId)
+        if (t.phase === "after" && t.asked > 0) console.info(`[open-house] no-show decisions: ${t.asked} asked, ${t.handedToHost} handed to the host`)
+      }
     } catch (err) {
       console.warn("[open-house] event attendance not finalized (follow-up continues):", err instanceof Error ? err.message : err)
     }
@@ -1134,58 +1100,25 @@ async function generateEventAnalytics(eventId: string, client?: any) {
 // ============================================
 
 export async function createOpenHouseEvent(params: {
-  agentId: string
+  /** @deprecated ignored — the host is the SESSION's agent (CLAUDE.md §4). */
+  agentId?: string
   propertyId: string
   eventDate: string
   startTime: string
   endTime: string
   description?: string
 }) {
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId)) {
+  if (!isValidUUID(params.propertyId)) {
     return { success: false, error: "Invalid IDs" }
   }
-
-  const supabase = await createClient()
-
+  // WAVE 149 (149F — lane 148H Still open 4): ONE PRODUCER. TOMBSTONE: the acquisition card's own insert (tenant from the listing,
+  // host from the BODY) stood here. SURVIVOR: app/actions/open-house.ts createOpenHouse → lib/kernel/open-house.ts.
   try {
-    // Tenant resolved through the RECORD (the listing this open house is on),
-    // for the reason spelled out on scheduleOpenHouse above and worked through
-    // at app/actions/open-house.ts:481-498. `params.agentId` stays as passed —
-    // agents(id) and brokerages(id) are disjoint id spaces.
-    const { data: listing, error: listingErr } = await supabase
-      .from("listings")
-      .select("brokerage_id")
-      .eq("id", params.propertyId)
-      .maybeSingle()
-
-    if (listingErr) throw listingErr
-    if (!listing?.brokerage_id) {
-      return {
-        success: false,
-        error: "Listing not found, or it has no brokerage on record — the open house was not created.",
-      }
-    }
-
-    const { data: event, error } = await supabase
-      .from("open_house_events")
-      .insert({
-        agent_id: params.agentId,
-        listing_id: params.propertyId,
-        brokerage_id: listing.brokerage_id,
-        event_date: params.eventDate,
-        start_time: params.startTime,
-        end_time: params.endTime,
-        description: params.description,
-        status: "scheduled",
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-    if (!event) throw new Error("Failed to create open house event")
-
+    const { createOpenHouse } = await import("@/app/actions/open-house")
+    const r = await createOpenHouse({ listingId: params.propertyId, date: params.eventDate, startTime: params.startTime, endTime: params.endTime, publicDescription: params.description })
+    if (!r.success) return { success: false, error: r.error ?? "Failed to create event" }
     revalidatePath(`/dashboard/listings/${params.propertyId}/open-house`)
-    return { success: true, data: event }
+    return { success: true, data: r.event }
   } catch (error) {
     console.error("Create event error:", error)
     return { success: false, error: "Failed to create event" }
@@ -1696,7 +1629,7 @@ function parseTime(timeStr: string): number {
 
 // TOMBSTONE (wave 146, lane 146G — owner ruling 15; eight-step proof row `checkInAttendee` in
 // scripts/manager-duplicate-proof-guard.ts): checkInAttendee DELETED here → survivor
-// app/actions/seller-open-house.ts:661 checkInAttendee — the kiosk check-in the event-day tab calls: event-derived
+// app/actions/seller-open-house.ts:647 checkInAttendee — the kiosk check-in the event-day tab calls: event-derived
 // brokerage, refuses a completed / cancelled event, REQUIRES TCPA consent, dedupes on (event, email), records the
 // consent on contact_consent_events and emits OPEN_HOUSE_ATTENDEE_CAPTURED. This twin had no importer. Its only
 // behaviours the survivor lacks were not merged, on purpose: it DEFAULTED tcpa_consent to true when optInFollowUp was

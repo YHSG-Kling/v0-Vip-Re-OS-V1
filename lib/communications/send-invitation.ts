@@ -199,7 +199,12 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
       return { success: false, error: "This contact has no brokerage, so the send cannot be billed or gated" }
     }
 
-    const property = event.listings
+    // A webinar / education session / client gathering has no listing (m924/m926): the "where" is the event's own address or title.
+    const property = (event.listings ?? { address: event.property_address ?? event.title ?? "our event", featured_image: "" }) as { address: string; featured_image?: string | null }
+    // C32 (wave 149, lane 149F — owner ruling 15): the invitation speaks in the CREATING tenant's brand (THE cascade, via the event
+    // brand reader) — never the platform's, never a generic "our open house" with no name on it.
+    const { resolveEventBrand, eventFrontDoorPath } = await import("@/lib/open-house/event-marketing")
+    const brand = await resolveEventBrand(supabase as never, { id: event.id, brokerage_id: event.brokerage_id ?? contact.brokerage_id, agent_id: event.agent_id ?? null, created_by: event.created_by ?? null })
     const eventDate = new Date(event.event_date).toLocaleDateString("en-US", {
       weekday: "long",
       month: "long",
@@ -239,7 +244,9 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
     const joinLink =
       online && appUrl && params.invitationId
         ? registrationRequired
-          ? `${appUrl}/open-house/${params.eventId}/register`
+          // Rulings 11 + 12: the registration page INSIDE the tenant's own website (its storefront path; the platform-origin page only
+          // for a tenant with no site).
+          ? `${appUrl}${await eventFrontDoorPath(supabase as never, { id: params.eventId, brokerage_id: event.brokerage_id ?? contact.brokerage_id, event_type: evKind })}`
           : `${appUrl}/open-house/${params.eventId}/join?i=${params.invitationId}`
         : null
 
@@ -250,7 +257,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
       if (!contact.email) {
         email = { delivered: false, error: "No email address on file" }
       } else {
-        const subject = `You're Invited: Open House at ${property.address}`
+        const subject = `${brand.displayName}: you're invited — ${event.title?.trim() || `open house at ${property.address}`}`.slice(0, 180)
         const res = await dispatchEmail({
           brokerageId: contact.brokerage_id,
           contactId: params.contactId,
@@ -267,6 +274,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
             joinLink,
             joinLabel: registrationRequired ? "Register to Join Online" : "Join Online",
             personalizedOpening: params.personalizedMessage,
+            brand: { name: brand.displayName, website: brand.website, primaryColor: brand.primaryColor, logoUrl: brand.logoUrl, fairHousingLine: brand.fairHousingLine, agentName: brand.agentName },
           }),
           channelPurpose: "campaign",
           systemSource: "open_house_invitation",
@@ -302,7 +310,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
           to: contact.phone,
           message:
             (params.personalizedSms?.trim() ||
-            `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}.${rsvpLink ? ` RSVP: ${rsvpLink}` : ""}`) +
+            `Hi ${contact.first_name}! ${brand.displayName} invites you to ${event.title?.trim() || `an open house at ${property.address}`} on ${eventDate} from ${event.start_time} to ${event.end_time}.${rsvpLink ? ` RSVP: ${rsvpLink}` : ""}`) +
             (joinLink ? `${registrationRequired ? " Register to join online" : " Join online"}: ${joinLink}` : ""),
           systemSource: "open_house_invitation",
           // WAVE 148 (148Z): an open-house invitation is MARKETING (its email twin above already says "campaign") — the
@@ -547,7 +555,11 @@ function generateInvitationEmailHTML(data: {
   /** Wave 148Z: "Register to Join Online" when the link is the kind's registration page. */
   joinLabel?: string
   personalizedOpening?: string
+  /** C32 (wave 149): the creating tenant's brand — the only business named on the piece. */
+  brand: { name: string; website: string | null; primaryColor: string | null; logoUrl: string | null; fairHousingLine: string | null; agentName: string | null }
 }) {
+  const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+  const accent = data.brand.primaryColor && /^#[0-9a-f]{3,8}$/i.test(data.brand.primaryColor) ? data.brand.primaryColor : "#0F172A"
   return `
     <!DOCTYPE html>
     <html>
@@ -555,24 +567,26 @@ function generateInvitationEmailHTML(data: {
       <style>
         body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
         .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; }
+        .header { background: ${accent}; color: white; padding: 30px; text-align: center; }
+        .footer { color: #6b7280; font-size: 12px; padding: 16px 0; text-align: center; }
         .content { background: #f9fafb; padding: 30px; }
         .property-image { width: 100%; height: 300px; object-fit: cover; border-radius: 8px; margin: 20px 0; }
-        .cta-button { display: inline-block; background: #667eea; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
-        .details { background: white; padding: 20px; border-left: 4px solid #667eea; margin: 20px 0; }
+        .cta-button { display: inline-block; background: ${accent}; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+        .details { background: white; padding: 20px; border-left: 4px solid ${accent}; margin: 20px 0; }
         .personalized { background: white; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; font-style: italic; color: #4b5563; }
       </style>
     </head>
     <body>
       <div class="container">
         <div class="header">
-          <h1>You're Invited to Our Open House!</h1>
+          ${data.brand.logoUrl && /^https:\/\//.test(data.brand.logoUrl) ? `<img src="${esc(data.brand.logoUrl)}" alt="${esc(data.brand.name)}" style="max-height:40px" /><br/>` : `<p style="margin:0;font-weight:600">${esc(data.brand.name)}</p>`}
+          <h1>You're invited</h1>
         </div>
         <div class="content">
           <p>Hi ${data.contactName},</p>
           ${data.personalizedOpening
             ? `<div class="personalized">${data.personalizedOpening}</div>`
-            : `<p>We're excited to invite you to an exclusive open house event at a beautiful property we think you'll love!</p>`
+            : `<p>${esc(data.brand.name)} would love to show you around. Come see the home, ask anything, and leave with the details you need.</p>`
           }
 
           ${data.propertyImage ? `<img src="${data.propertyImage}" alt="Property" class="property-image" />` : ""}
@@ -584,13 +598,14 @@ function generateInvitationEmailHTML(data: {
             <p><strong>⏰ Time:</strong> ${data.eventTime}</p>
           </div>
 
-          <p>Join us to explore this amazing property and discover if it's the perfect fit for you!</p>
+          <p>Questions before then? Just reply to this email${data.brand.agentName ? ` — ${esc(data.brand.agentName)} will get back to you` : ""}.</p>
 
           ${data.rsvpLink ? `<a href="${data.rsvpLink}" class="cta-button">RSVP Now</a>` : ""}
           ${data.joinLink ? `<a href="${data.joinLink}" class="cta-button">${data.joinLabel ?? "Join Online"}</a>` : ""}
 
           <p>We look forward to seeing you there!</p>
         </div>
+        <div class="footer">${esc(data.brand.name)}${data.brand.website ? ` · ${esc(data.brand.website)}` : ""}${data.brand.fairHousingLine ? `<br/>${esc(data.brand.fairHousingLine)}` : ""}</div>
       </div>
     </body>
     </html>

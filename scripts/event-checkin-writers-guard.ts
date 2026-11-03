@@ -31,6 +31,7 @@ import { stripComments, blankComments, blankStrings } from "./strip-comments"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { memSupabase } from "./in-memory-supabase"
 import { stubModule, setSvc } from "./canaries/_harness"
+import { EVENT_KINDS } from "../lib/open-house/event-registry"
 
 const ROOT = process.cwd()
 let passed = 0, failed = 0
@@ -141,6 +142,10 @@ function producedTypes(stmt: string, body: string): string[] | null {
   const ident = /event_type:\s*([A-Za-z_$][\w$]*)\s*[,}\n]/.exec(stmt.slice(0, 900))?.[1]
   if (!ident) return null
   const masked = blankComments(body)
+  // WAVE 149 (149F — the ONE writer, lib/kernel/open-house.ts produceEventRow): a variable validated against THE registry
+  // (`if (!isEventKind(kind)) return …`) produces exactly the registry's kinds (EVENT_KINDS — itself held = the CHECK by
+  // test:event-producer-registry). Re-asserted from the waypoint "createOpenHouse's own list" to the rule "one validated vocabulary".
+  if (new RegExp(`!\\s*isEventKind\\(\\s*${ident}\\s*\\)\\s*\\)\\s*return\\b`).test(masked)) return [...EVENT_KINDS]
   const gate = new RegExp(`!\\s*\\(?\\s*([A-Z_][A-Z0-9_]*)(?:\\s+as\\s+readonly\\s+string\\[\\])?\\s*\\)?\\.includes\\(\\s*${ident}\\s*\\)\\s*\\)\\s*return\\b`).exec(masked)
   if (!gate) return null
   const list = new RegExp(`const\\s+${gate[1]}\\s*=\\s*\\[([^\\]]*)\\]`).exec(masked)
@@ -236,11 +241,15 @@ async function main(): Promise<void> {
   check(`every produced type is a live CHECK value (${[...produced.keys()].join(", ")})`, [...produced.keys()].every((t) => types.includes(t)))
   // wave 147 (lane 147Z — lane 147F "Still open": broker_open / virtual_open_house were CHECK-admitted and never produced;
   // orphan doctrine §1.2, BUILD the missing half). ONE scheduling door produces all three kinds through one validated list.
-  check("the scheduling door (createOpenHouse) PRODUCES every live event type through ONE validated vocabulary — no twin producer",
-    types.every((t) => (produced.get(t) ?? []).includes("app/actions/open-house.ts::createOpenHouse")), JSON.stringify([...produced]))
+  // WAVE 149 (149F): re-asserted from the waypoint "createOpenHouse holds the insert" to the RULE — ONE writer produces every live
+  // type through ONE validated vocabulary, and the scheduling door reaches it (no twin producer anywhere: test:event-branding's census).
+  check("the ONE writer (lib/kernel/open-house.ts::produceEventRow) PRODUCES every live event type through ONE validated vocabulary — and the scheduling door (createOpenHouse) calls it",
+    types.every((t) => (produced.get(t) ?? []).includes("lib/kernel/open-house.ts::produceEventRow")) && producers.length === 1 && /produceEventRow\(/.test(stripComments(files.get("app/actions/open-house.ts") ?? "")), JSON.stringify([...produced]))
   check("POSITIVE CONTROL: a variable event_type validated by a refusing includes() produces the list; an unvalidated variable produces nothing provable",
     JSON.stringify(producedTypes(`.from("open_house_events").insert({ event_type: kind, x: 1 })`, `function f(){ const KINDS = ["open_house", "broker_open"] as const\n if (!(KINDS as readonly string[]).includes(kind)) return { error: 1 } }`)) === JSON.stringify(["open_house", "broker_open"])
-    && producedTypes(`.from("open_house_events").insert({ event_type: kind, x: 1 })`, `function f(){ const KINDS = ["broker_open"]; if (KINDS.includes(kind)) log() }`) === null)
+    && producedTypes(`.from("open_house_events").insert({ event_type: kind, x: 1 })`, `function f(){ const KINDS = ["broker_open"]; if (KINDS.includes(kind)) log() }`) === null
+    && JSON.stringify(producedTypes(`.from("open_house_events").insert({ event_type: kind, x: 1 })`, `function f(){ if (!isEventKind(kind)) return { ok: false } }`)) === JSON.stringify([...EVENT_KINDS])
+    && producedTypes(`.from("open_house_events").insert({ event_type: kind, x: 1 })`, `function f(){ if (isEventKind(kind)) log() }`) === null)
   {
     const kioskSrc = raw("app/api/open-house/attend/route.ts")
     const bo = brokerOpenBranch(kioskSrc)
@@ -268,7 +277,9 @@ async function main(): Promise<void> {
     // link rides the email AND the text.
     const mintsJoin = (s: string) => /const online = isOnlineEvent\(/.test(s) && /online && appUrl && params\.invitationId/.test(s)
       && /`\$\{appUrl\}\/open-house\/\$\{params\.eventId\}\/join\?i=\$\{params\.invitationId\}`/.test(s)
-      && /`\$\{appUrl\}\/open-house\/\$\{params\.eventId\}\/register`/.test(s)
+      // WAVE 149 (149F, rulings 11 + 12): re-asserted from the platform-origin "/open-house/<id>/register" waypoint to the RULE —
+      // the registration link is the event's front door INSIDE the tenant website (lib/open-house/event-marketing.ts eventFrontDoorPath).
+      && /`\$\{appUrl\}\$\{await eventFrontDoorPath\(/.test(s)
       && /[Jj]oin online"\}: \$\{joinLink\}/.test(s) && /joinLink,/.test(s)
     check("online kinds: the invitation sender mints the join link (eventId + invitationId) — or the registration page for a registration-required kind — in the email AND the text; the join door has its in-tree producer", mintsJoin(sender))
     check("POSITIVE CONTROL: the finder rejects the virtual-only waypoint it replaced", !mintsJoin("const joinLink = (event as any).event_type === \"virtual_open_house\" && appUrl ? `${appUrl}/open-house/${params.eventId}/join?i=${params.invitationId}` : null; joinLink,"))

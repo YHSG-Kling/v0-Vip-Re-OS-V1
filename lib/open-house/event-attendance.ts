@@ -23,9 +23,9 @@ import { createHash } from "node:crypto"
 import { fromZonedTime } from "date-fns-tz"
 import type { ConsentGrantInput } from "@/lib/contact-pipeline/contact-capture"
 import {
-  EVENT_PRODUCER_REGISTRY, EVENT_INTENTS, EVENT_TIMELINE_BUCKETS, CONTACT_TYPE_FOR_INTENT,
+  EVENT_PRODUCER_REGISTRY, CONTACT_TYPE_FOR_INTENT,
   attendanceVerdict, attendanceVerifiability, computeAttendanceWindow, eventOutcome, isEventKind, isOnlineEvent,
-  matchParticipantIdentity, normalizeEmail, shouldNotifyAgent,
+  matchParticipantIdentity, normalizeEmail, sanitizeEventSituation, shouldNotifyAgent,
   type EventSituation, type RegistrationForMatch,
 } from "./event-registry"
 
@@ -82,7 +82,7 @@ export interface RegisterInput {
   lastName: string
   email: string
   phone?: string | null
-  situation?: Partial<Record<keyof EventSituation, unknown>> | null
+  situation?: Partial<Record<string, unknown>> | null
   /** The ONE consent component's submission exactly as posted (C15) — parsed and re-rendered server-side, never believed. */
   consent: unknown
   /** When the person submitted (the route stamps it). */
@@ -103,23 +103,20 @@ export interface RegisterDeps {
   now?: () => Date
 }
 
-/** PURE — keep only the situation values the registry vocabulary admits; a free-text question is kept verbatim (≤ 500). */
-function sanitizeSituation(raw: Partial<Record<keyof EventSituation, unknown>> | null | undefined): EventSituation {
-  const r = raw ?? {}
-  const intent = (EVENT_INTENTS as readonly string[]).includes(String(r.intent)) ? (r.intent as EventSituation["intent"]) : null
-  const timeline = (EVENT_TIMELINE_BUCKETS as readonly string[]).includes(String(r.timeline)) ? (r.timeline as EventSituation["timeline"]) : null
-  const workingWithAgent = typeof r.workingWithAgent === "boolean" ? r.workingWithAgent : null
-  const q = typeof r.question === "string" ? r.question.trim().slice(0, 500) : ""
-  return { intent, timeline, workingWithAgent, question: q || null }
-}
+// WAVE 149 (149F, ruling 16): TOMBSTONE — `sanitizeSituation` (intent / timeline / agent + a free-text `question` kept verbatim)
+// stood here. SURVIVOR: lib/open-house/event-registry.ts sanitizeEventSituation — the kind's OWN closed questions
+// (REGISTRATION_QUESTIONS), so a registration can carry only answers that question asked.
 
 /** PURE — the situation in one line for the contact's notes (APPENDED on a merge by C8, never overwritten). */
 function situationNote(eventTitle: string, s: EventSituation): string {
   const bits = [
-    s.intent ? `intent: ${s.intent.replace(/_/g, " ")}` : null,
+    s.intent ? `intent: ${s.intent}` : null,
     s.timeline ? `timeline: ${s.timeline.replace(/_/g, " ")}` : null,
     s.workingWithAgent === true ? "already working with an agent" : s.workingWithAgent === false ? "not working with an agent" : null,
-    s.question ? `asked: "${s.question}"` : null,
+    s.interests?.length ? `wants covered: ${s.interests.join(", ").replace(/_/g, " ")}` : null,
+    s.requests?.length ? `asked the host to: ${s.requests.join(", ").replace(/_/g, " ")}` : null,
+    s.guests != null ? `guests: ${s.guests}` : null,
+    s.accessibility === true ? "asked about an accessibility accommodation" : null,
   ].filter(Boolean)
   return `Registered for ${eventTitle}${bits.length ? ` — ${bits.join("; ")}` : ""}.`
 }
@@ -154,7 +151,7 @@ export async function registerForEvent(svc: Db, input: RegisterInput, deps: Regi
   const brandName = await resolveConsentBrand(svc as never, { brokerageId: ev.brokerage_id, agentId: ev.agent_id ?? null })
   const c15 = consentGrantsFromComponent(input.consent, { door: "event_registration", brandName, provided: { email: true, phone: phoneDigits.length >= 10 } })
   if (!c15.submission || c15.submission.service_delivery !== true) return { ok: false, status: 400, error: "Please agree to receive your confirmation and join link — it is how you get into the event" }
-  const situation = sanitizeSituation(input.situation)
+  const situation = sanitizeEventSituation(ev.event_type, input.situation)
   const title = EVENT_LABEL(ev)
   const consents: ConsentGrantInput[] = c15.grants
 
@@ -167,7 +164,8 @@ export async function registerForEvent(svc: Db, input: RegisterInput, deps: Regi
     ...(ev.agent_id ? {} : { agentUserId: ev.created_by ?? null }),
     source: "event_registration",
     first_name: firstName, last_name: lastName, email, phone: phoneDigits || null,
-    contact_type: situation.intent ? CONTACT_TYPE_FOR_INTENT[situation.intent] : "prospect",
+    // Ruling 3: buyer | seller | both, or nothing — never `prospect` (a platform word). A merge never overwrites a stored type.
+    ...(situation.intent ? { contact_type: CONTACT_TYPE_FOR_INTENT[situation.intent] } : {}),
     preferred_channel: "email",
     language: input.language ?? null,
     notes: situationNote(title, situation),
@@ -269,7 +267,7 @@ export async function registerForEvent(svc: Db, input: RegisterInput, deps: Regi
 // ─── COPY (AI-drafted, human-approved — lib/open-house/event-marketing.ts) ────
 
 /** The app's public origin, or null (never the literal "undefined/…"). */
-function absoluteUrl(path: string): string | null {
+export function absoluteUrl(path: string): string | null {
   const base = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
   return base ? `${base}${path}` : null
 }
@@ -280,18 +278,22 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
  * Fill APPROVED copy with facts (deterministic: the model wrote the words, the code supplies the date, the link and the name).
  * Null when the event carries no approved copy for this touchpoint — nothing static stands in for the approved words.
  */
-function renderEventCopy(
+type EventTouchpoint = "confirmation" | "reminder" | "replay_attended" | "replay_missed" | "handout"
+
+/** @proofSeam lib/open-house/event-touches.ts renders the arbiter-released reminder through this same filler */
+export function renderEventCopy(
   ev: Pick<EventRow, "marketing_assets" | "title" | "event_date" | "start_time" | "end_time" | "timezone" | "property_address" | "event_type">,
-  touchpoint: "confirmation" | "replay_attended" | "replay_missed",
-  facts: { firstName: string; joinLink?: string | null; replayLink?: string | null },
+  touchpoint: EventTouchpoint,
+  facts: { firstName: string; joinLink?: string | null; replayLink?: string | null; handoutLink?: string | null },
 ): { subject: string; text: string; html: string } | null {
   const m = (ev.marketing_assets ?? {}) as Record<string, any>
   if (m.status !== "approved") return null
   const d = (m.approved ?? m.draft ?? {}) as Record<string, string>
   const subject = d[`${touchpoint}_subject`], body = d[`${touchpoint}_body`]
   if (typeof subject !== "string" || typeof body !== "string" || !subject.trim() || !body.trim()) return null
-  if (touchpoint === "confirmation" && body.includes("{{join_link}}") && !facts.joinLink && isOnlineEvent(ev.event_type, null)) return null
-  if (touchpoint !== "confirmation" && !facts.replayLink) return null
+  if ((touchpoint === "confirmation" || touchpoint === "reminder") && body.includes("{{join_link}}") && !facts.joinLink && isOnlineEvent(ev.event_type, null)) return null
+  if ((touchpoint === "replay_attended" || touchpoint === "replay_missed") && !facts.replayLink) return null
+  if (touchpoint === "handout" && !facts.handoutLink) return null
   const when = [ev.event_date ? new Date(`${String(ev.event_date).slice(0, 10)}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : null, ev.start_time ? `${String(ev.start_time).slice(0, 5)}${ev.end_time ? `–${String(ev.end_time).slice(0, 5)}` : ""}` : null, ev.timezone ?? null].filter(Boolean).join(" · ")
   const fill = (s: string) => s
     .replace(/\{\{first_name\}\}/g, facts.firstName || "there")
@@ -299,6 +301,7 @@ function renderEventCopy(
     .replace(/\{\{date_time\}\}/g, when || "the scheduled time")
     .replace(/\{\{join_link\}\}/g, facts.joinLink ?? "")
     .replace(/\{\{replay_link\}\}/g, facts.replayLink ?? "")
+    .replace(/\{\{handout_link\}\}/g, facts.handoutLink ?? "")
   const text = fill(body)
   return { subject: fill(subject).slice(0, 180), text, html: `<div style="font-family:system-ui,sans-serif;line-height:1.55">${esc(text).replace(/\n/g, "<br/>").replace(/(https:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')}</div>` }
 }
@@ -598,3 +601,69 @@ export async function deliverEventReplay(svc: Db, eventId: string, deps: { sendE
   }
   return { delivered, skipped, reason: "sent where a recording, approved copy and an e-mail all exist", errors }
 }
+
+// ─── THE PROMISED SESSION HANDOUT (wave 149, lane 149F — lane 148H Still open 3) ─────────────────────────────────────────
+//
+// The registry declared `session_handout` on webinars and education sessions with NO delivery path. It now has the replay's:
+// nothing is sent until the handout EXISTS (open_house_events.handout_url, https — m948; set by setEventHandout), then ONCE per
+// registration in the APPROVED handout words (event-marketing.ts handout_subject / handout_body, {{handout_link}}), through the
+// governed dispatcher's consent / suppression gates, ledgered `open_house.handout.deliver`. Before m948 is applied the column is
+// absent: the read refuses and NOTHING is sent (said in the reason) — never a handout "delivered" without the asset.
+
+/** One event's handout link, read on its own (the column is m948's; absent → refused, never guessed). */
+async function readHandoutUrl(svc: Db, ev: EventRow): Promise<{ url: string | null; error: string | null }> {
+  const { data, error } = await svc.from("open_house_events").select("handout_url").eq("id", ev.id).eq("brokerage_id", ev.brokerage_id).maybeSingle()
+  if (error) return { url: null, error: `handout link unreadable (${error.message}) — m948 may not be applied yet` }
+  const url = (data as { handout_url?: string | null } | null)?.handout_url ?? null
+  return { url: url && /^https:\/\//.test(url) ? url : null, error: null }
+}
+
+export async function deliverEventHandout(svc: Db, eventId: string, deps: { sendEmail?: RegisterDeps["sendEmail"]; ledger?: RegisterDeps["ledger"] } = {}): Promise<ReplayDeliveryResult> {
+  const { event: ev, error } = await readEvent(svc, eventId)
+  if (error || !ev?.brokerage_id) return { delivered: 0, skipped: 0, reason: error ?? "event not found", errors: [] }
+  if (!isEventKind(ev.event_type) || !EVENT_PRODUCER_REGISTRY[ev.event_type].deliverables.includes("session_handout")) return { delivered: 0, skipped: 0, reason: "this kind promises no handout", errors: [] }
+  const h = await readHandoutUrl(svc, ev)
+  if (h.error) return { delivered: 0, skipped: 0, reason: h.error, errors: [] }
+  if (!h.url) return { delivered: 0, skipped: 0, reason: "no handout yet — nothing is sent until it exists", errors: [] }
+  const regs = await loadRegistrations(svc, ev)
+  if (regs.error) return { delivered: 0, skipped: 0, reason: regs.error, errors: [] }
+  const send = deps.sendEmail ?? defaultSendEmail
+  const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
+  let delivered = 0, skipped = 0
+  const errors: string[] = []
+  for (const [contactId, rsvp] of regs.byContact) {
+    const email = regs.emails.get(contactId)
+    if (!email) { skipped++; continue }
+    const copy = renderEventCopy(ev, "handout", { firstName: regs.names.get(contactId)?.first ?? "", handoutLink: h.url })
+    if (!copy) { skipped++; continue }
+    const r = await ledger(
+      {
+        brokerageId: ev.brokerage_id, action: "open_house.handout.deliver", actor: { type: "system", userId: null },
+        subject: { type: "open_house_rsvp", id: rsvp.id }, cycle: "handout", channel: "email",
+        reasonCode: "SERVICE_NOTICE", reasonDetail: "the session handout the registration was promised", systemSource: "event_handout",
+        detail: { event_id: ev.id, contact_id: contactId },
+      },
+      () => send({ brokerageId: ev.brokerage_id as string, to: email, contactId, subject: copy.subject, html: copy.html, text: copy.text, metadata: { event_id: ev.id, rsvp_id: rsvp.id, kind: "event_handout" } }),
+      {
+        settle: (s: { success: boolean; error?: string }) => (s.success ? { status: "executed", outcome: "handout_sent", provider: "email" } : { status: "failed", outcome: "handout_not_sent", error: s.error ?? null }),
+        replay: (claim: { kind: string; error?: string }) => (claim.kind === "refused" ? { success: false, error: `the action ledger refused: ${claim.error}` } : { success: false, error: "already delivered" }),
+      },
+    ) as { success: boolean; error?: string }
+    if (r.success) delivered++
+    else if (r.error === "already delivered") skipped++
+    else errors.push(`${contactId}: ${r.error ?? "not sent"}`)
+  }
+  return { delivered, skipped, reason: "sent where a handout, approved copy and an e-mail all exist", errors }
+}
+
+/** The registrations of one event with each person's e-mail and first name — read by the arbiter-owned touches (event-touches.ts). */
+export async function loadEventRegistrations(svc: Db, eventId: string): Promise<{ event: EventRow | null; rows: Array<{ contactId: string; rsvp: Record<string, any>; email: string | null; firstName: string }>; error: string | null }> {
+  const { event: ev, error } = await readEvent(svc, eventId)
+  if (error || !ev?.brokerage_id) return { event: null, rows: [], error: error ?? "event not found" }
+  const regs = await loadRegistrations(svc, ev)
+  if (regs.error) return { event: ev, rows: [], error: regs.error }
+  return { event: ev, rows: [...regs.byContact].map(([contactId, rsvp]) => ({ contactId, rsvp, email: regs.emails.get(contactId) ?? null, firstName: regs.names.get(contactId)?.first ?? "" })), error: null }
+}
+
+/** The governed service-notice e-mail every event touch uses (consent / suppression / ledger at the dispatcher). */
+export const sendEventServiceEmail = defaultSendEmail

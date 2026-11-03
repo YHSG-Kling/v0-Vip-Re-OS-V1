@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 149, lane 149A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-11-03 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 149, lane 149A ──
 --
 -- m935 — OWNER RULING 3 (2026-11-03): contact INTENT is buyer, seller or both — nothing else. "Intent is more the contact
 -- persona's situation." `prospect` is a PLATFORM person (a potential VIPAgents subscriber — public.platform_prospects), never a

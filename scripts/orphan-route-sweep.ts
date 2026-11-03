@@ -50,6 +50,11 @@ const EXEMPT: Record<string, string> = {
   "/p/[agentSlug]": "app/sitemap.ts agentEntries — public agent profiles",
   "/listing/[slug]": "app/sitemap.ts listingEntries — public listing pages",
   "/lm/[slug]": "app/sitemap.ts magnetEntries — lead-magnet landing pages",
+  // Wave 149 (149F — rulings 11 + 12): an event's registration page INSIDE the tenant website. Reached from OUTSIDE the app by
+  // construction: the printed / shared QR (qr_codes.target_url minted by lib/open-house/event-marketing.ts ensureEventQr), the
+  // invitation e-mail and SMS (lib/communications/send-invitation.ts → eventFrontDoorPath) and the reminder — all built by
+  // eventFrontDoorPath (`${tenantWebsitePath(slug)}/events/<id>`), which no href scan can see.
+  "/site/[slug]/events/[eventId]": "lib/open-house/event-marketing.ts eventFrontDoorPath — the event QR (qr_codes.target_url), the invitation e-mail/SMS and the reminder link",
   "/blog/[slug]": "app/sitemap.ts blogEntries — public blog posts",
   "/v/[slug]": "app/sitemap.ts videoEntries — public video landing pages",
   // ── Reachable through code shapes the scanner can't see ──

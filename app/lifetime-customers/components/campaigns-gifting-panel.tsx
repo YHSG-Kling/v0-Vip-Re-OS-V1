@@ -48,7 +48,7 @@ import {
   aiPlanBulkGifting,
   getGiftAnalytics,
 } from "@/app/actions/ai-client-gifting"
-import { aiGenerateEventInvitation } from "@/app/actions/ai-sphere-management"
+import { aiGenerateEventInvitation } from "@/app/actions/open-house"
 import { usd } from "@/lib/format/money"
 
 interface LifetimeContact {
@@ -140,7 +140,10 @@ export function CampaignsGiftingPanel({ brokerageId, agentId, contacts }: Props)
   const [eventDate, setEventDate] = useState("")
   const [eventLocation, setEventLocation] = useState("")
   const [eventDetails, setEventDetails] = useState("")
-  const [eventCopy, setEventCopy] = useState<{ email?: string; sms?: string; social?: string } | null>(null)
+  const [eventEnd, setEventEnd] = useState("")
+  const [eventKind, setEventKind] = useState<"client_appreciation" | "holiday_party" | "educational_seminar" | "market_update">("client_appreciation")
+  // Wave 149 (149F): the action now CREATES the event (C22 + C32) — this holds its result, not loose copy.
+  const [eventCopy, setEventCopy] = useState<{ note: string; manageUrl: string; warnings: string[] } | null>(null)
   const [eventBusy, setEventBusy] = useState(false)
 
   // Load sequences once
@@ -350,30 +353,17 @@ export function CampaignsGiftingPanel({ brokerageId, agentId, contacts }: Props)
 
   // ── EVENT INVITE ───────────────────────────────────────────────────────────
   async function generateEventCopy() {
-    if (!eventName.trim() || !eventDate) {
-      toast.error("Event name and date are required.")
+    if (!eventName.trim() || !eventDate || !eventEnd) {
+      toast.error("Event name, start and end time are required.")
       return
     }
     setEventBusy(true)
     try {
-      const result = await aiGenerateEventInvitation({
-        agentId,
-        eventDetails: {
-          name: eventName,
-          date: eventDate,
-          location: eventLocation || "TBD",
-          description: eventDetails || "",
-        },
-      } as any)
-      if ((result as any).success) {
-        const data = (result as any).data ?? (result as any).invitation ?? {}
-        setEventCopy({
-          email: data.email ?? data.emailCopy ?? "",
-          sms: data.sms ?? data.smsCopy ?? "",
-          social: data.social ?? data.socialCopy ?? "",
-        })
+      const result = await aiGenerateEventInvitation({ eventType: eventKind, title: eventName, startsAt: eventDate, endTime: eventEnd, location: eventLocation, description: eventDetails })
+      if (result.success && result.data) {
+        setEventCopy({ note: result.data.note, manageUrl: result.data.manageUrl, warnings: result.data.warnings })
       } else {
-        toast.error((result as any).error ?? "Couldn't generate invitation copy.")
+        toast.error(result.error ?? "Couldn't create the event.")
       }
     } finally {
       setEventBusy(false)
@@ -871,6 +861,19 @@ export function CampaignsGiftingPanel({ brokerageId, agentId, contacts }: Props)
                 <Label className="text-xs">Date</Label>
                 <Input type="datetime-local" value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
               </div>
+              <div>
+                <Label className="text-xs">Ends</Label>
+                <Input type="time" value={eventEnd} onChange={(e) => setEventEnd(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Kind</Label>
+                <select className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={eventKind} onChange={(e) => setEventKind(e.target.value as typeof eventKind)}>
+                  <option value="client_appreciation">Client appreciation</option>
+                  <option value="holiday_party">Holiday gathering</option>
+                  <option value="educational_seminar">Educational seminar</option>
+                  <option value="market_update">Market update (online)</option>
+                </select>
+              </div>
             </div>
             <div>
               <Label className="text-xs">Location</Label>
@@ -882,29 +885,19 @@ export function CampaignsGiftingPanel({ brokerageId, agentId, contacts }: Props)
             </div>
             <Button onClick={generateEventCopy} disabled={eventBusy} className="w-full">
               {eventBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Sparkles className="h-4 w-4 mr-2" />}
-              Generate copy
+              Create event and draft its invitation
             </Button>
 
             {eventCopy && (
-              <div className="space-y-3 mt-2">
-                {(["email", "sms", "social"] as const).map((channel) => {
-                  const text = (eventCopy as any)[channel] as string | undefined
-                  if (!text) return null
-                  return (
-                    <Card key={channel}>
-                      <CardContent className="p-3 space-y-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          {channel}
-                        </p>
-                        <p className="text-xs whitespace-pre-wrap">{text}</p>
-                        <Button size="sm" variant="outline" onClick={() => copyToClipboard(text)}>
-                          Copy
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  )
-                })}
-              </div>
+              <Card className="mt-2">
+                <CardContent className="p-3 space-y-2">
+                  <p className="text-xs">{eventCopy.note}</p>
+                  {eventCopy.warnings.map((w) => <p key={w} className="text-xs text-muted-foreground">{w}</p>)}
+                  <Button size="sm" variant="outline" asChild>
+                    <Link href={eventCopy.manageUrl}>Review and approve <ExternalLink className="h-3 w-3 ml-1" /></Link>
+                  </Button>
+                </CardContent>
+              </Card>
             )}
           </div>
           <DialogFooter>

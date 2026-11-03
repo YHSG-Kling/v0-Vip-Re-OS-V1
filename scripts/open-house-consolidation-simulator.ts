@@ -176,7 +176,11 @@ async function main(): Promise<void> {
   console.log("\n[Layer 3 · the war-room insert speaks the survivor's vocabulary]")
   const war = stripComments(readFileSync(`${ROOT}lib/kernel/launch-war-room.ts`, "utf8"))
   check("war room writes open_house_events", war.includes(`from("open_house_events")`))
-  check("…with registration_required, the survivor's spelling", war.includes("registration_required: true"))
+  // WAVE 149 (149F — lane 148H Still open 4): re-asserted from the waypoint "the war room's own insert literal says
+  // registration_required: true" to the RULE — the war room writes through THE one writer (lib/kernel/open-house.ts
+  // produceEventRow), and THAT writer speaks the survivor's spelling (registration_required, from the registry; never require_rsvp).
+  const writer = stripComments(readFileSync(`${ROOT}lib/kernel/open-house.ts`, "utf8"))
+  check("…with registration_required, the survivor's spelling (through the one writer)", war.includes("produceEventRow(") && /registration_required:\s*spec\.registration\.required/.test(writer) && !war.includes("require_rsvp") && !writer.includes("require_rsvp"))
   check("…and NOT require_rsvp (an absent column refuses the WHOLE row, PGRST204)",
     !war.includes("require_rsvp"))
   check("…still staged as a draft with no fabricated date", war.includes(`status: "draft"`) && !war.includes("event_date:"))
