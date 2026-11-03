@@ -250,8 +250,13 @@ async function main() {
   ok("enrichment_persona_summary is a routed row on a Haiku-class model", !!row && /haiku|mini/.test(String(row.model)), JSON.stringify(row))
   const orch = blankStrings(blankComments(read("lib/lead-pipeline/enrichment-orchestrator.ts")))
   const orchRaw = blankComments(read("lib/lead-pipeline/enrichment-orchestrator.ts"))
-  ok("the orchestrator's persona summary uses it, and no longer borrows client_message",
-    /feature:\s*'enrichment_persona_summary'/.test(orchRaw) && !/feature:\s*'client_message'/.test(orchRaw) && orch.length > 0)
+  // RE-ASSERTED (wave 149, lane 149J): the RULE is "the persona summary rides its own cheap row, never client_message".
+  // The model call moved into the persona study (lib/contacts/persona-builder.ts derivePersona, wave 148C) and the
+  // orchestrator's unused 180-token `summarize` callback was retired (149J, lane 148C Outside-lane 7) — so the row's
+  // literal is asserted where the call IS, and the orchestrator is held to never borrowing client_message.
+  const studyRaw = blankComments(read("lib/contacts/persona-builder.ts"))
+  ok("the persona study's model call uses it, and the orchestrator never borrows client_message",
+    /feature:\s*["']enrichment_persona_summary["']/.test(studyRaw + orchRaw) && !/feature:\s*["']client_message["']/.test(orchRaw) && orch.length > 0)
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

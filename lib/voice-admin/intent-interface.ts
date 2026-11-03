@@ -568,6 +568,12 @@ export interface IntentActor {
   contactId?: string | null
   /** That contact's type (buyer · seller · both) — the client floor's seller gate reads it. */
   contactType?: string | null
+  /** WAVE 149 (lane 149J — wave-148 §2 lane D "C17 role check ignores capability grants"): the roles the person holds
+   *  through `user_role_assignments` IN THIS TENANT (lib/auth/role-grants.ts readRoleGrants, filtered to the session
+   *  tenant by withTenantRoleGrants in lib/auth/role-grants.ts). They may only ADD a feature the seat lacks; they never
+   *  widen the data scope (that stays the seat's — the narrower reading) and never lift the contact / client floors.
+   *  Absent or null = the seat alone (the pre-149 behaviour, and the fail-closed reading of a refused grant read). */
+  grantedRoles?: readonly string[] | null
 }
 
 export interface IntentTenant {
@@ -603,6 +609,16 @@ export function actorRole(actor: IntentActor): CanonicalRole | null {
   return toCanonicalRole(actor.userType)
 }
 
+/** PURE: the actor's tenant grants in the canonical role vocabulary (unknown names dropped — never guessed). */
+function grantedCanonicalRoles(actor: IntentActor): CanonicalRole[] {
+  const out: CanonicalRole[] = []
+  for (const g of actor.grantedRoles ?? []) {
+    const r = toCanonicalRole(g)
+    if (r && !out.includes(r)) out.push(r)
+  }
+  return out
+}
+
 /**
  * PURE: may THIS actor have THIS route, and on what terms. The order is the kernel lane's
  * (kernel-command-surface.ts buildVoicePlan): authority → operability → (missing info, outside) →
@@ -635,12 +651,18 @@ export function checkIntentAuthority(route: IntentRoute, actor: IntentActor, opt
     if (role === "contact") return refuse("refused_role", "That is a staff command.")
     return { ...base, outcome: "surface_gates", allowed: true, reasons: [`${route.service.split(" ")[0]} applies its own authority matrix before it acts.`] }
   }
-  const admitted = role === "superadmin" || (FEATURE_FLAGS[route.feature] ?? []).includes(role)
+  const featureRoles: readonly string[] = FEATURE_FLAGS[route.feature] ?? []
+  const bySeat = role === "superadmin" || featureRoles.includes(role)
+  // A tenant grant can admit a feature the seat lacks (a grant-only admin). A grant naming a platform role is NOT
+  // honoured here — platform staff are platform_role (CLAUDE.md §4), never a tenant grant row.
+  const byGrant = bySeat ? null : grantedCanonicalRoles(actor).find((g) => g !== "superadmin" && featureRoles.includes(g)) ?? null
+  const admitted = bySeat || byGrant !== null
   if (!admitted) return refuse("refused_role", `Your role (${role.replace(/_/g, " ")}) doesn't include ${route.label.toLowerCase()} — ask your broker if you need it.`)
   if (opts.operable === false) {
     return { ...base, outcome: "not_operable", allowed: false, confirmationRequired: false, approvalRequired: false, reasons: [opts.blockReason ? `I can't do that yet — ${opts.blockReason}` : "I can't do that yet: the provider it needs is not connected."] }
   }
   const reasons: string[] = []
+  if (byGrant) reasons.push(`Your ${byGrant.replace(/_/g, " ")} grant in this brokerage covers it.`)
   if (route.mutates) reasons.push("It changes something, so it waits for your yes.")
   if (route.publishes) reasons.push("Anything it produces for the public waits for your brokerage's approver before it goes out.")
   if (base.dataScope === "own") reasons.push("You'll see your own contacts and listings only.")

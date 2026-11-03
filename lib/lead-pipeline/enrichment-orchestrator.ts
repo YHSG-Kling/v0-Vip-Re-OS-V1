@@ -1182,49 +1182,71 @@ export async function processEnrichmentQueue(
             // content all read client_detailed_personas (empty until now).
             // Best-effort; the routed-AI summary falls back deterministically.
             try {
-              const { buildContactPersona } = await import('@/lib/contacts/persona-builder')
-              const { generateTextRouted } = await import('@/lib/ai/models')
-              await buildContactPersona(supabase as any, {
-                contactId: entityId,
-                brokerageId,
-                agentId: (contact as any).agent_id ?? null, // contacts.agent_id is agents-class
-                facts: {
-                  ageRange: enriched.ageRange ?? (enriched.age ? String(enriched.age) : null),
-                  // Lane 85C — the four household financials read from the PROFILE (carried forward +
-                  // the paid rung), not the PDL object, which never carries them.
-                  maritalStatus: profile.marital_status ?? enriched.maritalStatus ?? null,
-                  childrenCount: enriched.childrenCount ?? null,
-                  householdSize: enriched.householdSize ?? null,
-                  // PDL carries a PERSON salary band (inferred_salary), not household income — used
-                  // only when no household figure exists, and labelled so the persona never mistakes it.
-                  householdIncome: profile.household_income ?? enriched.householdIncome ?? (enriched.inferredSalary ? `${enriched.inferredSalary} (individual salary, inferred)` : null),
-                  // m640: promoted from the jsonb blob alongside household_income —
-                  // see lib/lead-pipeline/enrichment-column-map.ts and the migration header.
-                  netWorth: profile.net_worth ?? enriched.netWorth ?? null,
-                  // TOMBSTONE (wave 86, lane 86A): the modeled credit band is no longer a persona fact.
-                  // The persona's pain_points reach OUTBOUND copy (app/actions/open-house-automation.ts
-                  // puts them in the invitation prompt), so a band there was a band in outbound copy —
-                  // the FCRA / fair-lending line the owner drew. The band's reader is the agent contact
-                  // card (app/actions/contact-enrichment.ts::getContactInsights).
-                  homeOwnerStatus: enriched.homeOwnerStatus ?? null,
-                  homeValue: enriched.homeValue ?? null,
-                  occupation: enriched.currentTitle ?? null,
-                  industry: enriched.currentIndustry ?? null,
-                  // education is a structured array from the provider — persona
-                  // psychographics wants the strongest single line.
-                  education: Array.isArray(enriched.education)
-                    ? (enriched.education[0]?.degree ?? enriched.education[0]?.school ?? null)
-                    : ((enriched.education as string | undefined) ?? null),
-                  lifeEvents: ((enriched as any).life_events ?? (enriched as any).lifeEvents ?? null) as string[] | null,
-                  contactType: (contact as any).contact_type ?? null,
-                },
-                summarize: async (prompt) => {
-                  const { text } = await generateTextRouted({
-                    feature: 'enrichment_persona_summary', brokerageId, prompt, temperature: 0.3, maxTokens: 180,
-                  })
-                  return text
-                },
-              })
+              const personaFacts = {
+                ageRange: enriched.ageRange ?? (enriched.age ? String(enriched.age) : null),
+                // Lane 85C — the four household financials read from the PROFILE (carried forward +
+                // the paid rung), not the PDL object, which never carries them.
+                maritalStatus: profile.marital_status ?? enriched.maritalStatus ?? null,
+                childrenCount: enriched.childrenCount ?? null,
+                householdSize: enriched.householdSize ?? null,
+                // PDL carries a PERSON salary band (inferred_salary), not household income — used
+                // only when no household figure exists, and labelled so the persona never mistakes it.
+                householdIncome: profile.household_income ?? enriched.householdIncome ?? (enriched.inferredSalary ? `${enriched.inferredSalary} (individual salary, inferred)` : null),
+                // m640: promoted from the jsonb blob alongside household_income —
+                // see lib/lead-pipeline/enrichment-column-map.ts and the migration header.
+                netWorth: profile.net_worth ?? enriched.netWorth ?? null,
+                // TOMBSTONE (wave 86, lane 86A): the modeled credit band is no longer a persona fact.
+                // The persona's pain_points reach OUTBOUND copy (app/actions/open-house-automation.ts
+                // puts them in the invitation prompt), so a band there was a band in outbound copy —
+                // the FCRA / fair-lending line the owner drew. The band's reader is the agent contact
+                // card (app/actions/contact-enrichment.ts::getContactInsights).
+                homeOwnerStatus: enriched.homeOwnerStatus ?? null,
+                homeValue: enriched.homeValue ?? null,
+                occupation: enriched.currentTitle ?? null,
+                industry: enriched.currentIndustry ?? null,
+                // education is a structured array from the provider — persona
+                // psychographics wants the strongest single line.
+                education: Array.isArray(enriched.education)
+                  ? (enriched.education[0]?.degree ?? enriched.education[0]?.school ?? null)
+                  : ((enriched.education as string | undefined) ?? null),
+                lifeEvents: ((enriched as any).life_events ?? (enriched as any).lifeEvents ?? null) as string[] | null,
+                contactType: (contact as any).contact_type ?? null,
+              }
+              // CADENCE (wave 149, lane 149J — wave-148 §2 lane C): the study re-derives on NEW EVIDENCE only
+              // (lib/lead-pipeline/enrichment-retry.ts, the cadence section). A re-enrichment that returned the same facts does not
+              // re-buy a ~1,400-token study; the skip is logged with its reason. No timetable: evidence decides.
+              const { personaEvidenceFingerprint, storedPersonaEvidence, personaRederivationVerdict } = await import('./enrichment-retry')
+              const fingerprint = personaEvidenceFingerprint(personaFacts as Record<string, unknown>)
+              const stored = storedPersonaEvidence((contact as any).enrichment_profile)
+              let personaRowExists: boolean | null = null
+              if (stored && stored.fingerprint === fingerprint) {
+                const { data: prow, error: prowErr } = await supabase.from('client_detailed_personas')
+                  .select('id').eq('contact_id', entityId).eq('brokerage_id', brokerageId).limit(1)
+                if (prowErr) console.warn('[enrichment-orchestrator] persona row read refused (study re-derives):', prowErr.message)
+                else personaRowExists = (prow ?? []).length > 0
+              }
+              const verdict = personaRederivationVerdict({ fingerprint, stored, personaRowExists })
+              if (!verdict.run) {
+                console.info(`[enrichment-orchestrator] persona study skipped for contact ${entityId}: ${verdict.reason}`)
+              } else {
+                const { buildContactPersona } = await import('@/lib/contacts/persona-builder')
+                // TOMBSTONE (wave 149, 149J — lane 148C Outside-lane 7): the `summarize` callback (a 180-token
+                // generateTextRouted call) is gone — buildContactPersona accepts it and never calls it (the study
+                // makes its own call). SURVIVOR: lib/contacts/persona-builder.ts derivePersona.
+                const built = await buildContactPersona(supabase as any, {
+                  contactId: entityId,
+                  brokerageId,
+                  agentId: (contact as any).agent_id ?? null, // contacts.agent_id is agents-class
+                  facts: personaFacts,
+                })
+                if (built.written) {
+                  const current = ((contact as any).enrichment_profile ?? {}) as Record<string, unknown>
+                  const { data: stamped, error: stampErr } = await supabase.from('contacts')
+                    .update({ enrichment_profile: { ...current, persona_evidence: { fingerprint, at: new Date().toISOString() } } })
+                    .eq('id', entityId).eq('brokerage_id', brokerageId).select('id')
+                  if (stampErr || (stamped ?? []).length !== 1) console.warn(`[enrichment-orchestrator] persona evidence fingerprint not stored for ${entityId} (the next enrichment re-derives): ${stampErr?.message ?? `matched ${(stamped ?? []).length} rows`}`)
+                }
+              }
             } catch { /* persona is additive — never blocks the enrichment ledger */ }
           }
         }

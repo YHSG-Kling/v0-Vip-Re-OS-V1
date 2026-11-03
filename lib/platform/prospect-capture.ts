@@ -191,8 +191,13 @@ export async function upsertPlatformProspect(svc: any, input: UpsertPlatformPros
     if (phone && !existing.phone) patch.phone = phone
     const { data, error } = await svc.from("platform_prospects").update(patch).eq("id", existing.id).select("id, email, phone")
     if (error) {
+      // WAVE 149 (lane 149J, journey audit): a REFUSED update is a refusal, not a capture. This returned the existing row
+      // as if saved, so the /get-started and /demo doors told the person "saved" while their new details (a demo
+      // request's preferred times, a qualification) were lost. null is every caller's "could not save — try again"
+      // (app/actions/superadmin/platform-growth.ts, lib/voice/platform-reception.ts, lib/platform/prospect-agent-tools.ts,
+      // lib/platform/subscriber-door.ts); the write is idempotent by email / phone, so the retry lands on the same row.
       console.error("[prospect-capture] update refused:", error.message)
-      return { id: existing.id, created: false, email: existing.email, phone: existing.phone }
+      return null
     }
     const row = ((data ?? []) as Array<{ id: string; email: string | null; phone: string | null }>)[0]
     return { id: existing.id, created: false, email: row?.email ?? existing.email, phone: row?.phone ?? existing.phone }

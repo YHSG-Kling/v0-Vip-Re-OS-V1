@@ -8,6 +8,9 @@
  * the vocabulary and a reason. Ruling references: WAVE148_SPEC.md "OWNER RULINGS (2026-11-01)".
  */
 import type { Disposition } from "./open-loop-ledger"
+// Wave 149 (lane 149J, owner ruling 20): the 575 rows wave 148 left `unverified`, each re-read and dispositioned. Kept in
+// its own module for review; spread into the one map at the end of this file (a manual row written above wins).
+import { WAVE149J_DISPOSITIONS } from "./open-loop-ledger-dispositions-149j"
 
 const Z147 = "wave 147 convergence (lane 147Z closure table)"
 const I147 = "wave 147 integrator (WIP 14) / lane 147I"
@@ -16,6 +19,7 @@ const R22 = "owner ruling 22 (2026-11-01): go with the recommendation"
 const handed = (o: Disposition["o"], r: string, lc = false): Disposition => ({ s: "carried", k: "handed-to-lane", o, r, lc })
 
 export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
+  ...WAVE149J_DISPOSITIONS,
   // ── wave 147 · lane A (consented intake) ──────────────────────────────────────────────────────────────────────────
   "147A-SO-01": { ...handed("lane148B", "Seven doors still create contacts their own way (147Z partial: widget + kiosk merged). Ruling 4 assigns all seven onto captureContact / captureConsentedContact with the injected-client seam to lane 148B.", true), e: ["app/api/widget/intake/route.ts#captureConsentedContact"] },
   "147A-SO-02": handed("lane148B", "Embed widget consent box — decided by ruling 22 (the embed gets the C15 consent component); built by lane 148B.", true),

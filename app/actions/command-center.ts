@@ -239,9 +239,14 @@ export async function runTeamCommand(
   const { interpretIntent } = await import("@/lib/voice-admin/intent-interface")
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
   const agentId = await resolveAgentId(supabase as never, user.id)
+  // Wave 149 (149J): tenant capability GRANTS join the seat — read on the session client (a person reads their own
+  // grant rows); a refused read leaves the seat alone (fail closed).
+  const { withTenantRoleGrants } = await import("@/lib/auth/role-grants")
+  const granted = await withTenantRoleGrants(supabase as never, { userId: user.id, userType: (u as { user_type?: string | null }).user_type ?? null, platformRole: (u as { platform_role?: string | null }).platform_role ?? null, agentId }, u.brokerage_id)
+  if (granted.note) console.warn(`[command-center] ${granted.note}`)
   const interpretation = interpretIntent({
     utterance: text, modality: "text", screen: "assistant",
-    actor: { userId: user.id, userType: (u as { user_type?: string | null }).user_type ?? null, platformRole: (u as { platform_role?: string | null }).platform_role ?? null, agentId },
+    actor: granted.actor,
     tenant: { brokerageId: u.brokerage_id },
   })
   if (interpretation.family === "domain") {

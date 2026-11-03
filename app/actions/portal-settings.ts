@@ -3,6 +3,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { portalChannelWithdrawals } from "@/lib/notifications/buyer-preferences"
 
 interface ProfileUpdate {
   first_name?: string
@@ -110,6 +111,29 @@ export async function updateContactProfile(
       const prov = await persistFieldProvenance(createServiceClient(), { table: "contacts", id: contactId, brokerageId: access.brokerageId },
         stampFieldProvenance(typed, { source: "contact", capability: "contact.self_edit", purpose: "self_service", actor: access.userId }))
       if (!prov.ok) console.warn("[portal-settings] self-edit provenance not recorded:", prov.error)
+    }
+
+    // THE PORTAL UNSUBSCRIBE (wave 149, lane 149J — wave-148 §2 lane B "no portal communication-preferences screen calls
+    // processOptOut"). Turning OFF a whole channel on the person's own Communication Preferences card is their
+    // withdrawal from that channel, so it is recorded through the ONE opt-out writer (lib/ai-isa/opt-out-writer.ts
+    // writeOptOut, source 'portal' — the flags every contact-keyed send refuses + the C16 suppression-list rows). The
+    // channel mute in metadata stays the portal's display state; the suppression is what the senders obey. Turning a
+    // channel back ON is NOT a re-grant (a re-subscribe needs its own wording — lane 148B Still open 4), so nothing
+    // here un-suppresses. A refused write is SAID (the preference saved, the unsubscribe did not) — never "saved".
+    const optOutChannels = portalChannelWithdrawals(updates.metadata)
+    if (optOutChannels.length > 0) {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { writeOptOut } = await import("@/lib/ai-isa/opt-out-writer")
+      const svc = createServiceClient()
+      const { data: flags, error: flagsError } = await svc
+        .from("contacts").select("email_opt_out, sms_opt_out").eq("id", contactId).eq("brokerage_id", access.brokerageId).maybeSingle()
+      if (flagsError) return { success: false, error: `Your preferences were saved, but the unsubscribe could not be checked: ${flagsError.message}` }
+      for (const channel of optOutChannels) {
+        const already = channel === "email" ? (flags as { email_opt_out?: boolean | null } | null)?.email_opt_out === true : (flags as { sms_opt_out?: boolean | null } | null)?.sms_opt_out === true
+        if (already) continue
+        const res = await writeOptOut(svc, access.brokerageId, { entityType: "contact", entityId: contactId, channel, source: "portal" })
+        if (!res.success) return { success: false, error: `Your preferences were saved, but the ${channel === "sms" ? "text" : "email"} unsubscribe did not record: ${res.error ?? "unknown"}` }
+      }
     }
 
     revalidatePath(`/portal/${contactId}`)

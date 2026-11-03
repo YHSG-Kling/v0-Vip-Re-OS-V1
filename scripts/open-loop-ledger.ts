@@ -52,6 +52,10 @@ export const OWNERS = [
   "owner", "counsel", "integrator", "inherent",
   "lane148A", "lane148B", "lane148C", "lane148D", "lane148E", "lane148F", "lane148G", "lane148H", "lane148I", "lane148J",
   "lane148K", "lane148Z",
+  // wave 149 (lane 149J re-evaluated the 575 unverified rows and hands each carried row to the wave-149 lane whose file
+  // domain holds it — WAVE149_SPEC.md "LANES"; lane149Z = the wave's convergence lane, no other lane owns the file)
+  "lane149A", "lane149B", "lane149C", "lane149D", "lane149E", "lane149F", "lane149G", "lane149H", "lane149I", "lane149J",
+  "lane149K", "lane149Z",
 ] as const
 export type Owner = (typeof OWNERS)[number]
 

@@ -34,6 +34,23 @@ export interface SendPersonalEmailInput {
   /** When set, send from this OWNER's connected mailbox (vendor/contact/team/brokerage) instead of
    *  resolving the agent's personal account by agentUserId. */
   owner?: EmailOwner
+  /** Wave 149 (lane 149J — wave-148 §2 lane B "Tier-1 personal-mailbox adapter sends no List-Unsubscribe header"): the
+   *  List-Unsubscribe / List-Unsubscribe-Post pair assembleEmail builds for a NON-transactional send (C16, RFC 8058).
+   *  Gmail carries them in the RFC 5322 message; only these two names are admitted (a header-injection guard — no CR/LF).
+   *  Microsoft Graph sendMail admits only `x-` custom headers (internetMessageHeaders), so an Outlook send carries the
+   *  footer link alone — said in `unsubscribeHeaders` on the result, never assumed. */
+  headers?: Record<string, string>
+}
+
+/** The only extra headers the personal mailbox carries (RFC 2369 / RFC 8058), CR/LF-free. PURE. */
+function personalMailUnsubscribeHeaders(h: Record<string, string> | undefined): string[] {
+  if (!h) return []
+  const out: string[] = []
+  for (const name of ["List-Unsubscribe", "List-Unsubscribe-Post"]) {
+    const v = h[name]
+    if (typeof v === "string" && v.trim() && !/[\r\n]/.test(v)) out.push(`${name}: ${v.trim()}`)
+  }
+  return out
 }
 
 export interface SendPersonalEmailResult {
@@ -42,6 +59,9 @@ export interface SendPersonalEmailResult {
   messageId?: string
   threadId?: string
   fromAddress?: string
+  /** Wave 149 (149J): whether the one-click unsubscribe headers rode the message ("carried"), could not on this provider
+   *  ("provider_cannot" — Outlook Graph), or none were asked ("none"). */
+  unsubscribeHeaders?: "carried" | "provider_cannot" | "none"
   /** When success=false and reason='no_personal_account', caller should fall back to SendGrid */
   reason?:
     | "no_personal_account"
@@ -312,7 +332,9 @@ async function sendViaGmail(args: {
   cc?: string[]
   bcc?: string[]
   replyToMessageId?: string
+  headers?: Record<string, string>
 }): Promise<SendPersonalEmailResult> {
+  const extraHeaders = personalMailUnsubscribeHeaders(args.headers)
   const raw = buildRfc5322({
     from: args.fromAddress ?? "me",
     to: args.to,
@@ -322,6 +344,7 @@ async function sendViaGmail(args: {
     cc: args.cc,
     bcc: args.bcc,
     inReplyTo: args.replyToMessageId,
+    extraHeaders,
   })
   // base64url encode for Gmail API
   const encoded = Buffer.from(raw).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
@@ -348,6 +371,7 @@ async function sendViaGmail(args: {
     messageId: res.data?.id,
     threadId: res.data?.threadId,
     fromAddress: args.fromAddress ?? undefined,
+    unsubscribeHeaders: extraHeaders.length > 0 ? "carried" : "none",
   }
 }
 
@@ -363,7 +387,10 @@ async function sendViaOutlook(args: {
   cc?: string[]
   bcc?: string[]
   replyToMessageId?: string
+  headers?: Record<string, string>
 }): Promise<SendPersonalEmailResult> {
+  // Graph admits only x- custom headers, so List-Unsubscribe cannot ride an Outlook send: the footer link is the path.
+  const unsubscribeHeaders = personalMailUnsubscribeHeaders(args.headers).length > 0 ? "provider_cannot" as const : "none" as const
   const message = {
     subject: args.subject,
     body: { contentType: "HTML", content: args.htmlBody },
@@ -388,7 +415,7 @@ async function sendViaOutlook(args: {
         error: `Outlook reply (${res.status}): ${res.error ?? ""}`,
       }
     }
-    return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
+    return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined, unsubscribeHeaders }
   }
 
   // Regular send
@@ -405,7 +432,7 @@ async function sendViaOutlook(args: {
       error: `Outlook (${res.status}): ${res.error ?? ""}`,
     }
   }
-  return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
+  return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined, unsubscribeHeaders }
 }
 
 // ─── RFC 5322 message builder (used by Gmail) ────────────────────────────────
@@ -419,6 +446,7 @@ function buildRfc5322(args: {
   cc?: string[]
   bcc?: string[]
   inReplyTo?: string
+  extraHeaders?: string[]
 }): string {
   const boundary = `--vip${Date.now().toString(36)}`
   const headers: string[] = [
@@ -431,6 +459,7 @@ function buildRfc5322(args: {
   if (args.cc?.length) headers.push(`Cc: ${args.cc.join(", ")}`)
   if (args.bcc?.length) headers.push(`Bcc: ${args.bcc.join(", ")}`)
   if (args.inReplyTo) headers.push(`In-Reply-To: <${args.inReplyTo}>`)
+  for (const h of args.extraHeaders ?? []) headers.push(h)
 
   const text = args.textBody ?? stripHtml(args.htmlBody)
   const body = [

@@ -331,9 +331,10 @@ export interface SendEmailParams {
   icsAttachment?: { filename: string; content: string }
   /**
    * Wave 148 (lane 148B — C16): extra MIME headers — the List-Unsubscribe / List-Unsubscribe-Post pair assembleEmail builds for
-   * a non-transactional send (RFC 8058 one-click). Carried by the SendGrid tier (`headers` on /v3/mail/send). BLIND SPOT, named:
-   * the Tier-1 personal-mailbox adapter (Gmail / Outlook, 1:1 agent mail) builds no custom headers — that mail still carries the
-   * footer link, and a 1:1 conversation is not bulk mail.
+   * a non-transactional send (RFC 8058 one-click). Carried by the SendGrid tier (`headers` on /v3/mail/send) and, since wave 149
+   * (lane 149J), by the Tier-1 Gmail send (lib/providers/email/personal-email-adapter.ts personalMailUnsubscribeHeaders).
+   * BLIND SPOT, named: Microsoft Graph admits only x- custom headers, so an Outlook send carries the footer link alone
+   * (the adapter returns unsubscribeHeaders: "provider_cannot").
    */
   headers?: Record<string, string>
 }
@@ -417,6 +418,8 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         subject: params.subject,
         htmlBody: params.html,
         textBody: params.text,
+        // Wave 149 (149J): the C16 one-click unsubscribe pair rides the agent's Gmail too (Outlook says it cannot).
+        headers: params.headers,
       })
       if (result.success) {
         await recordProviderLog({

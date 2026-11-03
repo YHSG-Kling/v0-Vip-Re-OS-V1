@@ -36,6 +36,7 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
 import { isIntentScreen, INTENT_MODALITIES, type IntentActor, type IntentModality } from "@/lib/voice-admin/intent-interface"
 import { interpretIntentLive, executeIntent, recordIntentCommand } from "@/lib/voice-admin/intent-interface-live"
+import { withTenantRoleGrants } from "@/lib/auth/role-grants"
 
 export const dynamic = "force-dynamic"
 
@@ -81,7 +82,7 @@ export async function POST(req: Request) {
     listingId: typeof rawCtx.listingId === "string" && UUID.test(rawCtx.listingId) ? rawCtx.listingId : null,
   }
 
-  const actor: IntentActor = {
+  const seatActor: IntentActor = {
     userId: auth.userId,
     userType: auth.userType,
     platformRole: auth.platformRole,
@@ -93,6 +94,11 @@ export async function POST(req: Request) {
   }
   const tenant = { brokerageId: auth.brokerageId }
   const svc = createServiceClient()
+  // Wave 149 (149J): capability GRANTS in the session tenant join the seat (a grant only adds a feature; a refused
+  // grant read leaves the seat alone — fail closed, logged).
+  const granted = await withTenantRoleGrants(svc, seatActor, tenant.brokerageId)
+  if (granted.note) console.warn(`[agentic-os/voice] ${granted.note}`)
+  const actor: IntentActor = granted.actor
 
   const interpretation = await interpretIntentLive({ utterance, modality, actor, tenant, screen, context, svc })
   const execution = interpretation.capability ? await executeIntent(interpretation, { actor, tenant, confirmed, context, svc }) : null

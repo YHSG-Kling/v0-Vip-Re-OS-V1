@@ -247,3 +247,23 @@ export function selectPrimaryRole(grants: RoleGrant[], preferred?: string | null
   if (want && roles.includes(want)) return want
   return roles[0]
 }
+
+/**
+ * WAVE 149 (lane 149J — wave-148 §2 lane D "C17 role check ignores capability grants"): the actor of the one intent
+ * interface (lib/voice-admin/intent-interface.ts IntentActor) with its tenant role GRANTS attached — the
+ * user_role_assignments rows whose brokerage is the SESSION tenant (never a request body, CLAUDE.md §4). Read through
+ * readRoleGrants above, its error READ: a refused read leaves the actor on its seat alone (the narrower answer — fail
+ * closed) and says so in `note`. A grant only ever ADDS a feature the seat lacks (checkIntentAuthority); it never widens
+ * the data scope and never lifts the contact / client floors. Lives here (not in a new module) so the three C17 doors
+ * that call it (app/api/agentic-os/voice, app/actions/command-center.ts, app/api/agent-assistant/tool-call) add no
+ * module to their entries' graphs (test:proxy-graph-budget).
+ */
+export async function withTenantRoleGrants<A extends { userId: string; grantedRoles?: readonly string[] | null }>(
+  client: unknown, actor: A, brokerageId: string | null,
+): Promise<{ actor: A; note: string | null }> {
+  if (!brokerageId || !actor.userId) return { actor: { ...actor, grantedRoles: null }, note: null }
+  const r = await readRoleGrants(client as SupabaseClient<any, any, any>, actor.userId)
+  if (!r.ok) return { actor: { ...actor, grantedRoles: null }, note: `role grants unreadable (${r.error}) — the seat alone decides` }
+  const roles = r.grants.filter((g) => g.brokerage_id === brokerageId && !!g.role).map((g) => String(g.role))
+  return { actor: { ...actor, grantedRoles: roles }, note: null }
+}

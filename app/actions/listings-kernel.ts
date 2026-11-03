@@ -393,10 +393,13 @@ export async function createListingWithSellerContact(params: {
 const EDITABLE_LISTING_FIELDS = [
   "address", "city", "state", "zip",
   "list_price", "bedrooms", "bathrooms", "sqft", "property_type",
-  "year_built", "lot_size", "hoa_dues", "has_pool", "has_septic", "has_solar",
+  "year_built", "lot_size", "lot_size_unit", "hoa_dues", "has_pool", "has_septic", "has_solar",
   "public_remarks", "showing_instructions",
   "expiration_date", "commission_rate", "seller_walkaway_price",
 ] as const
+
+/** m954's CHECK list (wave 149, lane 149J) — the unit of `lot_size` as the agent RECORDS it; never inferred. */
+const LOT_SIZE_UNITS = ["square_feet", "acres"] as const
 
 /**
  * The editable shape, verified column-by-column against information_schema.columns.
@@ -420,6 +423,8 @@ type ListingDraftUpdate = {
   property_type?: string | null
   year_built?: number | null
   lot_size?: number | null
+  /** m954 — 'square_feet' | 'acres' (null = not recorded). Accepted only with the value it describes. */
+  lot_size_unit?: (typeof LOT_SIZE_UNITS)[number] | null
   hoa_dues?: number | null
   has_pool?: boolean | null
   has_septic?: boolean | null
@@ -446,6 +451,22 @@ export async function saveListingDraftAction(params: {
       allowed[key] = incoming[key]
     } else {
       rejected.push(key)
+    }
+  }
+
+  // THE LOT-SIZE UNIT (wave 149, lane 149J — wave-148 §2 lane E; m954). A unit is a fact ABOUT a value, so it is
+  // accepted only beside the lot_size it describes (or a cleared value with a cleared unit), and only in m954's list —
+  // refused in words otherwise (fail closed: never written as a value no reader understands, never silently dropped).
+  if (allowed.lot_size_unit !== undefined) {
+    const unit = allowed.lot_size_unit
+    if (unit !== null && !(LOT_SIZE_UNITS as readonly unknown[]).includes(unit)) {
+      return { success: false, error: `"${String(unit)}" is not a lot-size unit (square feet or acres).` }
+    }
+    if (allowed.lot_size === undefined) {
+      return { success: false, error: "A lot-size unit is recorded together with the lot size it describes." }
+    }
+    if (unit !== null && (allowed.lot_size === null || allowed.lot_size === "")) {
+      return { success: false, error: "A lot-size unit needs a lot size." }
     }
   }
 

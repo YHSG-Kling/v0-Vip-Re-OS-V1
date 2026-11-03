@@ -117,3 +117,72 @@ export async function escalateConfigFaultOnce(
     return { escalated: false, alreadyEscalated: false }
   }
 }
+
+// ── PERSONA RE-DERIVATION CADENCE — WAVE 149 (lane 149J): the persona study re-derives on NEW EVIDENCE only.
+//
+// Wave-148 final report §2, lane C: "persona study re-runs at every enrichment (no cadence policy)". The enrichment
+// orchestrator (lib/lead-pipeline/enrichment-orchestrator.ts, step 6e) called the autonomous persona study
+// (lib/contacts/persona-builder.ts buildContactPersona → derivePersona, ~1,400 output tokens booked on ai_tool_usage)
+// every time a contact was enriched — including a periodic re-buy that returned the SAME facts. That spends the
+// platform-covered AI budget (CLAUDE.md §5 — a wrong number on ai_tool_usage is a wrong invoice) on a study whose
+// inputs did not move.
+//
+// The policy is evidence-driven, never a timetable (owner ruling 7, wave 149 — no fixed schedules): a study runs when
+// the facts it is built from CHANGED since the last study, or when no study exists. The facts' fingerprint is stored
+// beside the enrichment it came from (`contacts.enrichment_profile.persona_evidence`, written by the orchestrator — the
+// one enrichment_profile writer) after a study that WROTE its row. Anything else (new behavioural evidence, a stated
+// need, a staff edit) reaches the persona through its own doors (app/actions/contact-persona.ts), not this one.
+// Kept in this import-free policy module (not a new one) so the orchestrator's graph does not grow (test:proxy-graph-budget).
+
+/** Stable JSON: keys sorted at every level, so the same facts always give the same fingerprint. */
+function stable(v: unknown): string {
+  if (v === null || v === undefined) return "null"
+  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>
+    return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`
+  }
+  return JSON.stringify(v)
+}
+
+/** PURE — the fingerprint of the facts a persona study is built from: two independent FNV-1a 32-bit passes over the
+ *  stable JSON (16 hex). Not a security hash — an equality check on the evidence, import-free like the rest of this file. */
+export function personaEvidenceFingerprint(facts: Record<string, unknown>): string {
+  const s = stable(facts)
+  let a = 0x811c9dc5
+  let b = 0x01000193 ^ s.length
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    a = Math.imul(a ^ c, 0x01000193) >>> 0
+    b = Math.imul(b ^ (c + 0x9e37), 0x01000193) >>> 0
+  }
+  return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0")
+}
+
+/** PURE — the stored fingerprint, read from a contact's enrichment_profile (null when absent or malformed). */
+export function storedPersonaEvidence(enrichmentProfile: unknown): { fingerprint: string; at: string | null } | null {
+  const p = (enrichmentProfile && typeof enrichmentProfile === "object" ? enrichmentProfile : null) as Record<string, unknown> | null
+  const e = (p?.persona_evidence && typeof p.persona_evidence === "object" ? p.persona_evidence : null) as Record<string, unknown> | null
+  if (!e || typeof e.fingerprint !== "string" || !e.fingerprint) return null
+  return { fingerprint: e.fingerprint, at: typeof e.at === "string" ? e.at : null }
+}
+
+export type PersonaRederivationVerdict =
+  | { run: true; reason: "no_prior_study" | "evidence_changed" | "persona_row_missing" }
+  | { run: false; reason: "evidence_unchanged" }
+
+/**
+ * PURE — run the study or not. `personaRowExists` is asked only when the fingerprint matches (a deleted row with an
+ * unchanged fingerprint is re-derived — the row is what the readers use). Unknown row state (`null`) re-derives:
+ * a study that cannot prove it is redundant runs (the persona is additive, the spend is ledgered).
+ */
+export function personaRederivationVerdict(input: {
+  fingerprint: string
+  stored: { fingerprint: string } | null
+  personaRowExists: boolean | null
+}): PersonaRederivationVerdict {
+  if (!input.stored) return { run: true, reason: "no_prior_study" }
+  if (input.stored.fingerprint !== input.fingerprint) return { run: true, reason: "evidence_changed" }
+  if (input.personaRowExists !== true) return { run: true, reason: "persona_row_missing" }
+  return { run: false, reason: "evidence_unchanged" }
+}

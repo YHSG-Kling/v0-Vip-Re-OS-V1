@@ -487,7 +487,7 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
                   <Label className="text-base">Email Notifications</Label>
-                  <p className="text-sm text-muted-foreground">Receive updates via email</p>
+                  <p className="text-sm text-muted-foreground">Receive updates via email. Turning this off and saving unsubscribes you from email; to hear by email again, ask your agent.</p>
                 </div>
                 <Switch checked={emailNotifications} onCheckedChange={setEmailNotifications} />
               </div>
@@ -497,7 +497,7 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
                   <Label className="text-base">SMS Notifications</Label>
-                  <p className="text-sm text-muted-foreground">Receive text message alerts</p>
+                  <p className="text-sm text-muted-foreground">Receive text message alerts. Turning this off and saving unsubscribes you from texts; to get texts again, ask your agent.</p>
                 </div>
                 <Switch checked={smsNotifications} onCheckedChange={setSmsNotifications} />
               </div>
