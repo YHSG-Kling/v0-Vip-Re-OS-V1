@@ -213,6 +213,15 @@ async function main() {
   check("m938 adds the consent columns and narrows portal_member_searches to owners", ["feedback_for_shopping_agent", "feedback_consent_at", "feedback_consent_by_user_id"].every((c) => m938.includes(c)) && /m\.role = 'owner'/.test(m938) && !/brokerage_id IS NULL OR/.test(m938.split("CREATE POLICY").slice(1).join("")))
   check("POSITIVE CONTROL: the NULL-arm finder sees the old policy text", /brokerage_id IS NULL OR/.test("USING ((brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()))"))
 
+  console.log("\n J. THE INVITE IS THE TENANT'S (149Z — C32 brand rule)")
+  {
+    const svc =code("lib/services/communication.service.tsx"), act = code("app/actions/collaborative-search.ts")
+    check("the share door resolves the SESSION tenant's brand through the one resolver and hands it to the invite sender",
+      /resolveConsentBrand\(g\.svc as never, \{ brokerageId: g\.brokerageId \}\)/.test(act) && /sendCollaborativeSearchInvite\(\{[^}]*tenantBrand[^}]*\}\)/.test(act))
+    check("the invite copy names the tenant (never a platform brand), escapes every name, and promises only the shared homes",
+      /tenantBrand\?: string \| null/.test(svc) && /esc\(params\.inviterName\)/.test(svc) && /only the homes they chose to share/.test(svc) && !/VIP ?Agents|VIP Real Estate/i.test(svc.slice(svc.indexOf("sendCollaborativeSearchInvite"), svc.indexOf("sendAnniversaryMessage"))))
+  }
+
   console.log(`\n RESULT: ${pass} passed, ${fail} failed${fail ? ` — ${failures.join(" | ")}` : ""}`)
   if (fail === 0) console.log(" COLLABORATIVE_SEARCH_PASS")
   process.exit(fail ? 1 : 0)

@@ -230,7 +230,9 @@ console.log("\n[every declaration is grounded in the gate the code ACTUALLY hits
     (APP_CAPABILITY_REGISTRY.handwritten_note_send.requires?.platform ?? []).includes("lob"))
   check("…and it really dispatches there rather than stamping itself sent",
     /dispatchDirectMail/.test(src("app/actions/reputation-kernel.ts")) &&
-    /pieceType:\s*"postcard"/.test(src("app/actions/reputation-kernel.ts")))
+    // Re-asserted 149Z: the card is a printed piece (the personal LETTER when LOB_PERSONAL_LETTER_TEMPLATE_ID is configured,
+    // the notecard POSTCARD otherwise — DIRECT-MAIL §11.3), never a self-stamped "sent".
+    /pieceType:\s*letterTemplateId\s*\?\s*"letter"\s*:\s*"postcard"/.test(src("app/actions/reputation-kernel.ts")))
   check("…with the same platform gate direct_mail_send names",
     (APP_CAPABILITY_REGISTRY.direct_mail_send.requires?.platform ?? []).join() ===
     (APP_CAPABILITY_REGISTRY.handwritten_note_send.requires?.platform ?? []).join())

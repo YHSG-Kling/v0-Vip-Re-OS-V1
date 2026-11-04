@@ -237,6 +237,12 @@ await (async () => {
   ok("llms.txt lists every public copy route", missing(llms).length === 0, missing(llms).join(", "))
   ok("POSITIVE CONTROL: an llms.txt without /team/ is caught", missing(llms.split("${base}/team/").join("")).includes("/team/"))
   ok("every public copy source names its publish predicate", OS_COPY_SOURCES.filter((s) => s.publicRoute).every((s) => !!s.publicWhen))
+  // 149Z (ruling 12): a landing page is listed at its canonical home INSIDE the tenant website; the bare /lm/ is the fallback
+  // for a tenant with no site slug, and the bare route declares the same canonical.
+  const TENANT_LM = /\$\{base\}\$\{tenantLandingPagePath\(siteSlugById\.get\(m\.brokerage_id\)!, m\.slug\)\}/
+  ok("sitemap.xml + llms.txt list a landing page at /site/<slug>/lm/<form> (tenantLandingPagePath) when the tenant has a site", TENANT_LM.test(sitemap) && TENANT_LM.test(llms))
+  ok("the bare /lm/<form> page declares the tenant-site canonical", /alternates:\s*\{\s*canonical:\s*`\$\{origin\}\$\{tenantLandingPagePath\(siteSlug, slug\)\}`/.test(code("app/lm/[slug]/page.tsx")))
+  ok("POSITIVE CONTROL: the tenant-path finder refuses the bare-only producer", !TENANT_LM.test("url: `${base}/lm/${m.slug}`,"))
   const robots = code("app/robots.ts")
   ok("robots welcomes the AI crawlers and does not disallow a public copy route", robots.includes("AI_CRAWLER_BOTS") && !PUBLIC_COPY_ROUTES.some((r) => new RegExp(`DISALLOW = \\[[^\\]]*"${r.replace(/\//g, "\\/")}`).test(robots)))
 
@@ -274,6 +280,12 @@ console.log("§F  the dashboard door")
   ok("the card says what would measure an unmeasured source", card.includes("s.waitingExternal"))
   ok("the card shows the markets from Settings with their registry status", card.includes("Settings → Territories") && card.includes("m.registry.status"))
   ok("the card is a server component (no client bundle, no lib in a client)", !/^\s*["']use client["']/m.test(readFileSync("app/dashboard/marketing/seo/search-visibility-card.tsx", "utf8")))
+  // 149Z (lane 149E Outside-lane 1): the header search box is never an inert input — it opens the ONE app search (⌘K palette).
+  const gs = code("app/components/layout/global-search.tsx")
+  const INERT = (s: string) => /<Input\b/.test(s) && !/on(Click|Change|KeyDown|Focus|Submit)=/.test(s)
+  ok("the header search box opens the ⌘K command palette (an onClick that dispatches the palette's own key), not an inert input", !INERT(gs) && /onClick=\{openCommandPalette\}/.test(gs) && /document\.dispatchEvent\(new KeyboardEvent\('keydown', \{ key: 'k'/.test(gs))
+  ok("…and it promises only what the palette searches (pages and actions, never records)", !/contacts, listings, leads/.test(gs.replace(/\/\/.*$/gm, "")) && /Search pages and actions/.test(gs))
+  ok("POSITIVE CONTROL: the inert finder flags the retired shape", INERT(`<Input placeholder="Search contacts, listings, leads..." className="pl-8" />`))
 }
 
 console.log(`\n${"═".repeat(70)}`)

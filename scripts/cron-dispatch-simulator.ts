@@ -166,6 +166,16 @@ async function main() {
     calls.every((c) => c.auth === `Bearer ${process.env.CRON_SECRET}`))
   check("dispatch: per-path failures reported, the rest still dispatched",
     r.failures.length === 1 && r.failures[0].path === "/api/cron/appointment-whisper" && r.dispatched === r.due - 1)
+  {
+    // 149Z (lane 149J K — 143H-SO-03): a target still running past the dispatcher's wait is 202 "still running", never a
+    // failure and never a completed run; a real error still fails.
+    const slow: CronFetcher = async (url) => (url.includes("appointment-whisper") ? { ok: true, status: 202 } : { ok: true, status: 200 })
+    const r2 = await dispatchDueCrons({ now: at, fetcher: slow, baseUrl: "https://example.test" })
+    check("dispatch: a 202 (dispatcher stopped waiting) is listed as stillRunning, not a failure", r2.failures.length === 0 && (r2.stillRunning ?? []).length === 1 && r2.stillRunning![0] === "/api/cron/appointment-whisper")
+    const src = (await import("node:fs")).readFileSync("lib/kernel/cron-dispatch.ts", "utf8")
+    check("dispatch: ONLY a TimeoutError maps to 202 in the real fetcher (every other error is re-thrown → a failure)",
+      /name === "TimeoutError"\) return \{ ok: true, status: 202 \}/.test(src) && /\n\s*throw e\n/.test(src))
+  }
 
   report()
 }

@@ -257,7 +257,7 @@ export async function sendThankYouNoteAction(input: {
     // hours, opt-out, de-conflict and content-safety gates; a refusal leaves
     // the note 'failed' with the provider's reason rather than a false 'sent'.
     const { data: c } = await service
-      .from("contacts").select("phone").eq("id", input.contactId).maybeSingle()
+      .from("contacts").select("phone").eq("id", input.contactId).eq("brokerage_id", actor.brokerageId).maybeSingle() // 149Z: tenant-pinned (service client; the contact id is a parameter)
     const phone = ((c as any)?.phone as string | null) ?? null
     if (!phone) {
       await sentinelWrite(service, service.from("thank_you_notes")
@@ -296,7 +296,7 @@ export async function sendThankYouNoteAction(input: {
     const { data: c } = await service
       .from("contacts")
       .select("first_name, last_name, mailing_address, mailing_city, mailing_state, mailing_zip, city, state, zip_code")
-      .eq("id", input.contactId).maybeSingle()
+      .eq("id", input.contactId).eq("brokerage_id", actor.brokerageId).maybeSingle() // 149Z: tenant-pinned (service client; the contact id is a parameter)
     const row = c as any
     const street = (row?.mailing_address as string | null) ?? null
     const city   = (row?.mailing_city as string | null) ?? (row?.city as string | null) ?? null
@@ -313,15 +313,36 @@ export async function sendThankYouNoteAction(input: {
         error: "No complete mailing address on this contact — a handwritten card needs street, city, state and ZIP.",
       }
     }
-    const templateId = process.env.LOB_NOTECARD_ID || process.env.LOB_POSTCARD_FRONT_ID || ""
+    // WAVE 149Z (lane 149I Outside-lane; docs/commercial/DIRECT-MAIL-PROVIDER-COMPARISON.md §11.3 item 1): THE PERSONAL LETTER
+    // FIRST. When the platform has configured a Lob personal-letter template (LOB_PERSONAL_LETTER_TEMPLATE_ID — a name only,
+    // platform-owned), the card goes as a color letter in an envelope on the tenant's letterhead; otherwise today's notecard
+    // postcard (LOB_NOTECARD_ID) is the fallback. Same one door (dispatchDirectMail), every gate, booked at
+    // DIRECT_MAIL_PIECE_COST_USD by piece type. The copy is "a note from <agent>", never claimed as handwritten by a person.
+    const letterTemplateId = process.env.LOB_PERSONAL_LETTER_TEMPLATE_ID || ""
+    const templateId = letterTemplateId || process.env.LOB_NOTECARD_ID || process.env.LOB_POSTCARD_FRONT_ID || ""
     if (!templateId) {
       await sentinelWrite(service, service.from("thank_you_notes")
         .update({ status: "failed" }).eq("id", noteRow?.id), { table: "thank_you_notes", flow: "thank_you_note_failed_stamp", reason: "failure stamp; the failure is returned to the caller in the same step" })
       return {
         success: false,
         noteId: noteRow?.id,
-        error: "No notecard template configured (LOB_NOTECARD_ID) — the platform must add one before cards can be mailed.",
+        error: "No card template configured (LOB_PERSONAL_LETTER_TEMPLATE_ID for the personal letter, or LOB_NOTECARD_ID for the notecard postcard) — the platform must add one before cards can be mailed.",
       }
+    }
+    let letterVars: Record<string, string> = {}
+    if (letterTemplateId) {
+      // The tenant's brand through the ONE brand resolver (resolveConsentBrand); website + the sending agent's name from their own
+      // rows, tenant-pinned. No signature image column exists (schema-snapshot: no signature_url) — the merge var is empty, said.
+      const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+      const [brand, { data: site, error: siteErr }, { data: me, error: meErr }] = await Promise.all([
+        resolveConsentBrand(service as never, { agentId: actor.agentId, brokerageId: actor.brokerageId }),
+        service.from("brokerages").select("website").eq("id", actor.brokerageId).maybeSingle(),
+        service.from("users").select("first_name, last_name").eq("id", actor.userId).eq("brokerage_id", actor.brokerageId).maybeSingle(),
+      ])
+      if (siteErr) console.warn("[reputation-kernel] tenant website not read for the letterhead:", siteErr.message)
+      if (meErr) console.warn("[reputation-kernel] agent name not read for the letter:", meErr.message)
+      const agentName = [(me as { first_name?: string | null } | null)?.first_name, (me as { last_name?: string | null } | null)?.last_name].filter(Boolean).join(" ").trim()
+      letterVars = { tenant_brand_name: brand, tenant_website: String((site as { website?: string | null } | null)?.website ?? ""), agent_name: agentName, signature_url: "" }
     }
     const { dispatchDirectMail } = await import("@/lib/providers/dispatch")
     const mail = await dispatchDirectMail({
@@ -333,11 +354,11 @@ export async function sendThankYouNoteAction(input: {
       mailingAddress: street,
       city, state, zip,
       templateId,
-      pieceType:     "postcard",
+      pieceType:     letterTemplateId ? "letter" : "postcard",
       color:         true,
-      mergeVars:     { note_body: input.noteText, recipient_name: input.contactName },
+      mergeVars:     { note_body: input.noteText, recipient_name: input.contactName, ...letterVars },
       systemSource:  "thank_you_note",
-      metadata:      { note_id: noteRow?.id, occasion },
+      metadata:      { note_id: noteRow?.id, occasion, format: letterTemplateId ? "personal_letter" : "notecard_postcard" },
     })
     const { error: cardNoteStampErr } = await service.from("thank_you_notes").update({
       status:  mail.success ? "sent" : "failed",

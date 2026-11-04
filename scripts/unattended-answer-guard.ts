@@ -269,6 +269,14 @@ async function main() {
   check("the brief is an expert, structured prompt (every section, a typed JSON contract, money / approval / legal excluded)", SECTIONS.every((s) => ua.UNATTENDED_ANSWER_SYSTEM.includes(s)) && /JSON/.test(ua.UNATTENDED_ANSWER_SYSTEM) && /money/.test(ua.UNATTENDED_ANSWER_SYSTEM) && /approve/.test(ua.UNATTENDED_ANSWER_SYSTEM))
   const src = code("lib/communications/unattended-answer.ts")
   check("the delegated authority is the gate's own verdict (autonomyDecision over posture + ladder + halts)", /autonomyDecision\(\{\s*managerKey:\s*"ai_isa"/.test(src) && /resolveAgentAuthorityLevel\(/.test(src))
+  {
+    // 149Z (lane 149G Outside-lane 1, C33): the facts read the CONTRACTUAL closing (m927) — not the legacy close_date alone.
+    const sel = /from\("transactions"\)\s*\.select\("([^"]+)"\)/.exec(src)?.[1] ?? ""
+    check("the verified facts read the m927 contractual closing columns (contract_closing_date / _terms / actual_close_date) and no money column",
+      ["contract_closing_date", "contract_closing_terms", "actual_close_date"].every((c) => sel.split(/\s*,\s*/).includes(c)) && !/price|commission|amount/.test(sel), sel)
+    check("an 'on or before' contract is a PERMISSION fact (earlierClosing.allowed), never a promised earlier day",
+      /dates\.earlierClosing\?\.allowed === true/.test(src) && /no earlier day has been set/.test(raw("lib/communications/unattended-answer.ts")))
+  }
   check("the send goes through the ONE SMS chokepoint (inbound-reply-executors sendInboundSmsReply → dispatchSms)", /sendInboundSmsReply\(/.test(src) && /dispatchSms\(/.test(code("lib/communications/inbound-reply-executors.ts")))
   check("the 147G boundary is re-stated as ruling 16's (answers within authority; never approval / signature / money / legal)", /never approval, a signature, money or a legal question/.test(ct.COMPLETION_DETECTIONS.incomplete_follow_up.humanBoundary) && /C24/.test(ct.COMPLETION_DETECTIONS.incomplete_follow_up.withinAuthority))
   {

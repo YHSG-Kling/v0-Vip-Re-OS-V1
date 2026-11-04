@@ -2339,3 +2339,23 @@ export function formatWidgetValue(value: any, format?: string): string {
       return String(value)
   }
 }
+
+// ─── Persona labels as an AUDIENCE vocabulary (owner ruling 1, wave 149) ─────────────────────────────────────────────────────
+import { LIFE_EVENT_TYPES, LIFE_EVENT_VOCAB } from "@/lib/enrichment/life-event-vocabulary"
+import { personaLabelSet } from "@/lib/compliance-rules/audience-compliance"
+
+/**
+ * Every persona label the OS speaks to — the kernel-portal personas above (ruling 2: "the kernel portal layout has the personas
+ * we use") and the C20 life-event situations with every spelling the map reads — normalised for `audienceProxyHits`. A typed ad
+ * audience that names one of these ("empty nesters", "retirement", "newlyweds", "probate") is a lawful audience BASIS and is never
+ * refused as a protected-class proxy; what still drops an audience is the ad platform's own housing rule (age / gender / ZIP /
+ * lookalike narrowing) and words that are only a protected class ("women", "church goers"). Memoised: the sources are frozen.
+ */
+let personaAudienceLabelsMemo: ReadonlySet<string> | null = null
+export function personaAudienceLabels(): ReadonlySet<string> {
+  if (personaAudienceLabelsMemo) return personaAudienceLabelsMemo
+  const raw: string[] = [...Object.keys(PERSONA_CONFIGS), ...LIFE_EVENT_TYPES]
+  for (const t of LIFE_EVENT_TYPES) raw.push(...LIFE_EVENT_VOCAB[t].aliases)
+  personaAudienceLabelsMemo = personaLabelSet(raw)
+  return personaAudienceLabelsMemo
+}

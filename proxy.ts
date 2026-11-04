@@ -106,6 +106,13 @@ export default async function proxy(request: NextRequest) {
       if (landing) {
         return NextResponse.rewrite(new URL(`/site/${slug}/lm/${landing[1]}${request.nextUrl.search}`, request.url))
       }
+      // EVENT REGISTRATION PAGES INSIDE THE TENANT WEBSITE (wave 149Z — lane 149F Outside-lane 1, C32): this domain's
+      // /events/<uuid> is served by app/site/[slug]/events/[eventId], which proves the event belongs to THIS domain's tenant.
+      // The tenant is the host's mapped `slug`, never a value from the path; only a uuid id is rewritten.
+      const eventPage = /^\/events\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(pathname)
+      if (eventPage) {
+        return NextResponse.rewrite(new URL(`/site/${slug}/events/${eventPage[1]}${request.nextUrl.search}`, request.url))
+      }
       if (pathname.startsWith("/site/")) {
         const requested = pathname.slice("/site/".length).split("/")[0]
         if (requested !== slug) {

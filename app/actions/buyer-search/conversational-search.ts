@@ -557,7 +557,7 @@ export async function explainHomeForBuyerAction(input: { contactId: string; list
   // IN-HOUSE = THIS BROKERAGE'S OWN (wave 148E, ruling 8): the read is bounded to the gate's tenant — a buyer cannot
   // have another brokerage's listing explained as "ours" by guessing its id.
   const { data: listing, error } = await g.svc.from("listings")
-    .select("id, address, city, state, zip, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, status, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks")
+    .select("id, address, city, state, zip, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, status, has_pool, has_septic, hoa_dues, lot_size, lot_size_unit, year_built, public_remarks")
     .eq("id", input.listingId).eq("brokerage_id", g.brokerageId).in("status", buyerShoppableListingStatuses()).is("deleted_at", null).maybeSingle()
   if (error) return { ok: false, error: "That home couldn't be read just now." }
   if (!listing) return { ok: false, error: "That home isn't available to explain." }

@@ -520,6 +520,16 @@ async function main() {
     && /<BookProjectPanel/.test(review) && /bookStage !== "ready_for_review"/.test(review))
   check("G6 every book action is a public async endpoint resolving tenant + actor from the SESSION (getAgentContext), never the body",
     ["startBookProjectAction", "advanceBookProjectAction", "getBookProjectAction", "reviseBookChapterAction"].every((n) => new RegExp(`export async function ${n}\\([\\s\\S]{0,400}?getAgentContext\\(\\)`).test(actSrc)))
+  {
+    // 149Z (lane 149J A2): EVERY public-copy scan door hands the tenant's HOPA older-persons records to scanPublicCopy.
+    const SCAN_CALL = /scanPublicCopy\(\s*[^,()]+,\s*"[a-z_]+"\s*(,\s*\{[^}]*\})?\s*\)/g
+    const missingOlder = (src: string) => (src.match(SCAN_CALL) ?? []).filter((c) => !/olderPersons/.test(c))
+    const adDoor = code("lib/ads/ad-creator.ts"), magnetDoor = code("lib/kernel/lead-magnets.ts")
+    check("G7 the ad wording scan (ad-creator) and the lead-magnet scan both pass the tenant's older-persons verifications to scanPublicCopy",
+      /loadOlderPersonsVerifications\(/.test(adDoor) && missingOlder(adDoor).length === 0 && (adDoor.match(SCAN_CALL) ?? []).length > 0 && missingOlder(magnetDoor).length === 0,
+      JSON.stringify({ ad: missingOlder(adDoor), magnet: missingOlder(magnetDoor) }))
+    check("G7' POSITIVE CONTROL: the finder flags a scan call without olderPersons", missingOlder(`await scanPublicCopy(text, "ad")`).length === 1 && missingOlder(`await scanPublicCopy(text, "ad", { olderPersons })`).length === 0)
+  }
 
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (backgroundRejections.length) console.log(` (background best-effort work that could not load under tsx: ${backgroundRejections.length}; first: ${backgroundRejections[0]})`)

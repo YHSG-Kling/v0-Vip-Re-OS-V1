@@ -258,6 +258,9 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
   if (!access.ok) return { success: false, error: "Forbidden" }
 
   const service = createServiceClient()
+  // 149Z (lane 149H Outside-lane 3): the lesson's milestone (the decision it teaches) rides the kernel event, so a portal
+  // education view can be read as a TOPIC-bearing first-party indicator instead of a topic-less one. Null when unknown.
+  let viewedMilestoneKey: string | null = null
 
   // Completion lives on learning_assignments.module_id — a uuid FK to learning_modules.
   try {
@@ -283,6 +286,7 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
       // and record completion against that uuid. Fixes the former FK/uuid corruption.
       const lesson = await getLessonByKey(contactId, lessonKey)
       if (!lesson) return { success: false, error: "Unknown lesson" }
+      viewedMilestoneKey = lesson.milestoneKey ?? null
       const bridged = await bridgeStaticLessonCompletion(service, {
         brokerageId: access.brokerageId,
         contactId,
@@ -310,6 +314,7 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
     entityType: "contact",
     entityId: contactId,
     brokerageId: access.brokerageId,
+    metadata: { lessonKey, milestoneKey: viewedMilestoneKey },
   }).catch(err => {
     console.error("[PortalEducation] Error emitting kernel event:", err)
   })

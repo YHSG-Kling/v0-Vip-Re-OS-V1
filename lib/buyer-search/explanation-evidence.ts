@@ -203,13 +203,18 @@ export interface LotFacts {
  * (`listings.lot_size`, m206) records NO unit, so a value is read as acres only when it cannot be square feet
  * (≤ 50 — no lot is 50 sq ft) and as square feet only when it cannot be acres (≥ 2,000 — not a residential listing's
  * acreage); anything between is an UNKNOWN UNIT and is said as such, never converted on a guess.
+ * Wave 149Z (lane 149J B1, m954 APPLIED LIVE): `listings.lot_size_unit` ('square_feet' | 'acres', never inferred — the
+ * listing edit action writes it only beside the size it describes) is read FIRST: a stated unit is the record's own fact,
+ * so the magnitude rule applies only to a row that states none. Unknown stays unknown.
  */
-export function lotFactsFrom(input: { lotSizeSqft?: number | null; lotSize?: number | null; source: EvidenceSource }): LotFacts | null {
+export function lotFactsFrom(input: { lotSizeSqft?: number | null; lotSize?: number | null; lotSizeUnit?: string | null; source: EvidenceSource }): LotFacts | null {
   if (typeof input.lotSizeSqft === "number" && input.lotSizeSqft > 0) {
     return { acres: input.lotSizeSqft / SQFT_PER_ACRE, sqft: input.lotSizeSqft, basis: "reported_sqft", raw: input.lotSizeSqft, source: input.source }
   }
   const raw = typeof input.lotSize === "number" ? input.lotSize : input.lotSize != null ? Number(input.lotSize) : NaN
   if (!(raw > 0)) return null
+  if (input.lotSizeUnit === "acres") return { acres: raw, sqft: Math.round(raw * SQFT_PER_ACRE), basis: "reported_acres", raw, source: input.source }
+  if (input.lotSizeUnit === "square_feet") return { acres: raw / SQFT_PER_ACRE, sqft: raw, basis: "reported_sqft", raw, source: input.source }
   if (raw <= 50) return { acres: raw, sqft: Math.round(raw * SQFT_PER_ACRE), basis: "inferred_from_magnitude", raw, source: input.source }
   if (raw >= 2000) return { acres: raw / SQFT_PER_ACRE, sqft: raw, basis: "inferred_from_magnitude", raw, source: input.source }
   return { acres: null, sqft: null, basis: "unknown_unit", raw, source: input.source }

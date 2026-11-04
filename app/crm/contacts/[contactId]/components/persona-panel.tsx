@@ -44,6 +44,8 @@ const PURPOSES: Array<[string, string]> = [
 export function PersonaPanel({ contactId }: { contactId: string }) {
   const [row, setRow] = useState<Record<string, any> | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // C26 preview: the audience the button will build (name / consent basis / platform note), or the platform's refusal.
+  const [audiencePlan, setAudiencePlan] = useState<{ ok: true; audienceName: string; consentBasis: string; platformNote: string } | { ok: false; refusal: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [purpose, setPurpose] = useState("customer_service")
   const [justification, setJustification] = useState("")
@@ -54,7 +56,7 @@ export function PersonaPanel({ contactId }: { contactId: string }) {
     setLoading(true)
     const res = await loadContactPersona({ contactId })
     if (!res.ok) setNote(res.error)
-    else { setRow(res.persona); if (!res.layered && "note" in res) setNote(res.note ?? null) }
+    else { setRow(res.persona); setAudiencePlan("audiencePlan" in res ? (res.audiencePlan ?? null) : null); if (!res.layered && "note" in res) setNote(res.note ?? null) }
     setLoading(false)
   }, [contactId])
   useEffect(() => { void load() }, [load])
@@ -134,6 +136,8 @@ export function PersonaPanel({ contactId }: { contactId: string }) {
                   <Megaphone className="h-3 w-3 mr-1" />Create custom audience
                 </Button>
                 {!marketing.audienceEligible && <p className="text-xs text-muted-foreground">Not enough evidence yet for an audience — ask what they need.</p>}
+                {audiencePlan?.ok && <p className="text-xs text-muted-foreground">Meta custom audience “{audiencePlan.audienceName}” — {audiencePlan.consentBasis}. {audiencePlan.platformNote}</p>}
+                {audiencePlan && !audiencePlan.ok && <p className="text-xs text-muted-foreground">{audiencePlan.refusal}</p>}
               </div>
             )}
           </>

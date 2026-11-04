@@ -334,6 +334,23 @@ export function opportunityMenu(reading: OpportunityReading, ctx: OpportunityMen
   return { options, floor: "quiet_monitoring", screenFallbacks }
 }
 
+/**
+ * PURE (wave 149Z — the arbiter READS the reading, lane 149H Outside-lane 1). The reading + menu as the follow-up arbiter's
+ * EVIDENCE (lib/ai-isa/followup-arbiter.ts ArbiterFacts.opportunity): only the modes the menu does not mark `not_eligible`, each
+ * with why, the experience that carries it and whether an approver must see it — never a brief's words, a tone, an event or a
+ * source (those are the writer's). Undefined when there is no primary reading or nothing eligible. Structural input so the
+ * arbiter passes what the hook returned without importing this module eagerly.
+ */
+export function opportunityFactsFrom(o: {
+  reading?: { primary?: { kind?: string | null; stage?: string | null } | null; sensitive?: boolean } | null
+  menu?: { options: ReadonlyArray<{ mode: string; status: string; why: string; experience: string; requiresApproval?: boolean }>; floor: string } | null
+} | null | undefined): { kind: string; stage: string; sensitive: boolean; modes: Array<{ mode: string; status: string; why: string; experience: string; requiresApproval: boolean }>; floor: string } | undefined {
+  if (!o?.reading?.primary || !o.menu) return undefined
+  const modes = o.menu.options.filter((m) => m.status !== "not_eligible").map((m) => ({ mode: m.mode, status: m.status, why: m.why, experience: m.experience, requiresApproval: m.requiresApproval === true }))
+  if (modes.length === 0) return undefined
+  return { kind: String(o.reading.primary.kind ?? "unknown"), stage: String(o.reading.primary.stage ?? "none"), sensitive: o.reading.sensitive === true, modes, floor: o.menu.floor }
+}
+
 // ── the expert brief the deciding models read (one text, two readers) ─────────────────────────────────────────────────────────
 
 /**

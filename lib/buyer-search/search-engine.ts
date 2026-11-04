@@ -235,7 +235,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       .from('listings')
       // has_pool / has_septic / hoa_dues / lot_size / year_built / public_remarks (wave 147C) are what
       // the explainable fit answers lifestyle asks and deal-breakers from — columns the live table has.
-      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, has_pool, has_septic, hoa_dues, lot_size, year_built, public_remarks')
+      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, has_pool, has_septic, hoa_dues, lot_size, lot_size_unit, year_built, public_remarks')
       .eq('brokerage_id', contact.brokerage_id ?? '')
       .in('status', buyerShoppableListingStatuses())
       .is('deleted_at', null)  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)

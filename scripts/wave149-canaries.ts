@@ -549,7 +549,7 @@ group("149D", "magnet → page → funnel; the creator stored; the QR resolves t
     },
   },
   {
-    id: "149D·C30", label: "created_by_user_id is the users.id that clicked Create (assignment follows the form's agent); an agents.id is crossed via agents.user_id; another tenant's user is NULL, never guessed",
+    id: "149D·C30", label: "created_by_user_id is the users.id that clicked Create (assignment follows the form's agent); an agents.id handed as the creator is NOT silently crossed (agents.id and users.id are disjoint — lane 149Z removed the kernel crossing the identity-class guard refused) and another tenant's user is NULL, never guessed",
     run: async () => {
       const { createLeadMagnet } = await import("../lib/kernel/lead-magnets")
       const { db, r } = await buildPackage()
@@ -559,8 +559,9 @@ group("149D", "magnet → page → funnel; the creator stored; the QR resolves t
       const c2 = await withSvc(null, () => quiet(() => createLeadMagnet({ title: "Foreign creator", description: "x", magnetType: "generic_form", brokerageId: DB2, agentId: DAG2, createdBy: DU1, publishState: "draft" } as never, { client: d2 as never })))
       const f1 = rows(d2, "lead_capture_forms").find((f) => f.id === (c1 as any).magnetId), f2 = rows(d2, "lead_capture_forms").find((f) => f.id === (c2 as any).magnetId)
       return {
-        positive: r.ok && form?.created_by_user_id === DU1 && form?.agent_id === DAG && r.package.creator.created_by_user_id === DU1 && (c1 as any).success && f1?.created_by_user_id === DU2,
-        negative: (c2 as any).success && f2?.created_by_user_id === null,
+        positive: r.ok && form?.created_by_user_id === DU1 && form?.agent_id === DAG && r.package.creator.created_by_user_id === DU1,
+        // An agents.id as createdBy (c1) and a foreign tenant's user (c2) both record NULL — the row is created, the creator is never guessed.
+        negative: (c1 as any).success && f1?.created_by_user_id === null && (c2 as any).success && f2?.created_by_user_id === null,
         detail: JSON.stringify({ form: form?.created_by_user_id, f1: f1?.created_by_user_id, f2: f2?.created_by_user_id }),
       }
     },

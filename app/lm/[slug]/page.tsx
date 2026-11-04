@@ -140,10 +140,20 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   // page is noindex anyway.
   if (landing) {
     const cardUrl = await getLeadMagnetCardUrl(form.id, form.brokerage_id)
+    // Ruling 12 (wave 149Z — lane 149J D1): the canonical home of this page is INSIDE the tenant's website
+    // (/site/<slug>/lm/<form> — the route that proves the form is that tenant's); this bare route declares it so search and
+    // AI search index one URL. No site slug (or a refused read) → no canonical claimed.
+    const { data: site, error: siteErr } = await createServiceClient().from("brokerages").select("slug").eq("id", form.brokerage_id).maybeSingle()
+    if (siteErr) console.warn("[lm] tenant site slug not read — no canonical declared:", siteErr.message)
+    const siteSlug = String((site as { slug?: string | null } | null)?.slug ?? "").trim()
+    const { siteUrl } = await import("@/lib/platform/site-url")
+    const { tenantLandingPagePath } = await import("@/lib/kernel/tenant-creation")
+    const origin = siteUrl()
     return {
       title: landing.headline || form.name,
       description: (landing.subhead || `Get started — ${form.name}`).slice(0, 300),
       robots: { index: true, follow: true },
+      ...(siteSlug && origin ? { alternates: { canonical: `${origin}${tenantLandingPagePath(siteSlug, slug)}` } } : {}),
       // When no completed card exists, the openGraph block is omitted entirely —
       // no placeholder image is ever claimed.
       ...(cardUrl ? { openGraph: { images: [cardUrl] } } : {}),

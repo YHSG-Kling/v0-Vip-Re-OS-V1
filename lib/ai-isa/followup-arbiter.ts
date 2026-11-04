@@ -519,6 +519,9 @@ export interface ArbiterFacts {
   /** Wave 148 (148F, ruling 17): present when the DECISIVE signal is a life event — the brief the empathetic branch decides under
    *  (never the words to say: the sensitivity, the tone, what the evidence and the tenant's authority permit). */
   lifeEvent?: { sensitivity: LifeEventSensitivity | "unknown"; category: string; tone: string; modesOffered: LifeEventEngagementMode[]; automatedHelpOffered: boolean; whyNotAutomated: string[]; evidence: { grounded: boolean; identityConfirmed: boolean } }
+  /** Wave 149 (149Z, lane 149H ruling 18): the combined-signal opportunity reading — the decision kind, its stage, and the
+   *  engagement modes the reading permits (never a not_eligible one). Evidence for the model; it carries no time. */
+  opportunity?: { kind: string; stage: string; sensitive: boolean; modes: Array<{ mode: string; status: string; why: string; experience: string; requiresApproval: boolean }>; floor: string }
 }
 
 export interface ArbiterDecision {
@@ -767,6 +770,11 @@ export const ARBITER_SYSTEM = [
   "Reply with JSON only: {optionId, channel|null, format|null, waitHours|null, rationale (1-3 sentences, plain words), evidence (the fact keys you used), confidence 0..1}.",
 ].join(" ")
 
+/** Wave 149 (149Z, lane 149H): how the model reads evidence.opportunity — appended (with OPPORTUNITY_COMBINATION_BRIEF) only when
+ *  the C9 hook returned a reading. The mapping is the owner's five stances; a mode absent from evidence.opportunity.modes is not
+ *  eligible and must not be the reason for a choice. */
+const ARBITER_OPPORTUNITY_NOTE ="evidence.opportunity, when present, is the combined-signal reading for this person (a decision kind and its stage — a single observation never raises intent) and the engagement modes it permits: quiet_monitoring maps to WAIT, helpful_education to EDUCATE, appropriate_outreach to ACT NOW, human to NOTIFY HUMAN; research is internal and never a message. Choose only among the menu's options; never pick a stance because of a mode that is not listed in evidence.opportunity.modes, respect requiresApproval (an approver sees it before anything leaves), and never mention what was observed, from where, or any life event."
+
 /**
  * WAVE 148 (lane 148F, owner ruling 17 — "a life event signal should never just send to a human and the arbiter should decide the
  * best way to warm engagement without mentioning the life event — it is about them and their emotions at this time"): THE
@@ -972,6 +980,8 @@ async function arbitrateExperiencePlan(
     helpers?: readonly ArbiterMovementHelper[]
     /** Wave 148 (148F): the tenant's explicit autonomy grant, read only when the decisive signal is a life event (null = not granted). */
     lifeEventAuthority?: LifeEventAuthority | null
+    /** Wave 149 (149Z, lane 149H): the combined-signal opportunity reading + menu from the C9 hook (evidence; null = none). */
+    opportunity?: ArbiterOpportunityInput | null
   },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbitratedPlan> {
@@ -993,7 +1003,21 @@ async function arbitrateExperiencePlan(
   const chosenOpt: ArbiterOption = { id: plannedKind, kind: plannedKind, channels: channelsForKind(plannedKind, ctx), why: (plannedKind === a.plan.chosen.kind ? a.plan.chosen.reasons : plannedRanked?.reasons ?? ["quiet monitoring — the kind default for a significant personal moment"]).slice(0, 4) }
   const facts = arbiterFactsFromExperienceInput(a.input, moment, { checks: a.checks ?? null, signals: a.signals, helpers: a.helpers })
   if (menu.lifeEvent) facts.lifeEvent = menu.lifeEvent.brief
-  const decided = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null, system: menu.lifeEvent ? ARBITER_LIFE_EVENT_SYSTEM : null }, deps)
+  // WAVE 149 (149Z — lane 149H Outside-lane 1 / lane 149C Outside-lane 2): the combined-signal reading reaches the decision as
+  // EVIDENCE (eligible modes only) and as urgency (an `emerging`-or-stronger reading is at least "normal"; it never raises "high"
+  // alone — a combination is still not a fresh stated move). The expert brief for reading a combination rides the system prompt.
+  // The menu stays the planner's: the reading never adds an outbound option and carries no time (timing is the arbiter's).
+  let system: string | null = menu.lifeEvent ? ARBITER_LIFE_EVENT_SYSTEM : null
+  if (a.opportunity?.reading?.primary) {
+    const { OPPORTUNITY_COMBINATION_BRIEF, opportunityFactsFrom } = await import("@/lib/intent/opportunity-discovery")
+    const opp = opportunityFactsFrom(a.opportunity)
+    if (opp) {
+      facts.opportunity = opp
+      if (facts.urgency == null && ["emerging", "likely", "stated"].includes(opp.stage)) facts.urgency = "normal"
+      system = `${system ?? ARBITER_SYSTEM}\n${ARBITER_OPPORTUNITY_NOTE}\n${OPPORTUNITY_COMBINATION_BRIEF}`
+    }
+  }
+  const decided = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null, system }, deps)
   const decision: ArbiterDecision = menu.lifeEvent ? { ...decided, lifeEvent: { ...menu.lifeEvent.guard, mode: lifeEventModeOf(decided.kind) } } : decided
   if (decision.kind === a.plan.chosen.kind && decision.waitHours === null) return { plan: a.plan, decision }
   let found: RankedExperience | undefined = a.plan.ranked.find((r) => r.kind === decision.kind)
@@ -1155,6 +1179,10 @@ export const ARBITER_PLANNER_ENTRY_POINTS = Object.freeze({
   sequence_step: { planner: "lib/campaign-sequences/enrollment-engine.ts", door: "lib/campaign-sequences/step-executor.ts", via: "arbitratePlannedTouch", what: "a due step (after the first) sends now or waits a bounded time — the author's spacing is the fallback" },
   // Owner ruling 8 (C24 extended): when the person's window passes, the arbiter decides how the team answers for them.
   unattended_answer: { planner: "lib/communications/unattended-answer.ts", door: "lib/communications/unattended-answer.ts", via: "arbitratePlannedTouch", what: "a written answer on the client's channel (text / email / portal), that answer plus a personal video update, or a person after all — the written answer is the fallback" },
+  // C32 / C29 (wave 149Z, lane 149C Outside-lane 1): event reminders and the no-show nurture are arbiter decisions, never a
+  // T-<n>d table. Lane 149F's producer asks the arbiter's own door (arbitrateFollowUp) with a closed two-option menu.
+  event_reminder: { planner: "lib/open-house/event-touches.ts", door: "lib/open-house/event-touches.ts", via: "arbitrateFollowUp", what: "event_registrant_upcoming: remind the registrant now on their consented channel, or wait — waiting is the fallback" },
+  event_no_show: { planner: "lib/open-house/event-touches.ts", door: "lib/open-house/event-touches.ts", via: "arbitrateFollowUp", what: "event_registrant_no_show: hand the registrant to the host (a person) or let it rest under the AI ISA's normal consented engagement — resting is the fallback" },
 } as const)
 export type PlannerEntryPoint = keyof typeof ARBITER_PLANNER_ENTRY_POINTS
 
@@ -1515,7 +1543,7 @@ async function loadChannelReadiness(
 async function loadLifeChangeSignals(
   svc: { from: (t: string) => any },
   a: { brokerageId: string; contactId: string; now: Date; policy: FollowupPolicy; movementConsumer?: MovementSignalConsumer | null },
-): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null; helpers: ArbiterMovementHelper[] }> {
+): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null; helpers: ArbiterMovementHelper[]; opportunity: ArbiterOpportunityInput | null }> {
   const since = new Date(a.now.getTime() - a.policy.sphere.lifeEventWindowDays * DAY_MS).toISOString()
   const { data, error } = await svc.from("signal_reactivations").select("signal_type, signal_strength, triggered_at, signal_data")
     .eq("brokerage_id", a.brokerageId).eq("contact_id", a.contactId).gte("triggered_at", since).order("triggered_at", { ascending: false }).limit(20)
@@ -1556,7 +1584,7 @@ async function loadLifeChangeSignals(
   const moved = await readMovementSignals(svc, { brokerageId: a.brokerageId, contactId: a.contactId, now: a.now, sinceIso: since }, a.movementConsumer)
   for (const s of moved.signals) if (!seen.has(s.type)) { seen.add(s.type); signals.push(s) }
   if (moved.blindSpot) blind.push(moved.blindSpot)
-  return { signals, blindSpot: blind.length ? blind.join("; ") : null, helpers: moved.helpers }
+  return { signals, blindSpot: blind.length ? blind.join("; ") : null, helpers: moved.helpers, opportunity: moved.opportunity }
 }
 
 /**
@@ -1571,8 +1599,16 @@ async function loadLifeChangeSignals(
  * or refused read is a blind spot — an unread source is never "no signal".
  */
 interface ArbiterMovementHelper { key: string; title: string; offer: string; experience: string }
-type MovementSignalConsumer = (svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string; now: Date; sinceIso: string }) =>
-  Promise<LifeChangeSignal[] | { signals: LifeChangeSignal[]; blindSpot?: string | null; helpers?: ReadonlyArray<ArbiterMovementHelper> | null }>
+/** Wave 149 (149Z — lane 149H Outside-lane 1): the per-decision opportunity reading + its closed engagement menu, as the hook
+ *  returns it (lib/intent/movement-signals.ts ArbiterOpportunityContext). Structural here so this module imports nothing eager. */
+interface ArbiterOpportunityInput {
+  reading: { primary?: { kind?: string | null; stage?: string | null } | null; sensitive?: boolean; screenEvents?: readonly string[] }
+  menu: { options: ReadonlyArray<{ mode: string; status: string; why: string; experience: string; brief: string | null; tone?: string | null; requiresApproval?: boolean; research?: ReadonlyArray<unknown> }>; floor: string }
+}
+type MovementSignalConsumer = (svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string; now: Date; sinceIso: string; autonomy?: "autonomous" | "supervised" | "unknown"; paidResearchAffordable?: boolean | null }) =>
+  Promise<LifeChangeSignal[] | { signals: LifeChangeSignal[]; blindSpot?: string | null; helpers?: ReadonlyArray<ArbiterMovementHelper> | null; opportunity?: ArbiterOpportunityInput | null }>
+// autonomy / paidResearchAffordable are NOT read here (unread = "unknown" / null, which the menu treats as fail-closed: outreach
+// needs approval, paid research waits) — reading them costs a tenant read + an entitlement read on EVERY arbitration (149Z notes).
 const MOVEMENT_SIGNAL_CONSUMER: MovementSignalConsumer | null = async (svc, a) => (await import("@/lib/intent/movement-signals")).movementSignalsForArbiter(svc as never, a)
 
 /** Read the movement signals through the seam (or an injected consumer — the proofs). Evidence, never a gate. */
@@ -1580,18 +1616,22 @@ async function readMovementSignals(
   svc: { from: (t: string) => any },
   a: { brokerageId: string; contactId: string; now: Date; sinceIso: string },
   injected?: MovementSignalConsumer | null,
-): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null; helpers: ArbiterMovementHelper[] }> {
+): Promise<{ signals: LifeChangeSignal[]; blindSpot: string | null; helpers: ArbiterMovementHelper[]; opportunity: ArbiterOpportunityInput | null }> {
   const consumer = injected === undefined ? MOVEMENT_SIGNAL_CONSUMER : injected
-  if (!consumer) return { signals: [], blindSpot: "signals: movement signals (contract C9, lane 147B) are not wired into the arbiter", helpers: [] }
+  if (!consumer) return { signals: [], blindSpot: "signals: movement signals (contract C9, lane 147B) are not wired into the arbiter", helpers: [], opportunity: null }
   try {
     const got = await consumer(svc, a)
     const list = Array.isArray(got) ? got : (got?.signals ?? [])
     const helpers = Array.isArray(got) ? [] : (got?.helpers ?? []).map((h) => ({ key: String(h.key), title: String(h.title), offer: String(h.offer), experience: String(h.experience) }))
-    return { signals: list.filter((s) => !!s && typeof s.type === "string" && s.type.length > 0), blindSpot: Array.isArray(got) ? null : (got?.blindSpot ?? null), helpers }
+    const opportunity = Array.isArray(got) ? null : (got?.opportunity && Array.isArray(got.opportunity.menu?.options) ? got.opportunity : null)
+    return { signals: list.filter((s) => !!s && typeof s.type === "string" && s.type.length > 0), blindSpot: Array.isArray(got) ? null : (got?.blindSpot ?? null), helpers, opportunity }
   } catch (e) {
-    return { signals: [], blindSpot: `signals: movement signals not read (${(e as Error)?.message ?? String(e)})`, helpers: [] }
+    return { signals: [], blindSpot: `signals: movement signals not read (${(e as Error)?.message ?? String(e)})`, helpers: [], opportunity: null }
   }
 }
+
+// The facts shaping (only the eligible modes) is lib/intent/opportunity-discovery.ts opportunityFactsFrom — the reading's own
+// module, lazily imported with the brief in arbitrateExperiencePlan (149Z).
 
 const STORED_SIGNAL_CONTACT_COLUMNS = "id, enrichment_profile, life_events, last_life_event_detected, home_anniversary"
 
@@ -1897,7 +1937,7 @@ export async function arbitrateAndRecordExperience(
       try { lifeEventAuthority = await (deps.lifeEventAuthority ?? ((b: string) => defaultLifeEventAuthority(svc, b)))(a.brokerageId) }
       catch (e) { lifeEventAuthority = { allowed: false, reason: `autonomy could not be read (${e instanceof Error ? e.message : String(e)}) — no automated help` } }
     }
-    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, helpers: sig.helpers, priority: a.priority ?? null, lifeEventAuthority }, { decide: deps.decide })
+    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, helpers: sig.helpers, priority: a.priority ?? null, lifeEventAuthority, opportunity: sig.opportunity }, { decide: deps.decide })
     plan = arbitrated.plan
     decision = arbitrated.decision
   }

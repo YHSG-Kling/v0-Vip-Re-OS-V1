@@ -567,6 +567,8 @@ export interface ListingFitFacts {
   has_septic?: boolean | null
   hoa_dues?: number | null
   lot_size?: number | null
+  /** Wave 149Z (m954): the unit the listing states beside lot_size ('square_feet' | 'acres'); null = not stated. */
+  lot_size_unit?: string | null
   year_built?: number | null
   public_remarks?: string | null
   features?: string[] | null
@@ -651,7 +653,7 @@ function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProve
   const unknown = (detail: string): Bucketed => ({ bucket: 'unknowns', item: { field, ask: askText, detail, source: 'none', provenance: prov } })
   const proven = (bucket: keyof CriteriaFit, detail: string, evidence: FitEvidence, brief?: string): Bucketed => ({ bucket, item: { field, ask: askText, detail, source: evidence.source === 'listing' ? 'listing' : 'provider', provenance: prov, evidence, ...(brief ? { brief } : {}) } })
   const acreLot = (acres: number) => `a ${acres >= 10 ? Math.round(acres) : acres >= 1 ? acres.toFixed(1).replace(/\.0$/, '') : acres.toFixed(2)}-acre lot`
-  const lot = lotFactsFrom({ lotSizeSqft: l.lot_size_sqft ?? null, lotSize: l.lot_size ?? null, source: l.facts_source ?? 'listing' })
+  const lot = lotFactsFrom({ lotSizeSqft: l.lot_size_sqft ?? null, lotSize: l.lot_size ?? null, lotSizeUnit: l.lot_size_unit ?? null, source: l.facts_source ?? 'listing' })
   const lotCaveat = lot?.basis === 'inferred_from_magnitude' ? "the listing doesn't record the unit, so it's read from the size of the number" : null
 
   switch (ask.kind) {
@@ -698,7 +700,7 @@ function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProve
       const sizeText = `${formatAcres(lot.acres)}${lot.sqft ? ` (about ${Math.round(lot.sqft).toLocaleString('en-US')} sq ft)` : ''}`
       const features = outdoorFeatureNote(l)
       const caveat = ["usable yard isn't measured — slopes, easements, setbacks and HOA rules can shrink it, and the plat or survey shows the boundaries", lotCaveat].filter(Boolean).join('; ')
-      const evidence: FitEvidence = { source: lot.source, confidence: lot.basis === 'reported_sqft' ? 'high' : 'medium', figures: { acres, ...(lot.sqft ? { lot_sqft: Math.round(lot.sqft) } : {}) }, caveat }
+      const evidence: FitEvidence = { source: lot.source, confidence: lot.basis === 'reported_sqft' || lot.basis === 'reported_acres' ? 'high' : 'medium', figures: { acres, ...(lot.sqft ? { lot_sqft: Math.round(lot.sqft) } : {}) }, caveat }
       const withFeatures = (s: string) => (features ? `${s}; ${features}` : s)
       const lotBrief = (tail: string) => `${acreLot(lot.acres!)}${tail}`
       // C27: the BUYER's minimum decides (converted to acres — conversion is allowed, inventing is not). A legacy row's

@@ -12,6 +12,7 @@ export const dynamic = "force-dynamic"
 export const revalidate = 3600
 
 import { siteUrl } from "@/lib/platform/site-url"
+import { tenantLandingPagePath } from "@/lib/kernel/tenant-creation"
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const base = siteUrl()
@@ -68,13 +69,13 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       // Cross-tenant by design (one public sitemap) — rows carry brokerage_id
       svc.from("agents").select("public_slug, brokerage_id, updated_at")
         .not("public_slug", "is", null).limit(2000),
-      svc.from("lead_capture_forms").select("slug, updated_at")
+      svc.from("lead_capture_forms").select("slug, brokerage_id, updated_at")
         .eq("is_active", true).not("slug", "is", null).limit(1000),
       svc.from("blog_posts").select("slug, published_at")
         .eq("publish_status", "published").not("slug", "is", null)
         .order("published_at", { ascending: false }).limit(2000),
       // Tenant WEBSITES — every brokerage with a slug has a full public site
-      svc.from("brokerages").select("slug, updated_at")
+      svc.from("brokerages").select("id, slug, updated_at")
         .not("slug", "is", null).is("deleted_at", null).limit(2000),
       // TEAM sites — the middle tier gets the same zero-hosting presence
       svc.from("teams").select("public_slug, brokerage_id, updated_at")
@@ -94,9 +95,13 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         changeFrequency: "weekly" as const,
         priority: 0.5,
       }))
-    const magnetEntries: MetadataRoute.Sitemap = ((magnets.data ?? []) as Array<{ slug: string; updated_at: string | null }>)
+    // Ruling 12 (wave 149Z — lane 149E Outside-lane 2 / lane 149J D1): a landing page's CANONICAL home is inside the tenant's
+    // own website (tenantLandingPagePath → /site/<slug>/lm/<form>); the bare /lm/<form> is listed only for a form whose tenant
+    // has no site slug. One URL per page in the sitemap (the bare route declares the same canonical).
+    const siteSlugById = new Map(((sites.data ?? []) as Array<{ id: string; slug: string | null }>).filter((s) => !!s.slug).map((s) => [s.id, s.slug as string]))
+    const magnetEntries: MetadataRoute.Sitemap = ((magnets.data ?? []) as Array<{ slug: string; brokerage_id: string | null; updated_at: string | null }>)
       .map((m) => ({
-        url: `${base}/lm/${m.slug}`,
+        url: m.brokerage_id && siteSlugById.has(m.brokerage_id) ? `${base}${tenantLandingPagePath(siteSlugById.get(m.brokerage_id)!, m.slug)}` : `${base}/lm/${m.slug}`,
         lastModified: m.updated_at ?? undefined,
         changeFrequency: "monthly" as const,
         priority: 0.4,

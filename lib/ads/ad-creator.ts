@@ -384,13 +384,18 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
       let rewriteAttempts = 0
       if (!complianceResult.allowed) {
         const { rewritePublicCopyUntilCompliant, scanPublicCopy, renderFindingsForRewrite } = await import("@/lib/kernel/marketing/public-copy-rewrite")
+        // 149Z (lane 149J Outside-lane A2 — 143F-SO-04 / 146I-OL-20): the ad's wording scan reads the tenant's HOPA older-persons
+        // verifications like every other public-copy door (lib/kernel/lead-magnets.ts) — an "unreadable" read is passed through,
+        // and the scan treats it as unverified (fail closed), never as a verified 55+ community.
+        const { loadOlderPersonsVerifications } = await import("@/lib/compliance/fair-housing-older-persons-store")
+        const olderPersons = await loadOlderPersonsVerifications(supabase as never, brokerageId)
         let latest = variation
         let latestGate = complianceResult
         const loop = await rewritePublicCopyUntilCompliant({
           text: `${variation.headline} ${variation.primaryText} ${variation.description}`,
           surface: "ad",
           gate: async (text) => {
-            const scan = await scanPublicCopy(text, "ad")
+            const scan = await scanPublicCopy(text, "ad", { olderPersons })
             const findings = [...scan.findings, ...(latestGate.violations ?? []).map((v) => ({ phrase: v, fix: "Describe the home and the service; promise no outcome; name no protected class.", reference: "lib/kernel/compliance.ts evaluateOutbound", severity: "blocker" as const }))]
             return { ok: latestGate.allowed && scan.ok, findings, warnings: scan.warnings }
           },

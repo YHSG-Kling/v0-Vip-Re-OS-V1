@@ -346,6 +346,10 @@ section("K. landing pages live INSIDE the tenant website — tenant-proven, one 
   const vanity = p.slice(p.indexOf("const slug = await customDomainSiteSlug(host)"), p.indexOf("// ── 1) Embed-blog CSP path"))
   check("proxy: a connected domain's /lm/<form> is rewritten to /site/<HOST's slug>/lm/<form> (single segment)", /\/\^\\\/lm\\\/\(\[\^\/\]\+\)\\\/\?\$\/\.exec\(pathname\)/.test(vanity) && /NextResponse\.rewrite\(new URL\(`\/site\/\$\{slug\}\/lm\/\$\{landing\[1\]\}\$\{request\.nextUrl\.search\}`/.test(vanity))
   check("proxy: the tenant in that rewrite is the host's mapped slug, never a value parsed from the path", !/\/site\/\$\{landing\[1\]\}/.test(vanity) && vanity.indexOf("landing") > vanity.indexOf("customDomainSiteSlug"))
+  // 149Z (lane 149F Outside-lane 1, C32): the connected domain's /events/<uuid> reaches the tenant-site event page the same way.
+  check("proxy: a connected domain's /events/<uuid> is rewritten to /site/<HOST's slug>/events/<uuid> (uuid only, the host's tenant)",
+    /NextResponse\.rewrite\(new URL\(`\/site\/\$\{slug\}\/events\/\$\{eventPage\[1\]\}\$\{request\.nextUrl\.search\}`/.test(vanity) && /\[0-9a-f\]\{8\}-/.test(vanity) && !/\/site\/\$\{eventPage\[1\]\}/.test(vanity)
+    && existsSync(join(process.cwd(), "app/site/[slug]/events/[eventId]/page.tsx")))
   check("readiness `website` check states the landing capability (pattern in evidence) — no second key, the capability IS the website", /landingPagePattern:\s*tenantLandingPagePath\(slug,/.test(code(READINESS)))
 }
 
@@ -368,6 +372,6 @@ section("J. registration — chain membership, ownership, docs")
 
 console.log(`\n${pass} passed, ${fail} failed`)
 console.log(`  denominators: ${CUSTOM_DOMAIN_STATUSES.length} statuses × ${SIGNALS.length} signals · ${DNS_PROVIDERS.length} providers × 2 hosts · rail files ${[LIB, ACTIONS, CARD, PROXY].length}`)
-console.log("  blind spots: the actions layer is proven by stripped-source census + the pure functions it calls, not mounted (it is a \"use server\" module behind a session); the real DNS resolver and the routing API are never called here (resolver injected, routing proven by endpoint census); the proxy's host cache TTL is not exercised. K (wave 143G): the in-website landing ROUTE and the proxy rewrite are proven by stripped source + the resolver's behaviour over an in-memory client, NOT mounted in a running Next server (no browser, no real vanity-host request); the survivor page's own rendering is test:lead-magnet-* territory; app/sitemap.ts and the lead-magnet URL producers still emit the bare /lm/<slug> (other lanes' files).")
+console.log("  blind spots: the actions layer is proven by stripped-source census + the pure functions it calls, not mounted (it is a \"use server\" module behind a session); the real DNS resolver and the routing API are never called here (resolver injected, routing proven by endpoint census); the proxy's host cache TTL is not exercised. K (wave 143G): the in-website landing ROUTE and the proxy rewrite are proven by stripped source + the resolver's behaviour over an in-memory client, NOT mounted in a running Next server (no browser, no real vanity-host request); the survivor page's own rendering is test:lead-magnet-* territory; app/sitemap.ts and app/llms.txt list a landing page at /site/<slug>/lm/<form> when the tenant has a site slug (149Z, held by test:search-visibility); other lead-magnet URL producers (share links, QR targets already minted) may still emit the bare /lm/<slug>, which declares the tenant-site canonical.")
 if (fail > 0) { console.log(`\nFAILED:\n  - ${fails.join("\n  - ")}`); process.exit(1) }
 console.log("RESULT: custom-domain-flow PASS")

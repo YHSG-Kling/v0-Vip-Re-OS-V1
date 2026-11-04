@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic"
 export const revalidate = 3600
 
 import { siteUrl } from "@/lib/platform/site-url"
+import { tenantLandingPagePath } from "@/lib/kernel/tenant-creation"
 
 export async function GET() {
   const base = siteUrl()
@@ -121,18 +122,21 @@ export async function GET() {
   try {
     const svc = createServiceClient()
     const [{ data: magnets }, { data: sites }, { data: teams }] = await Promise.all([
-      svc.from("lead_capture_forms").select("slug, name, magnet_type")
+      svc.from("lead_capture_forms").select("slug, name, magnet_type, brokerage_id")
         .eq("is_active", true).not("slug", "is", null)
         .order("updated_at", { ascending: false }).limit(300),
-      svc.from("brokerages").select("slug, name, city, state")
+      svc.from("brokerages").select("id, slug, name, city, state")
         .not("slug", "is", null).is("deleted_at", null).limit(300),
       svc.from("teams").select("public_slug, name")
         .not("public_slug", "is", null).is("deleted_at", null).limit(300),
     ])
-    magnetPages = ((magnets ?? []) as Array<{ slug: string; name: string | null; magnet_type: string | null }>)
+    // Ruling 12 (wave 149Z — lane 149E Outside-lane 2): the canonical landing URL is inside the tenant's website
+    // (tenantLandingPagePath); the bare /lm/<form> only when the tenant has no site slug — the same rule as app/sitemap.ts.
+    const siteSlugById = new Map(((sites ?? []) as Array<{ id: string; slug: string | null }>).filter((s) => !!s.slug).map((s) => [s.id, s.slug as string]))
+    magnetPages = ((magnets ?? []) as Array<{ slug: string; name: string | null; magnet_type: string | null; brokerage_id: string | null }>)
       .map((m) => ({
         title: m.name || "Resource",
-        url: `${base}/lm/${m.slug}`,
+        url: m.brokerage_id && siteSlugById.has(m.brokerage_id) ? `${base}${tenantLandingPagePath(siteSlugById.get(m.brokerage_id)!, m.slug)}` : `${base}/lm/${m.slug}`,
         summary: m.magnet_type ? `Free ${m.magnet_type.replace(/_/g, " ")} from a local real-estate professional.` : "Free resource from a local real-estate professional.",
       }))
     sitePages = ((sites ?? []) as Array<{ slug: string; name: string | null; city: string | null; state: string | null }>)

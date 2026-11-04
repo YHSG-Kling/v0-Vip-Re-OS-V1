@@ -17,6 +17,7 @@
 
 import { evaluateOutbound } from "./compliance"
 import { checkSuppression } from "./compliance/check-suppression"
+import { contactIntentOf } from "@/lib/contact-types"
 import { createClient as createServerClient } from "@/lib/supabase/server"
 import type {
   EvaluateOutboundParams,
@@ -864,7 +865,9 @@ function messageTypeToSuppressionChannel(
 }
 
 function inferJourneyType(contact: KernelContact): JourneyType {
-  if (contact.contact_type === "seller") return "seller"
-  if (contact.contact_type === "both")   return "dual"
+  // Owner ruling 3 (wave 149): intent is buyer | seller | both, read through the ONE reader (a relationship class reads null → buyer journey).
+  const intent = contactIntentOf(contact.contact_type)
+  if (intent === "seller") return "seller"
+  if (intent === "both")   return "dual"
   return "buyer"
 }

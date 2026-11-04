@@ -241,6 +241,16 @@ async function main(): Promise<void> {
     delete process.env.NEXT_PUBLIC_APP_URL
   }
 
+  {
+    // 149Z (this lane's Outside-lane 2, C32): the tenant website's home lists its OWN upcoming published events, linked inside
+    // the site (the tenant-site event route proves the tenant again); positive control on the finder.
+    const site = stripped("app/site/[slug]/page.tsx")
+    const READS_OWN_EVENTS = /from\("open_house_events"\)[\s\S]{0,260}\.eq\("brokerage_id",[^)]*\)[\s\S]{0,200}\.eq\("is_published", true\)/
+    check("the tenant website lists its own upcoming published events and links each INSIDE the site (/site/<slug>/events/<id>)",
+      READS_OWN_EVENTS.test(site) && /\.gte\("event_date", todayIso\)/.test(site) && /href=\{`\$\{tenantWebsitePath\(b\.slug\)\}\/events\/\$\{e\.id\}`\}/.test(site))
+    check("POSITIVE CONTROL: the finder refuses an events read with no tenant predicate", !READS_OWN_EVENTS.test(`svc.from("open_house_events").select("id").eq("is_published", true)`))
+  }
+
   console.log("\n[blind spots]")
   console.log("  · the brand census reads STRIPPED source of the event surface files by pattern (platform names: VIP Agents / VIPAgents / VIP Real Estate OS / VIP RE OS + a configured product name); a platform name assembled at runtime from parts, or one stored in a tenant's own data, is not seen here — the copy scan (scanEventCopy) is the runtime net for model-written words");
   console.log("  · lib/open-house/event-registry.ts is excluded from the census: it holds the detector's own patterns")

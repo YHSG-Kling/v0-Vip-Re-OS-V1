@@ -119,7 +119,9 @@ async function loadVerifiedFacts(svc: Svc, brokerageId: string, contactId: strin
   const blindSpots: string[] = []
   if (!UUID.test(contactId)) return { facts, blindSpots: ["the contact id is not a uuid — no facts read"] }
   const { data: txns, error } = await svc.from("transactions")
-    .select("id, status, stage, property_address, close_date, estimated_close_date, property_state, financing_type")
+    // Wave 149Z (lane 149G Outside-lane 1, C33): the m927 contractual columns ride the read, so resolveClosingDates can say
+    // "on or before" and use the confirmed actual day instead of guessing from the legacy close_date.
+    .select("id, status, stage, property_address, close_date, estimated_close_date, contract_closing_date, contract_closing_terms, contract_closing_source, actual_close_date, property_state, financing_type")
     .eq("brokerage_id", brokerageId).is("deleted_at", null)
     .or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
     .not("status", "in", "(lost,archived)").limit(3)
@@ -132,6 +134,8 @@ async function loadVerifiedFacts(svc: Svc, brokerageId: string, contactId: strin
     const dates = resolveClosingDates(t)
     if (dates.actual) facts.push({ fact: `It closed on ${dates.actual.date}.`, source: `transactions:${t.id}.actual` })
     else if (dates.anticipated) facts.push({ fact: `The expected closing day is ${dates.anticipated.date}${dates.contractual?.terms === "on_or_before" ? ` (the contract says on or before ${dates.contractual.date})` : ""}.`, source: `transactions:${t.id}.closing_dates` })
+    // A permission the contract gives, never a promise of an earlier day (C33).
+    if (!dates.actual && dates.earlierClosing?.allowed === true) facts.push({ fact: "The contract allows closing before that day if every party is ready; no earlier day has been set.", source: `transactions:${t.id}.contract_closing_terms` })
     const { data: ms, error: msErr } = await svc.from("transaction_milestones").select("milestone_name, title, target_date, status")
       .eq("brokerage_id", brokerageId).eq("transaction_id", t.id).eq("is_client_visible", true).neq("status", "completed").order("target_date", { ascending: true, nullsFirst: false }).limit(2)
     if (msErr) blindSpots.push(`the next steps could not be read (${msErr.message})`)

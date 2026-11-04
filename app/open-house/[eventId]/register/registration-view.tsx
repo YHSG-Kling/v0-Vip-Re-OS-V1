@@ -15,7 +15,7 @@ import { RegistrationForm } from "./registration-form"
  *     unpublished, cancelled, completed or kiosk-kind event is a 404;
  *   · BRAND (C32, wave 149 — owner ruling 15): the CREATING tenant's, through THE cascade (resolveEventBrand → resolveBrandContext:
  *     team > brokerage name, logo, colour, website, EHO line). TOMBSTONE: this page used to put `global_settings.app_name` in the
- *     header — a column whose live DEFAULT is 'VIP Real Estate OS' (read 2026-11-03), i.e. the platform's name on any tenant that
+ *     header — a column whose live DEFAULT is the platform's own product name (read 2026-11-03), i.e. the platform's name on any tenant that
  *     never renamed it. The platform's brand appears only on a platform-owned event (brand_owner = 'platform');
  *   · the questions are the kind's OWN closed situation questions (REGISTRATION_QUESTIONS, ruling 16) — no open "anything else?";
  *   · the payload handed to the client is display-only (no ids beyond the event's, no agent e-mail, no brokerage id);

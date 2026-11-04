@@ -40,7 +40,7 @@ export type PersonaAudiencePlatform = "facebook" | "instagram" | "google" | "lin
  * means a connector in lib/ads/connectors/registry.ts uploads a hashed customer list for it; the explanation is what an operator
  * reads when it cannot.
  */
-export const PERSONA_AUDIENCE_PLATFORMS: Readonly<Record<PersonaAudiencePlatform, { supported: boolean; explanation: string }>> = Object.freeze({
+const PERSONA_AUDIENCE_PLATFORMS: Readonly<Record<PersonaAudiencePlatform, { supported: boolean; explanation:string }>> = Object.freeze({
   facebook: { supported: true, explanation: "Meta Custom Audience from a customer list (hashed email / phone). Housing ads run in Meta's Special Ad Category: the custom audience is allowed; Meta itself refuses age, gender and ZIP narrowing and lookalike audiences at delivery, and the ad carries the platform's housing disclosures." },
   instagram: { supported: true, explanation: "Same Meta Custom Audience as Facebook (one Graph API account); the same Special Ad Category delivery rules apply." },
   google: { supported: true, explanation: "Google Ads Customer Match (hashed email / phone). The Ads account must be Customer-Match eligible (Google's own policy); Google's housing personalized-ads policy refuses age, gender, ZIP, parental and marital-status targeting at delivery." },

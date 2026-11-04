@@ -284,7 +284,8 @@ export async function shareCollection(svc: Svc, input: ShareCollectionInput, dep
 
 // ─── The collaborator's side (the token is the credential) ───────────────────────────────────────
 
-export interface CollaboratorContext {
+// Module-private (149Z: exported types nothing imported read as one-sided to test:opposite-missing).
+interface CollaboratorContext {
   memberId: string
   memberName: string | null
   memberEmail: string
@@ -293,7 +294,7 @@ export interface CollaboratorContext {
   buyerContactId: string
 }
 
-export type CollaboratorResolution = { ok: true; c: CollaboratorContext } | { ok: false; error: string }
+type CollaboratorResolution = { ok: true; c: CollaboratorContext } | { ok: false; error: string }
 
 /** Resolve a token to its member — hash match, scope feedback_only, not revoked, not expired, search active. */
 async function resolveCollaborator(svc: Svc, token: string, now: Date = new Date()): Promise<CollaboratorResolution> {

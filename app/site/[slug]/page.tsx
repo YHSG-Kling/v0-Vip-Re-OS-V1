@@ -52,7 +52,7 @@ async function loadSite(slug: string) {
   const { data: identity } = await svc.from("ai_identity_profiles")
     .select("assistant_name").eq("scope_id", b.id).eq("scope_type", "brokerage").maybeSingle()
   const todayIso = new Date().toISOString().slice(0, 10)
-  const [{ data: listings }, { data: agents }, { data: posts }, { data: magnets }, { data: openHouses }] = await Promise.all([
+  const [{ data: listings }, { data: agents }, { data: posts }, { data: magnets }, { data: openHouses }, { data: events, error: eventsError }] = await Promise.all([
     svc.from("listings")
       .select("id, mls_number, address, city, state, list_price, bedrooms, bathrooms, sqft, primary_photo_url")
       .eq("brokerage_id", b.id).eq("status", "active").is("deleted_at", null)
@@ -79,7 +79,17 @@ async function loadSite(slug: string) {
       .is("deleted_at", null)
       .gte("open_house_event_date", todayIso)
       .order("open_house_event_date", { ascending: true }).limit(6),
+    // C32 (wave 149Z — lane 149F Outside-lane 2): the tenant's own UPCOMING EVENTS (seminars, webinars, workshops) whose
+    // registration page lives inside this website (app/site/[slug]/events/[eventId] proves the tenant again). Published,
+    // registration-taking, not cancelled, dated today or later — this site's brokerage only.
+    svc.from("open_house_events")
+      .select("id, title, event_type, event_date, start_time, property_address")
+      .eq("brokerage_id", (b as any).id)
+      .eq("is_published", true).eq("registration_required", true).is("cancelled_at", null)
+      .gte("event_date", todayIso)
+      .order("event_date", { ascending: true }).limit(6),
   ])
+  if (eventsError) console.warn("[site] upcoming events not read — the block is hidden:", eventsError.message)
   const magnetRows = (magnets ?? []) as any[]
   const valuationMagnet = magnetRows.find((m) => String(m.magnet_type ?? "").toLowerCase().includes("valuation") || String(m.magnet_type ?? "").toLowerCase().includes("home_value")) ?? null
   // D-ID Express v4 live agent AS AN OPTION on the public website (owner
@@ -92,7 +102,7 @@ async function loadSite(slug: string) {
   // rail's own published rows, re-classified so a client video never reaches the storefront).
   // Null = no slot rendered: a tenant with no approved public reel gets no empty box.
   const heroVideo = await pickSiteHeroVideo(svc, b.id).catch(() => null)
-  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet, livePublicId: liveEmbed?.publicId ?? null, heroVideo }
+  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], events: (eventsError ? [] : events ?? []) as Array<{ id: string; title: string | null; event_type: string | null; event_date: string | null; start_time: string | null; property_address: string | null }>, valuationMagnet, livePublicId: liveEmbed?.publicId ?? null, heroVideo }
 }
 
 export async function generateMetadata({ params }: PageProps) {
@@ -117,7 +127,7 @@ export default async function TenantSitePage({ params }: PageProps) {
     if (data.successorSlug) permanentRedirect(tenantWebsitePath(data.successorSlug))
     notFound()
   }
-  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet, livePublicId, heroVideo } = data as any
+  const { b, assistantName, listings, agents, posts, magnets, openHouses, events, valuationMagnet, livePublicId, heroVideo } = data as any
   const primary = /^#[0-9a-fA-F]{6}$/.test(b.primary_color ?? "") ? (b.primary_color as string) : "#0F172A"
   const base = siteUrl()
   const pageUrl = `${base}/site/${b.slug}`
@@ -225,6 +235,26 @@ export default async function TenantSitePage({ params }: PageProps) {
                 </p>
                 <p className="mt-2 text-xs font-medium text-primary">See the home →</p>
               </a>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* UPCOMING EVENTS (C32) — the tenant's own registration pages, inside this website */}
+      {events.length > 0 && (
+        <section className="container mx-auto px-6 py-16" aria-label="Upcoming events">
+          <h2 className="text-2xl font-bold mb-8">Upcoming events</h2>
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {events.map((e: { id: string; title: string | null; event_type: string | null; event_date: string | null; start_time: string | null; property_address: string | null }) => (
+              <Link key={e.id} href={`${tenantWebsitePath(b.slug)}/events/${e.id}`} className="rounded-lg border p-5 hover:bg-muted/40">
+                <p className="text-sm font-semibold">{e.title ?? (e.event_type ?? "Event").replace(/_/g, " ")}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {e.event_date ? new Date(`${e.event_date}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }) : ""}
+                  {e.start_time ? ` · ${String(e.start_time).slice(0, 5)}` : ""}
+                  {e.property_address ? ` · ${e.property_address}` : ""}
+                </p>
+                <p className="mt-2 text-xs font-medium text-primary">Register →</p>
+              </Link>
             ))}
           </div>
         </section>

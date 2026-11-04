@@ -195,7 +195,9 @@ export async function runLaunchWarRoom(
         title: `First look — ${l.address}`,
         description: desc.body,
         magnetType: "listing_alert",
-        brokerageId, agentId: agentRowId, createdBy: agentRowId,
+        // Wave 149Z (lane 149D Outside-lane 3): createdBy is the creating USER (users.id → created_by_user_id); it was the
+        // agents.id, which the kernel had to cross back. agents.id ≠ users.id (CLAUDE.md §3).
+        brokerageId, agentId: agentRowId, createdBy: agentUserId,
         thankYouMessage: "You're on the list — expect a private-preview invitation shortly.",
       })
       if (magnet.success && magnet.magnetId) {

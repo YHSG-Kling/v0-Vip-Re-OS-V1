@@ -395,17 +395,18 @@ export function defaultFieldsForType(
 }
 
 /**
- * Wave 149 (lane 149D, m942): the creating USER for lead_capture_forms.created_by_user_id. `createdBy` is meant to be a users.id
- * in this tenant; a caller that hands an agents.id is crossed via agents.user_id (§3 — the two are disjoint, and a raw agents.id
- * in a users FK would refuse the whole insert). Unresolvable / a refused read → null (said), never a guess.
+ * Wave 149 (lane 149D, m942): the creating USER for lead_capture_forms.created_by_user_id. `createdBy` IS a users.id in this
+ * tenant (every caller passes the session user). Unresolvable / a refused read → null (said), never a guess.
+ *
+ * TOMBSTONE (wave 149Z, lane 149D Outside-lane 3): a second read here crossed an agents.id handed as `createdBy` via
+ * agents.user_id — one value read as two identities (identity-class guard). Its one caller, the launch war room
+ * (lib/kernel/launch-war-room.ts createLeadMagnet call), now passes the agent's users.id, so the crossing is gone.
  */
 async function resolveCreatorUserId(supabase: Svc, brokerageId: string, createdBy: string): Promise<string | null> {
   const { data: u, error: uErr } = await supabase.from("users").select("id").eq("id", createdBy).eq("brokerage_id", brokerageId).maybeSingle()
   if (uErr) { console.warn("[createLeadMagnet] creator users read refused — created_by_user_id left null:", uErr.message); return null }
-  if (u?.id) return u.id as string
-  const { data: a, error: aErr } = await supabase.from("agents").select("user_id").eq("id", createdBy).eq("brokerage_id", brokerageId).maybeSingle()
-  if (aErr) { console.warn("[createLeadMagnet] creator agents read refused — created_by_user_id left null:", aErr.message); return null }
-  return (a?.user_id as string | null | undefined) ?? null
+  if (!u?.id) console.warn("[createLeadMagnet] createdBy is not a user in this tenant — created_by_user_id left null")
+  return (u?.id as string | undefined) ?? null
 }
 
 // ============================================================================

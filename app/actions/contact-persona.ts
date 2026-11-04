@@ -84,7 +84,17 @@ export async function loadContactPersona(input: { contactId: string }) {
   const full = await g.svc.from("client_detailed_personas")
     .select(`${FIVE_LAYER_SELECT}`)
     .eq("contact_id", input.contactId).eq("brokerage_id", g.brokerageId).maybeSingle()
-  if (!full.error) return { ok: true as const, layered: true, persona: (full.data ?? null) as Record<string, unknown> | null }
+  if (!full.error) {
+    // C26 preview (wave 149): what "Create custom audience" WILL build for the stored campaign persona — the plan is pure
+    // (name from the template shelf, consent basis, the platform's own note), so the panel can show it before the click.
+    const cp = ((full.data as { marketing_persona?: { campaignPersona?: string | null } } | null)?.marketing_persona?.campaignPersona ?? null) as string | null
+    const { planPersonaAudience } = await import("@/lib/ads/persona-audience")
+    const plan = cp ? planPersonaAudience({ persona: cp, platform: "facebook", derived: true }) : null
+    const audiencePlan = plan === null ? null
+      : plan.ok ? { ok: true as const, audienceName: plan.audienceName, consentBasis: plan.consentBasis, platformNote: plan.platformNote }
+      : { ok: false as const, refusal: plan.refusal }
+    return { ok: true as const, layered: true, persona: (full.data ?? null) as Record<string, unknown> | null, audiencePlan }
+  }
   // m913 not applied: the legacy columns only — said, never shown as "no persona".
   const legacy = await g.svc.from("client_detailed_personas").select("persona_name, persona_type, buying_triggers, pain_points, ai_summary, updated_at")
     .eq("contact_id", input.contactId).eq("brokerage_id", g.brokerageId).maybeSingle()

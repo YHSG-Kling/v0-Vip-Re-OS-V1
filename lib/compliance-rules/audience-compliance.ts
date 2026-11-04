@@ -96,14 +96,45 @@ export interface AudienceProxyHit {
  * PURE. Every proxy term this text carries, as whole words / phrases. Empty = no proxy recognised (which is NOT a verdict on
  * the statutory words — callers run the field-token classifier beside this; the two together are the selection gate).
  */
-export function audienceProxyHits(text: string): AudienceProxyHit[] {
+export function audienceProxyHits(text: string, exemptPersonaLabels?: ReadonlySet<string>): AudienceProxyHit[] {
   const hay = normalise(text)
   if (hay.trim() === "") return []
   const hits: AudienceProxyHit[] = []
   for (const [term, proxyFor] of Object.entries(AUDIENCE_PROXY_TERMS)) {
-    if (hay.includes(` ${term} `)) hits.push({ term, proxyFor })
+    if (!hay.includes(` ${term} `)) continue
+    // Owner ruling 1 (wave 149, 2026-11-03 — "every persona is allowed"): a term that IS a persona label of the OS (a kernel-portal
+    // persona, a C20 life-event situation or one of its spellings — "empty nesters", "retirement", "newlyweds") is an audience
+    // BASIS, not a proxy, when the caller hands the persona vocabulary in. The ad platform's own housing rules (age / gender /
+    // ZIP / lookalike) are enforced beside this by the caller; words that are only a protected class ("women", "church goers")
+    // are never persona labels and still hit. Without the set the behaviour is unchanged (copy screens, segmentation rules).
+    if (exemptPersonaLabels && (exemptPersonaLabels.has(term) || exemptPersonaLabels.has(singular(term)))) continue
+    hits.push({ term, proxyFor })
   }
   return hits
+}
+
+/** PURE. "empty nesters" → "empty nester", "babies" → "baby", "retirees" → "retiree" (a label match is tried both ways). */
+function singular(term: string): string {
+  if (term.endsWith("ies")) return term.slice(0, -3) + "y"
+  if (term.endsWith("s") && !term.endsWith("ss")) return term.slice(0, -1)
+  return term
+}
+
+/** PURE. The persona vocabulary a caller hands to `audienceProxyHits` — every label normalised the way the proxy terms are
+ *  (lower-case, separators collapsed), with `_buyer` / `_seller` portal suffixes also offered bare ("first_time_buyer" → "first time
+ *  buyer" + "first time"). The SOURCES live where the personas live: lib/portal/persona-config.ts PERSONA_CONFIGS (ruling 2) and
+ *  lib/enrichment/life-event-vocabulary.ts LIFE_EVENT_VOCAB (C20) — this module stays import-free (see the header), so the
+ *  caller passes the raw labels and this normalises them. */
+export function personaLabelSet(rawLabels: Iterable<string>): ReadonlySet<string> {
+  const out = new Set<string>()
+  for (const raw of rawLabels) {
+    const label = normalise(raw).trim()
+    if (!label) continue
+    out.add(label)
+    const bare = label.replace(/ (buyer|seller|buyers|sellers)$/, "")
+    if (bare && bare !== label) out.add(bare)
+  }
+  return out
 }
 
 /**

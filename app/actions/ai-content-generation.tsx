@@ -2133,17 +2133,17 @@ export async function generateContentPlan(params: {
 
     // WAVE 148 (148Z): TENANT FROM THE SESSION. This read had NO tenant predicate — RLS alone decided, and a broad policy
     // would have handed other tenants' persona types to the plan prompt. Pinned to the session brokerage, and the error READ.
-    // Owner ruling 1: what reaches MARKETING is needs-based — a protected-characteristic persona type (senior, probate,
-    // divorce, military; computed by the one classifier) is dropped before the plan prompt sees it.
+    // TOMBSTONE (wave 149Z, owner ruling 2026-11-03 "every persona is allowed", lane 149A Outside-lane 3): a
+    // `protectedClassReasonFor(p.persona_type) === null` filter stood here and dropped senior / probate / divorce / military
+    // persona types before the plan prompt — the wave-148 needs-based firewall the owner REVERSED. Every persona reaches the
+    // plan; the plan's WORDING is what fair housing judges (the publish-time copy scan in lib/compliance-rules/** stays).
     const { data: personaRows, error: personasError } = await supabase
       .from("client_detailed_personas")
       .select("persona_type")
       .eq("brokerage_id", auth.actor.brokerageId)
       .limit(5)
     if (personasError) console.error("[generateContentPlan] Persona read refused (plan continues without it):", personasError.message)
-    const { protectedClassReasonFor } = await import("@/lib/lead-governance/protected-class-signals")
-    const personas = ((personaRows ?? []) as Array<{ persona_type: string | null }>)
-      .filter((p) => !!p.persona_type && protectedClassReasonFor(p.persona_type) === null)
+    const personas = ((personaRows ?? []) as Array<{ persona_type: string | null }>).filter((p) => !!p.persona_type)
 
     const { data: topContent } = await supabase
       .from("ai_generated_content")

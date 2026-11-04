@@ -327,22 +327,30 @@ export async function sendCollaborativeSearchInvite(params: {
   inviterName: string
   inviteToken: string
   searchId: string
+  /** Wave 149Z (lane 149B Outside-lane 4, C32 brand rule): the TENANT's brand (resolveConsentBrand — the one resolver), so the
+   *  family member sees whose service this is. Absent → the copy names no brand at all (never the platform's). */
+  tenantBrand?: string | null
 }) {
   const inviteUrl = `${process.env.NEXT_PUBLIC_APP_URL}/search/join?token=${params.inviteToken}`
+  // Names are data (the buyer typed their own; the brand is the tenant's row) — escaped before they reach HTML.
+  const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string))
+  const brand = (params.tenantBrand ?? "").trim()
+  const via = brand && brand !== "our brokerage" ? ` with ${brand}` : ""
 
   const htmlBody = `
     <html>
       <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>You're Invited to Collaborate on a Property Search!</h2>
-        <p>${params.inviterName} has invited you to join their property search.</p>
+        <h2>${esc(params.inviterName)} would love your opinion on a few homes</h2>
+        <p>${esc(params.inviterName)} is house-hunting${esc(via)} and shared the homes they are considering, so you can tell them what you think.</p>
+        <p>You will see only the homes they chose to share, and you can leave a quick reaction or a comment on each.</p>
         <p>
-          <a href="${inviteUrl}" 
+          <a href="${inviteUrl}"
              style="background: #0066cc; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
-            Join Search
+            See the homes
           </a>
         </p>
         <p style="color: #666; font-size: 14px;">
-          This invitation link expires in 7 days.
+          This invitation link expires in 7 days.${brand && brand !== "our brokerage" ? ` Sent on behalf of ${esc(params.inviterName)} by ${esc(brand)}.` : ""}
         </p>
       </body>
     </html>
@@ -350,9 +358,9 @@ export async function sendCollaborativeSearchInvite(params: {
 
   return await sendEmail({
     to: params.email,
-    subject: `${params.inviterName} invited you to collaborate on a property search`,
+    subject: `${params.inviterName} would love your opinion on a few homes${via}`,
     htmlBody,
-    textBody: `Join the search: ${inviteUrl}`,
+    textBody: `${params.inviterName} shared the homes they are considering${via} and would love your opinion: ${inviteUrl}`,
     metadata: { searchId: params.searchId, inviteToken: params.inviteToken },
   })
 }

@@ -68,10 +68,20 @@ export async function POST(req: NextRequest) {
     .digest("hex")
     .slice(0, 32)
 
+  // Wave 149Z (lane 149H Outside-lane 2): this is a PUBLIC endpoint, so a body-supplied contact id is a claim, not a fact. It is
+  // stored only when it names a contact of the POST's tenant (§4 — never another tenant's id, never an invented one); otherwise
+  // the view is recorded anonymously. A refused lookup also stores null (fail closed) and is logged.
+  let viewerContactId: string | null = null
+  if (typeof body.contact_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.contact_id)) {
+    const { data: viewer, error: viewerErr } = await svc.from("contacts").select("id").eq("id", body.contact_id).eq("brokerage_id", p.brokerage_id).maybeSingle()
+    if (viewerErr) console.warn("[blog/track-view] viewer contact not verified — recorded anonymously:", viewerErr.message)
+    viewerContactId = (viewer as { id?: string } | null)?.id ?? null
+  }
+
   await sentinelWrite(svc, svc.from("blog_post_views").insert({
     blog_post_id:            p.id,
     brokerage_id:            p.brokerage_id,
-    viewer_contact_id:       body.contact_id ?? null,
+    viewer_contact_id:       viewerContactId,
     viewer_persona_snapshot: body.persona_snapshot ?? null,
     source:                  body.source ?? "direct",
     referrer:                body.referrer ?? null,

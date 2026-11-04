@@ -634,7 +634,10 @@ export async function shareHomesWithFamilyAction(input: {
       sendEmailInvite: async (p) => {
         try {
           const { sendCollaborativeSearchInvite } = await import("@/lib/services/communication.service")
-          const sent: any = await sendCollaborativeSearchInvite({ email: p.email, inviterName, inviteToken: p.token, searchId: p.searchId })
+          // 149Z (lane 149B Outside-lane 4): the invite carries the TENANT's brand through the one resolver (session tenant).
+          const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+          const tenantBrand = await resolveConsentBrand(g.svc as never, { brokerageId: g.brokerageId }).catch(() => null)
+          const sent: any = await sendCollaborativeSearchInvite({ email: p.email, inviterName, inviteToken: p.token, searchId: p.searchId, tenantBrand })
           return sent && sent.success === false ? { ok: false, error: sent.error ?? "the sender refused" } : { ok: true }
         } catch (e) {
           return { ok: false, error: (e as Error)?.message ?? "the sender failed" }

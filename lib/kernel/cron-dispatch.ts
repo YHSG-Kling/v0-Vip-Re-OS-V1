@@ -396,15 +396,26 @@ export function duePaths(at: Date): string[] {
 /** Injectable seam: how a due path gets invoked (tests inject; prod uses fetch). */
 export type CronFetcher = (url: string, headers: Record<string, string>) => Promise<{ ok: boolean; status: number }>
 
+// Wave 149Z (lane 149J Outside-lane K — 143H-SO-03 / OL-08): the dispatcher stops WAITING after 55 s, but the target route
+// keeps running on its own invocation (its maxDuration governs it). A TimeoutError here therefore means "invoked, still
+// running — outcome not observed by the dispatcher", reported as 202 and listed in `stillRunning`, never as a failure and
+// never as a completed run. Every other error (DNS, refused, 4xx/5xx) is still a failure.
 const realFetcher: CronFetcher = async (url, headers) => {
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(55_000) })
-  return { ok: res.ok, status: res.status }
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(55_000) })
+    return { ok: res.ok, status: res.status }
+  } catch (e) {
+    if ((e as { name?: string } | null)?.name === "TimeoutError") return { ok: true, status: 202 }
+    throw e
+  }
 }
 
 export interface DispatchResult {
   due: number
   dispatched: number
   failures: Array<{ path: string; error: string }>
+  /** Invoked, but the dispatcher stopped waiting (202) — the run's outcome is the route's own log, not observed here. */
+  stillRunning?: string[]
 }
 
 /**
@@ -426,12 +437,14 @@ export async function dispatchDueCrons(
 
   const due = duePaths(now)
   const failures: Array<{ path: string; error: string }> = []
+  const stillRunning: string[] = []
   const results = await Promise.allSettled(
     due.map((path) => fetcher(`${base}${path}`, { authorization: `Bearer ${secret}` })),
   )
   results.forEach((r, i) => {
     if (r.status === "rejected") failures.push({ path: due[i], error: String(r.reason?.message ?? r.reason) })
     else if (!r.value.ok) failures.push({ path: due[i], error: `HTTP ${r.value.status}` })
+    else if (r.value.status === 202) stillRunning.push(due[i])
   })
-  return { due: due.length, dispatched: due.length - failures.length, failures }
+  return { due: due.length, dispatched: due.length - failures.length, failures, stillRunning }
 }

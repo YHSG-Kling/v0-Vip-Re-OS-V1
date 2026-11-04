@@ -188,11 +188,24 @@ async function main() {
   check("3k the catalogue speaks NO never-spoken capability", !intentCatalogue().some((r) => r.governedBy && (VOICE_NEVER_SPOKEN as readonly string[]).includes(r.governedBy)))
   check("3l an operability block is said BEFORE anything is promised",
     say("Create an ad for my new listing", agent, { operable: { ad_campaign_launch: false }, blockReason: { ad_campaign_launch: "connect Meta first" } }).authority_check.outcome === "not_operable")
-  const protectedAudience = say("Create an ad for my new listing targeting seniors")
-  check("3m FAIR HOUSING ON AD AUDIENCES: 'targeting seniors' is DROPPED with the reason; the ad still drafts on location",
-    protectedAudience.params.audience === null && protectedAudience.notes.some((n) => /Fair Housing/.test(n)) && protectedAudience.capability === "listing_ad_draft")
+  // Re-asserted wave 149Z to the owner's 2026-11-03 rule: a PERSONA audience is lawful ("seniors" passes); what is dropped
+  // is the housing ad platform's refused narrowing (age / gender / ZIP / lookalike) and proxy wording. Positive control flipped.
+  const narrowedAudience = say("Create an ad for my new listing targeting buyers aged 55 and over")
+  check("3m PLATFORM RULE ON AD AUDIENCES: age narrowing ('aged 55 and over') is DROPPED with Meta's Special Ad Category reason; the ad still drafts on location",
+    narrowedAudience.params.audience === null && narrowedAudience.notes.some((n) => /Special Ad Category/.test(n)) && narrowedAudience.capability === "listing_ad_draft", JSON.stringify(narrowedAudience.params.audience))
+  const lookalike = say("Create an ad for my new listing targeting a lookalike of my past buyers")
+  check("3m' …a LOOKALIKE audience is dropped too (Meta housing delivery rule)", lookalike.params.audience === null && lookalike.notes.some((n) => /lookalike/.test(n)), JSON.stringify(lookalike.params.audience))
+  const personaAudience = say("Create an ad for my new listing targeting seniors")
+  check("3n …a PERSONA audience ('seniors') passes untouched — every persona is allowed (owner ruling 1)", personaAudience.params.audience === "seniors" && personaAudience.notes.length === 0, JSON.stringify(personaAudience.params.audience))
   const needsAudience = say("Create an ad for my new listing targeting first-time buyers")
-  check("3n …a NEEDS-based audience ('first-time buyers') passes untouched (control)", needsAudience.params.audience === "first-time buyers" && needsAudience.notes.length === 0)
+  check("3n' …'first-time buyers' passes untouched (control)", needsAudience.params.audience === "first-time buyers" && needsAudience.notes.length === 0)
+  // Wave 149 integration (owner ruling 1 + C20): a typed audience word that IS a persona label of the OS ("empty nesters" is a
+  // kernel-portal persona and a life-event situation) is an audience BASIS, not a familial-status proxy; a word that is only a
+  // protected class ("women" — gender, which Meta's housing category refuses at delivery anyway) still drops the audience.
+  const personaWord = say("Create an ad for my new listing targeting empty nesters")
+  check("3n'' …'empty nesters' passes untouched — a persona label is never a proxy (owner ruling 1, personaAudienceLabels)", personaWord.params.audience === "empty nesters" && personaWord.notes.length === 0, JSON.stringify(personaWord.params.audience))
+  const classWord = say("Create an ad for my new listing targeting women")
+  check("3n''' POSITIVE CONTROL — 'women' (a protected class, not a persona) is still dropped with the proxy reason", classWord.params.audience === null && classWord.notes.some((n) => /women/.test(n)), JSON.stringify(classWord.params.audience))
 
   // ── 4 · EXECUTION RAILS ───────────────────────────────────────────────────
   console.log("\n── 4 · execution rails ──")
@@ -395,7 +408,8 @@ async function main() {
   const SECTIONS = ["ROLE AND MANDATE", "THE PERSON", "WHAT YOU MAY RELY ON", "WHAT YOU MUST NEVER INVENT", "THE DECISION YOU OWN", "CATALOGUE", "COMPLIANCE BOUNDARY", "ESCALATION", "OUTPUT CONTRACT"]
   check("8a the prompt carries every section of the owner's standard", SECTIONS.every((s) => prompt.includes(s)), SECTIONS.filter((s) => !prompt.includes(s)).join(","))
   check("8b it names the tenant's brand, the screen, the modality and lists EVERY route", prompt.includes("Oak & Main Realty") && prompt.includes("Ads") && /SPOKEN/.test(prompt) && intentCatalogue().every((r) => prompt.includes(`- ${r.key}:`)))
-  check("8c fair housing is scoped to public copy and ad audiences — buyer criteria are captured as said", /PUBLIC MARKETING COPY and AD AUDIENCES/.test(prompt) && /captured as said/.test(prompt))
+  check("8c fair housing is scoped to WORDING + the platform's housing rules on AD AUDIENCES (any persona) — buyer criteria are captured as said",
+    /WORDING of public marketing copy/.test(prompt) && /may be any persona/.test(prompt) && /Special Ad Category/.test(prompt) && /captured as said/.test(prompt) && !/captured only as needs/.test(prompt))
   check("8d POSITIVE CONTROL: a one-line prompt fails the rubric", !SECTIONS.every((s) => "Classify the command.".includes(s)))
   check("8e the brain/field/command prompts are gone — the ONE prompt is the only intent prompt (5a holds the tree)", !/Respond with ONLY the intent string/.test(code("app/api/internal/voice-command/route.ts")))
   check("8f matchRoutes on the ads screen breaks a tie toward the ad, never inventing one", matchRoutes("ad for this listing", "ads")[0]?.route.key === "listing_ad_draft" && matchRoutes("hello there", "ads").length === 0)

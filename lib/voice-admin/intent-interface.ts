@@ -41,12 +41,12 @@ import { FEATURE_FLAGS } from "@/lib/security/permission-matrix"
 import { RoleManager } from "@/lib/security/role-manager"
 import { toCanonicalRole, type CanonicalRole } from "@/lib/security/types"
 import { extractCriteriaFromTranscript, extractLifestyleAsks } from "@/lib/buyer-search/conversation-criteria"
-import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
-import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
+import { audienceProxyHits } from "@/lib/compliance-rules/audience-compliance"
 import { resolveSpokenDate, resolveSpokenTime } from "@/lib/voice/spoken-values"
 import { voiceCapabilities, humanManager, VOICE_NEVER_SPOKEN } from "./kernel-command-surface"
 import { assistantSkillRefusal } from "./assistant-reach"
 import { parseTeamCommandText, type ParsedTeamCommand } from "@/lib/voice/parse-team-command"
+import { personaAudienceLabels } from "@/lib/portal/persona-config"
 
 // ─── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -669,19 +669,42 @@ export function checkIntentAuthority(route: IntentRoute, actor: IntentActor, opt
   return { ...base, outcome: "allowed", allowed: true, reasons }
 }
 
-// ─── Compliance boundary: ad audiences only (fair housing on public copy and ad audiences — owner) ──────
+// ─── Compliance boundary on a spoken ad audience: proxy wording + the platform's housing delivery rules (owner, 2026-11-03) ──
 
-/** PURE: a spoken ad audience that names a protected characteristic is DROPPED (the ad still drafts on
- *  location targeting) with the reason. Uses the two existing gates — the protected-class token gate and
- *  the fair-housing phrase list — never a third list (§6). Needs-based audiences pass. */
+/** TOMBSTONE (wave 149Z; owner ruling 1, lane 149J Outside-lane A5 / 149A Outside-lane 4). This screen used to DROP any
+ *  audience carrying a protected-class FIELD token (`protectedClassReasonFor` — "seniors", "probate heirs", "divorcing",
+ *  "military families") or matching the public-copy phrase list (`detectFairHousingViolations`). The owner reversed that:
+ *  a persona audience is lawful and every persona is allowed; fair housing concerns the WORDING (the drafted ad is still
+ *  scanned by lib/compliance-rules/**) and the ad platform's housing rules. What stays is exactly those two survivors:
+ *    · the audience-selection proxy vocabulary (`audienceProxyHits`, lib/compliance-rules/audience-compliance.ts — the one
+ *      list lane 149A kept for free-text audience wording: "young families", "church goers", "women");
+ *    · Meta's Special Ad Category / Google's housing policy on DELIVERY — no age, gender or ZIP narrowing, no lookalike
+ *      (the same rules `validateAdReadiness` in lib/ads/connectors/ad-payload.ts enforces on the delivery spec). */
+const HOUSING_DELIVERY_NARROWING: ReadonlyArray<{ rule: string; re: RegExp }> = [
+  { rule: "age narrowing", re: /\b(ages?|aged)\s+\d{2}|\b\d{2}\s*(\+|plus\b|and\s+(over|up)\b)|\b(over|under)\s+\d{2}\b|\b\d{2}\s*(-|to)\s*\d{2}\b|\byears?\s+old\b/i },
+  { rule: "gender narrowing", re: /\b(gender|male|males|female|females)\b/i },
+  { rule: "ZIP narrowing", re: /\bzip(\s*codes?)?\b|\bpostal\s+codes?\b|\b\d{5}(-\d{4})?\b/i },
+  { rule: "a lookalike audience", re: /\blook[\s-]?alikes?\b|\bsimilar\s+audiences?\b/i },
+]
+
+/** PURE: a spoken ad audience is DROPPED (the ad still drafts on location targeting) only when its words select people by
+ *  a protected-class proxy or ask for narrowing the housing ad platform refuses. Every persona audience passes. */
 function screenAdAudience(audience: string | null): { audience: string | null; refusedReason: string | null } {
   if (!audience) return { audience: null, refusedReason: null }
-  const tokenReason = protectedClassReasonFor(audience)
-  const phrases = detectFairHousingViolations(audience)
-  if (tokenReason || phrases.length > 0) {
+  // A persona label ("empty nesters", "retirement", "probate") is an audience BASIS, never a proxy (owner ruling 1; the labels
+  // come from the kernel-portal personas + the C20 situations — lib/portal/persona-config.ts personaAudienceLabels).
+  const proxy = audienceProxyHits(audience, personaAudienceLabels())[0]
+  const narrowing = HOUSING_DELIVERY_NARROWING.find((n) => n.re.test(audience))
+  if (narrowing) {
     return {
       audience: null,
-      refusedReason: `I left out the audience "${audience}" — an ad can't be aimed at a protected characteristic (Fair Housing Act § 3604). Describe what they need instead: first-time buyers, relocating, downsizing, investors.`,
+      refusedReason: `I left out the audience "${audience}" — housing ads run in Meta's Special Ad Category (and Google's housing policy), which refuses ${narrowing.rule}. Any persona works as the audience (first-time buyers, seniors, military, relocating, investors…).`,
+    }
+  }
+  if (proxy) {
+    return {
+      audience: null,
+      refusedReason: `I left out the audience "${audience}" — "${proxy.term}" selects people by a stand-in for ${proxy.proxyFor.replace(/_/g, " ")}, which a housing ad's wording and Meta's Special Ad Category don't allow (Fair Housing Act § 3604(c)). Name the persona instead: first-time buyers, seniors, military, relocating, investors…`,
     }
   }
   return { audience, refusedReason: null }
@@ -719,7 +742,7 @@ function explainPlan(route: IntentRoute, params: Params, authority: AuthorityChe
       steps = [
         `Read the facts of ${listingWords(params.listing)} (price, beds, baths, city) from the listing record — nothing invented.`,
         `Draft a ${params.kind === "just_sold" ? "just-sold" : params.kind === "price_reduction" ? "price-improvement" : "just-listed"} ad in your brand voice${params.outcome ? `, built to ${params.outcome}` : ""}${params.platform ? ` for ${params.platform}` : ""}, fair-housing clean by construction, with your approved media.`,
-        params.audience ? `Aim it at ${params.audience} (needs-based) around the listing's location.` : "Target the listing's area (location only — never a protected characteristic).",
+        params.audience ? `Aim it at ${params.audience} — the persona's situation — around the listing's location; the wording passes the fair-housing copy scan and Meta's housing delivery rules apply.` : "Target the listing's area (location; Meta's housing delivery rules apply — no age, gender or ZIP narrowing).",
         "Put the creative in the ad approval queue: no spend and nothing runs until your approver says yes.",
       ]
       break
@@ -989,7 +1012,7 @@ export function intentSystemPrompt(input: { brandName: string | null; role: Cano
     "WHAT YOU MUST NEVER INVENT: a name, an address, a listing, a date, a time, a price, a link, an audience or an outcome the person did not say. A param value must be copied from their words (dates and times may be normalised: \"Saturday\", \"1 to 3 pm\"). If a required param (marked *) was not said, leave it out — the application will ASK; a missing field is fine, a guessed one is a defect.",
     "THE DECISION YOU OWN: choosing ONE route key from the catalogue (or \"none\") and extracting the params they said. You do not execute anything, you do not answer the request, and you never decide whether they are allowed — the application's authority rails decide that after you.",
     `CATALOGUE (route: what it is for [params, * = required]):\n${catalogue}`,
-    "COMPLIANCE BOUNDARY: fair housing applies to PUBLIC MARKETING COPY and AD AUDIENCES. For an ad, an audience is captured only as needs (first-time buyers, relocating, downsizing, investors) — if they describe an audience by race, colour, religion, sex, disability, familial status (children, families with kids), national origin, age or any protected characteristic, leave the audience param empty. Buyer search criteria are the buyer's own stated wishes and are captured as said; never infer household, age or demographics.",
+    "COMPLIANCE BOUNDARY: fair housing applies to the WORDING of public marketing copy and ads, and the ad platform's housing rules apply to AD AUDIENCES. An ad audience may be any persona — the person's situation (first-time buyers, seniors, military, divorcing, probate, relocating, downsizing, investors) — captured as they said it. Leave the audience param empty only when they ask for age, gender or ZIP narrowing or a lookalike audience, or describe people by race, colour, religion, national origin, disability or sexual orientation (Meta's Special Ad Category for housing refuses that narrowing). Buyer search criteria are the buyer's own stated wishes and are captured as said; never infer household, age or demographics.",
     "ESCALATION: anything that moves money, writes the books, changes a deal's legal stage, signs, or submits a contract is route \"none\" with needs_human true — those start from their own screen with a human. If two routes fit equally, pick the more specific one and set confidence \"medium\". If nothing fits, route \"none\" with confidence \"low\".",
     "OUTPUT CONTRACT: JSON matching the schema exactly — { route, params: [{ name, value }], confidence: high|medium|low, needs_human, reason }. `reason` is one short sentence a human could read.",
   ].join("\n\n")

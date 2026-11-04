@@ -44,7 +44,7 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 const P = "app/portal/[contactId]"
-type Verdict = "BUILT" | "PARTIAL" | "BUILT (149B)" | "WIRED (149B)"
+type Verdict = "BUILT" | "PARTIAL" | "BUILT (149B)" | "WIRED (149B)" | "BUILT (149J)"
 interface Capability { key: string; verdict: Verdict; surface: string; door: string; token: string; missing?: string }
 
 /** The audit (lane 149B notes "Verdict per requirement" carries the same table). `token` must appear in BOTH the
@@ -72,7 +72,10 @@ const CAPABILITIES: Capability[] = [
   { key: "family collaborative search (C28)", verdict: "BUILT (149B)", surface: `${P}/search/ShareWithFamilyCard.tsx`, door: "app/actions/collaborative-search.ts", token: "shareHomesWithFamilyAction" },
   { key: "collaborator view (C28)", verdict: "BUILT (149B)", surface: "app/search/join/page.tsx", door: "app/actions/collaborative-search.ts", token: "acceptInvitation" },
   { key: "family opinions → buyer (C28)", verdict: "BUILT (149B)", surface: `${P}/search/ShareWithFamilyCard.tsx`, door: "app/actions/collaborative-search.ts", token: "loadFamilyFeedbackAction" },
-  { key: "communication preferences", verdict: "PARTIAL", surface: "app/components/portal/PortalSettingsPage.tsx", door: "app/actions/ai-isa/process-opt-out.ts", token: "processOptOut", missing: "no portal screen calls the opt-out door; processOptOut gates on getAgentContext (a portal contact has no agent brokerage) — lane 149J (Outside-lane)" },
+  // Flipped wave 149Z (lane 149B Outside-lane 1): lane 149J built the portal opt-out on the contact-self door
+  // (updateContactProfile → portalChannelWithdrawals → the ONE opt-out writer writeOptOut, source 'portal'), gated by the
+  // contact's own access, instead of a processPortalOptOut twin. §A' below holds the door to the writer.
+  { key: "communication preferences", verdict: "BUILT (149J)", surface: "app/components/portal/PortalSettingsPage.tsx", door: "app/actions/portal-settings.ts", token: "updateContactProfile" },
 ]
 
 /** PURE: a capability resolves when both files exist and both carry the token in stripped source. */
@@ -91,6 +94,11 @@ for (const c of CAPABILITIES.filter((x) => x.verdict !== "PARTIAL")) {
 }
 for (const c of CAPABILITIES.filter((x) => x.verdict === "PARTIAL")) {
   check(`${c.key} [PARTIAL] is published with what is missing`, !!c.missing && c.missing.length > 20)
+}
+{
+  const door = code("app/actions/portal-settings.ts")
+  check("A' communication preferences: the portal door records a channel withdrawal through the ONE opt-out writer (writeOptOut, source 'portal') under the contact's own access, and reads its result",
+    /requireContactAccess\(/.test(door) && /writeOptOut\(svc, access\.brokerageId, \{[^}]*source: "portal"/.test(door) && /if \(!res\.success\) return \{ success: false/.test(door))
 }
 check("POSITIVE CONTROL: a capability whose surface never calls its door does NOT resolve", !resolves({ key: "x", verdict: "BUILT", surface: `${P}/learn/page.tsx`, door: "app/actions/collaborative-search.ts", token: "shareHomesWithFamilyAction" }).ok)
 check("POSITIVE CONTROL: a capability whose door file is absent does NOT resolve", !resolves({ key: "x", verdict: "BUILT", surface: `${P}/learn/page.tsx`, door: "app/actions/no-such-door.ts", token: "portal-education" }).ok)

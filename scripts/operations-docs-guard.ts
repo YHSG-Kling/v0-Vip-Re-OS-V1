@@ -652,8 +652,14 @@ console.log("\nC. HOSTING FACTS (vercel.json, next.config.ts, proxy.ts, the cron
   // The sweep conflation (scripts/dangling-link-sweep.ts:179 reads every `source:` as a redirect): a catch-all '/:path*' header source would turn every path into "served by a redirect".
   check("no headers() source is the catch-all '/:path*' (it would blind scripts/dangling-link-sweep.ts, which reads every `source:` as a redirect)", !/source\s*:\s*['"]\/:path\*['"]/.test(next))
   check("the app still frames-controls per tenant in proxy.ts (frame-ancestors) and the widget routes keep their explicit CSP", /frame-ancestors/.test(blankComments(rd("proxy.ts"))) && /frame-ancestors \*/.test(next))
-  check("the demo of absence stays true: no app/global-error.tsx and no instrumentation.ts (R-5) and no app/api/health route (F-4) — if one lands, the facts block and the notes must be updated",
-    !has("app/global-error.tsx") && !has("instrumentation.ts") && !has("app/api/health/route.ts"))
+  // Re-asserted wave 149Z: this pinned a WAYPOINT ("no app/global-error.tsx") that could only pass while the gap stayed open
+  // (CLAUDE.md §2). THE RULE: the generated facts row states each observability file's presence exactly as the tree has it
+  // (the drift check below holds the doc to the row); positive control on both spellings.
+  const factsRow = renderHostingFacts()
+  const states = (f: string) => factsRow.includes(`${f} ${has(f) ? "present" : "ABSENT"}`)
+  check("the hosting-facts row states app/global-error.tsx and instrumentation.ts (R-5) exactly as present / ABSENT in the tree",
+    states("app/global-error.tsx") && states("instrumentation.ts"))
+  check("POSITIVE CONTROL — the presence finder distinguishes the two spellings", "x.tsx present".includes("x.tsx present") && !"x.tsx ABSENT".includes("x.tsx present"))
 }
 const archDoc = "docs/architecture/PRODUCTION-ARCHITECTURE.md"
 const hostBlock = renderHostingFacts()

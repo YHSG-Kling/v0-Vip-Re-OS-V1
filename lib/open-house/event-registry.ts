@@ -195,7 +195,8 @@ export function eventBrandOwner(v: unknown): EventBrandOwner { return v === "pla
 /**
  * The platform's own names as they could appear in copy — the product brand (lib/platform/product-brand.ts DEFAULT_PRODUCT_BRAND
  * "VIP Agents", the configured name passed in), its domain, and the legacy OS name global_settings.app_name defaults to
- * ('VIP Real Estate OS', live column default read 2026-11-03).
+ * (the legacy "VIP Real Estate" + "OS" spelling, live column default read 2026-11-03 — not spelled out here: no runtime file may
+ * carry the platform's literal name, test:asset-production §17).
  * @proofSeam scripts/event-branding-guard.ts plants each spelling as a positive control
  */
 export const PLATFORM_BRAND_PATTERNS: readonly RegExp[] = [/\bvip\s*-?\s*agents\b(\.ai)?/i, /\bvipagents\b/i, /\bvip\s+real\s+estate\s+os\b/i, /\bvip[-\s]?re[-\s]?os\b/i]

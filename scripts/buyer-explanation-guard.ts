@@ -160,6 +160,21 @@ async function main() {
   check("a 41-minute drive is a MISS against 30; a trunk road 200 ft away is a quiet MISS (traffic sound said plainly)", near.misses.some((m) => m.field === "lifestyle:commute" && /over the 30 minutes/.test(m.detail)) && near.misses.some((m) => m.field === "lifestyle:quiet_setting" && /Dallas Pkwy/.test(m.detail)))
   const bare = gen.explainCriteriaFit({ price: 640000, bedrooms: 3, bathrooms: 2, property_type: "single_family", city: "Frisco", lot_size: 500 } as never, criteria as never, null)
   check("UNKNOWNS NEVER FACTS: with no evidence, commute / walkability / quiet are UNKNOWN; an ambiguous lot unit (500) is UNKNOWN, never converted", ["commute", "nearby_amenity", "quiet_setting", "outdoor_space"].every((k) => bare.unknowns.some((u) => u.field === `lifestyle:${k}`)) && bare.unknowns.some((u) => u.field === "lifestyle:outdoor_space" && /acres or square feet/.test(u.detail)))
+  {
+    // 149Z (lane 149J B1, m954): a STATED unit (listings.lot_size_unit) is read before the magnitude rule — the ambiguous 500
+    // that is UNKNOWN without a unit becomes 500 sq ft when the listing says so; 3 stated as acres is 3 acres. No unit → unchanged.
+    const ev = await import("../lib/buyer-search/explanation-evidence")
+    const stated = ev.lotFactsFrom({ lotSize: 500, lotSizeUnit: "square_feet", source: "listing" })
+    const acresStated = ev.lotFactsFrom({ lotSize: 3, lotSizeUnit: "acres", source: "listing" })
+    const unstated = ev.lotFactsFrom({ lotSize: 500, lotSizeUnit: null, source: "listing" })
+    check("STATED LOT UNIT (m954): 500 stated square_feet → 500 sq ft (reported, not inferred); 3 stated acres → 3 acres; the same 500 with no unit stays UNKNOWN (positive control)",
+      stated?.basis === "reported_sqft" && stated.sqft === 500 && acresStated?.basis === "reported_acres" && acresStated.acres === 3 && unstated?.basis === "unknown_unit" && unstated.acres === null,
+      JSON.stringify({ stated, acresStated, unstated }))
+    const withUnit = gen.explainCriteriaFit({ price: 640000, bedrooms: 3, bathrooms: 2, property_type: "single_family", city: "Frisco", lot_size: 2.5, lot_size_unit: "acres" } as never, criteria as never, null)
+    check("…and the explanation reads the listing's stated unit (2.5 acres stated → matches the 2-acre ask, high confidence, no 'doesn't record the unit' caveat)",
+      withUnit.matches.some((m) => m.field === "lifestyle:outdoor_space" && /2\.5 acres/.test(m.detail) && m.evidence?.confidence === "high" && !/doesn't record the unit/.test(m.evidence?.caveat ?? "")),
+      JSON.stringify(withUnit.matches.map((m) => [m.field, m.detail, m.evidence?.confidence])))
+  }
   const small = gen.explainCriteriaFit({ price: 500000, lot_size: 0.18, city: "Frisco" } as never, { ...conv.emptyCriteria(), lifestyle: extractLifestyleAsks("less yard please") } as never, null)
   // Wave 149 (lane 149B — owner ruling 5, C27: "the buyer decides the yard and acreage minimum; AI clarifies, never invents
   // a minimum"): this pinned a WAYPOINT — "less yard" MATCHED a 0.18-acre lot against the platform's invented 0.2-acre bar

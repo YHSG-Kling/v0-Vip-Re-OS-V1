@@ -12,7 +12,7 @@
  *   B. THE CREATE DOOR ASKS BEFORE IT BUILDS — no answers → the questions (every persona offered), nothing written.
  *   C. THE ORDER IS THE ORDER — the magnet's primary is produced BEFORE the form row exists; the secondaries AFTER it; the
  *      package and its ledger row carry magnet → landing_page → funnel (positive control: a re-ordered stamp list fails).
- *   D. THE CREATOR IS STORED — created_by_user_id = the creator's users.id; an agents.id is crossed via agents.user_id; solo /
+ *   D. THE CREATOR IS STORED — created_by_user_id = the creator's users.id; an agents.id is never read as one (null; 149Z); solo /
  *      team / brokerage are not assumed.
  *   E. THE PAGE IS ON THE TENANT SITE, THE QR RESOLVES — storefront path, a connected custom domain, the ONE lead-magnet QR
  *      (label lead_magnet:<id>), qr_code_id on the form, and the QR's target resolves to THIS tenant's form (another tenant's
@@ -219,7 +219,11 @@ async function main() {
     const c = await createLeadMagnet({ title: "Agent-id creator", description: "x", magnetType: "generic_form", brokerageId: B2, agentId: AG2, createdBy: AG2, publishState: "draft" }, { client: d2 as never })
     const c2 = await createLeadMagnet({ title: "Foreign creator", description: "x", magnetType: "generic_form", brokerageId: B2, agentId: AG2, createdBy: U1, publishState: "draft" }, { client: d2 as never })
     const f1 = rows(d2, "lead_capture_forms").find((f) => f.id === c.magnetId), f2 = rows(d2, "lead_capture_forms").find((f) => f.id === c2.magnetId)
-    check("a caller passing an agents.id (launch-war-room does) is crossed via agents.user_id — the users FK holds (§3)", c.success && f1?.created_by_user_id === U2)
+    // Re-asserted wave 149Z: the RULE is "the users FK only ever holds a users.id of this tenant" (§3). The agents.id crossing
+    // that used to satisfy it was one value read as two identities; its one caller (the war room) now passes the users.id.
+    check("an agents.id handed as createdBy is never read as a user — created_by_user_id is null, the users FK holds (§3)", c.success && f1?.created_by_user_id === null)
+    check("the launch war room passes the agent's USERS id as createdBy (no agents.id reaches the creator column)",
+      /createLeadMagnet\(\{[\s\S]{0,600}createdBy:\s*agentUserId/.test(readFileSync("lib/kernel/launch-war-room.ts", "utf8")) && !/createdBy:\s*agentRowId/.test(readFileSync("lib/kernel/launch-war-room.ts", "utf8")))
     check("a users.id from ANOTHER tenant is never recorded as this tenant's creator (null, not a guess)", c2.success && f2?.created_by_user_id === null)
   }
 

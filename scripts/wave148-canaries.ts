@@ -514,14 +514,17 @@ group("148D", "one intent interface (interpretIntent → plan → authority → 
     },
   },
   {
-    id: "148D·C17", label: "fair housing on ad audiences: 'targeting seniors' is DROPPED with the § 3604 reason (the ad still drafts); 'first-time buyers' passes",
+    // Re-asserted wave 149Z (owner ruling 2026-11-03): a persona audience ('seniors') is lawful and passes; what is dropped is
+    // the housing ad platform's refused narrowing (age / gender / ZIP / lookalike). Both arms flipped to the owner's rule.
+    id: "148D·C17", label: "ad audiences: a persona ('seniors', 'first-time buyers') passes; age narrowing ('aged 55 and over') is DROPPED with Meta's Special Ad Category reason (the ad still drafts)",
     run: async () => {
       const I = await import("../lib/voice-admin/intent-interface")
-      const bad = I.interpretIntent({ utterance: "Create an ad for my new listing targeting seniors", modality: "voice", actor: DAGENT, tenant: DTENANT, now: NOW })
+      const bad = I.interpretIntent({ utterance: "Create an ad for my new listing targeting buyers aged 55 and over", modality: "voice", actor: DAGENT, tenant: DTENANT, now: NOW })
       const good = I.interpretIntent({ utterance: "Create an ad for my new listing targeting first-time buyers", modality: "voice", actor: DAGENT, tenant: DTENANT, now: NOW })
+      const persona = I.interpretIntent({ utterance: "Create an ad for my new listing targeting seniors", modality: "voice", actor: DAGENT, tenant: DTENANT, now: NOW })
       return {
-        positive: good.params.audience === "first-time buyers" && good.notes.length === 0,
-        negative: bad.capability === "listing_ad_draft" && bad.params.audience === null && bad.notes.some((n) => /Fair Housing/.test(n)),
+        positive: good.params.audience === "first-time buyers" && good.notes.length === 0 && persona.params.audience === "seniors" && persona.notes.length === 0,
+        negative: bad.capability === "listing_ad_draft" && bad.params.audience === null && bad.notes.some((n) => /Special Ad Category/.test(n)),
         detail: JSON.stringify({ bad: bad.params.audience, notes: bad.notes }),
       }
     },

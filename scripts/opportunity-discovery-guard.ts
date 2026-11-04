@@ -224,6 +224,17 @@ async function main() {
     ok(hook2.opportunity?.menu.options.find((x) => x.mode === "appropriate_outreach")?.status === "needs_authority" || hook2.opportunity?.menu.options.find((x) => x.mode === "appropriate_outreach")?.status === "not_eligible", "the hook never asserts authority it did not read (outreach is needs_authority / not_eligible, never eligible by default)")
     const foreign = await quiet(() => mv.movementSignalsForArbiter(d, { brokerageId: B2, contactId: "c2", now: NOW, windowDays: 180 }))
     ok(foreign.signals.length === 0 && !foreign.opportunity, "tenant-pinned: another tenant gets no reading and no menu")
+    // 149Z (lane 149H Outside-lane 1 → the arbiter READS the reading): the facts the model sees carry only the eligible modes.
+    const arb = { opportunityFactsFrom: od.opportunityFactsFrom }
+    const f1 = arb.opportunityFactsFrom(hookSingle.opportunity as never)
+    const f2 = arb.opportunityFactsFrom(hook2.opportunity as never)
+    ok(!!f1 && f1.stage === "single_observation" && !f1.modes.some((m) => m.mode === "appropriate_outreach") && f1.modes.some((m) => m.mode === "quiet_monitoring"),
+      `the arbiter's evidence for a single observation never lists outreach (not_eligible is dropped): ${JSON.stringify(f1?.modes.map((m) => m.mode))}`)
+    ok(!!f2 && ["emerging", "likely", "stated"].includes(f2.stage) && f2.modes.every((m) => m.status !== "not_eligible"), "(positive control) a combined reading reaches the arbiter's evidence with its stage, no not_eligible mode")
+    ok(arb.opportunityFactsFrom(null) === undefined && arb.opportunityFactsFrom(foreign.opportunity as never) === undefined, "no reading → no opportunity evidence (another tenant's empty hook adds nothing)")
+    const arbSrc = blankStrings(src("lib/ai-isa/followup-arbiter.ts"))
+    ok(/opportunity:\s*sig\.opportunity/.test(arbSrc) && /facts\.opportunity\s*=\s*opp/.test(arbSrc) && /opportunityFactsFrom\(a\.opportunity\)/.test(arbSrc) && /OPPORTUNITY_COMBINATION_BRIEF/.test(arbSrc) && /opportunity:\s*moved\.opportunity/.test(arbSrc),
+      "stripped source: the arbiter carries the hook's opportunity through loadLifeChangeSignals into its facts and appends the combination brief to its system prompt")
   }
 
   // ── F ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -234,6 +245,14 @@ async function main() {
     ok(/behavioural researcher with a conscience/.test(brief) && /NONE of them alone/.test(brief) && /never raise/.test(brief) && /never exploit hardship/.test(brief) && /Paid research is a cost/.test(brief), "the brief names the role, the single-observation rule, the policy ceiling, the never-exploit rule and the cost rule")
     const sig = blankStrings(src("lib/intent/movement-signals.ts"))
     ok(/opportunity:\s*\{\s*reading,\s*menu\s*\}/.test(sig) && /stageAtLeast\(reading\.primary\.stage,/.test(sig), "stripped source: the arbiter hook returns { reading, menu } and gates the life change on the reading's stage")
+    {
+      // 149Z (this lane's Outside-lane 2): the public view endpoint stores a viewer contact only when it is the POST's tenant's.
+      const tv = blankStrings(src("app/api/blog/track-view/route.ts"))
+      const tvRaw = src("app/api/blog/track-view/route.ts")
+      ok(!/viewer_contact_id:\s*body\.contact_id/.test(tvRaw) && /\.eq\("brokerage_id", p\.brokerage_id\)/.test(tvRaw) && /viewer_contact_id:\s*viewerContactId/.test(tv),
+        "the public blog view endpoint never stores a body-supplied contact id unverified — only a contact of the post's own tenant (else null)")
+      ok(/viewer_contact_id:\s*body\.contact_id/.test("viewer_contact_id: body.contact_id ?? null"), "(positive control) the finder sees the old unverified write")
+    }
     const TIMETABLE = /\b\d+\s*\*?\s*(?:DAY_MS|days?\b|hours?\b|weeks?\b)|reminderDaysBefore|cadence\s*[:=]\s*\d/
     const mod = blankStrings(src("lib/intent/opportunity-discovery.ts"))
     ok(!TIMETABLE.test(mod) && TIMETABLE.test("const reminderDaysBefore = 7"), "no fixed timetable in the opportunity module (control: a planted `reminderDaysBefore = 7` is caught)")

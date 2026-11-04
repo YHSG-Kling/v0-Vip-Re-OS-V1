@@ -94,8 +94,10 @@ export function ShellProvider({ children }: { children: React.ReactNode }) {
         case "f":
           e.preventDefault()
           // Trigger Cmd+K palette via synthetic keydown so the existing
-          // CommandPalette listener picks it up
-          window.dispatchEvent(
+          // CommandPalette listener picks it up. 149Z: dispatched on DOCUMENT —
+          // the palette listens on document, and an event dispatched on window
+          // never reaches a document listener (the shortcut did nothing).
+          document.dispatchEvent(
             new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true })
           )
           break
