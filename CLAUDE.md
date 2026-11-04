@@ -200,7 +200,11 @@ This has bitten timeline (six spellings), video status (22), and vendor category
 - Run the thing. Quote its output. "Should work" is not a result.
 - Report failures with their output. If a step was skipped, say so.
 - The **full guard chain** runs before any push:
-  `NODE_OPTIONS="--max-old-space-size=10000" npm run guard`
+  `NODE_OPTIONS="--max-old-space-size=12288" npm run guard`
+  (measured 2026-11-04 on a 16 GB / 4-CPU box: the chain's first step, the whole-project `tsc --noEmit`,
+  aborted "Ineffective mark-compacts near heap limit" at 10000 MB — 9.83 GB used — and again at 11264 MB —
+  11.05 GB used — and passed at 12288 MB; 7,251 node_modules + 3,011 app + 2,213 lib + 1,221 scripts files.
+  Nothing else may run beside it: 12.3 GB heap plus V8 overhead leaves ~2 GB on that box.)
   and **`GUARD_EXIT` grepped from the log is the only trustworthy signal** —
   the log contains the words "fail" and "failed" hundreds of times in prose.
 - Do not run a full `tsc --noEmit` or full guard chain in parallel lanes; they
