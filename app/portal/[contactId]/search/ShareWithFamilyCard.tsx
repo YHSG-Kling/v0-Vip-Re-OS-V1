@@ -25,7 +25,7 @@ export interface ShareableHome { ref: string; label: string }
 type Digest = {
   searchId: string | null
   feedbackForShoppingAgent: boolean
-  collaborators: Array<{ id: string; name: string | null; status: string; channel: string | null }>
+  collaborators: Array<{ id: string; name: string | null; status: string; channel: string | null; invitedAt?: string | null; invitedByUserId?: string | null; lastViewedAt?: string | null }>
   homes: Array<{ sharedHomeId: string; listingRef: string; address: string | null; opinions: Array<{ by: string | null; vote: string | null; comment: string | null }> }>
 }
 
@@ -84,7 +84,7 @@ export function ShareWithFamilyCard({ contactId, homes }: { contactId: string; h
       </CardHeader>
       <CardContent className="space-y-4">
         {homes.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Save a home or two first — then you can share them here.</p>
+          <p className="text-sm text-muted-foreground">No saved homes yet — save a home or two first, then you can share them here.</p>
         ) : (
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium">Which homes?</legend>
@@ -124,7 +124,11 @@ export function ShareWithFamilyCard({ contactId, homes }: { contactId: string; h
             <ul className="space-y-1 text-sm">
               {digest.collaborators.map((c) => (
                 <li key={c.id} className="flex items-center justify-between gap-2">
-                  <span>{c.name ?? "Family member"} · {c.status}</span>
+                  <span>
+                    {c.name ?? "Family member"} · {c.status}
+                    {c.invitedAt ? ` · invited ${new Date(c.invitedAt).toLocaleDateString()}` : ""}
+                    {c.lastViewedAt ? ` · last looked ${new Date(c.lastViewedAt).toLocaleDateString()}` : ""}
+                  </span>
                   {c.status !== "closed" && <Button type="button" size="sm" variant="ghost" onClick={() => close(c.id)} disabled={pending}>Close their link</Button>}
                 </li>
               ))}

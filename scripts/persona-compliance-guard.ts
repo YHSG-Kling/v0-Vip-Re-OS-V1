@@ -378,9 +378,11 @@ async function main() {
   const sqlOf = (n: string) => raw(`supabase/migrations/${n}`).split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
   const m934 = migs.find((n) => /^m934-/.test(n))
   const readds = migs.filter((n) => Number(n.match(/^m(\d+)/)![1]) > 934 && NEEDS_CHECK.test(sqlOf(n)))
-  check("m934 DROPS client_detailed_personas_marketing_needs_based_check (lane stamp or APPLIED LIVE on line 1) and no later migration re-adds it",
+  // The rule, not a waypoint: the migration is APPLIED LIVE (2026-11-03) — a file that lost its stamp, or a later file that re-adds
+  // the CHECK, is the defect (the lane-stamp alternative retired with the stamp; migration-claim-guard holds the ledger in agreement).
+  check("m934 DROPS client_detailed_personas_marketing_needs_based_check, is stamped APPLIED LIVE on line 1, and no later migration re-adds it",
     !!m934 && /DROP CONSTRAINT IF EXISTS client_detailed_personas_marketing_needs_based_check/.test(sqlOf(m934)) && !NEEDS_CHECK.test(sqlOf(m934))
-    && (/^-- WRITTEN, NOT APPLIED \(wave 149, lane 149A\)/.test(raw(`supabase/migrations/${m934}`)) || /^-- ── APPLIED LIVE /.test(raw(`supabase/migrations/${m934}`))) && readds.length === 0, readds.join(","))
+    && /^-- ── APPLIED LIVE /.test(raw(`supabase/migrations/${m934}`)) && readds.length === 0, readds.join(","))
   check("m913 adds the five layers + service profile + derivation, holds 'marketing persona only when safe' and 'no research value' in the database",
     ["stated_needs", "behavioural_evidence", "inferred_interests", "research_layer", "marketing_persona", "marketing_safe", "service_profile", "derivation", "derived_at"].every((c) => new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\b`).test(sql913))
     && /marketing_persona IS NULL OR marketing_safe = true/.test(sql913) && /jsonb_path_exists\(research_layer/.test(sql913))

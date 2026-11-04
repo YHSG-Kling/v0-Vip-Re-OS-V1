@@ -554,6 +554,13 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   qualification_newsletter_enrolled:        { consumers: [], disposition: "feed_only", kind: "update", what: "the AI enrolled a qualified person in the brand's newsletter — Campaign Orchestrator's visibility into a new subscriber sourced by qualification, not a signup form (lib/ai-isa/capability-catalogue.ts::buildSendNewsletterTool)" },
   qualification_market_report_sent:         { consumers: [], disposition: "feed_only", kind: "update", what: "the AI sent a market-condition report for a qualified person's area (condition/trend/inventory only — never a dollar figure) — Campaign Orchestrator's visibility (lib/ai-isa/capability-catalogue.ts::buildSendMarketReportTool)" },
   qualification_explainer_video_requested:  { consumers: [], disposition: "feed_only", kind: "update", what: "the AI commissioned a buying/selling-process explainer video for a qualified person through the SAME Director rail every avatar video rides (lib/video/avatar-explainer.ts) — Asset Manager's visibility; distinct from video_generation_requested (that signal's FROM/TO is fixed and routed by the video project's own entity association, never re-published here) (lib/ai-isa/capability-catalogue.ts::buildSendExplainerVideoTool)" },
+
+  // ── Wave 149 (lane 149B, C28 family collaborative search) — feed-only VISIBILITY, classified `update` by classifyCoordination.
+  // The portal ear (ai_isa) tells the Shopping Agent that a family member left a notable opinion on a shared home; the opinion
+  // itself reaches the Shopping Agent only through lib/portal/collaborative-share.ts when the BUYER has consented
+  // (collaborative_searches.feedback_for_shopping_agent, m938) — the signal carries no family words without that consent, so
+  // there is nothing for a handler to act on unasked; the buyer's own next turn is where the consented opinions are read.
+  family_feedback_received: { consumers: [], disposition: "feed_only", kind: "update", what: "a family collaborator left a notable opinion (love / dislike / pass, or a comment) on a home the buyer shared — the Shopping Agent's visibility into the buyer's family conversation (app/actions/collaborative-search.ts recordFamilyOpinionAction → lib/portal/collaborative-share.ts recordCollaboratorOpinion); the words travel only when the buyer consented (C28, m938)" },
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */

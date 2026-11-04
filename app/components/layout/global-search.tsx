@@ -18,7 +18,7 @@ export function GlobalSearch() {
       type="button"
       onClick={openCommandPalette}
       aria-label="Search — opens the command palette (⌘K)"
-      className="relative flex h-9 w-full items-center rounded-md border border-gray-200 bg-gray-100 pl-8 pr-10 text-left text-sm text-gray-500"
+      className="relative flex h-9 w-full items-center rounded-md border border-gray-200 bg-gray-100 pl-8 pr-10 text-left text-sm text-gray-600"
     >
       <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-500" aria-hidden />
       {/* The palette searches pages and actions (not records) — the label says exactly that, never "contacts, listings, leads". */}

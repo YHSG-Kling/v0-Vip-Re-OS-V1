@@ -317,7 +317,11 @@ async function resolveCollaborator(svc: Svc, token: string, now: Date = new Date
 }
 
 export interface CollaboratorHome { id: string; facts: SharedHomeFacts; myVote: FamilyVote | null; myComment: string | null }
-export interface CollaboratorView { buyerFirstName: string | null; collaboratorName: string | null; homes: CollaboratorHome[] }
+export interface CollaboratorView {
+  buyerFirstName: string | null; collaboratorName: string | null; homes: CollaboratorHome[]
+  /** false = the accepted / last-viewed stamp was refused or matched no row (reported, never hidden); the homes still show. */
+  viewRecorded: boolean
+}
 
 /** What the collaborator sees: the shared homes' public facts and their OWN opinions. Nothing else. */
 export async function collaboratorView(svc: Svc, token: string, now: Date = new Date()): Promise<{ ok: true; view: CollaboratorView } | { ok: false; error: string }> {
@@ -333,11 +337,17 @@ export async function collaboratorView(svc: Svc, token: string, now: Date = new 
   const myBy = new Map<string, Record<string, any>>(((mine ?? []) as Array<Record<string, any>>).map((o) => [String(o.property_id), o]))
   // The buyer's FIRST NAME only — how the collaborator knows whose homes these are. No other contact field.
   const { data: buyer } = await svc.from("contacts").select("first_name").eq("id", c.buyerContactId).eq("brokerage_id", c.brokerageId).maybeSingle()
-  // First open accepts the invitation; the view is recorded (count-checked, best effort — the read is the product).
-  await svc.from("collaborative_search_members").update({ invite_status: "accepted", accepted_at: now.toISOString(), last_viewed_at: now.toISOString() }).eq("id", c.memberId).select("id")
+  // First open accepts the invitation; the view is recorded. The read is the product, so a refused or unmatched record never
+  // hides the homes — but it is READ (supabase-js resolves a refusal) and reported on the view, never swallowed.
+  const { data: seen, error: seenError } = await svc.from("collaborative_search_members")
+    .update({ invite_status: "accepted", accepted_at: now.toISOString(), last_viewed_at: now.toISOString() }).eq("id", c.memberId).select("id")
+  const viewRecorded = !seenError && (seen ?? []).length === 1
+  if (!viewRecorded) console.warn(`[collaborative-share] member view not recorded for ${c.memberId}: ${seenError ? seenError.message : `${(seen ?? []).length} row(s) matched`}`)
   return {
     ok: true,
     view: {
+      /** false = the opened-at stamp was refused or matched no row (the buyer's "last looked" stays stale); the homes still show. */
+      viewRecorded,
       buyerFirstName: (buyer as { first_name?: string | null } | null)?.first_name ?? null,
       collaboratorName: c.memberName,
       homes: ((homes ?? []) as Array<Record<string, any>>).map((h) => ({
@@ -413,7 +423,11 @@ export interface FamilyOpinion { sharedHomeId: string; listingRef: string; addre
 export interface BuyerFeedbackDigest {
   searchId: string | null
   feedbackForShoppingAgent: boolean
-  collaborators: Array<{ id: string; name: string | null; status: "invited" | "viewed" | "closed" | "expired"; channel: string | null }>
+  collaborators: Array<{
+    id: string; name: string | null; status: "invited" | "viewed" | "closed" | "expired"; channel: string | null
+    /** m937 (read back for the buyer): when the invitation was issued, by which user (the buyer's own seat, or the agent's), and when the member last opened the shared homes. */
+    invitedAt: string | null; invitedByUserId: string | null; lastViewedAt: string | null
+  }>
   homes: Array<{ sharedHomeId: string; listingRef: string; address: string | null; opinions: FamilyOpinion[] }>
 }
 
@@ -426,7 +440,7 @@ export async function buyerFeedbackDigest(svc: Svc, a: { brokerageId: string; co
   const search = ((s ?? []) as Array<Record<string, any>>)[0]
   if (!search) return { ok: true, digest: { searchId: null, feedbackForShoppingAgent: false, collaborators: [], homes: [] } }
   const [mRes, hRes, oRes] = await Promise.all([
-    svc.from("collaborative_search_members").select("id, name, role, revoked_at, token_expires_at, accepted_at, invite_channel").eq("collaborative_search_id", search.id),
+    svc.from("collaborative_search_members").select("id, name, role, revoked_at, token_expires_at, accepted_at, invite_channel, invited_at, invited_by_user_id, last_viewed_at").eq("collaborative_search_id", search.id),
     svc.from("collaborative_search_properties").select("id, property_mls_id, property_data, status").eq("collaborative_search_id", search.id).eq("status", "active"),
     svc.from("property_family_ratings").select("property_id, member_id, vote, notes, updated_at").eq("collaborative_search_id", search.id),
   ])
@@ -450,6 +464,7 @@ export async function buyerFeedbackDigest(svc: Svc, a: { brokerageId: string; co
       collaborators: members.map((m) => ({
         id: String(m.id), name: m.name ?? null, channel: m.invite_channel ?? null,
         status: m.revoked_at ? "closed" : !m.token_expires_at || new Date(m.token_expires_at).getTime() <= now.getTime() ? "expired" : m.accepted_at ? "viewed" : "invited",
+        invitedAt: (m.invited_at ?? null) as string | null, invitedByUserId: (m.invited_by_user_id ?? null) as string | null, lastViewedAt: (m.last_viewed_at ?? null) as string | null,
       })),
       homes,
     },

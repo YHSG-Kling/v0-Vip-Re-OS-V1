@@ -254,7 +254,7 @@ async function main(): Promise<void> {
   console.log("\n[blind spots]")
   console.log("  · the brand census reads STRIPPED source of the event surface files by pattern (platform names: VIP Agents / VIPAgents / VIP Real Estate OS / VIP RE OS + a configured product name); a platform name assembled at runtime from parts, or one stored in a tenant's own data, is not seen here — the copy scan (scanEventCopy) is the runtime net for model-written words");
   console.log("  · lib/open-house/event-registry.ts is excluded from the census: it holds the detector's own patterns")
-  console.log("  · the model, the QR minter, the brand cascade (server-only) and the dispatcher are seams; memSupabase has no RLS / CHECK — m947 / m948 are WRITTEN, NOT APPLIED, so brand_owner and the reminder memory exist only in the fixture")
+  console.log("  · the model, the QR minter, the brand cascade (server-only) and the dispatcher are seams; memSupabase has no RLS / CHECK — m947 / m948 are APPLIED LIVE (2026-11-03), but here brand_owner and the reminder memory are fixture columns without the database's CHECKs")
   console.log("  · 'platform-owned' is decided in createOpenHouse from the session's platform_role (code gate) — the database CHECK cannot see the actor")
   console.log("  · the arbiter's decision is scripted here; whether the live model chooses well is not provable statically")
   console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

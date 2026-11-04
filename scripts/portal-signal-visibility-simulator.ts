@@ -460,6 +460,7 @@ const READS_NEEDING_A_TENANT_FILTER: Record<string, string> = {
   "lib/kernel/client-story-drafts.ts": "service client — the engagement count feeds a story about how active this buyer was",
   "app/actions/journey-tasks.ts": "service client — reads a contact's completions back for the portal",
   "lib/portal/journey-milestone-events.ts": "service client (lane 86F2) — reads the contact's completions back to decide whether a completion finished its stage / the journey; pinned to the verified tenant",
+  "lib/intent/movement-source-watcher.ts": "service client (wave 149, lane 149H — the first-party home-dashboard indicator, C9) — the per-tenant sweep polls portal_module_viewed rows for ONE brokerage (.eq brokerage_id, bounded by the last success time and a 500-row cap) and turns a signed-in homeowner's dashboard visits into a movement signal; a contact outside the tenant never reaches the registry because the row was read under the tenant",
 }
 const READS_BOUND_BY_RLS: Record<string, string> = {
   "app/actions/contact-details.ts": "cookie-session client — RLS is the tenant bound, and the caller is already authorized on this contact",
