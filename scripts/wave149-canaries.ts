@@ -978,7 +978,7 @@ group("149I", "the commercial docs name Tracerfy, DataZapp and AMcards with date
       const dz = sourced(src, /DataZapp/i, 5), tf = sourced(src, /Tracerfy/i, 2)
       const we = section(s10, /^### 10\.9 /)
       const shape = (s: string, t: string) => /DataZapp/.test(s) && /Tracerfy/.test(s) && /50,000/.test(s) && /^### 10\.0 Verdict/m.test(s) && NO_PURCHASE.test(s) && /WAITING_EXTERNAL/.test(t) && /TRACERFY_API_KEY/.test(t)
-      const stripped = src.replace(/<https:\/\/[^>]+>/, "(link removed)")
+      const stripped = src.replace(/<https:[^>]+>/, "(link removed)") // an angle-bracket URL (the two slashes sit inside [^>]+)
       return {
         positive: s10.length > 0 && dz.ok && tf.ok && shape(s10, we),
         negative: !sourced(stripped, /DataZapp/i, 5).ok && !shape(s10.replace(/no purchase/gi, "a purchase"), we) && !sourced(src.replace(/\b20\d\d-\d\d-\d\d\b/g, "recently"), /DataZapp/i, 5).ok,
@@ -996,7 +996,7 @@ group("149I", "the commercial docs name Tracerfy, DataZapp and AMcards with date
       const shape = (s: string) => /AMcards/.test(s) && /Lob/.test(s) && /^### 11\.2 Verdict/m.test(s) && /not justified/i.test(s) && /^### 11\.3 .*(letter|format)/im.test(s) && NO_PURCHASE.test(s) && /WAITING_EXTERNAL/.test(s)
       return {
         positive: s11.length > 0 && am.ok && shape(s11),
-        negative: !shape(s11.replace(/not justified/gi, "pending")) && !sourced(section(s11, /^### 11\.1 /).replace(/<https:\/\/amcards\.com[^>]*>/g, "amcards"), /amcards\.com|AMcards/i, 3).ok,
+        negative: !shape(s11.replace(/not justified/gi, "pending")) && !sourced(section(s11, /^### 11\.1 /).replace(/<https:[^>]*amcards\.com[^>]*>/g, "amcards"), /amcards\.com|AMcards/i, 3).ok,
         detail: JSON.stringify({ am, s11: s11.length }),
       }
     },

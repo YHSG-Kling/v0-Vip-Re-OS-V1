@@ -284,7 +284,7 @@ console.log("§F  the dashboard door")
   const gs = code("app/components/layout/global-search.tsx")
   const INERT = (s: string) => /<Input\b/.test(s) && !/on(Click|Change|KeyDown|Focus|Submit)=/.test(s)
   ok("the header search box opens the ⌘K command palette (an onClick that dispatches the palette's own key), not an inert input", !INERT(gs) && /onClick=\{openCommandPalette\}/.test(gs) && /document\.dispatchEvent\(new KeyboardEvent\('keydown', \{ key: 'k'/.test(gs))
-  ok("…and it promises only what the palette searches (pages and actions, never records)", !/contacts, listings, leads/.test(gs.replace(/\/\/.*$/gm, "")) && /Search pages and actions/.test(gs))
+  ok("…and it promises only what the palette searches (pages and actions, never records)", !/contacts, listings, leads/.test(gs) && /Search pages and actions/.test(gs)) // gs is code() → already stripped by scripts/strip-comments.ts
   ok("POSITIVE CONTROL: the inert finder flags the retired shape", INERT(`<Input placeholder="Search contacts, listings, leads..." className="pl-8" />`))
 }
 
