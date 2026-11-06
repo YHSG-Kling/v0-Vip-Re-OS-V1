@@ -158,7 +158,7 @@ export async function resolveCanonicalPerson(params: {
     return { isDuplicate: false }
   }
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("contacts")
     .select("id, email, phone_digits")
     .eq("brokerage_id", params.brokerageId)
@@ -166,6 +166,10 @@ export async function resolveCanonicalPerson(params: {
     .or(orClauses.join(","))
     .limit(1)
     .maybeSingle()
+
+  // supabase-js RESOLVES a refusal (CLAUDE.md §3): a refused dedupe read used to read as "not a duplicate" and the caller
+  // then created a second contact for the same person. A read that could not run refuses — never "no match" (wave 150, lane 150PU finding).
+  if (error) throw new Error(`resolveCanonicalPerson: contacts dedupe read refused — ${error.message}`)
 
   if (!data) {
     return { isDuplicate: false }
