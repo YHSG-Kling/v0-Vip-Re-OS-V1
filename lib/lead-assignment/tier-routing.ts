@@ -255,7 +255,11 @@ async function resolveTierRouting(
   // there is nobody else, and brokerages.default_assignment_method='manual'
   // would otherwise hold the founder's own leads for the founder to place.
   if (tier === "solo_agent") {
-    const owner = await resolveSoloAgentOwner(supabase, brokerageId)
+    // Wave 150 (150PU): the owner read now THROWS on a refusal — said here as a refusal, never as "no agents row yet".
+    let owner: string | null
+    try { owner = await resolveSoloAgentOwner(supabase, brokerageId) } catch (e) {
+      return none("solo_agent", `solo_agent tier but the owner read was refused — nothing assigned on a guess (${e instanceof Error ? e.message : String(e)})`)
+    }
     if (owner) {
       return {
         tier, agentId: owner, method: "solo_agent", ruleId: null, held: false,

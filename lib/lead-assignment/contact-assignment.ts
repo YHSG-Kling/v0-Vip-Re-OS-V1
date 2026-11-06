@@ -74,6 +74,18 @@ export interface ResolveAgentForContactResult {
 }
 
 
+/**
+ * WAVE 150 (lane 150PU — "the creating USER owns what they create"; CLAUDE.md §3 supabase-js RESOLVES refusals). Every read
+ * below used to be `const { data: x } = await …`: a REFUSED owner read looked exactly like "the owner left", a refused
+ * rules read like "no rules", a refused team read like "an empty team" — and the contact was silently routed to SOMEBODY
+ * ELSE (the load-balance fallback), away from the agent who created it. A refusal is not an answer: it throws with the
+ * read's own reason, the door's capture fails loudly (captureContact surfaces it), and nobody is misrouted on a guess.
+ */
+function assignmentRead<T>(what: string, res: { data: T; error: { message: string } | null }): T {
+  if (res.error) throw new Error(`resolveAgentForContact: ${what} read refused — ${res.error.message} (no agent picked on a guess)`)
+  return res.data
+}
+
 const RULE_FIELDS =
   "id, brokerage_id, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered"
 
@@ -86,12 +98,12 @@ export async function resolveAgentForContact(
 
   // 1. Caller-specified owner — verify it belongs to the brokerage before honoring.
   if (ownerAgentId) {
-    const { data: ownerAgent } = await supabase
+    const ownerAgent = assignmentRead("owner agent", await supabase
       .from("agents")
       .select("id, team_id, is_active")
       .eq("id", ownerAgentId)
       .eq("brokerage_id", brokerageId)
-      .maybeSingle()
+      .maybeSingle())
     if (ownerAgent?.id && ownerAgent.is_active) {
       return { agentId: ownerAgent.id, method: "owner", teamId: ownerAgent.team_id ?? null }
     }
@@ -114,24 +126,24 @@ export async function resolveAgentForContact(
   // 2b. Team tier — a single-team brokerage gives every contact that team's
   //     affinity (rules + fallback then stay within the team).
   if (!teamHint && planTier === "team") {
-    const { data: onlyTeam } = await supabase
+    const onlyTeam = assignmentRead("single-team", await supabase
       .from("teams")
       .select("id")
       .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
-      .limit(2)
+      .limit(2))
     if (onlyTeam?.length === 1) teamHint = onlyTeam[0].id
   }
 
   // 3. Assignment rules — evaluate in priority order. We have limited hints
   //    at contact-creation time (no score / urgency yet), so only condition
   //    types that match against source / zip will fire.
-  const { data: rules } = await supabase
+  const rules = assignmentRead("assignment_rules", await supabase
     .from("assignment_rules")
     .select(RULE_FIELDS)
     .eq("brokerage_id", brokerageId)
     .eq("is_active", true)
-    .order("priority", { ascending: false })
+    .order("priority", { ascending: false }))
 
   // Team-scoped rules outrank brokerage-wide rules at equal priority and never
   // fire for a contact with a different team affinity (teamScopeAllows). A team
@@ -156,13 +168,13 @@ export async function resolveAgentForContact(
 
     let pool = rule.agent_ids ?? []
     if (pool.length === 0 && rule.team_id) {
-      const { data: members } = await supabase
+      const members = assignmentRead("rule team members", await supabase
         .from("agents")
         .select("id")
         .eq("brokerage_id", brokerageId)
         .eq("team_id", rule.team_id)
-        .eq("is_active", true)
-      pool = (members ?? []).map((m) => m.id)
+        .eq("is_active", true))
+      pool = ((members ?? []) as Array<{ id: string }>).map((m) => m.id)
     }
     if (pool.length === 0) continue
 
@@ -191,13 +203,13 @@ export async function resolveAgentForContact(
     if (!candidate) continue
 
     // Verify the candidate is an active agent in the brokerage.
-    const { data: confirmed } = await supabase
+    const confirmed = assignmentRead("rule candidate", await supabase
       .from("agents")
       .select("id")
       .eq("id", candidate)
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
-      .maybeSingle()
+      .maybeSingle())
     if (confirmed?.id) {
       return { agentId: confirmed.id, method: "rule", ruleId: rule.id, teamId: rule.team_id ?? teamHint }
     }
@@ -213,12 +225,12 @@ export async function resolveAgentForContact(
   //     Capacity-aware load-balance among team members; if the team has no routable
   //     members, hand to the TEAM LEAD (teams.team_lead_id is users.id → agents row).
   if (teamHint) {
-    const { data: teamAgents } = await supabase
+    const teamAgents = assignmentRead("team members", await supabase
       .from("agents")
       .select("id")
       .eq("brokerage_id", brokerageId)
       .eq("team_id", teamHint)
-      .eq("is_active", true)
+      .eq("is_active", true)) as Array<{ id: string }> | null
 
     if (teamAgents?.length) {
       // The brokerage's configured default method, applied WITHIN the team —
@@ -237,20 +249,20 @@ export async function resolveAgentForContact(
       }
     }
 
-    const { data: teamRow } = await supabase
+    const teamRow = assignmentRead("team lead", await supabase
       .from("teams")
       .select("team_lead_id")
       .eq("id", teamHint)
       .is("deleted_at", null)
-      .maybeSingle()
+      .maybeSingle())
     if (teamRow?.team_lead_id) {
-      const { data: leadAgent } = await supabase
+      const leadAgent = assignmentRead("team lead agent", await supabase
         .from("agents")
         .select("id")
         .eq("user_id", teamRow.team_lead_id)
         .eq("brokerage_id", brokerageId)
         .eq("is_active", true)
-        .maybeSingle()
+        .maybeSingle())
       if (leadAgent?.id) {
         return { agentId: leadAgent.id, method: "team_lead", teamId: teamHint }
       }

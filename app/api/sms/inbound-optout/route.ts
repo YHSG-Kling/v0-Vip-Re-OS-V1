@@ -124,6 +124,40 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Could not process opt-out' }, { status: 503 })
     }
 
+    // WAVE 150 (lane 150U — "STOP everywhere"; contract C2): an OPEN LEAD texting STOP was never written. The route matched
+    // contacts only, so a lead's STOP fell to the bare number-keyed list row below: number-only sends saw it, but the lead's
+    // own flags stayed clear — every lead-keyed evaluator (lib/lead-pipeline/lead-lifecycle.ts reads the flags) still treated
+    // them as reachable, and at promotion lib/contact-promotion/contact-creator.ts carried the lead's CLEAR flags onto the new
+    // contact. Each open lead of the owning tenant with this number now gets the STOP through THE one writer (flags + list
+    // + consent ledger), exactly as a contact does. A CONVERTED lead (contact_id set) is not written: its contact is the
+    // party (matched above by the same number), and the lead table is provenance only.
+    let openLeadsQuery = supabase.from('leads').select('id, brokerage_id').in('phone_digits', digitForms).is('contact_id', null)
+    if (owner?.brokerageId) openLeadsQuery = openLeadsQuery.eq('brokerage_id', owner.brokerageId)
+    const { data: openLeads, error: openLeadsError } = await openLeadsQuery
+    if (openLeadsError) {
+      console.error('[sms-optout] open-lead lookup refused:', openLeadsError.message)
+      return NextResponse.json({ error: 'Could not process opt-out' }, { status: 503 })
+    }
+    if (openLeads && openLeads.length > 0) {
+      const leadResults = await Promise.all(
+        (openLeads as Array<{ id: string; brokerage_id: string }>).map((l) =>
+          processOptOutFromVerifiedInbound({
+            entityType: 'lead',
+            entityId: l.id,
+            brokerageId: l.brokerage_id,
+            channel: optOut.channel,
+            source: 'inbound_sms',
+            rawMessage: `STOP keyword received: "${msgBody.trim().slice(0, 200)}"`,
+          })
+        )
+      )
+      const leadRefused = leadResults.filter((r) => !r.success)
+      if (leadRefused.length > 0) {
+        console.error(`[sms-optout] ${leadRefused.length}/${leadResults.length} lead STOP suppression(s) REFUSED for ${from}:`, leadRefused.map((r) => r.error ?? 'unknown').join(' | '))
+        return NextResponse.json({ error: 'Could not record opt-out' }, { status: 503 })
+      }
+    }
+
     if (contacts && contacts.length > 0) {
       const results = await Promise.all(
         contacts.map((c: { id: string; brokerage_id: string }) =>
@@ -157,7 +191,7 @@ export async function POST(req: NextRequest) {
       // `to` IS the tenant's own number, and phone_number_events records which brokerage
       // provisioned it. Resolve through that; if the number cannot be attributed, log and
       // do nothing rather than suppress under a brokerage that never messaged them.
-      const { data: numberOwner } = await supabase
+      const { data: numberOwner, error: numberOwnerError } = await supabase
         .from('phone_number_events')
         .select('brokerage_id')
         .eq('phone_number', to)
@@ -165,6 +199,12 @@ export async function POST(req: NextRequest) {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle()
+      // Wave 150 (150U): a refused owner read is not "unattributable" — answer 503 so the carrier retries, never a STOP
+      // acknowledged and dropped.
+      if (numberOwnerError && !owner?.brokerageId) {
+        console.error('[sms-optout] number-owner lookup refused:', numberOwnerError.message)
+        return NextResponse.json({ error: 'Could not process opt-out' }, { status: 503 })
+      }
 
       const providerConfig = (owner?.brokerageId ? { brokerage_id: owner.brokerageId } : numberOwner) as { brokerage_id?: string | null } | null
       if (!providerConfig?.brokerage_id) {

@@ -48,7 +48,7 @@ export async function resolveSoloAgentOwner(
   // Oldest active agent — the founder's own row. Deterministic, and stable if a
   // second row is ever added (an assistant, a re-provisioned row), so ownership
   // never silently migrates between them.
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("agents")
     .select("id")
     .eq("brokerage_id", brokerageId)
@@ -56,6 +56,9 @@ export async function resolveSoloAgentOwner(
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle()
+  // Wave 150 (lane 150PU, CLAUDE.md §3): a refused read is not "no agent" — returning null here let the router fall through
+  // to rules / load balance on a solo tenant's day of a refused read. Both callers (contact + lead routing) let it throw.
+  if (error) throw new Error(`resolveSoloAgentOwner: agents read refused — ${error.message}`)
 
   return (data as { id?: string } | null)?.id ?? null
 }

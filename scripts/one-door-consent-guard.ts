@@ -266,11 +266,15 @@ async function sectionD() {
   const C = await import("../lib/kernel/compliance/consent-component")
   const svc = seed(); G.__148B.svc = null // NOTHING may mint a service client: the injected one must carry every write
   G.__148B.minted = 0
-  const welcomes: string[] = [], invites: string[] = [], notified: string[] = []
+  const welcomes: string[] = [], invites: string[] = [], notified: string[] = [], videos: string[] = []
+  // WAVE 150 (lane 150PU, canary 4): the door gained a fourth EFFECT — the portal welcome video (ensureWelcomeAvatarVideo →
+  // the avatar spine, which mints its own service client and does model work). The RULE is unchanged: the injected client
+  // carries every write, and every effect that mints its own client is stubbed by the proof. Stubbed here like the other three.
   const effects = {
     notify: (async (e: { event: string }) => { notified.push(String(e.event)) }) as never,
     welcome: async (_s: unknown, c: { id: string }) => { welcomes.push(c.id) },
     portalInvite: async (p: { contactId: string }) => { invites.push(p.contactId) },
+    welcomeVideo: async (_s: unknown, p: { contactId: string }) => { videos.push(p.contactId) },
   }
   const r1 = await cap.captureContact({
     brokerageId: A, creatorUserId: "u-a1", source: "web_form", first_name: "Jane", last_name: "Doe", email: "Jane.Doe@Example.com", phone: "(512) 555-0100",
@@ -305,7 +309,7 @@ async function sectionD() {
     r2.action === "merged" && r2.contactId === r1.contactId && after.length === 1, JSON.stringify({ a: r2.action, n: after.length }))
   check("PRIOR HISTORY PRESERVED: the first owner / creator / timeline stay; the new answers are kept as conflict notes, never dropped",
     after[0].agent_id === AGENT_A && after[0].source_agent_id === "u-a1" && after[0].timeline === "3-6_months" && /1-3_months/.test(after[0].notes ?? "") && /512-555-0199/.test(after[0].notes ?? ""), String(after[0].notes))
-  check("NO DUPLICATE WELCOME / INVITE: a merge sends neither", welcomes.length === 1 && invites.length === 1)
+  check("NO DUPLICATE WELCOME / INVITE / VIDEO: a merge sends none of them (the create commissioned exactly one video)", welcomes.length === 1 && invites.length === 1 && videos.length === 1, JSON.stringify({ welcomes: welcomes.length, invites: invites.length, videos: videos.length }))
   const r3 = await cap.captureContact({ brokerageId: A, source: "qr_scan", first_name: "Jane", last_name: "Doe", phone: "+1 512 555 0100", tcpa_consent: false }, { client: svc, effects })
   check("the phone in another spelling finds the same person through phone_digits", r3.action === "merged" && rows(svc, "contacts").length === 1)
   const inj = await cap.captureContact({ brokerageId: A, source: "web_form", first_name: "Mal", last_name: "Lory", email: "mal@x.test,id.not.is.null", tcpa_consent: false }, { client: svc, effects })

@@ -154,11 +154,14 @@ export async function createContactFromLead(
     let agentLocationId: string | null = null
     let agentTeamId: string | null = null
     {
-      const { data: agentRow } = await supabase
+      const { data: agentRow, error: agentRowError } = await supabase
         .from("agents")
         .select("location_id, team_id")
         .eq("id", data.agentId)
         .maybeSingle()
+      // Read, not swallowed (CLAUDE.md §3): a refused read leaves the scope null as before, but it is SAID — a converted
+      // contact invisible to its office's scoped views must leave a trace.
+      if (agentRowError) console.error(`[createContactFromLead] agent scope read refused for agent ${data.agentId} — location/team left null: ${agentRowError.message}`)
       agentLocationId = agentRow?.location_id ?? null
       agentTeamId = agentRow?.team_id ?? null
     }
@@ -320,12 +323,15 @@ export async function createContactFromLead(
 
       // Consent provenance — carry over what was captured during the lead phase. Faithful (no
       // fabricated consent) — converted contacts inherit exactly the consent state on the lead.
-      // web_form / qr_scan sources captured explicit consent at submission (documented business
-      // rule, same as the kernel handler used), so those count as consented even when the lead
-      // row's flag wasn't stamped.
+      //
+      // TOMBSTONE (wave 150, lane 150PU — owner ruling 3 "consent never fabricated"; CONTRACT C8): this read
+      // `tcpa_consent === true || ['web_form', 'qr_scan'].includes(source)` — a TCPA consent minted from a SOURCE NAME on a
+      // lead whose row never recorded one. Since C8 (wave 147) a consented web form / QR submission becomes a CONTACT
+      // through lib/contact-pipeline/contact-capture.ts captureConsentedContact, never a lead, so a LEAD carrying those
+      // sources and no stamped flag is precisely one whose consent was NOT recorded. The contact inherits the lead's own
+      // flag and nothing else; the consent ledger (contact_consent_events) is the record.
       tcpa_consent:
-        data.lead.tcpa_consent === true ||
-        ['web_form', 'qr_scan'].includes(data.lead.source ?? ''),
+        data.lead.tcpa_consent === true,
       tcpa_consent_date:   data.lead.tcpa_consent_at ?? null,
       tcpa_consent_at:     data.lead.tcpa_consent_at ?? null,
       tcpa_consent_ip:     data.lead.tcpa_consent_ip ?? null,

@@ -61,6 +61,9 @@ export interface OptOutResult {
    * address-keyed send (a number-only text, a mailing to the bare address) may not see it — said, never hidden.
    */
   listSynced?: boolean
+  /** Wave 150 (150U): on a GLOBAL opt-out, how many active / paused sequence enrollments were ended as 'unsubscribed';
+   *  null when not a global opt-out or when the update was refused (said in the log). */
+  enrollmentsEnded?: number | null
 }
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -152,12 +155,15 @@ export async function writeOptOut(supabase: Svc, brokerageId: string, params: Op
       channelsSuppressed.push(channel)
       // Append channel to opt_out_channels array via fetch-and-update
       // (Supabase does not expose array append in a single update call)
-      const { data: current } = await supabase
+      const { data: current, error: currentError } = await supabase
         .from(table)
         .select("opt_out_channels")
         .eq("id", entityId)
         .eq("brokerage_id", brokerageId)
         .maybeSingle()
+      // Wave 150 (150U): read, not swallowed. The FLAG below still lands (it is the suppression); only the provenance
+      // array is not appended, and that is said rather than silently lost.
+      if (currentError) console.error(`[processOptOut] opt_out_channels read refused — the ${channel} flag is still written, the channel list is not appended: ${currentError.message}`)
 
       if (current) {
         const existing: string[] = (current as { opt_out_channels?: string[] }).opt_out_channels ?? []
@@ -214,6 +220,28 @@ export async function writeOptOut(supabase: Svc, brokerageId: string, params: Op
     }
   }
 
+  // DOWNSTREAM JOURNEYS (wave 150, lane 150U — "consent/STOP/unsubscribe … across downstream journeys"). The kernel event
+  // emitted below (CONTACT_DNC_SET / CONTACT_CHANNEL_OPT_OUT) has NO consumer in the tree — the comment "downstream
+  // automation stops automatically" described a wish. Every SEND was still refused at T0+1 (dispatch → checkSuppression),
+  // but a person who revoked EVERYTHING stayed 'active' in their campaign sequences: the scheduler kept stepping them,
+  // drafting and logging refusals, and a later re-grant on one channel would have resumed a journey they left. A GLOBAL
+  // opt-out now ends this person's active / paused sequence enrollments as 'unsubscribed' (a live CHECK value), keyed by
+  // the entity's own column. A single-channel opt-out leaves the journey running — its other channels are still lawful
+  // and the send gate refuses the revoked one. Read + counted; a refusal is said, never a failed opt-out (the flags and
+  // the list above ARE the suppression).
+  let enrollmentsEnded: number | null = null
+  if (globalDNC) {
+    const { data: ended, error: endError } = await supabase
+      .from("sequence_enrollments")
+      .update({ status: "unsubscribed", completed_at: now })
+      .eq(entityType === "contact" ? "contact_id" : "lead_id", entityId)
+      .eq("brokerage_id", brokerageId)
+      .in("status", ["active", "paused"])
+      .select("id")
+    if (endError) console.error(`[processOptOut] sequence enrollments NOT ended after a global opt-out (${entityType} ${entityId}): ${endError.message}`)
+    else enrollmentsEnded = (ended ?? []).length
+  }
+
   // Compliance audit — always write, never block on failure.
   //
   // "Never block on failure" was the intent; dropping the result was the
@@ -252,12 +280,14 @@ export async function writeOptOut(supabase: Svc, brokerageId: string, params: Op
   )
 
   // Agent notification via activities (uses notes: text, not metadata)
-  const { data: entity } = await supabase
+  const { data: entity, error: entityError } = await supabase
     .from(table)
     .select("agent_id, first_name, last_name")
     .eq("id", entityId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  // Wave 150 (150U): the suppression above is written; a refused read here only loses the agent's timeline row — said.
+  if (entityError) console.error("[processOptOut] owner read for the opt-out activity refused — suppression applied, no timeline row:", entityError.message)
 
   if (entity?.agent_id) {
     const notesPayload = JSON.stringify({
@@ -300,5 +330,5 @@ export async function writeOptOut(supabase: Svc, brokerageId: string, params: Op
     entityId,
   })
 
-  return { success: true, channelsSuppressed, globalDNC, listSynced }
+  return { success: true, channelsSuppressed, globalDNC, listSynced, enrollmentsEnded }
 }

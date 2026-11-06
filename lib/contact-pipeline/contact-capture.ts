@@ -256,6 +256,9 @@ export interface CaptureContactEffects {
   notify?: typeof processKernelEvent
   welcome?: (svc: CaptureClient, contact: { id: string; brokerageId: string; contactType: string | null; firstName: string | null; lastName: string | null }, opts: { origin?: CaptureContactParams['welcomeOrigin'] }) => Promise<unknown>
   portalInvite?: (p: { contactId: string; agentUserId: string; sendMagicLink: boolean }) => Promise<unknown>
+  /** WAVE 150 (lane 150PU, canary 4): the assigned agent's personal portal welcome video — commissioned LAST, after the portal
+   *  invite and the welcome, so nothing the person receives waits on a render (the spine renders asynchronously). */
+  welcomeVideo?: (svc: CaptureClient, p: { contactId: string; agentId: string; brokerageId: string; origin?: CaptureContactParams['welcomeOrigin'] }) => Promise<unknown>
   enrich?: (p: { brokerageId: string; contactId: string; client: CaptureClient }) => Promise<void>
 }
 export interface CaptureContactOptions {
@@ -410,6 +413,14 @@ export async function captureContact(
   const portalInvite = effects.portalInvite ?? (async (p: { contactId: string; agentUserId: string; sendMagicLink: boolean }) => {
     const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
     return createSystemPortalInvite({ contactId: p.contactId, agentUserId: p.agentUserId, sendMagicLink: p.sendMagicLink })
+  })
+  // ONE commissioning path (lib/contact-promotion/welcome-avatar-video.ts ensureWelcomeAvatarVideo — the spine's own idempotency
+  // ledger answers `already_commissioned` before any draft, so a door that ALSO reaches deliverConversionWelcome spends once).
+  const welcomeVideo = effects.welcomeVideo ?? (async (svc: CaptureClient, p: { contactId: string; agentId: string; brokerageId: string; origin?: CaptureContactParams['welcomeOrigin'] }) => {
+    const { ensureWelcomeAvatarVideo } = await import('@/lib/contact-promotion/welcome-avatar-video')
+    const r = await ensureWelcomeAvatarVideo(svc, { contactId: p.contactId, agentId: p.agentId, brokerageId: p.brokerageId, origin: p.origin ?? null })
+    for (const w of r.warnings) console.warn(`[captureContact] welcome video: ${w}`)
+    return r
   })
 
   // ── Viability gate ───────────────────────────────────────────────────────
@@ -829,17 +840,6 @@ export async function captureContact(
     entityId: contactId,
   }))
 
-  // CLIENT WELCOME (concierge #1–2) — same gated draft on the direct-capture
-  // path. Best-effort, never blocks capture. Idempotent per contact (the welcome
-  // ledger), so a door that also hands off to deliverConversionWelcome cannot send two.
-  await bestEffortEffect('client welcome', () => welcome(supabase, {
-    id: contactId, brokerageId: params.brokerageId,
-    contactType: params.contact_type ?? null,
-    firstName: params.first_name ?? null, lastName: params.last_name ?? null,
-  }, { origin: params.welcomeOrigin }))
-
-  await bestEffortEffect('enrichment queue', () => enrich({ brokerageId: params.brokerageId, contactId, client: supabase }))
-
   // Warm-capture portal invite. These sources are self-provided / consented (web_form / qr_scan /
   // business_card / widget / open_house / home_value_form / showing_request — NOT in
   // LEAD_CONVERSION_SOURCES, which are invited via handleLeadAssigned). Resolve the assigned agent's
@@ -848,10 +848,18 @@ export async function captureContact(
   // Skipped when there is no owning agent (skipAutoAssign + no hint, e.g. a represented
   // buyer): there is no agent to attribute the invite to, and we must not invite them
   // into the listing agent's portal.
+  //
+  // WAVE 150 (lane 150PU, canary 4 — "portal invitation immediate, welcome video asynchronous"): the invite runs FIRST, the
+  // moment the contact exists. It used to wait behind the welcome (a model-drafted letter) and the enrichment queue, so the
+  // person's portal waited on an LLM. The grant is idempotent (one invite per contact, portal_contact_invites UNIQUE), so the
+  // welcome's own ensurePortalAccess afterwards re-reads the same row. The owning agent's read is READ (it was
+  // `const { data: agentRow }` — a refused read silently skipped the invite and nobody was told).
   try {
-    const { data: agentRow } = createAgentId
+    const agentRead = createAgentId
       ? await supabase.from('agents').select('user_id').eq('id', createAgentId).maybeSingle()
-      : { data: null }
+      : { data: null, error: null }
+    if (agentRead.error) console.error(`[captureContact] portal invite NOT sent for contact ${contactId}: the owning agent read was refused (${agentRead.error.message})`)
+    const agentRow = agentRead.data as { user_id?: string | null } | null
     if (agentRow?.user_id) {
       // ONE EMAIL, HERE TOO. `ensureClientWelcome` ran a few lines above and, for
       // any contact type a manager picks up, it has already granted portal access
@@ -875,6 +883,25 @@ export async function captureContact(
     }
   } catch (err) {
     console.error('[captureContact] portal invite failed (non-fatal):', err)
+  }
+
+  // CLIENT WELCOME (concierge #1–2) — same gated draft on the direct-capture
+  // path. Best-effort, never blocks capture. Idempotent per contact (the welcome
+  // ledger), so a door that also hands off to deliverConversionWelcome cannot send two.
+  await bestEffortEffect('client welcome', () => welcome(supabase, {
+    id: contactId, brokerageId: params.brokerageId,
+    contactType: params.contact_type ?? null,
+    firstName: params.first_name ?? null, lastName: params.last_name ?? null,
+  }, { origin: params.welcomeOrigin }))
+
+  await bestEffortEffect('enrichment queue', () => enrich({ brokerageId: params.brokerageId, contactId, client: supabase }))
+
+  // THE PORTAL WELCOME VIDEO — LAST, and only for a contact with an owning agent (the video is that agent's). The spine
+  // drafts and renders out of band; the person already has their portal and their welcome. A refusal (no avatar on file,
+  // an excluded contact type) is a warning, never a failed capture.
+  if (createAgentId) {
+    const agentIdForVideo = createAgentId
+    await bestEffortEffect('portal welcome video', () => welcomeVideo(supabase, { contactId, agentId: agentIdForVideo, brokerageId: params.brokerageId, origin: params.welcomeOrigin }))
   }
 
   const createdPerson = await recordCapturePersonEvidence(supabase, params, contactId, 'created', 1)

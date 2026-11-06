@@ -37,6 +37,10 @@ export interface AdLeadInput {
   /** Wave 147 (C8): the provider's own submission id (Meta leadgen_id) — a webhook retry carries it verbatim, so the consent
    *  record is written once per submission. */
   submissionRef?: string | null
+  /** Wave 150 (150U): what the OS knows about the form's own legal content — 'verified' (a person compared it with the live
+   *  form), 'unknown' (fetched or not, never verified), 'not_provided' (the form carries none), 'unreadable'. Evidence only;
+   *  the consent rests on `consentText`, which the by-reference path fills ONLY from a verified row. */
+  legalContentStatus?: "verified" | "unknown" | "not_provided" | "unreadable" | null
 }
 
 export interface AdLeadResult { ok: boolean; contactId?: string; created?: boolean; reason?: string }
@@ -95,6 +99,7 @@ export async function ingestConsentedAdLead(
       evidence: {
         platform: input.platform ?? null, form_id: input.formId ?? null, submission_ref: input.submissionRef ?? null,
         ip: input.ip ?? null, user_agent: input.userAgent ?? null, platform_disclosure_captured: !!disclosure,
+        platform_legal_content_status: input.legalContentStatus ?? "unknown",
       },
     },
   }, { client: supabase })
@@ -139,9 +144,14 @@ export async function ingestMetaLeadByRef(
     inlineFields?: MetaLeadField[] | null
   },
 ): Promise<{ ok: boolean; stage: MetaLeadStage; brokerageId?: string; contactId?: string }> {
-  const { data: cred } = await svc.from("platform_credentials")
+  const { data: cred, error: credError } = await svc.from("platform_credentials")
     .select("brokerage_id, access_token")
     .eq("platform", "facebook").eq("account_id", input.pageId).maybeSingle()
+  // Wave 150 (150U): a REFUSED credential read is a transient failure (retryable, parked), never "this page is not mapped".
+  if (credError) {
+    console.error(`[ad-lead-intake] page credential read refused for page ${input.pageId}: ${credError.message}`)
+    return { ok: false, stage: "graph_error" }
+  }
   const c = decryptSecretFields(cred as { brokerage_id?: string; access_token?: string } | null, ["access_token"])
   if (!c?.brokerage_id) return { ok: false, stage: "no_credential" }
 
@@ -156,6 +166,12 @@ export async function ingestMetaLeadByRef(
   }
   if (fields.length === 0) return { ok: false, stage: "no_fields", brokerageId: c.brokerage_id }
 
+  // THE FORM'S OWN LEGAL CONTENT (wave 150, lane 150U): fetched once per (tenant, form), stored UNKNOWN until a person verifies
+  // it against the live form; only verified wording becomes this lead's consent text.
+  const legal = input.formId
+    ? await resolveAdFormLegalContent(svc, { brokerageId: c.brokerage_id, platform: "facebook", formId: input.formId, accessToken: c.access_token ?? null })
+    : { status: "unknown" as const, consentText: null }
+
   const res = await ingestConsentedAdLead({
     brokerageId: c.brokerage_id,
     firstName:   pickMetaField(fields, "first_name", "full_name", "name"),
@@ -165,7 +181,77 @@ export async function ingestMetaLeadByRef(
     platform:    "facebook",
     formId:      input.formId ?? null,
     submissionRef: input.leadgenId ?? null,
+    consentText: legal.consentText,
+    legalContentStatus: legal.status,
   }, svc)
   if (!res.ok) return { ok: false, stage: "rejected", brokerageId: c.brokerage_id }
   return { ok: true, stage: "ingested", brokerageId: c.brokerage_id, contactId: res.contactId }
+}
+
+// ── The form's legal content: UNKNOWN until verified (wave 150, lane 150U; m978) ──────────────────────────────────────────
+
+type LegalContentStatus = "verified" | "unknown" | "not_provided" | "unreadable"
+interface LegalContentRow { legal_content_status?: string | null; disclosure_text?: string | null; checkbox_keys?: string[] | null }
+
+/**
+ * PURE — the consent wording a stored legal-content row may lend a lead: ONLY a VERIFIED row with disclosure text and no
+ * checkboxes. A form with checkboxes records a per-lead answer this OS does not read yet (the lead's
+ * `custom_disclaimer_responses` is an unverified field), so its wording proves nothing about THIS person — no consent.
+ */
+function consentTextFromLegalRow(row: LegalContentRow | null): string | null {
+  if (!row || row.legal_content_status !== "verified") return null
+  if ((row.checkbox_keys ?? []).length > 0) return null
+  const text = (row.disclosure_text ?? "").trim()
+  return text || null
+}
+
+type FetchedLegal = { ok: true; legal: import("@/lib/ads/connectors/meta").MetaLeadFormLegalContent | null } | { ok: false; error: string }
+
+/**
+ * The stored row for (tenant, platform, form), fetched from Meta and written as 'unknown' / 'not_provided' the first time.
+ * Never throws; never overwrites a verified row (insert only — a 23505 re-reads the winner). Until m978 is applied the read
+ * is refused and the answer is 'unreadable' with no consent, exactly the pre-150 behaviour.
+ */
+async function resolveAdFormLegalContent(
+  svc: ReturnType<typeof createServiceClient>,
+  p: { brokerageId: string; platform: string; formId: string; accessToken: string | null },
+): Promise<{ status: LegalContentStatus; consentText: string | null }> {
+  const readRow = async () => svc.from("ad_lead_form_legal_content")
+    .select("legal_content_status, disclosure_text, checkbox_keys")
+    .eq("brokerage_id", p.brokerageId).eq("platform", p.platform).eq("form_id", p.formId).maybeSingle()
+  const first = await readRow()
+  if (first.error) {
+    console.warn(`[ad-lead-intake] form legal content unreadable (${p.formId}) — no consent recorded from it: ${first.error.message}`)
+    return { status: "unreadable", consentText: null }
+  }
+  if (first.data) {
+    const row = first.data as LegalContentRow
+    return { status: (row.legal_content_status as LegalContentStatus) ?? "unknown", consentText: consentTextFromLegalRow(row) }
+  }
+  let fetched: FetchedLegal = { ok: false, error: "no access token" }
+  if (p.accessToken) {
+    const { fetchMetaLeadFormLegalContent } = await import("@/lib/ads/connectors/meta")
+    fetched = await fetchMetaLeadFormLegalContent(p.accessToken, p.formId)
+  }
+  const legal = fetched.ok ? fetched.legal : null
+  const status: LegalContentStatus = fetched.ok && !legal ? "not_provided" : "unknown"
+  const { error: insertError } = await svc.from("ad_lead_form_legal_content").insert({
+    brokerage_id: p.brokerageId,
+    platform: p.platform,
+    form_id: p.formId,
+    disclosure_text: legal?.disclosureText ?? null,
+    checkbox_keys: legal?.checkboxKeys ?? [],
+    privacy_policy_url: legal?.privacyPolicyUrl ?? null,
+    legal_content_status: status,
+    fetch_error: fetched.ok ? null : fetched.error,
+  })
+  if (insertError && (insertError as { code?: string }).code === "23505") {
+    const again = await readRow()
+    if (again.error || !again.data) return { status: "unreadable", consentText: null }
+    const row = again.data as LegalContentRow
+    return { status: (row.legal_content_status as LegalContentStatus) ?? "unknown", consentText: consentTextFromLegalRow(row) }
+  }
+  if (insertError) console.warn(`[ad-lead-intake] form legal content NOT stored (${p.formId}): ${insertError.message}`)
+  // A row this call just wrote is never 'verified' — no consent from it.
+  return { status, consentText: null }
 }

@@ -181,3 +181,57 @@ export const metaConnector: AdConnector = {
     } catch { return null }
   },
 }
+
+// ── LEAD FORMS ONLY: the form's own legal content (wave 150, lane 150U) ──────────────────────────────────────────────────
+//
+// THE DISCLOSURE A PERSON SAW ON A META LEAD FORM is the only wording a TCPA / CAN-SPAM consent from that form can rest on
+// (lib/ads/ad-lead-intake.ts records NO consent without it — owner ruling 3, "consent never fabricated"). Meta keeps it on the
+// LeadgenForm node's `legal_content` (a privacy-policy link and an optional custom disclaimer with optional checkboxes).
+//
+// PROVIDER LEGAL CONTENT IS UNKNOWN UNTIL VERIFIED. The field path below (`legal_content{privacy_policy,custom_disclaimer}`,
+// `custom_disclaimer.body.text`, `custom_disclaimer.checkboxes[].key|is_required`) is written from Meta's published LeadgenForm
+// reference and has NOT been read back from a live form by this OS (no page token in any sandbox). So the mapper is total (any
+// shape → a value, never a throw), the caller stores what came back with status 'unknown', and nothing here arms a consent.
+// WAITING_EXTERNAL: one live form check (a Page access token with leads_retrieval + Meta's Lead Ads Testing Tool) confirming the
+// path; then a person marks that form's row verified (owner SQL — lane 150PU notes, m978).
+
+export interface MetaLeadFormLegalContent {
+  /** The custom disclaimer's body text, verbatim (trimmed) — null when the form shows none. */
+  disclosureText: string | null
+  /** Checkbox keys the form asked about (a consent box Meta may record a per-lead response for). */
+  checkboxKeys: string[]
+  /** True when any checkbox was marked required on the form. */
+  requiredCheckbox: boolean
+  privacyPolicyUrl: string | null
+}
+
+/** PURE, TOTAL: a Graph LeadgenForm payload → its legal content, or null when the payload carries none. Never throws.
+ *  Module-private (driven by scripts/suppression-everywhere-guard.ts through fetchMetaLeadFormLegalContent's stubbed Graph). */
+function mapMetaLeadFormLegalContent(form: unknown): MetaLeadFormLegalContent | null {
+  const legal = (form as { legal_content?: unknown } | null | undefined)?.legal_content as
+    | { privacy_policy?: { url?: unknown } | null; custom_disclaimer?: { body?: { text?: unknown } | null; checkboxes?: unknown } | null }
+    | null | undefined
+  if (!legal || typeof legal !== "object") return null
+  const bodyText = legal.custom_disclaimer?.body?.text
+  const text = typeof bodyText === "string" ? bodyText.trim() : ""
+  const boxes = Array.isArray(legal.custom_disclaimer?.checkboxes) ? (legal.custom_disclaimer?.checkboxes as Array<Record<string, unknown>>) : []
+  const url = typeof legal.privacy_policy?.url === "string" ? legal.privacy_policy.url : null
+  const out: MetaLeadFormLegalContent = {
+    disclosureText: text || null,
+    checkboxKeys: boxes.map((b) => (typeof b?.key === "string" ? b.key : null)).filter((k): k is string => !!k),
+    requiredCheckbox: boxes.some((b) => b?.is_required === true),
+    privacyPolicyUrl: url,
+  }
+  return out.disclosureText || out.checkboxKeys.length || out.privacyPolicyUrl ? out : null
+}
+
+/** One Graph read of a lead form's legal content. Never throws; a failure is a reason, never a guessed disclosure. */
+export async function fetchMetaLeadFormLegalContent(
+  accessToken: string,
+  formId: string,
+): Promise<{ ok: true; legal: MetaLeadFormLegalContent | null } | { ok: false; error: string }> {
+  if (!accessToken || !formId) return { ok: false, error: "no access token or form id" }
+  const res = await graphGet<Record<string, unknown>>(accessToken, [formId], { fields: "legal_content{privacy_policy,custom_disclaimer}" })
+  if (!res.ok) return { ok: false, error: res.error ?? "graph error" }
+  return { ok: true, legal: mapMetaLeadFormLegalContent(res.data) }
+}

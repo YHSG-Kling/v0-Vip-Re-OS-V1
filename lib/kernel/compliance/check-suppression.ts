@@ -75,18 +75,32 @@ export interface SuppressionResult {
   reason?: string
 }
 
+/**
+ * PURE — does a platform_suppression_list row with this reason bind a send on this channel? `federal_dnc` is the telephone
+ * registry (calls and texts only); every other reason — and an unknown or missing one (fail closed) — binds every channel.
+ */
+function platformReasonBinds(reason: string | null | undefined, channel: SuppressionChannel): boolean {
+  if (reason === 'federal_dnc') return channel === 'sms' || channel === 'phone'
+  return true
+}
+
 export async function checkSuppression(
   params: CheckSuppressionParams,
   opts: { client?: SuppressionClient } = {},
 ): Promise<SuppressionResult> {
   const supabase: any = opts.client ?? createServiceClient()
 
+  // The contact's OWN email / phone (wave 150): a contact-id-only send (direct mail, a queued step that carries no address)
+  // still asks the platform list about the person's identities below — never only the ones the caller happened to pass.
+  let contactEmail: string | null = null
+  let contactPhone: string | null = null
+
   // ── 1. Check contact flags ────────────────────────────────────────────────
   if (params.contactId) {
     const { data: contact, error: contactError } = await supabase
       .from('contacts')
       .select(
-        'email_unsubscribed, email_opt_out, sms_unsubscribed, sms_opt_out, dnc_status, call_stop_flag, phone_opt_out, direct_mail_opt_out'
+        'email_unsubscribed, email_opt_out, sms_unsubscribed, sms_opt_out, dnc_status, call_stop_flag, phone_opt_out, direct_mail_opt_out, email, phone'
       )
       .eq('id', params.contactId)
       .maybeSingle()
@@ -105,6 +119,8 @@ export async function checkSuppression(
     }
 
     if (contact) {
+      contactEmail = (contact as { email?: string | null }).email ?? null
+      contactPhone = (contact as { phone?: string | null }).phone ?? null
       if (params.channel === 'email') {
         if (contact.email_unsubscribed || contact.email_opt_out) {
           return { suppressed: true, reason: 'Contact has unsubscribed from email' }
@@ -196,20 +212,28 @@ export async function checkSuppression(
   //    explicit opt-out the ISA escalated). lib/platform/suppression-list.ts documents "Reads happen before any outbound
   //    channel attempt"; until now only the distribution engine and the predictive auto-send read it. Phone is keyed by its
   //    last 10 digits, email lower-cased (that module's own normalisation). FAIL CLOSED like every arm above.
-  if (params.channel !== 'mail' && (params.email || params.phone)) {
-    const digits = String(params.phone ?? '').replace(/\D/g, '')
-    const ten = digits.length >= 10 ? digits.slice(-10) : null
-    const email = params.email ? String(params.email).trim().toLowerCase() : null
+  //
+  // WAVE 150 (lane 150U — suppression EVERYWHERE): the platform list's own contract is "NO subscriber may contact this
+  // person via ANY channel" (lib/platform/suppression-list.ts header). This arm asked only the identity that matched the
+  // channel (an email only for email, a phone only for sms/phone) and skipped MAIL entirely — so a litigator or a
+  // spam-complaint entry still received a postcard, and a person who said "stop" by text still received a marketing email
+  // to the address the sender also knew. Now every identity the caller supplied is asked on every channel, and the REASON
+  // decides reach: `federal_dnc` is a telephone rule (calls + texts — the TCPA's DNC registry, never email or mail); every
+  // other reason (explicit opt-out, TCPA violation, spam complaint, litigator, manual admin) binds all channels.
+  if (params.email || params.phone || contactEmail || contactPhone) {
+    const tens = [...new Set([params.phone, contactPhone].map((ph) => String(ph ?? '').replace(/\D/g, '')).filter((d) => d.length >= 10).map((d) => d.slice(-10)))]
+    const emails = [...new Set([params.email, contactEmail].map((e) => String(e ?? '').trim().toLowerCase()).filter(Boolean))]
     const platformReads: Array<{ what: string; q: any }> = []
-    if (email && params.channel === 'email') platformReads.push({ what: 'email', q: supabase.from('platform_suppression_list').select('id, reason').eq('email', email) })
-    if (ten && (params.channel === 'sms' || params.channel === 'phone')) platformReads.push({ what: 'phone', q: supabase.from('platform_suppression_list').select('id, reason').eq('phone_digits', ten) })
+    if (emails.length) platformReads.push({ what: 'email', q: supabase.from('platform_suppression_list').select('id, reason').in('email', emails) })
+    if (tens.length) platformReads.push({ what: 'phone', q: supabase.from('platform_suppression_list').select('id, reason').in('phone_digits', tens) })
     for (const r of platformReads) {
-      const { data: rows, error } = await r.q.limit(1)
+      const { data: rows, error } = await r.q.limit(5)
       if (error) {
         console.error(`[checkSuppression] platform suppression list read (${r.what}) refused:`, error.message)
         return { suppressed: true, reason: `Platform suppression list unreadable — refusing to send (${error.message})` }
       }
-      if (rows && rows.length > 0) return { suppressed: true, reason: `Platform-suppressed: ${rows[0].reason}` }
+      const binding = ((rows ?? []) as Array<{ reason?: string | null }>).find((row) => platformReasonBinds(row.reason, params.channel))
+      if (binding) return { suppressed: true, reason: `Platform-suppressed: ${binding.reason}` }
     }
   }
 
