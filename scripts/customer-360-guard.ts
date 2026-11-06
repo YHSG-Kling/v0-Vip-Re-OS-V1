@@ -156,15 +156,18 @@ async function main() {
     const stated = obs.find((o) => o.source === "contacts.timeline")
     const appended = obs.filter((o) => o.basis === "provider_append")
     const firstParty = obs.filter((o) => o.basis === "first_party_action")
-    ok(!!stated && stated.confirmed === true && stated.basis === "staff_entered" && stated.playbook === "purchase", "a staff-recorded stated timeline on a buyer is a CONFIRMED purchase intent", JSON.stringify(stated))
+    // WAVE 150 (150JNAD, owner ruling R2): re-asserted to the RULE — the stated timeline is CONFIRMED (a human stamp says who
+    // recorded it) but names NO side; contact_type ("buyer" on this fixture) is never read as a signal.
+    ok(!!stated && stated.confirmed === true && stated.basis === "staff_entered" && stated.playbook === null, "R2: a staff-recorded stated timeline is CONFIRMED, and contact_type never gives it a side (playbook null)", JSON.stringify(stated))
     ok(appended.length >= 2 && appended.every((o) => o.confirmed === false), `APPEND ≠ INTENT: ${appended.length} provider observations, none confirmed`)
     const plainView = await quiet(() => c360.customer360For(db as never, B, { type: "contact", id: "c-plain" }, { now: NOW, slices: ["intent"] }))
     const plainStated = plainView.ok ? plainView.view.intent!.observations.find((o) => o.source === "contacts.timeline") : undefined
-    ok(!!plainStated && plainStated.basis === "unstamped" && plainStated.confirmed === false && plainStated.playbook === "sale" && plainView.ok && !plainView.view.intent!.confirmed.includes("sale"),
+    ok(!!plainStated && plainStated.basis === "unstamped" && plainStated.confirmed === false && plainStated.playbook === null && plainView.ok && !plainView.view.intent!.confirmed.includes("sale"),
       "(control) the SAME timeline with NO stamp saying who recorded it is observed, NOT confirmed", JSON.stringify(plainStated))
     ok(Object.keys(v.fields).every((k) => protectedClassReasonFor(k.split(".")[1]) === null), "no projected field is a protected-class column (the classifier, applied to every key)")
     ok(firstParty.length >= 2 && firstParty.every((o) => o.confirmed === false), `a first-party action is observed, never confirmed (${firstParty.length})`)
-    ok(v.intent!.confirmed.includes("purchase") && !v.intent!.observedNotConfirmed.includes("purchase") && v.intent!.playbooks.every((p) => p.route === "isa_engagement"), `confirmed ${JSON.stringify(v.intent!.confirmed)} / observed ${JSON.stringify(v.intent!.observedNotConfirmed)} — a contact's playbooks route to the ISA's governed engagement`)
+    // R2: a buyer-TYPED contact with first-party search activity has purchase OBSERVED (their own actions), never CONFIRMED by its type.
+    ok(!v.intent!.confirmed.includes("purchase") && v.intent!.observedNotConfirmed.includes("purchase") && v.intent!.playbooks.every((p) => p.route === "isa_engagement"), `confirmed ${JSON.stringify(v.intent!.confirmed)} / observed ${JSON.stringify(v.intent!.observedNotConfirmed)} — a contact's playbooks route to the ISA's governed engagement`)
     // reads only, columns real
     ok(log.every((l) => l.op === "select"), `the read WRITES NOTHING (${log.length} calls, ops ${[...new Set(log.map((l) => l.op))].join(",")})`)
     // the lead path and the watcher's reads ride the same recorder, so every select shape this lane wrote is checked

@@ -596,12 +596,13 @@ export async function customer360For(
       if (row.timeline) {
         const st = stamps.timeline && typeof stamps.timeline === "object" ? (stamps.timeline as Record<string, unknown>) : null
         const basis: C360Basis = st && typeof st.source === "string" ? HUMAN_SOURCES[st.source] ?? "provider_append" : "unstamped"
-        const type = String(row.contact_type ?? row.lead_type ?? row.persona ?? "").toLowerCase()
-        const playbooks: IntentPlaybook[] = /both/.test(type) ? ["purchase", "sale"] : /buyer|renter/.test(type) ? ["purchase"] : /seller|owner/.test(type) ? ["sale"] : []
+        // WAVE 150 (lane 150JNAD, owner ruling R2 — 2026-11-06: "intent / readiness is NOT derived from contact types"). This
+        // used to read contact_type / lead_type / persona to decide WHICH playbook a stated timeline confirmed — a buyer-typed
+        // record became a CONFIRMED purchase intent. The timeline stays the person's statement (confirmed when a human stamp says
+        // who recorded it), but it names no side: the side comes from evidence (the C37 moment — lib/intent/moving-moments.ts
+        // buildMovingMoment — and the stated / first-party / provider observations below), never from contact_type.
         const at = st && typeof st.retrievedAt === "string" ? st.retrievedAt : null
-        for (const p of playbooks.length > 0 ? playbooks : [null]) {
-          observations.push({ playbook: p, signal: `stated timeline ${row.timeline}`, basis, confirmed: basis === "person_stated" || basis === "staff_entered", source: `${table}.timeline`, observedAt: at, freshness: freshnessOf(basis === "unstamped" ? "unknown" : "realtime_write", CUSTOMER_360_SOURCES.record.cadence, at, null, now) })
-        }
+        observations.push({ playbook: null, signal: `stated timeline ${row.timeline}`, basis, confirmed: basis === "person_stated" || basis === "staff_entered", source: `${table}.timeline`, observedAt: at, freshness: freshnessOf(basis === "unstamped" ? "unknown" : "realtime_write", CUSTOMER_360_SOURCES.record.cadence, at, null, now) })
       }
       // (2) first-party actions (observed, never confirmed).
       if (engagement) {

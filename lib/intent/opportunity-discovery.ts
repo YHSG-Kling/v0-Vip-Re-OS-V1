@@ -99,6 +99,14 @@ export interface OpportunityObservation {
   fields?: readonly string[] | null
   lifeEvent?: string | null
   protectedProxy?: boolean | null
+  /** WAVE 150 (150JNAD, C37) — the record's own side (m892 `side`; never contacts.contact_type, R2). */
+  side?: "buyer" | "seller" | "both" | "unknown" | null
+  /** C37 — the outreach the record's source + subject class permit (m892 `outreach`). */
+  outreach?: "none" | "email_mail_only" | "consent_gated" | "address_correction_only" | null
+  /** C37 — the source's collection basis at the record (m892 `data_rights.collection`). */
+  rights?: string | null
+  /** C37 (m970) — a known date the record documents (a lease end, a planned list date). */
+  knownDeadline?: { kind: "lease_end" | "planned_list_date" | "closing_date" | "relocation_start" | "other_stated"; at: string } | null
 }
 
 /** PURE. The decisions one observation bears on (topic tags first, then the investing sources, then the record's intents). */
@@ -344,11 +352,45 @@ export function opportunityMenu(reading: OpportunityReading, ctx: OpportunityMen
 export function opportunityFactsFrom(o: {
   reading?: { primary?: { kind?: string | null; stage?: string | null } | null; sensitive?: boolean } | null
   menu?: { options: ReadonlyArray<{ mode: string; status: string; why: string; experience: string; requiresApproval?: boolean }>; floor: string } | null
-} | null | undefined): { kind: string; stage: string; sensitive: boolean; modes: Array<{ mode: string; status: string; why: string; experience: string; requiresApproval: boolean }>; floor: string } | undefined {
+  /** WAVE 150 (150JNAD, C37) — lib/intent/moving-moments.ts MovingMoment (structural: only the fields the arbiter reads). */
+  moment?: MomentFactsInput | null
+  /** WAVE 150 (150JNAD, C38) — lib/intent/moving-moments.ts readinessPlays. */
+  plays?: { options: ReadonlyArray<{ play: string; mode: string; status: string; why: string }>; floor: string; holdout: boolean } | null
+} | null | undefined): OpportunityFacts | undefined {
   if (!o?.reading?.primary || !o.menu) return undefined
   const modes = o.menu.options.filter((m) => m.status !== "not_eligible").map((m) => ({ mode: m.mode, status: m.status, why: m.why, experience: m.experience, requiresApproval: m.requiresApproval === true }))
   if (modes.length === 0) return undefined
-  return { kind: String(o.reading.primary.kind ?? "unknown"), stage: String(o.reading.primary.stage ?? "none"), sensitive: o.reading.sensitive === true, modes, floor: o.menu.floor }
+  const out: OpportunityFacts = { kind: String(o.reading.primary.kind ?? "unknown"), stage: String(o.reading.primary.stage ?? "none"), sensitive: o.reading.sensitive === true, modes, floor: o.menu.floor }
+  // C37 / C38: the moment as EVIDENCE (levels and reasons only — never a source, an event, a vendor score's value or a quote) and
+  // the plays the policy left open. The arbiter picks timing; the window is a reporting interval, never a schedule.
+  const m = o.moment
+  if (m && m.personLevel) {
+    out.moment = {
+      window: m.decision_window.window, windowBasis: m.decision_window.basis, uncertainty: m.decision_window.uncertainty,
+      buyer: m.buyer_readiness.level, seller: m.seller_readiness.level, investor: m.investor_strategy.stage,
+      desire: m.desire_to_move.level, expects: m.expects_to_move.level, ability: m.ability_to_act.level,
+      barriers: m.barrier.map((b) => b.key), negatives: m.negative_evidence.length, identity: m.identity_confidence, outreach: m.outreach_permission,
+      probability: m.probability ? { rate: m.probability.rate, validated: m.probability.validated } : null,
+    }
+  }
+  if (o.plays) out.plays = { options: o.plays.options.filter((p) => p.status !== "not_eligible").map((p) => ({ play: p.play, mode: p.mode, status: p.status, why: p.why })), floor: o.plays.floor, holdout: o.plays.holdout }
+  return out
+}
+
+/** The arbiter's view of the moment (structural — lib/intent/moving-moments.ts MovingMoment satisfies it). */
+interface MomentFactsInput {
+  personLevel: boolean
+  decision_window: { window: string; basis: string; uncertainty: string }
+  buyer_readiness: { level: string }; seller_readiness: { level: string }; investor_strategy: { stage: string }
+  desire_to_move: { level: string }; expects_to_move: { level: string }; ability_to_act: { level: string }
+  barrier: ReadonlyArray<{ key: string }>; negative_evidence: ReadonlyArray<unknown>; identity_confidence: string; outreach_permission: string
+  probability: { rate: number; validated: number } | null
+}
+
+interface OpportunityFacts {
+  kind: string; stage: string; sensitive: boolean; modes: Array<{ mode: string; status: string; why: string; experience: string; requiresApproval: boolean }>; floor: string
+  moment?: { window: string; windowBasis: string; uncertainty: string; buyer: string; seller: string; investor: string; desire: string; expects: string; ability: string; barriers: string[]; negatives: number; identity: string; outreach: string; probability: { rate: number; validated: number } | null }
+  plays?: { options: Array<{ play: string; mode: string; status: string; why: string }>; floor: string; holdout: boolean }
 }
 
 // ── the expert brief the deciding models read (one text, two readers) ─────────────────────────────────────────────────────────
@@ -360,4 +402,6 @@ export function opportunityFactsFrom(o: {
 export const OPPORTUNITY_COMBINATION_BRIEF = [
   "HOW TO READ A COMBINATION (the `opportunity` reading): you are a behavioural researcher with a conscience. Early signs of a home decision (moving, selling, buying, investing, refinancing) are small and independent — the person's own activity on the tenant's surfaces, a public record about their property, their own public post, a licensed provider field — and NONE of them alone means anything. The reading's stage is computed by policy and you may never raise it: single_observation (one source, however often it repeats) and watch (inferences only) allow only quiet monitoring or research; emerging allows helpful education; likely (independent kinds agree, one verified, identity confirmed) or stated (the person's own words) allow appropriate outreach under consent and authority. Market and community context explain timing, never intent. Treat 'inferred' as a guess, 'reported' as unchecked, 'verified' as an authoritative record.",
   "WHAT KIND MEANS HERE: you serve the person, not the pipeline. Choose the least intrusive step that would genuinely help: often that is to keep watching quietly. Never let a message reveal what was observed, from where, or any life event; never exploit hardship, urgency or fear; never infer anything about a protected characteristic. Paid research is a cost to the tenant — free first-party reads first, reuse what was already learned, buy only what would change the decision.",
+  // WAVE 150 (lane 150JNAD, C37 + C38): the needs × expectation × feasibility reasoning over the `moment` and its `plays`.
+  "NEED × EXPECTATION × FEASIBILITY (the `moment`, when present): reason like a seasoned listing-and-buyer agent with a mortgage professional at their side. Ask three questions in order. (1) WHAT DO THEY WANT — `desire` comes from their own words first; observed activity is a weaker sign and an inference is a guess. (2) WHAT MAKES IT POSSIBLE — `ability` reads financing, equity, inventory that fits what they asked for, a lease, a sell-before-buy chain and any barrier they named; a barrier is a readiness CONDITION to help with (explain the sell-buy timeline, find homes that fit, introduce a licensed lender they choose), never a category and never something to mention as observed. (3) WHEN COULD WE HELP — `window` is a REPORTING INTERVAL (0-30 / 31-90 / 91-180 / 181-365 / over 365 / unknown), never a schedule; a stated date beats any range, `evidence_prior` is an uncalibrated prior, and `unknown` is a legitimate, honest answer. Wanting to move is not expecting to move, and desire without feasibility is never 'ready now'. Choose only among `plays` the policy left open: INVITE (a person is preparing or ready), EXPLAIN (they want it and something is in the way), MATCH (licensed active homes within their own stated criteria, or an honest shortage note), CLARIFY (one kind, easy question when the window is unknown), WATCH (keep reading approved signals) or STAY QUIET (thin, mixed or unwelcome evidence — always allowed). A holdout subject is only watched. A vendor score is a signal in its own units, never a chance; a probability exists only when `moment.probability` is present, calibrated on this tenant's validated outcomes — never state one otherwise, and never treat an appointment as a closing.",
 ].join("\n")

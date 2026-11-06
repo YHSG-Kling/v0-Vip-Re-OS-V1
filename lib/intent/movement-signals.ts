@@ -59,6 +59,10 @@ import {
 } from "@/lib/intent/movement-source-registry"
 
 import {
+  KNOWN_DEADLINE_KINDS, buildMovingMoment, movementHoldoutArm, readinessPlays, statedTimelineWindow,
+  type KnownDeadlineKind, type MovingMoment, type MovingMomentFacts, type ReadinessPlays,
+} from "@/lib/intent/moving-moments"
+import {
   OPPORTUNITY_COMBINATION_BRIEF, OPPORTUNITY_INTENT, opportunityKindsForTopic, opportunityMenu, opportunityTag, readOpportunities, stageAtLeast,
   type OpportunityMenu, type OpportunityObservation, type OpportunityReading,
 } from "@/lib/intent/opportunity-discovery"
@@ -135,6 +139,11 @@ export interface MovementSignalInput {
   lifeEvent?: string | null
   /** C20: when the event HAPPENED, by the evidence (a filing / publication date) — observedAt stays when the source observed it. */
   eventAt?: string | null
+  /** C37 (wave 150, 150JNAD, m970): a known date this record DOCUMENTS (a lease end the person stated, a planned list date). A
+   *  stated date beats any inferred range in the decision-window forecaster (lib/intent/moving-moments.ts). */
+  knownDeadline?: { kind: KnownDeadlineKind; at: string } | null
+  /** C37 (m970): the timeline bucket the person THEMSELVES stated in this evidence (a public post in their own voice). */
+  statedTimeline?: string | null
 }
 
 export type MovementOutreach = "none" | "email_mail_only" | "consent_gated" | "address_correction_only"
@@ -156,6 +165,9 @@ export interface MovementSignalRecord extends Required<Pick<MovementSignalInput,
   /** C20: the canonical life event and when it happened (null for a non-life-event record). */
   lifeEvent: LifeEventType | null
   eventAt: string | null
+  /** C37 (m970): null when the evidence documents no date / no stated bucket. */
+  knownDeadline: { kind: KnownDeadlineKind; at: string } | null
+  statedTimeline: string | null
   idempotencyKey: string
   /** Chosen by the manager / arbiter (decideMovementNextAction) — never by the source. */
   nextAction: null
@@ -243,6 +255,11 @@ function buildMovementSignal(input: MovementSignalInput): MovementBuild {
   if (input.lifeEvent && !lifeEvent) return no("bad_evidence", `"${String(input.lifeEvent)}" is not in LIFE_EVENT_VOCAB (never guessed onto a nearby event)`)
   const eventAtMs = input.eventAt ? Date.parse(input.eventAt) : NaN
   const eventAt = Number.isFinite(eventAtMs) && eventAtMs <= Date.now() + DAY_MS ? new Date(eventAtMs).toISOString() : null
+  // C37: a documented date is only a date when its kind is in THE vocabulary and it parses; a stated bucket only from the person.
+  const kd = input.knownDeadline ?? null
+  if (kd && (!(KNOWN_DEADLINE_KINDS as readonly string[]).includes(kd.kind) || !Number.isFinite(Date.parse(kd.at)))) return no("bad_evidence", `a known deadline needs a kind from KNOWN_DEADLINE_KINDS and a real date ("${String(kd?.kind)}")`)
+  if (kd && !(e.confidence === "verified" || (e.confidence === "reported" && e.reportedBy === "self"))) return no("bad_evidence", "a known date is only a record's own fact (verified) or the person's own words (reported by self) — never an inference")
+  const statedTimeline = input.statedTimeline && statedTimelineWindow(input.statedTimeline) !== null && e.confidence === "reported" && e.reportedBy === "self" ? input.statedTimeline : null
   return {
     ok: true,
     record: {
@@ -251,7 +268,7 @@ function buildMovementSignal(input: MovementSignalInput): MovementBuild {
       capturedBy: input.capturedBy, confidence: e.confidence, protectedProxy, targetingProhibited: protectedProxy || intimate || input.eventRelevance === "life_stage",
       sensitivity, dataRights: { collection: src.licence.collection, storage: src.licence.storage, terms: src.licence.terms, costClass: src.costClass, status: src.status },
       outreach, propertyAddress: input.propertyAddress ?? (s.type === "property" ? s.address : null),
-      datasetKey: input.datasetKey ?? null, lifeEvent, eventAt, idempotencyKey, nextAction: null, outcome: null,
+      datasetKey: input.datasetKey ?? null, lifeEvent, eventAt, knownDeadline: kd ? { kind: kd.kind, at: new Date(Date.parse(kd.at)).toISOString() } : null, statedTimeline, idempotencyKey, nextAction: null, outcome: null,
     },
   }
 }
@@ -507,6 +524,9 @@ export function movementSignalFromPublicPost(a: {
   return buildMovementSignal({
     brokerageId: a.brokerageId, subject: a.subject, sourceKey: a.sourceKey, evidence, observedAt: a.postedAt, eventRelevance: r.eventRelevance,
     side: r.side, identity: a.subject.type === "raw_lead" ? "record_key" : "verified_match", capturedBy: "automation",
+    // C37 (150JNAD): the classifier's stated bucket was dropped on the floor — a writer with no reader. It rides the record only
+    // when the author spoke for themselves (buildMovementSignal re-checks), and the forecaster reads it as THEIR timeline.
+    statedTimeline: r.about === "author" && r.quote && r.timelineBucket !== "unknown" ? r.timelineBucket : null,
   })
 }
 
@@ -807,6 +827,10 @@ interface MovementRow {
   observed_at: string; outreach: MovementOutreach; protected_proxy: boolean; next_action: MovementNextAction | null; outcome: MovementOutcome | null
   /** C20 (m919) — present on life-event rows only. */
   life_event?: LifeEventType | null; event_at?: string | null; sequence?: number | null; supersedes?: string | null
+  /** C37 (m970). */
+  known_deadline_kind?: KnownDeadlineKind | null; known_deadline_at?: string | null; stated_timeline?: string | null
+  data_rights?: { collection?: string } | null
+  decision?: Record<string, unknown> | null
 }
 
 /** PURE. The m892 row for a built record (exact column names — scripts/movement-signals-guard.ts checks them against the migration). */
@@ -822,6 +846,9 @@ function movementRowFor(r: MovementSignalRecord): Record<string, unknown> {
     // C20 (m919): the chronology columns ride LIFE-EVENT rows only (sequence / supersedes are set at persistence, from the
     // subject's earlier rows) — a non-life row names no m919 column at all.
     ...(r.lifeEvent ? { life_event: r.lifeEvent, event_at: r.eventAt } : {}),
+    // C37 (m970): named only when the evidence documents them — an ordinary row names no m970 column.
+    ...(r.knownDeadline ? { known_deadline_kind: r.knownDeadline.kind, known_deadline_at: r.knownDeadline.at } : {}),
+    ...(r.statedTimeline ? { stated_timeline: r.statedTimeline } : {}),
   }
 }
 
@@ -834,6 +861,9 @@ const scorable = (row: MovementRow): ScorableMovement & { outreach: MovementOutr
 const observationOf = (row: MovementRow): OpportunityObservation => ({
   id: row.id, sourceKey: row.source_key, relevance: row.event_relevance, confidence: row.confidence, identity: row.identity_match, observedAt: row.observed_at,
   intents: row.intents ?? null, fields: (row.evidence as { fields?: readonly string[] } | null)?.fields ?? null, lifeEvent: row.life_event ?? null, protectedProxy: row.protected_proxy,
+  // C37 (150JNAD): the record's own side / outreach / rights / documented date — the moment reads these, never contact_type.
+  side: row.side ?? null, outreach: row.outreach ?? null, rights: row.data_rights?.collection ?? null,
+  knownDeadline: row.known_deadline_kind && row.known_deadline_at ? { kind: row.known_deadline_kind, at: row.known_deadline_at } : null,
 })
 
 /** PURE. Research already planned for these rows (their decision's research_keys at decided_at) — the reuse half of rule 7. */
@@ -906,7 +936,7 @@ export async function recordMovementSignal(svc: Svc, input: MovementSignalInput 
     // A pre-built record (the watcher's, with its change key) is RE-VALIDATED — the record-time rules hold on every path, never
     // only on the builder's; only its idempotency key is kept.
     const fields: MovementSignalInput = "idempotencyKey" in input
-      ? { brokerageId: input.brokerageId, subject: input.subject, sourceKey: input.sourceKey, evidence: input.evidence, observedAt: input.observedAt, eventRelevance: input.eventRelevance, intents: input.intents, side: input.side, identity: input.identity, capturedBy: input.capturedBy, protectedProxy: input.protectedProxy, propertyAddress: input.propertyAddress, datasetKey: input.datasetKey ?? null, lifeEvent: input.lifeEvent ?? null, eventAt: input.eventAt ?? null }
+      ? { brokerageId: input.brokerageId, subject: input.subject, sourceKey: input.sourceKey, evidence: input.evidence, observedAt: input.observedAt, eventRelevance: input.eventRelevance, intents: input.intents, side: input.side, identity: input.identity, capturedBy: input.capturedBy, protectedProxy: input.protectedProxy, propertyAddress: input.propertyAddress, datasetKey: input.datasetKey ?? null, lifeEvent: input.lifeEvent ?? null, eventAt: input.eventAt ?? null, knownDeadline: input.knownDeadline ?? null, statedTimeline: input.statedTimeline ?? null }
       : input
     let built = buildMovementSignal(fields)
     if (!built.ok) return { status: "refused", code: built.code, reason: built.reason }
@@ -1038,6 +1068,112 @@ async function loadSubjectEvidence(svc: Svc, brokerageId: string, s: MovementSub
   return { ok: true, rows, weights, blind }
 }
 
+// ── C37: the facts beside the C9 records (wave 150, lane 150JNAD) ───────────────────────────────────────────────────────────────
+
+/** A held-out subject's next action (watched, not contacted on movement evidence). A MovementNextAction, never a ledger action name. */
+const HOLDOUT_NEXT_ACTION: MovementNextAction = "wait"
+const NEGATIVE_OUTCOMES: ReadonlySet<string> = new Set(["declined", "false_positive", "opted_out", "no_change"])
+const PLANNED_LISTING_STATUSES: ReadonlySet<string> = new Set(["draft", "listing_signed", "coming_soon"])
+const PULLED_LISTING_STATUSES: ReadonlySet<string> = new Set(["withdrawn", "cancelled", "expired"])
+const IN_CONTRACT_STATUSES: ReadonlySet<string> = new Set(["pending", "under_contract", "clear_to_close"])
+const STAMP_BASIS: Readonly<Record<string, "person_stated" | "staff_entered">> = Object.freeze({ staff: "staff_entered", contact: "person_stated", ai_tool: "person_stated" })
+
+/**
+ * The C37 facts for ONE contact, every read pinned to the tenant: the person's own timeline (contacts.timeline + WHO recorded it),
+ * the recorded tenure (home_owner_status — the renter segment), the equity SIGN (never the number), a planned MLS go-live date and a
+ * pulled listing (listings), a contract closing date and a just-closed purchase (transactions), the financing STATUS
+ * (buyer_financial_profiles — never an amount), and NEGATIVE evidence (this subject's movement rows closed declined / false positive
+ * / opted out / no change). NEVER contacts.contact_type (owner ruling R2). A refused read is named in `unread`, never "no".
+ */
+async function loadMomentFacts(svc: Svc, brokerageId: string, contactId: string, rows: readonly MovementRow[], sinceIso: string, now: Date): Promise<MovingMomentFacts> {
+  const unread: string[] = []
+  const facts: MovingMomentFacts = { subjectIsPerson: true, knownDeadlines: [], negative: [], unread }
+  const { data: c, error: cErr } = await svc.from("contacts").select("id, timeline, equity_estimate, home_owner_status, enrichment_profile, updated_at").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (cErr) unread.push(`contact facts unread (${cErr.message})`)
+  else if (!c) return { subjectIsPerson: false, unread: ["contact not in this brokerage"] }
+  else {
+    const row = c as { timeline?: string | null; equity_estimate?: number | string | null; home_owner_status?: string | null; enrichment_profile?: Record<string, unknown> | null; updated_at?: string | null }
+    if (row.timeline && statedTimelineWindow(row.timeline) !== null) {
+      const fp = row.enrichment_profile && typeof row.enrichment_profile === "object" ? (row.enrichment_profile as Record<string, unknown>).field_provenance : null
+      const st = fp && typeof fp === "object" ? ((fp as Record<string, unknown>).timeline as Record<string, unknown> | undefined) : undefined
+      const basis = st && typeof st.source === "string" ? STAMP_BASIS[st.source] ?? "unstamped" : "unstamped"
+      facts.statedTimeline = { value: row.timeline, basis, at: st && typeof st.retrievedAt === "string" ? st.retrievedAt : null }
+    }
+    const eq = row.equity_estimate === null || row.equity_estimate === undefined ? NaN : Number(row.equity_estimate)
+    facts.equity = Number.isFinite(eq) ? (eq > 0 ? "positive" : "none") : "unknown"
+    facts.tenure = row.home_owner_status === "renter" ? "renter" : row.home_owner_status === "owner" ? "owner" : null
+  }
+  // The person's own bucket from a public post in their voice (m970 stated_timeline) when the record holds none.
+  if (!facts.statedTimeline) {
+    const own = rows.filter((r) => r.stated_timeline && statedTimelineWindow(r.stated_timeline) !== null).sort((a, b) => (a.observed_at < b.observed_at ? 1 : -1))[0]
+    if (own?.stated_timeline) facts.statedTimeline = { value: own.stated_timeline, basis: "person_stated", at: own.observed_at }
+  }
+  const deadlines: Array<NonNullable<MovingMomentFacts["knownDeadlines"]>[number]> = []
+  const negative: Array<NonNullable<MovingMomentFacts["negative"]>[number]> = []
+  const { data: ls, error: lErr } = await svc.from("listings").select("id, status, go_live_date, stage_updated_at, updated_at").eq("brokerage_id", brokerageId).eq("seller_contact_id", contactId).is("deleted_at", null).limit(20)
+  if (lErr) unread.push(`listings unread (${lErr.message})`)
+  for (const l of (lErr ? [] : ls ?? []) as Array<{ id: string; status: string | null; go_live_date: string | null; stage_updated_at: string | null; updated_at: string | null }>) {
+    if (l.status && PLANNED_LISTING_STATUSES.has(l.status) && l.go_live_date) deadlines.push({ kind: "planned_list_date", at: l.go_live_date, source: "first_party_row", ref: `listings:${l.id}` })
+    const at = l.stage_updated_at ?? l.updated_at
+    if (l.status && PULLED_LISTING_STATUSES.has(l.status) && at && at >= sinceIso) negative.push({ key: "listing_pulled", why: `their listing was ${l.status}`, at, source: `listings:${l.id}` })
+  }
+  const { data: tx, error: tErr } = await svc.from("transactions").select("id, status, contract_closing_date, actual_close_date").eq("brokerage_id", brokerageId).eq("buyer_contact_id", contactId).limit(20)
+  if (tErr) unread.push(`transactions unread (${tErr.message})`)
+  for (const t of (tErr ? [] : tx ?? []) as Array<{ id: string; status: string | null; contract_closing_date: string | null; actual_close_date: string | null }>) {
+    if (t.status && IN_CONTRACT_STATUSES.has(t.status) && t.contract_closing_date) deadlines.push({ kind: "closing_date", at: t.contract_closing_date, source: "document", ref: `transactions:${t.id}` })
+    if (t.status === "closed" && t.actual_close_date && t.actual_close_date >= sinceIso.slice(0, 10)) negative.push({ key: "just_purchased", why: "they just closed on a purchase", at: t.actual_close_date, source: `transactions:${t.id}` })
+  }
+  const { data: fin, error: fErr } = await svc.from("buyer_financial_profiles").select("is_cash_buyer, pre_approval_issued_date, pre_approval_expires_at, verified").eq("brokerage_id", brokerageId).eq("contact_id", contactId).limit(5)
+  if (fErr) { unread.push(`financing status unread (${fErr.message})`); facts.financing = "unknown" }
+  else {
+    const fins = (fin ?? []) as Array<{ is_cash_buyer: boolean | null; pre_approval_issued_date: string | null; pre_approval_expires_at: string | null }>
+    facts.financing = fins.length === 0 ? "unknown"
+      : fins.some((f) => f.is_cash_buyer === true) ? "cash"
+        : fins.some((f) => f.pre_approval_issued_date && (!f.pre_approval_expires_at || Date.parse(f.pre_approval_expires_at) > now.getTime())) ? "pre_approved"
+          : fins.some((f) => f.pre_approval_issued_date) ? "expired" : "unknown"
+  }
+  const { data: closed, error: nErr } = await svc.from("movement_signals").select("id, outcome, outcome_at").eq("brokerage_id", brokerageId).eq("contact_id", contactId).not("outcome", "is", null).gte("outcome_at", sinceIso).limit(50)
+  if (nErr) unread.push(`closed movement outcomes unread (${nErr.message}) — negative evidence not read`)
+  for (const r of (nErr ? [] : closed ?? []) as Array<{ id: string; outcome: string | null; outcome_at: string | null }>) {
+    if (r.outcome && NEGATIVE_OUTCOMES.has(r.outcome) && r.outcome_at) negative.push({ key: r.outcome, why: `an earlier sign closed as ${r.outcome.replace(/_/g, " ")}`, at: r.outcome_at, source: `movement_signals:${r.id}` })
+  }
+  return { ...facts, knownDeadlines: deadlines, negative, unread }
+}
+
+/** PURE. The holdout arm a prior decision stamped on these rows (decision.holdout) — the hook reads it, it never re-draws it. */
+const stampedHoldout = (rows: readonly MovementRow[]): boolean => rows.some((r) => (r.decision as { holdout?: { arm?: string } } | null | undefined)?.holdout?.arm === "holdout")
+
+/** PURE. The moment's ledger / snapshot summary (levels and reasons only — no source names, no vendor values). */
+const momentSummary = (m: MovingMoment, plays: ReadinessPlays | null) => ({
+  window: m.decision_window.window, window_basis: m.decision_window.basis, uncertainty: m.decision_window.uncertainty, why: m.decision_window.why.slice(0, 300),
+  buyer: m.buyer_readiness.level, seller: m.seller_readiness.level, investor: m.investor_strategy.stage, investor_exit: m.investor_strategy.exit,
+  desire: m.desire_to_move.level, expects: m.expects_to_move.level, ability: m.ability_to_act.level, barriers: m.barrier.map((b) => b.key),
+  known_deadline: m.known_deadline ? { kind: m.known_deadline.kind, at: m.known_deadline.at, source: m.known_deadline.source } : null,
+  identity: m.identity_confidence, source_confidence: m.source_confidence, rights: m.rights, last_observed: m.last_observed,
+  negative: m.negative_evidence.map((n) => n.key), outreach: m.outreach_permission, segments: m.segments,
+  vendor_scores: m.vendor_scores.map((v) => ({ provider: v.provider, field: v.field, unit: v.unit })), probability: m.probability, unread: m.unread,
+  plays: plays ? plays.options.filter((p) => p.status !== "not_eligible").map((p) => p.play) : [],
+})
+
+/** The C37 moment + C38 plays + holdout arm for a decided subject (null for a property / territory / raw lead — nobody to predict). */
+async function momentFor(
+  svc: Svc,
+  a: { brokerageId: string; cls: { cls: MovementSubjectClass; contactId: string | null; leadId: string | null }; rows: readonly MovementRow[]; since: string; now: Date; opportunity: OpportunityReading },
+): Promise<{ moment: MovingMoment; plays: ReadinessPlays; holdout: import("@/lib/kernel/experiments").ExperimentAssignment | null } | null> {
+  const person = a.cls.contactId ?? a.cls.leadId
+  if (!person) return null
+  const facts: MovingMomentFacts = a.cls.contactId ? await loadMomentFacts(svc, a.brokerageId, a.cls.contactId, a.rows, a.since, a.now) : { subjectIsPerson: true, unread: ["a lead with no contact yet — contact facts (timeline, tenure, listings, financing) not read"] }
+  const { loadDecisionWindowCalibration } = await import("@/lib/analytics/ai-prediction-outcomes")
+  const cal = await loadDecisionWindowCalibration(svc as never, a.brokerageId)
+  facts.calibration = cal.ok ? cal.calibration : null
+  if (!cal.ok) facts.unread = [...(facts.unread ?? []), `calibration unread (${cal.error})`]
+  const moment = buildMovingMoment(a.opportunity, a.rows.map(observationOf), facts, { now: a.now })
+  const { loadExperimentPolicy } = await import("@/lib/kernel/experiments")
+  const holdout = movementHoldoutArm(a.brokerageId, person, await loadExperimentPolicy(svc, a.brokerageId))
+  const plays = readinessPlays(moment, null, a.opportunity, { holdout: holdout?.arm === "holdout" })
+  return { moment, plays, holdout }
+}
+
 /**
  * THE MANAGER'S TURN for one subject: evidence → combination → closed menu → decision (AI inside the menu) → act → stamp the rows.
  * One ledger event per (subject, evidence set) — the same evidence is never decided twice; NEW evidence is a new decision. Never throws.
@@ -1056,6 +1192,8 @@ async function evaluateMovementSubject(svc: Svc, a: { brokerageId: string; subje
     const combination = scoreMovementCombination(ev.rows.map(scorable), { now, weights: ev.weights })
     const allowed = allowedMovementActions(combination, ev.rows.map(scorable), { subjectClass: cls.cls })
     const opportunity = readOpportunities(ev.rows.map(observationOf), { now })
+    // C37 / C38 (wave 150, 150JNAD): the moment, its plays and the subject's independent holdout arm — computed over the SAME rows.
+    const mm = await momentFor(svc, { brokerageId: a.brokerageId, cls, rows: ev.rows, since, now, opportunity })
     const ids = own.map((r) => r.id).sort()
     const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
     const manager = cls.cls === "lifetime" ? "sphere_of_influence" : cls.cls === "lead" || cls.cls === "contact" ? "ai_isa" : "data_steward"
@@ -1066,16 +1204,29 @@ async function evaluateMovementSubject(svc: Svc, a: { brokerageId: string; subje
         brokerageId: a.brokerageId, action: "intent.movement_signal.decide", actor: { type: "manager", managerKey: manager }, subject: subjectRef,
         idempotencyKey: `movement_decide:${a.brokerageId}:${subjectKey(a.subject)}:${movementDigest(ids.join(","))}`, reasonCode: movementReasonCode(combination.dominantRelevance),
         reasonDetail: combination.explanation.slice(0, 500), systemSource: "movement_signals", policyKey: "followup_policy",
-        detail: { score: combination.score, band: combination.band, dominant: combination.dominantRelevance, kinds: combination.independentKinds, caps: combination.caps, allowed: allowed.allowed, why: allowed.why, evidence_ids: ids, blind_spots: ev.blind, opportunity: opportunity.primary ? { kind: opportunity.primary.kind, stage: opportunity.primary.stage } : null },
+        detail: { score: combination.score, band: combination.band, dominant: combination.dominantRelevance, kinds: combination.independentKinds, caps: combination.caps, allowed: allowed.allowed, why: allowed.why, evidence_ids: ids, blind_spots: ev.blind, opportunity: opportunity.primary ? { kind: opportunity.primary.kind, stage: opportunity.primary.stage } : null, ...(mm ? { moment: momentSummary(mm.moment, mm.plays) } : {}), ...(mm?.holdout ? { experiment: { key: mm.holdout.key, arm: mm.holdout.arm } } : {}) },
       },
       async () => {
-        const decision = await decideMovementNextAction({ brokerageId: a.brokerageId, subjectClass: cls.cls, combination, allowed, opportunity }, { decide: deps.decide })
+        const decided = await decideMovementNextAction({ brokerageId: a.brokerageId, subjectClass: cls.cls, combination, allowed, opportunity }, { decide: deps.decide })
+        // 150AD: an INDEPENDENT HOLDOUT subject is watched, never handed to outreach on movement evidence (a person who told us
+        // themselves is never held out — readinessPlays). `human` (escalation) stays: a measurement never blocks a person's judgment.
+        const decision: MovementDecision = mm?.plays.holdout && decided.action === "offer_help"
+          ? { ...decided, action: HOLDOUT_NEXT_ACTION, rationale: `${decided.rationale} (Held: an independent holdout for outcome learning — watched, not contacted on this evidence.)`.slice(0, 600), helperKeys: [] }
+          : decided
         const routed = await actOnMovementDecision(svc, { brokerageId: a.brokerageId, cls, combination, decision, rows: own, now }, deps)
         const { data: upd, error: uErr } = await svc.from("movement_signals")
-          .update({ next_action: decision.action, decided_by: manager, decided_at: now.toISOString(), updated_at: now.toISOString(), decision: { source: decision.source, rationale: decision.rationale, helper_keys: decision.helperKeys, research_keys: decision.researchKeys, evidence: decision.evidence, confidence: decision.confidence, fallback_reason: decision.fallbackReason, score: combination.score, band: combination.band, explanation: combination.explanation.slice(0, 2000), routed } })
+          .update({ next_action: decision.action, decided_by: manager, decided_at: now.toISOString(), updated_at: now.toISOString(), decision: { source: decision.source, rationale: decision.rationale, helper_keys: decision.helperKeys, research_keys: decision.researchKeys, evidence: decision.evidence, confidence: decision.confidence, fallback_reason: decision.fallbackReason, score: combination.score, band: combination.band, explanation: combination.explanation.slice(0, 2000), routed, ...(mm?.holdout ? { holdout: { key: mm.holdout.key, arm: mm.holdout.arm, reason: mm.holdout.reason } } : {}) },
+            // C37 (m970): the subject's moment at this decision — the per-subject snapshot outcome learning reads back.
+            ...(mm ? { decision_window: mm.moment.decision_window.window, moment: momentSummary(mm.moment, mm.plays) } : {}) })
           .eq("brokerage_id", a.brokerageId).in("id", ids).select("id")
         const stamped = uErr ? 0 : (upd ?? []).length
         if (stamped !== ids.length) console.warn(`[movement-signals] decision stamped ${stamped} of ${ids.length} rows${uErr ? ` (${uErr.message})` : ""}`)
+        // 150N: a PLACED window is a forecast — frozen once in THE prediction ledger (ai_predictions), graded by the outcome later.
+        if (mm && mm.moment.decision_window.window !== "unknown" && (cls.contactId || cls.leadId)) {
+          const { freezeDecisionWindowForecast } = await import("@/lib/analytics/ai-prediction-outcomes")
+          const f = await freezeDecisionWindowForecast(svc as never, { brokerageId: a.brokerageId, entityType: cls.contactId ? "contact" : "lead", entityId: (cls.contactId ?? cls.leadId) as string, moment: mm.moment, holdoutArm: mm.holdout?.arm ?? null, evidenceIds: ids, now })
+          if (!f.captured && !/unchanged/.test(f.reason)) console.warn(`[movement-signals] decision-window forecast not frozen: ${f.reason}`)
+        }
         return (out = { status: "decided", reason: `${decision.action} (${decision.source})${stamped !== ids.length ? ` — ${stamped}/${ids.length} rows stamped` : ""}`, combination, decision, routed })
       },
       { settle: (r) => ({ status: r.routed?.ok === false ? "failed" : "executed", outcome: r.decision?.action ?? r.status, error: r.routed?.ok === false ? r.routed.detail ?? "route refused" : null }),
@@ -1160,11 +1311,21 @@ export async function recordMovementOutcome(
       },
       async () => {
         const { data, error } = await svc.from("movement_signals").update({ outcome: a.outcome, outcome_at: now.toISOString(), outcome_evidence: a.evidence, updated_at: now.toISOString() })
-          .eq("id", a.signalId).eq("brokerage_id", a.brokerageId).is("outcome", null).select("id")
+          .eq("id", a.signalId).eq("brokerage_id", a.brokerageId).is("outcome", null).select("id, contact_id, lead_id")
         if (error) return (out = { status: "refused", reason: `update refused: ${error.message}` })
         // An UPDATE that matches nothing RESOLVES (CLAUDE.md §3) — count it.
         if ((data ?? []).length === 0) return (out = { status: "refused", reason: "no open movement record with that id in this brokerage" })
-        return (out = { status: "recorded", reason: `${a.outcome} recorded` })
+        // 150N / 150AD: the outcome GRADES the subject's frozen decision-window forecasts (a confirmed move by the days it took; an
+        // appointment is recorded but never validates a forecast — appointments are not closings). A grading refusal is said.
+        const row = (data as Array<{ contact_id?: string | null; lead_id?: string | null }>)[0]
+        const entity = row?.contact_id ? { type: "contact" as const, id: row.contact_id } : row?.lead_id ? { type: "lead" as const, id: row.lead_id } : null
+        let graded = ""
+        if (entity) {
+          const { gradeDecisionWindowForecasts } = await import("@/lib/analytics/ai-prediction-outcomes")
+          const g = await gradeDecisionWindowForecasts(svc as never, { brokerageId: a.brokerageId, entityType: entity.type, entityId: entity.id, outcome: a.outcome, outcomeAt: now.toISOString(), signalId: a.signalId })
+          graded = g.error ? `; forecast grading refused: ${g.error}` : g.graded > 0 ? `; ${g.graded} forecast(s) graded` : ""
+        }
+        return (out = { status: "recorded", reason: `${a.outcome} recorded${graded}` })
       },
       { settle: (r) => ({ status: r.status === "recorded" ? "executed" : "failed", outcome: r.status, error: r.status === "refused" ? r.reason : null }),
         // WAVE 147 (147Z — census II.2): a REFUSED claim recorded no outcome — said as a refusal, never "already recorded".
@@ -1230,7 +1391,7 @@ export async function reconcileMovementOutcomes(svc: Svc, brokerageId: string, d
  * menu over the five engagement modes (quiet_monitoring / research / helpful_education / appropriate_outreach / human), each with
  * its status and why. Lane 149C owns how the arbiter times what it picks; this is the input shape.
  */
-export interface ArbiterOpportunityContext { reading: OpportunityReading; menu: OpportunityMenu }
+export interface ArbiterOpportunityContext { reading: OpportunityReading; menu: OpportunityMenu; moment?: MovingMoment | null; plays?: ReadinessPlays | null }
 export interface ArbiterMovementContext { signals: LifeChangeSignal[]; helpers: NeighbourlyHelper[]; explanation: string | null; blindSpot: string | null; opportunity?: ArbiterOpportunityContext | null }
 
 /**
@@ -1289,7 +1450,13 @@ export async function movementSignalsForArbiter(
       ...(dom && combo.band !== "none" && grounded.length === 0 ? [`the ${dom.replace(/_/g, " ")} evidence is inferred only — research, not a life change`] : []),
       ...(!raised && reading.primary && grounded.length > 0 ? [`the reading is only "${reading.primary.stage.replace(/_/g, " ")}" — a single observation never raises intent (quiet monitoring / research)`] : []),
     ]
-    return { signals, helpers: signals.length > 0 ? allowed.helpers : [], explanation: combo.explanation, blindSpot: blind.length ? `movement: ${blind.join("; ")}` : null, opportunity: { reading, menu } }
+    // C37 / C38 (wave 150, 150JNAD): the moment over the same rows, the plays the menu leaves open, the holdout a decision stamped
+    // (never re-drawn here). Calibration is not read per arbitration — the moment publishes no probability on this path.
+    const facts = await loadMomentFacts(svc, a.brokerageId, a.contactId, ev.rows, since, a.now)
+    const moment = buildMovingMoment(reading, ev.rows.map(observationOf), facts, { now: a.now })
+    const plays = readinessPlays(moment, menu, reading, { holdout: stampedHoldout(ev.rows) })
+    if (moment.unread.length) blind.push(`moment: ${moment.unread.join("; ")}`)
+    return { signals, helpers: signals.length > 0 ? allowed.helpers : [], explanation: combo.explanation, blindSpot: blind.length ? `movement: ${blind.join("; ")}` : null, opportunity: { reading, menu, moment, plays } }
   } catch (e) {
     return empty(`movement: ${(e as Error)?.message ?? String(e)}`)
   }

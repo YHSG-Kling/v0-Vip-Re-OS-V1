@@ -274,7 +274,159 @@ export function strategyFinding(a: string, b: string, tenant: StrategySignifican
   }
 }
 
-export interface StrategyLearningRun { strategies: number; pairs: number; proposed: number; existing: number; errors: string[] }
+// ── WAVE 150 (lane 150JNAD — directive 150N + 150AD): calibration of decision windows and MOVEMENT OUTCOME LEARNING ──────────────
+//
+// Same discipline as above: deterministic statistics over survivors, thin data is never a verdict.
+//   forecasts ..... ai_predictions prediction_type 'decision_window' (frozen + graded by lib/analytics/ai-prediction-outcomes.ts)
+//   outcomes ...... movement_signals.outcome (recordMovementOutcome — the human disposition door + the reconciler)
+//   moment ........ movement_signals.decision_window / decision.holdout (m970; stamped by the movement manager's decision)
+//   campaign ...... agent_action_ledger.detail.strategy (strategyRefOf — the ONE spelling) on the subject's own rows; spend = their cost_usd
+//   territory ..... contacts.zip_code (5)
+// CONFIRMED MOVES (listed / purchased / moved) are the outcome; APPOINTMENTS are counted beside them and never as one; a false
+// positive is a human's mark; INDEPENDENT HOLDOUTS (lib/intent/moving-moments.ts movementHoldoutArm) give the incremental lift and
+// the spend per INCREMENTAL confirmed move — never the spend per raw outcome, which credits outreach with moves that happen anyway.
+
+/** Validated graded forecasts a window needs before any probability is published (a statistical floor, not a business rule). */
+const CALIBRATION_MIN_VALIDATED = 50
+
+export interface DecisionWindowCalibration {
+  byWindow: Partial<Record<string, { validated: number; hits: number; rate: number | null; interval: [number, number] | null; published: boolean; why: string }>>
+  minValidated: number
+  /** Negative closes inside a still-open window — recorded, never validated (the person may still move inside it). */
+  earlyNegatives: number
+}
+
+/** PURE. Graded forecasts → per-window calibration. Only `validated` grades count; a window publishes only past the floor. */
+export function calibrateDecisionWindows(samples: ReadonlyArray<{ forecast: string; validated: boolean; hit: boolean; kind: string }>, minValidated = CALIBRATION_MIN_VALIDATED): DecisionWindowCalibration {
+  const byWindow: DecisionWindowCalibration["byWindow"] = {}
+  let earlyNegatives = 0
+  const tally = new Map<string, { n: number; k: number }>()
+  for (const s of samples) {
+    if (s.kind === "no_move_early") { earlyNegatives++; continue }
+    if (!s.validated || !s.forecast || s.forecast === "unknown") continue
+    const t = tally.get(s.forecast) ?? { n: 0, k: 0 }
+    t.n++; if (s.hit) t.k++
+    tally.set(s.forecast, t)
+  }
+  for (const [w, t] of tally) {
+    const published = t.n >= minValidated
+    byWindow[w] = { validated: t.n, hits: t.k, rate: published ? +(t.k / t.n).toFixed(4) : null, interval: published ? wilsonInterval(t.k, t.n) : null, published,
+      why: published ? `${t.k} of ${t.n} validated forecasts for ${w} moved inside it (Wilson 95 %)` : `${t.n} validated outcome(s) for ${w} — fewer than ${minValidated}, so no probability is published` }
+  }
+  return { byWindow, minValidated, earlyNegatives }
+}
+
+const CONFIRMED_MOVE_OUTCOMES: ReadonlySet<string> = new Set(["listed", "purchased", "moved"])
+const MOVEMENT_LEARNING_DIMENSIONS = Object.freeze(["window", "side", "source", "territory", "play", "campaign", "tenant"] as const)
+type MovementLearningDimension = (typeof MOVEMENT_LEARNING_DIMENSIONS)[number]
+
+interface MovementOutcomeRow { subjectId: string; window: string; side: string; sourceKey: string; territory: string; play: string; campaign: string; arm: string; outcome: string; spendUsd: number }
+
+export interface MovementOutcomeCell {
+  dimension: MovementLearningDimension; key: string
+  subjects: number; confirmedMoves: number; appointments: number; engaged: number; falsePositives: number; declined: number; optedOut: number; noChange: number
+  confirmedRate: number | null; interval: [number, number] | null; spendUsd: number
+}
+
+export interface MovementOutcomeLearning {
+  cells: MovementOutcomeCell[]
+  holdout: { treated: { subjects: number; confirmed: number; spendUsd: number }; holdout: { subjects: number; confirmed: number }; significance: StrategySignificance; incrementalRate: number | null; spendPerIncrementalMove: number | null; why: string }
+  blindSpots: string[]
+}
+
+/** The subject's ONE outcome for subject-level cells (a confirmed move beats an appointment beats engagement beats a negative). */
+const OUTCOME_RANK: Readonly<Record<string, number>> = Object.freeze({ listed: 6, purchased: 6, moved: 6, appointment: 5, engaged: 4, declined: 3, false_positive: 2, opted_out: 2, no_change: 1 })
+
+/**
+ * PURE. Closed movement rows (one per C9 record, carrying its subject's snapshot) → outcome learning by window, side, source,
+ * territory, play, campaign and tenant, plus the treated-vs-holdout lift. `source` counts RECORDS (a subject's every source is
+ * credited with the subject's outcome — attribution is shared, said); every other dimension counts SUBJECTS once.
+ */
+function movementOutcomeLearning(rows: readonly MovementOutcomeRow[], minSample = STRATEGY_MIN_SAMPLE): MovementOutcomeLearning {
+  const bySubject = new Map<string, MovementOutcomeRow>()
+  for (const r of rows) { const cur = bySubject.get(r.subjectId); if (!cur || (OUTCOME_RANK[r.outcome] ?? 0) > (OUTCOME_RANK[cur.outcome] ?? 0)) bySubject.set(r.subjectId, r) }
+  const subjects = [...bySubject.values()]
+  const spendOf = new Map<string, number>()
+  for (const r of rows) spendOf.set(r.subjectId, Math.max(spendOf.get(r.subjectId) ?? 0, r.spendUsd))
+  const cell = (dimension: MovementLearningDimension, key: string, members: readonly MovementOutcomeRow[], perRecord: boolean): MovementOutcomeCell => {
+    const out = (o: string) => members.filter((m) => (perRecord ? (bySubject.get(m.subjectId)?.outcome ?? m.outcome) : m.outcome) === o).length
+    const n = members.length
+    const confirmed = members.filter((m) => CONFIRMED_MOVE_OUTCOMES.has(perRecord ? (bySubject.get(m.subjectId)?.outcome ?? m.outcome) : m.outcome)).length
+    return { dimension, key, subjects: n, confirmedMoves: confirmed, appointments: out("appointment"), engaged: out("engaged"), falsePositives: out("false_positive"), declined: out("declined"), optedOut: out("opted_out"), noChange: out("no_change"),
+      confirmedRate: n > 0 ? +(confirmed / n).toFixed(4) : null, interval: wilsonInterval(confirmed, n), spendUsd: +[...new Set(members.map((m) => m.subjectId))].reduce((s, id) => s + (spendOf.get(id) ?? 0), 0).toFixed(4) }
+  }
+  const cells: MovementOutcomeCell[] = []
+  for (const dim of MOVEMENT_LEARNING_DIMENSIONS) {
+    const perRecord = dim === "source"
+    const pool = perRecord ? [...rows] : subjects
+    const keyOf = (r: MovementOutcomeRow) => (dim === "window" ? r.window : dim === "side" ? r.side : dim === "source" ? r.sourceKey : dim === "territory" ? r.territory : dim === "play" ? r.play : dim === "campaign" ? r.campaign : "tenant")
+    const groups = new Map<string, MovementOutcomeRow[]>()
+    for (const r of pool) { const k = keyOf(r) || "unknown"; groups.set(k, [...(groups.get(k) ?? []), r]) }
+    for (const [k, m] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) cells.push(cell(dim, k, m, perRecord))
+  }
+  const treated = subjects.filter((s) => s.arm === "treated"), held = subjects.filter((s) => s.arm === "holdout")
+  const tConf = treated.filter((s) => CONFIRMED_MOVE_OUTCOMES.has(s.outcome)).length, hConf = held.filter((s) => CONFIRMED_MOVE_OUTCOMES.has(s.outcome)).length
+  const significance = strategySignificance({ exposures: treated.length, conversions: tConf }, { exposures: held.length, conversions: hConf }, minSample)
+  const tSpend = +treated.reduce((s, t) => s + (spendOf.get(t.subjectId) ?? 0), 0).toFixed(4)
+  const incrementalRate = significance.verdict === "insufficient_sample" ? null : +((tConf / treated.length) - (hConf / held.length)).toFixed(4)
+  const incrementalMoves = incrementalRate !== null ? incrementalRate * treated.length : 0
+  const spendPerIncrementalMove = significance.verdict === "a_better" && incrementalMoves > 0 ? +(tSpend / incrementalMoves).toFixed(2) : null
+  return {
+    cells,
+    holdout: { treated: { subjects: treated.length, confirmed: tConf, spendUsd: tSpend }, holdout: { subjects: held.length, confirmed: hConf }, significance, incrementalRate, spendPerIncrementalMove,
+      why: spendPerIncrementalMove !== null ? `outreach adds ${(incrementalRate! * 100).toFixed(1)} confirmed moves per 100 subjects over the independent holdout (${significance.why}); spend per incremental move $${spendPerIncrementalMove}` : `no incremental verdict: ${significance.why}` },
+    blindSpots: [
+      "an appointment is counted beside a confirmed move, never as one",
+      "`source` cells credit every record of a subject with that subject's outcome (shared attribution, never a sum of moves)",
+      "`play` is the movement manager's decision (research / offer_help / wait / human); the arbiter's chosen experience lives on the ledger",
+      "`campaign` is the latest agent_action_ledger.detail.strategy on the subject; a subject touched by none reads 'none'",
+      "a `moved` outcome needs a person's mark — the reconciler closes listed / purchased / opted out / no change only",
+    ],
+  }
+}
+
+/** PURE. The side from the decision's C37 moment snapshot (m970 `moment.segments` — evidence-based, never contact_type, R2). */
+function momentSide(m: { segments?: string[] } | null | undefined): string | null {
+  const s = (m?.segments ?? []).filter((x) => x === "seller" || x === "buyer" || x === "renter" || x === "investor")
+  return s.length > 0 ? s.join("+") : null
+}
+
+/**
+ * The tenant's movement outcome learning over the window. Every read pinned to brokerageId (the cron's per-tenant loop / the
+ * caller's SESSION tenant); a refused read returns the error, never zeros.
+ */
+async function tenantMovementOutcomeLearning(svc: Svc, brokerageId: string, opts: { sinceIso: string }): Promise<{ ok: true; learning: MovementOutcomeLearning; rows: number } | { ok: false; error: string }> {
+  if (!brokerageId) return { ok: false, error: "no brokerage" }
+  const { data, error } = await svc.from("movement_signals")
+    .select("id, contact_id, lead_id, source_key, side, outcome, outcome_at, next_action, decision, decision_window, moment")
+    .eq("brokerage_id", brokerageId).not("outcome", "is", null).gte("outcome_at", opts.sinceIso).limit(LEDGER_LIMIT)
+  if (error) return { ok: false, error: `movement_signals: ${error.message}` }
+  const closed = (data ?? []) as Array<{ id: string; contact_id: string | null; lead_id: string | null; source_key: string; side: string | null; outcome: string; next_action: string | null; decision: Record<string, unknown> | null; decision_window: string | null; moment?: { segments?: string[] } | null }>
+  const contactIds = [...new Set(closed.map((r) => r.contact_id).filter((x): x is string => !!x))]
+  const zip = new Map<string, string>(), campaign = new Map<string, { at: string; ref: string }>(), spend = new Map<string, number>()
+  for (let i = 0; i < contactIds.length; i += 200) {
+    const chunk = contactIds.slice(i, i + 200)
+    const c = await svc.from("contacts").select("id, zip_code").eq("brokerage_id", brokerageId).in("id", chunk)
+    if (c.error) return { ok: false, error: `contacts: ${c.error.message}` }
+    for (const r of (c.data ?? []) as Array<{ id: string; zip_code: string | null }>) if (r.zip_code) zip.set(r.id, String(r.zip_code).slice(0, 5))
+    const l = await svc.from("agent_action_ledger").select("subject_id, cost_usd, created_at, detail").eq("brokerage_id", brokerageId).eq("subject_type", "contact").in("subject_id", chunk).gte("created_at", opts.sinceIso).limit(LEDGER_LIMIT)
+    if (l.error) return { ok: false, error: `agent_action_ledger: ${l.error.message}` }
+    for (const r of (l.data ?? []) as Array<{ subject_id: string; cost_usd: number | string | null; created_at: string; detail: Record<string, unknown> | null }>) {
+      spend.set(r.subject_id, (spend.get(r.subject_id) ?? 0) + (Number(r.cost_usd ?? 0) || 0))
+      const s = strategyRefOf(r.detail)
+      const cur = campaign.get(r.subject_id)
+      if (s && (!cur || r.created_at > cur.at)) campaign.set(r.subject_id, { at: r.created_at, ref: s.ref })
+    }
+  }
+  const rows: MovementOutcomeRow[] = closed.map((r) => {
+    const subjectId = r.contact_id ?? r.lead_id ?? r.id
+    const arm = (r.decision as { holdout?: { arm?: string } } | null)?.holdout?.arm
+    return { subjectId, window: r.decision_window ?? "unknown", side: momentSide(r.moment) ?? r.side ?? "unknown", sourceKey: r.source_key, territory: (r.contact_id && zip.get(r.contact_id)) || "unknown", play: r.next_action ?? "undecided", campaign: (r.contact_id && campaign.get(r.contact_id)?.ref) || "none", arm: arm ?? "unassigned", outcome: r.outcome, spendUsd: (r.contact_id && spend.get(r.contact_id)) || 0 }
+  })
+  return { ok: true, learning: movementOutcomeLearning(rows), rows: rows.length }
+}
+
+export interface StrategyLearningRun { strategies: number; pairs: number; proposed: number; existing: number; errors: string[]; movement?: { rows: number; cells: number; holdoutVerdict: StrategyVerdict; spendPerIncrementalMove: number | null; learning: MovementOutcomeLearning } }
 
 const MAX_STRATEGIES = 6
 
@@ -288,6 +440,25 @@ export async function runStrategyLearning(svc: Svc, brokerageId: string, opts: {
   const run: StrategyLearningRun = { strategies: 0, pairs: 0, proposed: 0, existing: 0, errors: [] }
   const windowDays = opts.windowDays ?? 90
   const sinceIso = new Date((opts.now ?? new Date()).getTime() - windowDays * 86_400_000).toISOString()
+  // WAVE 150 (150JNAD, 150AD): movement outcome learning rides the same weekly per-tenant run. A significant treated-vs-holdout
+  // verdict becomes ONE improvement proposal (subject movement_outreach_lift) a human approves — never an automatic change.
+  const mv = await tenantMovementOutcomeLearning(svc, brokerageId, { sinceIso })
+  if (!mv.ok) run.errors.push(mv.error)
+  else {
+    const h = mv.learning.holdout
+    run.movement = { rows: mv.rows, cells: mv.learning.cells.length, holdoutVerdict: h.significance.verdict, spendPerIncrementalMove: h.spendPerIncrementalMove, learning: mv.learning }
+    if (h.significance.verdict === "a_better" || h.significance.verdict === "b_better") {
+      const { proposeImprovement } = await import("@/lib/kernel/improvement-proposals")
+      const w = await proposeImprovement(svc, {
+        brokerageId, subjectKind: "strategy", subjectKey: "movement_outreach_lift:treated|holdout", proposer: "strategy_learning",
+        proposedChange: { statement: h.significance.verdict === "a_better" ? `Movement-signal outreach adds confirmed moves over the independent holdout — ${h.why}` : `Movement-signal outreach does NOT beat the independent holdout — review the plays (${h.significance.why})`, windowDays, holdout: h, cells: mv.learning.cells.filter((c) => c.dimension !== "source").slice(0, 40) },
+        evidenceRefs: [{ kind: "movement_signals.outcome", window_days: windowDays }, { kind: "experiment", key: "movement_outreach_holdout" }],
+      })
+      if (!w.ok) run.errors.push(w.error)
+      else if (w.existing) run.existing++
+      else run.proposed++
+    }
+  }
   const all = await tenantStrategyStats(svc, brokerageId, { sinceIso })
   if (!all.ok) { run.errors.push(all.error); return run }
   const top = [...all.stats].sort((x, y) => y.exposures - x.exposures).filter((s) => s.exposures > 0).slice(0, MAX_STRATEGIES)

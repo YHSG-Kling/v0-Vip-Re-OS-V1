@@ -244,7 +244,9 @@ async function main() {
     const brief = od.OPPORTUNITY_COMBINATION_BRIEF
     ok(/behavioural researcher with a conscience/.test(brief) && /NONE of them alone/.test(brief) && /never raise/.test(brief) && /never exploit hardship/.test(brief) && /Paid research is a cost/.test(brief), "the brief names the role, the single-observation rule, the policy ceiling, the never-exploit rule and the cost rule")
     const sig = blankStrings(src("lib/intent/movement-signals.ts"))
-    ok(/opportunity:\s*\{\s*reading,\s*menu\s*\}/.test(sig) && /stageAtLeast\(reading\.primary\.stage,/.test(sig), "stripped source: the arbiter hook returns { reading, menu } and gates the life change on the reading's stage")
+    // WAVE 150 (150JNAD): re-asserted to the RULE — the hook returns the reading and the menu (now beside the C37 moment and the
+    // C38 plays); the pinned literal `{ reading, menu }` was a waypoint.
+    ok(/opportunity:\s*\{\s*reading,\s*menu\b/.test(sig) && /stageAtLeast\(reading\.primary\.stage,/.test(sig), "stripped source: the arbiter hook returns { reading, menu, … } and gates the life change on the reading's stage")
     {
       // 149Z (this lane's Outside-lane 2): the public view endpoint stores a viewer contact only when it is the POST's tenant's.
       const tv = blankStrings(src("app/api/blog/track-view/route.ts"))
