@@ -181,6 +181,14 @@ export interface TenantCreationInput {
    *  key the prospect rail uses. A caller holding a stronger key (a prospect
    *  id, a Stripe event) passes it; a resume checks the stored key matches. */
   provisioningKey?: string | null
+  /** THE TENANT HIERARCHY (wave 150, lane 150C — C34): offices (each its own legal identity, territories, brand
+   *  overrides, seat ownership), their teams, and the initial agents with EXPLICIT office / team memberships.
+   *  Provisioned by provisionTenantStructure (below) right after the owner is pinned, for EVERY
+   *  door and billing mode (trial, paid, active — not every subscription is a trial). A brokerage with no offices given
+   *  gets its head office; a solo / team tenant carries none. Initial agents are invited IMMEDIATELY; a gap is recorded
+   *  on the provisioning record (structure.complete=false), routed to the Recruiting Manager + the right office head,
+   *  and finished by resumeTenantProvisioning — the tenant is never rolled back for it. */
+  structure?: TenantStructureInput | null
 }
 
 /** One provisioning step's recorded outcome. `skipped` = legitimately not
@@ -211,6 +219,12 @@ export interface TenantProvisioningRecord {
    *  READY / NOT READY with the blockers, so the record itself says whether this
    *  tenant can work. Unknown (the evaluation threw) is recorded as NOT ready. */
   readiness?: TenantReadinessVerdict
+  /** Wave 150 (C34): the hierarchy provisioned for this tenant — offices / teams / memberships / initial agents.
+   *  Not a step (the step vocabulary is the readiness contract's); a resume re-runs it while `complete` is false. */
+  structure?: TenantStructureRecord
+  /** What the structure was asked to provision, kept only while it is incomplete so a resume finishes the SAME
+   *  request (initial agents' names and emails are the tenant's own staff, on the tenant's own row). */
+  structure_input?: TenantStructureInput | null
 }
 
 export interface TenantReadinessVerdict { ready: boolean; blockers: string[]; checkedAt: string }
@@ -252,6 +266,8 @@ export interface TenantCreationResult {
   provisioning?: TenantProvisioningRecord
   /** Wave 140C — the agent_action_ledger evidence row for this attempt. */
   ledger?: { claimed: boolean; id?: string | null; error?: string }
+  /** Wave 150 (C34) — the offices / teams / memberships / initial agents this call provisioned or finished. */
+  structure?: TenantStructureRecord
 }
 
 /** @proofSeam — production callers never pass this; scripts/subscriber-convergence-guard.ts
@@ -274,6 +290,8 @@ export interface TenantCreationDeps {
   /** Wave 141B — the immediate-operations reporter (lib/kernel/immediate-operations.ts reportOperationOutcome):
    *  the tenant_creation + website_creation post-condition verdicts, evidenced and routed. */
   reportOutcome?: (svc: any, input: Record<string, unknown>) => Promise<unknown>
+  /** Wave 150 (C34) — the env-bound member invite + reporter of provisionTenantStructure (below). */
+  structure?: StructureDeps
 }
 
 const DEFAULT_TRIAL_DAYS = 14
@@ -534,11 +552,15 @@ export async function createTenantCore(service: any, input: TenantCreationInput,
       if (!declared.ok) { extrasSkipped.push("declared_affiliation"); console.warn("[tenant-creation] declared affiliation not stored (non-fatal):", declared.error, { brokerageId }) }
     }
 
+    // THE HIERARCHY (C34) — offices, teams, explicit memberships, initial agents invited NOW. Recorded, never fatal.
+    await runTenantStructure(service, { brokerageId, tier: input.tier, ownerUserId: userId, brokerageName, actorUserId: input.callerUserId ?? userId }, input.structure ?? null, record, deps, extrasSkipped)
+
     const out = await runProvisioningSteps({ service, input, deps, brokerageId, userId, slug, brokerageName, adminEmail, tierId: tierId as string, waiver, record, extrasSkipped })
     return {
       ok: true,
       brokerageId, userId, slug, websitePath: tenantWebsitePath(slug), trialEndsAt,
       inviteSent: owner.inviteSent, inviteError: owner.inviteError,
+      structure: record.structure,
       ...out,
       extrasSkipped,
       resumed: false,
@@ -555,6 +577,33 @@ export async function createTenantCore(service: any, input: TenantCreationInput,
     return await abandonHalfBuiltTenant(service, brokerageId, ledgered.error ?? "evidence refused", extrasSkipped, ledgered.ledger)
   }
   return { ...ledgered, ledger: ledgered.ledger ?? { claimed: true } }
+}
+
+/** Run (or finish) the tenant's structure and keep it on the provisioning record. A structure gap never fails the
+ *  tenant: it is named in extrasSkipped ("org_structure"), kept on the record for the resume, and already routed to
+ *  its manager by provisionTenantStructure. */
+async function runTenantStructure(
+  service: any,
+  p: { brokerageId: string; tier: CanonicalTier; ownerUserId: string; brokerageName: string; actorUserId: string | null },
+  structureInput: TenantStructureInput | null,
+  record: TenantProvisioningRecord,
+  deps: TenantCreationDeps,
+  extrasSkipped: string[],
+): Promise<void> {
+  try {
+    const structure = await provisionTenantStructure(service, { ...p, source: "provisioning", input: structureInput, prior: record.structure ?? null }, deps.structure ?? {})
+    record.structure = structure
+    record.structure_input = structure.complete ? null : structureInput
+    if (!structure.complete) extrasSkipped.push("org_structure")
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e)
+    const prior = record.structure
+    record.structure = { version: 1, complete: false, offices: prior?.offices ?? [], teams: prior?.teams ?? [], memberships: prior?.memberships ?? 0, members: prior?.members ?? [], errors: [`structure threw: ${msg.slice(0, 300)}`], notes: [], at: new Date().toISOString() }
+    record.structure_input = structureInput
+    extrasSkipped.push("org_structure")
+    console.warn("[tenant-creation] tenant structure threw (recorded for resume):", msg)
+  }
+  await persistProvisioningRecord(service, p.brokerageId, record)
 }
 
 /** A brokerage row that could not be finished is removed with the counted rollback
@@ -975,7 +1024,8 @@ export async function resumeTenantProvisioning(service: any, brokerageId: string
   const record = (row?.billing_metadata as { provisioning?: TenantProvisioningRecord } | null | undefined)?.provisioning ?? null
   if (!row || !record || record.version !== 1) return { resumable: false, reason: "no_record" }
   if (opts.expectKey && opts.expectKey !== record.key) return { resumable: false, reason: "key_mismatch" }
-  if (record.completed_at || provisioningComplete(record)) return { resumable: false, reason: "complete" }
+  const structurePending = !!record.structure && !record.structure.complete
+  if ((record.completed_at || provisioningComplete(record)) && !structurePending) return { resumable: false, reason: "complete" }
 
   const { data: ownerRow, error: ownerErr } = await service
     .from("users").select("id, email, first_name, last_name, user_type").eq("id", record.owner_user_id).eq("brokerage_id", brokerageId).maybeSingle()
@@ -1008,11 +1058,412 @@ export async function resumeTenantProvisioning(service: any, brokerageId: string
     detail: { door: record.door, tier: record.tier, billing_mode: record.billing_mode, attempt: record.attempts, resume: true, pending: provisioningStepsPending(record) },
   }, async () => {
     await persistProvisioningRecord(service, brokerageId, record)
+    // C34: a structure gap (an initial agent's invite, an office seat refusal) is finished from the SAME request it was made with.
+    if (structurePending) await runTenantStructure(service, { brokerageId, tier: record.tier, ownerUserId: owner.id, brokerageName: row.name, actorUserId: owner.id }, record.structure_input ?? null, record, deps, extrasSkipped)
     const out = await runProvisioningSteps({ service, input, deps, brokerageId, userId: owner.id, slug, brokerageName: row.name, adminEmail, tierId: tierId as string, waiver: null, record, extrasSkipped })
-    return { ok: true, brokerageId, userId: owner.id, slug, websitePath: tenantWebsitePath(slug), trialEndsAt: row.trial_ends_at, ...out, extrasSkipped, resumed: true, provisioning: record }
+    return { ok: true, brokerageId, userId: owner.id, slug, websitePath: tenantWebsitePath(slug), trialEndsAt: row.trial_ends_at, ...out, extrasSkipped, resumed: true, provisioning: record, structure: record.structure }
   }, {
     settle: (r) => ({ status: "executed", outcome: provisioningComplete(record) ? "provisioned" : "provisioned_with_gaps", providerRef: brokerageId, error: provisioningComplete(record) ? null : `pending: ${provisioningStepsPending(record).join(",")}` }),
     replay: (claim) => ({ ok: false, error: `Provisioning resume evidence could not be recorded (${claim.kind === "refused" ? claim.error : claim.kind})`, extrasSkipped, ledger: { claimed: false, error: claim.kind === "refused" ? claim.error : claim.kind } }),
   }, { client: service })
   return { resumable: true, result: { ...ledgered, ledger: ledgered.ledger ?? { claimed: true } } }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── THE TENANT STRUCTURE (wave 150, lane 150C — C34). Folded into the ONE provisioning core rather than a new module:
+//    every app entry that reaches createTenantCore already reaches this file (test:proxy-graph-budget — app/crm/page.tsx
+//    sits at the 1300 ceiling), and the structure IS a provisioning part.
+// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TENANT HIERARCHY (wave 150, lane 150C — contract C34). Platform → subscriber tenant (`brokerages` row for a
+// solo agent, a team, a brokerage or a brokerage with several locations) → optional legal brokerage relationship
+// (lib/kernel/brokerage-identity.ts — a DECLARED label, never membership) → brokerage LOCATION / office
+// (`locations`, m957: own legal identity, settings, territories, brand overrides, seat ownership) → team
+// (`teams.location_id`, m957) → EXPLICIT seat memberships (`organization_members`, m958 — possibly several).
+//
+// SURVIVORS REUSED, never re-spelled (audited at ccccb2db):
+//   · lib/kernel/tenant-creation.ts createTenantCore — the ONE provisioning core; this section is its structure part
+//     (offices / teams / memberships / initial agents), run inside the core and re-run by resumeTenantProvisioning.
+//   · lib/kernel/users.ts inviteTenantMember — the ONE member invite (auth user first, id pinned, domain records).
+//   · lib/kernel/seat-usage.ts seatGate (inside the invite) + locationSeatGate (the office's own seat ownership).
+//   · lib/kernel/immediate-operations.ts reportOperationOutcome — a failed placement reaches its manager IN THE REQUEST.
+//   · lib/kernel/brokerage-transfer.ts — the consented transfer rail. It moves the people; THIS module places them in
+//     the target OFFICE / team with source 'transfer' (provisionTenantStructure with existing user ids).
+//   · teams.team_lead_id — the leadership FACT (m473); locations.managing_broker_user_id — the office head FACT (m661).
+//
+// THE RULES THIS FILE HOLDS (directive "Canonical topology" 1–2):
+//   1. A NAME IS A LABEL. Offices are keyed by `office_code`, teams by the ids this record minted; no read here filters
+//      a tenant, an office or a team by name (scripts/multi-location-tenancy-guard.ts holds the census). Two offices
+//      of one brokerage may share a name and remain two offices with distinct teams.
+//   2. AGGREGATION NEEDS A GRANT. In a multi-location tenant only an active `leadership` membership at scope 'tenant'
+//      opens the all-office view; an office head sees their office (leadership membership or the managing-broker
+//      fact), a team lead their team (the team_lead_id fact or a team leadership grant), everyone else their own work.
+//      `users.user_type` never widens a multi-location row; `superadmin` / `platform_role` never widen any row here.
+//      A single-office tenant keeps the CLAUDE.md §4 roster rule (its tenant admins administer the tenant).
+//   3. FAIL CLOSED. A refused read is a refusal, never "no restriction".
+//   4. A placement of an EXISTING user is refused unless that user already sits in this tenant — so a solo agent
+//      whose declared affiliation spells this brokerage's name is never captured; only the consented transfer rail
+//      moves a person between tenants.
+
+type Svc = any
+
+// ── Vocabulary (ONE spelling; m958 CHECKs mirror these) ───────────────────────────────────────────────────────
+// scripts/multi-location-tenancy-guard.ts T6 holds this list equal to the m958 CHECK (one vocabulary, read from source).
+const MEMBERSHIP_SCOPE_KINDS = ["tenant", "location", "team"] as const
+type MembershipScopeKind = (typeof MEMBERSHIP_SCOPE_KINDS)[number]
+// scripts/multi-location-tenancy-guard.ts T6 holds this list equal to the m958 CHECK (one vocabulary, read from source).
+export const MEMBERSHIP_ACCESS_LEVELS = ["member", "leadership"] as const
+export type MembershipAccessLevel = (typeof MEMBERSHIP_ACCESS_LEVELS)[number]
+// scripts/multi-location-tenancy-guard.ts T6 holds this list equal to the m958 CHECK (one vocabulary, read from source).
+const MEMBERSHIP_SOURCES = ["provisioning", "invite", "transfer", "admin_grant"] as const
+type MembershipSource = (typeof MEMBERSHIP_SOURCES)[number]
+
+/** The tiers that carry offices. A solo agent and a team carry none (a team IS a mini brokerage, m473). */
+const OFFICE_TIERS = new Set(["brokerage", "multi_location"])
+
+export interface OfficeInput {
+  /** The office's idempotency key inside the tenant. Default `office-<n>` by position — never the name. */
+  officeCode?: string | null
+  name: string
+  legalName?: string | null
+  dba?: string | null
+  licenseNumber?: string | null
+  /** Two-letter USPS code. */
+  licenseState?: string | null
+  address?: string | null
+  city?: string | null
+  state?: string | null
+  territories?: string[] | null
+  /** The office layer of the brand cascade (office → team → user). */
+  brandOverrides?: Record<string, unknown> | null
+  /** Location-scoped settings; permissions under `permissions`. */
+  settings?: Record<string, unknown> | null
+  /** Seats this office owns; null = the tenant band alone. */
+  seatCap?: number | null
+  teams?: Array<{ name: string }> | null
+}
+
+export interface StructureMemberInput {
+  /** New person (invited now) … */
+  email?: string | null
+  firstName?: string | null
+  lastName?: string | null
+  userType: string
+  /** … or a person ALREADY in this tenant (the consented-transfer placement). Never another tenant's user. */
+  existingUserId?: string | null
+  /** The office: a code from this structure's offices, or a verified location id of this tenant. */
+  officeCode?: string | null
+  locationId?: string | null
+  /** The team: a name from THIS input's office team list (input-local, never a database name lookup), or a verified team id. */
+  teamName?: string | null
+  teamId?: string | null
+  /** Office leadership (an office head). Never tenant leadership — that is the owner's, or an explicit admin grant. */
+  officeLeadership?: boolean
+  /** Lead the team: anchors teams.team_lead_id when the team has no lead, and records a team leadership grant. */
+  leadsTeam?: boolean
+}
+
+export interface TenantStructureInput {
+  offices?: OfficeInput[] | null
+  members?: StructureMemberInput[] | null
+}
+
+export interface TenantStructureRecord {
+  version: 1
+  complete: boolean
+  offices: Array<{ code: string; id: string; name: string }>
+  teams: Array<{ key: string; id: string; name: string; locationId: string | null }>
+  memberships: number
+  members: Array<{ key: string; status: "placed" | "failed"; userId?: string | null; locationId?: string | null; teamId?: string | null; error?: string }>
+  errors: string[]
+  notes: string[]
+  at: string
+}
+
+export interface ProvisionStructureParams {
+  brokerageId: string
+  tier: string
+  ownerUserId: string
+  brokerageName: string
+  /** The staff actor, the self-serve owner, or the approving admin of a transfer. */
+  actorUserId: string | null
+  source: MembershipSource
+  input: TenantStructureInput | null | undefined
+  /** The record of an earlier attempt — its minted ids are REUSED (a resume never mints a second office or team). */
+  prior?: TenantStructureRecord | null
+  /** Transfer request id / consent evidence carried on every membership it writes. */
+  evidence?: Record<string, unknown> | null
+}
+
+/** @proofSeam scripts/multi-location-tenancy-guard.ts + scripts/subscriber-provisioning-guard.ts inject the env-bound
+ *  invite (Supabase Auth) and observe the reporter; production passes nothing. */
+export interface StructureDeps {
+  invite?: (params: { brokerageId: string; teamId: string | null; email: string; firstName: string; lastName: string; userType: string; callerUserId: string; client: Svc }) => Promise<{ success: boolean; userId: string | null; error?: string }>
+  report?: (svc: Svc, input: Record<string, unknown>) => Promise<unknown>
+}
+
+const trimOrNull = (v: unknown, max = 160): string | null => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null)
+
+function officeCodeFor(o: OfficeInput, i: number): string {
+  const raw = trimOrNull(o.officeCode, 48)
+  return (raw ?? `office-${i + 1}`).toLowerCase().replace(/[^a-z0-9-]+/g, "-")
+}
+
+/** PURE: the offices this tier provisions — or the refusal. A brokerage gets one head office (default: the tenant's
+ *  own name and identity); a brokerage with several locations gets the ones staff / the signer named; solo and team
+ *  tenants carry none. Same-name offices are allowed: identity is the office code. */
+/** Consumers: createTenantCore (via provisionTenantStructure) and app/actions/auth/signup-brokerage.ts (validates the head office before any write). */
+export function planTenantOffices(tier: string, brokerageName: string, offices: OfficeInput[] | null | undefined): { ok: true; offices: Array<OfficeInput & { code: string }>; note: string | null } | { ok: false; error: string } {
+  const given = (offices ?? []).filter((o) => o && trimOrNull(o.name))
+  if (!OFFICE_TIERS.has(tier)) {
+    if (given.length) return { ok: false, error: `A ${tier.replace(/_/g, " ")} workspace has no offices — choose Brokerage or Multi-Location to add one.` }
+    return { ok: true, offices: [], note: null }
+  }
+  if (tier === "brokerage" && given.length > 1) return { ok: false, error: "A Brokerage workspace runs one office — choose Multi-Location for several independently operated locations." }
+  const list = given.length ? given : tier === "brokerage" ? [{ name: brokerageName, officeCode: "main" }] : []
+  const coded = list.map((o, i) => ({ ...o, code: officeCodeFor(o, i) }))
+  const dup = coded.find((o, i) => coded.findIndex((x) => x.code === o.code) !== i)
+  if (dup) return { ok: false, error: `Two offices share the office code "${dup.code}" — every office needs its own code (names may repeat; codes may not).` }
+  const badState = coded.find((o) => o.licenseState && !/^[A-Z]{2}$/.test(String(o.licenseState).trim().toUpperCase()))
+  if (badState) return { ok: false, error: `Office "${badState.name}": licence state must be a two-letter US state code.` }
+  const badCap = coded.find((o) => o.seatCap !== undefined && o.seatCap !== null && (!Number.isInteger(o.seatCap) || o.seatCap < 0))
+  if (badCap) return { ok: false, error: `Office "${badCap.name}": seat ownership must be a whole number of seats (0 or more).` }
+  return { ok: true, offices: coded, note: tier === "multi_location" && coded.length === 0 ? "multi-location tenant created without offices — staff add each location (Settings → Offices)" : null }
+}
+
+// ── Memberships ───────────────────────────────────────────────────────────────────────────────────────────────
+
+async function grantMembership(svc: Svc, row: { brokerageId: string; userId: string; scope: MembershipScopeKind; locationId?: string | null; teamId?: string | null; access: MembershipAccessLevel; source: MembershipSource; grantedBy: string | null; evidence?: Record<string, unknown> | null; role?: string | null }): Promise<{ ok: true; created: boolean } | { ok: false; error: string }> {
+  const locationId = row.scope === "location" ? row.locationId ?? null : null
+  const teamId = row.scope === "team" ? row.teamId ?? null : null
+  let q = svc.from("organization_members").select("id, access_level").eq("brokerage_id", row.brokerageId).eq("user_id", row.userId).eq("scope_kind", row.scope).is("revoked_at", null)
+  q = locationId ? q.eq("location_id", locationId) : q.is("location_id", null)
+  q = teamId ? q.eq("team_id", teamId) : q.is("team_id", null)
+  const { data: existing, error: readErr } = await q.limit(1)
+  if (readErr) return { ok: false, error: `membership read refused: ${readErr.message}` }
+  const hit = (existing ?? [])[0] as { id: string; access_level: string } | undefined
+  if (hit) {
+    if (hit.access_level === row.access || row.access === "member") return { ok: true, created: false }
+    const { data: up, error: upErr } = await svc.from("organization_members").update({ access_level: row.access, updated_at: new Date().toISOString() }).eq("id", hit.id).eq("brokerage_id", row.brokerageId).select("id")
+    if (upErr) return { ok: false, error: `membership upgrade refused: ${upErr.message}` }
+    if ((up ?? []).length !== 1) return { ok: false, error: "membership upgrade matched no row" }
+    return { ok: true, created: false }
+  }
+  const { error } = await svc.from("organization_members").insert({
+    brokerage_id: row.brokerageId, user_id: row.userId, scope_kind: row.scope, location_id: locationId, team_id: teamId,
+    access_level: row.access, source: row.source, role: row.role ?? (row.access === "leadership" ? "leadership" : "member"),
+    granted_by_user_id: row.grantedBy, evidence: row.evidence ?? {}, joined_at: new Date().toISOString(),
+  })
+  if (error) {
+    if (error.code === "23505") return { ok: false, error: `a second scope membership was refused by the legacy one-row-per-tenant UNIQUE — owner SQL O-150C-1 pending (${error.message})` }
+    return { ok: false, error: `membership write refused: ${error.message}` }
+  }
+  return { ok: true, created: true }
+}
+
+// ── Provisioning ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Provision (or finish provisioning) a tenant's structure. Idempotent: offices by office_code, teams by the ids the
+ * prior record minted (or the owner's team by the team_lead_id fact), memberships by their active scope key. Every
+ * write reads its error; every update is counted. Failures are recorded on the returned record (complete:false —
+ * resumeTenantProvisioning re-runs it) and routed to the right manager immediately; the tenant is never rolled back
+ * for a structure gap ("invite immediately, repair asynchronously, notify the right manager").
+ */
+/** Consumers: createTenantCore / resumeTenantProvisioning (provisioning), app/dashboard/settings/offices/actions.ts grantOfficeMembershipAction (admin_grant) and — once the Outside-lane hook lands — lib/kernel/brokerage-transfer.ts (transfer). */
+export async function provisionTenantStructure(svc: Svc, p: ProvisionStructureParams, deps: StructureDeps = {}): Promise<TenantStructureRecord> {
+  const rec: TenantStructureRecord = { version: 1, complete: false, offices: [], teams: [], memberships: 0, members: [], errors: [], notes: [], at: new Date().toISOString() }
+  const prior = p.prior ?? null
+  const grant = async (g: Omit<Parameters<typeof grantMembership>[1], "brokerageId" | "source" | "grantedBy" | "evidence">, label: string) => {
+    const r = await grantMembership(svc, { ...g, brokerageId: p.brokerageId, source: p.source, grantedBy: p.actorUserId, evidence: p.evidence ?? null })
+    if (!r.ok) { rec.errors.push(`${label}: ${r.error}`); return false }
+    if (r.created) rec.memberships += 1
+    return true
+  }
+
+  // 1. The owner holds TENANT LEADERSHIP — the explicit grant that makes their aggregated view a fact, not a user_type.
+  if (p.source === "provisioning") await grant({ userId: p.ownerUserId, scope: "tenant", access: "leadership" }, "owner tenant leadership")
+
+  // 2. Offices.
+  const plan = planTenantOffices(p.tier, p.brokerageName, p.input?.offices)
+  if (!plan.ok) { rec.errors.push(plan.error) }
+  else {
+    if (plan.note) rec.notes.push(plan.note)
+    for (const o of plan.offices) {
+      const { data: found, error: findErr } = await svc.from("locations").select("id, name").eq("brokerage_id", p.brokerageId).eq("office_code", o.code).limit(1)
+      if (findErr) { rec.errors.push(`office ${o.code}: read refused (${findErr.message})`); continue }
+      let officeId = ((found ?? [])[0] as { id: string } | undefined)?.id ?? null
+      if (!officeId) {
+        const { data: made, error: insErr } = await svc.from("locations").insert({
+          brokerage_id: p.brokerageId, office_code: o.code, name: o.name.trim().slice(0, 160),
+          legal_name: trimOrNull(o.legalName), dba: trimOrNull(o.dba), license_number: trimOrNull(o.licenseNumber, 64),
+          license_state: trimOrNull(o.licenseState, 2)?.toUpperCase() ?? null,
+          address: trimOrNull(o.address, 240), city: trimOrNull(o.city, 120), state: trimOrNull(o.state, 2)?.toUpperCase() ?? null,
+          territories: (o.territories ?? []).map((t) => String(t).trim()).filter(Boolean).slice(0, 200),
+          brand_overrides: o.brandOverrides ?? {}, settings: o.settings ?? {}, seat_cap: o.seatCap ?? null,
+          status: "active", created_by_user_id: p.actorUserId ?? p.ownerUserId,
+        }).select("id").single()
+        if (insErr || !made) { rec.errors.push(`office ${o.code}: create refused (${insErr?.message ?? "no row"})`); continue }
+        officeId = (made as { id: string }).id
+      }
+      rec.offices.push({ code: o.code, id: officeId, name: o.name })
+      // 3. The office's teams — reused from the prior record by key, never looked up by name.
+      for (const [ti, t] of (o.teams ?? []).entries()) {
+        const name = trimOrNull(t?.name)
+        if (!name) continue
+        const key = `${o.code}#${ti}`
+        const reused = prior?.teams.find((x) => x.key === key && x.locationId === officeId)
+        if (reused) { rec.teams.push(reused); continue }
+        const { data: team, error: tErr } = await svc.from("teams").insert({ brokerage_id: p.brokerageId, name, location_id: officeId }).select("id").single()
+        if (tErr || !team) { rec.errors.push(`team ${key}: create refused (${tErr?.message ?? "no row"})`); continue }
+        rec.teams.push({ key, id: (team as { id: string }).id, name, locationId: officeId })
+      }
+    }
+  }
+
+  // 3b. TEAM TIER: the team is the tenant's own — anchored on the team_lead_id FACT (provisionTenantOwner creates it on
+  //     the live path); a missing one is created here, and the owner holds team leadership on it.
+  if (p.tier === "team" && p.source === "provisioning") {
+    const { data: led, error: ledErr } = await svc.from("teams").select("id, name, location_id").eq("brokerage_id", p.brokerageId).eq("team_lead_id", p.ownerUserId).is("deleted_at", null).limit(1)
+    if (ledErr) rec.errors.push(`owner team read refused (${ledErr.message})`)
+    else {
+      let teamId = ((led ?? [])[0] as { id: string } | undefined)?.id ?? null
+      if (!teamId) {
+        const { data: made, error: mErr } = await svc.from("teams").insert({ brokerage_id: p.brokerageId, name: p.brokerageName, team_lead_id: p.ownerUserId }).select("id").single()
+        if (mErr || !made) rec.errors.push(`owner team create refused (${mErr?.message ?? "no row"})`)
+        else teamId = (made as { id: string }).id
+      }
+      if (teamId) {
+        rec.teams.push({ key: "owner#0", id: teamId, name: p.brokerageName, locationId: null })
+        await grant({ userId: p.ownerUserId, scope: "team", teamId, access: "leadership" }, "owner team leadership")
+      }
+    }
+  }
+
+  // 4. Members: invite NOW (or place an existing same-tenant user), then pin the office and record the memberships.
+  for (const [mi, m] of (p.input?.members ?? []).entries()) {
+    const key = m.existingUserId ? `user:${m.existingUserId}` : `email:${String(m.email ?? "").trim().toLowerCase() || mi}`
+    const prev = prior?.members.find((x) => x.key === key && x.status === "placed")
+    if (prev) { rec.members.push(prev); continue }
+    const placed = await placeSeat(svc, p, m, rec, deps)
+    rec.members.push({ key, ...placed })
+    if (placed.status === "failed") rec.errors.push(`${key}: ${placed.error}`)
+  }
+
+  rec.complete = rec.errors.length === 0
+  rec.at = new Date().toISOString()
+  await routeStructureOutcome(svc, p, rec, deps)
+  return rec
+}
+
+async function placeSeat(svc: Svc, p: ProvisionStructureParams, m: StructureMemberInput, rec: TenantStructureRecord, deps: StructureDeps): Promise<Omit<TenantStructureRecord["members"][number], "key">> {
+  // Resolve the office + team INSIDE this tenant (by code / input-local team name / verified id).
+  let locationId: string | null = null
+  if (m.officeCode) {
+    locationId = rec.offices.find((o) => o.code === String(m.officeCode).toLowerCase())?.id ?? null
+    if (!locationId) return { status: "failed", error: `office code "${m.officeCode}" is not one of this workspace's offices` }
+  } else if (m.locationId) {
+    const { data, error } = await svc.from("locations").select("id").eq("id", m.locationId).eq("brokerage_id", p.brokerageId).limit(1)
+    if (error) return { status: "failed", error: `office read refused (${error.message})` }
+    if (!(data ?? []).length) return { status: "failed", error: "that office is not one of this workspace's offices" }
+    locationId = m.locationId
+  }
+  let teamId: string | null = null
+  if (m.teamName) {
+    const t = rec.teams.find((x) => x.name === m.teamName && (locationId ? x.locationId === locationId : true))
+    if (!t) return { status: "failed", error: `team "${m.teamName}" is not a team of ${locationId ? "that office" : "this workspace"} in this structure` }
+    teamId = t.id
+  } else if (m.teamId) {
+    const { data, error } = await svc.from("teams").select("id, location_id").eq("id", m.teamId).eq("brokerage_id", p.brokerageId).is("deleted_at", null).limit(1)
+    if (error) return { status: "failed", error: `team read refused (${error.message})` }
+    const row = (data ?? [])[0] as { id: string; location_id: string | null } | undefined
+    if (!row) return { status: "failed", error: "that team is not a team of this workspace" }
+    if (locationId && row.location_id && row.location_id !== locationId) return { status: "failed", error: "that team works out of another office" }
+    teamId = row.id
+    locationId = locationId ?? row.location_id ?? null
+  }
+
+  // The person: an EXISTING user must already sit in THIS tenant (never captured by a name or an email typed here).
+  let userId: string | null = null
+  if (m.existingUserId) {
+    const { data, error } = await svc.from("users").select("id, brokerage_id").eq("id", m.existingUserId).maybeSingle()
+    if (error) return { status: "failed", error: `user read refused (${error.message})` }
+    const row = data as { id: string; brokerage_id: string | null } | null
+    if (!row || row.brokerage_id !== p.brokerageId) return { status: "failed", error: "that person is not a member of this workspace — only the consented transfer rail moves a person between workspaces" }
+    userId = row.id
+  }
+
+  if (locationId) {
+    const { locationSeatGate } = await import("@/lib/kernel/seat-usage")
+    const seat = await locationSeatGate(svc, p.brokerageId, locationId, { subjectUserId: userId })
+    if (!seat.allowed) return { status: "failed", locationId, teamId, error: seat.message ?? seat.reason }
+  }
+
+  if (!userId) {
+    const email = String(m.email ?? "").trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { status: "failed", error: "a valid email is required to invite a new member" }
+    const invite = deps.invite ?? (async (a: Parameters<NonNullable<StructureDeps["invite"]>>[0]) => {
+      const { inviteTenantMember } = await import("@/lib/kernel/users")
+      return inviteTenantMember({ brokerageId: a.brokerageId, teamId: a.teamId, email: a.email, firstName: a.firstName, lastName: a.lastName, userType: a.userType as never, callerUserId: a.callerUserId, client: a.client as never })
+    })
+    const r = await invite({ brokerageId: p.brokerageId, teamId, email, firstName: trimOrNull(m.firstName) ?? "", lastName: trimOrNull(m.lastName) ?? "", userType: m.userType, callerUserId: p.actorUserId ?? p.ownerUserId, client: svc })
+    if (!r.success || !r.userId) return { status: "failed", locationId, teamId, error: `invite refused: ${r.error ?? "unknown"}` }
+    userId = r.userId
+  }
+
+  // Pin the office (the person's office of record, users.location_id m423) — COUNTED, pinned to this tenant.
+  if (locationId) {
+    const { data: pinned, error: pinErr } = await svc.from("users").update({ location_id: locationId, updated_at: new Date().toISOString() }).eq("id", userId).eq("brokerage_id", p.brokerageId).select("id")
+    if (pinErr) return { status: "failed", userId, locationId, teamId, error: `office pin refused (${pinErr.message})` }
+    if ((pinned ?? []).length !== 1) return { status: "failed", userId, locationId, teamId, error: "office pin matched no user row in this workspace" }
+  }
+  if (teamId && m.leadsTeam) {
+    const { error: leadErr } = await svc.from("teams").update({ team_lead_id: userId, updated_at: new Date().toISOString() }).eq("id", teamId).eq("brokerage_id", p.brokerageId).is("team_lead_id", null).select("id")
+    if (leadErr) return { status: "failed", userId, locationId, teamId, error: `team lead anchor refused (${leadErr.message})` }
+  }
+
+  const label = `member ${userId}`
+  if (locationId && !(await grantFor(svc, p, rec, { userId, scope: "location", locationId, access: m.officeLeadership ? "leadership" : "member" }, `${label} office`))) return { status: "failed", userId, locationId, teamId, error: rec.errors[rec.errors.length - 1] }
+  if (teamId && !(await grantFor(svc, p, rec, { userId, scope: "team", teamId, access: m.leadsTeam ? "leadership" : "member" }, `${label} team`))) return { status: "failed", userId, locationId, teamId, error: rec.errors[rec.errors.length - 1] }
+  if (!locationId && !teamId && !(await grantFor(svc, p, rec, { userId, scope: "tenant", access: "member" }, `${label} tenant`))) return { status: "failed", userId, error: rec.errors[rec.errors.length - 1] }
+  return { status: "placed", userId, locationId, teamId }
+}
+
+async function grantFor(svc: Svc, p: ProvisionStructureParams, rec: TenantStructureRecord, g: { userId: string; scope: MembershipScopeKind; locationId?: string | null; teamId?: string | null; access: MembershipAccessLevel }, label: string): Promise<boolean> {
+  const r = await grantMembership(svc, { ...g, brokerageId: p.brokerageId, source: p.source === "provisioning" ? "invite" : p.source, grantedBy: p.actorUserId, evidence: p.evidence ?? null })
+  if (!r.ok) { rec.errors.push(`${label}: ${r.error}`); return false }
+  if (r.created) rec.memberships += 1
+  return true
+}
+
+/** IMMEDIATE outcome: a gap is evidenced and routed to the Recruiting Manager (the roster's owner) and the RIGHT human is
+ *  told — the office's managing broker when the failure belongs to one office, else the tenant owner. A clean run with
+ *  members is evidenced as succeeded. Reporter failures never fail provisioning (the record holds the truth). */
+async function routeStructureOutcome(svc: Svc, p: ProvisionStructureParams, rec: TenantStructureRecord, deps: StructureDeps): Promise<void> {
+  if (rec.complete && rec.members.length === 0) return
+  try {
+    const report = deps.report ?? (await import("@/lib/kernel/immediate-operations")).reportOperationOutcome
+    await report(svc, {
+      operation: "seat_provisioning", brokerageId: p.brokerageId, ok: rec.complete, owner: "recruiting_manager",
+      subjectType: "brokerage", subjectId: p.brokerageId, actorUserId: p.actorUserId, source: "system", platformVisible: p.source === "provisioning",
+      evidence: { structure: { offices: rec.offices.length, teams: rec.teams.length, memberships: rec.memberships, placed: rec.members.filter((m) => m.status === "placed").length, failed: rec.members.filter((m) => m.status === "failed").length }, errors: rec.errors.slice(0, 10), source: p.source },
+      error: rec.complete ? null : rec.errors.join(" | ").slice(0, 500),
+      tenantFacing: rec.complete ? null : "some offices, teams or seats are still being set up — the OS is finishing them and your office manager has been told",
+    })
+  } catch (e) { console.warn("[tenant-structure] outcome not reported:", (e as Error)?.message) }
+  if (rec.complete) return
+  const failedOffice = rec.members.find((m) => m.status === "failed" && m.locationId)?.locationId ?? null
+  let notifyUserId = p.ownerUserId
+  if (failedOffice) {
+    const { data, error } = await svc.from("locations").select("managing_broker_user_id").eq("id", failedOffice).eq("brokerage_id", p.brokerageId).maybeSingle()
+    if (error) console.warn("[tenant-structure] office head read refused — the owner is told instead:", error.message)
+    notifyUserId = (data as { managing_broker_user_id?: string | null } | null)?.managing_broker_user_id ?? p.ownerUserId
+  }
+  const { error: nErr } = await svc.from("notifications").insert({
+    user_id: notifyUserId, brokerage_id: p.brokerageId, type: "seat_provisioning",
+    title: "A seat or office still needs a hand",
+    body: `Setting up your workspace left ${rec.errors.length} item${rec.errors.length === 1 ? "" : "s"} open: ${rec.errors.slice(0, 3).join("; ").slice(0, 400)}. Invitations that could go out already went out; the rest is retried automatically.`,
+    priority: "high", is_read: false,
+  })
+  if (nErr) console.warn("[tenant-structure] manager notification refused:", nErr.message)
 }

@@ -77,6 +77,12 @@ export default async function DashboardSettingsTeamsPage() {
         Team members, roles and seats
         <ExternalLink className="h-3 w-3" />
       </Link>
+      <Link
+        href="/dashboard/settings/offices"
+        className="ml-4 inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+      >
+        Offices and the teams in each
+      </Link>
     </div>
   )
 }

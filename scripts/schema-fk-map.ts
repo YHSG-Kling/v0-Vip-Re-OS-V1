@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1929 of 2004 pairs) — storing them would be
+ * overwhelming majority (1933 of 2011 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -61,7 +61,7 @@
  * ── COMPOSITE FOREIGN KEYS, AND WHY THIS MAP IS NOT TOTAL ───────────────────────────
  * This header used to claim "every foreign key single-column, and no (table, column) pair carrying
  * FKs to two different targets, so the map is total and unambiguous". That was true when written
- * and is FALSE now: 1 foreign key spans more than one column.
+ * and is FALSE now: 4 foreign keys span more than one column.
  * `live_foreign_keys_json()` unnests `conkey`, so a composite FK arrives once PER COLUMN, and one
  * column can carry a single-column FK to one table AND be part of a composite FK to another.
  *
@@ -73,20 +73,20 @@
  * targets. Such a column is left OUT of the map and published in SCHEMA_FK_COLUMN_AMBIGUOUS with
  * all of its candidates — the map holds one target per column and cannot say "two", so it says
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
- * 1 column is in that state.
+ * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2103 edges across 752 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2004 unordered
- * table pairs carry at least one FK; 75
+ * MEASURED AT GENERATION: 2113 edges across 754 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2011 unordered
+ * table pairs carry at least one FK; 78
  * carry more than one and are listed below. 20 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-03
+ * generated: 2026-11-06
  * source: public.live_foreign_keys_json()
- * body-sha256: d9544c1808c7398aae459ff96095d3db13fb6aab09093e4e3e7ccd0968df7d0d
+ * body-sha256: 99ab0b2ba6efb932c13b42a64c53c2c2e47c4c1601f7eabdda3460085b9a3d4d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -99,10 +99,12 @@
 /** `SCHEMA_FK_MAP[sourceTable][fkColumn] = targetTable` */
 export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "accounting_sync_log": { "brokerage_id": "brokerages" },
+  "acquisition_plans": { "approved_by_user_id": "users", "brokerage_id": "brokerages", "created_by_user_id": "users", "territory_id": "lead_scraping_markets" },
   "activities": { "agent_id": "agents", "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions" },
   "ad_campaigns": { "agent_user_id": "users", "brokerage_id": "brokerages", "created_by": "users", "marketing_campaign_id": "marketing_campaigns", "team_id": "teams" },
   "ad_creative_variations": { "ad_campaign_id": "ad_campaigns", "brokerage_id": "brokerages", "competitor_ad_id": "competitor_ads", "source_marketing_asset_id": "marketing_assets" },
   "ad_insights": { "brokerage_id": "brokerages" },
+  "ad_lead_form_legal_content": { "brokerage_id": "brokerages", "verified_by_user_id": "users" },
   "ad_manager_actions": { "approved_by": "users", "brokerage_id": "brokerages" },
   "ad_performance": { "ad_campaign_id": "ad_campaigns", "brokerage_id": "brokerages", "creative_variation_id": "ad_creative_variations" },
   "ad_performance_history": { "ad_campaign_id": "ad_campaigns", "brokerage_id": "brokerages" },
@@ -364,7 +366,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "deal_team_members": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "deconflict_suppression_log": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "deposits": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by": "users", "transaction_id": "transactions" },
-  "direct_mail_campaigns": { "agent_id": "agents", "brokerage_id": "brokerages", "bundle_dispatch_id": "campaign_bundle_dispatches", "compliance_event_id": "compliance_events", "contact_id": "contacts", "created_by": "users", "lead_id": "leads", "marketing_campaign_id": "marketing_campaigns", "preset_id": "direct_mail_presets", "qr_code_id": "qr_codes", "variant_id": "direct_mail_variants" },
+  "direct_mail_campaigns": { "agent_id": "agents", "approved_by_user_id": "users", "brokerage_id": "brokerages", "bundle_dispatch_id": "campaign_bundle_dispatches", "compliance_event_id": "compliance_events", "contact_id": "contacts", "created_by": "users", "lead_id": "leads", "marketing_campaign_id": "marketing_campaigns", "preset_id": "direct_mail_presets", "qr_code_id": "qr_codes", "variant_id": "direct_mail_variants" },
   "direct_mail_presets": { "brokerage_id": "brokerages", "compliance_event_id": "compliance_events", "created_by": "users" },
   "direct_mail_recipients": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads" },
   "direct_mail_responses": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads", "recipient_id": "direct_mail_recipients" },
@@ -495,7 +497,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "listings": { "agent_id": "agents", "appointment_event_id": "calendar_events", "brokerage_id": "brokerages", "contact_id": "contacts", "location_id": "locations", "marketing_tier_id": "listing_marketing_tiers", "seller_contact_id": "contacts", "team_id": "teams" },
   "live_agent_sessions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "local_news_sources": { "brokerage_id": "brokerages" },
-  "locations": { "brokerage_id": "brokerages", "managing_broker_assigned_by": "users", "managing_broker_user_id": "users" },
+  "locations": { "brokerage_id": "brokerages", "created_by_user_id": "users", "managing_broker_assigned_by": "users", "managing_broker_user_id": "users" },
   "mail_response_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads" },
   "mail_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns" },
   "managed_agent_sessions": { "brokerage_id": "brokerages", "managed_agent_id": "managed_agents" },
@@ -576,7 +578,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "open_house_invitations": { "brokerage_id": "brokerages", "contact_id": "contacts", "event_id": "open_house_events" },
   "open_house_rsvp_tracking": { "brokerage_id": "brokerages", "consent_event_id": "contact_consent_events", "contact_id": "contacts", "created_by_user_id": "users", "event_id": "open_house_events" },
   "orchestrator_tasks": { "brokerage_id": "brokerages" },
-  "organization_members": { "brokerage_id": "brokerages", "team_id": "teams", "user_id": "users" },
+  "organization_members": { "granted_by_user_id": "users", "location_id": "locations", "revoked_by_user_id": "users", "team_id": "teams", "user_id": "users" },
   "outbound_message_compliance_log": { "brokerage_id": "brokerages", "contact_id": "contacts", "initiated_by": "users" },
   "outcome_reconciliations": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "outside_agent_contact_links": { "brokerage_id": "brokerages", "contact_id": "contacts", "created_by_user_id": "users", "listing_id": "listings", "outside_agent_id": "outside_agents", "transaction_id": "transactions" },
@@ -738,7 +740,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "team_heatmap_snapshots": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "team_members": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
   "team_performance": { "brokerage_id": "brokerages", "team_id": "teams" },
-  "teams": { "brokerage_id": "brokerages", "team_lead_id": "users" },
+  "teams": { "location_id": "locations", "team_lead_id": "users" },
   "template_feedback": { "template_id": "template_marketplace" },
   "template_marketplace": { "brokerage_id": "brokerages" },
   "tenant_ai_teammates": { "brokerage_id": "brokerages", "created_by": "users" },
@@ -859,6 +861,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
  *  being picked silently. A consumer that meets one of these columns must SKIP the embed, not
  *  guess — see resolveColumnTarget() in scripts/schema-cache-builders.ts for why. */
 export const SCHEMA_FK_COLUMN_AMBIGUOUS: Record<string, Record<string, string[]>> = {
+  "organization_members": { "brokerage_id": ["brokerages","locations","teams"] },
+  "teams": { "brokerage_id": ["brokerages","locations"] },
   "vendor_subscriptions": { "brokerage_id": ["brokerages","vendor_plans"] },
 }
 
@@ -871,6 +875,7 @@ export function fkColumnCandidates(table: string, column: string): readonly stri
 /** `SCHEMA_FK_PAIR_CARDINALITY["a|b"] = n` for the SORTED pair (a <= b), n > 1 only.
  *  Read it through fkPairCount() — the key encoding is this file's business, not its callers'. */
 export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
+  "acquisition_plans|users": 2,
   "ad_campaigns|facebook_custom_audiences": 2,
   "ad_campaigns|users": 2,
   "agent_book_transfers|agents": 2,
@@ -911,6 +916,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "contacts|users": 7,
   "contract_term_versions|offers": 2,
   "data_subject_requests|users": 3,
+  "direct_mail_campaigns|users": 2,
   "distribution_finals|users": 3,
   "fatigue_alerts|users": 2,
   "feature_access_overrides|users": 2,
@@ -918,13 +924,14 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "learning_modules|users": 3,
   "listing_media|users": 2,
   "listing_presentations|users": 2,
-  "locations|users": 3,
+  "locations|users": 4,
   "marketing_assets|users": 3,
   "marketing_campaigns|users": 2,
   "newsletter_brokers_templates|users": 2,
   "offers|outside_offer_messages": 2,
   "offers|strategy_recommendations": 2,
   "offers|transactions": 2,
+  "organization_members|users": 3,
   "outside_offer_messages|users": 2,
   "platform_form_packets|users": 2,
   "platform_impersonation_sessions|users": 2,

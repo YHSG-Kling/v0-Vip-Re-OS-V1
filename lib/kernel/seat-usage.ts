@@ -578,3 +578,30 @@ export async function seatGate(
 // callers the moment it was written — every surface that wants the tier reads
 // `verdict.decision.upgradeTo` directly (see app/api/recruiting/provision-agent),
 // and an export nothing references is the orphan this repo keeps burning down.
+
+// ── OFFICE SEAT OWNERSHIP (wave 150, lane 150C — C34: "a brokerage location has its own … seat ownership") ─────
+// The tenant band above decides how many seats the SUBSCRIPTION carries; an office MAY additionally own a cap of its
+// own (locations.seat_cap, m957). This gate is the office half and runs AFTER seatGate — it never admits what the
+// tenant band refused, it only narrows. Seats are counted as the people PINNED to the office (users.location_id,
+// m423), excluding the subject when they already sit there (a re-placement is not an add). Fail closed: a refused
+// read refuses the placement, by name. NULL seat_cap → the tenant band alone decides ("no_office_cap").
+// Consumer: lib/kernel/tenant-creation.ts placeSeat (initial agents, invites, consented-transfer placement).
+
+export type LocationSeatGateReason = "no_office_cap" | "within_office_cap" | "over_office_cap" | "office_unreadable" | "office_not_in_tenant" | "office_archived" | "office_seats_unreadable"
+
+export interface LocationSeatGateVerdict { allowed: boolean; reason: LocationSeatGateReason; seatCap: number | null; seated: number | null; message: string | null }
+
+export async function locationSeatGate(svc: Svc, brokerageId: string, locationId: string, opts?: { subjectUserId?: string | null }): Promise<LocationSeatGateVerdict> {
+  const { data: office, error } = await svc.from("locations").select("id, brokerage_id, seat_cap, status, name").eq("id", locationId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) return { allowed: false, reason: "office_unreadable", seatCap: null, seated: null, message: `Office seat check could not run (${error.message}). The seat was not placed.` }
+  const row = office as { seat_cap?: number | null; status?: string | null; name?: string | null } | null
+  if (!row) return { allowed: false, reason: "office_not_in_tenant", seatCap: null, seated: null, message: "That office is not one of this workspace's offices. The seat was not placed." }
+  if ((row.status ?? "active") !== "active") return { allowed: false, reason: "office_archived", seatCap: row.seat_cap ?? null, seated: null, message: `The office "${row.name ?? locationId}" is archived. The seat was not placed.` }
+  const cap = typeof row.seat_cap === "number" ? row.seat_cap : null
+  if (cap === null) return { allowed: true, reason: "no_office_cap", seatCap: null, seated: null, message: null }
+  const { data: pinned, error: pinErr } = await svc.from("users").select("id, user_type").eq("brokerage_id", brokerageId).eq("location_id", locationId)
+  if (pinErr) return { allowed: false, reason: "office_seats_unreadable", seatCap: cap, seated: null, message: `Office seat check could not run (${pinErr.message}). The seat was not placed.` }
+  const seated = ((pinned ?? []) as Array<{ id: string; user_type: string | null }>).filter((u) => u.id !== opts?.subjectUserId && roleConsumesSeat(String(u.user_type ?? ""), { produces: true })).length
+  const allowed = seated + 1 <= cap
+  return { allowed, reason: allowed ? "within_office_cap" : "over_office_cap", seatCap: cap, seated, message: allowed ? null : `The office "${row.name ?? locationId}" owns ${cap} seat${cap === 1 ? "" : "s"} and ${seated} ${seated === 1 ? "is" : "are"} in use. Raise the office's seat ownership or place the person in another office.` }
+}

@@ -193,8 +193,12 @@ const baseInput = (over: Partial<TenantCreationInput>): TenantCreationInput => (
 function foundation(svc: ReturnType<typeof fakeSvc>, brokerageId: string) {
   // `agents` is excluded on purpose: the owner's domain records are TIER-AWARE by design
   // (lib/kernel/users.ts — a solo/team owner is an agent, a brokerage-tier owner is a pure
-  // admin), so that table legitimately differs by tier, never by door.
-  const tablesWithRows = Object.entries(svc.tables).filter(([t, rows]) => t !== "brokerages" && t !== "agents" && rows.some((r) => r.brokerage_id === brokerageId)).map(([t]) => t).sort()
+  // admin), so that table legitimately differs by tier, never by door. Wave 150 (lane 150C, C34): `teams` and
+  // `locations` are the TIER-AWARE structure on the same footing — a team tenant's own team, a brokerage tenant's head
+  // office, none for a solo (lib/kernel/tenant-creation.ts provisionTenantStructure; the tier rule is proven by
+  // test:multi-location-tenancy). `organization_members` is written by EVERY door (the owner's tenant leadership) and stays in the set.
+  const TIER_AWARE = new Set(["brokerages", "agents", "teams", "locations"])
+  const tablesWithRows = Object.entries(svc.tables).filter(([t, rows]) => !TIER_AWARE.has(t) && rows.some((r) => r.brokerage_id === brokerageId)).map(([t]) => t).sort()
   const brk = svc.tables.brokerages.find((b) => b.id === brokerageId)!
   const record = brk.billing_metadata?.provisioning as TenantProvisioningRecord | undefined
   const terminal = record ? TENANT_PROVISIONING_STEPS.filter((s) => ["done", "skipped"].includes(record.steps[s]?.status ?? "")) : []
@@ -205,7 +209,11 @@ function foundation(svc: ReturnType<typeof fakeSvc>, brokerageId: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 1 · SAME FOUNDATION FROM EVERY DOOR — trial, direct paid, staff active, conversion, adoption]")
 const svc = fakeSvc(seedTables())
-const otherBefore = JSON.stringify(Object.fromEntries(Object.entries(svc.tables).map(([t, rows]) => [t, rows.filter((r) => r.brokerage_id === "brk-other" || r.id === "brk-other" || r.id === "usr-other")])))
+// Only the tables that HOLD a brk-other row are compared: a table the run first touches (created empty by a read,
+// e.g. organization_members / locations since wave 150) holds none of brk-other's rows before or after — an empty
+// slice is not a change, and listing it made the snapshot differ by a key, not by a row.
+const otherSlice = () => JSON.stringify(Object.fromEntries(Object.entries(svc.tables).map(([t, rows]) => [t, rows.filter((r) => r.brokerage_id === "brk-other" || r.id === "brk-other" || r.id === "usr-other")]).filter(([, rows]) => (rows as unknown[]).length > 0)))
+const otherBefore = otherSlice()
 const c = counters()
 const deps = makeDeps(svc, c)
 
@@ -301,7 +309,7 @@ console.log("\n[Layer 4 · RETRY-SAFE + EVIDENCED — owner failure rolls back; 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 5 · TENANT-SCOPED — the pre-existing tenant is untouched; every tenant write names a minted tenant]")
 {
-  const otherAfter = JSON.stringify(Object.fromEntries(Object.entries(svc.tables).map(([t, rows]) => [t, rows.filter((r) => r.brokerage_id === "brk-other" || r.id === "brk-other" || r.id === "usr-other")])))
+  const otherAfter = otherSlice()
   check("brk-other's rows (brokerage, user, subscription, settings) are byte-identical after five doors + two webhook deliveries", otherBefore === otherAfter)
   const minted = new Set(Object.values(doors).map((d) => d.brokerageId))
   const strays = svc.log.flatMap((w) => w.rows.filter((r) => "brokerage_id" in r && r.brokerage_id !== null && !minted.has(r.brokerage_id)).map((r) => `${w.kind} ${w.table} → ${r.brokerage_id}`))

@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 478 tables, 926 columns.
+ * MEASURED AT GENERATION: 482 tables, 943 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-03
+ * generated: 2026-11-06
  * source: public.live_check_constraints_json()
- * body-sha256: b8d7c1dd57cb367d1d08e5e2a32b977985425acb96b25346466c7d9def540292
+ * body-sha256: 38944daa64a89ab0582bab81c30c2d5ad7382b34805716241b9cb9bf99ab2401
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -36,6 +36,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["completed", "failed", "pending", "running"],
     sync_type: ["commission", "expense", "full", "invoice", "journal"],
   },
+  acquisition_plans: {
+    market_mode: ["farming", "hunting", "unknown"],
+    status: ["approved", "proposed", "rejected", "superseded"],
+    tilt: ["balanced", "buyer", "seller"],
+  },
   ad_campaigns: {
     platform: ["chatgpt", "facebook", "google", "groundtruth", "instagram", "linkedin", "stackadapt", "tiktok", "vibe_ctv"],
     status: ["approved", "draft", "ended", "failed", "launching", "live", "paused", "pending_review"],
@@ -46,6 +51,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   ad_insights: {
     source_type: ["competitor_ad", "competitor_analysis", "competitor_post"],
+  },
+  ad_lead_form_legal_content: {
+    legal_content_status: ["not_provided", "unknown", "verified"],
   },
   ad_manager_actions: {
     action_type: ["launch_ad_campaign", "pause_ad_campaign", "scale_ad_creative", "shift_ad_budget"],
@@ -714,6 +722,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["delivered", "disbursed", "forfeited", "pending", "received", "returned"],
   },
   direct_mail_campaigns: {
+    mail_format: ["handwritten_card", "letter", "personal_letter", "postcard"],
+    proof_status: ["refused", "rendered", "unavailable"],
     status: ["approved", "cancelled", "failed", "mailed", "planning", "printed"],
   },
   direct_mail_presets: {
@@ -722,6 +732,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
   direct_mail_recipients: {
+    delivery_outcome: ["accepted", "cancelled", "delivered_per_carrier_scan", "in_local_area", "in_transit", "mailed", "processed_for_delivery", "re_routed", "rendered", "returned_to_sender", "unknown"],
     delivery_status: ["delivered", "failed", "mailed", "pending", "returned"],
   },
   direct_mail_responses: {
@@ -1012,6 +1023,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["active", "ended", "swept"],
     surface: ["portal", "site", "widget"],
   },
+  locations: {
+    status: ["active", "archived"],
+  },
   mail_response_tracking: {
     response_type: ["appointment", "call", "form_submit", "landing_visit", "qr_scan", "reply"],
   },
@@ -1127,8 +1141,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   movement_signals: {
     captured_by: ["automation", "person", "staff"],
     confidence: ["inferred", "reported", "unknown", "verified"],
+    decision_window: ["0_30", "181_365", "31_90", "91_180", "over_365", "unknown"],
     event_relevance: ["community_change", "divorce", "life_stage", "market_event", "probate_estate", "property_event", "relocation", "seeking_agent"],
     identity_match: ["name_only", "none", "record_key", "verified_match"],
+    known_deadline_kind: ["closing_date", "lease_end", "other_stated", "planned_list_date", "relocation_start"],
     life_event: ["bankruptcy", "death_in_household", "divorce_filing", "empty_nester", "foreclosure_filing", "inheritance", "job_change", "job_change_to_non_local", "kids_graduated", "marriage", "new_baby", "relocation", "retirement"],
     next_action: ["human", "offer_help", "research", "wait"],
     outcome: ["appointment", "declined", "engaged", "false_positive", "listed", "moved", "no_change", "opted_out", "purchased"],
@@ -1136,6 +1152,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     sensitivity: ["behaviour", "intimate_service_topic", "market_context", "property_fact", "protected_proxy"],
     side: ["both", "buyer", "seller", "unknown"],
     source_kind: ["community_market_event", "first_party_behaviour", "property_public_record", "provider_observation", "public_post"],
+    stated_timeline: ["1-3", "1-3_months", "12+_months", "3-6", "3-6_months", "6-12", "6-12_months", "immediate", "researching"],
     subject_type: ["contact", "lead", "property", "raw_lead", "territory"],
   },
   negotiation_strategies: {
@@ -1260,6 +1277,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   orchestrator_tasks: {
     status: ["cancelled", "completed", "failed", "pending", "running"],
+  },
+  organization_members: {
+    access_level: ["leadership", "member"],
+    scope_kind: ["location", "team", "tenant"],
+    source: ["admin_grant", "invite", "provisioning", "transfer"],
   },
   outbound_message_compliance_log: {
     channel: ["call", "email", "sms"],
@@ -1475,8 +1497,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   raw_scraped_leads: {
     processing_status: ["duplicate_post_enrich", "duplicate_pre_enrich", "enriching", "error", "insufficient_contact_data", "insufficient_identity", "insufficient_identity_for_promotion", "pending", "processing", "promoted", "queued_for_enrichment", "territory_mismatch", "unassigned_no_market"],
+    producer_actor_type: ["actor", "cron", "csv_import", "manager_action", "manual", "research", "sdk_mcp", "vendor_event", "webhook"],
     source_family: ["contact_direct", "lead", "raw"],
     source_origin: ["brokerage", "platform"],
+    source_rights: ["first_party_observed", "licensed_vendor", "public_record", "public_web"],
+    subject_kind: ["anonymous_question", "business", "entity_trust_estate", "household", "job_civic_event", "listing", "market", "owner", "person", "property", "signal"],
   },
   recruiting_costs: {
     cost_type: ["onboarding", "other", "recruiting_fee", "signing_bonus", "training"],

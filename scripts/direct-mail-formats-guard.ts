@@ -263,7 +263,7 @@ async function main() {
   console.log("\n  Blind spots:")
   console.log("  · sendCampaign / trackDelivery / the reputation card are server actions with a cookie session: their wiring is proven on STRIPPED source, the decisions they call (router, merge builder, outcome map, ledger key) at runtime")
   console.log("  · readMailBrandFacts (the async reader over resolveBrandContext) is not driven here — it reads real server clients; buildMailMergeVariables, which it feeds, is. The sender's OFFICE is not in the brand cascade yet (Outside-lane), so office_name prints empty end-to-end")
-  console.log("  · memSupabase has no CHECKs: the live status CHECK is read from the generated cache scripts/check-vocabularies.ts; m985's CHECKs are read from the migration file (WRITTEN, NOT APPLIED)")
+  console.log("  · memSupabase has no CHECKs: the live status CHECK is read from the generated cache scripts/check-vocabularies.ts; m985's CHECKs are read from the migration file, whose line-1 stamp says whether it is applied")
   console.log("  · whether a Google Fonts family exists, and whether Lob renders a merge-variable font URL, are unverified without a Lob test render (LOB_TEST_API_KEY)")
   console.log("  · the dispatcher (lib/providers/dispatch.ts, lane 150QTV) still defaults a missing postcard back to LOB_POSTCARD_BACK_ID ?? front and uses the platform LOB_RETURN_ADDRESS_ID as `from`: every caller in this lane now passes a distinct back; the dispatcher fix is Outside-lane")
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

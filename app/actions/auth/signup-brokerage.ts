@@ -34,7 +34,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { createTenantCore } from "@/lib/kernel/tenant-creation"
+import { createTenantCore, planTenantOffices } from "@/lib/kernel/tenant-creation"
 import { validateFunnelCoupon } from "@/lib/platform/trial-funnel"
 import { headers } from "next/headers"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
@@ -56,6 +56,11 @@ export interface SignupBrokerageInput {
    *  context on their own tenant — never a lookup, never a merge (lib/kernel/brokerage-identity.ts).
    *  Edited later under Settings → General → Brokerage affiliation. */
   affiliatedBrokerage?: { name: string; licenseNumber?: string | null; licenseState?: string | null; city?: string | null; state?: string | null } | null
+  /** Brokerage tier only (wave 150, lane 150C — C34): the head office's own legal identity. Omitted → the head office
+   *  carries the brokerage's name. Validated by lib/kernel/tenant-creation.ts planTenantOffices; a solo / team signer's
+   *  value is ignored here (their brokerage is a DECLARED affiliation above, never an office), and a multi-location
+   *  shape is sales-assisted (staff provision its locations). */
+  headOffice?: { name?: string | null; legalName?: string | null; licenseNumber?: string | null; licenseState?: string | null; city?: string | null; state?: string | null } | null
   /**
    * @deprecated NOT USED to choose the snapshot any more, and deliberately so.
    *
@@ -215,6 +220,15 @@ export async function signupBrokerageAction(
   // link-back + ISA actor + starter assistant + SUBSCRIPTION_CREATED +
   // onboarding library. Fails closed on the tier lookup, the duplicate-owner
   // guard and owner provisioning (with the counted rollback).
+  // C34 (wave 150): the head office's identity is validated BEFORE any write — a bad licence state is a form error
+  // the signer can fix, never a half-provisioned office. The same rule the core applies (planTenantOffices).
+  const headOffice = plan.tier === "brokerage"
+    ? [{ officeCode: "main", name: input.headOffice?.name?.trim() || input.brokerageName.trim(), legalName: input.headOffice?.legalName ?? null, licenseNumber: input.headOffice?.licenseNumber ?? null, licenseState: input.headOffice?.licenseState?.trim().toUpperCase() || null, city: input.headOffice?.city ?? input.brokerageCity ?? null, state: input.headOffice?.state ?? input.brokerageState ?? null }]
+    : null
+  if (headOffice) {
+    const officePlan = planTenantOffices("brokerage", input.brokerageName.trim(), headOffice)
+    if (!officePlan.ok) return { ok: false, error: officePlan.error }
+  }
   const created = await createTenantCore(service, {
     brokerageName: input.brokerageName.trim(),
     adminEmail: input.adminEmail,
@@ -230,6 +244,7 @@ export async function signupBrokerageAction(
     declaredAffiliation: input.affiliatedBrokerage?.name?.trim()
       ? { name: input.affiliatedBrokerage.name, licenseNumber: input.affiliatedBrokerage.licenseNumber ?? null, licenseState: input.affiliatedBrokerage.licenseState ?? null, city: input.affiliatedBrokerage.city ?? null, state: input.affiliatedBrokerage.state ?? null }
       : null,
+    structure: headOffice ? { offices: headOffice } : null,
     callerUserId: null,
   })
   if (!created.ok || !created.brokerageId || !created.userId) {

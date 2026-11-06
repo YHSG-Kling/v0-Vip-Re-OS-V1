@@ -166,7 +166,7 @@ export async function aiGenerateDripCampaign(params: {
     // value → solution) so the campaign leads with the prospect's likely pain,
     // not the agent's pitch. No match = no block — the model is never handed a
     // wrong persona's script.
-    const { empathyGuidanceForCrmPersona } = await import("@/lib/them-first")
+    const { empathyGuidanceForCrmPersona } = await import("@/lib/them-first/empathy-library")
     const empathy = empathyGuidanceForCrmPersona(contact.contact_persona, contact.contact_type)
     const empathyBlock = empathy
       ? `\nTHEM-FIRST EMPATHY PLAYBOOK (authored for the "${empathy.libraryPersonaId}" persona — follow this arc, do not invent statistics beyond it):\n` +

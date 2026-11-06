@@ -41,6 +41,10 @@ export interface AdLeadInput {
    *  form), 'unknown' (fetched or not, never verified), 'not_provided' (the form carries none), 'unreadable'. Evidence only;
    *  the consent rests on `consentText`, which the by-reference path fills ONLY from a verified row. */
   legalContentStatus?: "verified" | "unknown" | "not_provided" | "unreadable" | null
+  /** The privacy-policy link the form showed (m978 privacy_policy_url) — evidence beside the disclosure, never consent itself. */
+  privacyPolicyUrl?: string | null
+  /** Why the form's legal content could not be fetched (m978 fetch_error) — so an 'unknown' status names its cause. */
+  legalContentFetchError?: string | null
 }
 
 export interface AdLeadResult { ok: boolean; contactId?: string; created?: boolean; reason?: string }
@@ -100,6 +104,8 @@ export async function ingestConsentedAdLead(
         platform: input.platform ?? null, form_id: input.formId ?? null, submission_ref: input.submissionRef ?? null,
         ip: input.ip ?? null, user_agent: input.userAgent ?? null, platform_disclosure_captured: !!disclosure,
         platform_legal_content_status: input.legalContentStatus ?? "unknown",
+        platform_privacy_policy_url: input.privacyPolicyUrl ?? null,
+        platform_legal_content_fetch_error: input.legalContentFetchError ?? null,
       },
     },
   }, { client: supabase })
@@ -170,7 +176,7 @@ export async function ingestMetaLeadByRef(
   // it against the live form; only verified wording becomes this lead's consent text.
   const legal = input.formId
     ? await resolveAdFormLegalContent(svc, { brokerageId: c.brokerage_id, platform: "facebook", formId: input.formId, accessToken: c.access_token ?? null })
-    : { status: "unknown" as const, consentText: null }
+    : { status: "unknown" as const, consentText: null, privacyPolicyUrl: null, fetchError: null }
 
   const res = await ingestConsentedAdLead({
     brokerageId: c.brokerage_id,
@@ -183,6 +189,8 @@ export async function ingestMetaLeadByRef(
     submissionRef: input.leadgenId ?? null,
     consentText: legal.consentText,
     legalContentStatus: legal.status,
+    privacyPolicyUrl: legal.privacyPolicyUrl,
+    legalContentFetchError: legal.fetchError,
   }, svc)
   if (!res.ok) return { ok: false, stage: "rejected", brokerageId: c.brokerage_id }
   return { ok: true, stage: "ingested", brokerageId: c.brokerage_id, contactId: res.contactId }
@@ -191,7 +199,7 @@ export async function ingestMetaLeadByRef(
 // ── The form's legal content: UNKNOWN until verified (wave 150, lane 150U; m978) ──────────────────────────────────────────
 
 type LegalContentStatus = "verified" | "unknown" | "not_provided" | "unreadable"
-interface LegalContentRow { legal_content_status?: string | null; disclosure_text?: string | null; checkbox_keys?: string[] | null }
+interface LegalContentRow { legal_content_status?: string | null; disclosure_text?: string | null; checkbox_keys?: string[] | null; privacy_policy_url?: string | null; fetch_error?: string | null }
 
 /**
  * PURE — the consent wording a stored legal-content row may lend a lead: ONLY a VERIFIED row with disclosure text and no
@@ -215,18 +223,18 @@ type FetchedLegal = { ok: true; legal: import("@/lib/ads/connectors/meta").MetaL
 async function resolveAdFormLegalContent(
   svc: ReturnType<typeof createServiceClient>,
   p: { brokerageId: string; platform: string; formId: string; accessToken: string | null },
-): Promise<{ status: LegalContentStatus; consentText: string | null }> {
+): Promise<{ status: LegalContentStatus; consentText: string | null; privacyPolicyUrl: string | null; fetchError: string | null }> {
   const readRow = async () => svc.from("ad_lead_form_legal_content")
-    .select("legal_content_status, disclosure_text, checkbox_keys")
+    .select("legal_content_status, disclosure_text, checkbox_keys, privacy_policy_url, fetch_error")
     .eq("brokerage_id", p.brokerageId).eq("platform", p.platform).eq("form_id", p.formId).maybeSingle()
   const first = await readRow()
   if (first.error) {
     console.warn(`[ad-lead-intake] form legal content unreadable (${p.formId}) — no consent recorded from it: ${first.error.message}`)
-    return { status: "unreadable", consentText: null }
+    return { status: "unreadable", consentText: null, privacyPolicyUrl: null, fetchError: first.error.message }
   }
   if (first.data) {
     const row = first.data as LegalContentRow
-    return { status: (row.legal_content_status as LegalContentStatus) ?? "unknown", consentText: consentTextFromLegalRow(row) }
+    return { status: (row.legal_content_status as LegalContentStatus) ?? "unknown", consentText: consentTextFromLegalRow(row), privacyPolicyUrl: row.privacy_policy_url ?? null, fetchError: row.fetch_error ?? null }
   }
   let fetched: FetchedLegal = { ok: false, error: "no access token" }
   if (p.accessToken) {
@@ -247,11 +255,11 @@ async function resolveAdFormLegalContent(
   })
   if (insertError && (insertError as { code?: string }).code === "23505") {
     const again = await readRow()
-    if (again.error || !again.data) return { status: "unreadable", consentText: null }
+    if (again.error || !again.data) return { status: "unreadable", consentText: null, privacyPolicyUrl: null, fetchError: again.error?.message ?? "the stored row vanished after a replayed insert" }
     const row = again.data as LegalContentRow
-    return { status: (row.legal_content_status as LegalContentStatus) ?? "unknown", consentText: consentTextFromLegalRow(row) }
+    return { status: (row.legal_content_status as LegalContentStatus) ?? "unknown", consentText: consentTextFromLegalRow(row), privacyPolicyUrl: row.privacy_policy_url ?? null, fetchError: row.fetch_error ?? null }
   }
   if (insertError) console.warn(`[ad-lead-intake] form legal content NOT stored (${p.formId}): ${insertError.message}`)
   // A row this call just wrote is never 'verified' — no consent from it.
-  return { status, consentText: null }
+  return { status, consentText: null, privacyPolicyUrl: legal?.privacyPolicyUrl ?? null, fetchError: fetched.ok ? null : fetched.error }
 }

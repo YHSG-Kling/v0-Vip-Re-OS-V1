@@ -280,6 +280,61 @@ const zeroMatch = await acceptUserInvitationOnFirstLogin({ userId: inv2.userId a
 ;(svc2 as any).from = origFrom
 check("J7.4 an acceptance UPDATE that matches 0 rows is COUNTED and reported, never read as success (CLAUDE.md §3)", zeroMatch.accepted === false && /matched 0 rows/.test(zeroMatch.error ?? ""))
 
+// ═════════════════════════════════════════════════════════════════════════════
+// J8 — THE SAME JOURNEY PARAMETRISED OVER THE FOUR TIERS (wave 150, lane 150C — lane 149K's follow-up: "loops J1–J7
+// over the tiers with one seed and adds step 13's cross-tier refusal"). ONE in-memory seed holds a solo, a team, a
+// brokerage and a multi-office tenant; each is provisioned through the REAL createTenantCore, its initial agent is
+// invited through the REAL inviteTenantMember (the structure's default invite — nothing injected) with an EXPLICIT
+// office / team membership, the agent's first sign-in is accepted, and then every tenant's people are asked to read
+// every OTHER tenant: each cross-tier read is REFUSED (lib/kernel/resolve-user-office.ts resolveViewerHierarchy).
+console.log("\n[J8 · the journey over solo / team / brokerage / multi-office — one seed, the REAL invite, cross-tier reads refused]")
+const { resolveViewerHierarchy, loadOfficeDirectory } = await import("../lib/kernel/resolve-user-office")
+ACTIVE = client(seed())
+const svc8 = ACTIVE
+const TIER_CASES: Array<{ tier: "solo_agent" | "team" | "brokerage" | "multi_location"; name: string; billing: any; structure: any; door: "self_serve" | "superadmin" }> = [
+  { tier: "solo_agent", name: "Pine Solo Homes", door: "self_serve", billing: { mode: "trial", trialDays: 14 }, structure: { members: [{ email: "tc@pine.test", firstName: "Tia", userType: "tc" }] } },
+  { tier: "team", name: "Birch Team", door: "self_serve", billing: { mode: "trial" }, structure: { members: [{ email: "agent@birch.test", firstName: "Bo", userType: "agent", teamName: "Birch Team" }] } },
+  { tier: "brokerage", name: "Cedar Brokerage", door: "self_serve", billing: { mode: "paid", billingCycle: "monthly" }, structure: { offices: [{ officeCode: "main", name: "Cedar Brokerage", legalName: "Cedar Brokerage Inc.", licenseState: "FL" }], members: [{ email: "agent@cedar.test", firstName: "Cy", userType: "agent", officeCode: "main" }] } },
+  { tier: "multi_location", name: "Oak Realty", door: "superadmin", billing: { mode: "active", billingCycle: "annual" }, structure: { offices: [{ officeCode: "north", name: "Oak Realty", teams: [{ name: "North Team" }] }, { officeCode: "south", name: "Oak Realty", teams: [{ name: "South Team" }] }], members: [{ email: "agent@oak.test", firstName: "Ola", userType: "agent", officeCode: "south", teamName: "South Team" }] } },
+]
+const deps8 = { ...deps(svc8), checkout: async () => ({ ok: true, url: "https://checkout.example.test/s/8", setupFeeCents: 0, setupFeeWaived: false }) }
+const made8: Array<{ tier: string; brokerageId: string; ownerId: string; memberId: string | null }> = []
+for (const c of TIER_CASES) {
+  const email = `owner@${c.name.split(" ")[0].toLowerCase()}.test`
+  let r: any
+  try { r = await createTenantCore(svc8, { brokerageName: c.name, adminEmail: email, adminFirstName: "Owner", adminLastName: c.tier, tier: c.tier, signupSource: c.door, billing: c.billing, callerUserId: c.door === "superadmin" ? randomUUID() : null, structure: c.structure }, deps8) } catch (e) { r = { ok: false, error: `threw: ${(e as Error).message}` } }
+  const rec8 = svc8.tables.brokerages.find((b) => b.id === r.brokerageId)?.billing_metadata?.provisioning
+  const memberEmail = c.structure.members[0].email
+  const member = svc8.tables.users.find((u) => u.email === memberEmail)
+  check(`J8 ${c.tier}: provisioned (${r.ok ? "ok" : r.error}) with its record complete, the "${c.tier} funnel" snapshot, a website, and the structure complete (${(r.structure?.errors ?? []).join("; ") || "no gaps"})`,
+    r.ok === true && !!rec8 && provisioningComplete(rec8) && r.snapshotName === `${c.tier} funnel` && /^\/site\//.test(r.websitePath ?? "") && r.structure?.complete === true)
+  check(`J8 ${c.tier}: the initial ${c.structure.members[0].userType} was invited through the REAL inviteTenantMember (auth invite dispatched, users row pinned to this tenant, invitation pending)`,
+    !!member && member.brokerage_id === r.brokerageId && svc8.invites.some((i) => i.email === memberEmail) && svc8.tables.user_invitations.some((i) => i.email === memberEmail && i.brokerage_id === r.brokerageId && i.status === "pending"))
+  const scopeRows = svc8.tables.organization_members.filter((m) => m.brokerage_id === r.brokerageId && m.user_id === member?.id)
+  const wantKinds = c.tier === "team" ? ["team"] : c.tier === "solo_agent" ? ["tenant"] : c.tier === "brokerage" ? ["location"] : ["location", "team"]
+  check(`J8 ${c.tier}: the member's EXPLICIT memberships are ${wantKinds.join(" + ")} (never inferred from a name or a user_type)`, wantKinds.every((k) => scopeRows.some((m) => m.scope_kind === k && m.access_level === "member")) && scopeRows.length === wantKinds.length, JSON.stringify(scopeRows.map((m) => m.scope_kind)))
+  const acc = member ? await acceptUserInvitationOnFirstLogin({ userId: member.id, email: memberEmail, brokerageId: r.brokerageId, client: svc8 as never }) : { accepted: false }
+  check(`J8 ${c.tier}: the member's first sign-in accepts the invitation (counted)`, acc.accepted === true)
+  const subs8 = svc8.tables.subscriptions.filter((s) => s.brokerage_id === r.brokerageId)
+  check(`J8 ${c.tier}: ONE subscription row in the state its door chose (${c.billing.mode} → ${subs8[0]?.status})`, subs8.length === 1 && subs8[0].status === (c.billing.mode === "active" ? "active" : "trialing"))
+  made8.push({ tier: c.tier, brokerageId: r.brokerageId, ownerId: r.userId, memberId: member?.id ?? null })
+}
+const crossLeaks: string[] = []
+let crossChecked = 0
+for (const a of made8) for (const b of made8) {
+  if (a.brokerageId === b.brokerageId) continue
+  for (const who of [a.ownerId, a.memberId]) {
+    if (!who) continue
+    crossChecked++
+    const s = await resolveViewerHierarchy(svc8 as never, { userId: who, brokerageId: b.brokerageId })
+    const d = await loadOfficeDirectory(svc8 as never, { userId: who, brokerageId: b.brokerageId })
+    if (s.ok || d.ok) crossLeaks.push(`${a.tier}→${b.tier}`)
+  }
+}
+check(`J8 CROSS-TIER READ REFUSAL: ${crossChecked} reads (each tenant's owner + member against every other tenant) all refused`, crossChecked === 24 && crossLeaks.length === 0, crossLeaks.join(", "))
+const own8 = await Promise.all(made8.map((m) => resolveViewerHierarchy(svc8 as never, { userId: m.ownerId, brokerageId: m.brokerageId })))
+check("J8 POSITIVE CONTROL — each owner reading their OWN tenant is admitted with the aggregated view (their tenant leadership grant)", own8.every((s) => s.ok && s.scope.aggregate))
+
 console.log("\n[blind spots]")
 console.log("  · Supabase Auth is not run: the magic link's delivery and the PKCE code exchange in the recipient's browser need a deployment (the callback's exchange is read from source)")
 console.log("  · the readiness verdict is injected here (proven by test:tenant-readiness); its effect on the immediate outcome is what this journey asserts")
