@@ -71,7 +71,7 @@ import { WEBHOOK_CONTRACT, type WebhookContractEntry } from "../lib/providers/we
 import { classifyProxyPath } from "../app/constants/auth"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
 import { claimOf } from "./migration-status"
-import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift } from "./release-rules"
+import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift, readReleaseEvidence, deriveO3, o3FullOpen } from "./release-rules"
 import { providerOfferVerdict, DEFAULT_ESIGN_PROVIDER } from "../lib/integrations/providers/catalog"
 
 const ROOT = process.cwd()
@@ -1722,12 +1722,15 @@ const seedAccountsResolved = (doc: string): boolean => {
 }
 interface OwnerObligation { id: string; what: string; blocking: boolean; where: string }
 const deployFacts = readDeploymentFacts(ROOT)
+// wave 150 (lane 150AAF): O3 is the WHOLE deployment build — heap + Node parity + machine RAM (ledger M1) + custom domain
+// (ledger M2) — by the ONE derivation release-blockers prints (scripts/release-rules.ts deriveO3). The heap half alone no longer discharges it.
+const o3Full = deriveO3(deployFacts, readReleaseEvidence(ROOT))
 const OWNER_OBLIGATIONS: OwnerObligation[] = [
   { id: "O1", what: "storage.objects policies on the five document buckets — m855 (brokerage-forms) and m875 (client / transaction / agent / offer documents)", blocking: !storageApplied146, where: `docs/operations/OWNER-SQL.md §F / §G — stamps: ${STORAGE_POLICY_MIGRATIONS_146.map((f) => `${f} (${stampOf(f)})`).join(", ") || "none in the tree"}; LIVE truth: public.storage_bucket_policy_readiness()` },
   { id: "O2", what: "the four unlinked portal-contact seed accounts (users.user_type='contact' with no contacts.contact_user_id) — link each or remove it", blocking: !seedAccountsResolved(ownerSqlDoc), where: "docs/operations/OWNER-SQL.md §I (census query + status line)" },
   // O3/O4 (wave 149, lanes 149K + 149I2): the deployment build and install parity, by the SAME pure rules over the SAME
   // repository facts test:release-blockers uses (scripts/release-rules.ts — one canonical path, never a copy).
-  { id: "O3", what: `the Vercel deployment build — vercel.json runs the ${deployFacts.singlePass ? "single" : "split"} pass at ${deployFacts.vercelHeap} MB vs the CI compile cap ${deployFacts.ciCap} MB (must run above it)`, blocking: deployFacts.o3Open, where: "ACTIVATION-CHECKLIST §1.9 (Vercel → Build Machine, then vercel.json's heap)" },
+  { id: "O3", what: `the Vercel deployment build — vercel.json runs the ${deployFacts.singlePass ? "single" : "split"} pass at ${deployFacts.vercelHeap} MB vs the CI compile cap ${deployFacts.ciCap} MB (must run above it)${o3Full.parts.length ? ` — OPEN: ${o3Full.parts.join("; ")}` : ""}`, blocking: o3Full.open, where: "ACTIVATION-CHECKLIST §1.9 + §6.7 rows M1/M2 (Vercel → Build Machine RAM, Domains)" },
   { id: "O4", what: `Vercel's install is not CI's — Vercel ${deployFacts.vInstall.pm}${deployFacts.vInstall.frozen ? " frozen" : " unfrozen"}, lockfile drift ${deployFacts.vDrift.absent.length} absent + ${deployFacts.vDrift.drifted.length} drifted vs CI ${deployFacts.ciInstall.pm}${deployFacts.ciInstall.frozen ? " frozen" : ""}`, blocking: deployFacts.o4Open, where: "ACTIVATION-CHECKLIST §1.10 (PRODUCTION-ARCHITECTURE §15.3 F-1: one package manager, one lockfile, frozen)" },
 ]
 for (const o of OWNER_OBLIGATIONS) console.log(`    ${o.blocking ? "RELEASE-BLOCKING" : "discharged      "} ${o.id} ${o.what} — ${o.where}`)
@@ -1735,8 +1738,9 @@ check("O1 the storage-policy obligation (m855 §F / m875 §G) is RELEASE-BLOCKIN
   OWNER_OBLIGATIONS[0].blocking === !storageApplied146 && STORAGE_POLICY_MIGRATIONS_146.length > 0)
 check("O2 the seed-account obligation is RELEASE-BLOCKING until OWNER-SQL §I's status line reads RESOLVED with a date and the zero census (the section exists and carries its census query)",
   /^## I\. /m.test(ownerSqlDoc) && /contact_user_id = u\.id/.test(ownerSqlDoc) && OWNER_OBLIGATIONS[1].blocking === !seedAccountsResolved(ownerSqlDoc))
-check(`O3 the deployment-build obligation is RELEASE-BLOCKING exactly when release-rules' deployBuildOpen says so (vercel ${deployFacts.vercelHeap} MB vs CI cap ${deployFacts.ciCap} MB → ${deployFacts.o3Open ? "OPEN" : "clear"}; derived, never pinned)`,
-  deployFacts.vercelHeap > 0 && deployFacts.ciCap > 0 && OWNER_OBLIGATIONS.find((o) => o.id === "O3")!.blocking === deployBuildOpen(deployFacts.vercelHeap, deployFacts.ciCap))
+check(`O3 the deployment-build obligation is RELEASE-BLOCKING exactly when release-rules' deriveO3 says so (heap ${deployFacts.vercelHeap} vs cap ${deployFacts.ciCap} MB ${o3Full.heapOpen ? "OPEN" : "clear"}; Node ${o3Full.nodeOpen ? "OPEN" : "clear"}; machine ${o3Full.machineOpen ? "OPEN" : "clear"}; domain ${o3Full.domainObserved ? "observed" : "OPEN"} → ${o3Full.open ? "OPEN" : "clear"}; derived, never pinned)`,
+  deployFacts.vercelHeap > 0 && deployFacts.ciCap > 0 && o3Full.heapOpen === deployBuildOpen(deployFacts.vercelHeap, deployFacts.ciCap)
+  && OWNER_OBLIGATIONS.find((o) => o.id === "O3")!.blocking === o3FullOpen(o3Full))
 check(`O4 the install-parity obligation is RELEASE-BLOCKING exactly when release-rules' installParityOpen says so (→ ${deployFacts.o4Open ? "OPEN" : "clear"}; derived, never pinned)`,
   OWNER_OBLIGATIONS.find((o) => o.id === "O4")!.blocking === installParityOpen(deployFacts.ciInstall, deployFacts.vInstall, deployFacts.vDrift))
 check("O3/O4 POSITIVE CONTROL — the shared rules still see the defect: 10240 vs 14336 is OPEN and 16384 clears; an unfrozen pnpm install is OPEN and npm ci over a covering lockfile clears",

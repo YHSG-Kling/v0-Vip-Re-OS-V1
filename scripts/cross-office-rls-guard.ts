@@ -189,7 +189,7 @@ function sectionC(): { policies: ParsedAlter[]; views: ParsedView[] } | null {
   if (!existsSync(join(ROOT, M999))) { check(`${M999} exists`, false); return null }
   const raw = readFileSync(join(ROOT, M999), "utf8")
   const line1 = raw.split("\n")[0]
-  check("m999 line 1 is the lane stamp or APPLIED LIVE", line1 === "-- WRITTEN, NOT APPLIED (wave 150, lane 150BAA) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor" || line1.startsWith("-- ── APPLIED LIVE "))
+  check("m999 line 1 is the APPLIED LIVE stamp (applied 2026-11-06 via Supabase MCP; the lane stamp retired with it — the rule, not a waypoint)", line1.startsWith("-- ── APPLIED LIVE "))
   const sql = stripSqlComments(raw)
   check("m999 is MCP-applicable and strictly narrowing: no DROP / CREATE POLICY, no DROP TABLE / VIEW, no GRANT", !/\b(DROP|CREATE)\s+POLICY\b|\bDROP\s+(TABLE|VIEW)\b|\bGRANT\b/i.test(sql))
   check("m999 introduces no untenanted-row escape", !ESCAPE.test(sql))

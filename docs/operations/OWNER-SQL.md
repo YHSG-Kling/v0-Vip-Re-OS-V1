@@ -602,6 +602,84 @@ Nothing is LIVE or production-safe until every step below reads its expected val
 6. **In the repository** (or ask the integrator), in one commit: flip line 1 of `supabase/migrations/m854-…`, `m855-…`, `m874-…` and `m875-…` to `-- ── APPLIED LIVE <date> …`; lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file flipped; flip §I's status line to `- Status: RESOLVED <date> — census 0`.
 7. **The proofs that read those stamps go green on the rule, not on a waypoint:** `npm run test:release-blockers` (prints `RELEASE BLOCKERS: 0 owner obligation(s) open` for the storage and seed items), `npm run test:production-readiness` (O1 and O2 `discharged`), `npm run test:transfer-classification`, `npm run test:migration-claim`.
 
+## K. O1 / O2 — your order of work, and the integrator's read-only re-measurement (wave 150, lane 150AAF)
+
+**Nothing on this page has been run by a lane.** As of 2026-11-06 O1 and O2 are OPEN in the tree: `m855` and `m875` carry the lane stamp (not applied) and §I's status line reads OPEN; the last live reads were 2026-11-03 (five private buckets `open`, 19 bucket-wide rules, 0 owner policies, 0 objects in any bucket) and 2026-11-01 (four unlinked seed accounts, `ok_pairs = 4`). `npm run test:release-blockers` derives both from the stamps and the status line — never from this paragraph.
+
+### Your order (owner)
+
+1. **Before anything:** ask the integrator to run Q1–Q9 below and paste the results into the release report; if Q5 reads `bucket_wide_on_five` below 19 while Q3 still says `open`, stop — the finder is blind (positive control below).
+2. **O1, brokerage-forms:** run §F "Before", then §F route A if Q1 says `can_alter_storage_objects = true`, otherwise §F route B (Dashboard → Storage → Policies). Then §F "Verify afterwards" — every expected value.
+3. **O1, the four document buckets + offer row:** the same for §G (Before → route A or B → Verify afterwards).
+4. **O2, the four seed accounts:** decide LINK (recommended — every pairing is exact) or ARCHIVE. For LINK, run Q8 alone first: it must read `ok_pairs = 4`, otherwise re-decide. Then run §I REMEDIATION A as one block; it returns exactly 4 rows or refuses. Keep §I ROLLBACK A beside it.
+5. **Close out:** run §J top to bottom. Then copy §J step 1's six verdicts, step 2's row count and step 3's count into the evidence ledger row R9 (`docs/operations/ACTIVATION-CHECKLIST.md` §6.7 — as `storage_bucket_policy_readiness(): agent-documents owner_scoped · … ; 0 bucket-wide; 11 owner policies`, dated), and flip §I's status line to `- Status: RESOLVED <date> — census 0`.
+6. **The integrator** flips line 1 of m854 / m855 / m874 / m875 to `-- ── APPLIED LIVE <date> …`, lowers `NOT_APPLIED_BASELINE` by one per file, and re-runs `npm run test:release-blockers` until it prints O1 and O2 `discharged` and R9 `OBSERVED` (F6 refuses R9 observed while a stamp still says not applied — fix the stamp, never the ledger).
+
+### Integrator re-measurement — READ-ONLY (Supabase MCP `execute_sql`, project `hrvaqgvukzxfskkcrwbt`)
+
+```sql
+-- §K Q1 (O1) can the MCP session alter storage.objects? (expect false → the owner's route B)
+SELECT current_user, pg_has_role(current_user, 'supabase_storage_admin', 'member') AS can_alter_storage_objects;
+
+-- §K Q2 (O1) the m854/m874 prerequisite functions exist (expect all non-null)
+SELECT to_regprocedure('public.brokerage_forms_path_readable(text)') AS bf_readable,
+       to_regprocedure('public.brokerage_forms_path_writable(text)') AS bf_writable,
+       to_regprocedure('public.document_bucket_path_readable(text, text)') AS doc_readable,
+       to_regprocedure('public.document_bucket_path_writable(text, text)') AS doc_writable,
+       to_regprocedure('public.document_bucket_object_deletable(text, text, text, timestamp with time zone)') AS doc_deletable,
+       to_regprocedure('public.storage_bucket_policy_readiness()') AS readiness;
+
+-- §K Q3 (O1) the live verdict per bucket (cleared: agent/brokerage-forms/client/transaction owner_scoped; documents + offer-documents service_only; empty arrays)
+SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness() ORDER BY bucket_id;
+
+-- §K Q4 (O1) every policy on storage.objects, classified (bucket-wide = the predicate is only bucket_id = '<b>')
+SELECT policyname, cmd, roles,
+       CASE WHEN coalesce(qual,'') ~ '^\(bucket_id = ''[a-z-]+''::text\)$' OR coalesce(with_check,'') ~ '^\(bucket_id = ''[a-z-]+''::text\)$' THEN 'BUCKET-WIDE'
+            WHEN policyname ~ ' owner (read|upload|update|delete)$' THEN 'owner'
+            ELSE 'other' END AS class
+FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' ORDER BY class, policyname;
+
+-- §K Q5 (O1) the counts §J expects (cleared: bucket_wide_on_five 0, owner_policies 11, agnostic_authenticated 0)
+SELECT
+  count(*) FILTER (WHERE qual ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$'
+                      OR with_check ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$') AS bucket_wide_on_five,
+  count(*) FILTER (WHERE policyname ~ '^(brokerage-forms|client-documents|transaction-documents|agent-documents) owner ') AS owner_policies,
+  count(*) FILTER (WHERE 'authenticated' = ANY (roles) AND coalesce(qual,'') !~ 'bucket_id' AND coalesce(with_check,'') !~ 'bucket_id') AS agnostic_authenticated
+FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects';
+
+-- §K Q6 (O1) exposure today: bucket privacy and object counts (0 objects = nothing has leaked yet)
+SELECT b.id, b.public, (SELECT count(*) FROM storage.objects o WHERE o.bucket_id = b.id) AS objects
+FROM storage.buckets b ORDER BY b.public, b.id;
+
+-- §K Q7 (O2) the census (4 today; 0 after remediation A) — no email selected
+SELECT u.id, u.brokerage_id, u.status, u.created_at
+FROM public.users u
+WHERE u.user_type = 'contact' AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id)
+ORDER BY u.id;
+
+-- §K Q8 (O2) remediation A's drift guard, run alone (expect ok_pairs = 4; anything else → re-decide before LINK)
+WITH seed_link(user_id, contact_id) AS (VALUES
+  ('a0000000-0000-0000-0000-000000000013'::uuid, '50000000-0000-0000-0000-000000000001'::uuid),
+  ('a0000000-0000-0000-0000-000000000014'::uuid, '50000000-0000-0000-0000-000000000002'::uuid),
+  ('a0000000-0000-0000-0000-000000000015'::uuid, '50000000-0000-0000-0000-000000000003'::uuid),
+  ('a0000000-0000-0000-0000-000000000016'::uuid, '50000000-0000-0000-0000-000000000004'::uuid))
+SELECT count(*) AS ok_pairs
+FROM seed_link l
+JOIN public.users u    ON u.id = l.user_id AND u.user_type = 'contact'
+JOIN public.contacts c ON c.id = l.contact_id AND c.brokerage_id = u.brokerage_id
+                      AND lower(c.email) = lower(u.email) AND c.contact_user_id IS NULL
+WHERE NOT EXISTS (SELECT 1 FROM public.contacts x WHERE x.contact_user_id = u.id);
+
+-- §K Q9 (O2) has any of the four signed in, or been invited, since the 2026-11-01 inventory? (no email selected)
+SELECT a.id, a.last_sign_in_at, a.banned_until,
+       (SELECT count(*) FROM public.user_invitations i WHERE lower(i.email) = lower(a.email)) AS invitations
+FROM auth.users a
+WHERE a.id IN ('a0000000-0000-0000-0000-000000000013','a0000000-0000-0000-0000-000000000014','a0000000-0000-0000-0000-000000000015','a0000000-0000-0000-0000-000000000016')
+ORDER BY a.id;
+```
+
+**Positive control for Q4/Q5:** before §F/§G are run, Q5 must read `bucket_wide_on_five ≥ 19` (the 2026-11-03 live count). Zero while Q3 still says `open` means the regex is blind — re-read Q4 raw before believing any count.
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

@@ -622,6 +622,21 @@ jobs:
       #   the ~1782 shared modules, not the route count, dominate each half.
       # WHAT IT DOES NOT CHANGE: Vercel still runs the single pass at 10240 (vercel.json) — no Vercel build of this
       #   tree exists. scripts/release-blockers-guard.ts A17 parses the two rows above (compile > generate per half).
+      #
+      # ── 2026-11-06, wave 150 lane 150AAF: VERCEL'S SINGLE PASS MOVED TO THE LARGER-MACHINE NUMBER — NOT A MEASUREMENT.
+      # vercel.json now builds at --max-old-space-size=16384 (was 10240) and installs with `npm ci` (was pnpm, unfrozen).
+      #   WHY 16384: it is the number this bracket already names for the full pass on a larger machine ("16384 on a 32 GB
+      #   runner", the 2026-10-03 "Both" ruling) — the single pass needs ~12.9 GB committed (2026-10-31 entry), and a cap
+      #   gives up at ~90% committed, so 14336 is the floor that aborted and 16384 leaves ~21% over the measured demand.
+      #   THE FIT RULE (the same one this job's preflight enforces): heap + ~4-5 GB off-heap must fit the machine's RAM, so
+      #   16384 needs ≥ 21504 MB (scripts/release-rules.ts machineFitOpen, BUILD_OFF_HEAP_MB 5120). Vercel's machine reads
+      #   Turbo (filter-inferred 2026-11-03); its RAM is UNREPORTED — the owner records it in ACTIVATION-CHECKLIST §6.7
+      #   row M1, and O3 stays RELEASE-BLOCKING until then. On a 16 GB-class machine 16384 is REFUSED by that rule.
+      #   NODE: package.json engines.node is now 22.x — the major every CI job runs (node-deps default) and the one these
+      #   readings were taken on (node 22.23.4); Vercel deploys the engines major over the project setting (24.x).
+      #   NOT MEASURED: no Vercel build of any tree since 2026-09-21 exists. The first one is ACTIVATION-CHECKLIST §6.7
+      #   row R4: append its "Compiled successfully" duration, and any Mark-Compact line, here. If it aborts at 16384 on a
+      #   machine that fits, the answer is this bracket's (a larger machine), not a second number.
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '14336' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.

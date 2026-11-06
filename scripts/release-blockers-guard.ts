@@ -2,7 +2,7 @@
 /**
  * scripts/release-blockers-guard.ts   (npm run test:release-blockers)   — wave 148, lane 148A
  * ─────────────────────────────────────────────────────────────────────────────
- * THE RELEASE PATH, read from the repository and the pinned toolchain — never from a claim. Five layers:
+ * THE RELEASE PATH, read from the repository and the pinned toolchain — never from a claim. Six layers:
  *
  *   A  THE BUILD GATE (.github/workflows/build.yml + .github/actions/next-build-phases). The owner's 2026-10-03 "Both"
  *      ruling (repo variables BUILD_RUNNER / BUILD_HEAP_MB) is honoured END TO END: the full single pass runs only on the
@@ -28,6 +28,13 @@
  *      (wave 149, lane 149K) E2 — CI ≠ VERCEL, THE INSTALL: O4 is derived from whether Vercel installs the SAME lockfile
  *      CI certifies, frozen (package manager, frozen flag, lockfile coverage of package.json). A17 — the bracket carries
  *      the first green matrix run's per-half compile and generate durations, read from the job logs.
+ *      (wave 150, lane 150AAF) O3 is the WHOLE deployment build: heap half + Node parity (E3, package.json engines vs the
+ *      CI major) + the machine holding heap and off-heap (E4, ledger row M1) + a custom domain outside Deployment
+ *      Protection (ledger row M2). The code half alone never discharges it.
+ *   F  (wave 150, lane 150AAF — contract C42) THE RELEASE GATE ROWS: chain exit, whole-project tsc, CI, clean build,
+ *      Vercel preview smoke, real sign-in, Workflow timer, cron tick, storage-policy evidence — nine separate rows, each
+ *      DERIVED from the evidence ledger (docs/operations/ACTIVATION-CHECKLIST.md §6.7) and the tree it was observed on
+ *      (scripts/release-rules.ts gateVerdict / gitFreshness). PRODUCTION-LIVE = 0 obligations ∧ all nine; CI green never is.
  *
  * Every absence/refusal assertion carries a POSITIVE CONTROL (CLAUDE.md §2). Source scans read STRIPPED source.
  * BLIND SPOTS (published): the CI result of the matrix itself is GitHub's, not this repo's (the first run is the heap
@@ -48,7 +55,13 @@ import { claimOf } from "./migration-status"
 import { walkTs } from "./runtime-roots"
 import { makeWalker } from "./app-import-graph"
 import { WEBHOOK_CONTRACT } from "../lib/providers/webhook-contract"
-import { readDeploymentFacts, deployBuildOpen, installOf, lockDrift, installParityOpen } from "./release-rules"
+import {
+  readDeploymentFacts, deployBuildOpen, installOf, lockDrift, installParityOpen,
+  nodeMajorPinned, nodeParityOpen, BUILD_OFF_HEAP_MB, machineFitOpen, o3FullOpen, machineRamMb,
+  RELEASE_GATES, CI_SIDE_ROWS, EVIDENCE_EXEMPT, parseEvidenceLedger, gateVerdict, freshnessOf, gitFreshness, productionLive,
+  readReleaseEvidence, deriveO3,
+  type Freshness, type GateState, type EvidenceRow,
+} from "./release-rules"
 
 const ROOT = process.cwd()
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -337,9 +350,30 @@ console.log("\n[E · the deployment build — what Vercel runs is the single pas
 // scripts/production-readiness-guard.ts derives the same obligations by the same rule — one canonical path, never a copy.
 const deploy = readDeploymentFacts(ROOT)
 const { vercelHeap, ciCap, singlePass } = deploy
-obligations.push({ id: "O3", kind: "owner-config", open: deployBuildOpen(vercelHeap, ciCap), what: `the Vercel deployment build — vercel.json runs the ${singlePass ? "single" : "split"} pass at ${vercelHeap} MB, at or below the CI compile cap that aborts (${ciCap} MB, ~12.9 GB committed demand measured 2026-10-31)`, where: "Vercel → Project → Settings → Build & Development → Build Machine (a larger machine), then raise vercel.json's heap to match (a code change after the owner picks the machine) — ACTIVATION-CHECKLIST §1.9" })
-check(`E1 the deployment-build obligation is derived, not pinned (vercel ${vercelHeap} MB vs CI cap ${ciCap} MB → ${deployBuildOpen(vercelHeap, ciCap) ? "OPEN" : "clear"})`, vercelHeap > 0 && ciCap > 0)
+// wave 150, lane 150AAF — O3 is the WHOLE deployment build, not only its heap: (a) the heap half (code: vercel.json above the
+// CI cap), (b) Node parity (code: package.json engines.node pins CI's major — Vercel deploys the engines major over the
+// project setting), (c) the build machine holds heap + the measured off-heap (owner: ledger row M1 reports the RAM), (d) a
+// custom production domain outside Deployment Protection (owner: ledger row M2). The evidence ledger is read in §F below;
+// its rows are parsed here first because O3's owner half depends on them.
+const evidence = readReleaseEvidence(ROOT)
+const { text: checklistMd, ledger, fresh } = evidence
+const o3 = deriveO3(deploy, evidence)
+const { heapOpen, machineOpen, ramMb, open: o3Open } = o3
+obligations.push({ id: "O3", kind: "owner-config", open: o3Open, what: `the Vercel deployment build — vercel.json runs the ${singlePass ? "single" : "split"} pass at ${vercelHeap} MB (CI compile cap ${ciCap} MB aborts at ~12.9 GB committed, 2026-10-31); Node engines ${deploy.engineNode ?? "unset"} vs CI ${deploy.ciNodeMajor}${o3.parts.length ? ` — OPEN: ${o3.parts.join("; ")}` : ""}`, where: "Vercel → Project → Settings → Build & Development → Build Machine (report its RAM in ACTIVATION-CHECKLIST §6.7 row M1) + Domains (row M2) — ACTIVATION-CHECKLIST §1.9" })
+check(`E1 the deployment-build HEAP half is derived, not pinned (vercel ${vercelHeap} MB vs CI cap ${ciCap} MB → ${heapOpen ? "OPEN" : "clear"})`, vercelHeap > 0 && ciCap > 0)
 check("E1 POSITIVE CONTROL — 10240 vs 14336 is OPEN; 16384 vs 14336 clears", deployBuildOpen(10240, 14336) && !deployBuildOpen(16384, 14336))
+check(`E3 Node parity is derived (package.json engines.node ${deploy.engineNode ?? "unset"} → pinned major ${nodeMajorPinned(deploy.engineNode) ?? "none"}; CI node-deps default ${deploy.ciNodeMajor} → ${deploy.nodeParityOpen ? "OPEN" : "clear"})`,
+  deploy.ciNodeMajor > 0 && deploy.nodeParityOpen === nodeParityOpen(deploy.engineNode, deploy.ciNodeMajor))
+check("E3 POSITIVE CONTROL — unset engines and a range admitting two majors (>=22) are OPEN, another major (24.x) is OPEN; 22.x / ^22 / 22 clear against CI 22",
+  nodeParityOpen(null, 22) && nodeParityOpen(">=22", 22) && nodeParityOpen("24.x", 22) && nodeParityOpen("22.x", 0)
+  && !nodeParityOpen("22.x", 22) && !nodeParityOpen("^22", 22) && !nodeParityOpen("22", 22))
+check(`E4 the machine-fit rule is derived (heap ${vercelHeap} + off-heap ${BUILD_OFF_HEAP_MB} MB vs reported RAM ${ramMb ?? "unreported"} → ${machineOpen ? "OPEN" : "clear"}); O3 = heap ∨ Node ∨ machine ∨ ¬domain (→ ${o3Open ? "OPEN" : "clear"})`,
+  o3Open === o3FullOpen({ heapOpen: deployBuildOpen(vercelHeap, ciCap), nodeOpen: deploy.nodeParityOpen, machineOpen: machineFitOpen(vercelHeap, ramMb), domainObserved: evidence.verdict("M2").state === "OBSERVED" })
+  && ramMb === (evidence.verdict("M1").state === "OBSERVED" ? machineRamMb(ledger.get("M1")) : null))
+check("E4 POSITIVE CONTROL — unreported RAM is OPEN; 16384 on 16384 MB (Enhanced-class) is OPEN; 16384 on 32768 fits; O3 stays OPEN while any one part is open (the code half alone never discharges it)",
+  machineFitOpen(16384, null) && machineFitOpen(16384, 16384) && !machineFitOpen(16384, 32768)
+  && o3FullOpen({ heapOpen: false, nodeOpen: false, machineOpen: true, domainObserved: true }) && o3FullOpen({ heapOpen: false, nodeOpen: false, machineOpen: false, domainObserved: false })
+  && !o3FullOpen({ heapOpen: false, nodeOpen: false, machineOpen: false, domainObserved: true }))
 
 // wave 149, lane 149K — CI ≠ VERCEL, THE INSTALL. CI certifies the tree `npm ci` installs from package-lock.json
 // (.github/actions/node-deps). Vercel installs with vercel.json's installCommand. A green CI build certifies the Vercel
@@ -351,8 +385,8 @@ check("E1 POSITIVE CONTROL — 10240 vs 14336 is OPEN; 16384 vs 14336 clears", d
 const { pkgDeps, ciInstall, vInstall, vDrift, ciDrift, o4Open } = deploy
 console.log(`    CI installs: ${ciInstall.pm}${ciInstall.frozen ? " (frozen: npm ci)" : " (NOT frozen)"} — package-lock covers package.json: ${ciDrift.absent.length} absent, ${ciDrift.drifted.length} drifted`)
 console.log(`    Vercel installs: ${vInstall.pm}${vInstall.frozen ? " (frozen)" : " (NOT frozen)"} — its lockfile vs package.json (${Object.keys(pkgDeps).length} deps): ${vDrift.absent.length} absent${vDrift.absent.length ? ` (${vDrift.absent.slice(0, 13).join(", ")})` : ""}, ${vDrift.drifted.length} drifted${vDrift.drifted.length ? ` (${vDrift.drifted.slice(0, 7).join(", ")})` : ""}`)
-console.log(`    Node major: package.json engines ${deploy.engineNode ?? "unset"}; CI node-deps default 22; the Vercel project's Node setting is not readable from the repository (names only)`)
-obligations.push({ id: "O4", kind: "owner-decision", open: o4Open, what: `the Vercel INSTALL is not the install CI certifies — vercel.json runs ${vInstall.pm}${vInstall.frozen ? "" : " unfrozen"} against a lockfile missing ${vDrift.absent.length} and drifting ${vDrift.drifted.length} of package.json's ${Object.keys(pkgDeps).length} dependencies, while CI runs ${ciInstall.pm}${ciInstall.frozen ? " ci (frozen)" : ""}`, where: "PRODUCTION-ARCHITECTURE §15.3 F-1 (owner: one package manager, one lockfile, frozen) — then vercel.json installCommand/buildCommand (a code change) — ACTIVATION-CHECKLIST §1.10" })
+console.log(`    Node major: package.json engines ${deploy.engineNode ?? "unset"}; CI node-deps default ${deploy.ciNodeMajor}; Vercel deploys the engines major when it pins one, else the project setting (not readable from the repository)`)
+obligations.push({ id: "O4", kind: "owner-decision", open: o4Open, what: `${o4Open ? "the Vercel INSTALL is not the install CI certifies" : "the Vercel INSTALL is the install CI certifies (code side; the first Vercel build of it is ledger row R4)"} — vercel.json runs ${vInstall.pm}${vInstall.frozen ? "" : " unfrozen"} against a lockfile missing ${vDrift.absent.length} and drifting ${vDrift.drifted.length} of package.json's ${Object.keys(pkgDeps).length} dependencies, while CI runs ${ciInstall.pm}${ciInstall.frozen ? " ci (frozen)" : ""}`, where: "PRODUCTION-ARCHITECTURE §15.3 F-1 (owner: one package manager, one lockfile, frozen) — then vercel.json installCommand/buildCommand (a code change) — ACTIVATION-CHECKLIST §1.10" })
 check(`E2 install parity is derived, not pinned (CI ${ciInstall.pm}${ciInstall.frozen ? " frozen" : ""} · Vercel ${vInstall.pm}${vInstall.frozen ? " frozen" : " unfrozen"} · drift ${vDrift.absent.length}+${vDrift.drifted.length} → ${o4Open ? "OPEN" : "clear"}); CI's own lockfile covers package.json`,
   ciInstall.pm === "npm" && ciInstall.frozen && ciDrift.absent.length === 0 && ciDrift.drifted.length === 0 && o4Open === installParityOpen(ciInstall, vInstall, vDrift),
   ciDrift.absent.length || ciDrift.drifted.length ? `package-lock.json itself drifts: ${[...ciDrift.absent, ...ciDrift.drifted].join(", ")}` : "")
@@ -362,6 +396,63 @@ check("E2 POSITIVE CONTROL — an unfrozen install, a different package manager 
   && installParityOpen({ pm: "npm", frozen: true }, installOf("npm ci"), lockDrift({ twilio: "^5" }, {}))
   && !installParityOpen({ pm: "npm", frozen: true }, installOf("npm ci"), lockDrift({ twilio: "^5" }, { twilio: "^5" }))
   && installOf("npm install").frozen === false)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F · THE C42 RELEASE GATE ROWS (wave 150, lane 150AAF)
+// ═════════════════════════════════════════════════════════════════════════════
+// Separate mandatory rows, each DERIVED from the evidence ledger (ACTIVATION-CHECKLIST §6.7) and the tree it was observed
+// on — never pinned. RULES: a row is OBSERVED only with the status word, an ISO date, evidence carrying every fact its gate
+// requires, and — for a commit-bound row — a commit whose tree equals this one apart from the ledger itself. A stale or
+// unseeable commit is NOT OBSERVED (fail closed). PRODUCTION-LIVE needs zero open obligations AND every R row observed:
+// CI green — even with the chain and tsc green beside it — is never production-live. These rows are a VERDICT, not
+// failures of this proof: an unobserved row prints and holds the release; only a broken derivation fails the RESULT line.
+console.log("\n[F · the C42 release gate rows — derived from the evidence ledger, ACTIVATION-CHECKLIST §6.7]")
+check("F1 the ledger exists between its markers and names every gate row exactly once (R1–R9, M1–M2)",
+  /<!-- release-evidence:start -->[\s\S]*<!-- release-evidence:end -->/.test(checklistMd) && RELEASE_GATES.every((g) => ledger.has(g.row)) && ledger.size === RELEASE_GATES.length,
+  `rows: ${[...ledger.keys()].join(", ")}`)
+const states = new Map<string, GateState>()
+for (const g of RELEASE_GATES) {
+  const v = gateVerdict(g, ledger.get(g.row), fresh)
+  states.set(g.row, v.state)
+  console.log(`    ${v.state.padEnd(12)} ${g.row} ${g.gate.padEnd(64)} ${g.deployOnly ? "[deploy-only]" : "[pre-deploy] "} ${v.why}`)
+}
+const rRows = RELEASE_GATES.filter((g) => g.row.startsWith("R"))
+const observedR = rRows.filter((g) => states.get(g.row) === "OBSERVED")
+check(`F2 every row's state is the rule's verdict over its ledger row (${observedR.length} of ${rRows.length} R rows observed on this tree; derived, never pinned)`,
+  RELEASE_GATES.every((g) => states.get(g.row) === gateVerdict(g, ledger.get(g.row), fresh).state))
+// POSITIVE CONTROLS — per gate: its own specimen is ACCEPTED fresh (the shape still sees what it was written for), and the
+// same row is REFUSED when stale, when its commit is unseeable, when blank, when NOT OBSERVED, and when it carries another
+// gate's evidence (a CI run id is not a deploy; a deploy id is not a cron tick).
+const okFresh = (): Freshness => "fresh", stale = (): Freshness => "stale", unseen = (): Freshness => "unknown"
+const rowOf = (g: (typeof RELEASE_GATES)[number], over: Partial<EvidenceRow> = {}): EvidenceRow => ({ row: g.row, status: "OBSERVED", date: "2026-11-06", commit: "ccccb2db", evidence: g.specimen, ...over })
+const ctlFail: string[] = []
+for (const g of RELEASE_GATES) {
+  if (gateVerdict(g, rowOf(g), okFresh).state !== "OBSERVED") ctlFail.push(`${g.row} specimen refused`)
+  if (gateVerdict(g, rowOf(g, { evidence: "" }), okFresh).state !== "NOT OBSERVED") ctlFail.push(`${g.row} blank evidence accepted`)
+  if (gateVerdict(g, rowOf(g, { status: "NOT OBSERVED" }), okFresh).state !== "NOT OBSERVED") ctlFail.push(`${g.row} NOT OBSERVED accepted`)
+  if (gateVerdict(g, rowOf(g, { date: "today" }), okFresh).state !== "NOT OBSERVED") ctlFail.push(`${g.row} undated accepted`)
+  if (g.commitBound && gateVerdict(g, rowOf(g), stale).state !== "NOT OBSERVED") ctlFail.push(`${g.row} stale accepted`)
+  if (g.commitBound && gateVerdict(g, rowOf(g), unseen).state !== "NOT OBSERVED") ctlFail.push(`${g.row} unseeable commit accepted`)
+  for (const other of RELEASE_GATES) if (other !== g && gateVerdict(g, rowOf(g, { evidence: other.specimen }), okFresh).state === "OBSERVED") ctlFail.push(`${g.row} accepts ${other.row}'s evidence`)
+}
+check(`F3 POSITIVE CONTROL — each of the ${RELEASE_GATES.length} rows accepts its specimen and refuses blank / NOT OBSERVED / undated / stale / unseeable / another gate's evidence`, ctlFail.length === 0, ctlFail.slice(0, 6).join("; "))
+check("F4 POSITIVE CONTROL — the freshness rule: nothing changed is fresh; only the ledger changed is fresh; any other file is stale; git unable to answer is unknown",
+  freshnessOf([]) === "fresh" && freshnessOf([...EVIDENCE_EXEMPT]) === "fresh" && freshnessOf(["vercel.json"]) === "stale" && freshnessOf(null) === "unknown"
+  && gitFreshness(ROOT, "0000000000000000000000000000000000000000") === "unknown")
+const parsedCtl = parseEvidenceLedger("<!-- release-evidence:start -->\n| Row | Gate | Status | Date | Commit | Evidence |\n|---|---|---|---|---|---|\n| R3 | ci | OBSERVED | 2026-11-04 | `ccccb2db` | build run 41765432933: next-build success |\n<!-- release-evidence:end -->")
+check("F4 POSITIVE CONTROL — the ledger parser reads a row's six cells (backticks stripped from the commit) and nothing outside the markers",
+  parsedCtl.get("R3")?.commit === "ccccb2db" && parsedCtl.get("R3")?.status === "OBSERVED" && parseEvidenceLedger("| R3 | ci | OBSERVED | 2026-11-04 | ccccb2db | x |").size === 0)
+const all = (s: GateState) => new Map(rRows.map((g) => [g.row, s] as const))
+const ciOnly = new Map(rRows.map((g) => [g.row, (CI_SIDE_ROWS.includes(g.row) ? "OBSERVED" : "NOT OBSERVED") as GateState] as const))
+const live = productionLive(obligations.filter((o) => o.open).length, states)
+check(`F5 PRODUCTION-LIVE is derived (${live ? "YES" : "NO"}: ${obligations.filter((o) => o.open).length} obligation(s) open, ${observedR.length}/${rRows.length} R rows observed)`, live === productionLive(obligations.filter((o) => o.open).length, states))
+check(`F5 POSITIVE CONTROL — CI green is never production-live: the pre-deploy rows alone (${CI_SIDE_ROWS.join(", ")}) are NO, every row with one obligation open is NO, every row with none is YES`,
+  !productionLive(0, ciOnly) && !productionLive(1, all("OBSERVED")) && productionLive(0, all("OBSERVED")) && !productionLive(0, all("NOT OBSERVED"))
+  && CI_SIDE_ROWS.length >= 3 && rRows.some((g) => g.deployOnly))
+// R9 and O1 read the same facts from two sides: a ledger that says the live policies are scoped while a policy migration
+// still lacks its applied stamp is a contradiction the integrator must resolve (flip the stamp, or correct the ledger).
+check(`F6 storage evidence and the O1 stamps agree (R9 ${states.get("R9")}, O1 ${o1Open ? "OPEN" : "discharged"}) — R9 observed with O1 open is a contradiction`,
+  !(states.get("R9") === "OBSERVED" && o1Open))
 
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[release blockers]")
@@ -375,6 +466,11 @@ console.log("  · a name read through process.env[<computed>] is credited from t
 console.log("  · presence of a name in the Vercel project is not readable from the repository (ACTIVATION-CHECKLIST §1 — names only)")
 console.log("  · E2 compares root-importer SPECIFIERS only (package.json vs the lockfile's importer) — a transitive resolution difference between npm and pnpm under one specifier is not measured")
 console.log("  · the Vercel project's Node major, build machine type, plan (per-minute cron, maxDuration 600) and Deployment Protection are project settings, not repository facts — lane 149K read them once via the read-only Vercel MCP (notes), this guard cannot")
+console.log("  · (F) the ledger is owner/integrator-written: this proof checks a row's SHAPE, date and tree freshness, not that the deployment, sign-in, timer or tick really happened — the evidence cell must name ids (dpl_, wrun_, run) the owner can re-open")
+console.log("  · (F) a CI checkout without the evidence commit (shallow clone) reads every commit-bound row NOT OBSERVED (unknown → fail closed); run this proof in a full clone to see them")
+console.log("  · (F) R9 / M1 / M2 are dated, not commit-bound (live database and project settings change outside the tree); re-read them before promoting")
+console.log(`\nRELEASE GATES: ${observedR.length} of ${rRows.length} C42 rows observed on this tree${observedR.length < rRows.length ? ` — not observed: ${rRows.filter((g) => states.get(g.row) !== "OBSERVED").map((g) => g.row).join(", ")}` : ""}`)
+console.log(`PRODUCTION-LIVE: ${live ? "YES" : "NO"} (needs 0 owner obligations and all ${rRows.length} rows; CI green is never production-live)`)
 console.log(`\nRELEASE BLOCKERS: ${open.length} owner obligation(s) open${open.length ? ` — ${open.map((o) => o.id).join(", ")}` : ""}`)
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

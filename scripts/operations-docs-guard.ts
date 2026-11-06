@@ -39,6 +39,7 @@ import {
   envReadsInSource, declaredEnvNamesInSource, namesFromEnvExample, namesFromVercelJson, namesFromWorkflowYaml,
 } from "./env-var-parity"
 import { claimOf } from "./migration-status"
+import { installOf } from "./release-rules"
 import { LIVE_TABLES } from "./live-tables"
 import { ENV_META, SYSTEMS, type Meta, type Req, type SysKey } from "./operations-docs-data"
 import { buildLaunchChecklist, type LaunchTier } from "@/lib/platform/launch-checklist"
@@ -498,9 +499,13 @@ function renderHostingFacts(): string {
   rows.push("|---|---|---|")
   rows.push(`| Framework | Next.js ${dep("next")} (App Router) · React ${dep("react")} · build uses webpack (\`next build --webpack\`) | package.json, ${L("vercel.json", "buildCommand", vText)} |`)
   rows.push(`| Build command | \`${mdCell(vercel.buildCommand ?? "—")}\` | ${L("vercel.json", "buildCommand", vText)} |`)
-  rows.push(`| Lockfile policy | \`--no-frozen-lockfile\` in BOTH install and build: **a deployment may resolve different dependency versions than CI tested** (finding F-1) | ${L("vercel.json", "installCommand", vText)} |`)
+  // wave 150 (lane 150AAF, applied by 150Z): DERIVED from the install command by the ONE rule (scripts/release-rules.ts
+  // installOf) — the row used to be prose that stayed true only while vercel.json ran pnpm unfrozen (a waypoint).
+  const vInst = installOf(`${vercel.installCommand ?? ""} ${vercel.buildCommand ?? ""}`)
+  rows.push(`| Lockfile policy | ${vInst.frozen ? `\`${mdCell(vercel.installCommand ?? "")}\` — ${vInst.pm}, FROZEN to its lockfile (the install CI certifies; finding F-1 closed in code, wave 150)` : `\`${mdCell(vercel.installCommand ?? "—")}\` is NOT frozen: **a deployment may resolve different dependency versions than CI tested** (finding F-1)`} | ${L("vercel.json", "installCommand", vText)} |`)
   rows.push(`| Type-checking at build | \`typescript.ignoreBuildErrors: true\` — type safety is the CI \`type-check\` gate, NOT the Vercel build | ${L("next.config.ts", "ignoreBuildErrors", nextRaw)} |`)
-  rows.push(`| Runtime pin | ${pkg.engines ? "engines set" : "no \`engines\`, no .nvmrc — the Node version is the Vercel project setting (finding F-2)"}; package manager ${pkg.packageManager ?? "unpinned (pnpm used by vercel.json, npm lockfile also present)"} | package.json |`)
+  const engNode = (pkg.engines as { node?: string } | undefined)?.node
+  rows.push(`| Runtime pin | ${engNode ? `\`engines.node\` ${engNode} (Vercel deploys this major over the project setting; finding F-2 closed in code, wave 150)` : "no \`engines\`, no .nvmrc — the Node version is the Vercel project setting (finding F-2)"}; package manager ${pkg.packageManager ?? `unpinned (vercel.json installs with ${vInst.pm}${has("pnpm-lock.yaml") && vInst.pm !== "pnpm" ? "; a stale pnpm-lock.yaml is still on disk" : ""})`} | package.json |`)
   rows.push(`| Route handlers / pages | ${md.routes} \`route.ts\` handlers · ${md.pages} \`page.tsx\` pages under app/ | app/ |`)
   rows.push(`| Function overrides | ${Object.keys(vercel.functions ?? {}).length} routes with explicit memory/duration: ${Object.entries(vercel.functions ?? {}).map(([k, v]) => `\`${k.replace(/^app\/api\//, "").replace(/\/route\.ts$/, "")}\` ${v.memory ?? "default"} MB · ${v.maxDuration ?? "default"} s`).join("; ")} | ${L("vercel.json", '"functions"', vText)} |`)
   rows.push(`| Per-route \`maxDuration\` | ${md.total} routes declare one: ${md.histogram.map(([s, c]) => `${s}s ×${c}`).join(" · ")}. **Above 300 s: ${md.above300.length ? md.above300.join(", ") : "none"}** — a duration above the plan's default needs Fluid compute / Pro limits (verify in the project; ACTIVATION-CHECKLIST §1) | app/**/route.ts |`)
