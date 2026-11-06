@@ -67,6 +67,12 @@ export async function uploadListingMedia(params: {
    * Ignored when usageIntent='mls'.
    */
   hasEmbeddedAttribution?: boolean
+  /**
+   * WAVE 150 (lane 150XY — owner ruling 2026-11-06, R9): a listing PHOTO is lawful only from the tenant's IDX / MLS feed or
+   * when the uploading user owns it. Every media_type 'photo' goes through lib/listings/owner-photo-upload.ts
+   * recordOwnerUploadedListingPhoto, which refuses without this attestation (the statement + its version shown on screen).
+   */
+  ownershipAttestation?: { accepted: boolean; version: string } | null
 }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -84,32 +90,51 @@ export async function uploadListingMedia(params: {
   // regardless of what the caller asserted (MLS rules override agent intent).
   const attributionAsserted = !isMlsBound && params.hasEmbeddedAttribution === true
 
-  const { data, error } = await supabase
-    .from("listing_media")
-    .insert({
-      listing_id:         params.listingId,
-      brokerage_id:       params.brokerageId,
-      media_type:         params.mediaType,
-      file_url:           params.fileUrl,
-      thumbnail_url:      params.thumbnailUrl ?? null,
-      caption:            params.caption ?? null,
-      alt_text:           params.altText ?? null,
-      tags:               params.tags ?? [],
-      is_primary:         params.isPrimary ?? false,
-      approval_required:  params.approvalRequired ?? true,
-      is_approved:        false,
-      kernel_compliance_passed: false,
-      usage_intent:              usageIntent,
-      has_logo_overlay:          attributionAsserted,
-      has_brokerage_attribution: attributionAsserted,
-      has_eho_mark:              attributionAsserted,
-      uploaded_by:        user.id,
-      sort_order:         0,
-    })
-    .select("id")
-    .single()
+  const commonRow = {
+    thumbnail_url:      params.thumbnailUrl ?? null,
+    alt_text:           params.altText ?? null,
+    tags:               params.tags ?? [],
+    is_primary:         params.isPrimary ?? false,
+    approval_required:  params.approvalRequired ?? true,
+    is_approved:        false,
+    kernel_compliance_passed: false,
+    usage_intent:              usageIntent,
+    has_logo_overlay:          attributionAsserted,
+    has_brokerage_attribution: attributionAsserted,
+    has_eho_mark:              attributionAsserted,
+    sort_order:         0,
+  }
 
-  if (error) return { data: null, error: error.message }
+  let data: { id: string }
+  let galleryWarning: string | null = null
+  if (params.mediaType === "photo") {
+    // THE ONE OWNER-PHOTO WRITER (wave 150, lane 150XY): uploader + listing + ownership attestation on listing_media, and the
+    // entry on listings.photos. Session client — RLS applies; the tenant is the session's (re-keyed above).
+    const { recordOwnerUploadedListingPhoto } = await import("@/lib/listings/owner-photo-upload")
+    const rec = await recordOwnerUploadedListingPhoto(supabase, {
+      brokerageId: params.brokerageId, listingId: params.listingId, userId: user.id, fileUrl: params.fileUrl,
+      caption: params.caption ?? null, attestation: params.ownershipAttestation ?? null, row: commonRow,
+    })
+    if (!rec.ok) return { data: null, error: rec.error }
+    data = { id: rec.mediaId }
+    galleryWarning = rec.galleryWarning
+  } else {
+    const ins = await supabase
+      .from("listing_media")
+      .insert({
+        listing_id:         params.listingId,
+        brokerage_id:       params.brokerageId,
+        media_type:         params.mediaType,
+        file_url:           params.fileUrl,
+        caption:            params.caption ?? null,
+        ...commonRow,
+        uploaded_by:        user.id,
+      })
+      .select("id")
+      .single()
+    if (ins.error) return { data: null, error: ins.error.message }
+    data = ins.data as { id: string }
+  }
 
   // Run brand compliance check immediately after upload
   const compliance = await checkBrandCompliance({
@@ -163,7 +188,7 @@ export async function uploadListingMedia(params: {
     }
   }
 
-  return { data: { ...data, compliance, fanoutWarning }, error: null }
+  return { data: { ...data, compliance, fanoutWarning, galleryWarning }, error: null }
 }
 
 export async function approveListingMedia(mediaId: string) {

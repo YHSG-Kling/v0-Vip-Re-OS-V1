@@ -30,6 +30,7 @@ import {
 } from "@/app/actions/listing-media"
 import { createClient } from "@/lib/supabase/client"
 import { checkUpload } from "@/lib/storage/file-limits"
+import { OWNER_PHOTO_ATTESTATION_TEXT, OWNER_PHOTO_ATTESTATION_VERSION } from "@/lib/listings/owner-photo-upload"
 import {
   MoreHorizontalIcon,
   PlusIcon,
@@ -97,6 +98,8 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
     mediaType: "photo" as const,
     isPrimary: false,
   })
+  // Owner ruling 2026-11-06 (lane 150XY): a listing photo is added only when the uploader attests they own it.
+  const [ownershipAttested, setOwnershipAttested] = useState(false)
 
   // File upload state
   const [fileUploading, setFileUploading] = useState(false)
@@ -203,6 +206,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
         altText:      form.altText.trim() || undefined,
         isPrimary:    form.isPrimary,
         approvalRequired: true,
+        ownershipAttestation: form.mediaType === "photo" ? { accepted: ownershipAttested, version: OWNER_PHOTO_ATTESTATION_VERSION } : null,
       })
       if (result.error) {
         toast({ title: "Upload failed", description: result.error, variant: "destructive" })
@@ -213,11 +217,12 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
       onMediaChange(updated.data ?? [])
       setUploadOpen(false)
       setForm({ fileUrl: "", thumbnailUrl: "", caption: "", altText: "", mediaType: "photo", isPrimary: false })
+      setOwnershipAttested(false)
       setFileUploadSuccess(false)
       setFileUploadError(null)
       // Lane 92A: a refused hero-photo fan-out rides the same toast that reports this
       // upload's compliance problems — saved, but not sent on to marketing.
-      const fanoutWarning = result.data?.fanoutWarning ?? null
+      const fanoutWarning = [result.data?.fanoutWarning, result.data?.galleryWarning].filter(Boolean).join(" ") || null
       toast({
         title: "Media uploaded",
         description: [
@@ -555,12 +560,24 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
               />
               <Label htmlFor="isPrimary" className="cursor-pointer">Set as primary</Label>
             </div>
+            {form.mediaType === "photo" && (
+              <div className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  id="ownershipAttested"
+                  checked={ownershipAttested}
+                  onChange={e => setOwnershipAttested(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-input"
+                />
+                <Label htmlFor="ownershipAttested" className="cursor-pointer text-sm leading-snug">{OWNER_PHOTO_ATTESTATION_TEXT}</Label>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setUploadOpen(false)} disabled={isPending || fileUploading}>
               Cancel
             </Button>
-            <Button onClick={handleUpload} disabled={isPending || fileUploading || !form.fileUrl.trim()}>
+            <Button onClick={handleUpload} disabled={isPending || fileUploading || !form.fileUrl.trim() || (form.mediaType === "photo" && !ownershipAttested)}>
               {isPending ? (
                 <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving…</>
               ) : fileUploading ? (

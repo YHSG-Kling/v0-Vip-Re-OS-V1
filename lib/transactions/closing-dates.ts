@@ -251,12 +251,58 @@ export async function recordActualClosing(svc: Svc, p: { brokerageId: string; tr
   return { ok: true, ...(Array.isArray(data) && data.length === 0 ? { error: "already stamped" } : {}) }
 }
 
+/**
+ * WAVE 150 (lane 150XY — the wave-149 §4 carried "contract reader"; lane 149G Outside-lane 2): at promotion, read how the
+ * EXECUTED signed contract words its closing date (lib/transactions/contract-terms.ts readClosingDateWording — deterministic, no
+ * model) and record a confident reading through applyClosingDateChange(kind 'contract_wording') as the system actor, the
+ * document as evidence. The document must show BOTH parties signed (governing-terms-rule signaturesPresent); an ambiguous or
+ * absent reading records NOTHING (the wording stays unknown for a person). Never throws; the reason is returned for the log.
+ * Called by lib/transactions/offer-bridge.ts createTransactionFromOffer.
+ */
+export async function readContractWordingAtPromotion(
+  svc: Svc,
+  p: { brokerageId: string; transactionId: string; contactId: string | null; offerId: string; expectedDate: string | null },
+  deps: { ledger: typeof withActionLedger },
+): Promise<{ ok: true; terms: ClosingDateTerms; documentId: string } | { ok: false; reason: string }> {
+  try {
+    const { readClosingDateWording } = await import("./contract-terms")
+    const { signaturesPresent } = await import("@/lib/offers/governing-terms-rule")
+    let q = svc.from("documents").select("id, content, signature_completeness, metadata, created_at").eq("brokerage_id", p.brokerageId).eq("classification", "signed_contract")
+    q = p.contactId ? q.eq("contact_id", p.contactId) : q.eq("transaction_id", p.transactionId)
+    const { data, error } = await q.order("created_at", { ascending: false }).limit(5)
+    if (error) return { ok: false, reason: `the executed contract could not be read: ${error.message}` }
+    const docs = (data ?? []) as Array<{ id: string; content?: string | null; signature_completeness?: unknown; metadata?: Record<string, unknown> | null }>
+    // the contract of THIS offer when the document names it; otherwise the latest signed contract of the client
+    const doc = docs.find((d) => d.metadata?.linked_offer_id === p.offerId) ?? docs[0]
+    if (!doc) return { ok: false, reason: "no executed signed contract is on file" }
+    const sig = signaturesPresent(doc.signature_completeness, ["buyer", "seller"])
+    if (sig.missing.length) return { ok: false, reason: `the signed contract on file does not show ${sig.missing.join(" and ")} signed` }
+    const reading = readClosingDateWording(doc.content, { expectedDate: p.expectedDate })
+    if (!reading.terms) return { ok: false, reason: reading.reason }
+    const r = await applyClosingDateChange(svc, {
+      brokerageId: p.brokerageId, transactionId: p.transactionId, actorUserId: null, systemSource: "contract_text_reader",
+      kind: "contract_wording", terms: reading.terms, evidenceRef: `document:${doc.id}`,
+      reason: `Read from the executed contract: "${(reading.quote ?? "").slice(0, 200)}"`,
+    }, deps)
+    if (!r.ok) return { ok: false, reason: r.error }
+    return { ok: true, terms: reading.terms, documentId: doc.id }
+  } catch (e) {
+    return { ok: false, reason: `threw: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
 // ── The governed change (the action calls it after the session gate) ───────────────────────────
 
 interface ClosingDateChangeInput {
   brokerageId: string
   transactionId: string
-  actorUserId: string
+  /** The person recording it. Null ONLY for the deterministic contract reader (`systemSource`), never for a person's change. */
+  actorUserId: string | null
+  /**
+   * WAVE 150 (lane 150XY): the non-model contract reader (lib/transactions/contract-terms.ts readClosingDateWording, called by
+   * the offer bridge) records `contract_wording` as a SYSTEM actor naming itself. Only `contract_wording` may be recorded this way.
+   */
+  systemSource?: "contract_text_reader"
   kind: ClosingDateChangeKind
   date?: string | null
   terms?: string | null
@@ -289,6 +335,8 @@ const FACT_COLS = "id, status, close_date, estimated_close_date, contract_closin
 export async function applyClosingDateChange(svc: Svc, input: ClosingDateChangeInput, deps: { ledger: typeof withActionLedger }): Promise<ClosingDateChangeResult> {
   try {
     if (!(CLOSING_DATE_CHANGE_KINDS as readonly string[]).includes(String(input.kind))) return { ok: false, error: `Unknown closing-date record '${String(input.kind)}'.` }
+    if (input.systemSource && input.kind !== "contract_wording") return { ok: false, error: "Only the contract's wording may be recorded by the contract reader — every other closing-date record is a person's." }
+    if (!input.systemSource && !input.actorUserId) return { ok: false, error: "A closing-date change is recorded by a signed-in person." }
     if ((input.reason ?? "").trim().length < OVERRIDE_REASON_MIN_CHARS) return { ok: false, error: `Tell us why (at least ${OVERRIDE_REASON_MIN_CHARS} characters) — a closing-date change is recorded with its reason.` }
     const needsProof = input.kind !== "anticipated"
     if (needsProof && (input.evidenceRef ?? "").trim().length < 3) return { ok: false, error: input.kind === "executed_amendment" ? "An amended closing deadline needs the EXECUTED amendment's reference (signed by every party) — a proposal is recorded as the anticipated date instead." : input.kind === "actual_confirmation" ? "Confirming the actual closing day needs the settlement statement, closing file or recorded deed it comes from." : "Recording how the contract words its closing date needs the executed contract's reference." }
@@ -300,6 +348,7 @@ export async function applyClosingDateChange(svc: Svc, input: ClosingDateChangeI
     if (!row) return { ok: false, error: "Transaction not found in your brokerage" }
     const facts = row as ClosingDateFacts & { updated_at?: string | null }
     const closed = CLOSED_STATUSES.has(String(facts.status ?? ""))
+    if (input.systemSource && isClosingDateTerms(facts.contract_closing_terms)) return { ok: false, error: "The contract's wording is already recorded — the reader never overwrites it." }
     if (closed && input.kind !== "actual_confirmation") return { ok: false, error: "This deal has closed — its actual closing day is the record now (confirm or correct it from the settlement statement)." }
     if (!closed && input.kind === "actual_confirmation") return { ok: false, error: "This deal has not closed — the actual day is stamped when it closes (the gated close); record an expected day instead." }
     const assessment = input.kind === "contract_wording" || input.kind === "actual_confirmation" ? null : assessClosingDateChange(facts, { date: input.date!, kind: input.kind })
@@ -312,11 +361,12 @@ export async function applyClosingDateChange(svc: Svc, input: ClosingDateChangeI
     type W ={ ok: true } | { ok: false; error: string }
     const w = await ledger<W>(
       {
-        brokerageId: input.brokerageId, action: "transaction.closing_date.record", actor: { type: "user", userId: input.actorUserId },
-        subject: { type: "transaction", id: input.transactionId }, reasonCode: "HUMAN_REQUESTED",
+        brokerageId: input.brokerageId, action: "transaction.closing_date.record",
+        actor: input.systemSource ? { type: "system" } : { type: "user", userId: input.actorUserId },
+        subject: { type: "transaction", id: input.transactionId }, reasonCode: input.systemSource ? "TRANSACTION_MILESTONE" : "HUMAN_REQUESTED",
         reasonDetail: `${input.kind}: ${input.reason.trim()}`.slice(0, 500),
         idempotencyKey: `closing_date:${input.transactionId}:${input.kind}:${input.date ?? input.terms ?? ""}:${facts.updated_at ?? "v0"}`,
-        riskClass: input.kind === "anticipated" ? "LOW_RISK_WRITE" : "LEGAL", systemSource: "closing-dates",
+        riskClass: input.kind === "anticipated" ? "LOW_RISK_WRITE" : "LEGAL", systemSource: input.systemSource ? `closing-dates:${input.systemSource}` : "closing-dates",
         detail: { kind: input.kind, date: input.date ?? null, terms: input.terms ?? null, evidence_ref: input.evidenceRef ?? null, assessment, before: { contract: facts.contract_closing_date ?? null, terms: facts.contract_closing_terms ?? null, anticipated: facts.estimated_close_date ?? null, actual: facts.actual_close_date ?? null } },
       },
       async () => {

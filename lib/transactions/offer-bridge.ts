@@ -440,12 +440,22 @@ export async function createTransactionFromOffer(params: {
   // THE CONTRACT'S CLOSING DEADLINE IS ITS OWN FACT (wave 148, lane 148I — owner ruling 21, m927): close_date above is the
   // EFFECTIVE date and is overwritten by the close; the executed contract's deadline is kept on contract_closing_date (source
   // executed_contract). Its WORDING (on / on or before) is not on the offer row — it stays NULL (unknown, never assumed)
-  // until it is read off the executed contract (app/actions/transactions.ts recordClosingDateChange, kind contract_wording).
+  // until it is read off the executed contract — by the deterministic reader just below (wave 150) or by a person
+  // (app/actions/transactions.ts recordClosingDateChange, kind contract_wording).
   // A separate statement, so a database without m927 still creates the deal; a refusal is logged with its reason.
   {
-    const { seedContractClosing } = await import("@/lib/transactions/closing-dates")
+    const { seedContractClosing, readContractWordingAtPromotion } = await import("@/lib/transactions/closing-dates")
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
     const seeded = await seedContractClosing(supabase as any, { brokerageId: params.brokerageId, transactionId: transaction.id, date: contractDeadlines.closingDate ?? null })
     if (!seeded.ok) console.warn(`[offer-bridge] transaction ${transaction.id}: the contract's closing deadline was not recorded — ${seeded.error}`)
+    // WAVE 150 (lane 150XY — the wave-149 §4 carried "contract reader"): read the WORDING off the executed signed contract on
+    // file with the DETERMINISTIC reader (no model) and record a confident reading through the ONE governed door, as the system
+    // actor naming the document. Anything short of an unambiguous sentence whose date agrees stays NULL ("unknown") for a person.
+    const wording = await readContractWordingAtPromotion(supabase as any, {
+      brokerageId: params.brokerageId, transactionId: transaction.id, contactId: ((offer as any).contact_id as string | null) ?? null,
+      offerId: params.offerId, expectedDate: contractDeadlines.closingDate ?? null,
+    }, { ledger: withActionLedger })
+    if (!wording.ok) console.warn(`[offer-bridge] transaction ${transaction.id}: closing wording not read from the contract — ${wording.reason}`)
   }
 
   // Log contract date set event via kernel

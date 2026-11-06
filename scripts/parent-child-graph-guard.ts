@@ -90,7 +90,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { blankComments, blankStrings } from "./strip-comments"
 import { runtimeFiles } from "./runtime-roots"
-import { SCHEMA_FK_MAP } from "./schema-fk-map"
+import { SCHEMA_FK_COLUMN_AMBIGUOUS, SCHEMA_FK_MAP } from "./schema-fk-map"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { LIVE_TABLES } from "./live-tables"
 import { MANAGERS, TABLE_MANAGER, canRefer, type ManagerKey } from "../lib/kernel/manager-registry"
@@ -164,7 +164,10 @@ export const CHAINS: ChainSpec[] = [
       { id: "org.brokerage>location", parentNode: "BROKERAGE", childNode: "LOCATION", parent: "brokerages", child: "locations",
         link: { kind: "fk", column: "brokerage_id" } },
       { id: "org.location>team", parentNode: "LOCATION", childNode: "TEAM", parent: "locations", child: "teams",
-        link: { kind: "absent", why: "teams carry no location_id — a team is a mini brokerage (CLAUDE.md §4) anchored on brokerage_id + team_lead_id; agents carry location_id directly. Whether a team belongs to ONE office is an owner question" } },
+        // C34 (wave 150, lane 150C; m957): a team works out of ONE office — teams.location_id, a composite same-tenant FK
+        // (location_id, brokerage_id) → locations (id, brokerage_id). Before m957 this arrow was ABSENT ("whether a team
+        // belongs to one office is an owner question"); the owner answered it with the tenant hierarchy contract.
+        link: { kind: "fk", column: "location_id" } },
       { id: "org.brokerage>team", parentNode: "BROKERAGE", childNode: "TEAM", parent: "brokerages", child: "teams",
         link: { kind: "fk", column: "brokerage_id" } },
       { id: "org.team>agent", parentNode: "TEAM", childNode: "AGENT", parent: "teams", child: "agents",
@@ -812,13 +815,24 @@ export function symbolExists(ref: SymbolRef, code: Map<string, string>): boolean
 
 // ── LINK derivation ────────────────────────────────────────────────────────────────────────────────
 type FkMap = Record<string, Record<string, string>>
+/** Every target a column links to: the one target the map holds, plus — for a column the generator left OUT of the map
+ *  because two constraints point it at different tables (a composite same-tenant FK beside the plain tenant FK, m957/m958:
+ *  teams.brokerage_id → brokerages AND → locations) — every candidate in SCHEMA_FK_COLUMN_AMBIGUOUS. An ambiguous column
+ *  is still a foreign key; reading only the map would call a live link ABSENT. */
+export function fkTargets(fk: FkMap, table: string, column: string): string[] {
+  const one = (fk[table] ?? {})[column]
+  const amb = fk === SCHEMA_FK_MAP ? ((SCHEMA_FK_COLUMN_AMBIGUOUS as Record<string, Record<string, string[]>>)[table] ?? {})[column] ?? [] : []
+  return [...new Set([...(one ? [one] : []), ...amb])]
+}
 export function fkColumns(fk: FkMap, from: string, to: string): string[] {
-  return Object.entries(fk[from] ?? {}).filter(([, t]) => t === to).map(([c]) => c).sort()
+  const cols = new Set(Object.keys(fk[from] ?? {}))
+  if (fk === SCHEMA_FK_MAP) for (const c of Object.keys((SCHEMA_FK_COLUMN_AMBIGUOUS as Record<string, Record<string, string[]>>)[from] ?? {})) cols.add(c)
+  return [...cols].filter((c) => fkTargets(fk, from, c).includes(to)).sort()
 }
 export function verifyLink(a: ArrowSpec, fk: FkMap, snap: Record<string, string[]>): string | null {
   const L = a.link
-  if (L.kind === "fk") return a.parent && (fk[a.child] ?? {})[L.column] === a.parent ? null : `declared FK ${a.child}.${L.column} → ${a.parent} is not in the FK cache`
-  if (L.kind === "reverse_fk") return a.parent && (fk[a.parent] ?? {})[L.column] === a.child ? null : `declared FK ${a.parent}.${L.column} → ${a.child} is not in the FK cache`
+  if (L.kind === "fk") return a.parent && fkTargets(fk, a.child, L.column).includes(a.parent) ? null : `declared FK ${a.child}.${L.column} → ${a.parent} is not in the FK cache`
+  if (L.kind === "reverse_fk") return a.parent && fkTargets(fk, a.parent, L.column).includes(a.child) ? null : `declared FK ${a.parent}.${L.column} → ${a.child} is not in the FK cache`
   if (L.kind === "root") {
     if (a.parent !== null) return "a root arrow must have no parent table"
     return null
@@ -1104,7 +1118,7 @@ for (const chain of CHAINS) {
 
     // ── MIRRORS + RESOLVER
     if (a.mirrors?.length && a.parent) {
-      const real = a.mirrors.filter((m) => (SCHEMA_FK_MAP[m.table] ?? {})[m.column] === a.parent)
+      const real = a.mirrors.filter((m) => fkTargets(SCHEMA_FK_MAP, m.table, m.column).includes(a.parent!))
       const fake = a.mirrors.filter((m) => !real.includes(m))
       if (fake.length) find(`mirror-not-in-cache:${a.id}`, a.id, fake.map((m) => `${m.table}.${m.column}`).join(", "))
       const ok = a.resolver ? symbolExists(a.resolver, CODE) : false
