@@ -1,4 +1,4 @@
-import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure" // the MODULE, not the barrel (proxy-graph budget, wave 150)
 import { createServiceClient } from "@/lib/supabase/service"
 import { dollarsToCents } from "../utils"
 import { agreementAsOf, loadAgentAgreementAsOf } from "../agreement-terms"

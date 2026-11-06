@@ -35,9 +35,10 @@
  * brokerage's fallback Lob template — the channel never goes dark.
  *
  * Idempotency: a direct_mail_campaigns row tagged
- * (target_audience='lifecycle:{event_type}', marketing_campaign_id=
- * <listing_id> as a sentinel) prevents the same event firing
- * postcards twice for the same listing.
+ * (target_audience='lifecycle:{event_type}:{listing_id}' as a sentinel)
+ * prevents the same event firing postcards twice for the same listing,
+ * and the action-ledger key per (listing, event, contact) holds each
+ * piece at-most-once (wave 150, lane 150R).
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -167,12 +168,15 @@ export async function dispatchLifecycleMail(
   const agentId:     string | null = (agentRow?.id as string | undefined) ?? null
 
   // 2. Idempotency — same (listing, event_type) doesn't double-fire.
-  const { count: prior } = await svc
+  // WAVE 150 (150R): the sentinel is keyed in target_audience. It used to put the LISTING id in
+  // marketing_campaign_id, an FK to marketing_campaigns (scripts/schema-fk-map.ts) — refused 23503, so the
+  // sentinel never existed. A refused count is a refusal, not "never sent" (the ledger key still holds).
+  const { count: prior, error: priorErr } = await svc
     .from("direct_mail_campaigns")
     .select("id", { count: "exact", head: true })
     .eq("brokerage_id", args.brokerageId)
-    .eq("target_audience", `lifecycle:${args.eventType}`)
-    .eq("marketing_campaign_id", args.listingId)
+    .eq("target_audience", `lifecycle:${args.eventType}:${args.listingId}`)
+  if (priorErr) return { ok: false, event: args.eventType, status: "failed", reason: `idempotency read refused: ${priorErr.message}` }
   if ((prior ?? 0) > 0) {
     return { ok: true, event: args.eventType, status: "already_sent" }
   }
@@ -281,7 +285,11 @@ export async function dispatchLifecycleMail(
   const fallbackTpl = policy.mail_template_id
     ?? (brokerageRow?.lob_fallback_template_id as string | null)
     ?? ""
-  if (!fallbackTpl) {
+  // WAVE 150 (lane 150R, R5): the GLOBAL postcard front/back is the survivor; the policy / tenant id is a
+  // measured legacy fallback (piece-type.ts fallbackLobTemplates), and a front with no distinct back is
+  // refused rather than aliased.
+  const { fallbackLobTemplates, mailPieceIdempotencyKey } = await import("@/lib/direct-mail/piece-type")
+  if (!fallbackLobTemplates("postcard", fallbackTpl).ok) {
     return { ok: true, event: args.eventType, status: "skipped", reason: "no_fallback_template_configured" }
   }
 
@@ -350,6 +358,9 @@ export async function dispatchLifecycleMail(
       // The listing × event REGISTERED code (minted above).
       qrScanUrl:          lifecycleQr?.scanUrl ?? null,
       systemSource:       `lifecycle:${args.eventType}`,
+      // AT-MOST-ONCE per (listing, event, contact): a re-fired reactor replays, never re-charges — even
+      // when the campaign sentinel below was not written.
+      idempotencyKey:     mailPieceIdempotencyKey("lifecycle", args.listingId, args.eventType, contactId),
     })
 
     if (result.success) sent++
@@ -364,15 +375,17 @@ export async function dispatchLifecycleMail(
     const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
     const mailAgentId = await resolveUserIdToAgentRecord(args.agentUserId, args.brokerageId)
 
-    await svc.from("direct_mail_campaigns").insert({
+    // TOMBSTONE (wave 150, lane 150R): status was "sent", which the LIVE direct_mail_campaigns_status_check
+    // refuses (read 2026-11-06) — the insert failed whole, unread, so the idempotency sentinel was never
+    // written and the next firing mailed the same piece again. "mailed" is the CHECK's word; the error is read.
+    const { error: sentinelErr } = await svc.from("direct_mail_campaigns").insert({
       brokerage_id:        args.brokerageId,
       agent_id:            mailAgentId,
       contact_id:          contactId,
-      marketing_campaign_id: args.listingId,
       campaign_name:       `Lifecycle ${args.eventType} - ${propertyAddress.slice(0, 60)}`,
-      target_audience:     `lifecycle:${args.eventType}`,
+      target_audience:     `lifecycle:${args.eventType}:${args.listingId}`,
       quantity:            1,
-      status:              result.success ? "sent" : "failed",
+      status:              result.success ? "mailed" : "failed",
       piece_type:          "postcard",
       lob_order_id:        result.messageId ?? null,
       mailing_date:        result.success ? new Date().toISOString().slice(0, 10) : null,
@@ -383,6 +396,7 @@ export async function dispatchLifecycleMail(
       compliance_event_id: result.complianceEventId ?? null,
       created_at:          new Date().toISOString(),
     })
+    if (sentinelErr) console.error(`[mail-reactor] lifecycle campaign sentinel NOT recorded for listing ${args.listingId} ${args.eventType} (the ledger idempotency key still holds the piece at-most-once): ${sentinelErr.message}`)
   }
 
   return {

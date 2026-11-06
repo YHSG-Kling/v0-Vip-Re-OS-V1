@@ -41,9 +41,16 @@ on base `ebed6c44`. A price that comes from a secondary source is labelled **rep
    AMcards' prices are unchanged. A member card still costs about 2.6× a Lob color letter, the licence questions in §5 are still
    open, and the outcome value is still unmeasured. Ruling 19 says that if no handwritten-card provider is justified, the platform
    adjusts to another branded format through existing providers. That format is the **personal letter**: a Lob color letter in an
-   envelope, with the tenant's brand, a handwriting-style typeface and the agent's signature. It is sent through the existing
+   envelope, with the tenant's brand, a personal-note typeface and the agent's signature. It is sent through the existing
    `dispatchDirectMail` door, which already sends color letters (`lib/providers/dispatch.ts:1347`). §11 specifies what exists and
    what to add. AMcards stays WAITING_EXTERNAL. No adapter is built.
+
+7. **Wave 150 (lane 150R, owner ruling R5, read 2026-11-06): four distinct global Lob templates, brand as data; the cost
+   comparison across six providers is §12.** The format router is `lib/direct-mail/piece-type.ts`. A typeface is never called
+   handwriting: the personal letter is a PRINTED note. **Correction:** AMcards is not a genuine-handwriting provider. Its home page
+   says "You Click, We Print, Stuff, Stamp, and Mail", so it is a printed card set in a handwriting-style font. Only Handwrytten
+   ("robots that hold real pens") and LettrLabs ("write each card with a ball point pen") claim a pen. Lob stays the default and
+   the only wired provider. Every other provider stays dormant behind the format router.
 
 ## 2. Sources read (2026-11-01)
 
@@ -265,7 +272,7 @@ right at 39 % of the price. Ruling 19 therefore points to the alternative.
 ### 11.3 The branded format through the existing provider: the personal letter
 
 **Definition.** A **personal letter** is one sheet, color, First Class, mailed in an envelope. It carries the tenant's letterhead
-(logo, colours, brokerage line, website), and the person's name and a short note set in a handwriting-style typeface. It closes
+(logo, colours, brokerage line, website), and the person's name and a short note set in a personal-note typeface (a script face; wave 150 R5: a typeface is never called handwriting). It closes
 with the agent's scanned signature and a hand-feel "P.S." line. It is private in the envelope, which is the one thing the notecard
 postcard lacks. It is personal in tone, and it is a lawful, ordinary letter. It is **never** presented as handwritten by a person
 when it is printed: the copy says "a note from <agent>", not "handwritten by".
@@ -329,3 +336,80 @@ no value.
 - **Delivery time is unmeasured** for both vendors. The AMcards 2 – 5 day figure is a third-party help page.
 - **Response lift is unmeasured.** The arbiter's format attribution (`printed_letter` against `postcard` against
   `handwritten_card`) is the instrument, once both formats are sent.
+
+## 12. Wave 150 — distinct formats, brand as data, and printed + postage + minimum + platform fee across six providers (lane 150R, read 2026-11-06)
+
+Owner ruling R5 (2026-11-06). Lob stays the default. The letter, the personal letter, the postcard front and the postcard back
+are **distinct** Lob template ids. There are a few **global** format templates, and every tenant, sending-user and office detail
+is merge data. Genuine handwritten cards and bulk providers stay optional behind the router, with price and licence proof. Nothing
+is bought.
+
+**Method.** Every price below comes from the vendor's own page, read on 2026-11-06 unless another date is given. No account was
+opened, no quote was requested and no order was placed. When a page does not publish a figure, the cell says **unconfirmed**.
+Lob's figures are the 2026-11-01 unit prices already sourced in §6 and §11.1.
+
+### 12.1 Sources (official pages only)
+
+| Provider | URL (read 2026-11-06) | What it says |
+|---|---|---|
+| Lob pricing | <https://help.lob.com/print-and-mail/ready-to-get-started/pricing-details> (read 2026-11-03, §11.1) | Prices "take effect on 11/01/2026", inclusive of print and postage. Plans: Developer $0 / mo, Startup $260 / mo, Growth $550 / mo (§6) |
+| Lob test environment | <https://help.lob.com/account-management/api-keys> | Test keys start `test_`. In test mode "a digital proof and thumbnails will be rendered, but the mail piece will not actually be printed and mailed", with no charge |
+| Lob idempotency | <https://docs.lob.com/> ("Idempotent Requests") | `Idempotency-Key` header (postcards also accept `idempotency_key` as a query parameter), up to 256 characters. Key lifetime: **unconfirmed** (the appendix did not render) |
+| Lob tracking | <https://help.lob.com/print-and-mail/getting-data-and-results/tracking-your-mail> | "Delivered" is generated "when the carrier's GPS unit leaves the delivery area". "USPS does not guarantee every event". "Processed for Delivery is more reliable" |
+| Lob fonts / merge variables | <https://help.lob.com/print-and-mail/designing-mail-creatives/maximizing-engagement/dynamic-personalization> | Hosted fonts through `@font-face` (TTF, Google web fonts; OTF and Typekit refused). `merge_variables` are capped at 25,000 characters, and names may not contain whitespace or special characters |
+| LettrLabs pricing | <https://www.lettrlabs.com/pricing> | "Postage is Always Included". Handwritten Postcard $1.66 / $1.26 / $0.88; Card & Envelope $2.86 / $2.05 / $1.27; Handwritten Envelope & Printed Letter $1.56 / $1.22 / $0.81 (Starter pay-as-you-go / Premium monthly / Enterprise annual). Premium "$399 /month" (a "$449 /month" figure also appears, unlabelled). Printed 4×6 postcard $0.76 on Starter |
+| LettrLabs order of operations | <https://docs.lettrlabs.com/order-of-operations/> | `POST /v1/order` "creates a new order every time". Checkout is `POST /v1/order/{id}/checkout`; payment settles **asynchronously**. "Do not retry a checkout that returned `200`". A second checkout while `Payment Needed` returns `400` |
+| LettrLabs product | <https://www.lettrlabs.com/> | "write each card with a ball point pen" (robotic) |
+| Handwrytten pricing | <https://handwrytten.com/pricing/> | Retail "$3.75" per card, "Postage extra". Business: Pro $1.99, Enterprise $1.49, Elite $1.29, Agency $1.19 per card; plan fees Pro $449 / $374, Enterprise $649 / $540, Elite $849 / $707, Agency $2,499 / $2,082 a month (the two figures are unlabelled, likely monthly vs annual). "Domestic Postage: Billed at the current USPS rate". API access on business plans |
+| Handwrytten product | <https://handwrytten.com/> | "robots that hold real pens" |
+| AMcards product | <https://amcards.com/> | "You Click, We Print, Stuff, Stamp, and Mail". Signatures are drawn on a device. This is a **printed** card in a handwriting-style font, not pen-written |
+| PostcardMania pricing | <https://www.postcardmania.com/pricing/>, <https://www.postcardmania.com/price/> | **HTTP 403** to the fetcher. No figure is taken from them. Their bulk-mail page, as summarised by search, lists print-only rates and a custom quote for postage. That is **unconfirmed**: it was not read first-hand |
+| PCM Integrations pricing | <https://www.pcmintegrations.com/pricing/> | "To request pricing details, please contact us". "No sign-up fees", "No integration fees", "No technology fees". No per-piece price is published |
+
+### 12.2 Cost table: printed + postage + minimum + platform fee
+
+All figures are USD per piece unless stated. **Platform fee** is the vendor's monthly plan fee. VIPAgents' own fee to tenants is
+not set (the commercial ruling sets no SaaS prices), so it is listed as **not set**, never invented.
+
+| Provider · format | Printed / written | Postage | All-in per piece | Minimum | Vendor platform fee | Genuine pen? |
+|---|---|---|---|---|---|---|
+| **Lob** · 4×6 postcard, First Class | incl. | incl. | $0.909 Dev · $0.649 Startup · $0.619 Growth | none published | $0 · $260 · $550 / mo | no (printed) |
+| **Lob** · letter, color (= the personal letter) | incl. | incl. | $1.226 · $0.936 · $0.896 | none published | same plans | no (printed, personal-note typeface) |
+| **Lob** · letter, B/W | incl. | incl. | $1.066 · $0.896 · $0.866 | none published | same plans | no |
+| **LettrLabs** · handwritten postcard | incl. | **incl.** | $1.66 Starter · $1.26 Premium · $0.88 Enterprise | **unconfirmed** | $0 Starter · $399 / mo Premium (also "$449", unlabelled) · Enterprise annual **unconfirmed** | **yes** (ball-point pen) |
+| **LettrLabs** · card & envelope | incl. | incl. | $2.86 · $2.05 · $1.27 | unconfirmed | same | yes |
+| **LettrLabs** · handwritten envelope + printed letter | incl. | incl. | $1.56 · $1.22 · $0.81 | unconfirmed | same | envelope only. The letter is printed and must be labelled so |
+| **Handwrytten** · card | $3.75 retail; $1.99 Pro · $1.49 Enterprise · $1.29 Elite · $1.19 Agency | **extra** (USPS rate) | card + current USPS stamp (the stamp rate itself was not re-read; §6 cites a **reported** $0.82) | none stated | $0 retail; $374–$2,499 / mo | **yes** (robots with real pens) |
+| **AMcards** · greeting card | $3.82 PAYG · $1.57 member (§11.1) | extra | ≈ $4.64 · ≈ $2.39 with the reported stamp (§6) | none stated | $0 · $29 / mo; licence tiers $199 + $39 / mo, $495 + $39 / mo | **no** (printed font) |
+| **PostcardMania** · postcard | **unconfirmed** (page 403) | **unconfirmed** | **unconfirmed** (custom quote) | **unconfirmed** | **unconfirmed** | no |
+| **PCM Integrations** · postcard / letter / handwritten | **unconfirmed** ("contact us") | **unconfirmed** | **unconfirmed** | none mentioned | "No sign-up / integration / technology fees" | unconfirmed |
+| VIPAgents platform fee to the tenant | — | — | **not set** (commercial ruling: no SaaS prices) | — | — | — |
+
+**Reading the table.**
+
+1. **Lob stays the default on price and on fit.** A personal letter on Lob Startup ($0.936) costs less than any pen-written
+   piece except LettrLabs Enterprise ($0.88 postcard, an annual plan whose fee is unpublished). It is also the only provider
+   already wired through every gate.
+2. **For a genuine handwritten piece, LettrLabs is the cheapest published option with postage included.** Its Premium
+   handwritten postcard costs $1.26 all-in, plus $399 / mo. That pays back against Handwrytten Pro ($1.99 + stamp + $374–$449 /
+   mo) at any volume. It remains **dormant**: there is no adapter, no written platform licence and no owner pilot decision.
+3. **LettrLabs checkout is a charge trap for a naive adapter.** `POST /v1/order` makes a new order every time, and a second
+   checkout after a `200` "charges again". Any future adapter must (a) key one order per piece through the action ledger
+   (`mailPieceIdempotencyKey`), (b) never retry a checkout that returned 200, and (c) settle asynchronously by polling
+   `paidDate`. This is recorded in `OPTIONAL_MAIL_PROVIDERS.lettrlabs.needs`. Canary 13 proves that no LettrLabs call exists in
+   code today.
+4. **AMcards drops out of the genuine-handwriting comparison.** It prints a font, so under R5 it cannot be sold as handwritten.
+   It remains a possible printed greeting-card format, also dormant.
+5. **PostcardMania and PCM cannot be compared.** Neither publishes an all-in price that we could read. Both stay
+   **unconfirmed** until a written quote is in hand. Requesting one is outreach, so it is the owner's call.
+
+### 12.3 What the code now holds (lane 150R)
+
+| Requirement | Survivor |
+|---|---|
+| Four distinct template ids, by name; aliasing refused; a format with none refused | `lib/direct-mail/piece-type.ts` `LOB_TEMPLATE_ENV`, `lobTemplatesForFormat` (legacy names `LOB_POSTCARD_FRONT_ID`, `LOB_POSTCARD_BACK_ID`, `LOB_NOTECARD_ID`, `LOB_DEFAULT_TEMPLATE_ID`, `LOB_DEFAULT_LETTER_TEMPLATE_ID` are read after the canonical names and flagged `legacy`) |
+| Brand as data (logo, colours, hosted font CSS, office, sending agent, licence, return address, tagline, QR, art, disclosures verbatim) | `buildMailMergeVariables` / `resolveMailBrandMergeVariables` over `resolveBrandContext` and `resolveUserOffice` |
+| Preview with zero spend | `lib/providers/lob/client.ts` `createLobProof` (a non-`test_` key is refused); `sendCampaign({ previewOnly: true })` |
+| No double charge | `mailPieceIdempotencyKey` on the action ledger (`withActionLedger` replays a second claim) |
+| Delivery outcomes per piece; a scan is never receipt | `mailOutcomeFromLobEvent`; `trackDelivery` settles onto `direct_mail_recipients.provider_piece_id` (m985) |
+| Genuine handwriting only from a pen provider | `routeMailFormat("handwritten_card")` refuses while every provider is dormant; never downgraded silently |

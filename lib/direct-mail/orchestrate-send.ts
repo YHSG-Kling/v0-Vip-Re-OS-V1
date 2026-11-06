@@ -80,6 +80,9 @@ export interface OrchestrateSendArgs {
   propertyPhotoUrl?: string | null
   statusBadge?:     string | null
   pullQuote?:       string | null
+  /** Wave 150 (150R): the at-most-once key for THIS piece (piece-type.ts mailPieceIdempotencyKey). The
+   *  action ledger refuses a second claim, so a re-fired caller cannot charge for the same piece twice. */
+  idempotencyKey?:  string
 }
 
 export interface OrchestrateSendResult {
@@ -242,8 +245,34 @@ export async function orchestrateRenderAndSend(
     fellBackReason = "piece_type_not_orchestrated"
   }
 
+  // ── WAVE 150 (lane 150R, owner ruling R5): THE FALLBACK IS THE GLOBAL FORMAT TEMPLATE + BRAND DATA ──
+  // TOMBSTONE: the fallback used to mail `args.fallbackTemplateId` (a per-tenant Lob template) as the
+  // FRONT with no back and no merge variables, so the dispatcher's `LOB_POSTCARD_BACK_ID ?? front`
+  // printed the front on both sides when no back was configured, and a global template printed blank.
+  // fallbackLobTemplates (lib/direct-mail/piece-type.ts) names the GLOBAL format template(s) first,
+  // reads the tenant id only as a measured legacy fallback, and REFUSES a postcard with no distinct back.
+  // The tenant/user/office brand is resolved now and passed as merge_variables.
+  let fallbackMergeVars: Record<string, string> | undefined
+  let templateSource: string = rendered ? "rendered_piece" : "none"
   if (!templateForLob) {
-    templateForLob = args.fallbackTemplateId
+    const { fallbackLobTemplates, readMailBrandFacts, buildMailMergeVariables } = await import("@/lib/direct-mail/piece-type")
+    const fb = fallbackLobTemplates(args.pieceType, args.fallbackTemplateId)
+    if (!fb.ok) {
+      return { success: false, rendered: false, fellBackReason: fellBackReason ?? fb.reason, variantPick, complianceEventId, error: `Not mailed — ${fb.reason}` }
+    }
+    templateForLob = fb.templateId
+    backTemplateForLob = fb.backTemplateId
+    templateSource = fb.source
+    const brandRead = await readMailBrandFacts({
+      brokerageId: args.brokerageId,
+      teamId: args.copyCtx.teamId ?? null,
+      agentUserId: args.copyCtx.agentUserId ?? args.userId ?? null,
+    })
+    const brand = buildMailMergeVariables(brandRead.facts, { recipientName: args.recipientName, qrDestinationUrl: args.qrScanUrl ?? null, pictureUrl: args.propertyPhotoUrl ?? null })
+    if (brand.oversize) {
+      return { success: false, rendered: false, fellBackReason, variantPick, complianceEventId, error: "Not mailed — merge variables exceed Lob's 25,000-character limit" }
+    }
+    fallbackMergeVars = brand.mergeVars
   }
 
   const dispatch = await dispatchDirectMail({
@@ -264,6 +293,7 @@ export async function orchestrateRenderAndSend(
     // postcards.create; passing this through lets the 6x9 path
     // actually order the larger card from Lob.
     size:           args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
+    ...(fallbackMergeVars ? { mergeVars: fallbackMergeVars } : {}),
     systemSource:   args.systemSource ?? "orchestrated",
     // Wave 101 (101B): the bandit's arm rides the send's ledger row as detail.experiment, so 100A
     // attribution rolls outcomes up by arm beside the A/B arms (lib/kernel/experiments.ts). The
@@ -271,8 +301,13 @@ export async function orchestrateRenderAndSend(
     // 102D/102F: the send ran under the tenant's `direct_mail_exploration` policy (the bandit kill
     // switch, lib/kernel/tenant-policy.ts) — named as policyKey so the ledger row reads
     // `direct_mail_exploration@<version>` (LAW 5), with the bandit's pick reason beside the arm (R4).
-    ...(variantPick ? { ledger: { detail: { ...experimentLedgerDetail({ key: "direct_mail_variant", arm: variantPick.variantId }), bandit_pick_reason: variantPick.pickReason }, policyKey: "direct_mail_exploration" } } : {}),
+    // Wave 150 (150R): the caller's at-most-once key rides the SAME ledger object (a retried drain / reactor
+    // firing replays the first dispatch instead of charging again).
+    ...(variantPick
+      ? { ledger: { detail: { ...experimentLedgerDetail({ key: "direct_mail_variant", arm: variantPick.variantId }), bandit_pick_reason: variantPick.pickReason }, policyKey: "direct_mail_exploration", ...(args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : {}) } }
+      : args.idempotencyKey ? { ledger: { idempotencyKey: args.idempotencyKey } } : {}),
     metadata: {
+      template_source: templateSource,
       rendered,
       fell_back_reason: fellBackReason,
       postcard_size:    args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,

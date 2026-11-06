@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server"
 // analyzeConversation (see the tombstone at the leads/contacts recency stamp
 // below). SURVIVOR for that call: the affected-row count on the update itself.
 import { generateAIJSON } from "@/lib/ai"
-import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure" // the MODULE, not the barrel (proxy-graph budget, wave 150)
 import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 import { resolveLeadVisibilityForSession } from "@/lib/auth/lead-visibility"
 

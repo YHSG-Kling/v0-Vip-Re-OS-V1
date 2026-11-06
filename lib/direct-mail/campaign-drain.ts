@@ -113,10 +113,17 @@ export async function runDirectMailCampaignDrain(
     }
 
     // The brokerage's Lob fallback template (the reactor's resolution).
-    const { data: brk } = await svc.from("brokerages")
+    // WAVE 150 (lane 150R, R5): the GLOBAL format template is the survivor; the tenant column is a
+    // measured legacy fallback only (lib/direct-mail/piece-type.ts fallbackLobTemplates). A refused
+    // read is said, never read as "no template".
+    const { data: brk, error: brkErr } = await svc.from("brokerages")
       .select("lob_fallback_template_id").eq("id", input.brokerageId).maybeSingle()
+    if (brkErr) console.error(`[campaign-drain] tenant legacy template read refused for ${input.brokerageId}: ${brkErr.message}`)
     const fallbackTpl = ((brk as any)?.lob_fallback_template_id as string | null) ?? ""
-    if (!fallbackTpl) {
+    const { fallbackLobTemplates, mailPieceIdempotencyKey } = await import("@/lib/direct-mail/piece-type")
+    const fbCheck = fallbackLobTemplates(((row.piece_type as string | null) ?? "postcard"), fallbackTpl)
+    if (!fbCheck.ok) {
+      console.error(`[campaign-drain] campaign ${row.id} not mailed: ${fbCheck.reason}`)
       out.failed++
       await sentinelWrite(svc, svc.from("direct_mail_campaigns").update({ status: "failed" }).eq("id", row.id), { table: "direct_mail_campaigns", flow: "direct_mail_drain_failed", reason: "failure stamp; counted as failed in the drain result" })
       continue
@@ -254,10 +261,16 @@ export async function runDirectMailCampaignDrain(
         // so every scan of the printed piece lands in qr_scan_events.
         qrScanUrl: printedQr?.scanUrl ?? null,
         systemSource: `campaign_drain:${row.target_audience ?? "approved"}`,
+        // AT-MOST-ONCE: one approved campaign row = one piece. A re-drain of the same row replays.
+        idempotencyKey: mailPieceIdempotencyKey("drain_campaign", row.id),
       })
 
+      // TOMBSTONE (wave 150, lane 150R): this wrote status "sent", which the LIVE
+      // direct_mail_campaigns_status_check refuses (planning | approved | printed | mailed | cancelled |
+      // failed, read 2026-11-06). The whole UPDATE was refused — lob_order_id with it — so the row stayed
+      // approved+planning and the NEXT drain mailed and charged it again. One vocabulary (§6): "mailed".
       const { error: drainStampErr } = await svc.from("direct_mail_campaigns").update({
-        status: result.success ? "sent" : "failed",
+        status: result.success ? "mailed" : "failed",
         lob_order_id: result.messageId ?? null,
         mailing_date: result.success ? new Date().toISOString().slice(0, 10) : null,
         pieces_mailed: result.success ? 1 : 0,

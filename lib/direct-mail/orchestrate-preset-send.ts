@@ -270,17 +270,26 @@ export async function orchestratePresetSend(
     fellBackReason = (e as Error).message
   }
 
+  // WAVE 150 (lane 150R, R5): the fallback is the GLOBAL format template (+ brand merge variables); the
+  // preset's own template id is a measured legacy fallback, and a postcard front with no distinct back
+  // is refused, never mailed as front-on-both-sides (piece-type.ts fallbackLobTemplates).
+  let fallbackMergeVars: Record<string, string> | undefined
   if (!templateForLob) {
-    templateForLob = preset.fallback_template_id ?? undefined
-    if (!templateForLob) {
+    const { fallbackLobTemplates, readMailBrandFacts, buildMailMergeVariables } = await import("@/lib/direct-mail/piece-type")
+    const fb = fallbackLobTemplates(preset.piece_type, preset.fallback_template_id)
+    if (!fb.ok) {
       return {
         success: false,
         rendered: false,
         fellBackReason: fellBackReason ?? "no_render_and_no_fallback",
         presetName: preset.name,
-        error: "no_template_for_lob",
+        error: `no_template_for_lob: ${fb.reason}`,
       }
     }
+    templateForLob = fb.templateId
+    backTemplateForLob = fb.backTemplateId
+    const fbBrand = buildMailMergeVariables((await readMailBrandFacts({ brokerageId: args.brokerageId, teamId: args.teamId ?? null, agentUserId: args.userId ?? null })).facts, { recipientName: args.recipientName })
+    fallbackMergeVars = fbBrand.oversize ? undefined : fbBrand.mergeVars
   }
 
   // 3. Lob dispatch. Same egress gates apply (lead verification +
@@ -300,6 +309,7 @@ export async function orchestratePresetSend(
     backTemplateId: backTemplateForLob,
     pieceType:      preset.piece_type,
     size:           preset.piece_type === "postcard" ? (preset.postcard_size ?? "4x6") : undefined,
+    ...(fallbackMergeVars ? { mergeVars: fallbackMergeVars } : {}),
     systemSource:   args.systemSource ?? "preset",
     metadata: {
       preset_id:   preset.id,

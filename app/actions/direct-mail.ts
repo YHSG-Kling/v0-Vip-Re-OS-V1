@@ -104,6 +104,13 @@ export interface SendCampaignParams {
   actorUserId: string
   brokerageId: string
   teamId?: string
+  /**
+   * Wave 150 (lane 150R, C40): PREVIEW, NOT SEND. Resolves the format's global Lob template(s) and THIS
+   * tenant's brand merge variables for the first pending recipient and asks Lob for a proof with the
+   * TEST key only (lib/providers/lob/client.ts createLobProof refuses a live key). Nothing is mailed,
+   * nothing is charged, no recipient row changes; the proof is stamped on the ledger row.
+   */
+  previewOnly?: boolean
 }
 
 // ─── CAMPAIGN CRUD ────────────────────────────────────────────────────────────
@@ -531,7 +538,36 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
 
     if (error) throw error
 
-    return { success: true, tracking: data }
+    // ── WAVE 150 (lane 150R, C40): ASYNC DELIVERY OUTCOME ON THE ONE LEDGER, PER PIECE ──
+    // The event settles onto the RECIPIENT row whose provider piece id it names (m985), in the campaign's
+    // own tenant. What it proves comes from the one mapping (piece-type.ts mailOutcomeFromLobEvent): a
+    // carrier scan is evidence about the piece — "delivered" reads `delivered_per_carrier_scan` — and is
+    // NEVER household receipt (householdReceiptProven is false by type). An unmatched piece is said, not
+    // read as success: the UPDATE is .select()ed and counted (CLAUDE.md §3).
+    let pieceSettled = 0
+    const pieceId = typeof payload?.lob_piece_id === "string" ? payload.lob_piece_id : params.batchId
+    const lobEvent = String(payload?.lob_event ?? payload?.status ?? "")
+    if (pieceId && lobEvent) {
+      const { mailOutcomeFromLobEvent } = await import("@/lib/direct-mail/piece-type")
+      const reading = mailOutcomeFromLobEvent(lobEvent)
+      const at = payload?.delivered_at ?? payload?.returned_at ?? payload?.mailed_at ?? new Date().toISOString()
+      const outcomePatch: Record<string, unknown> = { delivery_outcome: reading.outcome, last_provider_event: lobEvent, last_provider_event_at: at }
+      if (payload?.expected_delivery_date) outcomePatch.expected_delivery_date = payload.expected_delivery_date
+      if (reading.deliveryStatus && reading.deliveryStatus !== "mailed") outcomePatch.delivery_status = reading.deliveryStatus
+      if (reading.deliveryStatus === "delivered") outcomePatch.delivered_at = at
+      const { data: settled, error: settleErr } = await supabase
+        .from("direct_mail_recipients")
+        .update(outcomePatch)
+        .eq("campaign_id", params.campaignId)
+        .eq("brokerage_id", campaign.brokerage_id)
+        .eq("provider_piece_id", pieceId)
+        .select("id")
+      if (settleErr) console.error(`[DirectMail] delivery outcome NOT settled on the recipient for piece ${pieceId}: ${settleErr.message}`)
+      pieceSettled = Array.isArray(settled) ? settled.length : 0
+      if (!settleErr && pieceSettled === 0) console.warn(`[DirectMail] Lob event ${lobEvent} for piece ${pieceId} matched no recipient of campaign ${params.campaignId} (a 1:1 drain piece has its own campaign row)`)
+    }
+
+    return { success: true, tracking: data, pieceSettled }
   } catch (error) {
     return handleError(error, "trackDelivery")
   }
@@ -880,14 +916,92 @@ export async function sendCampaign(params: SendCampaignParams) {
       return { success: false, error: "Campaign already mailed" }
     }
 
-    const { data: recipients } = await supabase
+    const { data: recipients, error: recipientsError } = await supabase
       .from("direct_mail_recipients")
       .select("*")
       .eq("campaign_id", params.campaignId)
       .eq("delivery_status", "pending")
 
+    if (recipientsError) {
+      return { success: false, error: `Could not read the campaign's recipients: ${recipientsError.message}` }
+    }
     if (!recipients?.length) {
       return { success: false, error: "No pending recipients to mail" }
+    }
+
+    // ── WAVE 150 (lane 150R, owner ruling R5 / C40): THE FORMAT DECIDES THE TEMPLATE ──
+    // TOMBSTONE: this used to mail `templateId: campaign.design_url ?? campaign.id` with no piece type —
+    // a campaign UUID handed to Lob as a template id, every campaign a letter, and no brand. The ONE
+    // format router (lib/direct-mail/piece-type.ts routeMailFormat) now names the GLOBAL Lob template(s)
+    // for the campaign's format (distinct ids per format; a postcard's back is never its front; a format
+    // with none, or two formats sharing one id, is refused BEFORE any spend). The campaign's own uploaded
+    // design is DATA: it travels as the hosted `front_art_url` merge variable, never as a template.
+    const { routeMailFormat, formatForCampaignPieceType, readMailBrandFacts, buildMailMergeVariables, mailPieceIdempotencyKey, mailTemplateProvenance } =
+      await import("@/lib/direct-mail/piece-type")
+    const route = routeMailFormat(formatForCampaignPieceType(campaign.piece_type as string | null))
+    const svcLedger = createServiceClient()
+    const stampProvenance = async (campaignLedgerPatch: Record<string, unknown>) => {
+      // m985 columns. A separate write on purpose: before m985 is applied PGRST204 refuses an unknown
+      // column ENTIRELY, and the send's own status write above must never be taken down with it.
+      const { error: provErr } = await svcLedger.from("direct_mail_campaigns").update(campaignLedgerPatch).eq("id", params.campaignId).eq("brokerage_id", params.brokerageId)
+      if (provErr) console.error(`[DirectMail] format/proof provenance NOT recorded on campaign ${params.campaignId}: ${provErr.message}`)
+    }
+    if (!route.ok) {
+      await stampProvenance({ mail_format: route.format, template_provenance: mailTemplateProvenance(route, null) })
+      return { success: false, error: `Not mailed — ${route.reason}`, waitingExternal: route.waitingExternal }
+    }
+
+    // Brand, office, sending user and QR resolved NOW (proof time), from the one cascade.
+    let qrDestinationUrl: string | null = null
+    if (campaign.qr_code_id) {
+      const { data: code, error: codeErr } = await supabase.from("qr_codes").select("label").eq("id", campaign.qr_code_id).eq("brokerage_id", params.brokerageId).maybeSingle()
+      if (codeErr) console.error(`[DirectMail] campaign QR read refused for ${params.campaignId}: ${codeErr.message}`)
+      const label = (code as { label?: string } | null)?.label
+      if (label) {
+        const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+        const minted = await mintTrackedQr({ brokerageId: params.brokerageId, agentId: campaign.agent_id ?? null, label, purpose: "campaign" }, svcLedger as never)
+        qrDestinationUrl = minted?.scanUrl ?? null
+      }
+    }
+    const brandRead = await readMailBrandFacts({ brokerageId: params.brokerageId, teamId: params.teamId ?? null, agentUserId: params.actorUserId })
+    const brand = {
+      ...buildMailMergeVariables(brandRead.facts, {
+        qrDestinationUrl,
+        frontArtUrl: (campaign.design_url as string | null) ?? null,
+        bodies: { copy_text: (campaign.copy_text as string | null) ?? "" },
+      }),
+      provenance: brandRead.provenance,
+    }
+    if (brand.oversize) {
+      return { success: false, error: "Not mailed — the merge variables exceed Lob's 25,000-character limit; shorten the copy" }
+    }
+    const provenance = mailTemplateProvenance(route, brand)
+    const isPersonal = route.format === "personal_letter"
+
+    // ── PREVIEW: a Lob TEST-key proof, zero spend ─────────────────────────────
+    if (params.previewOnly) {
+      const first = recipients[0]
+      const { createLobProof } = await import("@/lib/providers/lob/client")
+      const proof = await createLobProof(process.env.LOB_TEST_API_KEY ?? "", {
+        pieceType: route.templates.pieceType,
+        to: { name: `${first.first_name} ${first.last_name}`.trim(), address_line1: first.address_line1, ...(first.address_line2 ? { address_line2: first.address_line2 } : {}), address_city: first.city, address_state: first.state, address_zip: first.zip },
+        templateId: route.templates.templateId,
+        backTemplateId: route.templates.backTemplateId,
+        mergeVariables: { ...brand.mergeVars, recipient_name: `${first.first_name} ${first.last_name}`.trim() },
+        color: isPersonal ? true : undefined,
+      })
+      await stampProvenance({
+        mail_format: route.format,
+        template_provenance: provenance,
+        proof_status: proof.ok ? "rendered" : (proof.error?.startsWith("unconfigured") ? "unavailable" : "refused"),
+        proof_url: proof.data?.url ?? null,
+        proof_rendered_at: proof.ok ? new Date().toISOString() : null,
+      })
+      return {
+        success: proof.ok,
+        preview: { format: route.format, label: route.label, proofUrl: proof.data?.url ?? null, thumbnails: proof.data?.thumbnails ?? [], brandMissing: brand.missing, mergeVariables: brand.mergeVars },
+        error: proof.ok ? undefined : proof.error ?? "Proof not rendered",
+      }
     }
 
     // ── Call Lob API via dispatchDirectMail() for each recipient ──
@@ -895,6 +1009,7 @@ export async function sendCampaign(params: SendCampaignParams) {
     let successCount = 0
     const failedRecipientIds: string[] = []
     const mailedRecipientIds: string[] = []
+    const pieceIds: Array<{ id: string; pieceId: string }> = []
     for (const recipient of recipients) {
       try {
         const lobResult = await dispatchDirectMail({
@@ -915,14 +1030,25 @@ export async function sendCampaign(params: SendCampaignParams) {
           city: recipient.city,
           state: recipient.state,
           zip: recipient.zip,
-          templateId: campaign.design_url ?? campaign.id,
-          mergeVars: campaign.copy_text ? { copy_text: campaign.copy_text } : undefined,
-          metadata: { campaign_id: params.campaignId },
+          templateId: route.templates.templateId,
+          backTemplateId: route.templates.backTemplateId,
+          pieceType: route.templates.pieceType,
+          color: isPersonal ? true : undefined,
+          mergeVars: { ...brand.mergeVars, recipient_name: `${recipient.first_name} ${recipient.last_name}`.trim() },
+          // Human approval is unchanged: this export is session-gated, and the dispatcher's autonomy gate arms
+          // only for a manager send. humanApproved is NOT asserted here — the workflow tool (app/actions/
+          // workflows.ts "send-direct-mail") reaches this door too, and the ledger must not read HUMAN_REQUESTED
+          // for it. The signed-in initiator is stamped on the ledger row (approved_by_user_id, m985).
+          // AT-MOST-ONCE PER PIECE: the action ledger's unique idempotency key makes a retried or
+          // concurrent Send of this recipient a REPLAY of the first dispatch — never a second Lob charge.
+          ledger: { idempotencyKey: mailPieceIdempotencyKey("campaign_recipient", params.campaignId, recipient.id), detail: { mail_format: route.format } },
+          metadata: { campaign_id: params.campaignId, recipient_id: recipient.id, mail_format: route.format, template_env_names: provenance.template_env_names },
         })
         if (lobResult.success && lobResult.messageId) {
           if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
           successCount++
           mailedRecipientIds.push(recipient.id)
+          pieceIds.push({ id: recipient.id, pieceId: lobResult.messageId })
         } else {
           failedRecipientIds.push(recipient.id)
         }
@@ -936,7 +1062,12 @@ export async function sendCampaign(params: SendCampaignParams) {
     }
 
     const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
-    const campaignStatus = failedRecipientIds.length > 0 ? "partial" : "mailed"
+    // TOMBSTONE (wave 150, lane 150R): "partial" is not in the LIVE direct_mail_campaigns_status_check
+    // (planning | approved | printed | mailed | cancelled | failed — read 2026-11-06), so a partly-failed
+    // send's status write was REFUSED after Lob had charged, the throw below skipped marking the mailed
+    // recipients, and they stayed `pending` for the next Send to mail AGAIN. One vocabulary (§6): the
+    // campaign is "mailed"; which pieces failed is on each recipient row (delivery_status 'failed').
+    const campaignStatus = "mailed"
 
     // Update campaign FIRST — recipients are only marked after this succeeds to keep state consistent
     const { error: updateError } = await supabase
@@ -961,6 +1092,16 @@ export async function sendCampaign(params: SendCampaignParams) {
         .in("id", mailedRecipientIds)
       if (mailedUpdateError) throw mailedUpdateError
     }
+
+    // m985 — the provider piece id per recipient (what trackDelivery settles each Lob event onto; the
+    // campaign's lob_order_id names only the FIRST piece) and the format/template/brand provenance.
+    for (const p of pieceIds) {
+      const { error: pieceErr } = await svcLedger.from("direct_mail_recipients")
+        .update({ provider_piece_id: p.pieceId, delivery_outcome: "accepted", idempotency_key: mailPieceIdempotencyKey("campaign_recipient", params.campaignId, p.id) })
+        .eq("id", p.id).eq("brokerage_id", params.brokerageId)
+      if (pieceErr) console.error(`[DirectMail] provider piece id NOT recorded for recipient ${p.id}: ${pieceErr.message}`)
+    }
+    await stampProvenance({ mail_format: route.format, template_provenance: provenance, approved_by_user_id: params.actorUserId, approved_at: new Date().toISOString() })
 
     // Mark failed recipients so they aren't silently re-queried as pending
     if (failedRecipientIds.length > 0) {

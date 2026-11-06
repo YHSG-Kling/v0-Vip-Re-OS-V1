@@ -15,7 +15,7 @@ import { SkyslopeProvider }       from "./skyslope-provider"
 import { AuthentisignProvider }   from "./authentisign-provider"
 import { BrokermintProvider }     from "./brokermint-provider"
 import { FormSimplicityProvider } from "./formsimplicity-provider"
-import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
+import { getTransactionProvider as getProviderName } from "@/lib/brokerage/get-brokerage-settings" // the MODULE, not the barrel (proxy-graph budget, wave 150)
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { getCatalogEntry, getImplementedProviders, type ProviderName } from "./catalog"
 

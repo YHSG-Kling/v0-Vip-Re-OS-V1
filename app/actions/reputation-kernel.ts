@@ -310,39 +310,36 @@ export async function sendThankYouNoteAction(input: {
       return {
         success: false,
         noteId: noteRow?.id,
-        error: "No complete mailing address on this contact — a handwritten card needs street, city, state and ZIP.",
+        error: "No complete mailing address on this contact — a mailed card needs street, city, state and ZIP.",
       }
     }
-    // WAVE 149Z (lane 149I Outside-lane; docs/commercial/DIRECT-MAIL-PROVIDER-COMPARISON.md §11.3 item 1): THE PERSONAL LETTER
-    // FIRST. When the platform has configured a Lob personal-letter template (LOB_PERSONAL_LETTER_TEMPLATE_ID — a name only,
-    // platform-owned), the card goes as a color letter in an envelope on the tenant's letterhead; otherwise today's notecard
-    // postcard (LOB_NOTECARD_ID) is the fallback. Same one door (dispatchDirectMail), every gate, booked at
-    // DIRECT_MAIL_PIECE_COST_USD by piece type. The copy is "a note from <agent>", never claimed as handwritten by a person.
-    const letterTemplateId = process.env.LOB_PERSONAL_LETTER_TEMPLATE_ID || ""
-    const templateId = letterTemplateId || process.env.LOB_NOTECARD_ID || process.env.LOB_POSTCARD_FRONT_ID || ""
-    if (!templateId) {
+    // WAVE 150 (lane 150R, owner ruling R5): THE ONE FORMAT ROUTER DECIDES THE CARD (lib/direct-mail/piece-type.ts).
+    // TOMBSTONE (149Z → 150R): the env reads that lived here (LOB_PERSONAL_LETTER_TEMPLATE_ID || LOB_NOTECARD_ID ||
+    // LOB_POSTCARD_FRONT_ID) moved to LOB_TEMPLATE_ENV, which also refuses two formats sharing one id and a postcard
+    // whose back is its front (the old postcard fallback passed no back, so the dispatcher's `LOB_POSTCARD_BACK_ID ??
+    // front` printed the front twice). Order: the PERSONAL LETTER (a printed note in an envelope, set in a personal-note
+    // typeface — never called handwriting), then the POSTCARD. A genuine handwritten card is the `handwritten_card`
+    // format, routed only to an active handwriting provider — none is active (WAITING_EXTERNAL), so it is never
+    // claimed. Brand / office / sending user / disclosures come from the ONE brand cascade as merge variables.
+    const { routeMailFormat, readMailBrandFacts, buildMailMergeVariables, mailPieceIdempotencyKey, mailTemplateProvenance } = await import("@/lib/direct-mail/piece-type")
+    const personal = routeMailFormat("personal_letter")
+    const route = personal.ok ? personal : routeMailFormat("postcard")
+    if (!route.ok) {
       await sentinelWrite(service, service.from("thank_you_notes")
         .update({ status: "failed" }).eq("id", noteRow?.id), { table: "thank_you_notes", flow: "thank_you_note_failed_stamp", reason: "failure stamp; the failure is returned to the caller in the same step" })
       return {
         success: false,
         noteId: noteRow?.id,
-        error: "No card template configured (LOB_PERSONAL_LETTER_TEMPLATE_ID for the personal letter, or LOB_NOTECARD_ID for the notecard postcard) — the platform must add one before cards can be mailed.",
+        error: `No card template configured — personal letter: ${personal.ok ? "configured" : personal.reason}; postcard: ${route.reason}. The platform must add one before cards can be mailed.`,
       }
     }
-    let letterVars: Record<string, string> = {}
-    if (letterTemplateId) {
-      // The tenant's brand through the ONE brand resolver (resolveConsentBrand); website + the sending agent's name from their own
-      // rows, tenant-pinned. No signature image column exists (schema-snapshot: no signature_url) — the merge var is empty, said.
-      const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
-      const [brand, { data: site, error: siteErr }, { data: me, error: meErr }] = await Promise.all([
-        resolveConsentBrand(service as never, { agentId: actor.agentId, brokerageId: actor.brokerageId }),
-        service.from("brokerages").select("website").eq("id", actor.brokerageId).maybeSingle(),
-        service.from("users").select("first_name, last_name").eq("id", actor.userId).eq("brokerage_id", actor.brokerageId).maybeSingle(),
-      ])
-      if (siteErr) console.warn("[reputation-kernel] tenant website not read for the letterhead:", siteErr.message)
-      if (meErr) console.warn("[reputation-kernel] agent name not read for the letter:", meErr.message)
-      const agentName = [(me as { first_name?: string | null } | null)?.first_name, (me as { last_name?: string | null } | null)?.last_name].filter(Boolean).join(" ").trim()
-      letterVars = { tenant_brand_name: brand, tenant_website: String((site as { website?: string | null } | null)?.website ?? ""), agent_name: agentName, signature_url: "" }
+    // The signer's office/team come from their own rows (resolveUserOffice inside the resolver); the tenant is the session's.
+    const brandRead = await readMailBrandFacts({ brokerageId: actor.brokerageId, agentUserId: actor.userId })
+    const brand = { ...buildMailMergeVariables(brandRead.facts, { recipientName: input.contactName, bodies: { note_body: input.noteText } }), provenance: brandRead.provenance }
+    if (brand.oversize) {
+      await sentinelWrite(service, service.from("thank_you_notes")
+        .update({ status: "failed" }).eq("id", noteRow?.id), { table: "thank_you_notes", flow: "thank_you_note_failed_stamp", reason: "failure stamp; the failure is returned to the caller in the same step" })
+      return { success: false, noteId: noteRow?.id, error: "The note is too long for the card — Lob merge variables are limited to 25,000 characters." }
     }
     const { dispatchDirectMail } = await import("@/lib/providers/dispatch")
     const mail = await dispatchDirectMail({
@@ -353,12 +350,15 @@ export async function sendThankYouNoteAction(input: {
       recipientName: input.contactName,
       mailingAddress: street,
       city, state, zip,
-      templateId,
-      pieceType:     letterTemplateId ? "letter" : "postcard",
-      color:         true,
-      mergeVars:     { note_body: input.noteText, recipient_name: input.contactName, ...letterVars },
+      templateId:     route.templates.templateId,
+      backTemplateId: route.templates.backTemplateId,
+      pieceType:      route.templates.pieceType,
+      color:          true,
+      mergeVars:      brand.mergeVars,
+      // At-most-once per note: a double-click or retry replays the first dispatch (no second Lob charge).
+      ledger:         { idempotencyKey: mailPieceIdempotencyKey("thank_you_note", noteRow?.id ?? `${input.contactId}:${occasion}`) },
       systemSource:  "thank_you_note",
-      metadata:      { note_id: noteRow?.id, occasion, format: letterTemplateId ? "personal_letter" : "notecard_postcard" },
+      metadata:      { note_id: noteRow?.id, occasion, format: route.format, template_provenance: mailTemplateProvenance(route, brand) },
     })
     const { error: cardNoteStampErr } = await service.from("thank_you_notes").update({
       status:  mail.success ? "sent" : "failed",

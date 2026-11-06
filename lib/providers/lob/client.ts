@@ -37,6 +37,8 @@ const LobSDK = createRequire(import.meta.url)("lob")
 
 interface LobClient {
   usVerifications: { verify: (params: LobVerifyParams, callback?: (err: unknown, data: unknown) => void) => Promise<unknown> }
+  postcards: { create: (params: Record<string, unknown>, headers?: Record<string, string>) => Promise<unknown> }
+  letters: { create: (params: Record<string, unknown>, headers?: Record<string, string>) => Promise<unknown> }
 }
 
 export interface AdapterResult<T> {
@@ -98,6 +100,58 @@ export async function verifyUsAddress(apiKey: string, params: LobVerifyParams): 
   try {
     const data = await client(apiKey).usVerifications.verify(params)
     return { ok: true, status: 200, data: data as LobVerifyData, error: null }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+// ─── PROOF / PREVIEW (wave 150, lane 150R — owner ruling R5, contract C40) ─────────────────────────
+// A Lob TEST key renders the piece — "a digital proof and thumbnails will be rendered, but the mail piece
+// will not actually be printed and mailed", and the test environment carries no charge (help.lob.com
+// account-management/api-keys, read 2026-11-06). So the preview is a real Lob render of the GLOBAL format
+// template with THIS tenant's merge variables, at zero spend. STRUCTURALLY no live spend: a key that does
+// not start with "test_" is refused before the SDK is touched, so a misconfigured live key can never turn
+// a preview into a mailed, charged piece. The env NAME is LOB_TEST_API_KEY (no value in code).
+
+export interface LobProofParams {
+  pieceType: "letter" | "postcard"
+  to: { name: string; address_line1: string; address_line2?: string; address_city: string; address_state: string; address_zip: string; address_country?: string }
+  /** Inline return address (the tenant's), or a saved Lob address id. */
+  from?: Record<string, string> | string
+  /** Letter: the document template id. Postcard: the FRONT template id. */
+  templateId: string
+  /** Postcard: the BACK template id — must differ from the front. */
+  backTemplateId?: string
+  mergeVariables: Record<string, string>
+  color?: boolean
+  size?: string
+}
+
+export interface LobProofData {
+  id: string | null
+  /** The signed proof PDF URL Lob rendered. */
+  url: string | null
+  thumbnails: string[]
+  expectedDeliveryDate: string | null
+}
+
+export async function createLobProof(testApiKey: string, params: LobProofParams): Promise<AdapterResult<LobProofData>> {
+  if (!testApiKey) return { ok: false, status: null, data: null, error: "unconfigured: no Lob test API key (LOB_TEST_API_KEY)" }
+  if (!testApiKey.startsWith("test_")) {
+    return { ok: false, status: null, data: null, error: "refused: a proof is rendered only with a Lob TEST key (test_…) — a live key would print, mail and charge" }
+  }
+  if (params.pieceType === "postcard" && (!params.backTemplateId || params.backTemplateId === params.templateId)) {
+    return { ok: false, status: null, data: null, error: "refused: a postcard proof needs a back template distinct from its front" }
+  }
+  try {
+    const c = client(testApiKey)
+    const common = { to: { address_country: "US", ...params.to }, ...(params.from ? { from: params.from } : {}), merge_variables: params.mergeVariables }
+    const raw = params.pieceType === "postcard"
+      ? await c.postcards.create({ ...common, front: params.templateId, back: params.backTemplateId, size: params.size ?? "4x6" })
+      : await c.letters.create({ ...common, file: params.templateId, color: params.color ?? false })
+    const d = (raw ?? {}) as { id?: string; url?: string; thumbnails?: Array<Record<string, string>>; expected_delivery_date?: string }
+    const thumbnails = (d.thumbnails ?? []).map((t) => t.large ?? t.medium ?? t.small ?? "").filter(Boolean)
+    return { ok: true, status: 200, data: { id: d.id ?? null, url: d.url ?? null, thumbnails, expectedDeliveryDate: d.expected_delivery_date ?? null }, error: null }
   } catch (err) {
     return mapError(err)
   }
