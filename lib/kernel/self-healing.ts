@@ -194,12 +194,18 @@ export function incidentOwner(i: HealthIncident): ManagerKey {
  * hard-gated (classifyForbidden) and are named here so the evidence says which consequential class held them;
  * everything else is an approved self-healing repair on a declared playbook (safe).
  */
-export function governedChangeForDiagnosis(d: { rootCause: string; touches?: { money?: boolean; tenantBoundary?: boolean; security?: boolean; dataDeletion?: boolean } | null }): GovernedChangeVerdict {
+export function governedChangeForDiagnosis(d: { rootCause: string; touches?: DiagnosisTouches | null }): GovernedChangeVerdict {
   const t = d.touches ?? {}
   if (t.money) return governedChangeVerdict("money_movement", "the diagnosis touches money")
   if (t.tenantBoundary) return governedChangeVerdict("rls_security", "the diagnosis crosses the tenant boundary")
   if (t.security) return governedChangeVerdict("credentials", "the diagnosis is a security / credential matter")
   if (t.dataDeletion) return governedChangeVerdict("destructive_schema", "the diagnosis involves deleting data")
+  // Wave 150 (lane 150BAA, directive "Release prioritization" self-heal paragraph): the four remaining things a model
+  // never silently alters, each named onto the ruling-14 class that already holds it for a human (no new class).
+  if (t.authority) return governedChangeVerdict("tenant_authority", "the diagnosis touches an authority rule (rung, autonomy, role grant, approval rule)")
+  if (t.entitlement) return governedChangeVerdict("financial_calculation", "the diagnosis touches an entitlement (the plan's priced terms)")
+  if (t.legalTerms) return governedChangeVerdict("legal_compliance", "the diagnosis touches legal terms (disclosures, consent text, contract / licence terms)")
+  if (t.migration) return governedChangeVerdict("production_source_edit", "the diagnosis needs a schema migration — a reviewed file, WRITTEN NOT APPLIED until the integrator applies it")
   if (d.rootCause === "code_defect") return governedChangeVerdict("production_source_edit", "the root cause is a code defect — the fix is a production source edit")
   return governedChangeVerdict("self_healing_repair", `root cause ${d.rootCause} — a declared playbook may repair it`)
 }
@@ -221,12 +227,22 @@ export function incidentLifecycle(i: HealthIncident, x: { diagnosis: { rootCause
 
 // ── 2. The hard gate (runs FIRST) ────────────────────────────────────────────────────────────
 
-type ForbiddenClass = "money" | "tenant_boundary" | "security" | "data_deletion"
+// Wave 150 (150BAA): authority / entitlement / legal_terms / schema_migration join the gate — with tenant VISIBILITY
+// (cross-office, cross-location, cross-brand, lead visibility) folded into tenant_boundary — so the directive's six
+// "never silently alter" surfaces (authority rules, migrations, entitlements, legal terms, money/payouts, tenant
+// visibility) each refuse BEFORE any model or playbook. scripts/cross-office-rls-guard.ts proves each refusal.
+type ForbiddenClass = "money" | "tenant_boundary" | "security" | "data_deletion" | "authority" | "entitlement" | "legal_terms" | "schema_migration"
 type GateVerdict = { forbidden: false } | { forbidden: true; class: ForbiddenClass; reason: string }
+/** What a diagnosis (or the model) flags. The four wave-150 flags are optional: an older model output omits them. */
+type DiagnosisTouches = { money?: boolean; tenantBoundary?: boolean; security?: boolean; dataDeletion?: boolean; authority?: boolean; entitlement?: boolean; legalTerms?: boolean; migration?: boolean }
 
 const MONEY_DETECTORS: ReadonlySet<HealthDetector> = new Set(["billing_drift", "usage_inconsistencies", "payments_sync"])
 const MONEY_RE = /\b(commissions?|payouts?|invoices?|refunds?|chargebacks?|payments?|stripe|escrow|wire transfers?|gci|earnings|billing|disbursements?|postage)\b/i
-const TENANT_RE = /\b(cross[- ]tenant|another tenant|other tenant|tenant mismatch|row[- ]level security|rls|brokerage_id mismatch|permission denied)\b/i
+const TENANT_RE = /\b(cross[- ]tenant|another tenant|other tenant|tenant mismatch|row[- ]level security|rls|brokerage_id mismatch|permission denied|cross[- ](?:office|location|brand|team)|another (?:office|location)|(?:tenant|lead|office|row) visibility|visibility (?:rule|scope)s?|office scope)\b/i
+const AUTHORITY_RE = /\b(authority (?:levels?|rungs?|rules?)|autonomy (?:tiers?|posture)|role (?:grants?|assignments?)|permission (?:grants?|changes?)|approval (?:rules?|thresholds?))\b/i
+const ENTITLEMENT_RE = /\b(entitlements?|plan (?:upgrade|downgrade|change)s?|feature (?:flags?|gates?)|seat (?:limits?|caps?)|(?:overage|quota) (?:waivers?|overrides?))\b/i
+const LEGAL_TERMS_RE = /\b(legal terms?|terms of (?:service|use)|disclosures?|contract terms?|consent (?:text|language)|licen[cs]e (?:terms?|agreements?))\b/i
+const MIGRATION_RE = /\b(migrations?|alter (?:table|policy|view|function)|create (?:policy|table|index|view)|schema change|ddl)\b/i
 const SECURITY_RE = /\b(breach(?:ed)?|hack(?:ed|ing)?|intrusion|injection|exfiltrat\w*|leak(?:ed)?|exposed|compromised?|brute[- ]?force|suspicious|unauthori[sz]ed access|credentials?|secrets?|private key|api key|impersonat\w*|privilege escalation)\b/i
 const DELETION_RE = /\b(delete[ds]?|deletion|truncated?|purged?|wiped?|erased?|drop (?:table|column|schema|index|database))\b/i
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
@@ -248,7 +264,7 @@ function foreignTenant(i: HealthIncident): string | null {
  * Fail closed: a keyword match is enough — a false positive costs a human glance, a false negative money.
  */
 /** @proofSeam the proof drives every forbidden class with a positive control */
-export function classifyForbidden(i: HealthIncident, modelFlags?: { money?: boolean; tenantBoundary?: boolean; security?: boolean; dataDeletion?: boolean } | null): GateVerdict {
+export function classifyForbidden(i: HealthIncident, modelFlags?: DiagnosisTouches | null): GateVerdict {
   const text = `${i.summary} ${JSON.stringify(i.evidence ?? {}).slice(0, 4000)}`
   if (i.class === "financial_discrepancy" || MONEY_DETECTORS.has(i.detector) || i.financialWriter || MONEY_RE.test(text) || modelFlags?.money)
     return { forbidden: true, class: "money", reason: "touches MONEY — the OS never acts on money; Finance / a human decides" }
@@ -259,6 +275,14 @@ export function classifyForbidden(i: HealthIncident, modelFlags?: { money?: bool
     return { forbidden: true, class: "security", reason: "a SECURITY / credential signal — never auto-remediated; a human decides" }
   if (DELETION_RE.test(text) || modelFlags?.dataDeletion)
     return { forbidden: true, class: "data_deletion", reason: "involves DATA DELETION — never auto-remediated; a human decides" }
+  if (AUTHORITY_RE.test(text) || modelFlags?.authority)
+    return { forbidden: true, class: "authority", reason: "touches an AUTHORITY rule — a model never alters who may act; a human decides" }
+  if (ENTITLEMENT_RE.test(text) || modelFlags?.entitlement)
+    return { forbidden: true, class: "entitlement", reason: "touches an ENTITLEMENT — the plan is set by platform staff / billing, never by a healer; a human decides" }
+  if (LEGAL_TERMS_RE.test(text) || modelFlags?.legalTerms)
+    return { forbidden: true, class: "legal_terms", reason: "touches LEGAL TERMS — verbatim legal text is never rewritten automatically; a human decides" }
+  if (MIGRATION_RE.test(text) || modelFlags?.migration)
+    return { forbidden: true, class: "schema_migration", reason: "needs a SCHEMA MIGRATION — written as a reviewed file, applied by the integrator, never by the runtime; a human decides" }
   return { forbidden: false }
 }
 
@@ -368,7 +392,7 @@ export async function runBoundedModel<T>(input: { brokerageId: string; feature: 
 const DiagnosisSchema = z.object({
   diagnosis: z.string().max(800),
   rootCause: z.enum(["transient", "rate_limit", "provider_change", "configuration", "data", "code_defect", "external_outage", "unknown"]),
-  touches: z.object({ money: z.boolean(), tenantBoundary: z.boolean(), security: z.boolean(), dataDeletion: z.boolean() }),
+  touches: z.object({ money: z.boolean(), tenantBoundary: z.boolean(), security: z.boolean(), dataDeletion: z.boolean(), authority: z.boolean().optional(), entitlement: z.boolean().optional(), legalTerms: z.boolean().optional(), migration: z.boolean().optional() }),
   playbook: z.string().max(60),
   params: z.record(z.string(), z.union([z.string().max(300), z.number(), z.boolean()])).optional(),
   confidence: z.number().min(0).max(1),
@@ -880,7 +904,7 @@ function incidentPrompt(i: HealthIncident, domain: PlaybookDomain, offered: Play
   const system =
     "You are the VIP Agents OS self-healing troubleshooter. Diagnose ONE operational incident from its evidence. " +
     "You may only SELECT one playbook from the offered list and fill only its declared parameters. " +
-    "Never propose SQL, code, credentials, deletions, refunds or any money movement. Flag touches.* honestly. " +
+    "Never propose SQL, code, credentials, deletions, refunds or any money movement. Flag touches.* honestly (money, tenantBoundary — including office / brand / lead visibility, security, dataDeletion, authority, entitlement, legalTerms, migration); any one of them hands the incident to a human. " +
     "If the fault is in the platform's own code, say rootCause code_defect — a human change request follows; never attempt a code fix. " +
     "If no offered playbook fits, select notify_owner_manager when offered, else read_only_diagnosis."
   const lib = offered.map((k) => `- ${k}: ${SELF_HEAL_PLAYBOOKS[k].label}; params ${JSON.stringify(SELF_HEAL_PLAYBOOKS[k].params)}`).join("\n")

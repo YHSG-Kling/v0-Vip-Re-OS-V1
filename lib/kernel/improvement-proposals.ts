@@ -194,7 +194,7 @@ export type ChangeControlRequirement = (typeof CHANGE_CONTROL_REQUIREMENTS)[numb
 export const CHANGE_CONTROL_HOW: Readonly<Record<ChangeControlRequirement, string>> = Object.freeze({
   human_approval: "a human decides: the tenant admin roster (decideProposal) for tenant policy, a compliance approver for a compliance-scoped change, platform staff (approveProposalAction, applied_by = a user id, never 'auto') for a change request",
   versioned_change: "the change is a version: tenant policy through appendTenantPolicyVersion (tenant_policy_versions, append-only, revert = a NEW version); code / schema / RLS as a reviewed commit or a migration file WRITTEN, NOT APPLIED until the integrator applies it",
-  tests: "the owning domain's proofs and the full guard chain pass (GUARD_EXIT=0) before the change ships; a tenant policy change is evaluated deterministically first (evaluateImprovement)",
+  tests: "the owning domain's proofs and the full guard chain exits 0 before the change ships; a tenant policy change is evaluated deterministically first (evaluateImprovement)",
   deployment_authorization: "a human-authorized deploy (CI build green) — no manager, healer or runtime path deploys, commits or applies a migration",
 })
 
@@ -253,6 +253,24 @@ export function governedChangeVerdict(cls: GovernedChangeClass, reason: string):
     : { class: cls, verdict: "consequential", managerMay: "propose_only", changeControl: CHANGE_CONTROL_REQUIREMENTS, reason }
 }
 
+const CONSEQUENTIAL_SURFACE_KEYS: ReadonlyArray<{ re: RegExp; cls: ConsequentialChangeClass; why: string }> = [
+  { re: /(^|[.:])[a-z_]*(entitlements?|plan_tier|plan_limits?|feature_flags?|seat_(?:limit|cap)s?|quotas?|overages?)[a-z_]*([.:]|$)/i, cls: "financial_calculation", why: "an entitlement (the plan's priced terms) — platform staff / billing set it" },
+  { re: /(^|[.:])[a-z_]*(visibility|office_scope|location_scope|tenant_scope|data_sharing|row_level|rls)[a-z_]*([.:]|$)/i, cls: "rls_security", why: "tenant visibility (who may see which rows) — a human decides" },
+  { re: /(^|[.:])[a-z_]*(migrations?|schema|ddl)[a-z_]*([.:]|$)/i, cls: "production_source_edit", why: "a schema change — a reviewed migration file the integrator applies, never a runtime write" },
+  { re: /(^|[.:])[a-z_]*(legal_terms?|terms_of_service|disclosures?|consent_text|licen[cs]e_terms?)[a-z_]*([.:]|$)/i, cls: "legal_compliance", why: "legal terms — verbatim legal text, a compliance approver decides" },
+]
+
+/** PURE — the named consequential surface a change touches (subject key, patch field names, change kind), or null. */
+function namedConsequentialSurface(subjectKey: string, change: Record<string, unknown>): { cls: ConsequentialChangeClass; reason: string } | null {
+  const patch = change.patch && typeof change.patch === "object" && !Array.isArray(change.patch) ? Object.keys(change.patch as Record<string, unknown>) : []
+  const keys = [subjectKey, ...patch.map((k) => `${subjectKey}.${k}`), typeof change.kind === "string" ? change.kind : ""].filter(Boolean)
+  for (const s of CONSEQUENTIAL_SURFACE_KEYS) {
+    const hit = keys.find((k) => s.re.test(k))
+    if (hit) return { cls: s.cls, reason: `${hit} is ${s.why}` }
+  }
+  return null
+}
+
 /**
  * PURE — WHICH ruling-14 class is this proposed change? Derived from the change (its surface, kind and payload),
  * never from the stored authority. Safe only when it is provably on the safe list: a self-optimization class
@@ -269,6 +287,11 @@ export function classifyGovernedChange(row: { subject_kind: string; subject_key:
     return governedChangeVerdict(cls, `forbidden surface ${surf.surface}: ${surf.reason}`)
   }
   if (surf.scope === "optimizable") return governedChangeVerdict(OPTIMIZATION_SAFE_CLASS[surf.class], `optimization class ${surf.class} (allowed fields only: ${surf.paths.join(", ")})`)
+  // Wave 150 (lane 150BAA) — the directive's "never silently alter" surfaces that had no NAMED class here (they were
+  // already consequential as `unlisted`, fail closed): the refusal now says WHICH boundary it holds. Read over the
+  // subject key, the patch's field names and the change kind — never the stored authority.
+  const named = namedConsequentialSurface(row.subject_key, change)
+  if (named) return governedChangeVerdict(named.cls, named.reason)
   switch (row.subject_kind) {
     case "variant": return governedChangeVerdict("content_channel_selection", `a ${row.subject_key.split(":")[0]} variant — the measured winner is selected`)
     case "experiment": return governedChangeVerdict("content_channel_selection", "an experiment adopts a measured arm; its spend is the human-set experiment envelope")
