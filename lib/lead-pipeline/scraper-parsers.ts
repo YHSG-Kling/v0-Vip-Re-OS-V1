@@ -7,7 +7,7 @@
 // NormalizedScrapedRecord[] out, filtered by the shared viability gate.
 
 import * as cheerio from "cheerio"
-import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
+import { isViableRecord, stableContentDigest, type NormalizedScrapedRecord } from "./raw-record-types"
 import { triggerForQuickListSlug, isInvestorBuyerTrigger } from "@/lib/external/batchdata-client"
 
 export interface MarketGeo {
@@ -172,7 +172,7 @@ export function parsePropertySearchResults(
       const address = $(el).text().trim()
       if (address.length < 5 || address.length > 120) return
       const record: NormalizedScrapedRecord = {
-        sourceRecordId: `${site}-${Date.now()}-${Math.random()}`,
+        sourceRecordId: `${site}-addr-${stableContentDigest(address)}`, // C35: a replay of the same card is the same id (never a clock / random)
         source: site,
         behaviorType: "fsbo_listing",
         intentType: "seller",
@@ -334,7 +334,7 @@ export function parseBuyerSavedSearches(
 
     const nameParts = handle.split(/\s+/).filter(Boolean)
     records.push({
-      sourceRecordId: `${site}-buyer-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      sourceRecordId: `${site}-buyer-${block.attr("data-id") ?? block.attr("id") ?? `dig-${stableContentDigest(block.text())}`}`,
       source: site,
       behaviorType: "saved_search",
       intentType: "buyer",
@@ -402,7 +402,7 @@ export function parseContactAgentChatter(html: string, site: string, market: Mar
 
     const nameParts = handle.split(/\s+/).filter(Boolean)
     records.push({
-      sourceRecordId: `${site}-contact-agent-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      sourceRecordId: `${site}-contact-agent-${block.attr("data-id") ?? block.attr("id") ?? `dig-${stableContentDigest(block.text())}`}`,
       source: site,
       behaviorType: "contact_agent_chatter",
       intentType: "buyer",
@@ -460,7 +460,7 @@ export function parseSellerChatter(html: string, site: string, market: MarketGeo
     const propertyAddress = block.find('[class*="address"], [class*="home-address"]').first().text().trim() || null
     const nameParts = handle.split(/\s+/).filter(Boolean)
     records.push({
-      sourceRecordId: `${site}-seller-chatter-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      sourceRecordId: `${site}-seller-chatter-${block.attr("data-id") ?? block.attr("id") ?? `dig-${stableContentDigest(block.text())}`}`,
       source: site,
       behaviorType: "seller_chatter",
       intentType: "seller",

@@ -36,6 +36,7 @@
  */
 import type { BatchDataRecord, FetchMotivatedSellersOptions } from "@/lib/external/batchdata-client"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
+import { paidPullApproval, type StoredPlanRow } from "@/lib/lead-pipeline/source-discovery-planner"
 
 /** The slice of a lead_scraping_markets row the pooled pull needs. */
 export interface PoolTerritory {
@@ -226,6 +227,9 @@ export interface PooledLaneLedger {
   unattributedRecords: number
   /** Charge with no receiving territory (booked platform-side by the caller). */
   unallocatedUsd: number
+  /** Wave 150 (lane 150EFG, directive 150E): territories whose tenant has NO approved acquisition plan for this lane —
+   *  dropped BEFORE the pull, so they are never bought for ("never a paid call without approval"). */
+  unapprovedTerritories?: number
   /** The per-territory loop this replaced would have issued this many requests (one per territory × trigger). */
   perTerritoryRequestsReplaced: number
 }
@@ -242,12 +246,29 @@ export interface PooledBatchDataDeps {
   maxInList: number
   /** Records each territory funds per trigger when it names no max_records_per_run (the old pull's take). */
   defaultRecordsPerTerritory?: number
+  /**
+   * THE APPROVAL GATE (wave 150, lane 150EFG — directive 150E, owner rule 7 "no autonomous purchases"). Asked once per
+   * want BEFORE any request is issued: may this tenant's share of a `lane` pull be bought? Production answers from the
+   * tenant's APPROVED acquisition plans (source-discovery-planner.ts paidPullApproval over acquisition_plans, m962); an
+   * unreadable store refuses every want. REQUIRED — a deps object without it does not type-check, so no caller forgets it.
+   */
+  approval: (brokerageId: string | null, lane: string) => { allowed: true } | { allowed: false; reason: string }
 }
 
 /** I/O defaults — the ONE BatchData client. */
 export async function productionPooledBatchDataDeps(): Promise<PooledBatchDataDeps> {
   const bd = await import("@/lib/external/batchdata-client")
+  // The tenants' approved acquisition plans, read ONCE per cycle (service client — the cron is platform-side; every
+  // decision below is per tenant). A refused read is `null` and paidPullApproval refuses every want (fail closed).
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { data: planRows, error: planErr } = await createServiceClient()
+    .from("acquisition_plans")
+    .select("id, brokerage_id, status, valid_until, lines")
+    .eq("status", "approved")
+  if (planErr) console.error("[pooled-pull] acquisition_plans read refused — every paid pooled want is refused this cycle:", planErr.message)
+  const plans: StoredPlanRow[] | null = planErr ? null : ((planRows ?? []) as StoredPlanRow[])
   return {
+    approval: (brokerageId, lane) => paidPullApproval(plans, { brokerageId, source: lane }),
     search: (opts) => bd.fetchMotivatedSellers(opts),
     dateWindow: (t, w) => bd.dateWindowCriteria(t, w),
     statusWindow: (r, t, w) => bd.withinListingStatusWindow(r, t, w),
@@ -267,14 +288,24 @@ export async function productionPooledBatchDataDeps(): Promise<PooledBatchDataDe
  */
 export async function runPooledBatchDataLane(
   lane: string,
-  wants: readonly PooledWant[],
+  allWants: readonly PooledWant[],
   deps: PooledBatchDataDeps,
 ): Promise<{ byTerritory: Map<string, PooledShare<BatchDataRecord>>; ledger: PooledLaneLedger; errors: string[] }> {
   const byTerritory = new Map<string, PooledShare<BatchDataRecord>>()
   const errors: string[] = []
+  // THE APPROVAL GATE — before pooling, so an unapproved tenant's geography never widens a paid request.
+  const approvedWants: PooledWant[] = []
+  let unapproved = 0
+  for (const w of allWants) {
+    const verdict = deps.approval(w.territory.brokerage_id, lane)
+    if (verdict.allowed) { approvedWants.push(w); continue }
+    unapproved++
+    errors.push(`${lane}: territory ${w.territory.id} not pulled — ${verdict.reason}`)
+  }
+  const wants: readonly PooledWant[] = approvedWants
   const ledger: PooledLaneLedger = {
     lane, vendor: "batchdata", territories: new Set(wants.map((w) => w.territory.id)).size, requests: 0, chunks: 0,
-    chargeUsd: 0, allocatedUsd: 0, unattributedRecords: 0, unallocatedUsd: 0,
+    chargeUsd: 0, allocatedUsd: 0, unattributedRecords: 0, unallocatedUsd: 0, unapprovedTerritories: unapproved,
     perTerritoryRequestsReplaced: wants.reduce((s, w) => s + w.triggers.length, 0),
   }
   const perTerritoryCap = (t: PoolTerritory) =>

@@ -19,7 +19,7 @@ import {
   scrapeFacebookMarketplaceListings,
   scrapeFsboSiteListings,
 } from "@/lib/external/apify-client"
-import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
+import { isViableRecord, stableContentDigest, type NormalizedScrapedRecord } from "./raw-record-types"
 import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter, parseSellerChatter } from "./scraper-parsers"
 // Lane 83A — the ONE intent lexicon (scrape-keywords.ts): every social normalizer adds the canonical
 // relocation / realtor-seeking / investor signals a post's text evidences, so a population the
@@ -86,7 +86,7 @@ export function normalizeRedditPost(post: Record<string, any>, market: SocialMar
   const text = `${post.title ?? ""} ${post.body ?? post.text ?? ""}`
   const intent = detectIntent(text)
   return {
-    sourceRecordId: `reddit-${post.id ?? post.post_id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `reddit-${post.id ?? post.post_id ?? post.url ?? `dig-${stableContentDigest(post)}`}`,
     source: "reddit_intent",
     behaviorType: "social_intent",
     intentType: intent, // buyer ("looking to buy") OR seller ("selling my home"), per post
@@ -105,7 +105,7 @@ export function normalizeFacebookPost(post: Record<string, any>, market: SocialM
   const intent = detectIntent(text)
   const { firstName, lastName } = nameFromHandle(post.authorName ?? post.user?.name)
   return {
-    sourceRecordId: `fb-${post.postId ?? post.id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `fb-${post.postId ?? post.id ?? post.url ?? `dig-${stableContentDigest(post)}`}`,
     source: "facebook_group",
     behaviorType: "social_intent",
     intentType: intent, // buyer + seller both captured; classified per post
@@ -124,7 +124,7 @@ export function normalizeInstagramPost(post: Record<string, any>, market: Social
   const text = `${post.caption ?? post.text ?? ""} ${(post.hashtags ?? []).join(" ")}`
   const { firstName, lastName } = nameFromHandle(post.ownerFullName ?? post.fullName)
   return {
-    sourceRecordId: `ig-${post.id ?? post.shortCode ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `ig-${post.id ?? post.shortCode ?? post.url ?? `dig-${stableContentDigest(post)}`}`,
     source: "instagram_intent",
     behaviorType: "social_intent",
     intentType: detectIntent(text), // both buyer + seller; resolved per caption
@@ -153,7 +153,7 @@ export function normalizeCraigslistItem(item: Record<string, any>, market: Socia
   const isBuyer = CL_WANTED.test(title) || (BUYER_TERMS.some((b) => lowTitle.includes(b)) && !SELLER_TERMS.some((s) => lowTitle.includes(s)))
   const intentType: "buyer" | "seller" = isBuyer ? "buyer" : "seller"
   return {
-    sourceRecordId: `cl-${item.id ?? item.pid ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `cl-${item.id ?? item.pid ?? item.url ?? `dig-${stableContentDigest(item)}`}`,
     source: "craigslist_fsbo",
     behaviorType: intentType === "buyer" ? "social_intent" : isFsbo ? "fsbo_listing" : "property_listing",
     intentType,
@@ -297,7 +297,7 @@ export function normalizeFacebookMarketplaceListing(item: Record<string, any>, m
   if (seeking) {
     const seekerType = intentTypeFromText(text)
     return {
-      sourceRecordId: `fbm-${item.id ?? item.listingUrl ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+      sourceRecordId: `fbm-${item.id ?? item.listingUrl ?? item.url ?? `dig-${stableContentDigest(item)}`}`,
       source: "facebook_marketplace",
       behaviorType: "marketplace_seeking_post",
       intentType: seekerType === "seller" ? "unknown" : seekerType,
@@ -323,7 +323,7 @@ export function normalizeFacebookMarketplaceListing(item: Record<string, any>, m
   ]
   const price = Number(item.listing_price?.amount ?? item.final_price ?? NaN)
   return {
-    sourceRecordId: `fbm-${item.id ?? item.listingUrl ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `fbm-${item.id ?? item.listingUrl ?? item.url ?? `dig-${stableContentDigest(item)}`}`,
     source: "facebook_marketplace",
     behaviorType: "property_listing",
     intentType: "seller",
@@ -383,7 +383,7 @@ export function normalizeFsboSiteListing(item: Record<string, any>, market: Soci
   const price = Number(item.priceAmount ?? item.price ?? item.listPrice ?? NaN)
   const phone = item.ownerPhone ?? item.phone ?? item.contactPhone ?? item.owner?.phone ?? undefined
   return {
-    sourceRecordId: `fsbo-site-${item.id ?? item.listingId ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `fsbo-site-${item.id ?? item.listingId ?? item.url ?? `dig-${stableContentDigest(item)}`}`,
     source: "fsbo_site_listing",
     behaviorType: "fsbo_listing",
     intentType: "seller",
@@ -433,7 +433,7 @@ export function normalizeRentalListing(item: Record<string, any>, market: Social
   const title = `${item.title ?? item.name ?? ""}`
   const byOwner = /\b(by owner|owner|private landlord)\b/i.test(title) && !/\b(property management|realty|broker|agent)\b/i.test(title)
   return {
-    sourceRecordId: `rental-${item.id ?? item.pid ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `rental-${item.id ?? item.pid ?? item.url ?? `dig-${stableContentDigest(item)}`}`,
     source: "rental_listing",
     behaviorType: "rental_listing",
     intentType: "seller", // landlords listing rentals are prospective sellers of the asset
@@ -461,7 +461,7 @@ export function normalizeLinkedInPost(post: Record<string, any>, market: SocialM
   const text = `${post.text ?? post.content ?? post.commentary ?? ""}`
   const { firstName, lastName } = nameFromHandle(post.authorName ?? post.author?.name ?? post.fullName)
   return {
-    sourceRecordId: `li-${post.id ?? post.urn ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `li-${post.id ?? post.urn ?? post.url ?? `dig-${stableContentDigest(post)}`}`,
     source: "linkedin_relocation",
     behaviorType: "social_intent",
     intentType: "buyer", // relocation posts are inbound-buyer signals
@@ -500,7 +500,7 @@ export async function sourceLinkedInRelocation(market: SocialMarket): Promise<{ 
 export function normalizeRedditRelocationPost(post: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
   const text = `${post.title ?? ""} ${post.body ?? post.text ?? post.selftext ?? ""}`
   return {
-    sourceRecordId: `reddit-reloc-${post.id ?? post.post_id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `reddit-reloc-${post.id ?? post.post_id ?? post.url ?? `dig-${stableContentDigest(post)}`}`,
     source: "reddit_relocation",
     behaviorType: "social_intent",
     intentType: "buyer", // relocation / "need a realtor" posts are inbound-buyer signals
@@ -535,7 +535,7 @@ export async function sourceRedditRelocation(market: SocialMarket): Promise<{ re
 export function normalizeFacebookRecommendRealtorPost(post: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
   const { firstName, lastName } = nameFromHandle(post.authorName ?? post.user?.name)
   return {
-    sourceRecordId: `fb-recrealtor-${post.postId ?? post.id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `fb-recrealtor-${post.postId ?? post.id ?? post.url ?? `dig-${stableContentDigest(post)}`}`,
     source: "facebook_recommend_realtor",
     behaviorType: "social_intent",
     intentType: "unknown", // a "recommend a realtor" thread may resolve buyer or seller at enrichment
@@ -671,7 +671,7 @@ export function normalizeNextdoorPost(post: Record<string, any>, market: SocialM
     match.intent === "sell" ? "seller" : match.intent === "realtor_seeking" ? byText : "buyer"
   const { firstName, lastName } = nameFromHandle(post.author_name ?? post.authorName)
   return {
-    sourceRecordId: `nextdoor-${post.post_id ?? post.id ?? `${Date.now()}-${Math.random()}`}`,
+    sourceRecordId: `nextdoor-${post.post_id ?? post.id ?? `dig-${stableContentDigest(post)}`}`,
     source: "nextdoor",
     behaviorType: "social_intent",
     intentType,

@@ -24,13 +24,19 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
-import { recordMatchesTerritory, recencyWindowForSource } from '@/lib/lead-pipeline/source-intent-map'
+import { recordMatchesTerritory, recencyWindowForSource, sourceRightsFor } from '@/lib/lead-pipeline/source-intent-map'
 import { resolveScrapeTerritoriesFrom } from '@/lib/lead-pipeline/scrape-territories'
 import { isWithinRecencyWindow, type NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
 import {
   isViableRecord,
   buildLeadIdentityKey,
+  buildRawDataEnvelope,
+  rawDataEnvelopeProblem,
+  type RawDataActorType,
+  type RawDataEnvelope,
 } from '@/lib/lead-pipeline/raw-record-types'
+import { ownerNameKind, subjectIdentityKeys, verifyOwnership } from '@/lib/identity/subject-identity'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 // ─── INPUT / OUTPUT CONTRACTS ────────────────────────────────────────────────
 
@@ -115,6 +121,14 @@ export interface IngestRawSourceBatchParams {
   /** Wave 91 (lane 91B): an explicit client-side recency window (days) for this batch. Omit
    *  (undefined) to use the source's own SOURCE_RECENCY window; null/0 = no window. */
   recencyDays?: number | null
+  /**
+   * C35 (wave 150, lane 150EFG) — WHO produced this batch (raw_scraped_leads.producer_actor_type /
+   * _id). Omitted = 'cron' (the scheduled scrape, by far the commonest caller). A webhook, a CSV
+   * import, a manager action or an SDK/MCP call names itself so the row says which door it came in.
+   */
+  actor?: { type: RawDataActorType; id?: string | null }
+  /** Injected client (the proofs' in-memory database); production callers omit it → service client. */
+  client?: SupabaseClient<any, any, any>
 }
 
 export interface IngestBatchResult {
@@ -127,7 +141,37 @@ export interface IngestBatchResult {
   /** Wave 91 (lane 91B): DATED records older than their source's recency window — dropped before
    *  the row exists, so they never reach enrichment spend. Undated records are kept. */
   skipped_stale: number
+  /** C35: records whose source names no rights basis (no vendor contract) — refused, never guessed. */
+  skipped_rights: number
+  /** C35: of skipped_duplicate, the REPLAYS of an observation already held under the same idempotency key. */
+  replayed: number
+  /** C35: rows written while m961's envelope columns were absent (the envelope rode normalized_preview.rawdata
+   *  only, and only the legacy (source, source_record_id) UNIQUE could catch a replay). 0 once m961 is applied. */
+  envelope_columns_absent: number
   rawIds: string[]
+}
+
+/** The m961 first-class envelope columns (a refusal naming one of them means m961 is not applied yet). */
+const RAWDATA_ENVELOPE_COLUMNS = [
+  'subject_kind', 'idempotency_key', 'source_rights', 'source_licence', 'signal_at', 'observed_at',
+  'ttl_expires_at', 'external_ids', 'proof_urls', 'producer_actor_type', 'producer_actor_id', 'producer_version', 'evidence',
+] as const
+
+/** PURE — the envelope as raw_scraped_leads columns (m961). cost_usd rides the existing cost_per_record. */
+function envelopeColumns(e: RawDataEnvelope): Record<string, unknown> {
+  return {
+    subject_kind: e.subject_kind, idempotency_key: e.idempotency_key, source_rights: e.source_rights,
+    source_licence: e.source_licence, signal_at: e.signal_at, observed_at: e.observed_at, ttl_expires_at: e.ttl_expires_at,
+    external_ids: e.external_ids, proof_urls: e.proof_urls, producer_actor_type: e.producer_actor_type,
+    producer_actor_id: e.producer_actor_id, producer_version: e.producer_version, evidence: e.evidence,
+  }
+}
+
+/** A refusal that names an absent envelope column (PGRST204 on insert / 42703 on a filter). */
+function isEnvelopeColumnAbsent(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false
+  if (err.code !== 'PGRST204' && err.code !== '42703') return false
+  return RAWDATA_ENVELOPE_COLUMNS.some((c) => (err.message ?? '').includes(c))
 }
 
 export interface NormalizeRawRecordParams {
@@ -534,7 +578,7 @@ async function scrapeEvent(
 export async function ingestRawSourceBatch(
   params: IngestRawSourceBatchParams,
 ): Promise<IngestBatchResult> {
-  const supabase = createServiceClient()
+  const supabase = (params.client ?? createServiceClient()) as ReturnType<typeof createServiceClient>
   const result: IngestBatchResult = {
     inserted: 0,
     skipped_duplicate: 0,
@@ -542,8 +586,13 @@ export async function ingestRawSourceBatch(
     skipped_territory: 0,
     skipped_refused: 0,
     skipped_stale: 0,
+    skipped_rights: 0,
+    replayed: 0,
+    envelope_columns_absent: 0,
     rawIds: [],
   }
+  // m961 not applied yet → the envelope rides normalized_preview.rawdata only (counted, said once).
+  let envelopeColumnsLive = true
 
   // PLATFORM ('platform') = scheduled, territory-driven, brokerage_id NULL until Engine 1 /
   // the promotion gate resolves an owner. BROKERAGE ('brokerage') = an explicit brokerageId
@@ -645,7 +694,44 @@ export async function ingestRawSourceBatch(
 
       const identityKey = buildLeadIdentityKey(record)
 
-      const { data: inserted, error: insertError } = await supabase
+      // Gate 3 — C35 THE PRODUCER CONTRACT (wave 150, lane 150EFG). Rights are DERIVED from the vendor contract
+      // (record.source, then the batch's channel); a record whose source names no basis is REFUSED, never guessed.
+      const recordRights = sourceRightsFor(record.source)
+      const rights = recordRights.rights !== 'unknown' ? recordRights : sourceRightsFor(params.sourceChannel)
+      const envelope = buildRawDataEnvelope(record, {
+        brokerageId: params.brokerageId,
+        rights,
+        entityKindOf: (name) => ownerNameKind(name),
+        actorType: params.actor?.type ?? 'cron',
+        actorId: params.actor?.id ?? null,
+        costUsd: costPerRecord,
+      })
+      const envelopeProblem = rawDataEnvelopeProblem(envelope)
+      if (envelopeProblem) {
+        result.skipped_rights++
+        console.error(`[kernel/scraping] raw record refused by the C35 producer contract (${record.source}): ${envelopeProblem}`)
+        continue
+      }
+      // C36 — the subject's identity keys (APN / address / entity / household / person) ride as external ids, and an
+      // OWNER observation carries its ownership verdict: a vendor that ties a name to a property has not, by that
+      // alone, proven the person owns it (verifyOwnership needs a second authoritative source or a matching mailing).
+      const identityKeys = subjectIdentityKeys({
+        apn: (record.rawPayload as Record<string, any> | null)?.apn ?? (record.rawPayload as Record<string, any> | null)?.parcelNumber ?? null,
+        countyFips: (record.rawPayload as Record<string, any> | null)?.fips ?? (record.rawPayload as Record<string, any> | null)?.countyFips ?? null,
+        propertyAddress: record.propertyAddress, zip: record.zip, state: record.state,
+        ownerName: record.fullName ?? [record.firstName, record.lastName].filter(Boolean).join(' '),
+        lastName: record.lastName, mailingAddress: record.mailingAddress, email: record.email, phone: record.phone,
+      })
+      if (identityKeys.length > 0) envelope.external_ids.identity_keys = identityKeys.join(' ')
+      if (envelope.subject_kind === 'owner' || envelope.subject_kind === 'entity_trust_estate' || envelope.subject_kind === 'property') {
+        envelope.evidence.ownership = verifyOwnership(
+          // The person's mailing address is NOT passed: it came from the SAME record, so it cannot corroborate itself.
+          { firstName: record.firstName, lastName: record.lastName, zip: record.zip },
+          [{ source: record.source, rights: rights.rights, ownerName: record.fullName ?? ([record.firstName, record.lastName].filter(Boolean).join(' ') || null), mailingAddress: record.mailingAddress }],
+        )
+      }
+
+      const insertRow = () => supabase
         .from('raw_scraped_leads')
         .insert({
           brokerage_id:         params.brokerageId,
@@ -720,17 +806,32 @@ export async function ingestRawSourceBatch(
             // dataset). Read by pipeline-processor.ts to skip the PeopleData call — owner 2026-09-29:
             // "…enriched by people data lab … unless we already paid for that lead data with the lead."
             paid_person_data: record.paidPersonData === true,
+            // C35 — the producer contract verbatim (the first-class m961 columns below carry the same values).
+            rawdata: envelope,
           },
           processing_status:    'pending',
           scraper_execution_id: execId ?? null,
           cost_per_record:      costPerRecord,
+          ...(envelopeColumnsLive ? envelopeColumns(envelope) : {}),
         })
         .select('id')
         .maybeSingle()
 
-      // 23505 = unique_violation — same source_record_id already exists
+      let { data: inserted, error: insertError } = await insertRow()
+      if (isEnvelopeColumnAbsent(insertError)) {
+        // m961 is written, not yet applied: say so ONCE, keep the envelope in normalized_preview.rawdata, and
+        // write the row the legacy way rather than refusing every observation (counted, never silent).
+        console.error('[kernel/scraping] m961 envelope columns absent — writing the C35 envelope to normalized_preview.rawdata only:', insertError?.message)
+        envelopeColumnsLive = false
+        ;({ data: inserted, error: insertError } = await insertRow())
+      }
+      if (!envelopeColumnsLive && !insertError) result.envelope_columns_absent++
+
+      // 23505 = unique_violation — the same observation is already held: under the C35 idempotency key
+      // (m961, scope-qualified — a REPLAY) or the legacy (source, source_record_id) UNIQUE.
       if (insertError?.code === '23505') {
         result.skipped_duplicate++
+        if (/idempotency/i.test(insertError.message ?? '')) result.replayed++
         continue
       }
       if (insertError || !inserted) {
@@ -750,7 +851,7 @@ export async function ingestRawSourceBatch(
         entity_id:   (inserted as any).id,
         event_type:  KernelEvent.RAW_RECORD_CREATED,
         brokerage_id: params.brokerageId,
-        metadata:    { source: record.source, identity_key: identityKey, intent_type: record.intentType },
+        metadata:    { source: record.source, identity_key: identityKey, intent_type: record.intentType, subject_kind: envelope.subject_kind, idempotency_key: envelope.idempotency_key, source_rights: envelope.source_rights },
         created_at:  new Date().toISOString(),
       })
     }

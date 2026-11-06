@@ -109,12 +109,31 @@
  * plain-`tsx` proofs call it directly.
  */
 import { checkEmailSyntax, isAutomatedLocalPart } from "@/lib/external/email-verifier"
+import { LEAD_CAPABLE_SUBJECT_KINDS, RAWDATA_SUBJECT_KINDS, type RawDataSubjectKind } from "@/lib/lead-pipeline/raw-record-types"
 
 export interface LeadCandidate {
   first_name?: string | null
   last_name?:  string | null
   email?:      string | null
   phone?:      string | null
+  /** C35 (wave 150, lane 150EFG) — the RawData subject the record is ABOUT (raw_scraped_leads.subject_kind, m961).
+   *  Absent / null = a pre-m961 row or a caller that does not know (judged on identity alone — published blind spot). */
+  subject_kind?: string | null
+}
+
+/**
+ * PURE — why a RawData SUBJECT can never walk to the Lead door, or null when it may (wave 150, lane 150EFG, canary 4:
+ * "anonymous market article yields topic/educational candidate only"). Only a person, an owner or a household is a
+ * Lead-capable subject; a property, a market, an anonymous question, a civic event, a listing, a business or an
+ * LLC / trust / estate is EVIDENCE — it reaches the market twin / watch / topic bank, and the person behind it (if any)
+ * must be found and observed as a person first. An unrecognised spelling refuses (fail closed); null passes to the
+ * identity rule (legacy rows).
+ */
+export function subjectKindLeadProblem(kind: string | null | undefined): string | null {
+  if (kind === null || kind === undefined || kind === "") return null
+  if (!(RAWDATA_SUBJECT_KINDS as readonly string[]).includes(kind)) return `unknown RawData subject kind "${kind}"`
+  if (LEAD_CAPABLE_SUBJECT_KINDS.has(kind as RawDataSubjectKind)) return null
+  return `a ${kind.replace(/_/g, " ")} observation is evidence, not a person — it feeds the market twin / watch / topic bank and never becomes a Lead itself`
 }
 
 /** The channels a passing record carries. "email" is always present on a pass (required, wave 85);
@@ -146,7 +165,7 @@ const EMAIL_PROBLEM_TEXT: Record<LeadEmailProblem, string> = {
 
 export type EligibilityResult =
   | { eligible: true; via: ReachableChannel[] }
-  | { eligible: false; reason: string; failing: "name" | "contact_anchor" }
+  | { eligible: false; reason: string; failing: "subject" | "name" | "contact_anchor" }
 
 /** Name parts that are placeholders, never a person (compared lowercased, punctuation stripped). */
 export const PLACEHOLDER_NAME_TOKENS: readonly string[] = [
@@ -204,6 +223,8 @@ export function personNameProblem(first: string | null | undefined, last: string
 }
 
 export function evaluateCanonicalLeadEligibility(c: LeadCandidate): EligibilityResult {
+  const subjectProblem = subjectKindLeadProblem(c.subject_kind)
+  if (subjectProblem) return { eligible: false, failing: "subject", reason: `Not a Lead subject — ${subjectProblem}` }
   const nameProblem = personNameProblem(c.first_name, c.last_name)
   if (nameProblem) {
     return {

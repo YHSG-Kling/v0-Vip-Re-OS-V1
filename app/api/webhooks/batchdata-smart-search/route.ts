@@ -197,6 +197,8 @@ export async function POST(request: Request) {
       marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
       // Lane 82B — the hydrate spend reaches cost_per_record (was null → a pushed lead read $0).
       batchCostUsd: perMarketHydrateCost,
+      // C35 (wave 150, lane 150EFG): the row names the door it came in (raw_scraped_leads.producer_actor_type).
+      actor: { type: "webhook", id: "batchdata_smart_search" },
     })
     inserted += res.inserted
     if (perMarketHydrateCost > 0) {

@@ -2,6 +2,8 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getTerritorySettings } from "@/app/actions/settings/territories"
 import { TerritoriesClient } from "./territories-client"
+import { getAcquisitionPlanView } from "@/app/actions/acquisition-plan"
+import { AcquisitionPlanPanel } from "./acquisition-plan-panel"
 
 /**
  * Settings → Territories.
@@ -20,7 +22,14 @@ export default async function TerritoriesSettingsPage() {
   const { data: auth } = await supabase.auth.getUser()
   if (!auth?.user) redirect("/login")
 
-  const view = await getTerritorySettings()
+  const [view, acquisition] = await Promise.all([getTerritorySettings(), getAcquisitionPlanView()])
 
-  return <TerritoriesClient view={view} />
+  return (
+    <>
+      <TerritoriesClient view={view} />
+      {/* Wave 150 (lane 150EFG): the Source Discovery Planner — preview, quote, approve (never a paid call without it). */}
+      {/* A non-admin seat is refused by the action's gate ("Forbidden…") — the panel is simply not theirs to see. */}
+      {acquisition.error?.startsWith("Forbidden") ? null : <AcquisitionPlanPanel view={acquisition} />}
+    </>
+  )
 }

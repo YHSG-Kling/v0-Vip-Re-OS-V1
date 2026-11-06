@@ -336,7 +336,10 @@ function conversionInvariants() {
   // client — every import line must name that pure vocabulary module and nothing else.
   const gateImports = gate.split("\n").filter((l) => /^import /.test(l))
   check("the gate module stays I/O-free (the plain-tsx simulators import it directly): its only import is the pure email vocabulary",
-    gateImports.length > 0 && gateImports.every((l) => /from "@\/lib\/external\/email-verifier"/.test(l) && !/import \{[^}]*\b(checkEmailMx|verifyEmailDeep)\b/.test(l)) && !/require\(/.test(gate) && !/server-only|use server|createClient|createServiceClient/.test(stripComments(gate)))
+    // Wave 150 (lane 150EFG) — RE-ASSERTED TO THE RULE (I/O-free), not the waypoint (one import): the gate also reads the
+    // C35 RawData subject vocabulary from lib/lead-pipeline/raw-record-types.ts, admitted ONLY while that module itself
+    // has no import line at all (so it can never carry I/O in behind the gate).
+    gateImports.length > 0 && gateImports.every((l) => (/from "@\/lib\/external\/email-verifier"/.test(l) && !/import \{[^}]*\b(checkEmailMx|verifyEmailDeep)\b/.test(l)) || (/from "@\/lib\/lead-pipeline\/raw-record-types"/.test(l) && !src("lib/lead-pipeline/raw-record-types.ts").split("\n").some((x) => /^import /.test(x)))) && !/require\(/.test(gate) && !/server-only|use server|createClient|createServiceClient/.test(stripComments(gate)))
   check("POSITIVE CONTROL: the same import finder flags an I/O import",
     !['import { createServiceClient } from "@/lib/supabase/service"'].every((l) => /from "@\/lib\/external\/email-verifier"/.test(l)))
 }

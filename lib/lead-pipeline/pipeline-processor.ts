@@ -23,7 +23,8 @@ import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLea
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { recordAcquisitionIntents } from './acquisition-coverage'
 // Lane 90B — THE email rule (pure, no I/O) decides what is an enrichment anchor before any spend.
-import { leadEmailProblem as leadEmailProblemPure } from './canonical-lead-eligibility'
+import { leadEmailProblem as leadEmailProblemPure, subjectKindLeadProblem } from './canonical-lead-eligibility'
+import { mergeSourceFacts } from '@/lib/identity/subject-identity'
 import { KernelEvent } from '@/lib/kernel/events'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { emitKernelEvent } from '@/lib/kernel/emit'
@@ -56,6 +57,8 @@ type ProcessingStatus = RawProcessingStatus
 interface RawRecord {
   id: string
   brokerage_id: string
+  /** C35 (m961) — the RawData subject; null on a pre-m961 row (normalized_preview.rawdata carries it too). */
+  subject_kind?: string | null
   market_id: string | null
   source: string
   source_record_id: string | null
@@ -197,6 +200,30 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const state      = rec.state      ?? rec.normalized_preview?.state      ?? (rec.raw_data?.state      as string | undefined) ?? null
   // lane 72B — see the RawRecord.normalized_preview.username doc comment above.
   const username   = rec.normalized_preview?.username ?? null
+
+  // ── C35 SUBJECT GATE — before ANY spend (wave 150, lane 150EFG; canary 4) ───────────────────
+  // A market article, an anonymous question, a civic event, a listing, a property, a business or an
+  // LLC / trust / estate is EVIDENCE, not a person: it never buys a PeopleData lookup and never walks
+  // to the Lead door (canonical-lead-eligibility.ts subjectKindLeadProblem — the same rule the
+  // promotion gate applies below). Read from the m961 column, else the producer's verbatim envelope.
+  const subjectKind = rec.subject_kind ?? ((rec.normalized_preview as any)?.rawdata?.subject_kind as string | undefined) ?? null
+  const subjectProblem = subjectKindLeadProblem(subjectKind)
+  if (subjectProblem) {
+    // No dedupe verdict is claimed: this gate stops BEFORE either dedupe pass runs (processing-status.ts).
+    await setStatus(supabase, rawRecordId, 'insufficient_identity', subjectProblem)
+    await logDeduplication({
+      raw_record_id:             rawRecordId,
+      // The log's live CHECK (lead_deduplication_log.stage) has no subject stage — the subject gate IS an
+      // identity gate (who is this about?), so it logs under that word with the gate named in the details.
+      stage:                     'identity_gate',
+      match_score:               0,
+      match_details:             { gate: 'subject', subject_kind: subjectKind },
+      action_taken:              'skipped',
+      skip_reason:               subjectProblem,
+      new_enrichment_confidence: null,
+    }, supabase)
+    return { success: false, action: 'skipped', reason: subjectProblem, stage: 'subject_gate' }
+  }
 
   // ── Territory gate — block before enrichment spend ────────────────────────
   // Load the market this record was scraped for and check city/state/zip match.
@@ -516,11 +543,21 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       const mergeSpecs = extractPropertySpecs([rec.raw_data as any, rec.normalized_preview as any])
       const specPatch = targetTable === 'leads' ? leadSpecPatch(mergeSpecs) : contactSpecPatch(mergeSpecs)
 
+      // C36 SOURCE MERGE THAT PRESERVES CONFLICTS (wave 150, lane 150EFG; canary 5). This used to write
+      // `email: enriched.email || existing.email, phone: enriched.phone || existing.phone` — the ENRICHED value
+      // won, so a phone the tenant or the customer had confirmed on the lead / contact was replaced by a vendor's
+      // different line with no record that anything changed, and the update's error was never read. The held
+      // value now wins (lib/identity/subject-identity.ts mergeSourceFacts): a gap is filled, an identical value
+      // corroborates, a DIFFERENT value is kept beside it as a conflict on the dedup log (both sources named).
+      const merged = mergeSourceFacts(
+        { email: postEnrichDuplicate.email, phone: postEnrichDuplicate.phone, first_name: postEnrichDuplicate.first_name, last_name: postEnrichDuplicate.last_name },
+        { email: enriched.email, phone: enriched.phone, first_name: enriched.first_name, last_name: enriched.last_name },
+        { heldSource: targetTable === 'leads' ? 'lead_record' : 'contact_record', incomingSource: `${rec.source}+enrichment` },
+      )
       // enrichment_status exists only on leads; contacts tracks confidence only.
       const mergeUpdate: Record<string, unknown> = {
         ...specPatch,
-        email:                 enriched.email || postEnrichDuplicate.email,
-        phone:                 enriched.phone || postEnrichDuplicate.phone,
+        ...merged.patch,
         enrichment_confidence: newConfidence,
         updated_at:            new Date().toISOString(),
       }
@@ -528,10 +565,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         mergeUpdate.enrichment_status = 'completed'
       }
 
-      await supabase
+      // Tenant-pinned and COUNTED (CLAUDE.md §3): an update that matches nothing resolves exactly like one that worked.
+      const { data: mergedRows, error: mergeErr } = await supabase
         .from(targetTable)
         .update(mergeUpdate)
         .eq('id', postEnrichDuplicate.id)
+        .eq('brokerage_id', effectiveBrokerageId)
+        .select('id')
+      if (mergeErr || (mergedRows ?? []).length === 0) {
+        console.error(`[pipeline] post-enrichment merge onto ${targetTable} ${postEnrichDuplicate.id} ${mergeErr ? `refused: ${mergeErr.message}` : 'matched no row in this tenant'}`)
+      }
 
       await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
       const mergeStack = await stackOntoDuplicateLead(supabase, postEnrichDuplicate, rawRecordId, rec)
@@ -542,7 +585,13 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         duplicate_of_contact_id:   postEnrichDuplicate.type === 'contact' ? postEnrichDuplicate.id : null,
         stage:                     'post_enrichment',
         match_score:               postEnrichDuplicate.score,
-        match_details:             { ...postEnrichDuplicate.details, ...(mergeStack ? { signal_stack: mergeStack } : {}) },
+        match_details:             {
+          ...postEnrichDuplicate.details, ...(mergeStack ? { signal_stack: mergeStack } : {}),
+          // C36 — every value the merge did NOT write, beside the one it kept (no quiet overwrite).
+          ...(merged.conflicts.length > 0 ? { identity_conflicts: merged.conflicts } : {}),
+          ...(merged.corroborated.length > 0 ? { corroborated_fields: merged.corroborated } : {}),
+          ...(mergeErr || (mergedRows ?? []).length === 0 ? { merge_write: mergeErr ? `refused: ${mergeErr.message}` : 'matched_no_row' } : {}),
+        },
         action_taken:              'merged',
         skip_reason:               null,
         old_enrichment_confidence: oldConfidence,
@@ -640,6 +689,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // automated mailbox) falls through here so the gate names the real reason, never "missing".
     email:      enriched.email ?? email,
     phone:      enriched.phone ?? phone,
+    subject_kind: subjectKind,
   })
 
   if (!promoEligibility.eligible) {

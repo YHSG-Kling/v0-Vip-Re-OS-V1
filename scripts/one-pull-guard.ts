@@ -131,6 +131,9 @@ async function main() {
     geographyCriteria: (k, v) => bd.pooledGeographyCriteria(k, v),
     maxTake: bd.BATCHDATA_POOLED_MAX_TAKE,
     maxInList: bd.BATCHDATA_POOLED_MAX_INLIST,
+    // Wave 150 (lane 150EFG): the approval gate is a REQUIRED dep; this proof measures pooling, so every tenant here
+    // holds an approved plan (the refusal half is proved by scripts/source-discovery-planner-guard.ts).
+    approval: () => ({ allowed: true as const }),
   })
   const trio = ["high_equity", "absentee", "pre_foreclosure"]
   const wants = [

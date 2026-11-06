@@ -1142,6 +1142,47 @@ export function vendorForSource(source: string): ScrapeVendor | null {
   return key in SOURCE_VENDOR ? SOURCE_VENDOR[key] : null
 }
 
+// ── SOURCE RIGHTS + LICENCE PER SOURCE (wave 150, lane 150EFG — contract C35) ────────────────
+//
+// The ONE RawData producer (lib/kernel/scraping.ts ingestRawSourceBatch) stamps every raw row with
+// the RIGHTS under which the observation was obtained and the LICENCE that governs its use. It is
+// DERIVED from the vendor contract (SOURCE_VENDOR) — never a second per-source table that could
+// drift from it — so a spelling with no SourceKey (no vendor) reads `unknown`, and the producer
+// REFUSES an `unknown`-rights record rather than guessing a basis for it (CLAUDE.md §4, fail closed).
+// The licence ids NAME the governing terms; they are not claims that the terms were reviewed — every
+// paid vendor's marketing-use licence is WAITING_EXTERNAL until the owner files it (lane notes).
+
+/** One vocabulary (CLAUDE.md §6) — raw_scraped_leads.source_rights CHECK (m961) holds the same words. */
+/** @proofSeam kept exported for scripts/rawdata-ingress-guard.ts, which holds this vocabulary equal to the m961 CHECK */
+export const RAWDATA_SOURCE_RIGHTS = [
+  "first_party_consented", // the person gave it to the tenant with consent (C8 captureContact — never a raw row)
+  "first_party_observed",  // the tenant's OWN systems observed it (site dwell, own email engagement, own inbox)
+  "licensed_vendor",       // bought from a data vendor under its API terms
+  "public_record",         // a government / civic dataset (permits, recorder, code violations)
+  "public_web",            // a public page read by a scraper / search API
+  "unknown",               // nothing names the basis — the producer REFUSES it
+] as const
+type RawDataSourceRights = (typeof RAWDATA_SOURCE_RIGHTS)[number]
+
+const VENDOR_RIGHTS: Record<ScrapeVendor, { rights: RawDataSourceRights; licence: string }> = {
+  internal:  { rights: "first_party_observed", licence: "tenant_first_party" },
+  batchdata: { rights: "licensed_vendor",      licence: "batchdata_api_terms" },
+  exa:       { rights: "public_web",           licence: "exa_api_terms+page_terms" },
+  tavily:    { rights: "public_web",           licence: "tavily_api_terms+page_terms" },
+  apify:     { rights: "public_web",           licence: "apify_actor_terms+page_terms" },
+  zenrows:   { rights: "public_web",           licence: "zenrows_api_terms+page_terms" },
+  zyte:      { rights: "public_web",           licence: "zyte_api_terms+page_terms" },
+  osint:     { rights: "public_web",           licence: "page_terms" },
+}
+
+/** PURE — the rights + licence an observation from `source` carries (derived from SOURCE_VENDOR). */
+export function sourceRightsFor(source: string): { rights: RawDataSourceRights; licence: string | null; vendor: ScrapeVendor | null } {
+  // A spelling that IS a vendor's name ("apify", "zenrows" — written by a few raw callers) names its terms directly.
+  const vendor = vendorForSource(source) ?? (source in VENDOR_RIGHTS ? (source as ScrapeVendor) : null)
+  if (!vendor) return { rights: "unknown", licence: null, vendor: null }
+  return { ...VENDOR_RIGHTS[vendor], vendor }
+}
+
 export function resolveSourceKey(source: string): SourceKey {
   const key = source as SourceKey
   if (key in SOURCE_MAP) return key
