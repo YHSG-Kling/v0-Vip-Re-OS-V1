@@ -239,7 +239,14 @@ type DiagnosisTouches = { money?: boolean; tenantBoundary?: boolean; security?: 
 const MONEY_DETECTORS: ReadonlySet<HealthDetector> = new Set(["billing_drift", "usage_inconsistencies", "payments_sync"])
 const MONEY_RE = /\b(commissions?|payouts?|invoices?|refunds?|chargebacks?|payments?|stripe|escrow|wire transfers?|gci|earnings|billing|disbursements?|postage)\b/i
 const TENANT_RE = /\b(cross[- ]tenant|another tenant|other tenant|tenant mismatch|row[- ]level security|rls|brokerage_id mismatch|permission denied|cross[- ](?:office|location|brand|team)|another (?:office|location)|(?:tenant|lead|office|row) visibility|visibility (?:rule|scope)s?|office scope)\b/i
-const AUTHORITY_RE = /\b(authority (?:levels?|rungs?|rules?)|autonomy (?:tiers?|posture)|role (?:grants?|assignments?)|permission (?:grants?|changes?)|approval (?:rules?|thresholds?))\b/i
+// An AUTHORITY RULE is who may act and how far: levels / rungs / rules, autonomy tiers / posture, approval rules /
+// thresholds, and a role or permission grant being CHANGED (widened, raised, escalated, bypassed …). The bare words
+// "role grant" are NOT a rule change: the tenant-readiness seats check names "a seat user without a role grant" and routes
+// it to the DECLARED provisioning playbook (repair_user_records), which restores the records the TIER REQUIRES through the
+// provisioning spec — a baseline record, not a widening — and refuses foreign tenants itself (hardStop tenant_boundary).
+// Matching the bare words refused that repair at the wave-150 integration (tenant-readiness 83/2); the altering phrasings
+// still refuse (scripts/cross-office-rls-guard.ts holds both halves).
+const AUTHORITY_RE = /\b(authority (?:levels?|rungs?|rules?)|autonomy (?:tiers?|posture)|approval (?:rules?|thresholds?)|(?:chang|alter|widen|elevat|escalat|rais|loosen|bypass|overrid|rewrit|extend|promot)\w*\s+(?:[\w'’-]+\s+){0,3}?(?:role|permission|authority|approval|autonomy)(?:s| (?:grants?|assignments?|changes?|levels?|rules?))?\b|(?:role|permission) (?:grants?|assignments?|changes?) (?:rules?|polic(?:y|ies)|changes?|widening|escalation))\b/i
 const ENTITLEMENT_RE = /\b(entitlements?|plan (?:upgrade|downgrade|change)s?|feature (?:flags?|gates?)|seat (?:limits?|caps?)|(?:overage|quota) (?:waivers?|overrides?))\b/i
 const LEGAL_TERMS_RE = /\b(legal terms?|terms of (?:service|use)|disclosures?|contract terms?|consent (?:text|language)|licen[cs]e (?:terms?|agreements?))\b/i
 const MIGRATION_RE = /\b(migrations?|alter (?:table|policy|view|function)|create (?:policy|table|index|view)|schema change|ddl)\b/i

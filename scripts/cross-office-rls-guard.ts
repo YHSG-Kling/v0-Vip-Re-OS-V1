@@ -85,6 +85,13 @@ function sectionA() {
   const clean = classifyForbidden(inc({}))
   check("POSITIVE CONTROL a clean transient webhook incident is NOT gated (the gate is not blanket)", !clean.forbidden)
   check("POSITIVE CONTROL a clean diagnosis is a SAFE self_healing_repair", governedChangeForDiagnosis({ rootCause: "transient" }).verdict === "safe")
+  // THE AUTHORITY GATE IS ABOUT RULE CHANGES (integrator, wave 150): the tenant-readiness seats check names "a seat user
+  // without a role grant" and routes it to the DECLARED provisioning playbook that restores tier-required records — that is
+  // a baseline record, not an authority change, and the gate must let the declared repair run. Both halves held here.
+  const restoring = classifyForbidden(inc({ summary: "2 of 4 seat user(s) missing tier-required records (1 without an agents row, 1 without a role grant) — repair_user_records restores them" }))
+  check("authority rules: a seat MISSING its tier-required role grant is NOT an authority change (the declared provisioning repair may run)", !restoring.forbidden, JSON.stringify(restoring))
+  const widening = classifyForbidden(inc({ summary: "widen the agent's role grant to broker_admin so the queue clears" }))
+  check("POSITIVE CONTROL authority rules: WIDENING a role grant is still an authority change — hard gate authority", widening.forbidden && (widening as { class: string }).class === "authority", JSON.stringify(widening))
   for (const s of SIX) {
     const g = classifyForbidden(inc({ summary: s.incidentSummary }))
     check(`${s.surface}: incident text → hard gate ${s.gate} (before any model or playbook)`, g.forbidden && (g as { class: string }).class === s.gate, JSON.stringify(g))

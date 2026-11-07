@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1933 of 2011 pairs) — storing them would be
+ * overwhelming majority (1934 of 2012 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2114 edges across 754 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2011 unordered
+ * MEASURED AT GENERATION: 2115 edges across 754 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2012 unordered
  * table pairs carry at least one FK; 78
  * carry more than one and are listed below. 20 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-07
  * source: public.live_foreign_keys_json()
- * body-sha256: 0ef9d69a6b09b3210638183e4ec431ad15d89cedfe70e67046533cb16db5c637
+ * body-sha256: ca3611c4bfdb6b4df5e6589f09de01afb20e72b69bbf610f725157258dd5f08c
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -378,7 +378,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "document_downloads": { "brokerage_id": "brokerages", "user_id": "users" },
   "document_extraction_log": { "brokerage_id": "brokerages", "transaction_doc_id": "transaction_documents", "transaction_id": "transactions" },
   "document_field_audit": { "document_id": "documents" },
-  "document_field_extractions": { "brokerage_id": "brokerages", "document_id": "documents" },
+  "document_field_extractions": { "brokerage_id": "brokerages", "document_id": "documents", "verified_by_user_id": "users" },
   "document_folders": { "brokerage_id": "brokerages", "created_by": "users", "parent_folder_id": "document_folders", "related_contact_id": "contacts", "related_lead_id": "leads", "related_transaction_id": "transactions" },
   "document_requests": { "brokerage_id": "brokerages", "contact_id": "contacts", "transaction_id": "transactions" },
   "document_retention": { "brokerage_id": "brokerages" },
