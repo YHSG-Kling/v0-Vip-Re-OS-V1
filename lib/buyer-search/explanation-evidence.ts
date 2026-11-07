@@ -87,6 +87,19 @@ export interface ExplanationClaim {
 
 // ─── The three sources, labelled for what they are (owner ruling 8) ─────────────────────────────
 
+/** PURE. An http(s) URL predicate shared by the engine's photo rule and the portal read model (lib/portal/saved-homes.ts). */
+export const isHttpUrl = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//.test(u)
+
+/**
+ * PURE. A search row's display photo — the engine's half of the photo rule (the portal half is the owner-upload gate in
+ * lib/portal/saved-homes.ts). Owner R9/R11 (2026-11-06): RentCast carries a listing's FACTS, never its photos; only a row
+ * the tenant's IDX/MLS feed licensed may show one. Lives beside `describeListingSource` because the source rule and the
+ * photo rule are one ruling (wave 150 integrator move from lib/buyer-search/search-engine.ts, which imports it back).
+ */
+export function licensedResultPhotoUrl(source: string | null | undefined, url: string | null | undefined): string | null {
+  return source === "idx" && isHttpUrl(url) ? url : null
+}
+
 export type ListingSourceKind = "in_house" | "idx" | "rentcast"
 
 export interface ListingSourceLabel {

@@ -40,6 +40,7 @@ import { LOT_UNITS, describeListingSource, readLotMinimum } from "../lib/buyer-s
 import type { HomeLocationEvidence } from "../lib/buyer-search/explanation-evidence"
 import { emptyCriteria } from "../lib/buyer-search/conversational-search"
 import { statedHardConstraints, answerStatedConstraints, type ConstraintCandidate } from "../lib/buyer-search/explanation-evidence"
+import { licensedResultPhotoUrl } from "../lib/buyer-search/explanation-evidence"
 import * as homes from "../lib/portal/saved-homes"
 import * as share from "../lib/portal/collaborative-share"
 
@@ -157,7 +158,7 @@ async function main() {
   check("a photo entry from any other source (e.g. rentcast) inside listings.photos is skipped", ownPhotoOf([{ url: "https://rc/1.jpg", source: "rentcast", order: 0 }]) === null)
   check("APPROVAL-GATED: an upload not in the approved set is skipped; an empty set (unreadable approvals) shows none", ownPhotoOf([up("https://own/1.jpg", 0), up("https://own/2.jpg", 1)], new Set(["m-1"])) === "https://own/2.jpg" && ownPhotoOf([up("https://own/1.jpg", 0)], new Set()) === null)
   check("ownerUploadMediaIds lists exactly the owner-upload media ids", homes.ownerUploadMediaIds([up("https://own/1.jpg", 0), { url: "https://x", source: "rentcast", media_id: "rc" }, "https://legacy"]).join() === "m-0")
-  check("the engine's half: a RentCast result row carries no photo; an IDX row does", homes.licensedResultPhotoUrl("rentcast", URL1) === null && homes.licensedResultPhotoUrl("idx", URL1) === URL1)
+  check("the engine's half: a RentCast result row carries no photo; an IDX row does", licensedResultPhotoUrl("rentcast", URL1) === null && licensedResultPhotoUrl("idx", URL1) === URL1)
 
   console.log("\n F. RENTCAST DISPLAY — the MLS name is the source")
   const lab = describeListingSource("rentcast", { mlsName: "Unlock MLS" })

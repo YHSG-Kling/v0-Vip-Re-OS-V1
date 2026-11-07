@@ -26,10 +26,14 @@
  */
 import { createHash } from "node:crypto"
 import type { PropertyLookupAddress, PropertyLookupResult, PropertyLookupRequest } from "@/lib/ai-isa/property-lookup-rail"
-// The origin vocabulary, the engine-side photo rule and the URL predicate live with the search engine (wave 150 integrator move —
-// the engine is on every page graph; this read model is not). Re-exported here so the portal keeps ONE import root for them.
-import { SAVED_HOME_ORIGINS, SOURCE_FOR_ORIGIN, savedHomeOrigin, licensedResultPhotoUrl, isHttpUrl as isHttp, type SavedHomeOrigin } from "@/lib/buyer-search/search-engine"
-export { SAVED_HOME_ORIGINS, SOURCE_FOR_ORIGIN, savedHomeOrigin, licensedResultPhotoUrl }
+// The origin vocabulary lives with the search engine (wave 150 integrator move — the engine is on every page graph; this
+// read model is not). Re-exported here so the portal keeps ONE import root for it. The URL predicate and the ENGINE-side
+// half of the photo rule (`licensedResultPhotoUrl`) live beside the source rule in lib/buyer-search/explanation-evidence.ts;
+// the engine imports that half itself, so nothing is forwarded here (a re-export nothing in this module calls is a hidden
+// wire, scripts/hidden-wire-census.ts).
+import { SAVED_HOME_ORIGINS, SOURCE_FOR_ORIGIN, savedHomeOrigin, type SavedHomeOrigin } from "@/lib/buyer-search/search-engine"
+import { isHttpUrl as isHttp } from "@/lib/buyer-search/explanation-evidence"
+export { SAVED_HOME_ORIGINS, SOURCE_FOR_ORIGIN, savedHomeOrigin }
 export type { SavedHomeOrigin }
 
 /** PURE. The line a buyer reads under a saved home: where it came from, in plain words. */

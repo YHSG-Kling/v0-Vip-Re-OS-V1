@@ -16,7 +16,7 @@ import { handleError } from '@/lib/errors'
 import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } from './intent-parser'
 import { inferBuyerPersona } from './persona-inference'
 import { generateMatchExplanation, explainCriteriaFit, composeNeighbourlyExplanation, fullExplanationText, type CriteriaFit, type ListingFitFacts } from './explanation-generator'
-import { describeListingSource, claimsFromFit, validateClaims, statedHardConstraints, answerStatedConstraints, type ConstraintAnswer, type ExplanationClaim, type ListingSourceLabel, type HomeLocationEvidence } from './explanation-evidence'
+import { describeListingSource, licensedResultPhotoUrl, claimsFromFit, validateClaims, statedHardConstraints, answerStatedConstraints, type ConstraintAnswer, type ExplanationClaim, type ListingSourceLabel, type HomeLocationEvidence } from './explanation-evidence'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
 import { scanExplanation, scanFairHousing } from './fair-housing'
 import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching/match-scorer' // the module, not the barrel (proxy-graph budget)
@@ -654,12 +654,12 @@ export async function explainPropertyMatchCore(params: {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SAVED-HOME ORIGINS + THE ENGINE-SIDE PHOTO RULE (wave 150, lane 150W; moved here from lib/portal/saved-homes.ts by the
-// integrator — the engine is on every page graph, the portal read model is not; saved-homes re-exports them).
+// SAVED-HOME ORIGINS (wave 150, lane 150W; moved here from lib/portal/saved-homes.ts by the integrator — the engine is on
+// every page graph, the portal read model is not; saved-homes re-exports them). The engine-side photo rule
+// (`licensedResultPhotoUrl`) and the `isHttpUrl` predicate moved on to lib/buyer-search/explanation-evidence.ts beside
+// `describeListingSource` — the SOURCE rule and the PHOTO rule are the same ruling (owner R9/R11: RentCast carries facts,
+// never photos); this module imports the photo rule back for `__photo_url`.
 // ═════════════════════════════════════════════════════════════════════════════
-
-/** PURE. An http(s) URL predicate shared with the portal read model. */
-export const isHttpUrl = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//.test(u)
 
 // ─── ORIGIN (the ONE saved-home origin vocabulary) ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -677,9 +677,4 @@ export function savedHomeOrigin(row: { source?: string | null; listing_id?: stri
   if (s === "buyer_url") return "buyer_url"
   if (s === "brokerage_listing" || row.listing_id) return "tenant_listing"
   return "manual"
-}
-
-/** PURE. A search row's display photo — the engine's half of the same rule (RentCast rows carry none). */
-export function licensedResultPhotoUrl(source: string | null | undefined, url: string | null | undefined): string | null {
-  return source === "idx" && isHttpUrl(url) ? url : null
 }
