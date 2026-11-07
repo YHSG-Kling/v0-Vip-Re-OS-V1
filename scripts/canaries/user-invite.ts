@@ -78,15 +78,29 @@ export async function run() {
     const tick = await consumeManagerSignals({ brokerageId: B, toManager: "data_steward" }, svc)
     const consumedSig = (svc.tables.manager_signals ?? []).find((s) => s.id === sig?.id)
     const bell = (svc.tables.notifications ?? []).filter((n) => n.brokerage_id === B && n.type === "operation_failure_escalation")
-    c.step("141B consumed on the tick: the owner's handler took the signal — no readiness check covers an email that never left, so it was handed to a HUMAN on this tenant (a bell with the tenant sentence, never the raw error) and the signal was marked consumed with the action recorded", tick.consumed >= 1 && consumedSig?.status === "consumed" && /escalated to a human/.test(String(consumedSig?.consumed_action)) && bell.length >= 1 && bell.every((n) => n.brokerage_id === B && !/smtp/i.test(String(n.body))), JSON.stringify({ consumed: tick.consumed, status: consumedSig?.status, bells: bell.map((n) => (n.user_id === ADMIN ? "ADMIN" : "other-user")), action: String(consumedSig?.consumed_action).slice(0, 120) }))
-    // OUTSIDE-LANE FINDING (lane 141K, reported in the notes, not fixed here): lib/kernel/org-recipients.ts:15 ORG_STAFF_ROLES
-    // retypes a role list ("broker", "broker_admin", "admin", "compliance_officer") instead of spreading
-    // TENANT_ADMIN_USER_TYPES (CLAUDE.md §4) — a brokerage whose only admin seat is the broker_owner has NO org recipient,
-    // and the fallback rings an ACTIVE AGENT (here: the invitee of the successful invite), who has no Users › Invitations
-    // door to act on. The human told must be one who can act: a tenant admin.
+    // WAVE 150 (lane 150DAC — "invite immediately, repair asynchronously", canary 16): the owner's handler RE-SENDS an
+    // invitation whose email never left, once, on this tick (lib/kernel/users.ts redispatchInvitation — THE ONE resend
+    // semantic) and re-opens its window. The inviter already saw the failure in-request and the failed row sat on
+    // Users › Invitations, so a REPAIRED invitation rings no human; only a second failure reaches one (proved below).
+    const refusedCalls2 = svc.canary.authCalls.filter((x) => x.email === refusedEmail && x.method === "inviteUserByEmail")
+    const refusedNow = (svc.tables.user_invitations ?? []).find((i) => i.brokerage_id === B && i.email === refusedEmail)
+    c.step("141B/150DAC consumed on the tick: the owner's handler took the signal and RE-SENT the invitation once (a second inviteUserByEmail call, ok), the failed row is pending again with its window re-opened, the action is recorded on the consumed signal, and NO bell rang — a repaired invitation is not a human's job", tick.consumed >= 1 && consumedSig?.status === "consumed" && /repaired asynchronously/.test(String(consumedSig?.consumed_action)) && refusedCalls2.length === 2 && refusedCalls2[0].ok === false && refusedCalls2[1].ok === true && refusedNow?.status === "pending" && !!refusedNow?.expires_at && bell.length === 0, JSON.stringify({ consumed: tick.consumed, status: consumedSig?.status, calls: refusedCalls2.map((x) => x.ok), row: refusedNow?.status, bells: bell.length, action: String(consumedSig?.consumed_action).slice(0, 120) }))
+    // POSITIVE CONTROL (the human half still exists): when the provider refuses the RE-SEND too, the handler escalates to a
+    // HUMAN who can act — the bell reaches a tenant ADMIN seat (TENANT_ADMIN_USER_TYPES — here the broker_owner;
+    // lib/kernel/org-recipients.ts ORG_STAFF_ROLES spreads the roster), never an agent with no Users › Invitations door —
+    // and the bell carries the tenant sentence, never the provider's raw error (the bus record keeps the detail).
+    const refusedTwiceEmail = `refused-twice@${CANARY_EMAIL_DOMAIN}`
+    svc.canary.faults.inviteUserByEmail = { message: "canary: the invite provider refused (smtp 550)" }
+    const refusedTwice = await inviteTenantMember({ brokerageId: B, email: refusedTwiceEmail, firstName: "Still", lastName: "NoMail", userType: "agent", callerUserId: ADMIN })
+    const signals2 = (svc.tables.manager_signals ?? []).filter((s) => s.brokerage_id === B && s.signal_type === "operation_failure_escalated" && s.status !== "consumed")
+    for (const s of signals2) if (s.status === undefined) s.status = "open"
+    svc.canary.faults.inviteUserByEmail = { message: "canary: the invite provider refused the re-send too (smtp 550)" }
+    const tick2 = await consumeManagerSignals({ brokerageId: B, toManager: "data_steward" }, svc)
+    const sig2 = (svc.tables.manager_signals ?? []).find((s) => s.id === signals2[0]?.id)
+    const bell2 = (svc.tables.notifications ?? []).filter((n) => n.brokerage_id === B && n.type === "operation_failure_escalation")
     const { TENANT_ADMIN_USER_TYPES } = await import("../../lib/auth/resolve-user-role")
-    const bellTypes = bell.map((n) => String((svc.tables.users ?? []).find((u) => u.id === n.user_id)?.user_type ?? "?"))
-    c.step("141B the human told can ACT: the escalation bell reaches a tenant ADMIN seat (TENANT_ADMIN_USER_TYPES — here the broker_owner), not an agent with no invitations door", bell.some((n) => n.user_id === ADMIN) && bellTypes.every((t) => TENANT_ADMIN_USER_TYPES.has(t)), `bells rang for user_type(s): ${bellTypes.join(",")} — lib/kernel/org-recipients.ts:15 ORG_STAFF_ROLES omits broker_owner (and team_lead); the fallback picked an active agent`)
+    const bellTypes = bell2.map((n) => String((svc.tables.users ?? []).find((u) => u.id === n.user_id)?.user_type ?? "?"))
+    c.step("141B the human told can ACT (positive control through the second failure): the re-send was refused too, so the handler escalated — the bell reaches a tenant ADMIN seat (TENANT_ADMIN_USER_TYPES — here the broker_owner), not an agent with no invitations door, and carries the tenant sentence, never the raw error", !refusedTwice.success && signals2.length === 1 && tick2.consumed >= 1 && sig2?.status === "consumed" && /escalated to a human/.test(String(sig2?.consumed_action)) && bell2.length >= 1 && bell2.some((n) => n.user_id === ADMIN) && bellTypes.every((t) => TENANT_ADMIN_USER_TYPES.has(t)) && bell2.every((n) => n.brokerage_id === B && !/smtp/i.test(String(n.body))), `bells rang for user_type(s): ${bellTypes.join(",") || "(none)"}; signals ${signals2.length}; consumed ${tick2.consumed}; action: ${String(sig2?.consumed_action).slice(0, 120)}`)
   }
   c.blind("Supabase Auth is stubbed: the invite email itself is never sent; the dispatch is proven as the recorded admin call + the read result. The in-memory client has no column DEFAULTs: manager_signals.status='open' is stamped by the canary before the tick (the live default). The tick itself is app/api/cron/manager-signals (every 30 min) — driven here directly through consumeManagerSignals.")
   const { cleanup, residual, mismatches } = await cleanupCanary(svc, B)
