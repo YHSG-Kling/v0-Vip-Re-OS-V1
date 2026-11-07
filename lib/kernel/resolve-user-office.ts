@@ -209,6 +209,8 @@ export async function resolveViewerHierarchy(svc: HierarchySvc, viewer: { userId
 
 /** One ACTIVE placement in an office (or one of its teams) — the membership row's audit fields, read back as written. */
 interface OfficePlacement {
+  /** organization_members.id — the row a revocation names (revokeOfficeMembershipAction). */
+  membershipId: string
   userId: string; name: string; team: string | null; access: string; role: string; source: string
   joinedAt: string | null; grantedBy: string | null; evidence: string[]
 }
@@ -223,19 +225,24 @@ export interface OfficeDirectoryEntry {
 }
 
 /** The Settings → Offices read model: ONLY the offices and teams the viewer's scope admits. */
-export async function loadOfficeDirectory(svc: HierarchySvc, viewer: { userId: string; brokerageId: string }): Promise<{ ok: true; scope: HierarchyScope; tier: string | null; offices: OfficeDirectoryEntry[]; unassignedTeams: Array<{ id: string; name: string; members: number }>; people: Array<{ id: string; name: string; userType: string }> } | { ok: false; error: string }> {
+/** A placement that was ended: who was removed, from what, by whom and when (organization_members.revoked_*). */
+export interface OfficeRemoval { membershipId: string; name: string; scope: string; team: string | null; removedBy: string | null; removedAt: string }
+
+export async function loadOfficeDirectory(svc: HierarchySvc, viewer: { userId: string; brokerageId: string }): Promise<{ ok: true; scope: HierarchyScope; tier: string | null; offices: OfficeDirectoryEntry[]; unassignedTeams: Array<{ id: string; name: string; members: number }>; people: Array<{ id: string; name: string; userType: string }>; recentRemovals: OfficeRemoval[] } | { ok: false; error: string }> {
   const v = await resolveViewerHierarchy(svc, viewer)
   if (!v.ok) return v
   const { scope } = v
-  if (scope.kind === "own") return { ok: true, scope, tier: v.tier, offices: [], unassignedTeams: [], people: [] }
-  const [officeRes, teamRes, memRes, pinRes] = await Promise.all([
+  if (scope.kind === "own") return { ok: true, scope, tier: v.tier, offices: [], unassignedTeams: [], people: [], recentRemovals: [] }
+  const [officeRes, teamRes, memRes, pinRes, revokedRes] = await Promise.all([
     svc.from("locations").select("id, name, office_code, legal_name, dba, license_number, license_state, city, state, territories, brand_overrides, settings, seat_cap, status, created_by_user_id").eq("brokerage_id", viewer.brokerageId).order("name"),
     svc.from("teams").select("id, name, location_id, deleted_at").eq("brokerage_id", viewer.brokerageId),
     // Every ACTIVE office / team placement with the audit fields the provisioner wrote (who placed, when, on what evidence).
-    svc.from("organization_members").select("user_id, scope_kind, location_id, team_id, access_level, role, source, joined_at, granted_by_user_id, evidence").eq("brokerage_id", viewer.brokerageId).in("scope_kind", ["location", "team"]).is("revoked_at", null),
+    svc.from("organization_members").select("id, user_id, scope_kind, location_id, team_id, access_level, role, source, joined_at, granted_by_user_id, evidence").eq("brokerage_id", viewer.brokerageId).in("scope_kind", ["location", "team"]).is("revoked_at", null),
     svc.from("users").select("location_id").eq("brokerage_id", viewer.brokerageId).not("location_id", "is", null),
+    // The ended placements (the audit trail of revokeOfficeMembershipAction): the most recent twenty.
+    svc.from("organization_members").select("id, user_id, scope_kind, location_id, team_id, revoked_at, revoked_by_user_id").eq("brokerage_id", viewer.brokerageId).in("scope_kind", ["location", "team"]).not("revoked_at", "is", null).order("revoked_at", { ascending: false }).limit(20),
   ])
-  const refused = officeRes.error ?? teamRes.error ?? memRes.error ?? pinRes.error
+  const refused = officeRes.error ?? teamRes.error ?? memRes.error ?? pinRes.error ?? revokedRes.error
   if (refused) return { ok: false, error: `office directory read refused (${refused.message})` }
   // The tenant's staff seats: the people a viewer may PLACE (grantOfficeMembershipAction) and the names behind every
   // placement's user / granter / office creator. Contacts / vendors are never seats. Names resolve ONLY through this
@@ -245,7 +252,7 @@ export async function loadOfficeDirectory(svc: HierarchySvc, viewer: { userId: s
   const staffRows = (staff ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null; user_type: string | null; location_id: string | null }>
   const nameOf = new Map(staffRows.map((u) => [u.id, [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email || u.id]))
   const nameOrStaff = (id: string | null) => (id ? nameOf.get(id) ?? "Platform staff" : null)
-  type MembershipRow = { user_id: string; scope_kind: string; location_id: string | null; team_id: string | null; access_level: string | null; role: string | null; source: string | null; joined_at: string | null; granted_by_user_id: string | null; evidence: Record<string, unknown> | null }
+  type MembershipRow = { id: string; user_id: string; scope_kind: string; location_id: string | null; team_id: string | null; access_level: string | null; role: string | null; source: string | null; joined_at: string | null; granted_by_user_id: string | null; evidence: Record<string, unknown> | null }
   const memberships = (memRes.data ?? []) as MembershipRow[]
   const memberCount = new Map<string, number>()
   for (const m of memberships) if (m.scope_kind === "team" && m.team_id) memberCount.set(m.team_id, (memberCount.get(m.team_id) ?? 0) + 1)
@@ -254,7 +261,7 @@ export async function loadOfficeDirectory(svc: HierarchySvc, viewer: { userId: s
   const teams = ((teamRes.data ?? []) as Array<{ id: string; name: string; location_id: string | null; deleted_at: string | null }>).filter((t) => !t.deleted_at && (scope.aggregate || scope.teamIds.includes(t.id)))
   const teamName = new Map(teams.map((t) => [t.id, t.name]))
   const placement = (m: MembershipRow): OfficePlacement => ({
-    userId: m.user_id, name: nameOf.get(m.user_id) ?? m.user_id, team: m.team_id ? teamName.get(m.team_id) ?? null : null,
+    membershipId: m.id, userId: m.user_id, name: nameOf.get(m.user_id) ?? m.user_id, team: m.team_id ? teamName.get(m.team_id) ?? null : null,
     access: m.access_level ?? "member", role: m.role ?? "member", source: m.source ?? "admin_grant", joinedAt: m.joined_at ?? null,
     grantedBy: nameOrStaff(m.granted_by_user_id), evidence: Object.keys(m.evidence ?? {}).sort(),
   })
@@ -281,5 +288,9 @@ export async function loadOfficeDirectory(svc: HierarchySvc, viewer: { userId: s
   const people = staffRows
     .filter((u) => scope.aggregate || !u.location_id || scope.locationIds.includes(u.location_id))
     .map((u) => ({ id: u.id, name: nameOf.get(u.id) ?? u.id, userType: u.user_type ?? "agent" }))
-  return { ok: true, scope, tier: v.tier, offices, unassignedTeams, people }
+  const visibleOffice = new Set(offices.map((o) => o.id)), visibleTeam = new Set(teams.map((t) => t.id))
+  const recentRemovals: OfficeRemoval[] = ((revokedRes.data ?? []) as Array<{ id: string; user_id: string; scope_kind: string; location_id: string | null; team_id: string | null; revoked_at: string; revoked_by_user_id: string | null }>)
+    .filter((r) => scope.aggregate || (r.location_id ? visibleOffice.has(r.location_id) : false) || (r.team_id ? visibleTeam.has(r.team_id) : false))
+    .map((r) => ({ membershipId: r.id, name: nameOf.get(r.user_id) ?? r.user_id, scope: r.scope_kind, team: r.team_id ? teamName.get(r.team_id) ?? null : null, removedBy: nameOrStaff(r.revoked_by_user_id), removedAt: r.revoked_at }))
+  return { ok: true, scope, tier: v.tier, offices, unassignedTeams, people, recentRemovals }
 }

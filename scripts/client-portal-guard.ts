@@ -122,7 +122,9 @@ check("'at least 2 acres' → 2 acres, high, words kept", lm("we want at least 2
 check("'half an acre' → 0.5 acres", lm("half an acre would be lovely")?.value === 0.5)
 check("'a quarter-acre lot' → 0.25 acres", lm("a quarter-acre lot is plenty")?.value === 0.25)
 check("'1/2 acre' → 0.5 acres", lm("a 1/2 acre yard")?.value === 0.5)
-check("'a 10,000 sq ft lot' → 10000 sqft (their unit)", lm("a 10,000 sq ft lot")?.unit === "sqft" && lm("a 10,000 sq ft lot")?.value === 10000)
+// Re-asserted to the RULE (wave 150, lane 150W, §6 one vocabulary): the buyer's square-feet minimum is spelled in the
+// listing's own lot_size_unit vocabulary (derived from the live CHECK cache, never a pinned literal).
+check("'a 10,000 sq ft lot' → 10000 in the listings.lot_size_unit square-feet spelling (their unit)", lm("a 10,000 sq ft lot")?.value === 10000 && (CHECK_VOCABULARIES.listings?.lot_size_unit ?? []).filter((u) => u !== "acres").includes(String(lm("a 10,000 sq ft lot")?.unit)))
 check("a HOUSE size is never a lot minimum ('2,000 sq ft home with a yard')", lm("a 2,000 sq ft home with a yard") === null)
 check("a MAXIMUM is not a minimum ('under an acre', 'no more than 2 acres')", lm("under an acre please") === null && lm("no more than 2 acres") === null)
 check("a hedge keeps the number with low confidence ('about an acre or so')", lm("about an acre or so")?.value === 1 && lm("about an acre or so")?.confidence === "low")

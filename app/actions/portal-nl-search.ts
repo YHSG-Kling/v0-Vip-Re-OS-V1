@@ -31,6 +31,7 @@ import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contac
 import type { CriteriaFit } from "@/lib/buyer-search/explanation-generator"
 import type { CriteriaChip } from "@/lib/buyer-search/conversational-search"
 import type { ExplanationClaim } from "@/lib/buyer-search/explanation-evidence"
+import type { ConstraintAnswer } from "@/lib/buyer-search/explanation-evidence"
 
 export interface PortalSearchResult {
   address: string | null
@@ -56,6 +57,9 @@ export interface PortalSearchResult {
   claims: ExplanationClaim[] | null
   followUpQuestion: string | null
   agentOffer: string | null
+  /** Wave 150 (lane 150W): the originating MLS a RentCast listing names (its source) and its MLS number — what a save carries. */
+  mlsName: string | null
+  mlsNumber: string | null
 }
 
 /** The action's public answer — named only so the body is one unambiguous
@@ -63,7 +67,7 @@ export interface PortalSearchResult {
  *  only what it EXPORTS (async functions). Wave 147C adds the stored criteria
  *  the search ran on (as provenance-labelled chips). */
 type PortalSearchOutcome =
-  | { ok: true; results: PortalSearchResult[]; criteria: CriteriaChip[] }
+  | { ok: true; results: PortalSearchResult[]; criteria: CriteriaChip[]; constraints: ConstraintAnswer | null }
   | { ok: false; error: string }
 
 // TOMBSTONE: local PortalAccessRefusal type + accessRefusal merged onto
@@ -162,7 +166,11 @@ export async function portalNaturalSearchAction(input: {
     claims: Array.isArray(m.claims) ? m.claims : null,
     followUpQuestion: m.follow_up_question ?? null,
     agentOffer: m.agent_offer ?? null,
+    mlsName: m.mls_name ?? null,
+    mlsNumber: m.mls_number ?? null,
   }))
   const { criteriaChips } = await import("@/lib/buyer-search/conversational-search")
-  return { ok: true, results, criteria: storedCriteria ? criteriaChips(storedCriteria) : [] }
+  // Wave 150 (lane 150W, canary 7): the engine's hold on the buyer's stated must-haves — passed through so an empty page
+  // shows the shortage explanation built from the measured figures, never a bare "nothing matches".
+  return { ok: true, results, criteria: storedCriteria ? criteriaChips(storedCriteria) : [], constraints: r.constraint_answer ?? null }
 }

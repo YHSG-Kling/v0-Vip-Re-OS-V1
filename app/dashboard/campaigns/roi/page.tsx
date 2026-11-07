@@ -5,7 +5,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { ROIDashboardClient } from "./roi-dashboard-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
-import { resolveEgressScope } from "@/lib/kernel/egress-scope"
+import { resolveEgressScopeForViewer } from "@/lib/kernel/egress-scope"
+import { createServiceClient } from "@/lib/supabase/service"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
   getCampaignROIData,
@@ -75,7 +76,10 @@ export default async function CampaignROIPage({
   // and a broker admin no dropdown at all; the seat roster in the `.in()` is
   // derived from TENANT_ADMIN_USER_TYPES rather than retyped.
   let agents: any[] = []
-  const scope = resolveEgressScope({
+  // Wave 150 (lane 150DAC, C34): on a multi-location tenant the scope is the hierarchy's (an office head sees
+  // their offices' people, never the whole house because of a user_type); single-office keeps the ladder.
+  // Ids from the SESSION above; the reader fails closed to own work.
+  const { scope } = await resolveEgressScopeForViewer(createServiceClient(), {
     userType: profile.user_type ?? "agent",
     userId: user.id,
     brokerageId: profile.brokerage_id,
@@ -88,7 +92,8 @@ export default async function CampaignROIPage({
       .eq("brokerage_id", profile.brokerage_id)
       .in("user_type", ["agent", ...TENANT_ADMIN_USER_TYPES])
       .order("first_name")
-    if (scope.kind === "team" && scope.teamId) peopleQuery = peopleQuery.eq("team_id", scope.teamId)
+    if (scope.kind === "team" && scope.teamId) peopleQuery = peopleQuery.in("team_id", scope.teamIds?.length ? scope.teamIds : [scope.teamId])
+    if (scope.kind === "location" && scope.locationId) peopleQuery = peopleQuery.in("location_id", scope.locationIds?.length ? scope.locationIds : [scope.locationId])
     const { data: agentData, error: agentError } = await peopleQuery
     if (agentError) console.error("[campaigns/roi] people read refused:", agentError.message)
 

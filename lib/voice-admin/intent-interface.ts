@@ -47,6 +47,10 @@ import { voiceCapabilities, humanManager, VOICE_NEVER_SPOKEN } from "./kernel-co
 import { assistantSkillRefusal } from "./assistant-reach"
 import { parseTeamCommandText, type ParsedTeamCommand } from "@/lib/voice/parse-team-command"
 import { personaAudienceLabels } from "@/lib/portal/persona-config"
+import { CAMPAIGN_PERSONAS, rawSpellingsForPersona } from "@/lib/campaigns/contact-sources"
+import { MARKETING_NEEDS } from "@/lib/contacts/persona-layers"
+import { personaLabelSet } from "@/lib/compliance-rules/audience-compliance"
+import { getNavigationForRole } from "@/app/config/navigation-config"
 
 // ─── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -687,13 +691,40 @@ const HOUSING_DELIVERY_NARROWING: ReadonlyArray<{ rule: string; re: RegExp }> = 
   { rule: "a lookalike audience", re: /\blook[\s-]?alikes?\b|\bsimilar\s+audiences?\b/i },
 ]
 
+/**
+ * R7 (wave 150, lane 150QTV — owner, 2026-11-06: "every persona is allowed" covers a typed audience word that equals a persona
+ * label; "extend the label set to every persona source"). The wave-149 set (`personaAudienceLabels`, lib/portal/persona-config.ts)
+ * carries the kernel-portal personas and the C20 life-event situations. Three persona sources were missing and are added here:
+ *   · the canonical Persona union (lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS) — what contacts.contact_persona and every
+ *     persona audience are segmented on;
+ *   · its drifted stored spellings (rawSpellingsForPersona — "veteran", "downsizer", "relocation", "pre_foreclosure" …);
+ *   · the marketing-persona NEEDS the persona study writes (lib/contacts/persona-layers.ts MARKETING_NEEDS — key and label:
+ *     "later_life_housing" / "Later-life housing", "military_relocation", "estate_property_sale" …).
+ * `other` is excluded: it names no situation. Memoised (every source is frozen). Outside-lane: fold these three sources into
+ * `personaAudienceLabels` itself (lib/portal/persona-config.ts, the portal lane's file) and delete this composition.
+ */
+let everyPersonaLabelMemo: ReadonlySet<string> | null = null
+/** @proofSeam read by scripts/two-way-channels-guard.ts (R7: the label set covers every persona source — counted, not assumed). */
+export function everyPersonaAudienceLabel(): ReadonlySet<string> {
+  if (everyPersonaLabelMemo) return everyPersonaLabelMemo
+  const raw: string[] = []
+  for (const p of CAMPAIGN_PERSONAS) {
+    if (p === "other") continue
+    raw.push(p, ...rawSpellingsForPersona(p))
+  }
+  for (const [key, spec] of Object.entries(MARKETING_NEEDS)) raw.push(key, spec.label)
+  everyPersonaLabelMemo = new Set([...personaAudienceLabels(), ...personaLabelSet(raw)])
+  return everyPersonaLabelMemo
+}
+
 /** PURE: a spoken ad audience is DROPPED (the ad still drafts on location targeting) only when its words select people by
  *  a protected-class proxy or ask for narrowing the housing ad platform refuses. Every persona audience passes. */
 function screenAdAudience(audience: string | null): { audience: string | null; refusedReason: string | null } {
   if (!audience) return { audience: null, refusedReason: null }
   // A persona label ("empty nesters", "retirement", "probate") is an audience BASIS, never a proxy (owner ruling 1; the labels
-  // come from the kernel-portal personas + the C20 situations — lib/portal/persona-config.ts personaAudienceLabels).
-  const proxy = audienceProxyHits(audience, personaAudienceLabels())[0]
+  // come from EVERY persona source — kernel-portal personas, C20 situations, the Persona union + its spellings, persona-study
+  // needs; R7, everyPersonaAudienceLabel above).
+  const proxy = audienceProxyHits(audience, everyPersonaAudienceLabel())[0]
   const narrowing = HOUSING_DELIVERY_NARROWING.find((n) => n.re.test(audience))
   if (narrowing) {
     return {
@@ -822,6 +853,57 @@ export function matchRoutes(utterance: string, screen?: IntentScreen | null): Ro
   return [...hits.values()].sort((a, b) => b.score - a.score)
 }
 
+// ─── NAVIGATION (wave 150, lane 150DAC — the owner's "natural-language / voice navigation") ─────
+// "Take me to the command center", "open my transactions", "go to offices" — said or typed on any C17 affordance.
+// SURVIVOR, NOT A SECOND MAP: the destinations are the person's OWN role-gated menu (app/config/navigation-config.ts
+// getNavigationForRole — the same union the shell's sidebar, header, mobile bar and command palette render), so a
+// sentence can never reach a screen the person's menu does not offer, and the page still applies its own gate when it
+// opens. Strict on purpose: the words after the verb must BE a menu label (articles, "my", "page/screen" dropped) — a
+// domain request that merely mentions a screen ("show me which contacts may need help") never becomes navigation.
+
+interface NavDestination { label: string; href: string }
+interface NavigationPick { href: string; label: string; said: string }
+
+interface NavItemLike { label?: string; href?: string; divider?: boolean; children?: NavItemLike[] }
+
+const NAV_VERB_RE = /^\s*(?:please\s+|can you\s+|could you\s+)?(?:go to|go back to|open up|open|take me to|bring up|pull up|show me|navigate to|jump to|switch to)\s+(.+?)\s*[.!?]*\s*$/i
+
+function navKey(s: string): string {
+  return norm(s).trim()
+    .replace(/^(?:the|my|our)\s+/, "")
+    .replace(/\s+(?:page|screen|tab|section|view|dashboard please|please)$/, "")
+    .replace(/^ai\s+/, "")
+    .replace(/s$/, "")
+}
+
+/** PURE: the person's own menu destinations (sidebar incl. children, top nav, mobile bar, palette), deduped by href. */
+function navigationDestinations(actor: IntentActor): NavDestination[] {
+  const role = actorRole(actor)
+  const held = [actor.userType, role, ...(actor.grantedRoles ?? [])].filter((r): r is string => typeof r === "string" && r.length > 0)
+  if (held.length === 0) return []
+  const config = getNavigationForRole(held)
+  const out: NavDestination[] = []
+  const seen = new Set<string>()
+  const walk = (items: readonly NavItemLike[] | undefined) => {
+    for (const it of items ?? []) {
+      if (!it.divider && it.label && it.href && it.href.startsWith("/") && !seen.has(it.href)) { seen.add(it.href); out.push({ label: it.label, href: it.href }) }
+      walk(it.children)
+    }
+  }
+  walk(config.sidebarItems); walk(config.topNavItems); walk(config.mobileBottomNav); walk(config.commandPaletteItems)
+  return out
+}
+
+/** PURE: a navigation request whose target IS one of the destinations; null otherwise (never a guess). */
+function interpretNavigation(utterance: string, destinations: readonly NavDestination[]): NavigationPick | null {
+  const m = (utterance ?? "").match(NAV_VERB_RE)
+  if (!m) return null
+  const target = navKey(m[1])
+  if (target.length < 3) return null
+  const hit = destinations.find((d) => navKey(d.label) === target)
+  return hit ? { href: hit.href, label: hit.label, said: m[1].trim().slice(0, 80) } : null
+}
+
 // ─── C17: interpretIntent ────────────────────────────────────────────────────
 
 export interface InterpretIntentInput {
@@ -872,6 +954,9 @@ export interface IntentInterpretation {
    * Executed by dispatchTeamCommand under its own gates (unchanged).
    */
   teamCommand: ParsedTeamCommand | null
+  /** WAVE 150 (lane 150DAC): a NAVIGATION request — the destination on the person's own menu. The affordance opens it;
+   *  nothing executes and nothing changes. Absent / null for every other interpretation. */
+  navigation?: NavigationPick | null
 }
 
 /** PURE. The team-command floor, asked only when no DOMAIN route owns the sentence (and never for a client actor). */
@@ -890,6 +975,18 @@ export function interpretIntent(input: InterpretIntentInput): IntentInterpretati
   const now = input.now ?? new Date()
   const screen = input.screen && isIntentScreen(input.screen) ? input.screen : null
   const role = actorRole(input.actor)
+  // NAVIGATION BRANCH (wave 150, lane 150DAC): "take me to …" whose target IS a label on the person's own menu opens
+  // that screen — asked before any route (a forced model route skips it). Nothing executes; the page gates itself.
+  const nav = !input.routeKey && role !== null ? interpretNavigation(input.utterance, navigationDestinations(input.actor)) : null
+  if (nav) {
+    return {
+      utterance: input.utterance, modality: input.modality, screen, capability: null, governedBy: null, family: null, manager: null,
+      params: {}, missing: [], clarification: null,
+      plan: { summary: `Opening ${nav.label}.`, steps: [`Open ${nav.label} (${nav.href}).`], willChange: false, needsConfirmation: false, approval: null, executor: null, managerSpoken: "" },
+      authority_check: { outcome: "allowed", allowed: true, role, dataScope: "own", confirmationRequired: false, approvalRequired: false, reasons: ["It is on your own menu; the screen checks your access again when it opens."] },
+      executors: {}, confidence: "high", via: "rules", alternatives: [], notes: [], teamCommand: null, navigation: nav,
+    }
+  }
   // A client in their portal is routed by the client floor (moved here — one interpreter for every actor).
   const clientKey = role === "contact" && !input.routeKey ? CLIENT_ROUTE_FOR[classifyClientIntent(input.utterance, input.actor.contactType ?? null)] : null
   const matches = clientKey ? [] : matchRoutes(input.utterance, screen)

@@ -14,7 +14,7 @@ import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadOfficeDirectory } from "@/lib/kernel/resolve-user-office"
-import { grantOfficeMembershipAction } from "./actions"
+import { grantOfficeMembershipAction, revokeOfficeMembershipAction } from "./actions"
 
 export const metadata = { title: "Offices | Settings" }
 
@@ -96,8 +96,14 @@ export default async function DashboardSettingsOfficesPage({ searchParams }: { s
                     {o.placements.length ? (
                       <ul className="mt-1 list-disc pl-5 text-sm">
                         {o.placements.map((p) => (
-                          <li key={`${p.userId}:${p.team ?? "office"}`}>
+                          <li key={p.membershipId}>
                             {p.name}{p.team ? ` — ${p.team}` : ""} · {p.access === "leadership" ? (p.team ? "team lead" : "office head") : p.role.replace(/_/g, " ")}
+                            {dir.scope.aggregate || p.access !== "leadership" ? (
+                              <form action={revokeOfficeMembershipAction} className="ml-2 inline">
+                                <input type="hidden" name="membershipId" value={p.membershipId} />
+                                <button type="submit" className="rounded border px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted" aria-label={`Remove ${p.name} from this ${p.team ? "team" : "office"}`}>Remove</button>
+                              </form>
+                            ) : null}
                             <span className="text-muted-foreground">
                               {" "}· placed {p.joinedAt ? new Date(p.joinedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }) : "on an unrecorded date"}
                               {p.grantedBy ? ` by ${p.grantedBy}` : ""} via {p.source.replace(/_/g, " ")}
@@ -140,6 +146,18 @@ export default async function DashboardSettingsOfficesPage({ searchParams }: { s
                   ) : null}
                 </li>
               ))}
+              <li className="rounded-lg border p-4">
+                <h2 className="text-lg font-semibold">Recent removals</h2>
+                {dir.recentRemovals.length ? (
+                  <ul className="mt-1 list-disc pl-5 text-sm">
+                    {dir.recentRemovals.map((r) => (
+                      <li key={r.membershipId}>
+                        {r.name} — {r.team ? `team ${r.team}` : "office placement"} · removed {new Date(r.removedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}{r.removedBy ? ` by ${r.removedBy}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="text-sm text-muted-foreground">No removals yet.</p>}
+              </li>
               {dir.unassignedTeams.length ? (
                 <li className="rounded-lg border p-4">
                   <h2 className="text-lg font-semibold">Teams not placed in an office</h2>

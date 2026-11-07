@@ -58,7 +58,8 @@ export async function interpretIntentLive(input: LiveInterpretInput): Promise<In
 
   // ── The model, only on a miss, a tie, or a required detail the rules could not lift from the words
   //    (a name, a note, a document) — booked to the session tenant, and re-checked verbatim below ──
-  const ambiguous = result.capability === null || result.confidence !== "high" || result.missing.length > 0
+  //    A NAVIGATION answer (wave 150, lane 150DAC — an exact label on the person's own menu) is never "a miss".
+  const ambiguous = !result.navigation && (result.capability === null || result.confidence !== "high" || result.missing.length > 0)
   if (ambiguous && input.allowModelAssist !== false && input.tenant.brokerageId && (input.utterance ?? "").trim().length >= 4) {
     try {
       const svc = input.svc ?? createServiceClient()

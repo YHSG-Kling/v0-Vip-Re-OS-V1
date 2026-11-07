@@ -249,7 +249,41 @@ const AI_TELLS: ReadonlyArray<{ re: RegExp; rule: string; fix?: AiTellFix }> = [
   { re: /\bin conclusion,|\bto sum(?:marize| it)? up,/i, rule: "essay scaffolding ('in conclusion,')",
     fix: { re: /\b(?:in conclusion|to sum(?:marize| it)? up),\s*/gi, to: "" } },
   { re: /\bthis (?:comprehensive |ultimate |complete )?(?:guide|chapter|book) will (?:walk|take|explore|delve|cover)\b/i, rule: "self-announcing paragraph ('this guide will walk you through')" },
+  // ── COMMON REAL-ESTATE CAMPAIGN PHRASES (wave 150, lane 150SZ — owner ruling R10, 2026-11-06: "all outward copy is inventive
+  // and humanized in the tenant's voice and tagline — never hard-copied, never a common real-estate campaign phrase"). The
+  // stock lines every postcard, listing ad and farming email already uses; a reader skims past them, so they cost the tenant
+  // the attention the piece exists to earn. SAME list, SAME scanner, SAME final phase (no second humanizer, CLAUDE.md §6).
+  // None has a safe deterministic rewrite — replacing one needs the writer's own idea about THIS home or THIS person — so every
+  // one stays OPEN for the writer (the model's repair pass or the human). Legal / scripted text is never judged here: the
+  // final phase masks the caller's verbatim blocks before it scans (lib/marketing/humanize-final.ts FinalizeInput.verbatim).
+  // The positive control is scripts/asset-producer-guard.ts §A (a specimen of every entry must be caught; ordinary prose not).
+  { re: /\bdream (?:home|house)s?\b/i, rule: "common real-estate campaign phrase ('dream home')" },
+  { re: /\b(?:won'?t|will not) last(?: long)?\b/i, rule: "common real-estate campaign phrase ('won't last long')" },
+  { re: /\bpriced to sell\b/i, rule: "common real-estate campaign phrase ('priced to sell')" },
+  { re: /\bhidden gem\b/i, rule: "common real-estate campaign phrase ('hidden gem')" },
+  { re: /\bmust[\s-]see\b/i, rule: "common real-estate campaign phrase ('must-see')" },
+  { re: /\bnestled (?:in|among|on|amid|between|at)\b/i, rule: "common real-estate campaign phrase ('nestled in')" },
+  { re: /\b(?:home|house|property|residence|kitchen|condo|it) boasts\b/i, rule: "common real-estate campaign phrase ('boasts')" },
+  { re: /\bturn[\s-]?key\b/i, rule: "common real-estate campaign phrase ('turnkey')" },
+  { re: /\bmove[\s-]in[\s-]ready\b/i, rule: "common real-estate campaign phrase ('move-in ready')" },
+  { re: /\bpride of ownership\b/i, rule: "common real-estate campaign phrase ('pride of ownership')" },
+  { re: /\bentertainer'?s (?:dream|delight|paradise)\b/i, rule: "common real-estate campaign phrase ('entertainer's dream')" },
+  { re: /\bthinking (?:of|about) selling\s*\?/i, rule: "common real-estate campaign phrase ('thinking of selling?')" },
+  { re: /\bwhat(?:'s| is) your home (?:really )?worth\b/i, rule: "common real-estate campaign phrase ('what's your home worth')" },
+  { re: /\b(?:now is|it'?s|there'?s never been) (?:a |the )?(?:great|perfect|best|better) time to (?:buy|sell)\b/i, rule: "common real-estate campaign phrase ('now is a great time to buy')" },
+  { re: /\bdon'?t miss (?:out|this)\b/i, rule: "common real-estate campaign phrase ('don't miss out')" },
+  { re: /\bcall (?:me|us) today\b/i, rule: "common real-estate campaign phrase ('call me today')" },
+  { re: /\ball (?:of )?your real[\s-]estate needs\b/i, rule: "common real-estate campaign phrase ('all your real estate needs')" },
+  { re: /\bone[\s-]stop[\s-]shop\b/i, rule: "common real-estate campaign phrase ('one-stop shop')" },
+  { re: /\bkey to your (?:new|next|dream) home\b|\bunlock the door to\b/i, rule: "common real-estate campaign phrase ('the key to your new home')" },
+  { re: /\blocation,? location,? location\b/i, rule: "common real-estate campaign phrase ('location, location, location')" },
+  { re: /\bbuyers are (?:waiting|lined up|looking for homes like yours)\b/i, rule: "common real-estate campaign phrase ('buyers are waiting')" },
+  { re: /\bhome sweet home\b/i, rule: "common real-estate campaign phrase ('home sweet home')" },
 ]
+
+/** The rule label every common real-estate campaign phrase carries (R10) — callers that only need to know "is this a stock
+ *  campaign line?" match on it instead of restating the list. */
+export const CAMPAIGN_PHRASE_RULE_PREFIX = "common real-estate campaign phrase"
 
 /** PURE. Machine-written tells in a text. Empty = none of the listed tells (the positive control is in the guard). */
 export function scanAiTells(text: string): AiTellFinding[] {

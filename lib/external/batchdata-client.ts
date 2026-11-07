@@ -1,4 +1,4 @@
-import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
+import { stableContentDigest, type NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 import { resolveBatchDataToken } from "@/lib/external/batchdata-tokens"
 import { householdFinancialsFromBatchData, type HouseholdFinancials } from "@/lib/lead-pipeline/enrichment-column-map"
 
@@ -2148,7 +2148,9 @@ export function normalizeBuyBoxInvestorRecord(
   const idSlug = `${entityName ?? fullName ?? "investor"}-${matchedPropertyAddress}`.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
 
   return {
-    sourceRecordId: `batchdata-buybox-${idSlug || Date.now()}`,
+    // Wave 150 (lane 150HIAB, lane-150EFG Outside-lane 3): a slug-less row keys on its CONTENT, never the clock — a
+    // replayed row must land on the same source_record_id (C35 idempotent replay).
+    sourceRecordId: `batchdata-buybox-${idSlug || stableContentDigest(row)}`,
     source: "batchdata_buybox",
     behaviorType: "investor_buy_box_match",
     intentType: "buyer",

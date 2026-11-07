@@ -38,6 +38,14 @@ import {
 } from "@/lib/support/ticket-constants"
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
+
+/** WAVE 150 (lane 150DAC — "tenant-safe errors"): a refused database read / write is LOGGED in full for staff and the
+ *  person is told, in words, what did not happen — never the raw database sentence (a constraint name, a table, a
+ *  permission code). Not exported (a "use server" export is a public endpoint). */
+function tenantSafeError(what: string, raw: string | null | undefined): string {
+  console.error(`[support] ${what} — refused: ${raw ?? "no detail"}`)
+  return `${what}. Please try again in a moment; if it keeps happening, raise it with your office administrator.`
+}
 import { decideStatusOverride, statusOverrideDetail } from "@/lib/kernel/status-override"
 import {
   resolveTicketQueueScope, scopeTicketQuery, ticketWithinScope,
@@ -213,7 +221,7 @@ export async function createSupportTicket(input: {
     })
     .select("id")
     .single()
-  if (error || !data) return { ok: false, error: error?.message ?? "Could not create ticket" }
+  if (error || !data) return { ok: false, error: tenantSafeError("Your ticket could not be created", error?.message) }
 
   // Alert the side that actually answers this lane. Before the lane existed BOTH
   // lanes alerted platform staff, so a brokerage-internal ticket paged the platform
@@ -264,7 +272,7 @@ async function callerIsTicketSubmitter(
     .select("id, agent_id, submitted_by_user_id, lane, status, satisfaction_rating")
     .eq("id", ticketId)
     .maybeSingle()
-  if (error) return { ok: false, error: `Could not read the ticket: ${error.message}` }
+  if (error) return { ok: false, error: tenantSafeError("The ticket could not be read", error.message) }
   if (!t) return { ok: false, error: "Ticket not found" }
   const row = t as Record<string, unknown>
   const mine =
@@ -322,7 +330,7 @@ export async function rateMyTicket(input: {
     satisfaction_comment: input.comment?.trim() || null,
     satisfaction_at: new Date().toISOString(),
   }).eq("id", input.ticketId).select("id")
-  if (error) return { ok: false, error: error.message }
+  if (error) return { ok: false, error: tenantSafeError("Your rating could not be saved", error.message) }
   if ((rated?.length ?? 0) === 0) return { ok: false, error: "The rating was not stored" }
   revalidatePath("/dashboard/help")
   return { ok: true }
@@ -351,7 +359,7 @@ export async function listMyTickets(): Promise<
     .eq("submitted_by_user_id", ctx.userId)
     .order("created_at", { ascending: false })
     .limit(100)
-  if (error) return { ok: false, error: error.message }
+  if (error) return { ok: false, error: tenantSafeError("Your tickets could not be loaded", error.message) }
   return { ok: true, tickets: (data ?? []).map(mapTicket) }
 }
 
@@ -387,7 +395,7 @@ export async function listBrokerageTickets(filters: {
   if (filters.status) query = query.eq("status", filters.status)
 
   const { data, error } = await query
-  if (error) return { ok: false, error: error.message }
+  if (error) return { ok: false, error: tenantSafeError("The ticket queue could not be loaded", error.message) }
   return { ok: true, tickets: (data ?? []).map(mapTicket) }
 }
 
@@ -417,7 +425,7 @@ export async function updateTicketStatus(
   // The prior state, read through the SAME pinned scope — it keys the ledger (a double-click replays; a later
   // reopen-and-resolve is a new cycle) and names the submitter the closure is reported to.
   const { data: prior, error: priorErr } = await scopeTicketQuery(svc.from("support_tickets").select("id, brokerage_id, lane, status, updated_at, subject, submitted_by_user_id").eq("id", ticketId), scope).maybeSingle()
-  if (priorErr) return { ok: false, error: priorErr.message }
+  if (priorErr) return { ok: false, error: tenantSafeError("The ticket could not be read", priorErr.message) }
   if (!prior) return { ok: false, error: "Ticket not found" }
   const before = prior as { id: string; brokerage_id: string | null; lane: string | null; status: string | null; updated_at: string | null; subject: string | null; submitted_by_user_id: string | null }
   if (!before.brokerage_id) return { ok: false, error: "Ticket has no tenant" }
@@ -446,7 +454,7 @@ export async function updateTicketStatus(
       // report "Ticket marked resolved" for a ticket in another tenant. The write and
       // its { error } read are ONE statement (swallowed-refusal-census reads per statement).
       const { data: updated, error } = await scopeTicketQuery(svc.from("support_tickets").update(update).eq("id", ticketId), scope).select("id")
-      if (error) return { ok: false, error: error.message }
+      if (error) return { ok: false, error: tenantSafeError("The ticket status could not be changed", error.message) }
       if ((updated?.length ?? 0) === 0) return { ok: false, error: "Ticket not found" }
       // The requester learns the outcome (a resolved ticket invites a reply, which reopens it — support-thread.ts).
       if ((status === "resolved" || status === "closed") && before.submitted_by_user_id && before.submitted_by_user_id !== ctx.userId) {
@@ -500,7 +508,7 @@ export async function logSupportRequestOnBehalf(input: {
 
   const svc = createServiceClient()
   const { data: requester, error: rErr } = await svc.from("users").select("id").eq("brokerage_id", scope.brokerageId).ilike("email", email).limit(1).maybeSingle()
-  if (rErr) return { ok: false, error: `Could not look up the requester: ${rErr.message}` }
+  if (rErr) return { ok: false, error: tenantSafeError("The requester could not be looked up", rErr.message) }
   if (!requester) return { ok: false, error: "No one with that email works with this office" }
   const { createHash } = await import("node:crypto")
   const fingerprint = createHash("sha256").update(`${(requester as { id: string }).id}|${channel}|${input.subject ?? ""}|${body}`).digest("hex").slice(0, 24)
@@ -693,7 +701,7 @@ export async function voteArticleHelpful(
   if (error) {
     // The allowlist rejects anything unexpected, so a failure here is real —
     // report it rather than silently falling back to the racy path.
-    return { ok: false, error: error.message }
+    return { ok: false, error: tenantSafeError("Your vote could not be recorded", error.message) }
   }
   return { ok: true }
 }

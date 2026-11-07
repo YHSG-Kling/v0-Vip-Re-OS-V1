@@ -15,10 +15,19 @@
  *     suppresses, that declaration reaches the Meta payload, and it is recorded
  *     on the audience (m538). Without this, an operator did it in Meta's own
  *     Exclude box, outside anything this product could see;
- *   · the capability REFUSES  — every audience placed in that slot passes
- *     `personaAdsEligibility(persona, "exclusion")`, so a protected-characteristic
- *     persona audience CANNOT be a suppression list (Fair Housing Act,
- *     42 U.S.C. § 3604(c); HUD's 2019-2022 actions against Meta).
+ *   · the capability is GOVERNED — every audience placed in that slot must be
+ *     readable in this tenant, resolvable, and free of raw demographic criteria;
+ *     the platform's housing rules (validateAdReadiness) require the slot to have
+ *     been gated before anything reaches Meta.
+ *
+ * RE-ASSERTED — wave 150, lane 150QTV (owner ruling R1, 2026-11-06): "the pre-147
+ * rule that a protected persona cannot be used to EXCLUDE people from a housing ad
+ * is REMOVED — delivery exclusions are governed only by the platform's own rules
+ * and consent/suppression." Section 2 used to pin "senior / probate / divorce /
+ * military in the exclude slot → REFUSED (protected_characteristic)". It now pins
+ * the RULE: those four are ADMITTED like every canonical persona, raw demographic
+ * criteria are still refused, and mutation A re-introduces the removed refusal and
+ * shows the R1 assertions going red.
  *
  * ── WHY EVERY GATE ASSERTION IS TWO-SIDED (CLAUDE.md §2) ────────────────────
  * A gate that refuses everything and a gate that refuses the right thing both
@@ -60,6 +69,7 @@ import {
   PERSONA_SEGMENT_TYPE,
 } from "../lib/ads/audience-persona-basis"
 import { audienceUseOf } from "../lib/ads/audience-source-rules"
+import { protectedClassReasonFor } from "../lib/lead-governance/protected-class-signals"
 import { CAMPAIGN_PERSONAS, type CampaignPersona } from "../lib/campaigns/contact-sources"
 import { FB_AUDIENCE_TEMPLATES, templateAudienceUse } from "../lib/ads/fb-audience-templates"
 import { validateAdReadiness, buildMetaAdStructure, type AdBuildInput } from "../lib/ads/connectors/ad-payload"
@@ -175,36 +185,54 @@ async function main() {
     && !/verifyExclusionSlot\s*\(/.test(code("app/dashboard/campaigns/ads/ads-dashboard-client.tsx")))
 
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[2 · THE CAPABILITY REFUSES — a protected characteristic may not SUPPRESS]")
+  console.log("\n[2 · R1 (2026-11-06) — every canonical persona MAY be a suppression list; platform rules + consent govern]")
 
   for (const key of PROTECTED_AUDS) {
     const row = AUD[key]
     const v = resolveExclusionSlot([row.id], ALL_ROWS, "Prospecting — Spring")
-    check(`"${row.audience_name}" in the EXCLUDE slot → REFUSED (protected_characteristic)`,
-      !v.ok && v.refusalKind === "protected_characteristic",
-      v.ok ? "ADMITTED — this is the HUD v. Meta shape" : `kind=${v.refusalKind}`)
-    check(`…and the refusal names the audience and the fix, not a bare code`,
-      !v.ok && v.refusal.includes(row.audience_name!) && v.refusal.length > 120)
+    check(`"${row.audience_name}" in the EXCLUDE slot → ADMITTED and governed (R1)`,
+      v.ok && v.governed.some((g) => g.audienceId === row.id),
+      v.ok ? "" : `kind=${v.refusalKind} — the removed protected-persona exclusion rule is back`)
   }
-  check("the refusal comes from the ARM THAT ALREADY EXISTED — personaAdsEligibility(persona,'exclusion')",
+  check("personaAdsEligibility(persona,'exclusion') admits every canonical persona except the null basis",
+    CAMPAIGN_PERSONAS.every((p) => personaAdsEligibility(p, "exclusion").eligible === (p !== "other")))
+  check("…and the exclusion verdict still RECORDS the operation (use: exclusion) for the audit line",
     PROTECTED_AUDS.every((k) => {
       const persona = (AUD[k].source_rule as { filters: { personas: string[] } }).filters.personas[0]
-      const verdict = personaAdsEligibility(persona as CampaignPersona, "exclusion")
-      return !verdict.eligible && verdict.refusalKind === "protected_characteristic"
+      return personaAdsEligibility(persona as CampaignPersona, "exclusion").use === "exclusion"
     }))
-  check("…and the module does NOT re-implement it (no second protected-class list here, §6)",
+  check("the removed refusal is GONE from code (no protectedClassReasonFor call in the persona-basis module)",
+    !/protectedClassReasonFor\s*\(/.test(code("lib/ads/audience-persona-basis.ts")))
+  check("POSITIVE CONTROL — that scanner sees the call when it is present",
+    /protectedClassReasonFor\s*\(/.test(blankComments("const r = protectedClassReasonFor(persona)\n")))
+  check("…and BOTH tombstones name R1 and the survivors (platform rules + consent/suppression)",
+    /owner ruling R1/.test(raw("lib/ads/audience-persona-basis.ts"))
+    && /OWNER RULING R1/.test(raw("lib/ads/audience-exclusion.ts"))
+    && /validateAdReadiness/.test(raw("lib/ads/audience-exclusion.ts"))
+    && /check-suppression/.test(raw("lib/ads/audience-exclusion.ts")))
+  check("the module does NOT coin a protected-class list (§6)",
     !/PROTECTED_CLASS_TOKENS|senior.*probate.*divorce/.test(code("lib/ads/audience-exclusion.ts")))
+  check("EXCLUSION_INELIGIBLE_PERSONAS is DERIVED and is now the null basis alone",
+    JSON.stringify([...EXCLUSION_INELIGIBLE_PERSONAS]) === JSON.stringify(["other"]),
+    EXCLUSION_INELIGIBLE_PERSONAS.join(","))
   check("EXCLUSION_INELIGIBLE_PERSONAS is exactly the set that refuses in the slot",
     CAMPAIGN_PERSONAS.every((p) => {
       const rule = { type: PERSONA_SEGMENT_TYPE, filters: { personas: [p] } }
       const v = resolveExclusionSlot(["x"], [{ id: "x", audience_name: p, source_rule: rule }], "C")
       return v.ok !== EXCLUSION_INELIGIBLE_PERSONAS.includes(p)
     }), EXCLUSION_INELIGIBLE_PERSONAS.join(","))
-  check("a protected class smuggled OUTSIDE the personas key is refused by the token gate arm",
+  check("a RAW DEMOGRAPHIC criterion outside the personas key is still refused by the token gate arm (no age narrowing)",
     (() => {
       const v = resolveExclusionSlot([AUD.tagged.id], ALL_ROWS, "C")
       return !v.ok && v.refusalKind === "protected_segmentation"
     })())
+  check("…on an exclusion_* rule type too (min_owner_age is the platform's no-age-narrowing rule; R1 leaves it)",
+    (() => {
+      const v = resolveExclusionSlot(["m"], [{ id: "m", audience_name: "65+", source_rule: { type: "exclusion_active_pipeline", filters: { min_owner_age: 65 } } }], "C")
+      return !v.ok && v.refusalKind === "protected_segmentation"
+    })())
+  check("…while a CANONICAL persona on an exclusion_* rule type passes the token gate (R1 removed the carve-out switch)",
+    resolveExclusionSlot(["p"], [{ id: "p", audience_name: "Senior pipeline", source_rule: { type: "exclusion_active_pipeline", filters: { personas: ["senior"] } } }], "C").ok)
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[3 · THE OTHER SIDE — this is NOT refuse-every-exclusion]")
@@ -243,9 +271,10 @@ async function main() {
       return excludedAudienceIdsIn(t).length === 0 && includedAudienceIdsIn(t).length === 4
         && resolveExclusionSlot(excludedAudienceIdsIn(t), ALL_ROWS, "C").ok
     })())
-  check("the ESCALATION is what makes the difference — the same rule, two operations, two verdicts",
+  check("R1 — the same rule resolves on BOTH operations (the escalation no longer changes a persona's verdict)",
     resolveAudiencePersonaBasis(AUD.senior.source_rule).ok
-    && !resolveAudiencePersonaBasis(AUD.senior.source_rule, "exclusion").ok)
+    && resolveAudiencePersonaBasis(AUD.senior.source_rule, "exclusion").ok
+    && !resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["other"] } }, "exclusion").ok)
   check("…and the escalation cannot be used to WIDEN (its only value is 'exclusion')",
     /escalateTo\?:\s*"exclusion"/.test(code("lib/ads/audience-persona-basis.ts")))
   check("POSITIVE CONTROL — that scanner would see a two-way parameter if one existed",
@@ -300,8 +329,8 @@ async function main() {
       !malformed.ok && malformed.refusalKind === "malformed_slot"
       && !malformedObj.ok && malformedObj.refusalKind === "malformed_slot"
       && !malformedBlank.ok && malformedBlank.refusalKind === "malformed_slot")
-    check("…and the same door ADMITS nothing it should not: the senior audience is still refused through it",
-      !gated.ok && gated.refusalKind === "protected_characteristic")
+    check("…and the same door ADMITS the senior audience (R1) once it is read in-tenant",
+      gated.ok && gated.governed.length === 1 && gated.governed[0].audienceId === "a-senior")
     check("POSITIVE CONTROL — with an empty slot the door returns ok WITHOUT reading anything",
       empty.ok && empty.audienceIds.length === 0)
     check("the m538 audit write SURFACES its refusal instead of swallowing it (PGRST204 until applied)",
@@ -482,23 +511,26 @@ async function main() {
   console.log("\n[10 · MUTATION TESTS — each gate is REMOVED and the assertions go RED]")
   console.log("      (an assertion never shown to fail is not evidence, CLAUDE.md §7)")
 
-  // MUTATION A — the escalation is dropped: the slot asks the audience's OWN rule
-  // which operation it performs, which is what every gate did before this lane.
+  // MUTATION A — the REMOVED R1 rule is re-introduced: a protected-characteristic
+  // persona in the exclude slot refuses again. The R1 assertions in section 2
+  // must go RED under it, or they are not evidence.
   function mutantA(ids: string[], rows: ExclusionAudienceRow[]): boolean {
+    if (!resolveExclusionSlot(ids, rows, "C").ok) return false
     for (const id of ids) {
       const row = rows.find((r) => r.id === id)
-      if (!row) continue
-      const res = resolveAudiencePersonaBasis(row.source_rule)   // ← no "exclusion"
-      if (!res.ok) return false
+      const personas = ((row?.source_rule as { filters?: { personas?: unknown } } | null)?.filters?.personas ?? []) as unknown[]
+      if (personas.some((p) => typeof p === "string" && protectedClassReasonFor(p))) return false   // ← the removed rule
     }
     return true
   }
-  const realRefusals = PROTECTED_AUDS.filter((k) => !resolveExclusionSlot([AUD[k].id], ALL_ROWS, "C").ok).length
-  const mutantARefusals = PROTECTED_AUDS.filter((k) => !mutantA([AUD[k].id], ALL_ROWS)).length
-  check(`WITH the escalation, all ${PROTECTED_AUDS.length} protected persona audiences are refused in the slot`,
-    realRefusals === PROTECTED_AUDS.length, `${realRefusals}/${PROTECTED_AUDS.length}`)
-  check(`WITHOUT it, ALL ${PROTECTED_AUDS.length} are ADMITTED — the exact HUD v. Meta shape, reproduced`,
-    mutantARefusals === 0, `${mutantARefusals} still refused`)
+  const realAdmits = PROTECTED_AUDS.filter((k) => resolveExclusionSlot([AUD[k].id], ALL_ROWS, "C").ok).length
+  const mutantAAdmits = PROTECTED_AUDS.filter((k) => mutantA([AUD[k].id], ALL_ROWS)).length
+  check(`REAL gate (R1): all ${PROTECTED_AUDS.length} protected-persona audiences are ADMITTED in the slot`,
+    realAdmits === PROTECTED_AUDS.length, `${realAdmits}/${PROTECTED_AUDS.length}`)
+  check(`MUTANT (removed rule restored): ALL ${PROTECTED_AUDS.length} are refused — the section-2 assertions would go RED`,
+    mutantAAdmits === 0, `${mutantAAdmits} still admitted`)
+  check("…and the mutant still ADMITS an ordinary audience (it re-adds exactly the removed rule, nothing else)",
+    mutantA([AUD.fsbo.id], ALL_ROWS) && mutantA([AUD.pipeline.id], ALL_ROWS))
 
   // MUTATION B — the unknown-audience arm is made permissive ("no row, nothing to
   // check"), which is the shape that reads as safe and is not.
@@ -560,8 +592,8 @@ function finish() {
     process.exit(1)
   }
   console.log(" ✅ AUDIENCE_EXCLUSION_PASS — an exclusion an operator intends is DECLARED in the")
-  console.log("    product, gated at all four doors, refused when it would suppress a protected")
-  console.log("    characteristic, and recorded on the audience it suppressed.")
+  console.log("    product, gated at all four doors for shape / tenancy / raw demographics, admitted")
+  console.log("    for every canonical persona (R1), and recorded on the audience it suppressed.")
 }
 
 main().catch((err) => {

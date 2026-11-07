@@ -33,6 +33,7 @@
 // revertProviderConfiguration is the same reversal for a person (the platform healing console) — append-only evidence.
 
 import { CHANGE_CONTROL_HOW, CHANGE_CONTROL_REQUIREMENTS, governedChangeVerdict, type GovernedChangeVerdict } from "@/lib/kernel/improvement-proposals"
+import { PROVIDER_ACTIVATION } from "@/lib/ai-isa/property-lookup-rail"
 
 type Svc = { from: (t: string) => any }
 
@@ -61,6 +62,17 @@ interface ProviderConfigChange {
 
 /** PURE — ruling 14's class of a provider-configuration change (derived from the change, never from who proposes it). */
 export function classifyProviderConfigChange(change: ProviderConfigChange, ctx: { declaredConfigAlternate: boolean }): GovernedChangeVerdict {
+  // Wave 150 (lane 150HIAB, owner ruling R9 / C39): moving traffic ONTO a provider that is not ACTIVE (a dormant survivor or a
+  // provider pending rights) is an ACTIVATION — contract, measured incremental coverage, unit economics, a route row and a
+  // transport in one reviewed change (lib/providers/provider-scorecard.ts activationVerdict). Never a heal, a failover or a
+  // tenant's persisted mapping, whatever the confidence.
+  // A dormant SURVIVOR whose live doors still wait on the owner (survivorDoors "owner_confirmation_pending") stays a lawful
+  // failover target until those doors close.
+  const target = change.toProvider ? (PROVIDER_ACTIVATION as Partial<Record<string, { state: string; survivorDoors?: string }>>)[change.toProvider] : undefined
+  const inactive = !!target && (target.state === "dormant_pending_rights" || (target.state === "dormant_survivor" && target.survivorDoors === "closed"))
+  if (target && inactive && (change.kind === "runtime_failover" || change.kind === "persisted_mapping")) {
+    return governedChangeVerdict("production_source_edit", `${change.toProvider} is ${target.state} (R9) — activating it is a reviewed activation change (contract, measured incremental coverage, unit economics), never a self-heal`)
+  }
   switch (change.kind) {
     case "declared_config_alternate":
       return ctx.declaredConfigAlternate

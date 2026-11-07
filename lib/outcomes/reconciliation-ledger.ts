@@ -146,7 +146,7 @@ export async function ingestProviderTruth(input: {
     // provider's LATEST word or one that has been overtaken.
     const { data: existing } = await svc
       .from("outcome_reconciliations")
-      .select("id, brokerage_id, claimed_status, claimed_at, verdict, escalated_at, claimed_by_manager, entity_type, entity_id, contact_id, provider_reported_at")
+      .select("id, brokerage_id, claimed_status, claimed_at, verdict, escalated_at, claimed_by_manager, entity_type, entity_id, contact_id, lead_id, provider_reported_at")
       .eq("channel", input.channel)
       .eq("provider_ref", input.providerRef)
       .maybeSingle()
@@ -159,6 +159,7 @@ export async function ingestProviderTruth(input: {
       verdict: ReconciliationVerdict; escalated_at: string | null
       claimed_by_manager: string | null; entity_type: string | null
       entity_id: string | null; contact_id: string | null
+      lead_id?: string | null
       provider_reported_at: string | null
     }
 
@@ -244,7 +245,16 @@ export async function ingestProviderTruth(input: {
         },
         dedupe: false,
       }, svc)
-      if (published.ok) {
+      // WAVE 150 (lane 150QTV, canary 12): the PERSON half — the staff member who owns this relationship hears it now, on the
+      // same once-only guard (escalated_at), with the provider's own words. A heads-up, never a re-send: the arbiter refuses this
+      // channel for them from here on (lib/ai-isa/followup-arbiter.ts deliveryFailures) and picks another way.
+      const { notifyFailedSend } = await import("@/lib/kernel/completion-tracking")
+      const told = await notifyFailedSend(svc, {
+        brokerageId: row.brokerage_id, channel: input.channel, contactId: row.contact_id, leadId: row.lead_id ?? null,
+        providerStatus: input.truth.status, providerDetail: (input.truth.detail ?? null) as Record<string, unknown> | null, reconciliationId: row.id,
+      })
+      if (told.error) console.error(`[reconciliation-ledger] failed-send staff notice NOT delivered for ${row.id}: ${told.error}`)
+      if (published.ok || told.notified > 0) {
         escalated = true
         await sentinelWrite(svc, svc.from("outcome_reconciliations")
           .update({ escalated_at: new Date().toISOString() }).eq("id", row.id), { table: "outcome_reconciliations", flow: "outcome_reconciliations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })

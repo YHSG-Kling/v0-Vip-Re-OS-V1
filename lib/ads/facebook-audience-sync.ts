@@ -188,55 +188,15 @@ export async function createAudience(
   return { success: true, audienceId: result.audienceId }
 }
 
-/**
- * syncAudience — THE audience-sync endpoint (§1.1 survivor; the duplicate export
- * `syncFacebookAudience` was deleted 2026-09-01, see the tombstone at the top of
- * this file). Body moved here verbatim; it was never an "alias".
- * Input: userId string (IGNORED — tenant and actor come from the session), params SyncAudienceParams
- * Output: { success, syncRunId?, recordsSynced?, recordsRejected?, error? }
- * Tables written: audience_sync_runs
- */
-export async function syncAudience(
-  _userId: string,
-  params: SyncAudienceParams
-): Promise<{
-  success: boolean
-  syncRunId?: string
-  recordsSynced?: number
-  recordsRejected?: number
-  error?: string
-}> {
-  // ── 0. Session gate — this uploads consented contact PII to an ad platform ──
-  const actor = await resolveAdsActor()
-  if (!actor.ok) return { success: false, error: actor.error }
-  const ctx = actor.ctx
-  const userId = ctx.userId
-
-  // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await mayUseFeature(userId, "ads_audiences")
-  if (!accessCheck.allowed) {
-    return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  // ── 2. Delegate to kernel syncAudience ───────────────────────────────────────
-  const result = await kernelSyncAudience({
-    ctx,
-    audienceId: params.audienceId,
-  })
-
-  if (!result.success) {
-    return { success: false, error: result.error }
-  }
-
-  const syncRun = result.syncRun
-
-  return {
-    success: true,
-    syncRunId: result.syncRunId,
-    recordsSynced: syncRun?.records_synced ?? 0,
-    recordsRejected: syncRun?.records_rejected ?? 0,
-  }
-}
+// ─── syncAudience (the "use server" manual-sync endpoint) — DELETED ───────────
+//
+// TOMBSTONE (wave 150, lane 150QTV — owner ruling R4, 2026-11-06: "persona custom audiences sync AUTOMATICALLY after approval /
+// eligibility — no extra final 'Sync' button"). Its only caller was the ads dashboard's "Sync Now" button, removed with it
+// (tombstone in app/dashboard/campaigns/ads/ads-dashboard-client.tsx). FUNCTIONALITY LIVES ELSEWHERE (§1.3):
+//   · on approval — approveAudience below calls the kernel command (lib/kernel/ads.ts syncAudience) on the same session actor;
+//   · on eligibility changes and revocations — app/api/cron/sync-facebook-audiences, the existing unattended door onto the same
+//     kernel command, selecting audiences by evidence (lib/ads/persona-audience.ts audiencesNeedingResync).
+// Removing the export also closes a public endpoint (every export of a "use server" file is one, CLAUDE.md §4).
 
 /**
  * approveAudience — sets facebook_custom_audiences.status = 'approved' (the state the audience sync reads; the
@@ -251,7 +211,7 @@ export async function approveAudience(
   _userId: string,
   audienceId: string,
   _brokerageId: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; synced?: boolean; syncError?: string }> {
   // Session gate — approval flips an audience live on Meta. Tenant and actor come
   // from the session; the caller-supplied ids are ignored.
   const actor = await resolveAdsActor()
@@ -317,7 +277,18 @@ export async function approveAudience(
   const settled = await recordReengagementDecision(svc, { brokerageId, audienceId, outcome: "approved", reviewerUserId: userId })
   if (!settled.ok) console.error("[facebook-audience-sync] approveAudience: the re-engagement request was not settled —", settled.error)
 
-  return { success: true }
+  // ── OWNER RULING R4 (2026-11-06; wave 150, lane 150QTV): "persona custom audiences sync AUTOMATICALLY after approval /
+  //    eligibility — no extra final 'Sync' button; revocations sync the same way; the provider's acknowledgment and the campaign
+  //    result are read back." The approval IS the go-ahead: the upload runs now, through the SAME kernel command (every gate —
+  //    consent basis, fair-housing token gate, persona basis, re-engagement approval, consent + suppression floor — runs inside
+  //    it) on the SAME session actor. The provider's acknowledgment rides the sync run (audience_sync_runs.provider_response.
+  //    provider_ack). Later eligibility changes and revocations re-sync through the existing unattended door
+  //    (app/api/cron/sync-facebook-audiences, evidence-selected by lib/ads/persona-audience.ts audiencesNeedingResync). A refused
+  //    upload leaves the audience 'failed' with the reason on the run — the approval itself stands.
+  const synced = await kernelSyncAudience({ ctx: actor.ctx, audienceId })
+  if (!synced.success) return { success: true, synced: false, syncError: synced.error ?? "the upload was refused" }
+  const run = synced.syncRun as { run_status?: string; error_message?: string | null } | undefined
+  return { success: true, synced: run?.run_status === "completed", ...(run?.run_status === "completed" ? {} : { syncError: run?.error_message ?? "the provider did not accept the upload" }) }
 }
 
 /**

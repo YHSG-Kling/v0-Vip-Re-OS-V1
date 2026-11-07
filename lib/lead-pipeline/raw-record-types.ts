@@ -244,6 +244,9 @@ function inferRawSubjectKind(
  *  real person behind it is found and re-observed as a person (canary 4). */
 export const LEAD_CAPABLE_SUBJECT_KINDS: ReadonlySet<RawDataSubjectKind> = new Set(["person", "owner", "household"])
 
+/** The identity-free evidence kinds an ingress may state (a cited market fact, a civic / job event, an anonymous question). */
+const EVIDENCE_ONLY_SUBJECT_KINDS: ReadonlySet<RawDataSubjectKind> = new Set(["market", "job_civic_event", "anonymous_question"])
+
 /**
  * PURE — the full envelope for one record, as the producer writes it. `signalAt` is the payload's own
  * date (recordSignalDate); `observedAt` is the producer's clock; TTL runs from the later-known of the two.
@@ -304,6 +307,14 @@ export function rawDataEnvelopeProblem(e: RawDataEnvelope): string | null {
  * Requires at minimum one identity signal or a property address.
  */
 export function isViableRecord(r: NormalizedScrapedRecord): boolean {
+  // C35 EVIDENCE SUBJECTS (wave 150, lane 150KLMO — canary 8): a cited market / civic-event / anonymous-question observation
+  // carries NO identity by design (Exa public-market research, owner ruling R9) and still must enter THE ONE producer. It is
+  // viable only when the ingress STATES that evidence kind and the record carries a URL a human can open — never a person kind
+  // (those still need an identity signal below), and LEAD_CAPABLE_SUBJECT_KINDS keeps every such row out of the Lead door.
+  const stated = r.envelope?.subjectKind
+  if (stated && EVIDENCE_ONLY_SUBJECT_KINDS.has(stated)) {
+    return [...(r.envelope?.proofUrls ?? []), r.sourceUrl ?? ""].some((u) => /^https?:\/\//i.test(u))
+  }
   return !!(
     r.email ||
     r.phone ||

@@ -1009,7 +1009,7 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
   type NbeInput = import("../lib/ai-isa/lead-action-plan").NextBestExperienceInput
   const inputFor = (w: World, over: Partial<NbeInput> = {}): NbeInput =>
     base({ nba: { intent: intent(80), memoryFacts: [] }, policy: { complianceHardFlag: false, allowedChannels: w.allowed ?? ["email", "sms", "phone", "direct_mail"], autoSendAllowed: true, videoAllowed: true }, ...over })
-  const run = async (o: { world?: World; deliverable?: readonly string[] | null; decide?: () => Promise<Record<string, unknown>>; input?: NbeInput; priority?: "speed_to_lead"; noContact?: boolean; prepare?: (db: any) => Promise<void> }) => {
+  const run = async (o: { world?: World; deliverable?: readonly string[] | null; decide?: () => Promise<Record<string, unknown>>; input?: NbeInput; priority?: "speed_to_lead"; noContact?: boolean; prepare?: (db: any) => Promise<void>; movement?: (svc: any, a: any) => Promise<any> }) => {
     const w = o.world ?? {}
     const recorded: Array<Record<string, any>> = []
     let prompt = "", calls = 0
@@ -1025,6 +1025,7 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
       decide: async (a) => { calls++; prompt = a.prompt; if (!o.decide) throw new Error("no model here"); return (await o.decide()) as never },
       record: { ledger: async (ctx: Record<string, any>, f: () => Promise<unknown>) => { recorded.push(ctx); return f() }, emit: async () => ({ inserted: true }), delegate: async () => ({ ok: true, delegation: { id: "d1" } }) },
       readiness: readinessDeps(w),
+      ...(o.movement ? { movement: o.movement as never } : {}),
     })
     const arbitration = recorded[0]?.detail?.arbitration ?? {}
     return { r, recorded, prompt, calls, arbitration, considered: (arbitration.channels_considered ?? []) as Considered[] }
@@ -1260,8 +1261,19 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     check("REFINANCE (model down → the deterministic verdict): a PERSON decides — a qualified lender the CLIENT chooses, never an automated referral — plus a refinance lesson; the signal rides the ledger row",
       refi.r.plan.chosen.kind === "agent_intervention" && !!refiAgent?.reasons.some((x) => /qualified lender/.test(x) && /never an automated referral/.test(x)) && refi.r.plan.ranked.some((r) => r.kind === "education") && refi.r.plan.contributed.includes("signal") && (refi.arbitration.signals ?? []).some((s: any) => s.type === "refinance_opportunity" && s.kind === "refinance"),
       `${refi.r.plan.chosen.kind} · ${JSON.stringify(refi.arbitration.signals)}`)
-    const moving = await run({ world: { signals: [sig("next_move_intent", 0)] }, input: inputFor({}, { nba: { memoryFacts: [] } }) })
-    check("MOVING (a buyer): matching properties lead, with a personal call ranked behind it", moving.r.plan.chosen.kind === "properties" && moving.r.plan.ranked.some((r) => r.kind === "agent_intervention"), moving.r.plan.chosen.kind)
+    // RE-ASSERTED — wave 150, lane 150QTV (owner ruling R2, 2026-11-06: "intent / readiness is NOT derived from contact_type"):
+    // this pinned "MOVING (a buyer)" where the buyer-ness came from contacts.contact_type. The RULE now: the planner reads the
+    // MOVING MOMENT's evidence segments (lib/intent/moving-moments.ts) — a contact_type label alone keeps the owner options open,
+    // and properties lead only when the moment's evidence says buyer.
+    const segMoment = (segments: string[]) => async () => ({ signals: [], opportunity: { reading: { primary: null }, menu: { options: [], floor: "quiet_monitoring" }, moment: {
+      personLevel: true, segments, decision_window: { window: "unknown", basis: "none", uncertainty: "high" }, buyer_readiness: { level: "unknown" }, seller_readiness: { level: "unknown" },
+      investor_strategy: { stage: "none" }, desire_to_move: { level: "unknown" }, expects_to_move: { level: "unknown" }, ability_to_act: { level: "unknown" }, barrier: [], negative_evidence: [],
+      identity_confidence: "record_key", outreach_permission: "consented", probability: null } } })
+    const labelOnly = await run({ world: { signals: [sig("next_move_intent", 0)] }, input: inputFor({}, { nba: { memoryFacts: [] } }), movement: segMoment([]) })
+    check("R2 — MOVING with only a contact_type label: the label is NOT evidence — the owner options stay open (a market update), a personal call behind it, properties never pushed by the label",
+      labelOnly.r.plan.chosen.kind === "market_update" && labelOnly.r.plan.ranked.some((r) => r.kind === "agent_intervention") && !labelOnly.r.plan.ranked.some((r) => r.kind === "properties" && r.reasons.some((x) => /thinking of moving: homes/.test(x))), labelOnly.r.plan.chosen.kind)
+    const moving = await run({ world: { signals: [sig("next_move_intent", 0)] }, input: inputFor({}, { nba: { memoryFacts: [] } }), movement: segMoment(["buyer"]) })
+    check("MOVING with the moment's evidence segment 'buyer': matching properties lead, with a personal call ranked behind it", moving.r.plan.chosen.kind === "properties" && moving.r.plan.ranked.some((r) => r.kind === "agent_intervention"), moving.r.plan.chosen.kind)
     const equity = await seller([sig("equity_milestone", 3)])
     check("EQUITY (an owner): a market update on their home — its executor from the planner's OWN table (listing_concierge · cma_generate)",
       equity.r.plan.chosen.kind === "market_update" && equity.r.plan.chosen.manager === lap.EXPERIENCE_EXECUTORS.market_update.manager && equity.r.plan.chosen.capability === lap.EXPERIENCE_EXECUTORS.market_update.capability, equity.r.plan.chosen.kind)

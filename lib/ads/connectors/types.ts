@@ -60,6 +60,9 @@ export interface AudienceSyncResult {
   recordsSynced:    number
   recordsRejected:  number
   error?:           string
+  /** Wave 150 (R4): "replace" when an existing platform list was swapped for the resolved set (revocations leave), "create"
+   *  for a first upload. Absent on a connector that has not declared it. */
+  mode?:            "replace" | "create"
 }
 
 /** Normalized performance — maps onto ad_performance columns. */
@@ -83,6 +86,12 @@ export interface PublishArgs { structure: Record<string, unknown>; cred: Connect
 export interface ProviderStatusQuery { campaignExternalId: string; cred: ConnectorCredential }
 export type ProviderStatusResult = { ok: true; state: string; review: string | null } | { ok: false; reason: string }
 
+/** Wave 150 (lane 150QTV, R4 — "the provider's acknowledgment … read back"): the platform's OWN view of an uploaded audience. */
+export interface AudienceStatusQuery { externalAudienceId: string; cred: ConnectorCredential }
+export type AudienceStatusResult =
+  | { ok: true; state: string; delivery: string | null; approxSize: { lower: number | null; upper: number | null } }
+  | { ok: false; reason: string }
+
 export interface AdConnector {
   platform: string
   /** Create the campaign on the platform (PAUSED) from an assembled structure. */
@@ -98,6 +107,9 @@ export interface AdConnector {
   /** Optional (wave 146): the provider's own campaign status / review state, polled by the performance ingest and
    *  recorded on the campaign (targeting_config.provider_status). A connector that publishes none omits it. */
   fetchStatus?(args: ProviderStatusQuery): Promise<ProviderStatusResult>
+  /** Optional (wave 150, R4): the platform's own acknowledgment of an uploaded audience — read back right after a sync and
+   *  recorded on audience_sync_runs.provider_response.provider_ack. */
+  fetchAudienceStatus?(args: AudienceStatusQuery): Promise<AudienceStatusResult>
 }
 
 // ─── CAPABILITY DECLARATIONS (wave 146, lane 146E — owner ruling 8) ─────────────────────────────

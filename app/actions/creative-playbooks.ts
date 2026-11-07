@@ -319,6 +319,9 @@ export async function installCreativePlaybook(
   // ── 4. Channel presets — every word AI-authored, gated at save ────────────
   const bundleItems: Array<{ channel: string; preset_id: string; order_index: number; send_after_minutes: number }> = []
   let order = 0
+  // No author offset (wave 150, lane 150SZ — owner: "no fixed timetables anywhere"): the playbook proposes ORDER only; when a
+  // follow-on goes is the arbiter's at dispatch (lib/marketing/creative-playbooks.ts tombstone names the door and its owner).
+  const noAuthorOffset = 0
   const CHANNEL_SHAPES: Record<string, Record<string, string>> = {
     email: { subject: "the email subject line", body_text: "the plain-text email body (may include {{magnet_url}})" },
     sms: { body: "the SMS text under 160 chars (may include {{magnet_url}})" },
@@ -358,7 +361,7 @@ export async function installCreativePlaybook(
       })
       if (r.success && r.presetId) {
         presets.push({ kind: step.kind, presetId: r.presetId, name: step.label })
-        bundleItems.push({ channel: step.kind, preset_id: r.presetId, order_index: order++, send_after_minutes: step.sendAfterMinutes ?? 0 })
+        bundleItems.push({ channel: step.kind, preset_id: r.presetId, order_index: order++, send_after_minutes: noAuthorOffset })
       } else {
         notes.push(`${step.label}: ${r.error ?? (r.violations?.length ? "blocked by compliance gate — regenerate from the playbook" : "skipped")}`)
       }
@@ -378,7 +381,7 @@ export async function installCreativePlaybook(
     })
     if (r.success && r.presetId) {
       presets.push({ kind: step.kind, presetId: r.presetId, name: step.label })
-      bundleItems.push({ channel: step.kind, preset_id: r.presetId, order_index: order++, send_after_minutes: step.sendAfterMinutes ?? 0 })
+      bundleItems.push({ channel: step.kind, preset_id: r.presetId, order_index: order++, send_after_minutes: noAuthorOffset })
     } else {
       notes.push(`${step.label}: ${r.error ?? "skipped"}`)
     }

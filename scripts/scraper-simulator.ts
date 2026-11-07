@@ -1326,8 +1326,12 @@ function testExaBuyerIntent() {
 
   const rec = normalizeExaResult(row, { city: "Tampa", state: "FL" })
   check("Exa record → buyer intent + exa_buyer_intent", rec.intentType === "buyer" && rec.source === "exa_buyer_intent")
-  check("Exa record → ai_neural_match signal", rec.intentSignals?.includes("ai_neural_match"))
-  check("Exa record viable via author handle", rec.username === "homehunter_mia" && isViableRecord(rec))
+  // RE-ASSERTED TO THE RULE (wave 150, lane 150KLMO — owner ruling R9 / canary 8: "Exa for public-market research with
+  // citations, never for people"). These two checks pinned the reversed lane-89B waypoint (an `ai_neural_match` person
+  // signal; viability via the AUTHOR HANDLE). The rule now: the record is a cited evidence observation, the author never rides
+  // it, and it is viable only through its openable citation URL. Full proof: scripts/public-market-research-guard.ts.
+  check("Exa record → public-market research evidence (anonymous question by default), never a person signal", rec.intentSignals?.includes("public_market_research") && rec.envelope?.subjectKind === "anonymous_question" && !rec.intentSignals?.includes("ai_neural_match"))
+  check("Exa record viable via its citation URL — the author handle never rides the record", !rec.username && !JSON.stringify(rec).includes("homehunter_mia") && isViableRecord(rec))
   // Seller phrasing within Exa content classifies as seller.
   const sellerRow = normalizeExaRow({ id: "x2", url: "https://blog/2", title: "Thinking of selling my home in Tampa", author: "owner_bob" })
   check("Exa seller content → seller intent", normalizeExaResult(sellerRow, { city: "Tampa", state: "FL" }).intentType === "seller")

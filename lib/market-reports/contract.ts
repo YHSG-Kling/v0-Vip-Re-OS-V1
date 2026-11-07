@@ -100,8 +100,11 @@ export interface ComparableSale {
 
 export interface TrendPoint {
   month: string // YYYY-MM
+  /** The month's median ASKING price of homes listed for sale (RentCast /markets) — never a sold median (canary 17). */
   medianPrice: number | null
   activeInventory: number | null
+  /** What medianPrice measures — always listing asking prices; a month without a recorded listing reading is not printed. */
+  priceBasis: "listing_asking"
   source: MarketSource
 }
 

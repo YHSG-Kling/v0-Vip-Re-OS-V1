@@ -6,6 +6,8 @@
 // discover real-estate BUYER intent across the open web, then classify + enrich.
 // Real REST API; no stubs.  Docs: https://docs.exa.ai (POST /search)
 
+import { stableContentDigest } from "@/lib/lead-pipeline/raw-record-types"
+
 export interface ExaResult {
   id: string
   url: string | null
@@ -79,7 +81,9 @@ export function exaSearchListCost(numResults: number): number {
 /** Pure: a raw Exa result row → normalized ExaResult (defensive field mapping). */
 export function normalizeExaRow(r: Record<string, any>): ExaResult {
   return {
-    id: String(r.id ?? r.url ?? `${Date.now()}-${Math.random()}`),
+    // Wave 150 (lane 150HIAB, lane-150EFG Outside-lane 3): an id-less, url-less row keys on its CONTENT — never
+    // Date.now()/Math.random(), which made every replay of the same result a new observation (C35).
+    id: String(r.id ?? r.url ?? `exa-${stableContentDigest(r)}`),
     url: r.url ?? null,
     title: r.title ?? null,
     text: r.text ?? (typeof r.contents?.text === "string" ? r.contents.text : null),

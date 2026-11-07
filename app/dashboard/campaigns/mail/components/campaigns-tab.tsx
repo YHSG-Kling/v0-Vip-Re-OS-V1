@@ -73,6 +73,7 @@ export function CampaignsTab({
   onSelectCampaign,
 }: CampaignsTabProps) {
   const [sendingId, setSendingId] = useState<string | null>(null)
+  const [previewingId, setPreviewingId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [printSubmittingId, setPrintSubmittingId] = useState<string | null>(null)
@@ -106,6 +107,27 @@ export function CampaignsTab({
       toast.error("Send failed")
     } finally {
       setSendingId(null)
+    }
+  }
+
+  // PREVIEW BEFORE SEND (wave 150, lane 150DAC — lane 150R Still open 5): the C40 proof door sendCampaign({ previewOnly })
+  // renders a Lob TEST-key proof with this tenant's brand merge variables — nothing mailed, nothing charged. The
+  // proof opens in a new tab; a missing brand field is said, never hidden.
+  async function handlePreviewCampaign(campaign: Campaign) {
+    setPreviewingId(campaign.id)
+    try {
+      const result = await sendCampaign({ campaignId: campaign.id, actorUserId: agentId, brokerageId: campaign.brokerage_id, previewOnly: true })
+      const preview = (result as { preview?: { proofUrl: string | null; brandMissing?: string[] } }).preview
+      if (result.success && preview?.proofUrl) {
+        window.open(preview.proofUrl, "_blank", "noopener,noreferrer")
+        toast.success(preview.brandMissing?.length ? `Proof ready — missing brand details: ${preview.brandMissing.join(", ")}` : "Proof ready — opened in a new tab")
+      } else {
+        toast.error(result.error ?? "The proof could not be rendered")
+      }
+    } catch {
+      toast.error("The proof could not be rendered")
+    } finally {
+      setPreviewingId(null)
     }
   }
 
@@ -295,6 +317,16 @@ export function CampaignsTab({
                             <Printer className="h-4 w-4 mr-2" />
                           )}
                           Send to Print
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void handlePreviewCampaign(campaign)
+                          }}
+                          disabled={previewingId === campaign.id}
+                        >
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          {previewingId === campaign.id ? "Rendering proof..." : "Preview proof (no charge)"}
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={() => handleSendCampaign(campaign)}

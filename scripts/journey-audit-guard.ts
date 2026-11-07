@@ -101,6 +101,15 @@ export const JOURNEYS: Record<string, Door[]> = {
     { file: "app/actions/push-subscriptions.ts", symbol: "subscribePush" },
     { file: "app/actions/portal-settings.ts", symbol: "fileDataSubjectRequestFromPortal" },
   ],
+  // Wave 150 (lane 150DAC — 150AC): the command center's own doors (the approval queue, the team command bar, coverage)
+  // and the mail surface's proof-before-send door. Every button behind them is held by test:command-center-surface.
+  "command center": [
+    { file: "app/actions/command-center.ts", symbol: "approveAgentAction" },
+    { file: "app/actions/command-center.ts", symbol: "rejectAgentAction" },
+    { file: "app/actions/command-center.ts", symbol: "runTeamCommand" },
+    { file: "app/actions/coverage-mode.ts", symbol: "setCoverageAction" },
+    { file: "app/actions/direct-mail.ts", symbol: "sendCampaign" },
+  ],
 }
 
 // ── finders (exported so the positive controls feed them fixtures) ────────────────────────────────────────────────────

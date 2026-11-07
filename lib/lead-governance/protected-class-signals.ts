@@ -65,8 +65,9 @@
  *   · INCLUDING people and choosing the wording they are reached with — allowed,
  *     for a CANONICAL persona at the `personas` filter key. That is the carve-out
  *     at `isCanonicalPersonaBasisValue`, and it is the only one in this file.
- *   · EXCLUDING or suppressing an audience on a protected characteristic —
- *     REFUSED, unchanged. `exclusion_*` source-rule types turn the carve-out off.
+ *   · EXCLUDING or suppressing an audience on a canonical persona — ALLOWED since
+ *     owner ruling R1 (2026-11-06): the carve-out no longer turns off for
+ *     `exclusion_*` source-rule types (tombstone at `protectedClassSegmentationIn`).
  *
  * WHAT DID NOT MOVE, AND IS THE THING TO CHECK FIRST IF YOU ARE EDITING HERE:
  * the RAW PROVIDER ATTRIBUTE path. `min_owner_age`, `demographics.recentlyDivorced`,
@@ -165,7 +166,6 @@
  */
 
 import { isCampaignPersona } from "@/lib/campaigns/contact-sources"
-import { audienceUseOf } from "@/lib/ads/audience-source-rules"
 import { audienceProxyReasonFor } from "@/lib/compliance-rules/audience-compliance"
 
 /**
@@ -800,13 +800,13 @@ export function labelProtectedClassFields(
  * criterion to an ad platform, and the two are told apart by the roster, not by
  * the key alone.
  *
- * ── AND IT DOES NOT APPLY WHEN THE AUDIENCE SUBTRACTS ───────────────────────
- * `suppresses` in the caller turns the carve-out off for an `exclusion_*` rule
- * type. Reaching a widow with probate-sale information is the them-first ruling;
- * removing every `senior` from a housing ad's delivery is withholding housing
- * from the elderly. `lib/ads/audience-persona-basis.ts` refuses that too — this
- * is the second, independent refusal on the same shape, which is what "defence
- * in depth" has meant at these four doors since the gate was built.
+ * ── IT APPLIES WHETHER THE AUDIENCE INCLUDES OR SUBTRACTS (R1, 2026-11-06) ──
+ * Until wave 150 a `suppresses` flag turned the carve-out off for an
+ * `exclusion_*` rule type. Owner ruling R1 removed the rule that a protected
+ * persona may not be used to EXCLUDE people from a housing ad; delivery
+ * exclusions are governed by the platform's own housing-category rules and by
+ * consent/suppression. Raw demographic criteria (every shape listed above) are
+ * still refused here on BOTH operations — only the canonical persona is admitted.
  *
  * ── TOMBSTONE (wave 149, lane 149A — owner ruling 2026-11-03) ──────────────
  * Wave 148Z recorded here that the persona gate refused senior / probate /
@@ -814,7 +814,7 @@ export function labelProtectedClassFields(
  * (no survivor — "Every persona is allowed and this can't change"); the
  * 2026-08-23 inclusion admission above is in force again in BOTH gates. This
  * carve-out is unchanged: a canonical persona at the persona key of an
- * INCLUSION rule passes; the exclusion arm still refuses.
+ * INCLUSION rule passes (and, since R1 2026-11-06, of an exclusion rule too).
  */
 function isCanonicalPersonaBasisValue(prefix: string, value: string): boolean {
   if (!/(?:^|\.)personas(?:\[\d+\])?$/.test(prefix)) return false
@@ -850,24 +850,22 @@ function isCanonicalPersonaBasisValue(prefix: string, value: string): boolean {
  *
  * ONE EXCEPTION, ADDED 2026-08-23 BY OWNER RULING, and it is deliberately the
  * narrowest shape that can carry it: a CANONICAL persona at the `personas`
- * filter key of an INCLUSION rule. See `isCanonicalPersonaBasisValue` above for
+ * filter key of an audience rule (inclusion or, since R1, exclusion). See `isCanonicalPersonaBasisValue` above for
  * what that admits and — more importantly — the list of neighbouring shapes it
  * still refuses. This is the only exception in this function and it must stay
  * the only one: the next author who wants to widen it is looking at the exact
  * spot where raw demographic targeting would re-enter the ads lane.
  */
 export function protectedClassSegmentationIn(rule: unknown, path = ""): string[] {
-  // WHICH OPERATION THIS AUDIENCE PERFORMS. An audience that REMOVES people gets
-  // no persona carve-out below: suppressing an audience by a protected
-  // characteristic is the restricted act, whatever field it is spelled in.
-  // ONE VOCABULARY (§6): `audienceUseOf` is the same function the persona gate
-  // reads the operation with, so these two doors cannot drift into disagreeing
-  // about what "an audience that subtracts" means.
-  const suppresses = audienceUseOf(rule) === "exclusion"
+  // TOMBSTONE (wave 150, lane 150QTV — owner ruling R1, 2026-11-06): `const suppresses = audienceUseOf(rule) ===
+  // "exclusion"` stood here and switched the persona carve-out OFF for an audience that subtracts people. REMOVED: the
+  // canonical persona is admitted on both operations; the platform's housing rules (lib/ads/connectors/ad-payload.ts
+  // validateAdReadiness) and consent/suppression govern exclusions. Survivor for "which operation": audienceUseOf in
+  // lib/ads/audience-source-rules.ts, still read by lib/ads/audience-persona-basis.ts resolveAudiencePersonaBasis.
   const hits: string[] = []
   const walk = (node: unknown, prefix: string): void => {
     if (typeof node === "string") {
-      if (isCanonicalPersonaBasisValue(prefix, node) && !suppresses) return
+      if (isCanonicalPersonaBasisValue(prefix, node)) return
       // WAVE 148 (lane 148C, owner ruling 1 — "compliance checks audience SELECTION and DELIVERY, not only wording, and refuses
       // protected characteristics AND PROXIES"): a value that selects people by a PROXY word ("young-families",
       // "spanish-speakers", "church-goers", "near-good-schools") is refused beside the field-token classifier. The proxy

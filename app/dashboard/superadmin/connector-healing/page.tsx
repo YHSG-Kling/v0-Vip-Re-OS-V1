@@ -22,6 +22,11 @@ import { getConnectorSpec } from "@/lib/agentic-os/connector-registry"
 import { ProposalActions, RevertProposal, ApplyConfigAlternate } from "./proposal-actions"
 import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
 import { HEALING_PROPOSAL_STATUSES, type HealingProposalStatus } from "@/lib/kernel/provider-config-healing"
+// Wave 150 (lane 150HIAB, owner ruling R9 / C39): the provider stack's activation state and field gaps sit beside the healing
+// queue, because activating a provider is the one provider-config change the healer may NEVER make (classifyProviderConfigChange).
+import { PROVIDER_ACTIVATION, activationVerdict, providerFieldMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
+import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
+import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { AlertTriangle, CheckCircle2, XCircle, ExternalLink } from "lucide-react"
 import { agoOrDash } from "@/lib/format/dates"
@@ -78,6 +83,15 @@ export default async function ConnectorHealingPage() {
   const pending = (pendingRes.proposals ?? []) as any[]
   const recent = (recentRes.proposals ?? []) as any[]
   // C25 — every CONFIG-level alternate a connector declares in code (the registry is the declaration survivor).
+  // R9 — pure data from the ONE scorecard (no vendor call): who may be called live, what blocks the rest, which fields no
+  // active provider documents.
+  const providerStack = (Object.keys(PROVIDER_ACTIVATION) as ScorecardProvider[]).map((p) => ({ provider: p, state: PROVIDER_ACTIVATION[p].state, ...activationVerdict(p) }))
+  const fieldGaps = providerFieldMatrix().filter((m) => m.gap)
+  // C39 — the matched pilot is a DESIGN. After the platform gate above, the design check runs over whatever cohort rows
+  // carry evidence.pilot (none until the owner loads one) with EMPTY provider answers — no provider is activated, so
+  // nothing is called and nothing is spent. It reports the design's validity and each arm's activation blockers; it can
+  // never produce a figure that justifies a purchase.
+  const pilot = await simulateProviderPilot(createServiceClient(), { simulate: () => ({ hit: false }), now: new Date() })
   const configAlternates = Object.values(CONNECTOR_REGISTRY).flatMap((spec) => (spec.alternates ?? []).filter((a) => a.level === "config").map((a) => ({ connector: spec.connector, id: a.id, version: a.version ?? null, reason: a.reason })))
 
   return (
@@ -246,6 +260,52 @@ export default async function ConnectorHealingPage() {
             </CardContent>
           </Card>
         )}
+      </section>
+
+      {/* ── PROVIDER STACK (R9) — activation is a reviewed change, never a heal ─────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-lg font-medium">Provider stack (owner ruling R9)</h2>
+        <Card>
+          <CardContent className="p-0">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-muted-foreground">
+                <tr><th className="p-3">Provider</th><th className="p-3">State</th><th className="p-3">Live calls</th><th className="p-3">What blocks activation</th></tr>
+              </thead>
+              <tbody>
+                {providerStack.map((r) => (
+                  <tr key={r.provider} className="border-t">
+                    <td className="p-3">{r.provider}</td>
+                    <td className="p-3"><Badge variant={r.state === "active" ? "default" : "outline"}>{r.state.replace(/_/g, " ")}</Badge></td>
+                    <td className="p-3">{r.mayActivate ? "allowed" : "blocked (offline simulation only)"}</td>
+                    <td className="p-3 text-xs text-muted-foreground">{r.blockers.length === 0 ? "nothing" : r.blockers.join("; ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+        <p className="text-sm text-muted-foreground">
+          {fieldGaps.length === 0
+            ? "No field gaps — every field has an active, documented provider."
+            : `Fields no active provider documents: ${fieldGaps.map((g) => g.field).join(", ")}. Only an activation after the matched pilot closes a gap.`}
+        </p>
+        <Card>
+          <CardContent className="space-y-2 p-4 text-sm">
+            <h3 className="font-medium">Matched pilot — design check (simulation, nothing called, nothing spent)</h3>
+            <p>
+              {pilot.cohort.candidates === 0
+                ? "No pilot cohort loaded yet. The 2,400-candidate matched design waits for the owner's no-cost sandbox decision."
+                : `${pilot.cohort.candidates} deduplicated candidates (${pilot.cohort.duplicatesDropped} duplicates dropped) · paid calls ${pilot.paidCalls} · live calls ${pilot.liveCalls}`}
+            </p>
+            {pilot.designProblems.length > 0 ? (
+              <ul className="list-disc pl-5 text-xs text-muted-foreground">{pilot.designProblems.slice(0, 6).map((d) => <li key={d}>{d}</li>)}</ul>
+            ) : <p className="text-xs text-muted-foreground">The matched design is complete.</p>}
+            <ul className="text-xs">
+              {pilot.activation.map((a) => <li key={a.provider}>{a.provider}: {a.mayActivate ? "may activate" : `may not activate — ${a.blockers.join("; ")}`}</li>)}
+            </ul>
+            <p className="text-xs text-muted-foreground">Projection basis: {pilot.projection.basis} — {pilot.projection.monthlyRecords.toLocaleString("en-US")} records a month is arithmetic, never a request size.</p>
+          </CardContent>
+        </Card>
       </section>
     </div>
   )

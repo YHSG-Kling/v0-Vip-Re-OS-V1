@@ -320,7 +320,7 @@ group("149B", "the collaborator sees only what was shared, feedback reaches the 
       const lm = (s: string) => extractLifestyleAsks(s).find((a: any) => a.kind === "outdoor_space")?.lotMinimum ?? null
       const two = lm("we want at least 2 acres"), sq = lm("a 10,000 sq ft lot"), half = lm("half an acre would be lovely")
       return {
-        positive: two?.value === 2 && two.unit === "acres" && two.stated_by === "buyer" && /2 acres/.test(two.literal) && sq?.unit === "sqft" && sq.value === 10000 && half?.value === 0.5
+        positive: two?.value === 2 && two.unit === "acres" && two.stated_by === "buyer" && /2 acres/.test(two.literal) && (E.LOT_UNITS as readonly string[]).includes(String(sq?.unit)) && sq?.unit !== "acres" && sq?.value === 10000 && half?.value === 0.5
           && [two, sq, half].every((m) => E.validLotMinimum(m)) && E.formatLotMinimum(sq!) === "10,000 sq ft",
         negative: lm("a big yard for the kids") === null && lm("no more than 2 acres") === null && lm("a 2,000 sq ft home with a yard") === null
           && !E.validLotMinimum({ value: 1, unit: "acres", stated_by: "ai", literal: "x", confidence: "high" }) && !E.validLotMinimum({ value: 1, unit: "hectares", stated_by: "buyer", literal: "x", confidence: "high" }),

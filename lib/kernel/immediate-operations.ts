@@ -182,7 +182,9 @@ export async function reportOperationOutcome(svc: Svc, input: OperationOutcomeIn
   if (!UUID_RE.test(String(input.brokerageId ?? ""))) { out.error = "no tenant id — refused"; return out }
   const { owner, refusedOverride } = resolveOperationOwner(input.operation, input.owner ?? null)
   const entityId = input.subjectId ?? input.brokerageId
-  const sentence = tenantSentence(input.operation, input.ok, input.tenantFacing)
+  // Wave 150 (lane 150DAC): the feed / bell sentence passes the tenant-facing gate; a door's sentence that would leak a
+  // provider internal falls back to the generic one (the raw error still lands in the evidence row).
+  const sentence = await tenantSafe(tenantSentence(input.operation, input.ok, input.tenantFacing), tenantSentence(input.operation, input.ok, null))
   const readinessKeys = OPERATION_READINESS_KEYS[input.operation]
 
   try {
@@ -270,6 +272,22 @@ export interface OperationHandlerDeps {
    *  that tracks it, so it carries an SLA clock and a thread, not only a bell (lib/support/ticket-triage.ts
    *  ensureOperationTicket). Default = that survivor; the proof injects a spy. */
   openTicket?: (svc: Svc, p: { brokerageId: string; operation: string; tenantFacing: string; platformVisible: boolean; actorUserId?: string | null; lifecycleEventId?: string | null }) => Promise<{ ticketId: string | null; created: boolean; error: string | null }>
+  /** Wave 150 (lane 150DAC — canary 16): THE ASYNC INVITATION REPAIR. A failed invitation dispatch is re-attempted ONCE
+   *  by the owner on the tick through THE ONE resend semantic (lib/kernel/users.ts redispatchInvitation) before a human
+   *  is bothered; still failing → the human rails + the ticket. Default = that survivor; the proof injects a spy. */
+  redispatchInvitation?: (svc: Svc, p: { invitationId: string; brokerageId: string; actorUserId: string }) => Promise<{ ok: boolean; dispatched: boolean; status: "pending" | "failed" | null; note?: string; error?: string }>
+}
+
+/** The tenant may read only a sentence that passes the support lane's tenant-facing gate (lib/support/ticket-triage.ts
+ *  tenantFacingGate: never a credential, a price, "platform-covered" or a provider / database internal). A sentence that
+ *  fails it is replaced by the operation's generic sentence; the detail stays in the staff body and the evidence row. */
+async function tenantSafe(text: string, fallback: string): Promise<string> {
+  try {
+    const { tenantFacingGate } = await import("@/lib/support/ticket-triage")
+    return tenantFacingGate(text).ok ? text : fallback
+  } catch {
+    return fallback // the gate could not run → the generic sentence (fail closed), never the raw text
+  }
 }
 
 interface OperationSignalPayload {
@@ -329,7 +347,12 @@ export async function handleOperationFailureEscalated(
   // readiness reasons, the playbook that ran, the engine's own refusal — so the feed says WHY.
   // Wave 142G: the escalation ALSO lands in the ticket flow (one tracked ticket per operation while open) — a
   // subject that is itself a support ticket (the triage's safe-repair path) is not re-ticketed; it is the ticket.
-  const escalate = async (title: string, body: string, staffDetail: string | null): Promise<string> => {
+  const escalate = async (title: string, rawBody: string, staffDetail: string | null): Promise<string> => {
+    // Wave 150 (lane 150DAC): the TENANT bell / ticket carry only a gated sentence (readiness reasons can name a
+    // database code); staff keep the full detail.
+    const label0 = isImmediateOperation(p.operation) ? OPERATION_LABEL[p.operation] : "An operation"
+    const body = await tenantSafe(rawBody, `${label0} needs your attention — the OS tried to repair it and could not. Our support team has the details.`)
+    staffDetail = staffDetail ?? (body === rawBody ? null : rawBody)
     const org = await notifyOrg(svc, ctx.brokerageId, { title, body, entityType, entityId })
     const staff = p.platform_visible ? await notifyStaff(svc, { title, body: staffDetail ?? body, entityType, entityId }) : 0
     let ticketNote = ""
@@ -350,6 +373,21 @@ export async function handleOperationFailureEscalated(
   const label = OPERATION_LABEL[operation]
   const keys = OPERATION_READINESS_KEYS[operation]
   const tenantFacing = (p.tenant_facing ?? "").trim() || `${label} did not verify.`
+
+  // WAVE 150 (lane 150DAC — canary 16): an invitation whose email never left is RE-ATTEMPTED once, asynchronously, by
+  // its owner on this tick (THE ONE resend semantic) — the inviter already saw the failure in-request and the failed
+  // row is on Users › Invitations; only a second failure reaches a human. Bounded: the resend's own failure report
+  // dedupes onto THIS still-open signal (publishManagerSignal, one open per subject), so it never loops.
+  if (operation === "invitation" && entityType === "user_invitation" && entityId && p.actor_user_id) {
+    const redispatch = deps.redispatchInvitation ?? (async (s: Svc, q: { invitationId: string; brokerageId: string; actorUserId: string }) => (await import("@/lib/kernel/users")).redispatchInvitation(s, q))
+    let r: Awaited<ReturnType<NonNullable<OperationHandlerDeps["redispatchInvitation"]>>> | null = null
+    let threw: string | null = null
+    try { r = await redispatch(svc, { invitationId: entityId, brokerageId: ctx.brokerageId, actorUserId: p.actor_user_id }) }
+    catch (e) { threw = e instanceof Error ? e.message : String(e) }
+    if (r?.ok) return `${label}: repaired asynchronously — the invitation was re-sent and its window re-opened (${r.note ?? "pending"})`.slice(0, 600)
+    if (r && !r.ok && /already accepted/i.test(r.error ?? "")) return `${label}: nothing to repair — the invitation was already accepted`
+    return escalate(`${label} needs you`, tenantFacing, `${label}: the automatic re-send did not work (${threw ?? r?.error ?? "no result"}); evidence row ${p.lifecycle_event_id ?? "(none)"}`)
+  }
 
   if (keys.length === 0) {
     return escalate(`${label} needs you`, tenantFacing, `${label}: no readiness check covers this post-condition — evidence row ${p.lifecycle_event_id ?? "(none)"}`)

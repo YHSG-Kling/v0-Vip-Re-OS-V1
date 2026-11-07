@@ -162,6 +162,10 @@ Only the EVIDENCE list. Each item has an id, a kind, a summary, the date observe
   market_trend     two monthly snapshots of the same territory (a direction between two dates — never a forecast)
   closed_sales     how many closed sales the brokerage's own MLS records hold (a sample of the territory)
   registry_dataset a public-record dataset verified for this market (it says what CAN be reported verifiably — it is not news)
+  demand_gap       buyers working with this brokerage who STATED, with consent, what they want here, against the fresh active
+                   listings that fit — counts and a date only; it never means a buyer has been found and never describes a buyer
+  relocation_context the listing and rental medians a move decision starts from, with the official military / VA sources a
+                   relocation guide cites by name (it supports a topic; it never carries one alone)
 Cite evidence by id. Never invent an id, a statistic, a date, a source or a trend. Never treat an asking price as a sale price.
 
 THE DECISION YOU OWN
@@ -170,11 +174,12 @@ territory_snapshot · what_sold_near_you · equity_this_quarter · inventory_wat
 Choose like an editor: the strongest story is where two kinds of market evidence agree (a market_signal and a market_trend
 moving the same way; enough closed_sales to show what sold). Use what_sold_near_you only when closed_sales evidence exists;
 equity_this_quarter only when a year-over-year price direction exists; inventory_watch only when listing counts or days on
-market exist. A registry_dataset may support a topic but never carries one alone.
+market exist (a demand_gap fits it: "homes like yours are in demand" — counts, never a found buyer). A registry_dataset or a
+relocation_context may support a topic but never carries one alone.
 
 OUTPUT CONTRACT
 Typed JSON (the schema you were given). Every suggestion names the territory in its title, says in one sentence the question
-it answers for a neighbour, and cites ≥1 evidence id of a market kind (market_signal, market_trend or closed_sales).
+it answers for a neighbour, and cites ≥1 evidence id of a market kind (market_signal, market_trend, closed_sales or demand_gap).
 
 COMPLIANCE BOUNDARY
 Topics describe homes, prices, supply and pace. No topic about who lives somewhere, school ratings, crime or safety, religious
@@ -188,7 +193,7 @@ snapshot and says so. Do not pad, and do not reach for a source you were not giv
 export interface TopicEvidenceItem {
   id: string
   /** Verified market data + the market registry only (owner ruling 10) — never a topic-bank theme. */
-  kind: "market_signal" | "market_trend" | "closed_sales" | "registry_dataset"
+  kind: "market_signal" | "market_trend" | "closed_sales" | "registry_dataset" | "demand_gap" | "relocation_context"
   summary: string
   observedAt: string | null
   source: string

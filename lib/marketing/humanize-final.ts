@@ -29,6 +29,9 @@
 //   5. flags — never silently ships — unsupported superlatives, testimonials without a verified review, rank claims, the
 //      tenant's prohibited words and hard fair-housing findings;
 //   6. hashes the result (sha256) so the version a human approves is the version the publication door can prove it sent.
+//   R10 (wave 150, lane 150SZ — owner 2026-11-06): the SAME tell list now carries the common real-estate campaign phrases
+//   ("dream home", "won't last", "priced to sell" …) — a blocker on an AI draft, a review note in a person's own words — and
+//   the caller's legal / scripted blocks (`verbatim`) are masked, never scanned, restored byte-for-byte and proven present.
 // The HUMAN APPROVAL is the publication gate (requiresHumanApproval is always true). The I/O half below records the final
 // version (public.distribution_finals, m866), notifies the human THE MOMENT it is ready, and — at the publication door —
 // records which approved version actually went out (or refuses an unapproved / non-compliant one, fail closed).
@@ -37,7 +40,7 @@
 // client. The brand / voice / notification defaults are lazy imports so this module stays importable anywhere on the server.
 
 import { createHash } from "node:crypto"
-import { scanAiTells, stripAiTells, type AiTellFinding } from "@/lib/lead-magnets/book-editorial"
+import { scanAiTells, stripAiTells, CAMPAIGN_PHRASE_RULE_PREFIX, type AiTellFinding } from "@/lib/lead-magnets/book-editorial"
 import { scanBookClaims } from "@/lib/lead-magnets/book-publishing"
 import { detectUngroundedClaims } from "@/lib/video/director-eval-harness"
 import { scanPublicCopy, type CopySurface, type OlderPersonsRecords } from "@/lib/kernel/marketing/public-copy-rewrite"
@@ -116,6 +119,14 @@ export interface FinalizeInput {
   authoredBy?: "ai" | "human"
   /** The tenant's recorded housing-for-older-persons exemptions (scanPublicCopy) — omitted = none recorded. */
   olderPersons?: OlderPersonsRecords
+  /**
+   * LEGAL / SCRIPTED TEXT THAT MUST GO OUT VERBATIM (wave 150, lane 150SZ — owner ruling R10: "legal/scripted text stays
+   * verbatim where required"). Each block — a consent sentence, a state-required disclosure, a compliance-approved script, a
+   * quoted contract term — is masked BEFORE the phase touches anything and restored byte-for-byte after; the tell / campaign-
+   * phrase / superlative scans never read it (a statute is not a cliché the writer can rephrase). A block that is not in the
+   * draft is appended once (exactly as given); a block that is not present byte-identical in the final is a BLOCKER.
+   */
+  verbatim?: readonly string[]
 }
 
 export interface FinalizedDistribution {
@@ -134,6 +145,10 @@ export interface FinalizedDistribution {
   tagline: { applied: "appended" | "render" | "already_present" | "none"; text: string | null; reason: string | null }
   logo: { placement: "render" | "none"; url: string | null; reason: string | null }
   disclosures: { required: string[]; carried: string[]; appended: string[]; missing: string[] }
+  /** Legal / scripted blocks (FinalizeInput.verbatim): which were carried untouched, appended as given, or lost. */
+  verbatim: { required: string[]; appended: string[]; missing: string[] }
+  /** Common real-estate campaign phrases still in the final (R10) — a subset of openTells, named for the writer. */
+  campaignPhrases: string[]
   materialTerms: { source: string[]; missing: string[] }
   /** Unsupported superlatives (not grounded in the caller's facts). */
   superlatives: string[]
@@ -262,11 +277,27 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
   const brand = input.tenantBrand ?? {}
   const sourcePlain = plainOf(source, isHtml)
 
+  // 0 · legal / scripted blocks (R10): masked before anything is touched, restored byte-for-byte at the end, never scanned.
+  //     A block the draft lacks is appended as a mask too, so no scan reads it either. Private-use code points, no digits (the
+  //     material-term reader never sees a mask as a number).
+  const verbatimRequired = [...new Set((input.verbatim ?? []).map((v) => String(v ?? "")).filter((v) => v.trim().length > 0))]
+  const masks: Array<{ token: string; text: string }> = []
+  const tokenFor = (i: number) => `${String.fromCharCode(0xE100 + i)}`
+  let maskedSource = source
+  verbatimRequired.forEach((v, i) => {
+    if (!maskedSource.includes(v)) return
+    const token = tokenFor(i)
+    maskedSource = maskedSource.split(v).join(token)
+    masks.push({ token, text: v })
+  })
+  const unmask = (s: string) => masks.reduce((acc, m) => acc.split(m.token).join(m.text), s)
+  const withoutMasks = (s: string) => masks.reduce((acc, m) => acc.split(m.token).join(" "), s)
+
   // 1 · remove the machine-written phrasing that can go without touching a fact (AI drafts only — a human's words are theirs).
   const removed: AiTellFinding[] = []
-  let body = source
+  let body = maskedSource
   if (authoredBy === "ai") {
-    body = mapTextSegments(source, isHtml, (seg) => {
+    body = mapTextSegments(maskedSource, isHtml, (seg) => {
       const r = stripAiTells(seg)
       removed.push(...r.removed)
       return r.text
@@ -298,12 +329,26 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
   const required = [...new Set((input.disclosures ?? []).map((d) => String(d ?? "").trim()).filter(Boolean))]
   const appended: string[] = []
   for (const d of required) {
-    if (squash(plainOf(body, isHtml)).includes(squash(d))) continue
+    if (squash(plainOf(unmask(body), isHtml)).includes(squash(d))) continue
     body = isHtml ? `${body}\n<p class="disclosure">${escapeHtml(d)}</p>` : `${body.replace(/\s+$/, "")}\n\n${d}`
     appended.push(d)
   }
+  // 4b · a required legal / scripted block the draft lacked is appended exactly as given (masked, so no scan reads it).
+  const verbatimAppended: string[] = []
+  verbatimRequired.forEach((v, i) => {
+    if (masks.some((m) => m.text === v) || plainOf(unmask(body), isHtml).includes(v)) return
+    const token = tokenFor(i)
+    masks.push({ token, text: isHtml ? escapeHtml(v) : v })
+    body = isHtml ? `${body}\n<p class="legal">${token}</p>` : `${body.replace(/\s+$/, "")}\n\n${token}`
+    verbatimAppended.push(v)
+  })
+  // Every judgement below reads the piece WITHOUT the verbatim blocks; every preservation proof reads it WITH them.
+  // The tenant's own vetted tagline is THEIR voice (R10 "in the tenant's voice and tagline") — never judged as a stock line.
+  const scanPlain = ((t: string) => (taglineOut.text ? t.split(taglineOut.text).join(" ") : t))(withoutMasks(plainOf(body, isHtml)))
+  body = unmask(body)
   const finalPlain = plainOf(body, isHtml)
   const finalSquashed = squash(finalPlain)
+  const missingVerbatim = verbatimRequired.filter((v) => !(isHtml ? finalPlain : body).includes(v))
   const missingDisclosures = [...carried, ...required].filter((d) => !finalSquashed.includes(squash(d)))
 
   // 5 · material terms — every amount / rate / date the draft stated is still stated.
@@ -312,21 +357,29 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
   const missingTerms = sourceTerms.filter((t) => !finalCompact.includes(t))
 
   // 6 · what the human must resolve.
-  const openTells = authoredBy === "ai" ? scanAiTells(finalPlain) : []
-  const superlatives = [...new Set(detectUngroundedClaims({ hook: "", script: finalPlain, captionText: "" }, [...(input.facts ?? [])])
+  const openTells = authoredBy === "ai" ? scanAiTells(scanPlain) : []
+  // R10: a common real-estate campaign phrase is NAMED on every outward piece, the person's own words included — the ruling is
+  // about the copy that goes out. On an AI draft it is a blocker (the model rewrites it); in a person's own words it is a review
+  // note (their words stay theirs — the phase tells them, it never holds their piece for it).
+  const campaignPhrases = (authoredBy === "ai" ? openTells : scanAiTells(scanPlain))
+    .filter((t) => t.rule.startsWith(CAMPAIGN_PHRASE_RULE_PREFIX)).map((t) => t.phrase)
+  const modelTells = openTells.filter((t) => !t.rule.startsWith(CAMPAIGN_PHRASE_RULE_PREFIX))
+  const superlatives = [...new Set(detectUngroundedClaims({ hook: "", script: scanPlain, captionText: "" }, [...(input.facts ?? [])])
     .filter((c) => c.kind === "superlative").map((c) => c.claim))]
-  const testimonials = unsupportedTestimonials(finalPlain, input.verifiedTestimonials ?? [])
-  const rankClaims = [...new Set(scanBookClaims({ copy: finalPlain }).map((c) => c.phrase))]
-  const lower = finalPlain.toLowerCase()
+  const testimonials = unsupportedTestimonials(scanPlain, input.verifiedTestimonials ?? [])
+  const rankClaims = [...new Set(scanBookClaims({ copy: scanPlain }).map((c) => c.phrase))]
+  const lower = scanPlain.toLowerCase()
   const prohibited = (brand.prohibitedWords ?? []).map((w) => String(w ?? "").trim()).filter(Boolean)
     .filter((w) => new RegExp(`(^|[^a-z0-9])${w.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i").test(lower))
   const preferred = (brand.preferredWords ?? []).map((w) => String(w ?? "").trim().toLowerCase()).filter(Boolean)
   const preferredMissing = preferred.length > 0 && !preferred.some((w) => lower.includes(w))
-  const fh = await scanPublicCopy(finalPlain, profile.surface, { brokerageName: brand.brandName ?? null, olderPersons: input.olderPersons })
+  const fh = await scanPublicCopy(scanPlain, profile.surface, { brokerageName: brand.brandName ?? null, olderPersons: input.olderPersons })
   const fairHousing = fh.findings.filter((f) => f.severity === "high" || f.severity === "blocker").map((f) => `"${f.phrase}" — ${f.fix}`)
 
   const blockers = [
-    ...openTells.map((t) => `machine-written phrasing still reads "${t.phrase}" (${t.rule}) — rewrite it in your own words`),
+    ...modelTells.map((t) => `machine-written phrasing still reads "${t.phrase}" (${t.rule}) — rewrite it in your own words`),
+    ...(authoredBy === "ai" ? campaignPhrases : []).map((p) => `"${p}" is a stock real-estate campaign line every competitor already uses — say it your way, about this home or this person`),
+    ...missingVerbatim.map((v) => `legal / scripted text must go out word for word and was changed or lost: "${v.slice(0, 120)}"`),
     ...superlatives.map((s) => `unsupported superlative "${s}" — remove it or ground it in a fact you can show`),
     ...testimonials.map((s) => `testimonial with no verified review behind it: "${s}"`),
     ...rankClaims.map((s) => `rank / award claim "${s}" — nothing the platform can verify`),
@@ -337,7 +390,9 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
   ]
   const spoken = input.assetKind === "video_script" || input.assetKind === "podcast_script" || input.assetKind === "ctv_ad"
   const reviewNotes = [
-    ...(spoken && authoredBy === "ai" ? scanSpokenRealism(finalPlain) : []),
+    ...(taglineOut.text && scanAiTells(taglineOut.text).some((t) => t.rule.startsWith(CAMPAIGN_PHRASE_RULE_PREFIX)) ? [`your tagline "${taglineOut.text}" reads like a stock real-estate line — it still goes out (it is your brand); consider a fresher one in brand settings`] : []),
+    ...(authoredBy === "human" ? campaignPhrases.map((p) => `"${p}" is a stock real-estate campaign line — consider saying it your own way`) : []),
+    ...(spoken && authoredBy === "ai" ? scanSpokenRealism(scanPlain) : []),
     ...(taglineOut.reason ? [taglineOut.reason] : []),
     ...(logoOut.reason && profile.logo !== "none" ? [logoOut.reason] : []),
     ...(preferredMissing ? [`none of your preferred words appear (${preferred.slice(0, 5).join(", ")})`] : []),
@@ -362,6 +417,8 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
     tagline: taglineOut,
     logo: logoOut,
     disclosures: { required, carried, appended, missing: missingDisclosures },
+    verbatim: { required: verbatimRequired, appended: verbatimAppended, missing: missingVerbatim },
+    campaignPhrases,
     materialTerms: { source: sourceTerms, missing: missingTerms },
     superlatives,
     testimonials,

@@ -19,7 +19,7 @@ import {
   lotFactsFrom,
   formatAcres,
   formatDistance,
-  validLotMinimum,
+  readLotMinimum,
   lotMinimumAcres,
   formatLotMinimum,
   type EvidenceSource,
@@ -706,8 +706,8 @@ function lifestyleFit(ask: LifestyleAsk, l: ListingFitFacts, prov: CriteriaProve
       // C27: the BUYER's minimum decides (converted to acres — conversion is allowed, inventing is not). A legacy row's
       // `minAcres` was only ever set from a stated number (148E's parser), so it is read as the buyer's when no
       // `lotMinimum` rides the ask.
-      const stated = validLotMinimum(ask.lotMinimum) ? ask.lotMinimum
-        : ask.minAcres && ask.minAcres > 0 ? { value: ask.minAcres, unit: 'acres' as const, stated_by: 'buyer' as const, literal: ask.evidence, confidence: 'high' as const } : null
+      const stated = readLotMinimum(ask.lotMinimum)
+        ?? (ask.minAcres && ask.minAcres > 0 ? { value: ask.minAcres, unit: 'acres' as const, stated_by: 'buyer' as const, literal: ask.evidence, confidence: 'high' as const } : null)
       if (stated && ask.direction !== 'less') {
         const min = lotMinimumAcres(stated)
         const said = formatLotMinimum(stated)

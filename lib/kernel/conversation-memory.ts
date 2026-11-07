@@ -26,6 +26,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { LANGUAGE_NAMES } from "@/lib/video/language-vocabulary"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -99,7 +100,13 @@ export interface ContextSpine {
 //     cheaper context and no stale fact presented as true.
 // Deterministic; the model never decides what is current.
 
-export type MemoryFactKey = "timeline" | "price_expectation" | "channel_preference" | "motivation"
+export type MemoryFactKey =
+  | "timeline" | "price_expectation" | "channel_preference" | "motivation"
+  // WAVE 150 (lane 150QTV, directive 150Q — preference memory from the person's OWN words; survivor first: this ledger, not a
+  // second store). Written by rememberStatedPreferences (end of this file) (the inbound chain,
+  // lib/communications/inbound-record.ts) only from a first-person statement; read by the arbiter (ARBITER_MEMORY_KEYS) and every
+  // AI surface through memoryContextBlock. `preferred_contact_time` / `language` are the arbiter's existing memory spellings (§6).
+  | "preferred_contact_time" | "language" | "communication_format" | "contact_frequency" | "barrier" | "explanation_style" | "scenario_choice"
 
 export interface MemoryFact {
   key: MemoryFactKey
@@ -125,10 +132,19 @@ export const MEMORY_FACT_REVIEW_DAYS: Readonly<Record<MemoryFactKey, number>> = 
   price_expectation: 45,
   channel_preference: 180,
   motivation: 120,
+  // Wave 150 (150Q): how the person asked to be reached / spoken to is stable; a stated barrier or a "fewer messages" request is
+  // re-confirmed sooner, because circumstances move and the person should not be held to an old sentence.
+  preferred_contact_time: 180,
+  language: 365,
+  communication_format: 180,
+  contact_frequency: 60,
+  barrier: 45,
+  explanation_style: 180,
+  scenario_choice: 90,
 })
 /** History kept per key (current + superseded) — bounded so the jsonb cannot grow forever. */
 export const MEMORY_FACT_HISTORY_CAP = 5
-const MEMORY_FACT_KEYS: readonly MemoryFactKey[] = ["timeline", "price_expectation", "channel_preference", "motivation"]
+const MEMORY_FACT_KEYS: readonly MemoryFactKey[] = Object.keys(MEMORY_FACT_REVIEW_DAYS) as MemoryFactKey[]
 
 const normFactValue = (v: string) => v.trim().toLowerCase().replace(/\s+/g, " ")
 
@@ -209,6 +225,9 @@ export function factsDueForReview(spineOrFacts: unknown, now: Date = new Date())
 
 const FACT_LABEL: Readonly<Record<MemoryFactKey, string>> = {
   timeline: "timeline", price_expectation: "price expectation", channel_preference: "preferred channel", motivation: "motivation",
+  preferred_contact_time: "best time to reach them", language: "language", communication_format: "preferred format",
+  contact_frequency: "how often they want to hear from us", barrier: "what is in the way", explanation_style: "how they like things explained",
+  scenario_choice: "the path they chose",
 }
 
 /**
@@ -712,4 +731,156 @@ export async function refreshRecentContactSpines(
     }
   }
   return result
+}
+
+// ─── PREFERENCE MEMORY FROM THE PERSON'S OWN WORDS (wave 150, lane 150QTV — directive 150Q) ───────────────────────────────
+//
+// "language / communication-preference memory from the person's own words, accessible explanations, friction / barriers,
+// scenario choices, fatigue, care-first response". SURVIVOR FIRST: this IS the one per-contact memory, so the reader lives here
+// (folded in rather than a new module — the crm page graph is at its 1300-module budget). It only READS A SENTENCE THE PERSON
+// WROTE and records the preferences they STATED on the facts ledger above, through recordConversationFacts. The arbiter reads
+// them back (lib/ai-isa/followup-arbiter.ts ARBITER_MEMORY_KEYS → evidence.preferences; lib/communications/inbound-responder.ts
+// merges them over the stored columns); every conversing surface reads them through memoryContextBlock. The accessibility FIELDS
+// the person set in the portal stay where they are (lib/contacts/accessibility-preferences.ts — explicit, user-controlled).
+//
+// THE RULE OF THE WORDS. A preference is recorded ONLY from a first-person statement about how THEY want to be reached or spoken
+// to ("please text me", "evenings are best", "en español por favor", "too many messages", "can you explain it simply", "we have
+// to sell our house first"). Never inferred from a demographic, an age, a name, a language guess, the channel the message
+// happened to arrive on, or contact_type (owner ruling R2). A sentence that only MENTIONS a channel records nothing. Each fact
+// keeps its source (person_words:<channel>:<provider ref>). CARE FIRST: `contact_frequency` fewer / pause and a stated `barrier`
+// tell the arbiter to slow down or explain (ARBITER_SYSTEM) — never push harder. A full STOP is not handled here:
+// lib/ai-isa/opt-out-utils.ts detectOptOutIntent runs first in the inbound chain and suppression is the answer.
+
+export interface StatedPreference {
+  key: Extract<MemoryFactKey, "channel_preference" | "preferred_contact_time" | "language" | "communication_format" | "contact_frequency" | "barrier" | "explanation_style" | "scenario_choice">
+  /** One spelling per key (the arbiter channel names; the accessibility format words; the language CODE of LANGUAGE_NAMES). */
+  value: string
+  /** A first-person statement is the person's own word: 0.9. */
+  confidence: number
+  /** The words that carried it, trimmed — evidence, never shown to an ad platform. */
+  quote: string
+}
+
+/** First person + a wish or a preference — the gate every rule below sits behind (a sentence about US is not about them). */
+const FIRST_PERSON = /\b(i|i'd|i'm|i’d|i’m|we|we'd|we're|we’d|we’re|me|us|my|our|please|pls|prefer|rather|best|better|easier|por favor|prefiero|preferimos|quiero|queremos|tenemos|mi|nos)\b/i
+
+/** PURE. The word (one sentence) that matched, trimmed for evidence. */
+function quoteOf(text: string, idx: number): string {
+  const start = Math.max(0, text.lastIndexOf(".", idx) + 1)
+  const endDot = text.indexOf(".", idx)
+  return text.slice(start, endDot === -1 ? undefined : endDot + 1).trim().slice(0, 160)
+}
+
+const CHANNEL_RULES: ReadonlyArray<{ value: string; re: RegExp }> = [
+  { value: "sms", re: /\b(?:please\s+)?(?:text|txt|sms)\s+(?:me|us)\b|\b(?:texting|texts?)\s+(?:is|are|works?)\s+(?:best|better|easier)\b|\bprefer\s+(?:a\s+)?(?:text|texts|texting)\b/i },
+  { value: "email", re: /\b(?:please\s+)?e-?mail\s+(?:me|us)\b|\be-?mail\s+(?:is|works?)\s+(?:best|better|easier)\b|\bprefer\s+(?:an?\s+)?e-?mails?\b|\brather\s+you\s+e-?mailed\b/i },
+  { value: "phone", re: /\b(?:please\s+)?(?:call|phone|ring)\s+(?:me|us)\b|\b(?:a\s+)?(?:call|phone\s+call)\s+(?:is|works?)\s+(?:best|better|easier)\b|\bprefer\s+(?:a\s+)?(?:call|phone)\b/i },
+  { value: "in_app", re: /\b(?:message|reach)\s+(?:me|us)\s+(?:in|through|on)\s+the\s+(?:portal|app)\b|\bprefer\s+the\s+(?:portal|app)\b/i },
+  { value: "direct_mail", re: /\b(?:mail|post)\s+(?:it|them|me)\s+(?:to\s+me|to\s+my\s+(?:house|home|address))\b|\bprefer\s+(?:paper|a\s+letter|mail)\b/i },
+]
+
+const TIME_RULES: ReadonlyArray<{ value: string; re: RegExp }> = [
+  { value: "mornings", re: /\b(?:mornings?|before\s+(?:noon|work))\s+(?:is|are|work)\s+(?:best|better)\b|\b(?:call|text|reach)\s+(?:me|us)\s+(?:in\s+the\s+)?mornings?\b/i },
+  { value: "afternoons", re: /\bafternoons?\s+(?:is|are|work)\s+(?:best|better)\b|\b(?:call|text|reach)\s+(?:me|us)\s+(?:in\s+the\s+)?afternoons?\b/i },
+  { value: "evenings", re: /\b(?:evenings?|after\s+work|after\s+[5-9]\s*(?:pm|p\.m\.)?)\s+(?:is|are|works?)\s+(?:best|better)\b|\b(?:call|text|reach)\s+(?:me|us)\s+(?:in\s+the\s+evenings?|after\s+(?:work|[5-9]\s*(?:pm|p\.m\.)?))\b/i },
+  { value: "weekends", re: /\bweekends?\s+(?:is|are|work)\s+(?:best|better)\b|\b(?:call|text|reach)\s+(?:me|us)\s+on\s+(?:the\s+)?weekends?\b/i },
+]
+
+const FORMAT_RULES: ReadonlyArray<{ value: string; re: RegExp }> = [
+  { value: "video", re: /\b(?:send|prefer|rather\s+have)\s+(?:me\s+)?(?:a\s+)?videos?\b|\bvideos?\s+(?:is|are|work)\s+(?:best|better|easier)\b/i },
+  { value: "audio", re: /\b(?:send|prefer|rather\s+have)\s+(?:me\s+)?(?:a\s+)?(?:voice\s*(?:note|message)|audio|recording)s?\b/i },
+  { value: "text", re: /\b(?:in\s+writing|written\s+down)\s+(?:is|works?)\s+(?:best|better|easier)\b|\bprefer\s+(?:it\s+)?(?:in\s+writing|written)\b/i },
+]
+
+const FREQUENCY_RULES: ReadonlyArray<{ value: string; re: RegExp }> = [
+  { value: "pause", re: /\b(?:give\s+(?:me|us)\s+(?:a\s+)?(?:few\s+)?(?:weeks?|months?|break|some\s+time)|check\s+back\s+(?:in|after)|not\s+right\s+now,?\s+(?:maybe\s+)?later)\b/i },
+  { value: "fewer", re: /\b(?:too\s+many\s+(?:messages|texts|emails|calls)|(?:less|fewer)\s+(?:often|messages|texts|emails|calls)|(?:please\s+)?(?:slow\s+down|stop\s+(?:texting|emailing|calling)\s+so\s+much))\b/i },
+]
+
+const BARRIER_RULES: ReadonlyArray<{ value: string; re: RegExp }> = [
+  { value: "must_sell_first", re: /\b(?:have|need)\s+to\s+sell\s+(?:our|my)\s+(?:house|home|place)\s+first\b/i },
+  { value: "financing", re: /\b(?:waiting\s+on|need\s+to\s+get|don't\s+have|do\s+not\s+have)\s+(?:a\s+)?(?:pre-?approval|financing|a\s+loan|mortgage)\b|\b(?:can't|cannot)\s+get\s+(?:a\s+)?(?:loan|mortgage)\b/i },
+  { value: "lease", re: /\b(?:my|our)\s+lease\s+(?:runs|ends|is\s+up)\b|\bstuck\s+in\s+(?:a|my|our)\s+lease\b/i },
+  { value: "cost", re: /\b(?:can't|cannot)\s+afford\b|\b(?:too|very)\s+expensive\s+(?:for\s+(?:me|us))\b|\bprices?\s+(?:are|is)\s+too\s+high\s+for\s+(?:me|us)\b/i },
+  { value: "timing", re: /\b(?:not\s+(?:ready|in\s+a\s+rush)\s+yet|(?:i|we)'?m?\s+not\s+ready)\b/i },
+]
+
+const EXPLANATION_RULES: ReadonlyArray<{ value: string; re: RegExp }> = [
+  { value: "plain_language", re: /\b(?:i\s+don'?t\s+understand|confus(?:ed|ing)|(?:explain|say)\s+(?:it|that)\s+(?:simply|in\s+plain\s+(?:english|words)|more\s+simply)|what\s+does\s+that\s+mean|too\s+much\s+jargon)\b/i },
+  { value: "step_by_step", re: /\b(?:step\s+by\s+step|one\s+step\s+at\s+a\s+time|walk\s+(?:me|us)\s+through)\b/i },
+  { value: "detailed", re: /\b(?:send|give)\s+(?:me|us)\s+(?:all\s+)?the\s+details\b|\bi\s+(?:like|want)\s+(?:the\s+)?(?:numbers|details)\b/i },
+]
+
+const SCENARIO_RULES: ReadonlyArray<{ value: string; re: RegExp }> = [
+  { value: "sell_first", re: /\b(?:we|i)(?:'d|\s+would|\s+want\s+to|\s+will|'ll)?\s+(?:rather\s+)?sell\s+(?:first|before\s+(?:we|i)\s+buy)\b/i },
+  { value: "buy_first", re: /\b(?:we|i)(?:'d|\s+would|\s+want\s+to|\s+will|'ll)?\s+(?:rather\s+)?buy\s+(?:first|before\s+(?:we|i)\s+sell)\b/i },
+  { value: "rent_first", re: /\b(?:we|i)(?:'d|\s+would|\s+will|'ll|\s+plan\s+to)?\s+rent\s+(?:first|for\s+a\s+while)\b/i },
+  { value: "stay_put", re: /\b(?:we|i)(?:'re|\s+are|'m|\s+am)?\s+(?:staying\s+put|not\s+moving|going\s+to\s+stay)\b/i },
+]
+
+/** PURE. The language CODE (LANGUAGE_NAMES — the ONE vocabulary) the person asked to be spoken to in, or null. */
+function statedLanguage(text: string): { code: string; idx: number } | null {
+  if (/\ben\s+español\b|\bhabla(?:s)?\s+español\b|\bpor\s+favor\s+en\s+español\b/i.test(text)) return { code: "es", idx: text.search(/español/i) }
+  for (const [code, name] of Object.entries(LANGUAGE_NAMES)) {
+    if (code === "en") continue
+    const re = new RegExp(`\\b(?:(?:speak|write|talk)\\s+(?:to\\s+(?:me|us)\\s+)?in|prefer|in)\\s+${name}\\b|\\b${name}\\s+(?:is|would\\s+be)\\s+(?:better|easier|best)\\b|\\bmy\\s+(?:first|native)\\s+language\\s+is\\s+${name}\\b`, "i")
+    const m = re.exec(text)
+    if (m) return { code, idx: m.index }
+  }
+  return null
+}
+
+/**
+ * PURE. Every preference a person STATED in one message. Empty when none — and empty for a sentence without a first-person
+ * wish, a public post, or an empty body. One value per key (the first rule that matched in the list order above).
+ */
+/** @proofSeam read by scripts/two-way-channels-guard.ts (150Q — first-person statements only; positive and negative cases). */
+export function preferencesFromOwnWords(body: string): StatedPreference[] {
+  const text = String(body ?? "").replace(/\s+/g, " ").trim().slice(0, 2000)
+  if (text.length < 3 || !FIRST_PERSON.test(text)) return []
+  const out: StatedPreference[] = []
+  const take = (key: StatedPreference["key"], rules: ReadonlyArray<{ value: string; re: RegExp }>) => {
+    for (const r of rules) {
+      const m = r.re.exec(text)
+      if (m) { out.push({ key, value: r.value, confidence: 0.9, quote: quoteOf(text, m.index) }); return }
+    }
+  }
+  take("channel_preference", CHANNEL_RULES)
+  take("preferred_contact_time", TIME_RULES)
+  const lang = statedLanguage(text)
+  if (lang) out.push({ key: "language", value: lang.code, confidence: 0.9, quote: quoteOf(text, Math.max(0, lang.idx)) })
+  take("communication_format", FORMAT_RULES)
+  take("contact_frequency", FREQUENCY_RULES)
+  take("barrier", BARRIER_RULES)
+  take("explanation_style", EXPLANATION_RULES)
+  take("scenario_choice", SCENARIO_RULES)
+  return out
+}
+
+export type PreferenceWriter = (
+  contactId: string, brokerageId: string,
+  facts: ReadonlyArray<{ key: MemoryFactKey; value: string; confidence: number }>,
+  opts: { client?: unknown; now?: Date; source?: string },
+) => Promise<{ recorded: number; error?: string }>
+
+/**
+ * Record what the person said about how they want to be reached, on the ONE memory ledger. Tenant-pinned (the survivor writer
+ * reads and writes `.eq("brokerage_id", …)` and counts the updated row). Never throws; a refusal comes back as `error`.
+ */
+export async function rememberStatedPreferences(
+  svc: unknown,
+  input: { brokerageId: string; contactId: string; body: string; channel: string; providerRef?: string | null; now?: Date },
+  writer?: PreferenceWriter,
+): Promise<{ stated: StatedPreference[]; recorded: number; error?: string }> {
+  const stated = preferencesFromOwnWords(input.body)
+  if (stated.length === 0 || !input.brokerageId || !input.contactId) return { stated, recorded: 0 }
+  try {
+    const write: PreferenceWriter = writer ?? ((c, b, f, o) => recordConversationFacts(c, b, f, o as never))
+    const r = await write(input.contactId, input.brokerageId, stated.map(({ key, value, confidence }) => ({ key, value, confidence })), {
+      client: svc, now: input.now, source: `person_words:${input.channel}${input.providerRef ? `:${input.providerRef}` : ""}`,
+    })
+    return { stated, recorded: r.recorded, ...(r.error ? { error: r.error } : {}) }
+  } catch (e) {
+    return { stated, recorded: 0, error: e instanceof Error ? e.message : String(e) }
+  }
 }

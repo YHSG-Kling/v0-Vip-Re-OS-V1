@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { resolveReportScope } from "@/lib/kernel/reporting-scope"
 import { getSourceDrilldown } from "@/app/actions/source-analytics"
 import { SourceDetailClient } from "./source-detail-client"
@@ -31,7 +31,9 @@ export default async function SourceDetailPage({ params, searchParams }: Props) 
   const sourceName = decodeURIComponent(resolvedParams.sourceId)
   const family = (resolvedSearch.family ?? "contact_direct") as SourceFamily
   // Lane 90A (89D P1-5): the ONE scope resolver — see app/dashboard/analytics/source/page.tsx.
-  const supabase = await createClient()
+  // Wave 150 (lane 150DAC): the scope reader takes the SERVICE client with the SESSION's ids (gate above) — the
+  // C34 hierarchy reads organization_members / locations, which a session read could hide and so narrow wrongly.
+  const supabase = createServiceClient()
   const scope = await resolveReportScope(supabase, {
     userType: ctx.userType,
     userId: ctx.userId,

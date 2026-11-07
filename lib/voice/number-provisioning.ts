@@ -336,14 +336,46 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
   //    lane (10DLC vs toll-free) follows the number; the outcome is audited on
   //    phone_number_events and reported here so the caller can show it.
   let registration: CarrierKickoffResult | undefined
+  let kickoffError: string | null = null
   try {
     const { kickCarrierRegistration } = await import("@/lib/voice/a2p-registration")
     registration = await kickCarrierRegistration(svc, { brokerageId: params.brokerageId, phoneNumber: targetNumber, trigger: "purchased" })
   } catch (err) {
-    console.warn("[number-provisioning] carrier registration kickoff failed (the number is purchased and bound):", (err as Error)?.message)
+    kickoffError = (err as Error)?.message ?? "carrier registration kickoff threw"
+    console.warn("[number-provisioning] carrier registration kickoff failed (the number is purchased and bound):", kickoffError)
   }
+  // WAVE 150 (lane 150DAC — canary 16): the PURCHASE door reports the same immediate post-condition the BYO / port-in
+  // door already did (wave 141B). Before this, a kickoff that threw on a freshly BOUGHT number reached nobody but a
+  // console line, and waited for the hourly carrier tick to be noticed. Now it is evidenced and routed in-request.
+  await reportPhoneA2pOutcome(svc, {
+    brokerageId: params.brokerageId, numberRowId, actorUserId: params.agentUserId ?? null, eventSource: params.eventSource ?? null,
+    number: targetNumber, source: "purchased", bound, registration, registrationNote: registration?.statusLine ?? kickoffError,
+  })
 
   return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote, billing, monthlyOverageCents, registration }
+}
+
+/** THE ONE phone_a2p post-condition report (both number doors — purchase and BYO / port-in — call it right after the
+ *  carrier kickoff). The step's post-condition is "carrier registration STARTED (or is honestly waiting on the tenant /
+ *  the carrier)"; a kickoff that THREW is routed now to the AI ISA (READINESS_OWNER.communications) — never left for
+ *  the hourly tick alone. Evidence carries the number's last four digits only; the tenant sentence names no provider. */
+async function reportPhoneA2pOutcome(svc: any, p: {
+  brokerageId: string; numberRowId: string | null; actorUserId: string | null; eventSource: string | null
+  number: string; source: string; bound: boolean; registration: CarrierKickoffResult | undefined; registrationNote: string | null
+}): Promise<void> {
+  try {
+    const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+    await reportOperationOutcome(svc, {
+      operation: "phone_a2p", brokerageId: p.brokerageId, ok: p.registration !== undefined,
+      subjectType: "tenant_phone_number", subjectId: p.numberRowId ?? null, actorUserId: p.actorUserId,
+      source: p.eventSource === "tenant_action" ? "ui" : "system",
+      evidence: { number_last4: p.number.replace(/\D/g, "").slice(-4), source: p.source, bound: p.bound, registration: p.registrationNote ?? null },
+      error: p.registration === undefined ? p.registrationNote ?? "carrier registration kickoff threw" : null,
+      tenantFacing: p.registration === undefined ? "business registration for your new number could not start — the OS will retry and tell you if it needs your business profile" : null,
+    })
+  } catch (err) {
+    console.warn("[number-provisioning] phone_a2p outcome not reported:", (err as Error)?.message)
+  }
 }
 
 // ─── Attach a number the tenant already OWNS (BYO / ported) ──────────────────
@@ -465,19 +497,10 @@ export async function attachOwnedNumber(
   // that THREW is routed now to the AI ISA (communications owner) — never left for the hourly tick alone;
   // the carrier's own verdict (pending / action required / rejected) rides the readiness `communications`
   // check the consumer re-verifies. Evidence carries the number's last four digits only.
-  try {
-    const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
-    await reportOperationOutcome(svc, {
-      operation: "phone_a2p", brokerageId: params.brokerageId, ok: registration !== undefined,
-      subjectType: "tenant_phone_number", subjectId: numberRowId ?? null, actorUserId: params.agentUserId ?? null,
-      source: params.eventSource === "tenant_action" ? "ui" : "system",
-      evidence: { number_last4: cleaned.slice(-4), source: params.source, bound, registration: registrationNote ?? null },
-      error: registration === undefined ? registrationNote ?? "carrier registration kickoff threw" : null,
-      tenantFacing: registration === undefined ? "business registration for your new number could not start — the OS will retry and tell you if it needs your business profile" : null,
-    })
-  } catch (err) {
-    console.warn("[number-provisioning] phone_a2p outcome not reported:", (err as Error)?.message)
-  }
+  await reportPhoneA2pOutcome(svc, {
+    brokerageId: params.brokerageId, numberRowId, actorUserId: params.agentUserId ?? null, eventSource: params.eventSource,
+    number: cleaned, source: params.source, bound, registration, registrationNote: registrationNote ?? null,
+  })
 
   return { ok: true, phoneNumber: cleaned, twilioSid: verifiedSid, numberRowId, bound, bindNote, registration, registrationNote }
 }

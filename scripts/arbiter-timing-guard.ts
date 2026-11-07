@@ -88,9 +88,11 @@ const DISPOSITIONS: Record<string, Disposition> = {
   "lib/ai-isa/settings-types.ts#touch_interval_days": { kind: "carried", owner: "lane 149C (Still open 1)", reason: "planNextLeadTouch spaces lead touches by the broker's touch_interval_days (lib/ai-isa/lead-action-plan.ts releaseDueLeadTouches) — not yet routed through arbitratePlannedTouch" },
   "app/dashboard/isa/campaigns/components/CreateCampaignDrawer.tsx#DEFAULT_TOUCH_INTERVAL": { kind: "carried", owner: "lane 149C (Still open 1)", reason: "the UI default of the same touch_interval_days setting" },
   "lib/kernel/strategy-library.ts#cadenceDays": { kind: "carried", owner: "lane 149C (Still open 2)", reason: "strategy-library step cadence (activateStrategy delegations) — guidance the strategy engine schedules on; arbitration of each delegated touch is Still open" },
-  "lib/marketing/creative-playbooks.ts#sendAfterMinutes": { kind: "carried", owner: "campaign_orchestrator (Outside-lane 3)", reason: "creative-playbook bundle offsets (campaign bundles, send_after_minutes) — a tenant-authored bundle the step executor's arbiter hold now governs only when it rides a sequence" },
+  // CLOSED (wave 150, lane 150SZ — wave-149 §4 C-3): creative-playbooks `sendAfterMinutes` removed; the playbook proposes order only and
+  // the dispatch-time arbiter door is the bundle dispatcher owner's (lane 150SZ notes, Outside-lane). The bundle builder default below stays carried.
   "app/settings/campaign-bundles/client.tsx#send_after_minutes": { kind: "carried", owner: "campaign_orchestrator (Outside-lane 3)", reason: "the bundle builder's default offset (same setting)" },
-  "lib/listing-presentation/section-drip.ts#DEFAULT_DRIP_WINDOW_DAYS": { kind: "carried", owner: "listing_concierge (Outside-lane 4)", reason: "the listing-presentation section drip spreads sections over a fixed window" },
+  // CLOSED (wave 150, lane 150SZ — wave-149 §4 C-4): section-drip `DEFAULT_DRIP_WINDOW_DAYS` removed; deliverDueSections asks the arbiter
+  // (arbitrateSectionDelivery → arbitrateFollowUp) before each part after the first; proven by scripts/lifetime-relationship-guard.ts.
 }
 /** Files whose constants are the arbiter's POLICY (it reads them as guidance, inside the judgment). */
 const POLICY_FILES = new Set(["lib/ai-isa/followup-policy.ts"])

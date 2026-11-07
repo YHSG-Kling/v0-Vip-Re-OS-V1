@@ -31,7 +31,8 @@ interface Props {
 const PIECE_LABELS: Record<DirectMailPieceType, string> = {
   postcard: "Postcard (4×6)",
   letter: "Letter (#10 envelope)",
-  handwritten_letter: "Handwritten Letter",
+  // R5 (owner 2026-11-06): a font is never called handwriting — the stored key stays, the words say what it is.
+  handwritten_letter: "Personal note (printed)",
   thank_you_note: "Thank-You Note",
 }
 
@@ -142,7 +143,7 @@ function HandwrittenLetterPreview({ body, agentName, recipientName }: Pick<Props
           <p className="text-base text-blue-900 self-end">Warmly, {agentName}</p>
         </div>
         <div className="px-3 py-2 text-[10px] text-muted-foreground bg-gray-50 border-t">
-          Printed via robotic handwriting service for an authentic personal feel.
+          Printed in a personal-note design (a script typeface, not pen handwriting). Genuine handwritten cards come only from a handwriting provider.
         </div>
       </CardContent>
     </Card>

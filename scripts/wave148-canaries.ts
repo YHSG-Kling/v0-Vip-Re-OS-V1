@@ -432,17 +432,21 @@ group("148C", "protected research → marketing-safe persona → compliant audie
     },
   },
   {
-    id: "148C·R1", label: "audiences: proxy tags ('young-families', 'church-goers') and a 'senior' SUPPRESSION list are refused; 'acreage buyers', derived 'relocated' and derived 'senior' audiences pass",
+    // RE-ASSERTED — wave 150, lane 150QTV (owner ruling R1, 2026-11-06): the negative half pinned "a 'senior' SUPPRESSION list is
+    // refused (protected_characteristic)". R1 removed that rule; a 'senior' suppression list now RESOLVES (positive half) and the
+    // negative half holds the surviving refusals: proxy tags and the null basis `other` as a suppression list.
+    id: "148C·R1", label: "audiences: proxy tags ('young-families', 'church-goers') and an 'other' SUPPRESSION list are refused; 'acreage buyers', derived 'relocated', derived 'senior' and a 'senior' suppression list (R1) pass",
     run: async () => {
       const proxy = await import("../lib/compliance-rules/audience-compliance")
       const basis = await import("../lib/ads/audience-persona-basis")
       const okRule = basis.resolveAudiencePersonaBasis({ type: "persona_segment", basis: "derived_persona", filters: { personas: ["relocated"] } })
       const seniorRule = basis.resolveAudiencePersonaBasis({ type: "persona_segment", basis: "derived_persona", filters: { personas: ["senior"] } })
       const seniorExcl = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["senior"] } }, "exclusion")
+      const otherExcl = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["other"] } }, "exclusion")
       return {
-        positive: proxy.audienceProxyHits("acreage buyers").length === 0 && okRule.ok && seniorRule.ok,
-        negative: proxy.audienceProxyHits("young-families").length > 0 && proxy.audienceProxyHits("church-goers").length > 0 && !seniorExcl.ok && (seniorExcl as any).refusalKind === "protected_characteristic",
-        detail: JSON.stringify({ okRule, seniorRule, seniorExcl }),
+        positive: proxy.audienceProxyHits("acreage buyers").length === 0 && okRule.ok && seniorRule.ok && seniorExcl.ok,
+        negative: proxy.audienceProxyHits("young-families").length > 0 && proxy.audienceProxyHits("church-goers").length > 0 && !otherExcl.ok && (otherExcl as any).refusalKind === "no_basis",
+        detail: JSON.stringify({ okRule, seniorRule, seniorExcl, otherExcl }),
       }
     },
   },

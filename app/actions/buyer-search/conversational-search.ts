@@ -117,6 +117,9 @@ const channelOf = (c: unknown): CriteriaChannel =>
 
 const hashOf = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16)
 
+/** The search engine's synthetic handle for a RentCast listing (lib/buyer-search/search-engine.ts `ext_${source}_${id}`). */
+const RENTCAST_REF_PREFIX = "ext_rentcast_"
+
 /** The bus line to the buyer's Shopping Agent — deduped by the bus to one open signal per contact. */
 async function tellShoppingAgent(svc: Svc, brokerageId: string, contactId: string, message: string, payload: Record<string, unknown>): Promise<boolean> {
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
@@ -212,6 +215,12 @@ export async function buyerHomeFeedbackAction(input: {
   /** The buyer's own words ("too small", "no HOA please") — parsed as a SAID turn. */
   note?: string
   channel?: "portal" | "mobile" | "voice"
+  /**
+   * Wave 150 (lane 150W, owner ruling 2026-11-06): for a RentCast listing (`ext_rentcast_<id>`), the IDENTIFIERS the
+   * result showed — its MLS number, the MLS's name (shown as the source) and the address — so the saved home carries its
+   * `rentcast_listing` origin. Shape-checked (cleanListingRef); facts never ride from the browser.
+   */
+  listingRef?: { mlsNumber?: string | null; mlsName?: string | null; address?: string | null }
 }): Promise<HomeFeedbackOutcome> {
   const listingId = (input.listingId ?? "").trim()
   if (!listingId || listingId.length > 200) return { ok: false, error: "Which home was that about?" }
@@ -251,6 +260,17 @@ export async function buyerHomeFeedbackAction(input: {
       },
     )
     if (!reacted.success) return { ok: false, error: reacted.error ?? "That didn't save — please try again." }
+    // The survivor writer stores a market save as source + external id only; a RentCast listing's origin also carries
+    // its MLS number and the MLS's name (m991 mls_name). Count-checked on the buyer's own row in this tenant.
+    if (input.kind === "saved" && listingId.startsWith(RENTCAST_REF_PREFIX)) {
+      const { cleanListingRef, stampRentcastListingSave } = await import("@/lib/portal/saved-homes")
+      const ref = cleanListingRef({ ...(input.listingRef ?? {}), externalId: listingId.slice(RENTCAST_REF_PREFIX.length) })
+      const stamped = ref ? await stampRentcastListingSave(g.svc, { brokerageId: g.brokerageId, contactId: input.contactId }, ref) : { ok: false, error: "unreadable listing reference" }
+      if (!stamped.ok) {
+        console.error(`[buyer-conversation] RentCast save origin not stamped for ${listingId}: ${stamped.error}`)
+        notes.push("The home is saved; its MLS details didn't attach this time, so your agent will confirm them.")
+      }
+    }
   }
 
   // ── LEARNING: the buyer's history → changes with reasons ──────────────────
@@ -597,5 +617,64 @@ export async function explainHomeForBuyerAction(input: { contactId: string; list
     ok: true, headline: told.headline, narrative: told.narrative, unknownsSentence: told.unknownsSentence, fit, via: told.via, note: told.note,
     claims, sourceLabel: source.label, followUpQuestion: told.followUpQuestion, agentOffer: told.agentOffer, evidenceNotes: evidence?.notes ?? [],
     familySaid,
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 7. SAVE A HOME FROM A LINK (wave 150, lane 150W — owner ruling 2026-11-06)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// "A buyer may also save a home by pasting the property's URL, stored as `source_url` on the saved home and resolved to
+// an address + RentCast facts where possible." The ONE saved-home table (saved_properties, origin buyer_url — m991); the
+// address is read from the link's own words and the facts come through the capability rail (customer audience: no
+// valuation rides back). The linked page is never fetched. Ledgered as the buyer's action; a double submit replays.
+
+export type SaveHomeFromLinkOutcome =
+  | { ok: true; savedId: string; created: boolean; resolved: boolean; message: string; notes: string[]; agentNotified: boolean }
+  | { ok: false; error: string }
+
+export async function saveHomeFromLinkAction(input: { contactId: string; url: string }): Promise<SaveHomeFromLinkOutcome> {
+  const url = String(input.url ?? "").trim()
+  if (url.length < 8 || url.length > 2048) return { ok: false, error: "Paste the full link to the home (it starts with https://)." }
+  const g = await gateBuyer(input.contactId)
+  if (!g.ok) return g
+  const { saveHomeFromLink, parsePropertyLink } = await import("@/lib/portal/saved-homes")
+  const parsed = parsePropertyLink(url)
+  if ("error" in parsed) return { ok: false, error: parsed.error }
+  // saved_properties.user_id is the OWNING agent's users.id (agents.id and users.id are disjoint — crossed via
+  // agents.user_id); a buyer with no assigned agent yet owns their own save through their portal seat.
+  let ownerUserId = g.actorUserId
+  if (g.agentId) {
+    const { data: a, error: aErr } = await g.svc.from("agents").select("user_id").eq("id", g.agentId).eq("brokerage_id", g.brokerageId).maybeSingle()
+    if (aErr) console.error("[buyer-conversation] agent owner read refused:", aErr.message)
+    ownerUserId = (a as { user_id: string | null } | null)?.user_id ?? g.actorUserId
+  }
+  const saved = await withActionLedger(
+    {
+      brokerageId: g.brokerageId,
+      action: "buyer_search.home.save_link",
+      actor: { type: "user", userId: g.actorUserId },
+      subject: { type: "contact", id: input.contactId, ref: parsed.key },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `buyer saved a home from a ${parsed.host} link`,
+      idempotencyKey: `buyer_search.home.save_link:${input.contactId}:${parsed.key}:${new Date().toISOString().slice(0, 16)}`,
+      channel: "portal",
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "buyer_portal_saved_homes",
+      detail: { host: parsed.host, address_read: !!parsed.address },
+    },
+    () => saveHomeFromLink(g.svc, { brokerageId: g.brokerageId, contactId: input.contactId, ownerUserId }, parsed.url),
+    {
+      settle: (r) => r.ok ? { status: "executed", outcome: r.resolved ? "saved_resolved" : "saved_link_only" } : { status: "failed", outcome: "save_refused", error: r.error },
+      replay: (claim) => ({ ok: false as const, error: claim.kind === "refused" ? claim.error : "That home is already being saved — give it a moment." }),
+    },
+  )
+  if (!saved.ok) return saved
+  const agentNotified = saved.created
+    ? await tellShoppingAgent(g.svc, g.brokerageId, input.contactId, `Buyer saved a home from a link (${parsed.host})${saved.resolved ? "" : " — address or facts still to confirm"}`, { saved_property: saved.savedId, origin: "buyer_url" })
+    : false
+  return {
+    ok: true, savedId: saved.savedId, created: saved.created, resolved: saved.resolved, notes: saved.notes, agentNotified,
+    message: saved.created ? "Saved — it's in your homes now, and your agent can see it too." : "That one was already in your saved homes — I refreshed it.",
   }
 }

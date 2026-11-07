@@ -76,11 +76,47 @@ export interface ProducerDeps extends ResearchDeps {
   /** The C4 final phase per text block (default lib/marketing/humanize-final.ts with the tenant's brand). */
   finalize?: (a: { brokerageId: string; agentUserId: string | null; texts: string[] }) => Promise<{ ok: true; texts: string[]; tagline: string | null } | { ok: false; reason: string }>
   brand?: (a: { brokerageId: string; agentUserId: string | null }) => Promise<PdfBrandLike>
+  /** The presenting agent's OFFICE (C34 brand cascade: office over tenant) — default reads users/agents.location_id → locations. */
+  officeBrand?: (a: { brokerageId: string; agentUserId: string | null }) => Promise<OfficeBrandRow | null>
   render?: (a: { brokerageId: string; agentUserId: string | null; contactId: string | null; spec: Record<string, unknown>; metadata: Record<string, unknown> }) => Promise<{ ok: boolean; pdfUrl: string | null; documentId: string | null; error: string | null }>
   approver?: (a: { brokerageId: string; agentId: string | null }) => Promise<{ ok: boolean; permittedUserIds: string[]; primaryUserIds: string[]; basis: string; reason: string }>
   commissionVideo?: (a: { brokerageId: string; agentUserId: string; title: string; script: string; discriminator: string; territory: MarketReportTerritory; documentId: string | null }) => Promise<{ ok: boolean; status: string; videoProjectId?: string | null; reason?: string | null }>
   /** The ledger's client (default: the same client the producer reads through). */
   ledgerClient?: Db
+}
+
+/** A brokerage location's own identity (locations, m957 — C34): legal name / DBA, office licence, brand overrides. */
+interface OfficeBrandRow { id: string; name: string | null; legal_name: string | null; dba: string | null; license_number: string | null; license_state: string | null; brand_overrides: Record<string, unknown> | null }
+
+/**
+ * PURE — the C34 brand cascade for a report: the presenting agent's OFFICE identity over the tenant's (canary 17: the same
+ * territory report differs per agent and per office). The office's DBA / legal name carries the brokerage line, its licence
+ * joins the line (an agent's own licence stays first), and its brand overrides set the colour and the tagline. No office →
+ * the tenant brand unchanged.
+ */
+function applyOfficeBrand(brand: PdfBrandLike, office: OfficeBrandRow | null): PdfBrandLike {
+  if (!office) return brand
+  const o = (office.brand_overrides ?? {}) as Record<string, unknown>
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null)
+  const officeLic = str(office.license_number) ? `Office Lic #${str(office.license_number)}${str(office.license_state) ? ` (${str(office.license_state)})` : ""}` : null
+  const agentLic = brand.licenseLine && !brand.licenseLine.startsWith("Brokerage Lic") ? brand.licenseLine : null
+  return {
+    ...brand,
+    brokerageName: str(office.dba) ?? str(office.legal_name) ?? brand.brokerageName,
+    licenseLine: officeLic ? [agentLic, officeLic].filter(Boolean).join(" · ") : brand.licenseLine,
+    primaryColor: str(o.primary_color) ?? str(o.primaryColor) ?? brand.primaryColor ?? null,
+    tagline: str(o.tagline) ?? brand.tagline ?? null,
+  }
+}
+
+const defaultOfficeBrand = (svc: Db): NonNullable<ProducerDeps["officeBrand"]> => async (a) => {
+  if (!a.agentUserId) return null
+  const { resolveUserOffice } = await import("@/lib/kernel/resolve-user-office")
+  const office = await resolveUserOffice(svc as never, a.agentUserId)
+  if (!office.locationId) return null
+  const { data, error } = await svc.from("locations").select("id, name, legal_name, dba, license_number, license_state, brand_overrides").eq("id", office.locationId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (error) throw new Error(`locations read refused: ${error.message ?? "unknown"}`)
+  return (data as OfficeBrandRow | null) ?? null
 }
 
 interface ProducedReportApprover { ok: boolean; permittedUserIds: string[]; primaryUserIds: string[]; basis: string; reason: string }
@@ -188,7 +224,7 @@ function marketReportPdfSpec(report: MarketReport, brand: PdfBrandLike): Record<
     sections.push({ heading: report.territory.grain === "street" ? "What sold near you" : "Recent sales", table: { header: ["Address", "Price", "Basis", "Date"], rows: report.comparables.map((c) => [c.address, `$${Math.round(c.price).toLocaleString("en-US")}`, c.priceBasis === "recorded_sale" ? "closed sale" : "last asking price", c.date]) } })
   }
   if (report.trend.length >= 2) {
-    sections.push({ heading: "Monthly trend", table: { header: ["Month", "Median price", "Active inventory"], rows: report.trend.map((p) => [p.month, p.medianPrice != null ? `$${Math.round(p.medianPrice).toLocaleString("en-US")}` : "—", p.activeInventory != null ? String(p.activeInventory) : "—"]) } })
+    sections.push({ heading: "Monthly listing trend", table: { header: ["Month", "Median asking price (listings)", "Active listings"], rows: report.trend.map((p) => [p.month, p.medianPrice != null ? `$${Math.round(p.medianPrice).toLocaleString("en-US")}` : "—", p.activeInventory != null ? String(p.activeInventory) : "—"]) } })
   }
   if (report.unavailable.length) sections.push({ heading: "Not available yet", bullets: report.unavailable.map((u) => `${u.label}: ${u.text}`) })
   if (n.buyerTakeaways.length) sections.push({ heading: "What this means for buyers", bullets: n.buyerTakeaways })
@@ -368,8 +404,14 @@ export async function produceMarketReport(svc: Db, input: ProduceMarketReportInp
       .catch((e: unknown) => ({ ok: false, permittedUserIds: [], primaryUserIds: [], basis: "refused", reason: e instanceof Error ? e.message : String(e) }))
 
     // 9 · THE BRANDED ASSET, under the action ledger (LAW 5).
-    const brand = await (deps.brand ?? defaultBrand(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null })
-    if (fin.tagline) brand.tagline = fin.tagline
+    const tenantBrand = await (deps.brand ?? defaultBrand(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null })
+    if (fin.tagline) tenantBrand.tagline = fin.tagline
+    // C34 cascade — a refused office read fails CLOSED (a report under the wrong office's licence line is a compliance defect).
+    let office: OfficeBrandRow | null = null
+    try { office = await (deps.officeBrand ?? defaultOfficeBrand(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null }) }
+    catch (e) { return { ok: false, stage: "render", reason: `office brand could not be resolved: ${e instanceof Error ? e.message : String(e)}`, validation, report, notes } }
+    const brand = applyOfficeBrand(tenantBrand, office)
+    if (office) notes.push(`branded for office ${office.name ?? office.id} (C34 cascade: office over tenant)`)
     const spec = marketReportPdfSpec(report, brand)
     const compact = { version: 1, territory, topic, format, as_of: asOf, data: report.data, unavailable: report.unavailable, comparables: report.comparables, trend: report.trend, validation: validation.counts, narrative_authored_by: narrative.authoredBy }
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
@@ -388,6 +430,7 @@ export async function produceMarketReport(svc: Db, input: ProduceMarketReportInp
           data: report.data.length, unavailable: report.unavailable.length, comparables: report.comparables.length, narrative_authored_by: narrative.authoredBy,
           cost_rails: { ai_tool_usage: { feature: "market_report", tokens: ai.tokens, model: ai.model }, vendor_meter: research.refreshed.attempted ? "rentcast meterCall (lib/property/rentcast.ts) via refreshMarketData" : "none (stored market data)" },
           approver: { basis: approver.basis, primary: approver.primaryUserIds, permitted: approver.permittedUserIds.length },
+          office_id: office?.id ?? null,
         },
       },
       async () => {

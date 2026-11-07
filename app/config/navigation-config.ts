@@ -1033,6 +1033,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'platform', label: 'Platform Admin', href: '/dashboard/superadmin/platform', icon: 'ShieldAlert' },
       { id: 'platform-overview', label: 'Platform Overview', href: '/dashboard/superadmin/platform', icon: 'TrendingUp' },
+      // Wave 150 (lane 150DAC — 150AC "one command center for platform / office / team / solo"): the command center
+      // already serves platform staff platform-wide (isPlatformSuperadminIdentity → loadCommandCenter({ platform })),
+      // but the platform menu never linked it — the platform tier's door was unreachable. Same href every other
+      // principal tier uses; nothing new built.
+      { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
       { id: 'brokerages', label: 'Brokerages', href: '/dashboard/superadmin/brokerages', icon: 'Building2' },
       // Cross-tenant user management lives in the god console's per-brokerage panels.
       { id: 'users', label: 'Users by Brokerage', href: '/dashboard/superadmin/brokerages', icon: 'Users' },

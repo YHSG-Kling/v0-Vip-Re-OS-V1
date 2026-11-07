@@ -295,7 +295,11 @@ async function main() {
   const exported = [...acts.matchAll(/export\s+async\s+function\s+(\w+)\s*\(/g)].map((m) => m[1])
   const bodyOf = (name: string) => { const i = acts.indexOf(`function ${name}(`); return i < 0 ? "" : acts.slice(i, acts.indexOf("\nexport ", i + 10) > 0 ? acts.indexOf("\nexport ", i + 10) : undefined) }
   const ungated = exported.filter((n) => { const b = bodyOf(n); const gate = b.search(/await\s+gateBuyer\(/); const svc = b.search(/createServiceClient\(|\.from\(/); return gate < 0 || (svc >= 0 && svc < gate) })
-  check(`every exported conversation door gates before any privileged read (${exported.length} doors)`, exported.length === 7 && ungated.length === 0, ungated.join(", "))
+  // Re-asserted to the RULE (wave 150, lane 150W added saveHomeFromLinkAction): the door COUNT was a waypoint (CLAUDE.md
+  // §2) — the rule is that every exported door gates first and none of the seven wave-147 doors disappeared.
+  const WAVE147_DOORS = ["buyerConversationTurnAction", "buyerHomeFeedbackAction", "decideCriteriaChangeAction", "editBuyerCriteriaAction", "loadBuyerCriteriaStateAction", "buyerKeepWatchingAction", "explainHomeForBuyerAction"]
+  check(`every exported conversation door gates before any privileged read (${exported.length} doors)`, WAVE147_DOORS.every((d) => exported.includes(d)) && ungated.length === 0, `${ungated.join(", ")} | missing: ${WAVE147_DOORS.filter((d) => !exported.includes(d)).join(", ")}`)
+  check("POSITIVE CONTROL: the gate finder flags a door that reads before it gates", (() => { const b = "function x() { svc.from('t'); await gateBuyer(id) }"; return b.search(/createServiceClient\(|\.from\(/) < b.search(/await\s+gateBuyer\(/) })())
   check("'keep watching' rides the EXISTING alert proposal rail (inactive until the agent approves), ledgered", /proposeWrittenCriteriaAlert\(/.test(bodyOf("buyerKeepWatchingAction")) && /buyer_search\.alert\.propose/.test(bodyOf("buyerKeepWatchingAction")) && !/is_active:\s*true/.test(acts))
   check("the shared gate is requireContactAccess, and the tenant is the gate's (never the body's)", /await\s+requireContactAccess\(contactId\)/.test(acts) && !/input\.(brokerageId|userId|agentId|actorUserId)/.test(acts))
   check("POSITIVE CONTROL: the body-tenant finder sees an IDOR shape", /input\.(brokerageId|userId|agentId|actorUserId)/.test("const b = input.brokerageId"))

@@ -75,6 +75,8 @@ export default async function JoinCollaborativeSearchPage({
               {h.facts.baths != null ? ` · ${h.facts.baths} ba` : ""}
               {h.facts.sqft != null ? ` · ${h.facts.sqft.toLocaleString("en-US")} sq ft` : ""}
             </CardDescription>
+            {/* Wave 150 (150W): where the home came from (the MLS a listing names, or the site a link came from). */}
+            {h.facts.source_line && <p className="text-xs text-muted-foreground">{h.facts.source_line}</p>}
           </CardHeader>
           <CardContent className="space-y-3">
             {h.facts.photo && (

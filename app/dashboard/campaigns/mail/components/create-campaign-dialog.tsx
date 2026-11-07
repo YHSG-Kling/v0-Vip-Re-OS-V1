@@ -401,7 +401,7 @@ export function CreateCampaignDialog({
                   [
                     { value: "postcard", label: "Postcard (4×6)", sub: "Highest deliverability" },
                     { value: "letter", label: "Letter", sub: "#10 envelope" },
-                    { value: "handwritten_letter", label: "Handwritten", sub: "Personal feel" },
+                    { value: "handwritten_letter", label: "Personal note (printed)", sub: "Script typeface, not pen" },
                     { value: "thank_you_note", label: "Thank-You", sub: "Folded card" },
                   ] as { value: DirectMailPieceType; label: string; sub: string }[]
                 ).map(({ value, label, sub }) => (

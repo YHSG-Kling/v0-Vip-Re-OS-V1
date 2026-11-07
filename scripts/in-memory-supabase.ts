@@ -212,13 +212,16 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         }
         rawTerms.push(cur)
         const terms = rawTerms.map((t) => {
-          const m = /^([\w]+)\.(eq|is|gte|lte|in)\.(.*)$/.exec(t.trim())
+          // Wave 150 (lane 150QTV, the scoped global search): + `ilike` — `first_name.ilike.%ann%` (the record search's name
+          // match). Same pattern grammar as `.ilike()` above.
+          const m = /^([\w]+)\.(eq|is|gte|lte|in|ilike)\.(.*)$/.exec(t.trim())
           if (!m) throw new Error(`memSupabase: unsupported or() term "${t}"`)
           filterCols.push(m[1])
           return m
         })
         filters.push((r) => terms.some(([, col, op, v]) =>
           op === "eq" ? String(val(r, col)) === v
+          : op === "ilike" ? typeof val(r, col) === "string" && new RegExp(`^${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, ".")}$`, "i").test(val(r, col))
           : op === "in" ? new Set(parseList(v)).has(String(val(r, col)))
           : op === "gte" ? val(r, col) !== null && val(r, col) !== undefined && String(val(r, col)) >= v
           : op === "lte" ? val(r, col) !== null && val(r, col) !== undefined && String(val(r, col)) <= v

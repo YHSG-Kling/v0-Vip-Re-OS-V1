@@ -27,6 +27,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -94,6 +95,7 @@ export interface IntentAffordanceProps {
 }
 
 export function IntentAffordance({ screen, context, seed, compact, title, className }: IntentAffordanceProps) {
+  const router = useRouter()
   const [text, setText] = useState("")
   const [request, setRequest] = useState<string>(seed?.utterance ?? "")
   const [modality, setModality] = useState<"voice" | "text">("text")
@@ -141,6 +143,8 @@ export function IntentAffordance({ screen, context, seed, compact, title, classN
       setAnswer(json)
       setRequest(said)
       if (how === "voice") speak(json.spokenSummary)
+      // NAVIGATION (wave 150, lane 150DAC): "take me to …" opens the screen from the person's own menu (the door checked it).
+      if (json.interpretation?.navigation?.href) { router.push(json.interpretation.navigation.href); return }
       if (json.execution?.status === "needs_info") inputRef.current?.focus()
       // An intent a legacy surface still executes: the SAME words to that surface's own door.
       if (json.execution?.status === "handoff" && json.execution.executorDoor) {
@@ -164,7 +168,7 @@ export function IntentAffordance({ screen, context, seed, compact, title, classN
     } finally {
       setBusy(false)
     }
-  }, [busy, context, screen, speak])
+  }, [busy, context, screen, speak, router])
 
   /** A new sentence — or the answer to the question just asked, added to the same request. */
   const submit = useCallback((said: string, how: "voice" | "text") => {
@@ -279,6 +283,13 @@ export function IntentAffordance({ screen, context, seed, compact, title, classN
             </div>
 
             <p className="text-sm text-foreground">{answer.spokenSummary}</p>
+
+            {/* NAVIGATION (wave 150, lane 150DAC): the screen on the person's own menu — opened, and linked in case it did not. */}
+            {interp.navigation?.href && (
+              <a href={interp.navigation.href} className="inline-flex min-h-9 items-center text-sm font-medium text-foreground underline underline-offset-2">
+                Go to {interp.navigation.label}
+              </a>
+            )}
 
             {exec?.status === "needs_info" && (
               <p className="flex items-start gap-1.5 text-xs text-foreground">

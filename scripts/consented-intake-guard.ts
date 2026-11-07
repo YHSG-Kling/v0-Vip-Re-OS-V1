@@ -246,14 +246,18 @@ async function main() {
   const ag = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "research", actor: { userId: "u-ag", userType: "agent", brokerageId: A } })
   const unk = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "curiosity", actor: { userId: "u-co", userType: "compliance_officer", brokerageId: A } })
   const steer = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "steering", actor: { userId: null, userType: null, platformRole: "platform_owner" } })
-  check("roles and purposes fail closed: team_lead / agent → role_not_admitted; an unknown purpose → unknown_purpose; steering → prohibited even for platform staff",
-    !tl.ok && tl.refused === "role_not_admitted" && !ag.ok && ag.refused === "role_not_admitted" && !unk.ok && unk.refused === "unknown_purpose" && !steer.ok && steer.refused === "prohibited_purpose")
+  // RE-ASSERTED — wave 150, lane 150QTV (owner ruling R3, 2026-11-06): this pinned "team_lead / agent → role_not_admitted" for
+  // research. Every authorized tenant staff seat now reads by purpose within tenant + SCOPE — so neither is refused for its ROLE;
+  // each is bound by its scope (a team lead to their teams, an agent to their assigned contacts). Purposes still fail closed.
+  check("R3 — team_lead / agent are not refused for their ROLE (only their scope binds them); an unknown purpose → unknown_purpose; steering → prohibited even for platform staff",
+    (tl.ok || tl.refused === "out_of_scope") && (ag.ok || ag.refused === "out_of_scope") && !unk.ok && unk.refused === "unknown_purpose" && !steer.ok && steer.refused === "prohibited_purpose",
+    JSON.stringify({ tl: tl.ok || tl.refused, ag: ag.ok || ag.refused }))
   const dsr = await store.readProtectedAttributes(rs, { brokerageId: A, contactId: "c-r", purpose: "data_subject_request", actor: { userId: "u-ad", userType: "admin", brokerageId: A } })
   check("the subject's right-to-know export (data_subject_request) is admitted for the tenant-admin roster", dsr.ok)
   const foreign = await store.readProtectedAttributes(rs, { brokerageId: B, contactId: "c-r", purpose: "research", actor: { userId: "u-co", userType: "compliance_officer", brokerageId: A } })
   check("another tenant reads nothing (not_in_tenant)", !foreign.ok && foreign.refused === "not_in_tenant")
-  check("the research-reader roster is DERIVED by named subtraction from TENANT_ADMIN_USER_TYPES (minus team_lead, admin)",
-    /\[\.\.\.TENANT_ADMIN_USER_TYPES\]\.filter\(\(t\) => !ROLES_HELD_OUT_OF_PROTECTED_RESEARCH\.has\(t\)\)/.test(src("lib/enrichment/protected-research-store.ts")) && store.PROTECTED_RESEARCH_READER_USER_TYPES.has("compliance_officer") && !store.PROTECTED_RESEARCH_READER_USER_TYPES.has("team_lead"))
+  check("R3 — the research-reader roster is DERIVED by named addition from TENANT_ADMIN_USER_TYPES (+ agent, support, tc), never retyped",
+    /\[\.\.\.TENANT_ADMIN_USER_TYPES,\s*"agent",\s*"support",\s*"tc"\]/.test(src("lib/enrichment/protected-research-store.ts")) && store.PROTECTED_RESEARCH_READER_USER_TYPES.has("compliance_officer") && store.PROTECTED_RESEARCH_READER_USER_TYPES.has("team_lead") && !store.PROTECTED_RESEARCH_READER_USER_TYPES.has("contact"))
 
   // ── 9 ──────────────────────────────────────────────────────────────────────
   console.log("\n[9 — census (stripped source) + m889 agrees with the code]")

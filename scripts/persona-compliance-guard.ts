@@ -11,8 +11,10 @@
  * persona refused as an audience basis, the m913 needs-based CHECK naming the four) now assert the owner's rule, and every
  * positive control flipped with it: a situation persona IS an eligible audience basis (staff-chosen AND derived), the persona
  * copy may name the situation, m934 drops the needs-based CHECK — while ad WORDING is still scanned, Meta / Google delivery rules
- * still refuse age / gender / ZIP / lookalike, a protected persona still may not SUPPRESS a housing audience, and the C26 upload is
- * still consent- and suppression-floored (section 6).
+ * still refuse age / gender / ZIP / lookalike, and the C26 upload is still consent- and suppression-floored (section 6).
+ * RE-ASSERTED — WAVE 150, LANE 150QTV (owner rulings R1 + R3, 2026-11-06): a protected persona MAY now be an exclusion basis
+ * (platform rules + consent/suppression govern exclusions), and every authorized tenant staff seat may read stored research
+ * attributes by purpose within tenant + scope, audited — the constraints apply at the ACTION, not at the read.
  *
  * WHAT IS EXECUTED (on the in-memory client, through the REAL modules — only `server-only`, the service-client factory and the
  * model are stubbed; the model is injected per case so a HOSTILE answer can be fed to the firewall):
@@ -26,8 +28,7 @@
  *      needs-based persona is written to contacts.contact_persona and a derived-persona audience on it passes every gate.
  *   3  RESEARCH NEVER BECOMES A NEED, BUT EVERY SITUATION PERSONA IS AN AUDIENCE: research-only evidence yields no audience-
  *      eligible persona and no contact_persona write; a staff-entered situation persona (senior) is HONOURED (mapped to its need,
- *      never overwritten); staff-chosen and derived audiences on every persona resolve; a protected persona on an EXCLUSION slot
- *      is still refused; proxy words in a free-text audience rule are refused at SELECTION.
+ *      never overwritten); staff-chosen and derived audiences on every persona resolve, on an EXCLUSION slot too (R1); proxy words in a free-text audience rule are refused at SELECTION.
  *   4  DELIVERY: proxy interests, ZIP targeting (Meta + Google), Google age / gender narrowing and an ungated targeted audience
  *      are violations; the launch assembler re-gates the targeted slot (look-alike, proxy rule, raw platform id refused; a
  *      governed needs-based audience delivered).
@@ -137,10 +138,16 @@ async function main() {
     { name: "broker reads for research (tenant scope)", role: "broker", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-broker", "broker") }, expect: "ok" },
     { name: "compliance officer reads for compliance_audit", role: "compliance_officer", req: { brokerageId: B, contactId: C1, purpose: "compliance_audit", actor: tenantSeat("u-co", "compliance_officer") }, expect: "ok" },
     { name: "tenant admin reads for persona_derivation", role: "admin", req: { brokerageId: B, contactId: C1, purpose: "persona_derivation", actor: tenantSeat("u-admin", "admin") }, expect: "ok" },
-    { name: "tenant admin is NOT a research reader (least privilege by purpose)", role: "admin", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-admin", "admin") }, expect: "role_not_admitted" },
+    // WAVE 150 (150QTV) — RE-ASSERTED to owner ruling R3: "tenant admin is NOT a research reader" and "agent is NOT a research
+    // reader" pinned the wave-148 held-out set. Every authorized tenant staff seat now reads by purpose within tenant + scope.
+    { name: "R3 — tenant admin reads for research (tenant scope)", role: "admin", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-admin", "admin") }, expect: "ok" },
+    { name: "R3 — a transaction coordinator reads for research (tenant scope)", role: "tc", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-tc", "tc") }, expect: "ok" },
+    { name: "R3 — a team lead reads a TEAM contact for compliance_audit (team scope)", role: "team_lead", req: { brokerageId: B, contactId: C1, purpose: "compliance_audit", actor: tenantSeat("u-tl", "team_lead") }, expect: "ok" },
     { name: "agent reads their OWN contact for persona_derivation (assigned scope)", role: "agent", req: { brokerageId: B, contactId: C1, purpose: "persona_derivation", actor: tenantSeat("u-agent", "agent") }, expect: "ok" },
     { name: "agent reads ANOTHER agent's contact → out_of_scope", role: "agent", req: { brokerageId: B, contactId: C4, purpose: "persona_derivation", actor: tenantSeat("u-agent", "agent") }, expect: "out_of_scope" },
-    { name: "agent is NOT a research reader", role: "agent", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-agent", "agent") }, expect: "role_not_admitted" },
+    { name: "R3 — agent reads their OWN contact for research (assigned scope)", role: "agent", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-agent", "agent") }, expect: "ok" },
+    { name: "R3 — agent reads ANOTHER agent's contact for research → out_of_scope (scope still binds)", role: "agent", req: { brokerageId: B, contactId: C4, purpose: "research", actor: tenantSeat("u-agent", "agent") }, expect: "out_of_scope" },
+    { name: "a CONTACT seat is not tenant staff → role_not_admitted", role: "contact", req: { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-c", "contact") }, expect: "role_not_admitted" },
     { name: "team lead reads a TEAM contact for customer_service (team scope)", role: "team_lead", req: { brokerageId: B, contactId: C1, purpose: "customer_service", actor: tenantSeat("u-tl", "team_lead") }, expect: "ok" },
     { name: "team lead reads an OFF-TEAM contact → out_of_scope", role: "team_lead", req: { brokerageId: B, contactId: C4, purpose: "customer_service", actor: tenantSeat("u-tl", "team_lead") }, expect: "out_of_scope" },
     { name: "tenant support investigates WITH a case reference", role: "tenant_support", req: { brokerageId: B, contactId: C1, purpose: "support_investigation", purposeNote: "ticket SUP-1042: wrong language on portal", actor: tenantSeat("u-sup", "support") }, expect: "ok" },
@@ -163,7 +170,7 @@ async function main() {
     const outcome = r.ok ? "ok" : r.refused
     check(`${k.name} → ${k.expect}`, outcome === k.expect, `got ${outcome}${r.ok ? "" : ` (${r.reason})`}`)
     const row = ledger()[ledger().length - 1]
-    const isLogged = ledger().length === before + 1 && row?.detail?.purpose === k.req.purpose && row?.detail?.role_class === (k.role === "platform_marketing" ? null : k.role)
+    const isLogged = ledger().length === before + 1 && row?.detail?.purpose === k.req.purpose && row?.detail?.role_class === (k.role === "platform_marketing" || k.role === "contact" ? null : k.role)
       && row?.action === (r.ok ? "research.protected_attribute.read" : "research.protected_attribute.refuse") && r.evidenced === true
     logged.push({ name: k.name, ok: isLogged })
   }
@@ -171,7 +178,7 @@ async function main() {
   check(`EVERY one of the ${cases.length} reads / refusals is ON THE LEDGER with its purpose and role class (evidenced)`, unlogged.length === 0, unlogged.map((u) => u.name).join("; "))
   const rolesSeen = new Set(cases.map((c) => c.role))
   check("every role the owner named was exercised (admin, platform, agent, team lead, broker, compliance, support + the autonomous study)",
-    ["admin", "platform_admin", "platform_support", "agent", "team_lead", "broker", "compliance_officer", "tenant_support", "system"].every((r) => rolesSeen.has(r)))
+    ["admin", "platform_admin", "platform_support", "agent", "team_lead", "broker", "compliance_officer", "tenant_support", "tc", "system"].every((r) => rolesSeen.has(r)))
   // POSITIVE CONTROL for the logging check: the same predicate on a fake ledger with a missing row / a missing purpose fails.
   const fakeOk = (l: any[], before: number, purpose: string) => l.length === before + 1 && l[l.length - 1]?.detail?.purpose === purpose
   check("POSITIVE CONTROL — the logging check sees a missing row and a missing purpose", !fakeOk([{ detail: { purpose: "research" } }], 1, "research") && !fakeOk([{ detail: {} }], 0, "research") && fakeOk([{ detail: { purpose: "research" } }], 0, "research"))
@@ -184,11 +191,20 @@ async function main() {
   const rs = await store.readProtectedAttributes(db, { brokerageId: B, contactId: C1, purpose: "research", actor: tenantSeat("u-broker", "broker") }, { now: NOW })
   check("DATA RIGHTS per purpose: an unclassified-source value is withheld from persona_derivation but read for research (the audit sees everything held)",
     pd.ok && rs.ok && !pd.attributes.some((a) => a.field === "Ethnicity") && pd.withheld.some((w) => w.field === "Ethnicity" && /unclassified/.test(w.reason)) && rs.attributes.some((a) => a.field === "Ethnicity"))
-  check("the matrix is DERIVED for research from the named-subtraction roster (broker tier + compliance), and platform marketing appears in no row",
-    store.PROTECTED_RESEARCH_READER_USER_TYPES.has("broker") && store.PROTECTED_RESEARCH_READER_USER_TYPES.has("compliance_officer") && !store.PROTECTED_RESEARCH_READER_USER_TYPES.has("team_lead")
-    && Object.values(store.PROTECTED_READ_MATRIX).every((row) => !("platform_marketing" in row)))
+  // R3: every purpose row admits every tenant staff class at its scope; the reader roster is every tenant staff user_type; marketing
+  // staff, contacts and vendors appear nowhere. POSITIVE CONTROL: the same predicate on the wave-148 research row fails.
+  const STAFF_CLASSES = ["agent", "team_lead", "broker", "admin", "compliance_officer", "tenant_support", "tc"]
+  const rowAdmitsAllStaff = (row: Record<string, string>) => STAFF_CLASSES.every((r) => r in row)
+  check("R3 — EVERY purpose row admits EVERY tenant staff seat (agent assigned, team lead team, the rest tenant), and platform marketing appears in no row",
+    Object.values(store.PROTECTED_READ_MATRIX).every((row) => rowAdmitsAllStaff(row as Record<string, string>) && !("platform_marketing" in row))
+    && (store.PROTECTED_READ_MATRIX.research as Record<string, string>).agent === "assigned" && (store.PROTECTED_READ_MATRIX.research as Record<string, string>).team_lead === "team")
+  check("POSITIVE CONTROL — the wave-148 research row (broker + compliance + platform admin) FAILS that predicate",
+    !rowAdmitsAllStaff({ broker: "tenant", compliance_officer: "tenant", platform_admin: "platform" }))
+  check("the reader roster is every tenant staff user_type (tenant-admin roster + agent + support + tc), never a contact / vendor / isa seat",
+    ["broker", "broker_admin", "broker_owner", "admin", "team_lead", "compliance_officer", "agent", "support", "tc"].every((t) => store.PROTECTED_RESEARCH_READER_USER_TYPES.has(t))
+    && !["contact", "vendor", "isa"].some((t) => store.PROTECTED_RESEARCH_READER_USER_TYPES.has(t)))
   console.log("\n  ROLE × PURPOSE MATRIX (rendered from PROTECTED_READ_MATRIX):")
-  const roleCols = ["agent", "team_lead", "broker", "admin", "compliance_officer", "tenant_support", "platform_support", "platform_admin", "system"] as const
+  const roleCols = ["agent", "team_lead", "broker", "admin", "compliance_officer", "tenant_support", "tc", "platform_support", "platform_admin", "system"] as const
   console.log(`    | purpose | ${roleCols.join(" | ")} |`)
   for (const [p, row] of Object.entries(store.PROTECTED_READ_MATRIX)) console.log(`    | ${p} | ${roleCols.map((r) => (row as Record<string, string>)[r] ?? "—").join(" | ")} |`)
 
@@ -274,11 +290,18 @@ async function main() {
     && everyPersona.every((p) => templates.FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)), `${basis.ADS_ELIGIBLE_PERSONAS.length}`)
   check("POSITIVE CONTROL — `other` (no situation) is still refused as a basis (no_basis), so the census is not refuse-nothing",
     (() => { const r = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["other"] } }); return !r.ok && r.refusalKind === "no_basis" })())
-  const exclSenior = basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: ["senior"] } }, "exclusion")
-  check("POSITIVE CONTROL — a protected persona on an EXCLUSION (suppression) slot is still refused (withholding delivery, unchanged)",
-    !exclSenior.ok && exclSenior.refusalKind === "protected_characteristic")
-  check("EXCLUSION_INELIGIBLE_PERSONAS is COMPUTED by the classifier (divorce, military, other, probate, senior — investor is not)",
-    [...basis.EXCLUSION_INELIGIBLE_PERSONAS].sort().join(",") === "divorce,military,other,probate,senior")
+  // WAVE 150 (150QTV) — RE-ASSERTED to owner ruling R1 (2026-11-06): these two checks pinned "a protected persona on an
+  // EXCLUSION slot is still refused" and EXCLUSION_INELIGIBLE_PERSONAS = divorce,military,other,probate,senior. The owner REMOVED
+  // that rule — delivery exclusions are governed by the platform's own housing rules and consent/suppression. The rule now:
+  // every canonical persona resolves on an exclusion slot too; only the null basis refuses; raw demographic criteria still refuse.
+  const exclRefused = everyPersona.filter((p) => !basis.resolveAudiencePersonaBasis({ type: "persona_segment", filters: { personas: [p] } }, "exclusion").ok)
+  check(`R1 — EVERY situation persona (${everyPersona.length}, incl. senior / probate / divorce / military) resolves on an EXCLUSION slot too`,
+    exclRefused.length === 0, exclRefused.join(","))
+  check("EXCLUSION_INELIGIBLE_PERSONAS is COMPUTED and is the null basis alone (other)",
+    [...basis.EXCLUSION_INELIGIBLE_PERSONAS].join(",") === "other")
+  check("POSITIVE CONTROL — the exclusion slot still refuses a RAW demographic criterion (min_owner_age: the platform's no-age-narrowing rule)",
+    pcs.protectedClassSegmentationIn({ type: "exclusion_active_pipeline", filters: { min_owner_age: 65 } }).length > 0
+    && pcs.protectedClassSegmentationIn({ type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }).length === 0)
   const proxyRules = [
     { type: "contact_list", filters: { contact_tags: ["young-families"] } },
     { type: "contact_list", filters: { contact_tags: ["spanish-speakers"] } },

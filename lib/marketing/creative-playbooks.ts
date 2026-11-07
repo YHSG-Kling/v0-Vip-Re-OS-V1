@@ -26,8 +26,12 @@ export interface PlaybookStep {
   label: string
   /** The STRATEGY BRIEF the AI author writes the actual copy from. */
   brief: string
-  /** Minutes after the previous bundle step (bundle channels only). */
-  sendAfterMinutes?: number
+  // TOMBSTONE (wave 150, lane 150SZ — owner: "no fixed timetables anywhere"; wave-149 §4 carried C-3): the per-step
+  // `sendAfterMinutes` offsets (3 / 6 / 2 / 4 / 1 days after the previous step) are gone. The playbook proposes ORDER and
+  // INTENT only (each brief says what the touch is for); WHEN a follow-on goes is the ONE arbiter's decision at dispatch
+  // (lib/ai-isa/followup-arbiter.ts). Measured at 74cbf43e: lib/direct-mail/orchestrate-bundle-send.ts selected
+  // send_after_minutes and fired every item at once anyway — the offsets were never honoured. The dispatch-time arbiter door
+  // is recorded in lane 150SZ notes (Outside-lane) for the bundle dispatcher's owner.
 }
 
 export interface CreativePlaybook {
@@ -75,17 +79,15 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "email",
-        sendAfterMinutes: 4320,
         label: "Zestimate Challenge — follow-up email",
         brief:
-          "A 3-day follow-up email to homeowners who received the postcard. Subject should reference 'that number Zillow gave you' with curiosity, not clickbait. Body: validate that most homeowners quietly wonder if the online estimate is right; explain in one honest sentence why it's a ZIP-code average; invite them to watch the agent's short breakdown video and get the real number via the link placeholder {{magnet_url}}. Short, personal, no pressure.",
+          "A follow-up email to homeowners who received the postcard. Subject should reference 'that number Zillow gave you' with curiosity, not clickbait. Body: validate that most homeowners quietly wonder if the online estimate is right; explain in one honest sentence why it's a ZIP-code average; invite them to watch the agent's short breakdown video and get the real number via the link placeholder {{magnet_url}}. Short, personal, no pressure.",
       },
       {
         kind: "sms",
-        sendAfterMinutes: 8640,
         label: "Zestimate Challenge — nudge SMS",
         brief:
-          "A day-6 one-line SMS nudge: casually ask if the online number for their place looked right, and offer the 90-second reality check + their real number at {{magnet_url}}. Friendly, under 160 characters.",
+          "A one-line SMS nudge: casually ask if the online number for their place looked right, and offer the 90-second reality check + their real number at {{magnet_url}}. Friendly, under 160 characters.",
       },
       { kind: "bundle", label: "The Zestimate Challenge", brief: "" },
     ],
@@ -119,17 +121,15 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "social_post",
-        sendAfterMinutes: 0,
         label: "Estimate Comparison — social carousel",
         brief:
           "A carousel caption for the comparison graphic: open with a pattern-interrupt hook about the websites disagreeing on the same home; one honest sentence on why (different data, none has seen inside); invite a DM with the word VALUE for a no-obligation home-value review. No address, no promise of a number, no people or neighborhood descriptions (fair housing).",
       },
       {
         kind: "email",
-        sendAfterMinutes: 4320,
         label: "Estimate Comparison — follow-up email",
         brief:
-          "A 3-day follow-up email. Subject along the lines of 'Why four websites can't agree on your home's value' — curiosity, not clickbait. Body: validate that the mismatch is confusing; explain in one sentence why the sites disagree; invite a no-obligation home-value review via {{magnet_url}}. Short, personal, no pressure, no number promised.",
+          "A follow-up email. Subject along the lines of 'Why four websites can't agree on your home's value' — curiosity, not clickbait. Body: validate that the mismatch is confusing; explain in one sentence why the sites disagree; invite a no-obligation home-value review via {{magnet_url}}. Short, personal, no pressure, no number promised.",
       },
       {
         kind: "video",
@@ -163,7 +163,6 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "social_post",
-        sendAfterMinutes: 0,
         label: "Neighbor Brag — social",
         brief:
           "A social caption celebrating another neighborhood closing (no address, no price — compliance): if you own nearby your comps just changed; invite DMs with a one-word trigger to get an updated value, no strings.",
@@ -187,13 +186,11 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "sms",
-        sendAfterMinutes: 2880,
         label: "Rate-Drop — SMS",
-        brief: "A two-day follow-up SMS: rates moved, the monthly-payment math on homes they liked changed; reply with one word for the updated numbers. Under 160 characters.",
+        brief: "A follow-up SMS: rates moved, the monthly-payment math on homes they liked changed; reply with one word for the updated numbers. Under 160 characters.",
       },
       {
         kind: "voicedrop",
-        sendAfterMinutes: 5760,
         label: "Rate-Drop — voicedrop",
         brief:
           "A 20-30 second warm ringless voicemail from the agent: with the recent rate move the monthly payment on the homes they looked at genuinely changed; the agent ran the new numbers and a couple were surprising; invite a call or text back for a two-minute walkthrough. Conversational, spoken, no script-reading feel.",
@@ -217,7 +214,6 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "voicedrop",
-        sendAfterMinutes: 1440,
         label: "Anniversary Equity — voicedrop",
         brief:
           "A 20-second warm ringless voicemail on the home anniversary: the agent remembers closing day, pulled together what the home has done since (the honest version, not the website number), and will text the one-page equity snapshot if they reply. Personal and brief.",
@@ -248,9 +244,8 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "sms",
-        sendAfterMinutes: 4320,
         label: "Neighbor VIP — reminder SMS",
-        brief: "A reminder SMS the day before: neighbor preview hour comes first; come see the home setting the street's comps and bring questions about their own number. Under 160 characters.",
+        brief: "A reminder SMS before the open house: neighbor preview hour comes first; come see the home setting the street's comps and bring questions about their own number. Under 160 characters.",
       },
       { kind: "bundle", label: "The Neighbor-First Open House", brief: "" },
     ],
@@ -271,10 +266,9 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "voicedrop",
-        sendAfterMinutes: 2880,
         label: "Expired Rescue — voicedrop",
         brief:
-          "A 25-second ringless voicemail two days after the letter: acknowledge they've heard from a dozen agents this week, so this is different — no ask for the listing; the 14-day relaunch plan is in the mail, keep it, use it with whoever they choose; a text away if they want a walkthrough. Calm and generous.",
+          "A 25-second ringless voicemail after the letter has arrived: acknowledge they've heard from a dozen agents this week, so this is different — no ask for the listing; the 14-day relaunch plan is in the mail, keep it, use it with whoever they choose; a text away if they want a walkthrough. Calm and generous.",
       },
       { kind: "bundle", label: "The Expired-Listing Second Opinion", brief: "" },
     ],

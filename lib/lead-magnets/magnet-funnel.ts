@@ -399,6 +399,10 @@ CREATIVE BRIEF
   situation. Every extra question must earn its place.
 - Name the principle you use (reciprocity, specificity, commitment) in "why", so the agent can defend the choice.
 - No dark patterns: no fake scarcity, no countdowns, no invented social proof.
+- Inventive and human, in the tenant's own voice and tagline (owner ruling R10): never a stock real-estate campaign line
+  ("dream home", "won't last", "priced to sell", "thinking of selling?", "what's your home worth", "call me today",
+  "buyers are waiting") — every competitor already mails those. Say the specific thing about THIS situation instead. The
+  final phase refuses stock lines and shows each one to a person; legal and consent text is the OS's and goes out verbatim.
 
 THE DECISION YOU OWN
 The package: 1 primary deliverable (kind: guide, report, valuation, checklist or video) + up to 4 secondary deliverables, the

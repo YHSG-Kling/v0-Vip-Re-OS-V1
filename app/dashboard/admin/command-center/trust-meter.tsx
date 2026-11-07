@@ -23,7 +23,15 @@ export function TrustMeter({
     .filter((r) => r.o && r.o.decisions > 0)
     .sort((a, b) => (b.o!.decisions - a.o!.decisions))
 
-  if (rows.length === 0) return null
+  // Wave 150 (lane 150DAC): no decisions yet is SAID — trust is earned by counted human decisions.
+  if (rows.length === 0) {
+    return (
+      <Card className="p-4 mb-4">
+        <h2 className="text-sm font-semibold">Manager trust — your decisions, counted</h2>
+        <p className="mt-1 text-xs text-muted-foreground">No approvals or rejections counted yet — every decision you make on the queue below builds each manager&apos;s record.</p>
+      </Card>
+    )
+  }
 
   return (
     <Card className="p-4 mb-4">

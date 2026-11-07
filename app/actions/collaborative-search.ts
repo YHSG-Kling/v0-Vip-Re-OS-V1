@@ -321,19 +321,22 @@ export async function addPropertyToSearch(
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
   const owner = await gateSearchOwner(searchId)
   if (!owner.ok) return { error: owner.error }
-  const { sharedFactsFromSaved, savedRef } = await import("@/lib/portal/collaborative-share")
+  const { sharedFactsFromSaved, savedRef, SHARE_SAVED_COLUMNS, approvedUploadIds } = await import("@/lib/portal/collaborative-share")
+  // Wave 150 (150W): the origin columns ride (source line + photo gate), and photos only from approved owner uploads.
   const { data: saved, error: savedError } = await owner.svc.from("saved_properties")
-    .select("listing_id, external_property_id, property_address, city, state, list_price, bedrooms, bathrooms, sqft, primary_photo_url, property_type, dismissed")
+    .select(SHARE_SAVED_COLUMNS)
     .eq("contact_id", owner.contactId).eq("brokerage_id", owner.brokerageId)
   if (savedError) return { error: savedError.message }
   const row = ((saved ?? []) as Array<Record<string, any>>).find((r) => savedRef(r) === propertyId && !r.dismissed)
   if (!row) return { error: "Only homes you've saved can be shared — save it first." }
+  const approvals = await approvedUploadIds(owner.svc, owner.brokerageId, [row])
+  if (approvals.error) console.error("[collaborative-search] listing photo approvals read refused:", approvals.error)
   const { data: existing, error: existingError } = await owner.svc.from("collaborative_search_properties")
     .select("id").eq("collaborative_search_id", searchId).eq("property_mls_id", propertyId).maybeSingle()
   if (existingError) return { error: existingError.message }
   if (existing) return { error: "Property already added to this search" }
   const { data, error } = await owner.svc.from("collaborative_search_properties")
-    .insert({ collaborative_search_id: searchId, property_mls_id: propertyId, property_data: sharedFactsFromSaved(row), added_by_contact_id: owner.contactId, status: "active" })
+    .insert({ collaborative_search_id: searchId, property_mls_id: propertyId, property_data: sharedFactsFromSaved(row, approvals.ids), added_by_contact_id: owner.contactId, status: "active" })
     .select().single()
   if (error) {
     console.error("[collaborative-search] Error adding property to search:", error.message)

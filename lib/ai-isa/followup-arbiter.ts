@@ -86,6 +86,7 @@
 import type { ExperienceKind, NextBestExperienceInput, NextBestExperiencePlan, RankedExperience } from "./lead-action-plan"
 import type { FollowupPolicy } from "./followup-policy"
 import { channelCarriesVideo, type CampaignChannelKey } from "@/lib/campaigns/channels"
+import { routeMailFormat } from "@/lib/direct-mail/piece-type"
 import { CHANNEL_PROVIDER_MATRIX } from "@/lib/providers/channel-provider-matrix"
 import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"
 import { LEAD_ALLOWED_CHANNELS } from "./lead-channel-policy"
@@ -98,7 +99,12 @@ import {
 type ChannelProviderRule = { categories?: readonly string[]; providers?: readonly string[] }
 
 /** Memory facts the model may read — preferences and timing, never anything that describes who the person is. */
-export const ARBITER_MEMORY_KEYS: readonly string[] = ["channel_preference", "timeline", "price_expectation", "preferred_contact_time", "language"]
+export const ARBITER_MEMORY_KEYS: readonly string[] = [
+  "channel_preference", "timeline", "price_expectation", "preferred_contact_time", "language",
+  // WAVE 150 (lane 150QTV, 150Q): what the person SAID about how they want to be reached and spoken to (lib/kernel/conversation-
+  // memory.ts rememberStatedPreferences — first-person statements only, on the survivor ledger lib/kernel/conversation-memory.ts). No protected or financial key.
+  "communication_format", "contact_frequency", "barrier", "explanation_style", "scenario_choice",
+]
 
 // ── THE CHANNEL SPACE (wave 144) ───────────────────────────────────────────────────────────────
 
@@ -120,9 +126,13 @@ const BASE_FORMATS: Readonly<Record<ArbiterChannel, readonly ArbiterFormat[]>> =
   direct_mail: ["printed_letter", "postcard", "handwritten_card"], social: ["social_post"], ads: ["ad_creative"], human_task: ["task"],
 })
 
-/** PURE. The formats a channel can carry: its own, plus a rendered video wherever the campaign taxonomy says video rides it. */
+/** PURE. The formats a channel can carry: its own, plus a rendered video wherever the campaign taxonomy says video rides it.
+ *  WAVE 150 (lane 150QTV — lane 150R Outside-lane 5, owner ruling R5 "a font is never called handwriting"): `handwritten_card` is
+ *  offered on direct mail ONLY when the format router has a pen-written provider route (lib/direct-mail/piece-type.ts
+ *  routeMailFormat — every handwriting provider is dormant today, so it is never offered). It is never the Lob personal letter:
+ *  that piece is `printed_letter` (the personal_letter format, labelled as printed). */
 function formatsForChannel(c: ArbiterChannel): ArbiterFormat[] {
-  const out = [...BASE_FORMATS[c]]
+  const out = BASE_FORMATS[c].filter((f) => f !== "handwritten_card" || routeMailFormat("handwritten_card").ok)
   if (c !== "human_task" && channelCarriesVideo(CAMPAIGN_CHANNEL_OF[c])) out.push("avatar_video", "video_reel")
   return out
 }
@@ -208,6 +218,10 @@ interface ChannelReadinessInput {
   sendsBlocked?: string | null
   /** An appended online-audience identifier exists for this person (lane 144E's online_audience_append); unknown = false. */
   audienceMatch?: boolean | null
+  /** WAVE 150 (lane 150QTV, canary 12 — two-way channels): channels whose provider's LATEST word on this person was a
+   *  contradiction (bounced / undelivered / returned — outcome_reconciliations verdict 'contradicted', nothing confirmed after it),
+   *  with the provider's own status. Such a channel is refused, so the arbiter chooses another way to reach them. */
+  deliveryFailures?: Partial<Record<ArbiterChannel, string>> | null
 }
 
 export interface ChannelCheck {
@@ -281,6 +295,9 @@ function evaluateChannelReadiness(input: ChannelReadinessInput): ChannelCheck[] 
         break
     }
     if (optedOut.has(channel)) refuse(`opted out of ${channel} (contacts.opt_out_channels)`)
+    // DELIVERY TRUTH (wave 150, canary 12): the provider said the last message on this channel did not arrive.
+    const failed = input.deliveryFailures?.[channel]
+    if (failed) refuse(`the provider reported the last ${channel.replace(/_/g, " ")} to this person did not arrive (${failed}) — reach them another way until it is fixed`)
     // TENANT POLICY — the brokerage's own ISA channel settings.
     if (TENANT_GOVERNED.has(channel) && !granted.has(channel)) refuse("not enabled in the brokerage's AI ISA channel settings (or the settings were unreadable — fail closed)")
     // FREQUENCY — the over-touch cap, one vocabulary with the dispatcher's de-confliction.
@@ -423,15 +440,21 @@ export interface LifeChangeSignal {
 function planWithLifeChangeSignals(
   plan: NextBestExperiencePlan,
   signals: readonly LifeChangeSignal[],
-  person: { contactType: string | null },
+  /** WAVE 150 (lane 150QTV, applying lane 150JNAD's C37 input shape — owner ruling R2: "intent / readiness is NOT derived from
+   *  contact_type"). The segments are the MOVING MOMENT's (lib/intent/moving-moments.ts — the person's words, authorized observed
+   *  behaviour, verified property events and market context), never contacts.contact_type. Null / empty = unknown. */
+  person: { segments: readonly string[] | null },
   /** The planner's OWN tables (lib/ai-isa/lead-action-plan.ts EXPERIENCE_EXECUTORS + EXPERIENCE_KINDS) — never a second copy. */
   planner: { executors: Readonly<Record<ExperienceKind, { manager: RankedExperience["manager"]; capability: RankedExperience["capability"] }>>; kinds: readonly ExperienceKind[] },
 ): NextBestExperiencePlan {
   // A locked plan is a hard verdict (and locked ⇔ forced in planNextBestExperience): a signal never unlocks it.
   if (plan.locked || signals.length === 0) return plan
-  const type = (person.contactType ?? "").toLowerCase()
-  const buyerish = type === "buyer" || type === "both"
-  const ownerish = type !== "buyer" // a seller, both, a lifetime client (they own the home they bought), or unknown
+  // TOMBSTONE (wave 150, lane 150QTV — R2): `const type = person.contactType …; buyerish = type === "buyer" || "both"; ownerish =
+  // type !== "buyer"` stood here and read contact_type as a readiness signal. Survivor: the moment's evidence segments.
+  const segments = person.segments ?? null
+  const buyerish = !!segments && (segments.includes("buyer") || segments.includes("renter"))
+  const ownerish = !segments || segments.length === 0 || segments.includes("seller") // unknown keeps the owner options open
+  const segmentsUnknown = !segments || segments.length === 0
   const add = new Map<ExperienceKind, { delta: number; reasons: string[] }>()
   const push = (k: ExperienceKind, delta: number, reason: string) => { const e = add.get(k) ?? { delta: 0, reasons: [] }; e.delta = Math.max(e.delta, delta); e.reasons.push(reason); add.set(k, e) }
   for (const s of signals) {
@@ -459,7 +482,7 @@ function planWithLifeChangeSignals(
         push("agent_intervention", 30, `signal: ${when} — offer a no-obligation listing conversation`)
         break
       case "buying":
-        if (buyerish || type === "") push("properties", 55, `signal: ${when} — buying intent: matching properties`)
+        if (buyerish || segmentsUnknown) push("properties", 55, `signal: ${when} — buying intent: matching properties`)
         break
       case "life_event":
         // WAVE 148 (lane 148F, owner ruling 17 — REVERSES wave 144's "a person only"): a life event is about THEM and how they feel
@@ -521,7 +544,14 @@ export interface ArbiterFacts {
   lifeEvent?: { sensitivity: LifeEventSensitivity | "unknown"; category: string; tone: string; modesOffered: LifeEventEngagementMode[]; automatedHelpOffered: boolean; whyNotAutomated: string[]; evidence: { grounded: boolean; identityConfirmed: boolean } }
   /** Wave 149 (149Z, lane 149H ruling 18): the combined-signal opportunity reading — the decision kind, its stage, and the
    *  engagement modes the reading permits (never a not_eligible one). Evidence for the model; it carries no time. */
-  opportunity?: { kind: string; stage: string; sensitive: boolean; modes: Array<{ mode: string; status: string; why: string; experience: string; requiresApproval: boolean }>; floor: string }
+  opportunity?: {
+    kind: string; stage: string; sensitive: boolean; modes: Array<{ mode: string; status: string; why: string; experience: string; requiresApproval: boolean }>; floor: string
+    /** WAVE 150 (lane 150QTV, C37 — exactly lib/intent/opportunity-discovery.ts opportunityFactsFrom's return): levels and reasons
+     *  only, never a source, an event, a vendor score's value or a quote. The window is a reporting interval, never a schedule. */
+    moment?: { window: string; windowBasis: string; uncertainty: string; buyer: string; seller: string; investor: string; desire: string; expects: string; ability: string; barriers: string[]; negatives: number; identity: string; outreach: string; probability: { rate: number; validated: number } | null }
+    /** WAVE 150 (C38): the eligible plays (never a brief's words — those go to the writer, ArbiterDecision.writerBrief). */
+    plays?: { options: Array<{ play: string; mode: string; status: string; why: string }>; floor: string; holdout: boolean }
+  }
 }
 
 export interface ArbiterDecision {
@@ -545,6 +575,10 @@ export interface ArbiterDecision {
   /** Wave 148 (148F, ruling 17): the life-event guard every downstream writer honours — the mode chosen, the canonical event (or
    *  null), the words a draft may never contain and the tone. Present only when the decisive signal was a life event. */
   lifeEvent?: LifeEventDecisionGuard
+  /** WAVE 150 (lane 150QTV, C38 — lane 150JNAD Outside-lane 1): the screened briefs the WRITER receives for the chosen option —
+   *  the opportunity mode's brief and the chosen readiness play's brief, side by side. Present only when a movement reading
+   *  shaped the decision and an eligible brief exists. Never the evidence itself. */
+  writerBrief?: { mode: string | null; modeBrief: string | null; play: string | null; playBrief: string | null }
 }
 
 /** What a life-event decision hands downstream (and to the ledger): the mode, and the rules of the words. */
@@ -761,6 +795,9 @@ export const ARBITER_SYSTEM = [
   "Reason from the evidence given: intent and its trend, how recently and how often they were touched, what they did, where they are in their journey, what they said they prefer, and the tenant's own guidance.",
   "Prefer being useful over selling. Prefer waiting over pestering. Route to a human when the situation needs judgment (a complaint, distress, a complicated question, a high-stakes moment).",
   "Never invent facts, never mention prices, commissions or costs, and never reason from any personal characteristic — only from the evidence keys supplied.",
+  "evidence.relationship.type is what the person TOLD US they are doing (buyer, seller, both) — a relationship label, never a readiness signal. Readiness comes only from their own words, what they did, verified property events and market context; when that evidence is thin or mixed, waiting or one kind question is the honest answer.",
+  "evidence.preferences are the person's OWN words about how to reach them — honour them first: their channel, their time, their language, their format. contact_frequency 'fewer' or 'pause' means they asked us to slow down: prefer WAIT unless they asked a question. A barrier (financing, a lease, selling first, cost, timing) means care before pace — explain or ask one kind question, never push. explanation_style 'plain_language' or 'step_by_step' means short, plain, one step at a time. A scenario_choice is the path they chose; respect it.",
+  "A channel marked unavailable because the provider said the last message on it did not arrive (bounced, undelivered, returned) is not offered — choose another permitted way to reach them, or a person.",
   "Your choice is one of five stances: ACT NOW (a useful touch on the best permitted channel), WAIT (a bounded hold), EDUCATE (a lesson), NOTIFY HUMAN (a task for the agent), or CHANGE CHANNEL (a touch on a different permitted channel than the last one).",
   "A channel is HOW a message travels (email, text, call, voice drop, mail, the portal, a task for a person); a video is a FORMAT that rides email, text or the portal — never name it as a channel. Consider every channel in `channels` with its reasons; choose only one marked available.",
   "When moment.key is speed_to_lead the person is NEW and must be answered now: a fast first response is a high-priority requirement, so waiting is not offered — choose the best permitted way to answer (the first touch on the channel that fits their stage, consent, preference, urgency and any existing activity, or a person when the situation needs one). The one welcome on becoming a contact is a fixed send outside this judgment.",
@@ -773,7 +810,24 @@ export const ARBITER_SYSTEM = [
 /** Wave 149 (149Z, lane 149H): how the model reads evidence.opportunity — appended (with OPPORTUNITY_COMBINATION_BRIEF) only when
  *  the C9 hook returned a reading. The mapping is the owner's five stances; a mode absent from evidence.opportunity.modes is not
  *  eligible and must not be the reason for a choice. */
-const ARBITER_OPPORTUNITY_NOTE ="evidence.opportunity, when present, is the combined-signal reading for this person (a decision kind and its stage — a single observation never raises intent) and the engagement modes it permits: quiet_monitoring maps to WAIT, helpful_education to EDUCATE, appropriate_outreach to ACT NOW, human to NOTIFY HUMAN; research is internal and never a message. Choose only among the menu's options; never pick a stance because of a mode that is not listed in evidence.opportunity.modes, respect requiresApproval (an approver sees it before anything leaves), and never mention what was observed, from where, or any life event."
+/** WAVE 150 (lane 150QTV, C38 — lane 150JNAD Outside-lane 1): the readiness play → the owner's stance. Enforced in code
+ *  (playsStanceRefusal), not only in the prompt: invite → act now; explain / match → educate; clarify → act now (one kind
+ *  question); watch / stay quiet → wait. A person (notify_human) is always a choice and needs no play. */
+const PLAY_STANCE: Readonly<Record<string, ArbiterStance>> = Object.freeze({ invite: "act_now", explain: "educate", match: "educate", clarify: "act_now", watch: "wait", stay_quiet: "wait" })
+
+/** PURE. Why a decision that rests on evidence.opportunity may not take this stance, or null. A held-out person (the movement-
+ *  outreach holdout) gets no outbound stance on movement evidence; otherwise the stance must belong to an eligible play. */
+function playsStanceRefusal(stance: ArbiterStance, opp: ArbiterFacts["opportunity"] | undefined): string | null {
+  const plays = opp?.plays
+  if (!plays || stance === "notify_human") return null
+  const s: ArbiterStance = stance === "change_channel" ? "act_now" : stance
+  if (plays.holdout && s !== "wait") return "this person is in the movement-outreach holdout — no outbound stance rests on movement evidence"
+  const allowed = new Set(plays.options.map((p) => PLAY_STANCE[p.play]).filter((x): x is ArbiterStance => !!x))
+  if (!allowed.has(s)) return `the stance ${stance} has no eligible play in evidence.opportunity.plays (eligible: ${[...allowed].join(", ") || "none"})`
+  return null
+}
+
+const ARBITER_OPPORTUNITY_NOTE ="evidence.opportunity, when present, is the combined-signal reading for this person (a decision kind and its stage — a single observation never raises intent) and the engagement modes it permits: quiet_monitoring maps to WAIT, helpful_education to EDUCATE, appropriate_outreach to ACT NOW, human to NOTIFY HUMAN; research is internal and never a message. Choose only among the menu's options; never pick a stance because of a mode that is not listed in evidence.opportunity.modes, respect requiresApproval (an approver sees it before anything leaves), and never mention what was observed, from where, or any life event. NEEDS x EXPECTATION x FEASIBILITY (C38): evidence.opportunity.moment, when present, says what the person wants (desire, from their own words), whether they expect to act (expects), what makes it possible (ability, barriers — financing, equity, inventory, a lease end, a sell-buy chain, a deadline) and when we can help (window + uncertainty; UNKNOWN is a legitimate answer and stated dates beat inferred ranges). Desire without feasibility is never ready now; negatives count against acting. evidence.opportunity.plays are the plays the policy left open — invite maps to ACT NOW, explain and match to EDUCATE, clarify to ACT NOW with one kind question, watch and stay_quiet to WAIT; never pick a stance whose play is not listed, and when plays.holdout is true never take an outbound stance on this evidence. evidence.relationship.type is what the person told us they are doing — never a readiness signal."
 
 /**
  * WAVE 148 (lane 148F, owner ruling 17 — "a life event signal should never just send to a human and the arbiter should decide the
@@ -919,7 +973,11 @@ export async function arbitrateFollowUp(
     }
     const v = validateArbiterReply(raw, menu, facts, a.policy)
     if (!v.ok) return fallback(`the model's reply was refused — ${v.why}`)
-    return withStance({ ...v.decision, source: "ai", fallbackReason: null, menu: menu.map((o) => o.id) })
+    const decided = withStance({ ...v.decision, source: "ai", fallbackReason: null, menu: menu.map((o) => o.id) })
+    // WAVE 150 (C38): a decision that rests on the movement reading must take a stance one of its eligible plays maps to.
+    const playWhy = decided.evidence.includes("opportunity") ? playsStanceRefusal(decided.stance ?? "wait", facts.opportunity) : null
+    if (playWhy) return fallback(`the model's reply was refused — ${playWhy}`)
+    return decided
   }
   if (a.menu.locked) return base({ kind: a.menu.locked.kind, optionId: a.menu.locked.kind, channel: null, fallbackReason: `locked — ${a.menu.locked.reason}` })
   // SPEED-TO-LEAD IS THE ARBITER'S DECISION (owner ruling 16, wave 145 — supersedes ruling 12's "fixed send"). The hard stops above
@@ -1019,6 +1077,14 @@ async function arbitrateExperiencePlan(
   }
   const decided = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null, system }, deps)
   const decision: ArbiterDecision = menu.lifeEvent ? { ...decided, lifeEvent: { ...menu.lifeEvent.guard, mode: lifeEventModeOf(decided.kind) } } : decided
+  // WAVE 150 (C38 — lane 150JNAD Outside-lane 1): hand the WRITER the screened brief of the chosen opportunity mode and of the
+  // readiness play that mode carries, beside each other. Only eligible options carry a brief (opportunity-discovery /
+  // moving-moments screen them at their source); nothing here composes words.
+  if (facts.opportunity && a.opportunity) {
+    const mode = a.opportunity.menu.options.find((o) => o.experience === decision.kind && o.status !== "not_eligible") ?? null
+    const play = mode ? a.opportunity.plays?.options.find((p) => p.mode === mode.mode && p.status !== "not_eligible" && !!p.brief) ?? null : null
+    if (mode?.brief || play?.brief) decision.writerBrief = { mode: mode?.mode ?? null, modeBrief: mode?.brief ?? null, play: play?.play ?? null, playBrief: play?.brief ?? null }
+  }
   if (decision.kind === a.plan.chosen.kind && decision.waitHours === null) return { plan: a.plan, decision }
   let found: RankedExperience | undefined = a.plan.ranked.find((r) => r.kind === decision.kind)
   if (!found && decision.kind === "agent_intervention") {
@@ -1042,6 +1108,8 @@ export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | 
     ...(extra.signals && extra.signals.length > 0 ? { signals: extra.signals.map((s) => ({ type: s.type, kind: s.kind, days_ago: s.daysAgo })) } : {}),
     ...(extra.blindSpots && extra.blindSpots.length > 0 ? { channel_blind_spots: [...extra.blindSpots] } : {}),
     // Wave 148 (148F, ruling 17 — LAW 5): the life-event mode chosen and the rules of the words, for every downstream writer and audit.
+    // Wave 150 (C38): which mode / play the writer was briefed with (names only — the briefs are screened copy guidance).
+    ...(d.writerBrief ? { writer_brief: { mode: d.writerBrief.mode, play: d.writerBrief.play } } : {}),
     ...(d.lifeEvent ? { life_event: { mode: d.lifeEvent.mode, canonical: d.lifeEvent.canonical, sensitivity: d.lifeEvent.sensitivity, automated_help_offered: d.lifeEvent.automatedHelpOffered, never_mention: d.lifeEvent.neverMention, tone: d.lifeEvent.tone } } : {}),
   }
 }
@@ -1528,11 +1596,37 @@ async function loadChannelReadiness(
   }
   blindSpots.push("ads: no online-audience identifier is read here (lane 144E's append) — ads stays an audience action, never a 1:1 rail")
 
+  // DELIVERY TRUTH (wave 150, lane 150QTV — canary 12): the provider's latest word per channel on this person
+  // (outcome_reconciliations — lib/outcomes/reconciliation-ledger.ts ingestProviderTruth is its writer). A channel whose newest
+  // provider verdict is 'contradicted' is refused; a later confirmed delivery on it clears it. Unreadable → a blind spot.
+  let deliveryFailures: Partial<Record<ArbiterChannel, string>> | null = null
+  const dr = await svc.from("outcome_reconciliations").select("channel, verdict, provider_status, updated_at")
+    .eq("brokerage_id", a.brokerageId).eq("contact_id", a.contactId).in("verdict", ["confirmed", "contradicted"]).order("updated_at", { ascending: false }).limit(50)
+  if (dr.error) blindSpots.push(`delivery: outcome_reconciliations read refused (${dr.error.message}) — a channel the provider rejected may still be offered`)
+  else deliveryFailures = deliveryFailuresFrom((dr.data ?? []) as Array<{ channel: string | null; verdict: string | null; provider_status: string | null }>)
+
   const checks = evaluateChannelReadiness({
     consent: contact as ChannelConsent, tenantAllowed: a.tenantAllowed,
-    saturated, providers, unitCostUsd, budgetRemainingUsd, sendsBlocked, audienceMatch: false,
+    saturated, providers, unitCostUsd, budgetRemainingUsd, sendsBlocked, audienceMatch: false, deliveryFailures,
   })
   return { ok: true, checks, blindSpots }
+}
+
+/** The outcome-ledger channel spelling → the arbiter's channel (lib/outcomes/reconciliation.ts OutcomeChannel). */
+const OUTCOME_CHANNEL_TO_ARBITER: Readonly<Record<string, ArbiterChannel>> = Object.freeze({ email: "email", sms: "sms", voice_drop: "voice_drop", in_app: "in_app", direct_mail: "direct_mail", social: "social" })
+
+/** PURE. Newest-first provider verdicts → the channels whose LATEST verdict is a contradiction, with the provider's status.
+ *  @proofSeam read by scripts/two-way-channels-guard.ts (canary 12 — a later confirmation clears a contradiction). */
+export function deliveryFailuresFrom(rows: ReadonlyArray<{ channel: string | null; verdict: string | null; provider_status: string | null }>): Partial<Record<ArbiterChannel, string>> {
+  const seen = new Set<string>()
+  const out: Partial<Record<ArbiterChannel, string>> = {}
+  for (const r of rows) {
+    const ch = OUTCOME_CHANNEL_TO_ARBITER[String(r.channel ?? "")]
+    if (!ch || seen.has(ch)) continue
+    seen.add(ch)
+    if (r.verdict === "contradicted") out[ch] = String(r.provider_status ?? "failed").slice(0, 60)
+  }
+  return out
 }
 
 /**
@@ -1604,6 +1698,18 @@ interface ArbiterMovementHelper { key: string; title: string; offer: string; exp
 interface ArbiterOpportunityInput {
   reading: { primary?: { kind?: string | null; stage?: string | null } | null; sensitive?: boolean; screenEvents?: readonly string[] }
   menu: { options: ReadonlyArray<{ mode: string; status: string; why: string; experience: string; brief: string | null; tone?: string | null; requiresApproval?: boolean; research?: ReadonlyArray<unknown> }>; floor: string }
+  /** WAVE 150 (lane 150QTV, applying lane 150JNAD's C37 shape — lib/intent/moving-moments.ts MovingMoment, structural): the
+   *  per-subject evidence model. `segments` replaces contact_type as the planner's buyer / owner reading (R2). */
+  moment?: {
+    personLevel: boolean; segments: string[]
+    decision_window: { window: string; basis: string; uncertainty: string }
+    buyer_readiness: { level: string }; seller_readiness: { level: string }; investor_strategy: { stage: string }
+    desire_to_move: { level: string }; expects_to_move: { level: string }; ability_to_act: { level: string }
+    barrier: ReadonlyArray<{ key: string }>; negative_evidence: ReadonlyArray<unknown>; identity_confidence: string; outreach_permission: string
+    probability: { rate: number; validated: number } | null
+  } | null
+  /** WAVE 150 (C38 — lib/intent/moving-moments.ts readinessPlays): the plays the policy left open, each with its screened brief. */
+  plays?: { options: ReadonlyArray<{ play: string; mode: string; status: string; why: string; brief: string | null }>; floor: string; holdout: boolean } | null
 }
 type MovementSignalConsumer = (svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string; now: Date; sinceIso: string; autonomy?: "autonomous" | "supervised" | "unknown"; paidResearchAffordable?: boolean | null }) =>
   Promise<LifeChangeSignal[] | { signals: LifeChangeSignal[]; blindSpot?: string | null; helpers?: ReadonlyArray<ArbiterMovementHelper> | null; opportunity?: ArbiterOpportunityInput | null }>
@@ -1929,7 +2035,7 @@ export async function arbitrateAndRecordExperience(
     const sig = await loadLifeChangeSignals(svc, { brokerageId: a.brokerageId, contactId: a.contactId, now: a.now, policy, movementConsumer: deps.movement })
     if (sig.blindSpot) channelBlindSpots.push(sig.blindSpot)
     signals = sig.signals
-    const withSignals = planWithLifeChangeSignals(a.plan, signals, { contactType: a.input.person.contactType }, { executors: EXPERIENCE_EXECUTORS, kinds: EXPERIENCE_KINDS })
+    const withSignals = planWithLifeChangeSignals(a.plan, signals, { segments: sig.opportunity?.moment?.segments ?? null }, { executors: EXPERIENCE_EXECUTORS, kinds: EXPERIENCE_KINDS })
     // WAVE 148 (148F, ruling 17): the tenant's EXPLICIT autonomy grant is read only when a life event is decisive (the empathetic
     // branch offers automated help only under it). Unreadable = not granted, and the reason rides the brief.
     let lifeEventAuthority: LifeEventAuthority | null = null
@@ -2229,5 +2335,81 @@ export async function arbitrateProspectFollowup(a: ProspectFollowupArbitrationIn
     return { action, waitHours: action === "wait" ? decision.waitHours : null, decision, skippedReason: null }
   } catch (e) {
     return { action: "send_now", waitHours: null, decision: null, skippedReason: `arbiter unavailable (${e instanceof Error ? e.message : String(e)}) — the ladder's send stands` }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE LISTING-PRESENTATION DRIP'S DELIVERY DECISION (wave 150, lane 150SZ; folded in here by the integrator — this module
+// hosts the domain wrappers over arbitrateFollowUp, and the drip's page graphs stay under budget: test:proxy-graph-budget).
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** The two arbiter doors the section decision uses — injectable so a proof can stand in for them. */
+type SectionArbiterSeam = { arbitrateFollowUp: typeof arbitrateFollowUp; recordArbitration: typeof recordArbitration }
+
+interface SectionDeliveryArbitration {
+  deliver: boolean
+  /** When held: the bounded time the arbiter chose (never past the appointment's buffer). */
+  holdUntil: string | null
+  rationale: string
+  source: string
+}
+
+/**
+ * THE DRIP'S TIMING IS THE ARBITER'S (wave 150, lane 150SZ — wave-149 §4 carried C-4; owner: "no fixed timetables anywhere").
+ * The planner's scheduled_for is only its PROPOSAL; when a section after the first comes due, the ONE arbiter
+ * (arbitrateFollowUp — the same closed-menu validator as every other decision) chooses: deliver it now, or hold it a bounded
+ * time (the seller already has part N-1; a second piece the same morning is noise). The PLANNED verdict is DELIVER — the
+ * seller asked for this plan (GATE 2: a human released it), so an outage, a refused reply or a spent budget sends on plan.
+ * The first section and a section with no contact are never held (nothing to space, nobody to read the arbiter's facts for).
+ * A hold never lands after the appointment's 12-hour buffer — the seller's own meeting is a service date. Never throws.
+ * Caller: lib/listing-presentation/section-drip.ts deliverDueSections (re-exported there); scripts/lifetime-relationship-guard.ts drives it with an injected model.
+ */
+export async function arbitrateSectionDelivery(
+  svc: { from: (t: string) => any },
+  s: { id: string; brokerage_id: string; contact_id: string | null; section_order: number; title: string | null; section_key: string },
+  ctx: { now: Date; appointmentAt: string | null; lastDeliveredAt: string | null; sectionCount: number | null },
+  deps: { decide?: ArbiterDecide; policy?: FollowupPolicy; budget?: ArbiterBudget; arbiter?: SectionArbiterSeam } = {},
+): Promise<SectionDeliveryArbitration> {
+  if (s.section_order <= 0 || !s.contact_id) return { deliver: true, holdUntil: null, rationale: s.section_order <= 0 ? "the first part of the plan opens it" : "no contact on the section — nothing to space", source: "deterministic" }
+  try {
+    const A: SectionArbiterSeam = deps.arbiter ?? { arbitrateFollowUp, recordArbitration }
+    const policy = deps.policy ?? (await (await import("@/lib/ai-isa/followup-policy")).loadFollowupPolicy(svc as never, s.brokerage_id)).policy
+    const apptMs = ctx.appointmentAt ? Date.parse(ctx.appointmentAt) : NaN
+    const hoursToAppt = Number.isFinite(apptMs) ? Math.round((apptMs - ctx.now.getTime()) / 3_600_000) : null
+    const hoursSinceLast = ctx.lastDeliveredAt ? Math.max(0, Math.round((ctx.now.getTime() - Date.parse(ctx.lastDeliveredAt)) / 3_600_000)) : null
+    const deliver = { id: "deliver", kind: "education" as const, channels: ["email" as const, "in_app" as const], why: [`part ${s.section_order + 1}${ctx.sectionCount ? ` of ${ctx.sectionCount}` : ""} of the listing plan the seller asked for ("${s.title ?? s.section_key}")`, hoursToAppt !== null ? `the appointment is in about ${hoursToAppt}h` : "no appointment date is on file"] }
+    const hold = { id: "wait", kind: "wait" as const, channels: [] as never[], why: ["the previous part arrived recently — give the seller time to read it"] }
+    const facts = {
+      subject: "contact" as const,
+      relationship: { type: "seller_preparing_for_listing_appointment", persona: null, hasAssignedAgent: true },
+      intent: null,
+      history: { hoursSinceAnyTouch: hoursSinceLast, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: "email", portalEducationViews: null },
+      journey: { transactionStage: null, nextMilestone: hoursToAppt !== null ? `listing appointment in about ${hoursToAppt}h` : "listing appointment (date not on file)", openLessons: ctx.sectionCount !== null ? Math.max(0, ctx.sectionCount - s.section_order) : null, nextLesson: s.title ?? s.section_key },
+      preferences: [], fatigueRisk: hoursSinceLast !== null && hoursSinceLast < 12 ? `the previous part went out ${hoursSinceLast}h ago` : null, localHour: null,
+      moment: { key: "listing_presentation_section_due", intent: "A seller released their pre-appointment listing plan; the next part is ready. Decide whether it helps them now or should wait so the parts do not pile up — it must land before the meeting.", daysSinceOpen: 0 },
+      blindSpots: ["whether the seller opened the previous part is not visible here"],
+    }
+    const decision = await A.arbitrateFollowUp({ brokerageId: s.brokerage_id, facts, menu: { menu: [deliver, hold], locked: null }, planned: deliver, policy, budget: deps.budget }, { decide: deps.decide })
+    // THE FATIGUE FLOOR ON THE FALLBACK (never a timetable): when the model did NOT decide (outage, refusal, spent budget, the
+    // arbiter switched off) the plan's verdict is "deliver" — but never inside the tenant's own fatigue floor
+    // (policy.guardrails.minHoursBetweenTouches) after the previous part, or a plan with no appointment would land every part in
+    // one tick. The floor only STOPS a send until it has passed; it never causes one, and the appointment buffer still caps it.
+    const floorHours = policy.guardrails.minHoursBetweenTouches
+    if (decision.source !== "ai" && hoursSinceLast !== null && hoursSinceLast < floorHours && ctx.lastDeliveredAt) {
+      let floorUntil = Date.parse(ctx.lastDeliveredAt) + floorHours * 3_600_000
+      if (Number.isFinite(apptMs)) floorUntil = Math.min(floorUntil, apptMs - 12 * 3_600_000)
+      if (floorUntil > ctx.now.getTime()) return { deliver: false, holdUntil: new Date(floorUntil).toISOString(), rationale: `${decision.rationale} — held to the tenant's fatigue floor (${floorHours}h after the previous part)`, source: decision.source }
+    }
+    if (decision.optionId !== "wait" || !decision.waitHours) return { deliver: true, holdUntil: null, rationale: decision.rationale, source: decision.source }
+    let until = ctx.now.getTime() + decision.waitHours * 3_600_000
+    if (Number.isFinite(apptMs)) until = Math.min(until, apptMs - 12 * 3_600_000)
+    if (until <= ctx.now.getTime()) return { deliver: true, holdUntil: null, rationale: `${decision.rationale} — but a hold would land after the appointment's buffer, so it goes now`, source: decision.source }
+    if (decision.source === "ai") {
+      const r = await A.recordArbitration(svc, { brokerageId: s.brokerage_id, subject: { type: "contact", id: s.contact_id }, decision, now: ctx.now, policyRef: null, systemSource: "listing_presentation_drip" })
+      if (!r.recorded) console.warn(`[section-drip] the hold for section ${s.id} was decided but not ledgered: ${r.error ?? "unknown"}`)
+    }
+    return { deliver: false, holdUntil: new Date(until).toISOString(), rationale: decision.rationale, source: decision.source }
+  } catch (e) {
+    return { deliver: true, holdUntil: null, rationale: `the plan stands — the arbiter could not be asked (${e instanceof Error ? e.message : String(e)})`, source: "deterministic" }
   }
 }

@@ -196,6 +196,69 @@ export async function createPersonaAudience(input: PersonaAudienceInput, deps?: 
     audienceId: created.audienceId,
     plan,
     attribution: { creatorUserId: input.creator.userId, persona: plan.persona, platform: plan.platform, audienceId: created.audienceId, basis: input.derived ? "derived_persona" : "staff_chosen" },
-    nextStep: "Review and approve the audience; the approved audience syncs through the existing door — only consented, unsuppressed contacts tagged with the persona are uploaded, hashed.",
+    nextStep: "Review and approve the audience — approval uploads it at once (owner ruling R4), and it keeps itself current: newly eligible people join and anyone who opts out or is suppressed leaves. Only consented, unsuppressed contacts tagged with the persona are uploaded, hashed.",
   }
+}
+
+// ── OWNER RULING R4 (2026-11-06; wave 150, lane 150QTV) — AUTOMATIC SYNC AFTER APPROVAL / ELIGIBILITY, REVOCATIONS TOO ──────────
+// The approval door uploads at once (lib/ads/facebook-audience-sync.ts approveAudience). What changes AFTER that — a contact newly
+// tagged with the persona, a consent granted, an opt-out, a suppression — must reach the platform the same way, without a button.
+// Before this, the unattended door (app/api/cron/sync-facebook-audiences — an EXISTING tick, no new timer) picked only status
+// 'approved'; the upload writes 'synced', so a live audience was never re-uploaded and a person who opted out stayed in it on Meta.
+// Every upload is now a FULL REPLACE of the platform list (Meta usersreplace / Google removeAll — lib/ads/connectors), so a re-sync
+// is how a revocation leaves. This selector says WHICH audiences the tick re-syncs, from evidence:
+//   · approved and never uploaded                       → "approved — first upload";
+//   · the last upload failed                            → "the last upload failed — retrying";
+//   · live, and the tenant's contacts or suppression list changed after the last upload → "eligibility changed since the last
+//     upload" (a consent / persona / opt-out change lands on contacts.updated_at; a suppression on contact_suppression_list).
+// FAIL TOWARD THE REVOCATION: a tenant whose evidence cannot be read is re-synced (the sync re-applies consent + suppression), and
+// the reason says so. Tenant comes from each audience ROW (the cron has no session and takes no tenant from a caller).
+
+export interface AudienceResyncCandidate { id: string; brokerage_id: string; audience_name: string; reason: string }
+
+/** The audiences the unattended door should (re-)upload now, each with its reason. Every `{ error }` is read. */
+export async function audiencesNeedingResync(
+  svc: { from: (t: string) => any },
+  opts: { limit?: number } = {},
+): Promise<{ ok: true; audiences: AudienceResyncCandidate[]; notes: string[] } | { ok: false; error: string }> {
+  const { data, error } = await svc.from("facebook_custom_audiences")
+    .select("id, brokerage_id, audience_name, status, last_synced_at")
+    .in("status", ["approved", "synced", "failed"])
+    .order("last_synced_at", { ascending: true, nullsFirst: true })
+    .limit(opts.limit ?? 200)
+  if (error) return { ok: false, error: `audience read refused (${error.message})` }
+  const rows = (data ?? []) as Array<{ id: string; brokerage_id: string; audience_name: string | null; status: string; last_synced_at: string | null }>
+  const notes: string[] = []
+  const latestChange = new Map<string, number | "unreadable">()
+  const changeFor = async (brokerageId: string): Promise<number | "unreadable"> => {
+    const memo = latestChange.get(brokerageId)
+    if (memo !== undefined) return memo
+    const [c, s] = await Promise.all([
+      svc.from("contacts").select("updated_at").eq("brokerage_id", brokerageId).order("updated_at", { ascending: false }).limit(1),
+      svc.from("contact_suppression_list").select("created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(1),
+    ])
+    let v: number | "unreadable"
+    if (c.error || s.error) {
+      v = "unreadable"
+      notes.push(`tenant ${brokerageId}: eligibility evidence unreadable (${c.error?.message ?? s.error?.message}) — re-syncing so revocations still leave`)
+    } else {
+      const t = [((c.data ?? [])[0] as { updated_at?: string } | undefined)?.updated_at, ((s.data ?? [])[0] as { created_at?: string } | undefined)?.created_at]
+        .map((x) => Date.parse(String(x ?? ""))).filter((n) => Number.isFinite(n))
+      v = t.length ? Math.max(...t) : 0
+    }
+    latestChange.set(brokerageId, v)
+    return v
+  }
+  const out: AudienceResyncCandidate[] = []
+  for (const r of rows) {
+    const name = r.audience_name || r.id
+    if (r.status === "approved" && !r.last_synced_at) { out.push({ id: r.id, brokerage_id: r.brokerage_id, audience_name: name, reason: "approved — first upload" }); continue }
+    if (r.status === "failed") { out.push({ id: r.id, brokerage_id: r.brokerage_id, audience_name: name, reason: "the last upload failed — retrying" }); continue }
+    const last = Date.parse(r.last_synced_at ?? "")
+    const changed = await changeFor(r.brokerage_id)
+    if (changed === "unreadable" || !Number.isFinite(last) || changed > last) {
+      out.push({ id: r.id, brokerage_id: r.brokerage_id, audience_name: name, reason: changed === "unreadable" ? "eligibility evidence unreadable — re-syncing so revocations still leave" : "eligibility changed since the last upload" })
+    }
+  }
+  return { ok: true, audiences: out, notes }
 }

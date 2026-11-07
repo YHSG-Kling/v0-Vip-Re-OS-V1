@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 482 tables, 943 columns.
+ * MEASURED AT GENERATION: 482 tables, 944 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-06
+ * generated: 2026-11-07
  * source: public.live_check_constraints_json()
- * body-sha256: 38944daa64a89ab0582bab81c30c2d5ad7382b34805716241b9cb9bf99ab2401
+ * body-sha256: 114252082a174a359eea488099cd4560a21c43b65dc8e51e2cc3ae871fff8ba9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -990,6 +990,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   listing_media: {
     media_type: ["document", "floorplan", "graphic", "photo", "reel", "story", "video", "virtual_tour"],
+    photo_source: ["idx_mls", "owner_upload"],
     usage_intent: ["both", "mls", "public_marketing"],
   },
   listing_packet_jobs: {
@@ -1552,7 +1553,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     snapshot_type: ["daily", "lifetime", "monthly", "quarterly", "weekly", "ytd"],
   },
   saved_properties: {
-    source: ["brokerage_listing", "idx", "manual", "mls", "rentcast"],
+    source: ["brokerage_listing", "buyer_url", "idx", "manual", "mls", "rentcast"],
   },
   scheduled_touchpoints: {
     status: ["completed", "failed", "scheduled", "sent", "skipped"],

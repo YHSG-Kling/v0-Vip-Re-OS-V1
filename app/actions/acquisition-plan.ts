@@ -207,7 +207,8 @@ export async function approveAcquisitionPlan(input: { planId: string; sources: s
       },
       {
         settle: (r) => r.n === 1 ? { status: "executed", outcome: "acquisition_plan_approved", costUsd: null } : { status: "failed", outcome: "approval_matched_nothing", error: r.error ?? "0 rows matched" },
-        replay: () => ({ n: 0, error: "this approval was already recorded" }),
+        // A refused ledger claim is NOT a replay: say which it was (the evidence census reads this hook).
+        replay: (claim) => ({ n: 0, error: claim.kind === "refused" ? `the approval could not be recorded on the action ledger (${claim.error}) — nothing was approved` : "this approval was already recorded" }),
       },
       { client: svc },
     )

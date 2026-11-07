@@ -637,3 +637,110 @@ The ranking question is u, not price. The cheapest valid test:
 - **The DealMachine Basic / Pro and PeopleData per-credit prices did not render** on 2026-11-03. The rows cite the last dated read.
 - **This is not legal advice.** All licence readings are procurement readings, and counsel reads before any signature. DataZapp
   can change its Terms without notice. Tracerfy notifies "via email or prominent notice".
+
+## 11. The provider stack under owner ruling R9 (wave 150, lane 150HIAB)
+
+Owner ruling R9 (2026-11-06): **RentCast + Versium + ONE owner-contact / seller-score provider decided by a matched pilot —
+Tracerfy vs DataZapp.** BatchData and PeopleData become **dormant survivor adapters** (never deleted; activation needs proven
+incremental coverage and rights). Data Axle only for a proven market-level / licensed-acquisition gap. This **supersedes §10.0
+items 3 and 4** (DataZapp "not added"; the survivors as "fallbacks to be retired"): DataZapp is now the matched challenger, and
+the survivors are dormant, not retired. Nothing in this section was bought, no account was opened and no key was requested.
+
+The executable source of every table below is `lib/providers/provider-scorecard.ts` (`PROVIDER_ACTIVATION`,
+`PROVIDER_FIELD_SCORECARD`, `SELLER_SIGNAL_FIELDS`); `scripts/provider-scorecard-guard.ts` fails if this section and the code
+disagree. The live provider ORDER is still one router — `routeCapability` over `CONTACT_PROVIDER_ROUTES`
+(`lib/ai-isa/property-lookup-rail.ts`); a provider pending rights has **no route row and no transport**, so live routing cannot
+reach it by construction. Activation is one reviewed change: contract + measured incremental coverage + unit economics, then the
+route row, the adapter facts and the transport together. Self-healing can never activate a provider
+(`lib/kernel/provider-config-healing.ts` classifies it a source edit).
+
+### 11.1 Activation and licensing state (by name — never a value)
+
+| Provider | State | Rights for this deployment | Credential (name) | Verified without spend by |
+|---|---|---|---|---|
+| RentCast | active | API-page statement only; Terms of Use not read | `RENTCAST_API_KEY` | one cached property record on the free quota |
+| Versium | active | existing account; SaaS / partner / LLM rights in signed terms unverified | `VERSIUM_API_KEY` | the free Estimates call |
+| BatchData | dormant_survivor — live doors wait on owner confirmation | Terms not read | `BATCHDATA_API_KEY` | a property lookup on an address already held |
+| PeopleData | dormant_survivor — live doors wait on owner confirmation | standard terms read (secondary) | `PEOPLEDATA_API_KEY` | a free no-match lookup |
+| Tracerfy | dormant_pending_rights | standard terms read; platform use likely, unconfirmed | `TRACERFY_API_KEY` | free `check_balance` + the free mock sandbox, after written platform-use confirmation |
+| DataZapp | dormant_pending_rights | no licence stated in the Terms | `DATAZAPP_API_KEY` | not requested (the $125 test is a purchase) |
+| PropertyRadar | dormant_pending_rights | partner / embedded rights not read | `PROPERTYRADAR_API_TOKEN` | a `Purchase=0` preview (consumes no record quota) |
+| Data Axle | dormant_pending_rights | product, fields and licence not read | none — no product chosen | not applicable |
+
+### 11.2 Field-level overlap and gap matrix (provider × field, with rights and cost)
+
+An **overlap** means two or more providers sell the field: the cheapest licensed one is asked first, never both. A **GAP** means
+no ACTIVE provider documents the field: only an activation (after the pilot) can close it.
+
+| Field | Provider | State | Unit price | Rights | Documented | Overlap / gap |
+|---|---|---|---|---|---|---|
+| `property_facts` | rentcast | active | $0.074 per request | api_page_statement_only | yes | single |
+| `home_value` | rentcast | active | $0.074 per request | api_page_statement_only | yes | single |
+| `mailing_address` | rentcast | active | $0.074 per request | api_page_statement_only | yes | single |
+| `length_of_residence` | rentcast | active | $0.074 per request | api_page_statement_only | yes | overlap |
+| `length_of_residence` | datazapp | dormant_pending_rights | $0.0075 per attribute | none_stated | yes | overlap |
+| `owner_phone` | versium | active | $0.05 per match | signed_terms_unverified | yes | overlap |
+| `owner_phone` | batchdata | dormant_survivor | $0.07 per match | not_read | yes | overlap |
+| `owner_phone` | tracerfy | dormant_pending_rights | $0.02 per match | standard_terms_read | yes | overlap |
+| `owner_phone` | datazapp | dormant_pending_rights | $0.03 per match | none_stated | yes | overlap |
+| `owner_phone` | propertyradar | dormant_pending_rights | UNKNOWN per match | not_read | yes | overlap |
+| `owner_email` | versium | active | $0.05 per match | signed_terms_unverified | yes | overlap |
+| `owner_email` | batchdata | dormant_survivor | $0.07 per match | not_read | yes | overlap |
+| `owner_email` | peopledata | dormant_survivor | $0.25 per match | standard_terms_read | yes | overlap |
+| `owner_email` | tracerfy | dormant_pending_rights | $0.02 per match | standard_terms_read | yes | overlap |
+| `owner_email` | datazapp | dormant_pending_rights | $0.03 per match | none_stated | yes | overlap |
+| `demographics` | versium | active | $0.15 per match | signed_terms_unverified | yes | overlap |
+| `demographics` | data_axle | dormant_pending_rights | UNKNOWN per record | not_read | no | overlap |
+| `online_audience_ids` | versium | active | $0.05 per match | signed_terms_unverified | yes | single |
+| `preview_count` | versium | active | $0 free | signed_terms_unverified | yes | overlap |
+| `preview_count` | propertyradar | dormant_pending_rights | $0 free | not_read | yes | overlap |
+| `dnc_status` | batchdata | dormant_survivor | $0.05 per request | not_read | yes | overlap · GAP (no active documented provider) |
+| `dnc_status` | tracerfy | dormant_pending_rights | $0.02 per phone | standard_terms_read | yes | overlap · GAP (no active documented provider) |
+| `distress_signal` | batchdata | dormant_survivor | $0.05 per record | not_read | yes | overlap · GAP (no active documented provider) |
+| `distress_signal` | propertyradar | dormant_pending_rights | UNKNOWN per record | not_read | yes | overlap · GAP (no active documented provider) |
+| `seller_signal` | batchdata | dormant_survivor | UNKNOWN per record | not_read | yes | overlap · GAP (no active documented provider) |
+| `seller_signal` | tracerfy | dormant_pending_rights | $0.1 per record | standard_terms_read | no | overlap · GAP (no active documented provider) |
+| `seller_signal` | datazapp | dormant_pending_rights | UNKNOWN per attribute | none_stated | yes | overlap · GAP (no active documented provider) |
+| `employment` | peopledata | dormant_survivor | $0.25 per match | standard_terms_read | yes | single · GAP (no active documented provider) |
+
+**What the matrix shows.** Under R9 three fields have no active provider: `dnc_status` (the BatchData MCP scrub is a dormant
+survivor; our own TCPA gate stays the authority either way), `distress_signal` / `seller_signal` (every seller score is a dormant
+vendor's), and `employment` (PeopleData only). The DNC gap is the one a launch decision must look at first.
+
+### 11.3 Seller-score fields — each in its own vendor-defined unit
+
+Stored under `raw_scraped_leads.evidence.seller_signals.<name>`, labelled by `labelSellerSignal`, ordered only within the SAME
+field by `compareSellerSignals` (two different vendors' scores compare as `null`). `probability` is always null until a score is
+calibrated against outcomes (C37).
+
+| Stored name | Vendor key (one vocabulary with `lib/intent/moving-moments.ts`) | Unit |
+|---|---|---|
+| `tracerfy_lead_builder_seller_score` | `tracerfy:seller_score` | Tracerfy's own scale (Lead Builder / TraceAI — NOT the ordinary skip trace, which returns no score); range unpublished |
+| `datazapp_signal_seller_score` | `datazapp:Signal_Seller_Score` | ordinal label 0x–4x |
+| `propertyradar_distress_score` | `propertyradar:DistressScore` | 0–100 distress rollup (an investor rank, not a likely-listing score) |
+| `propertyradar_likely_listing_score` | `propertyradar:LikelyListingScore` | undocumented in the installed reference |
+| `propertyradar_likely_purchase_score` | `propertyradar:LikelyPurchaseScore` | undocumented in the installed reference |
+| `batchdata_sale_propensity` | `batchdata:salePropensity` | BatchRank add-on scale (not on the platform account) |
+
+### 11.4 The matched pilot — designed, executable, unpurchased
+
+`lib/providers/provider-pilot.ts` `simulateProviderPilot` runs the C39 design on an in-memory client: 2,400 deduplicated
+candidates (600 consented inbound / 600 owners missing right-party contact / 600 independently evidenced possible sellers / 600
+controls), 150 per stratum × tenant shape (solo / team / office / multi-office); both arms get the identical input; the control
+stratum is the holdout. It scores per-field new coverage, right-party verified contact, suppression, freshness, simulated 30/90-day
+appointments, true marginal cost (misses free on per-match products) and cost per newly usable legally eligible person and per
+qualified appointment; seller-score lift is measured in each vendor's own top labels against the public-property baseline and is
+never ranked across vendors. It reports `paidCalls: 0`, `liveCalls: 0`, and `mayActivate: false` for both arms — licence unknown
+blocks activation, not offline testing. The 50,000-a-month figure is a projection, never a request. A paid pilot (the proposed
+$1,000 cap) is **not approved**.
+
+### 11.5 WAITING_EXTERNAL (R9)
+
+| Item | Provider | Where | How verified |
+|---|---|---|---|
+| Written platform-use confirmation | Tracerfy | sales, per tracerfy.com/pricing | §10.9's four points, in writing |
+| Written licence (storage, platform use, field exclusions) | DataZapp | info@datazapp.com | a signed licence; only then `DATAZAPP_API_KEY` |
+| The Tracerfy response schema (phone / email / score keys) | Tracerfy | the free mock sandbox `mock.tracerfy.com` | read the sandbox response; the mapper maps `hit` / `credits_deducted` only until then |
+| Partner / embedded rights | PropertyRadar | PropertyRadar account team | written rights before any tenant exposure |
+| Owner confirmation that R9 closes BatchData's / PeopleData's existing live doors | Owner | this section | `survivorDoors` moves to `closed` in `PROVIDER_ACTIVATION` |
+| Approval of a no-cost sandbox run or a bounded paid test | Owner | §11.4 | an explicit owner decision; none is assumed |

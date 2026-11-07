@@ -170,6 +170,17 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
       } catch (e) {
         blindSpots.push(`customer 360 not read (${e instanceof Error ? e.message : String(e)})`)
       }
+      // WAVE 150 (lane 150QTV, 150Q): what the person SAID about how they want to be reached (the memory ledger the inbound
+      // chain just wrote — lib/kernel/conversation-memory.ts rememberStatedPreferences) beats a stored column for the same key: their latest words win.
+      try {
+        const cm = await import("@/lib/kernel/conversation-memory")
+        const mem = await cm.loadContactMemoryForPrompt({ contactId: req.contactId, brokerageId: req.brokerageId, client: svc as never })
+        const stated = mem ? cm.currentMemoryFacts(mem.spine).filter((f) => ARBITER_MEMORY_KEYS.includes(f.key)) : []
+        const statedKeys = new Set<string>(stated.map((f) => f.key))
+        preferences = [...preferences.filter((p) => !statedKeys.has(p.key)), ...stated.map((f) => ({ key: f.key, value: f.value }))]
+      } catch (e) {
+        blindSpots.push(`stated-preference memory not read (${e instanceof Error ? e.message : String(e)})`)
+      }
     }
     const facts: ArbiterFacts = {
       subject: "contact",

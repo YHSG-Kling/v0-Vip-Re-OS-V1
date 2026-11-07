@@ -268,17 +268,33 @@ function closedSalesToData(rows: Awaited<ReturnType<typeof readClosedSales>>["ro
   return { data, unavailable: missing, comparables }
 }
 
-async function readTrend(svc: Db, brokerageId: string, t: MarketReportTerritory): Promise<{ trend: TrendPoint[]; error: string | null }> {
-  if (!t.zip) return { trend: [], error: null }
+/**
+ * The monthly trend. CANARY 17 (wave 150, lane 150KLMO): market_trends.median_price is written by THE refresher from whichever
+ * tier answered that day — RentCast's LISTING asking median, a scraped figure, or the cma_aggregate OPINION — and the table
+ * records no source. It used to be printed for every month as "rentcast" under a bare "Median price" header. A month is now
+ * printed only when the same tenant + zip holds a RentCast market_data reading dated in that month (the refresher writes both
+ * rows on the same run), and the point is labelled a LISTING asking price. Excluded months are said.
+ */
+async function readTrend(svc: Db, brokerageId: string, t: MarketReportTerritory): Promise<{ trend: TrendPoint[]; notes: string[]; error: string | null }> {
+  if (!t.zip) return { trend: [], notes: [], error: null }
   const { data, error } = await svc.from("market_trends").select("snapshot_month, median_price, active_inventory, zip_code").eq("brokerage_id", brokerageId).eq("zip_code", t.zip).order("snapshot_month", { ascending: false }).limit(12)
-  if (error) return { trend: [], error: `market_trends read refused: ${error.message ?? "unknown"}` }
-  return {
-    trend: ((data ?? []) as Array<{ snapshot_month: string; median_price: number | null; active_inventory: number | null }>)
-      .map((r) => ({ month: String(r.snapshot_month).slice(0, 7), medianPrice: positive(r.median_price), activeInventory: positive(r.active_inventory), source: { provider: "rentcast" as const, dataset: "market_trends" } }))
-      .filter((p) => p.medianPrice != null || p.activeInventory != null)
-      .reverse(),
-    error: null,
+  if (error) return { trend: [], notes: [], error: `market_trends read refused: ${error.message ?? "unknown"}` }
+  const rows = (data ?? []) as Array<{ snapshot_month: string; median_price: number | null; active_inventory: number | null }>
+  if (rows.length === 0) return { trend: [], notes: [], error: null }
+  const oldest = rows.map((r) => String(r.snapshot_month).slice(0, 7)).sort()[0]
+  const { data: readings, error: rErr } = await svc.from("market_data").select("data_date, source_type").eq("brokerage_id", brokerageId).eq("zip_code", t.zip).gte("data_date", `${oldest}-01`).limit(400)
+  if (rErr) return { trend: [], notes: [], error: `market_data (trend basis) read refused: ${rErr.message ?? "unknown"}` }
+  const listingMonths = new Set(((readings ?? []) as Array<{ data_date: string; source_type: string | null }>).filter((r) => r.source_type === "rentcast").map((r) => String(r.data_date).slice(0, 7)))
+  const notes: string[] = []
+  const trend: TrendPoint[] = []
+  for (const r of rows) {
+    const month = String(r.snapshot_month).slice(0, 7)
+    const point = { month, medianPrice: positive(r.median_price), activeInventory: positive(r.active_inventory), priceBasis: "listing_asking" as const, source: { provider: "rentcast" as const, dataset: "market_trends (RentCast listing statistics)" } }
+    if (point.medianPrice == null && point.activeInventory == null) continue
+    if (!listingMonths.has(month)) { notes.push(`market_trends ${month} not printed — no RentCast listing reading backs that month (it may be a scraped figure or an agents' CMA opinion)`); continue }
+    trend.push(point)
   }
+  return { trend: trend.reverse(), notes, error: null }
 }
 
 const defaultRefresh: NonNullable<ResearchDeps["refreshMarketData"]> = async (a) => {
@@ -339,6 +355,7 @@ export async function researchMarket(svc: Db, input: { brokerageId: string; agen
     // 4 · monthly trend.
     const trend = await readTrend(svc, input.brokerageId, t)
     if (trend.error) errors.push(trend.error)
+    notes.push(...trend.notes)
 
     const unavailableAll = [...fromMarket.unavailable, ...fromSales.unavailable]
     if (comparables.length === 0) unavailableAll.push(unavailable("comparable_sales", "Comparable sales", t, asOf, `no closed sales or provider comparables in the last ${SOLD_WINDOW_DAYS} days`))

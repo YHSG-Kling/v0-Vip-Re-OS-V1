@@ -102,7 +102,11 @@ function censusSignals(files: Array<{ path: string; src: string }>): CensusSigna
   const add = (s: CensusSignal) => { const k = `${s.kind}:${s.name}`; if (!out.has(k)) out.set(k, s) }
   // channel-provider-matrix (wave 145, lane 145D — contract C1) is DATA about providers, like tenancy-matrix: no client,
   // no key, no egress. Its own proof is test:channel-provider-matrix.
-  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions", "channel-provider-matrix"])
+  // Wave 150 (lane 150HIAB, C39 / R9): provider-scorecard + provider-pilot + dormant-adapters are DATA and PURE mapping about
+  // providers — no client, no key, no egress (scripts/provider-waterfall-guard.ts proves "no transport" on stripped source).
+  // Their providers are declared where they route: a dormant provider has NO route row until its activation change adds the
+  // row, the ADAPTER_FACTS declaration and the transport together. Own proofs: test:provider-scorecard / test:provider-waterfall.
+  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions", "channel-provider-matrix", "provider-scorecard", "provider-pilot", "dormant-adapters"])
   for (const { path, src } of files) {
     const p = path.replace(/^\.\//, "")
     const s = stripComments(src)

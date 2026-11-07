@@ -64,24 +64,25 @@ export async function GET(request: NextRequest) {
 
   try {
     // ── 2. Get audiences that need syncing ────────────────────────────────────
-    // Criteria: status = 'approved' AND (last_synced_at IS NULL OR last_synced_at < now() - 24 hours)
-    const twentyFourHoursAgo = new Date()
-    twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24)
-
-    const { data: audiences, error: fetchError } = await supabase
-      .from("facebook_custom_audiences")
-      .select("id, brokerage_id, audience_name, status, last_synced_at")
-      .eq("status", "approved")
-      .or(`last_synced_at.is.null,last_synced_at.lt.${twentyFourHoursAgo.toISOString()}`)
-      .limit(50) // Process up to 50 per run
-
-    if (fetchError) {
-      console.error("[sync-facebook-audiences] Failed to fetch audiences:", fetchError)
-      return NextResponse.json({ error: fetchError.message }, { status: 500 })
+    // WAVE 150 (lane 150QTV — owner ruling R4, 2026-11-06): "sync AUTOMATICALLY after approval / eligibility … revocations sync
+    // the same way". This used to select status 'approved' only — and the upload writes 'synced', so a live audience was never
+    // re-uploaded and a person who opted out stayed in it on the platform. The audiences are now chosen by EVIDENCE
+    // (lib/ads/persona-audience.ts audiencesNeedingResync: first upload after approval, a failed upload, or a tenant whose
+    // contacts / suppression list changed after the last upload — unreadable evidence re-syncs, toward the revocation). Every
+    // upload is a full replace on the platform, so a re-sync is how a revocation leaves. Same tick, no new timer.
+    const { audiencesNeedingResync } = await import("@/lib/ads/persona-audience")
+    const picked = await audiencesNeedingResync(supabase, { limit: 50 })
+    if (!picked.ok) {
+      console.error("[sync-facebook-audiences] Failed to select audiences:", picked.error)
+      await recordCronFailureAction({ context_id: contextId, error: new Error(picked.error), stage: "select-audiences" })
+      return NextResponse.json({ error: picked.error }, { status: 500 })
     }
+    for (const n of picked.notes) console.warn(`[sync-facebook-audiences] ${n}`)
+    const audiences = picked.audiences
 
-    if (!audiences || audiences.length === 0) {
+    if (audiences.length === 0) {
       console.log("[sync-facebook-audiences] No audiences need syncing")
+      await recordCronSuccessAction({ context_id: contextId, records_processed: 0, output_count: 0, metadata: { synced: 0, skipped: 0, failed: 0 } })
       return NextResponse.json({
         success: true,
         message: "No audiences need syncing",
@@ -114,7 +115,7 @@ export async function GET(request: NextRequest) {
 
       // ── 4. Sync the audience ────────────────────────────────────────────────
       try {
-        console.log(`[sync-facebook-audiences] Syncing audience: ${audience.audience_name}`)
+        console.log(`[sync-facebook-audiences] Syncing audience: ${audience.audience_name} (${audience.reason})`)
 
         // The tenant comes from the row being synced, never from a caller.
         // `agentId` / `userId` are carried as empty strings because the kernel

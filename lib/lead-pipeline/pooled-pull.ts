@@ -37,6 +37,8 @@
 import type { BatchDataRecord, FetchMotivatedSellersOptions } from "@/lib/external/batchdata-client"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 import { paidPullApproval, type StoredPlanRow } from "@/lib/lead-pipeline/source-discovery-planner"
+import { decideSpendBackpressure } from "@/lib/vendor-governance/budget-eval"
+import { splitPullCost } from "@/lib/vendor-governance/budget-eval"
 
 /** The slice of a lead_scraping_markets row the pooled pull needs. */
 export interface PoolTerritory {
@@ -47,6 +49,9 @@ export interface PoolTerritory {
   zip_codes?: string[] | null
   counties?: string[] | null
   max_records_per_run?: number | null
+  /** Wave 150 (lane 150HIAB): the territory's own monthly scrape budget (the cron passes the market row whole). */
+  spend_this_month?: number | null
+  monthly_budget_usd?: number | null
 }
 
 export type PoolGeoKind = "zip" | "county" | "city"
@@ -176,29 +181,8 @@ export function fanOutByTerritory<R>(
   return { byTerritory, receipts, unattributed }
 }
 
-/**
- * PURE — THE COST-SPLIT RULE. A vendor charge split by records received: share_i =
- * charge × receipts_i ÷ Σ receipts, computed in CENTS with the largest-remainder method so the
- * shares SUM TO THE CHARGE EXACTLY (no cent invented or lost). Zero receipts → no shares (the caller
- * books the charge unattributed — a pull nobody received is still spend, never dropped).
- */
-export function splitPullCost(chargeUsd: number, receipts: ReadonlyMap<string, number>): Map<string, number> {
-  const out = new Map<string, number>()
-  const cents = Math.round(Math.max(0, chargeUsd) * 100)
-  const entries = [...receipts.entries()].filter(([, n]) => n > 0)
-  const total = entries.reduce((s, [, n]) => s + n, 0)
-  if (total === 0 || entries.length === 0) return out
-  const raw = entries.map(([id, n]) => ({ id, exact: (cents * n) / total }))
-  const floors = raw.map((r) => ({ id: r.id, c: Math.floor(r.exact), rem: r.exact - Math.floor(r.exact) }))
-  let left = cents - floors.reduce((s, f) => s + f.c, 0)
-  for (const f of [...floors].sort((a, b) => b.rem - a.rem || a.id.localeCompare(b.id))) {
-    if (left <= 0) break
-    f.c++
-    left--
-  }
-  for (const f of floors) out.set(f.id, f.c / 100)
-  return out
-}
+// splitPullCost — THE cost-split rule — lives in lib/vendor-governance/budget-eval.ts (integrator move, wave 150); re-exported here for its importers.
+export { splitPullCost } from "@/lib/vendor-governance/budget-eval"
 
 // ─── BATCHDATA — the pooled quickList pull ─────────────────────────────────────────────
 
@@ -230,6 +214,12 @@ export interface PooledLaneLedger {
   /** Wave 150 (lane 150EFG, directive 150E): territories whose tenant has NO approved acquisition plan for this lane —
    *  dropped BEFORE the pull, so they are never bought for ("never a paid call without approval"). */
   unapprovedTerritories?: number
+  /** Wave 150 (lane 150HIAB, directive 150AB): approved territories whose DOLLAR ceiling (approved line / territory
+   *  budget) cut their funded records this cycle, and those deferred entirely (spent, unreadable ledger, failing provider,
+   *  no price). Each one was escalated to the finance manager the same cycle (decideSpendBackpressure.escalate). */
+  throttledTerritories?: number
+  deferredTerritories?: number
+  escalations?: number
   /** The per-territory loop this replaced would have issued this many requests (one per territory × trigger). */
   perTerritoryRequestsReplaced: number
 }
@@ -252,7 +242,19 @@ export interface PooledBatchDataDeps {
    * tenant's APPROVED acquisition plans (source-discovery-planner.ts paidPullApproval over acquisition_plans, m962); an
    * unreadable store refuses every want. REQUIRED — a deps object without it does not type-check, so no caller forgets it.
    */
-  approval: (brokerageId: string | null, lane: string) => { allowed: true } | { allowed: false; reason: string }
+  approval: (brokerageId: string | null, lane: string) => { allowed: true; maxSpendUsd?: number | null; approvedAt?: string | null } | { allowed: false; reason: string }
+  /**
+   * SPEND BACKPRESSURE (wave 150, lane 150HIAB — directive 150AB). When the approval carries its ceiling
+   * (`maxSpendUsd`, a number or null) AND `unitUsd` is set, every approved want is sized in DOLLARS by
+   * decideSpendBackpressure before any request: the approved line's ceiling minus what is already booked against it
+   * (`spentSinceApproval`; absent or null = unreadable → deferred), and the territory's monthly budget. A deps object
+   * without `unitUsd` keeps the record cap alone (the proofs' fixtures) — production always sets both.
+   */
+  unitUsd?: number
+  spentSinceApproval?: (brokerageId: string, lane: string, sinceIso: string | null) => number | null
+  providerFailing?: boolean
+  /** The same-cycle escalation to a manager (production: publishManagerSignal → finance_manager). Never throws. */
+  escalate?: (e: { brokerageId: string; territoryId: string; lane: string; action: string; reason: string }) => Promise<void> | void
 }
 
 /** I/O defaults — the ONE BatchData client. */
@@ -267,8 +269,36 @@ export async function productionPooledBatchDataDeps(): Promise<PooledBatchDataDe
     .eq("status", "approved")
   if (planErr) console.error("[pooled-pull] acquisition_plans read refused — every paid pooled want is refused this cycle:", planErr.message)
   const plans: StoredPlanRow[] | null = planErr ? null : ((planRows ?? []) as StoredPlanRow[])
+  // Wave 150 (lane 150HIAB): what each approval has already bought — the platform ledger rows the pooled persistence
+  // books per (brokerage, source) through source-cost-ledger (usage_type = the lane key), read ONCE per cycle from the
+  // earliest approval. A refused read is `null` → every dollar-sized want is deferred and escalated (fail closed).
+  const approvedAts = (plans ?? []).flatMap((p) => (Array.isArray(p.lines) ? (p.lines as Array<{ approvedAt?: string | null }>) : []).map((l) => l?.approvedAt ?? null)).filter((a): a is string => !!a).sort()
+  let spendRows: Array<{ brokerage_id: string | null; usage_type: string | null; total_cost: number | string | null; created_at: string }> | null = []
+  if (approvedAts.length > 0) {
+    const { data: rows, error: spendErr } = await createServiceClient()
+      .from("vendor_usage_tracking")
+      .select("brokerage_id, usage_type, total_cost, created_at")
+      .in("usage_type", ["batchdata_motivated", "batchdata_cash_buyer", "expired_listing"])
+      .gte("created_at", approvedAts[0])
+    if (spendErr) console.error("[pooled-pull] vendor_usage_tracking read refused — dollar-sized wants are deferred this cycle:", spendErr.message)
+    spendRows = spendErr ? null : ((rows ?? []) as typeof spendRows)
+  }
+  const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
   return {
     approval: (brokerageId, lane) => paidPullApproval(plans, { brokerageId, source: lane }),
+    unitUsd: bd.BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD,
+    spentSinceApproval: (brokerageId, lane, sinceIso) => spendRows === null ? null
+      : Math.round(spendRows.filter((r) => r.brokerage_id === brokerageId && r.usage_type === lane && (!sinceIso || r.created_at >= sinceIso))
+        .reduce((s, r) => s + (Number(r.total_cost) || 0), 0) * 100) / 100,
+    escalate: async (e) => {
+      // Same-cycle, deduped per territory while open (manager_signals entity) — never a week-late error.
+      const r = await publishManagerSignal({
+        brokerageId: e.brokerageId, fromManager: "cron_manager", toManager: "finance_manager", signalType: "autonomy_budget_escalated",
+        message: `Paid acquisition ${e.lane} ${e.action} for a territory: ${e.reason}`.slice(0, 900),
+        entityType: "lead_scraping_market", entityId: e.territoryId, payload: { lane: e.lane, action: e.action, reason: e.reason },
+      })
+      if (!r.ok) console.error("[pooled-pull] backpressure escalation not published:", r.reason)
+    },
     search: (opts) => bd.fetchMotivatedSellers(opts),
     dateWindow: (t, w) => bd.dateWindowCriteria(t, w),
     statusWindow: (r, t, w) => bd.withinListingStatusWindow(r, t, w),
@@ -295,21 +325,60 @@ export async function runPooledBatchDataLane(
   const errors: string[] = []
   // THE APPROVAL GATE — before pooling, so an unapproved tenant's geography never widens a paid request.
   const approvedWants: PooledWant[] = []
-  let unapproved = 0
+  let unapproved = 0, throttled = 0, deferred = 0, escalations = 0
+  // Records each territory may fund PER TRIGGER after the dollar check (absent = the record cap alone).
+  const dollarCap = new Map<string, number>()
   for (const w of allWants) {
     const verdict = deps.approval(w.territory.brokerage_id, lane)
-    if (verdict.allowed) { approvedWants.push(w); continue }
-    unapproved++
-    errors.push(`${lane}: territory ${w.territory.id} not pulled — ${verdict.reason}`)
+    if (!verdict.allowed) {
+      unapproved++
+      errors.push(`${lane}: territory ${w.territory.id} not pulled — ${verdict.reason}`)
+      continue
+    }
+    // SPEND BACKPRESSURE — only when the approval carries its ceiling and the price is known (see the deps doc).
+    if (verdict.maxSpendUsd !== undefined && typeof deps.unitUsd === "number" && w.territory.brokerage_id) {
+      const t = w.territory
+      const recordCap = typeof t.max_records_per_run === "number" && t.max_records_per_run > 0 ? Math.floor(t.max_records_per_run) : (deps.defaultRecordsPerTerritory ?? 100)
+      const triggers = Math.max(1, w.triggers.length)
+      const bp = decideSpendBackpressure({
+        wantRecords: recordCap * triggers,
+        unitUsd: deps.unitUsd,
+        approvedMaxUsd: verdict.maxSpendUsd,
+        approvedSpentUsd: deps.spentSinceApproval ? deps.spentSinceApproval(t.brokerage_id as string, lane, verdict.approvedAt ?? null) : null,
+        territoryRemainingUsd: typeof t.monthly_budget_usd === "number" ? t.monthly_budget_usd - (t.spend_this_month ?? 0) : null,
+        providerFailing: deps.providerFailing === true,
+      })
+      if (bp.escalate) {
+        escalations++
+        try { await deps.escalate?.({ brokerageId: t.brokerage_id as string, territoryId: t.id, lane, action: bp.action, reason: bp.reason }) } catch { /* never throws into the lane */ }
+      }
+      if (bp.action === "defer" || bp.action === "refuse") {
+        deferred++
+        errors.push(`${lane}: territory ${t.id} ${bp.action === "refuse" ? "refused" : "deferred"} — ${bp.reason}`)
+        continue
+      }
+      if (bp.action === "throttle") {
+        throttled++
+        const per = Math.floor(bp.records / triggers)
+        if (per < 1) { deferred++; throttled--; errors.push(`${lane}: territory ${t.id} deferred — ${bp.reason} (under one record per trigger)`); continue }
+        dollarCap.set(t.id, per)
+        errors.push(`${lane}: territory ${t.id} throttled — ${bp.reason}`)
+      }
+    }
+    approvedWants.push(w)
   }
   const wants: readonly PooledWant[] = approvedWants
   const ledger: PooledLaneLedger = {
     lane, vendor: "batchdata", territories: new Set(wants.map((w) => w.territory.id)).size, requests: 0, chunks: 0,
     chargeUsd: 0, allocatedUsd: 0, unattributedRecords: 0, unallocatedUsd: 0, unapprovedTerritories: unapproved,
+    throttledTerritories: throttled, deferredTerritories: deferred, escalations,
     perTerritoryRequestsReplaced: wants.reduce((s, w) => s + w.triggers.length, 0),
   }
-  const perTerritoryCap = (t: PoolTerritory) =>
-    typeof t.max_records_per_run === "number" && t.max_records_per_run > 0 ? Math.floor(t.max_records_per_run) : (deps.defaultRecordsPerTerritory ?? 100)
+  const perTerritoryCap = (t: PoolTerritory) => {
+    const records = typeof t.max_records_per_run === "number" && t.max_records_per_run > 0 ? Math.floor(t.max_records_per_run) : (deps.defaultRecordsPerTerritory ?? 100)
+    const dollars = dollarCap.get(t.id)
+    return typeof dollars === "number" ? Math.min(records, dollars) : records
+  }
 
   // Pools: (trigger, window) → members.
   const pools = new Map<string, { trigger: string; lookbackDays: number | null; criteria: Record<string, unknown>; members: PooledWant[] }>()

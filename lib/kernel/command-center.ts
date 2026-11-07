@@ -357,19 +357,30 @@ async function resolveScopedEntities(
   scope: EgressScope,
   brokerageId: string,
 ): Promise<{ contactIds: string[]; listingIds: string[] }> {
+  // WAVE 150 (lane 150DAC, C34): a hierarchy scope may admit SEVERAL offices / teams (scope.locationIds /
+  // scope.teamIds); a refused read narrows to nothing (fail closed — the empty list filters to NO_MATCH_UUID).
+  const ids = (cs: { data: unknown; error: { message: string } | null }, ls: { data: unknown; error: { message: string } | null }) => {
+    if (cs.error || ls.error) {
+      console.error(`[command-center] scoped entity read refused — showing nothing for this scope: ${(cs.error ?? ls.error)!.message}`)
+      return { contactIds: [], listingIds: [] }
+    }
+    return { contactIds: ((cs.data ?? []) as any[]).map((r) => r.id), listingIds: ((ls.data ?? []) as any[]).map((r) => r.id) }
+  }
   if (scope.kind === "location" && scope.locationId) {
+    const offices = scope.locationIds?.length ? scope.locationIds : [scope.locationId]
     const [cs, ls] = await Promise.all([
-      supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).eq("location_id", scope.locationId),
-      supabase.from("listings").select("id").eq("brokerage_id", brokerageId).eq("location_id", scope.locationId),
+      supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).in("location_id", offices),
+      supabase.from("listings").select("id").eq("brokerage_id", brokerageId).in("location_id", offices),
     ])
-    return { contactIds: (cs.data ?? []).map((r: any) => r.id), listingIds: (ls.data ?? []).map((r: any) => r.id) }
+    return ids(cs, ls)
   }
   if (scope.kind === "team" && scope.teamId) {
+    const teams = scope.teamIds?.length ? scope.teamIds : [scope.teamId]
     const [cs, ls] = await Promise.all([
-      supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).eq("team_id", scope.teamId),
-      supabase.from("listings").select("id").eq("brokerage_id", brokerageId).eq("team_id", scope.teamId),
+      supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).in("team_id", teams),
+      supabase.from("listings").select("id").eq("brokerage_id", brokerageId).in("team_id", teams),
     ])
-    return { contactIds: (cs.data ?? []).map((r: any) => r.id), listingIds: (ls.data ?? []).map((r: any) => r.id) }
+    return ids(cs, ls)
   }
   if (scope.kind === "agent" && scope.agentUserId) {
     // scope.agentUserId is a USER id; map it to this brokerage's agent row(s), then

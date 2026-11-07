@@ -208,6 +208,9 @@ export interface DedupResult {
   matchScore: number
   enrichmentConfidenceExisting: number | null
   shouldMerge: boolean   // true only if new confidence > existing * 1.1
+  /** Set when a dedup read was REFUSED: the verdict above is "no match found", not "no match exists" — a caller that
+   *  promotes on it is promoting blind. Absent on a complete check. */
+  readRefused?: string
 }
 
 export interface EnrichRawRecordParams {
@@ -731,7 +734,8 @@ export async function ingestRawSourceBatch(
         )
       }
 
-      const insertRow = () => supabase
+      const insertRow = async () => {
+        const { data, error } = await supabase
         .from('raw_scraped_leads')
         .insert({
           brokerage_id:         params.brokerageId,
@@ -816,6 +820,8 @@ export async function ingestRawSourceBatch(
         })
         .select('id')
         .maybeSingle()
+        return { data, error }
+      }
 
       let { data: inserted, error: insertError } = await insertRow()
       if (isEnvelopeColumnAbsent(insertError)) {
@@ -1066,24 +1072,34 @@ export async function dedupRawAgainstLeadAndContact(
     // Deterministic older-wins rule: only a row created BEFORE this one (or one
     // already promoted — which resolves to its lead) owns the identity.
     if (params.email || params.phone) {
-      const { data: self } = await supabase
+      const { data: self, error: selfErr } = await supabase
         .from('raw_scraped_leads')
         .select('created_at')
         .eq('id', params.rawRecordId)
         .maybeSingle()
+      // A refused read is NOT "no owner": the older-wins rule cannot run without this row's clock, so the raw-table
+      // check is skipped by name (the leads / contacts checks above already ran) and the refusal is reported.
+      if (selfErr) {
+        console.warn(`[kernel/scraping] dedup: raw_scraped_leads self read refused (${params.rawRecordId}): ${selfErr.message}`)
+        return { ...noMatch, readRefused: `raw_scraped_leads self read refused: ${selfErr.message}` }
+      }
       const selfCreatedAt = (self as any)?.created_at ?? null
 
       const identityFilters = [
         ...(params.email ? [`email.eq.${params.email}`] : []),
         ...(params.phone ? [`phone.eq.${params.phone}`] : []),
       ].join(',')
-      const { data: rawCandidates } = await supabase
+      const { data: rawCandidates, error: candErr } = await supabase
         .from('raw_scraped_leads')
         .select('id, lead_id, processing_status, created_at')
         .eq('brokerage_id', params.brokerageId)
         .or(identityFilters)
         .neq('id', params.rawRecordId)
         .limit(25)
+      if (candErr) {
+        console.warn(`[kernel/scraping] dedup: raw_scraped_leads identity read refused (${params.rawRecordId}): ${candErr.message}`)
+        return { ...noMatch, readRefused: `raw_scraped_leads identity read refused: ${candErr.message}` }
+      }
 
       const owner = ((rawCandidates ?? []) as any[]).find((r) =>
         r.processing_status === 'promoted' || r.lead_id ||

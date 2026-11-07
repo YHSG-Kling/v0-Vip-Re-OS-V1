@@ -16,13 +16,14 @@ import { handleError } from '@/lib/errors'
 import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } from './intent-parser'
 import { inferBuyerPersona } from './persona-inference'
 import { generateMatchExplanation, explainCriteriaFit, composeNeighbourlyExplanation, fullExplanationText, type CriteriaFit, type ListingFitFacts } from './explanation-generator'
-import { describeListingSource, claimsFromFit, validateClaims, type ExplanationClaim, type ListingSourceLabel, type HomeLocationEvidence } from './explanation-evidence'
+import { describeListingSource, claimsFromFit, validateClaims, statedHardConstraints, answerStatedConstraints, type ConstraintAnswer, type ExplanationClaim, type ListingSourceLabel, type HomeLocationEvidence } from './explanation-evidence'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
 import { scanExplanation, scanFairHousing } from './fair-housing'
 import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching/match-scorer' // the module, not the barrel (proxy-graph budget)
 import type { ParsedBuyerIntent } from './intent-parser'
 import type { BuyerCriteria } from './buyer-criteria'
 import { intentWithStoredCriteria, fitCriteriaFor } from './conversational-search'
+// Wave 150 (lane 150W): the buyer's stated must-haves held over the page (canary 7), and the ONE photo rule (R9).
 
 /**
  * WHAT A BUYER CAN SHOP (wave 147C). A buyer search returns homes a buyer can act on: ACTIVE
@@ -69,8 +70,11 @@ export interface BuyerSearchResult {
   source?: 'platform' | 'rentcast' | 'idx'
   /** External feed identifier when source !== 'platform' (no UUID; do not use as FK) */
   external_id?: string
-  /** Display photo URL for external listings (may expire — re-fetch on access) */
+  /** Display photo URL for external listings — IDX feed rows ONLY (owner R9: RentCast is never a photo source). */
   photo_url?: string
+  /** Wave 150 (150W): the originating MLS's name and number a RentCast /listings/sale row reports (shown as the source). */
+  mls_name?: string | null
+  mls_number?: string | null
   /**
    * Wave 147C (C10): how this home lines up with the buyer's criteria — matches, misses and
    * UNKNOWNS (asks the listing data cannot answer, said as unknown, never guessed).
@@ -326,8 +330,15 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
             __external: true,
             __source: e.source,
             __external_id: e.externalId,
-            __photo_url: e.photoUrl,
+            // Owner R9 (2026-11-06): photos only from the tenant's IDX/MLS feed or the tenant's own uploads — a RentCast
+            // row never shows one, whatever URL the vendor row may carry.
+            __photo_url: licensedResultPhotoUrl(e.source, e.photoUrl),
             __address: e.address,
+            // Wave 150 (150W): the MLS a RentCast /listings/sale row names, shown as the listing's source; the status
+            // AS THE SOURCE REPORTS IT (an IDX featured set is the feed's active inventory). Null stays null.
+            __mls_name: (e as { mlsName?: string | null }).mlsName ?? null,
+            __mls_number: (e as { mlsNumber?: string | null }).mlsNumber ?? null,
+            __status_reported: e.source === 'idx' ? 'active' : (e.sourceStatus ?? null),
           })
         }
       }
@@ -421,7 +432,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     }
     let claimProblems = 0
 
-    const results: BuyerSearchResult[] = viableListings.map(({ listing, matchScore, confidence }) => {
+    const pageResults: BuyerSearchResult[] = viableListings.map(({ listing, matchScore, confidence }) => {
       const scanned = scanExplanation(generateMatchExplanation(listing, enrichedIntent, persona, matchScore))
       if (scanned.flagged.length > 0) {
         fairHousingRewrites++
@@ -434,7 +445,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       const fit: CriteriaFit = explainCriteriaFit(listing as unknown as ListingFitFacts, fitCriteria, pageEvidence.get(String(listing.id)) ?? null)
       const label = (isExternal ? (listing as any).__address : (listing as any).address) || listing.city || 'This home'
       // C18 + owner ruling 8: the source labelled for what it is; every claim carries its evidence.
-      const sourceLabel = describeListingSource(isExternal ? (listing as any).__source : 'platform', { brokerageName: brand.brokerageName })
+      const sourceLabel = describeListingSource(isExternal ? (listing as any).__source : 'platform', { brokerageName: brand.brokerageName, mlsName: isExternal ? ((listing as any).__mls_name ?? null) : null })
       const claims = claimsFromFit(fit, sourceLabel)
       const verdict = validateClaims(claims)
       if (!verdict.ok) { claimProblems += verdict.problems.length; console.error('[buyer-search] C18 claim contract broken:', verdict.problems.slice(0, 3)) }
@@ -463,7 +474,9 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         internal_confidence: confidence,
         source: isExternal ? ((listing as any).__source as 'rentcast' | 'idx') : 'platform',
         external_id: isExternal ? (listing as any).__external_id : undefined,
-        photo_url: isExternal ? (listing as any).__photo_url : undefined,
+        photo_url: isExternal ? ((listing as any).__photo_url ?? undefined) : undefined,
+        mls_name: isExternal ? ((listing as any).__mls_name ?? null) : null,
+        mls_number: isExternal ? ((listing as any).__mls_number ?? null) : null,
         fit,
         explanation_voice: voiceScan.clean,
         source_label: sourceLabel,
@@ -473,6 +486,30 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       }
     })
     if (claimProblems > 0) console.error(`[buyer-search] ${claimProblems} C18 claim problem(s) on this page — see above`)
+
+    // WAVE 150 (lane 150W — directive canary 7, C27): THE BUYER'S STATED MUST-HAVES ARE HELD. When the buyer gave a lot
+    // minimum (their unit) and/or a commute limit to a named place, only licensed, reported-ACTIVE homes whose explanation
+    // PROVED each one met are shown; misses and unknowns are left out and counted, and an empty page carries the shortage
+    // explanation built from the measured figures (lib/buyer-search/buyer-constraints.ts). No stated number → nothing held.
+    const constraints = statedHardConstraints(fitCriteria.lifestyle ?? [])
+    let constraintAnswer: ConstraintAnswer | null = null
+    let results = pageResults
+    if (constraints.length > 0) {
+      const statusOf = new Map(viableListings.map(({ listing }) => {
+        const l = listing as any
+        return [String(l.id), l.__external ? (l.__status_reported ?? null) : (l.status ?? null)] as const
+      }))
+      constraintAnswer = answerStatedConstraints(pageResults.map((r) => ({
+        ref: String(r.listing_id),
+        label: r.address ?? r.city ?? 'This home',
+        // ONE origin vocabulary (saved-homes): a platform row is the tenant's own listing; rentcast / idx as the source says.
+        origin: savedHomeOrigin({ source: r.source === 'platform' || !r.source ? 'brokerage_listing' : r.source }),
+        status: statusOf.get(String(r.listing_id)) ?? null,
+        fit: r.fit ?? null,
+      })), constraints)
+      const keep = new Set(constraintAnswer.options)
+      results = pageResults.filter((r) => keep.has(String(r.listing_id)))
+    }
 
     if (fairHousingRewrites > 0) {
       console.warn('[buyer-search] fair-housing sanitizer rewrote generated match copy', {
@@ -501,6 +538,8 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     return {
       success: true,
       results,
+      /** Wave 150 (150W, canary 7): the stated must-haves, what was held back and why, and the shortage explanation. */
+      constraint_answer: constraintAnswer,
       metadata: {
         total_listings_evaluated: listings.length,
         results_returned: results.length,
@@ -612,4 +651,35 @@ export async function explainPropertyMatchCore(params: {
     console.error('[v0] Error in explainPropertyMatchCore:', error)
     return handleError(error, 'explainPropertyMatchCore')
   }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SAVED-HOME ORIGINS + THE ENGINE-SIDE PHOTO RULE (wave 150, lane 150W; moved here from lib/portal/saved-homes.ts by the
+// integrator — the engine is on every page graph, the portal read model is not; saved-homes re-exports them).
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** PURE. An http(s) URL predicate shared with the portal read model. */
+export const isHttpUrl = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//.test(u)
+
+// ─── ORIGIN (the ONE saved-home origin vocabulary) ───────────────────────────────────────────────────────────────────────────────────────
+
+export const SAVED_HOME_ORIGINS = ["idx_mls", "rentcast_listing", "buyer_url", "tenant_listing", "manual"] as const
+export type SavedHomeOrigin = (typeof SAVED_HOME_ORIGINS)[number]
+
+/** The `saved_properties.source` value each external origin is written with (m991 adds 'buyer_url' to the CHECK). */
+export const SOURCE_FOR_ORIGIN = { idx_mls: "idx", rentcast_listing: "rentcast", buyer_url: "buyer_url" } as const
+
+/** PURE. The origin a saved_properties row carries, from the survivor `source` column. */
+export function savedHomeOrigin(row: { source?: string | null; listing_id?: string | null }): SavedHomeOrigin {
+  const s = String(row.source ?? "").toLowerCase()
+  if (s === "idx" || s === "mls") return "idx_mls"
+  if (s === "rentcast") return "rentcast_listing"
+  if (s === "buyer_url") return "buyer_url"
+  if (s === "brokerage_listing" || row.listing_id) return "tenant_listing"
+  return "manual"
+}
+
+/** PURE. A search row's display photo — the engine's half of the same rule (RentCast rows carry none). */
+export function licensedResultPhotoUrl(source: string | null | undefined, url: string | null | undefined): string | null {
+  return source === "idx" && isHttpUrl(url) ? url : null
 }

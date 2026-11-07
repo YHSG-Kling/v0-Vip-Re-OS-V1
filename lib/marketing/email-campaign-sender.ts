@@ -32,6 +32,8 @@ interface CampaignRow {
   template_id: string | null
   status: string
   audience_segment_id: string | null
+  /** users.id of the person who composed / scheduled the campaign — the approval evidence the version record carries. */
+  created_by: string | null
 }
 
 async function resolveCampaignHtml(svc: Svc, campaign: CampaignRow): Promise<string | null> {
@@ -54,9 +56,10 @@ export interface CampaignSendResult {
  *  lives inside dispatchEmail. Safe against double-send via the 'sending'
  *  status claim. */
 export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<CampaignSendResult> {
-  const { data: c } = await svc.from("email_campaigns")
-    .select("id, brokerage_id, agent_id, subject_line, content, template_id, status, audience_segment_id")
+  const { data: c, error: campaignReadErr } = await svc.from("email_campaigns")
+    .select("id, brokerage_id, agent_id, subject_line, content, template_id, status, audience_segment_id, created_by")
     .eq("id", campaignId).maybeSingle()
+  if (campaignReadErr) return { ok: false, sent: 0, failed: 0, recipients: 0, error: `Campaign read refused: ${campaignReadErr.message}` }
   const campaign = c as CampaignRow | null
   if (!campaign) return { ok: false, sent: 0, failed: 0, recipients: 0, error: "Campaign not found" }
   if (campaign.status === "sent" || campaign.status === "sending") {
@@ -65,6 +68,14 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
 
   const html = await resolveCampaignHtml(svc, campaign)
   if (!html) return { ok: false, sent: 0, failed: 0, recipients: 0, error: "Campaign has no content (body or template)" }
+
+  // THE ONE FINAL PHASE BEFORE THE SEND (wave 150, lane 150SZ — owner ruling R10, "every outward asset"). The same check every
+  // publication door runs (checkDistributionPublication): the version staged by the final phase goes out as approved; anything
+  // else is the person's own words and is re-checked for what no approval waives (a hard fair-housing finding, the tenant's
+  // prohibited words, a lost disclosure). Read BEFORE the claim, so a refusal leaves the campaign exactly as it was. Fail closed:
+  // a phase that cannot run refuses the send — "nobody checked" never goes out as "checked and fine".
+  const preflight = await preflightCampaignCopy(svc, campaign, html)
+  if (!preflight.ok) return { ok: false, sent: 0, failed: 0, recipients: 0, error: preflight.error }
 
   // Claim before the loop so a concurrent tick can't double-send.
   const { data: claimed, error: claimErr } = await svc.from("email_campaigns")
@@ -275,6 +286,23 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
   }).eq("id", campaignId)
   if (campaignSentErr) console.error(`[email-campaign-sender] campaign sent but NOT marked sent (it stays 'sending'): ${campaignSentErr.message}`)
 
+  // THE ONE FINAL PHASE'S PUBLICATION RECORD (wave 150, lane 150SZ — R10 "every outward asset"; `email_campaign` was the one
+  // asset kind of lib/marketing/humanize-final.ts HUMANIZE_ASSET_KINDS with no door). The version that actually went out is
+  // recorded through the SAME door the newsletter send uses (recordDoorPublication → recordDistributionPublication): a staged
+  // humanized final that matches is marked published; anything else becomes its own human-approved version. Never undoes a send.
+  if (sent > 0) {
+    try {
+      const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+      const rec = await recordDoorPublication(svc, {
+        brokerageId: campaign.brokerage_id, assetKind: "email_campaign", assetTable: "email_campaigns", assetId: campaignId, content: html,
+        approvedBy: campaign.created_by, approvedAt: null, via: "email_campaign_send", ref: null,
+      })
+      if (!rec.ok) console.error(`[email-campaign-sender] campaign ${campaignId} sent, but the version that went out was NOT recorded: ${rec.error}`)
+    } catch (e) {
+      console.error(`[email-campaign-sender] campaign ${campaignId}: version record threw: ${(e as Error)?.message ?? e}`)
+    }
+  }
+
   await processKernelEvent({
     event: KernelEvent.EMAIL_CAMPAIGN_SENT,
     brokerageId: campaign.brokerage_id,
@@ -283,6 +311,25 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
   }).catch(() => { /* non-blocking */ })
 
   return { ok: true, sent, failed, recipients, error: null }
+}
+
+/**
+ * The pre-send half of the ONE final phase for a campaign (R10). The person who sends (sendEmailCampaign) or schedules
+ * (runScheduledEmailCampaigns) the campaign IS its approval; the check refuses only what no approval waives. Never throws.
+ */
+async function preflightCampaignCopy(svc: Svc, campaign: CampaignRow, html: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const { checkDistributionPublication, resolveTenantBrandForFinal } = await import("@/lib/marketing/humanize-final")
+    const brand = await resolveTenantBrandForFinal(svc, { brokerageId: campaign.brokerage_id, agentUserId: campaign.agent_id })
+    if (brand.error) console.warn(`[email-campaign-sender] campaign ${campaign.id}: ${brand.error}`)
+    const check = await checkDistributionPublication(svc, {
+      brokerageId: campaign.brokerage_id, assetKind: "email_campaign", assetTable: "email_campaigns", assetId: campaign.id, content: html,
+      approval: { approved: true, by: campaign.created_by, at: null }, tenantBrand: brand.brand,
+    })
+    return check.ok ? { ok: true } : { ok: false, error: `Not sent — ${check.reason}` }
+  } catch (e) {
+    return { ok: false, error: `Not sent — the final copy check could not run (${(e as Error)?.message ?? String(e)})` }
+  }
 }
 
 /** Cron work: every scheduled campaign whose send_date has arrived goes out. */

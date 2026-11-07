@@ -1041,8 +1041,13 @@ export interface DispatchDirectMailParams extends DispatchActorContext {
   zip: string
   /** Lob template id. For letters/self-mailers this is the document; for postcards it is the FRONT. */
   templateId: string
-  /** Postcard BACK template id (defaults to env LOB_POSTCARD_BACK_ID or the front). */
+  /** Postcard BACK / self-mailer OUTSIDE template id. WAVE 150 (lane 150QTV, applying lane 150R Outside-lane 1 — owner ruling R5):
+   *  never defaults to the front; a postcard without one takes the global postcard-back format template
+   *  (lib/direct-mail/piece-type.ts routeMailFormat), and a back equal to the front is REFUSED. */
   backTemplateId?: string
+  /** WAVE 150 (lane 150R Outside-lane 1): the TENANT's return address (MailBrandFacts.returnAddress, the brand cascade), so a
+   *  letter's window never shows the platform's address. Absent → the platform's LOB_RETURN_ADDRESS_ID (unchanged). */
+  fromAddress?: { name: string; line1: string; line2?: string | null; city: string; state: string; zip: string } | null
   /** Mail piece type — Lob supports more than letters. Defaults to "letter". */
   pieceType?: DirectMailPieceType
   /** Postcard size: "4x6" | "6x9" | "6x11" (default "4x6"). Letters ignore this. */
@@ -1300,8 +1305,28 @@ export async function dispatchDirectMail(
     address_zip: params.zip,
     address_country: "US",
   }
-  const from = process.env.LOB_RETURN_ADDRESS_ID
+  const fa = params.fromAddress
+  const from = fa && fa.name && fa.line1 && fa.city && fa.state && fa.zip
+    ? { name: fa.name, address_line1: fa.line1, ...(fa.line2 ? { address_line2: fa.line2 } : {}), address_city: fa.city, address_state: fa.state, address_zip: fa.zip, address_country: "US" }
+    : process.env.LOB_RETURN_ADDRESS_ID
   const mergeVars = params.mergeVars ?? {}
+  // WAVE 150 (lane 150R Outside-lane 1): the dispatcher's at-most-once rests on the action ledger; Lob's own Idempotency-Key is
+  // passed as the SDK create(params, headers) second argument when the caller's ledger carries a key.
+  const lobHeaders: Record<string, string> = params.ledger?.idempotencyKey ? { "Idempotency-Key": params.ledger.idempotencyKey } : {}
+  // R5 — a BACK is never the FRONT. The postcard back is the caller's distinct id, else the global postcard-back format
+  // template; the self-mailer outside must be given and distinct. Refused before any spend.
+  let back: string | null = null
+  if (pieceType === "postcard" || pieceType === "self_mailer") {
+    if (params.backTemplateId) back = params.backTemplateId
+    else if (pieceType === "postcard") {
+      const { routeMailFormat } = await import("@/lib/direct-mail/piece-type")
+      const r = routeMailFormat("postcard")
+      back = r.ok ? r.templates.backTemplateId ?? null : null
+    }
+    if (!back || back === params.templateId) {
+      return { success: false, providerKey, error: `Lob ${pieceType === "postcard" ? "postcard back" : "self-mailer outside"} template missing or identical to the front — every side needs its own template (set LOB_POSTCARD_BACK_TEMPLATE_ID / pass a distinct backTemplateId); nothing was mailed.` }
+    }
+  }
 
   // Approx Lob per-piece cost by type (telemetry only; reconciled against Lob invoices).
   const COST: Record<DirectMailPieceType, number> = DIRECT_MAIL_PIECE_COST_USD
@@ -1329,20 +1354,20 @@ export async function dispatchDirectMail(
         to,
         from,
         front: params.templateId,
-        back: params.backTemplateId ?? process.env.LOB_POSTCARD_BACK_ID ?? params.templateId,
+        back,
         size: params.size ?? "4x6",
         merge_variables: mergeVars,
-      })
+      }, lobHeaders)
     } else if (pieceType === "self_mailer") {
       data = await lob.selfMailers.create({
         to,
         from,
         inside: params.templateId,
-        outside: params.backTemplateId ?? params.templateId,
+        outside: back,
         size: params.size ?? "6x18_bifold",
         merge_variables: mergeVars,
         color: params.color ?? true,
-      })
+      }, lobHeaders)
     } else {
       data = await lob.letters.create({
         to,
@@ -1350,7 +1375,7 @@ export async function dispatchDirectMail(
         file: params.templateId,
         merge_variables: mergeVars,
         color: params.color ?? false,
-      })
+      }, lobHeaders)
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)

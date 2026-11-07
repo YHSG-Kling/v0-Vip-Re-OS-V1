@@ -30,6 +30,7 @@
 import { classifyMarketCoverage } from "@/lib/external/socrata-market-registry"
 import { isoDay, type MarketReportFormat, type MarketReportTerritory } from "./contract"
 import { buildMarketReportTopicPrompt, MARKET_REPORT_TOPIC_SYSTEM, MarketReportTopicSchema, type MarketReportTopicDraft, type TopicEvidenceItem } from "./prompts"
+import type { MarketTwin } from "./market-twin"
 
 type Db = { from: (table: string) => any }
 
@@ -62,7 +63,13 @@ export interface TopicDeps {
   now?: Date
   /** The routed strategist (default: generateObjectRouted, feature market_insight_narrative). Seam for the proof. */
   rank?: (a: { brokerageId: string; system: string; prompt: string }) => Promise<MarketReportTopicDraft>
+  /** THE market twin for the territory's zip (default lib/market-reports/market-twin.ts loadMarketTwin — the shared, platform-cached
+   *  RentCast read authorized by this report production). Seam for the proof. */
+  twin?: (svc: Db, a: { brokerageId: string; zip: string }) => Promise<MarketTwin>
 }
+
+/** The kinds that may CARRY a topic (a market fact). A registry entry or a relocation context only supports one. */
+const CARRYING_KINDS: ReadonlySet<TopicEvidenceItem["kind"]> = new Set(["market_signal", "market_trend", "closed_sales", "demand_gap"])
 
 /** A C19 row, read defensively (lane 148F owns the table; only the contract's field names are relied on). */
 interface DatasetVerificationRow {
@@ -94,7 +101,7 @@ function coversTerritory(geography: unknown, t: MarketReportTerritory): boolean 
 }
 
 /** Gather the evidence (tenant-pinned). Proven through suggestMarketReportTopics. */
-async function gatherRegistryEvidence(svc: Db, input: { brokerageId: string; territory: MarketReportTerritory; now?: Date }): Promise<{ evidence: TopicEvidenceItem[]; notes: string[] }> {
+async function gatherRegistryEvidence(svc: Db, input: { brokerageId: string; territory: MarketReportTerritory; now?: Date; twin?: TopicDeps["twin"] }): Promise<{ evidence: TopicEvidenceItem[]; notes: string[] }> {
   const now = input.now ?? new Date()
   const t = input.territory
   const notes: string[] = []
@@ -146,9 +153,9 @@ async function gatherRegistryEvidence(svc: Db, input: { brokerageId: string; ter
     if (cur && prev) {
       const parts: string[] = []
       const mp = Number(cur.median_price), pp = Number(prev.median_price)
-      if (mp > 0 && pp > 0) parts.push(`median price ${mp > pp ? "rose" : mp < pp ? "fell" : "held"} from $${Math.round(pp).toLocaleString("en-US")} (${prev.snapshot_month}) to $${Math.round(mp).toLocaleString("en-US")} (${cur.snapshot_month})`)
+      if (mp > 0 && pp > 0) parts.push(`median asking price of listed homes ${mp > pp ? "rose" : mp < pp ? "fell" : "held"} from $${Math.round(pp).toLocaleString("en-US")} (${prev.snapshot_month}) to $${Math.round(mp).toLocaleString("en-US")} (${cur.snapshot_month})`)
       const ci = Number(cur.active_inventory), pi = Number(prev.active_inventory)
-      if (ci > 0 && pi > 0) parts.push(`active inventory ${ci > pi ? "grew" : ci < pi ? "shrank" : "held"} from ${pi} to ${ci}`)
+      if (ci > 0 && pi > 0) parts.push(`active listings ${ci > pi ? "grew" : ci < pi ? "shrank" : "held"} from ${pi} to ${ci}`)
       if (parts.length) evidence.push({ id: `trend:${t.zip}:${cur.snapshot_month}`, kind: "market_trend", summary: `${t.label}: ${parts.join("; ")}`, observedAt: cur.snapshot_month, source: "market_trends (monthly snapshot)" })
     }
   }
@@ -183,6 +190,29 @@ async function gatherRegistryEvidence(svc: Db, input: { brokerageId: string; ter
       evidence.push({ id: `registry:${key}`, kind: "registry_dataset", summary: `${d.label} — a verified public-record dataset for ${coverage.market}${d.verifiedOn ? `, live row verified ${d.verifiedOn}` : ""}${v ? `; C19: ${v.reason}` : ""}`, observedAt: d.verifiedOn ?? null, source: `market registry (${d.kind}, ${key})` })
     }
   }
+
+  // 5 · THE MARKET TWIN (wave 150, lane 150KLMO — C41): the Housing Match Gap (consented buyer demand × fresh licensed inventory,
+  //     no identities, segments under the k-floor suppressed) and the relocation context (verified listing + rent medians →
+  //     the own-or-rent starting point a PCS / relocation guide stands on, with the official sources by name). Never the topic bank.
+  if (t.zip) {
+    const load = input.twin ?? (async (db: Db, a: { brokerageId: string; zip: string }) => (await import("./market-twin")).loadMarketTwin(db, { brokerageId: a.brokerageId, zips: [a.zip], allowProviderRead: true }))
+    const twin = await load(svc, { brokerageId: input.brokerageId, zip: t.zip }).catch((e: unknown) => { notes.push(`market twin unavailable: ${e instanceof Error ? e.message : String(e)}`); return null })
+    if (twin) {
+      notes.push(...twin.notes.map((n) => `twin: ${n}`))
+      for (const g of twin.demandGap.segments.filter((x) => x.undersupplied).slice(0, 3)) {
+        evidence.push({ id: `demand:${g.area}:${g.priceBand}:${g.beds}`.replace(/\s+/g, "_"), kind: "demand_gap", summary: `${g.attribution} (${g.claimBoundary})`, observedAt: twin.asOf, source: "consented buyer criteria (property_preferences, stated) × fresh active listings — no buyer identified" })
+      }
+      if (twin.demandGap.suppressedSegments) notes.push(`twin: ${twin.demandGap.suppressedSegments} demand segment(s) under the k-floor suppressed (a count that small could point at a person)`)
+      const z = twin.zips.find((x) => x.zip === t.zip)
+      if (z?.listing.medianAskingPrice && z.rental.medianRent) {
+        const { planRelocation, PCS_OFFICIAL_SOURCES } = await import("@/lib/relocation/pcs-planner")
+        const guide = planRelocation({ mode: "territory_guide", territoryLabel: t.label, facts: { medianAskingPrice: z.listing.medianAskingPrice.value, medianRent: z.rental.medianRent.value, asOf: z.asOf, source: "RentCast /markets listing statistics" } })
+        if (guide.ok && guide.mode === "territory_guide" && guide.priceToRent != null) {
+          evidence.push({ id: `relocation:${t.zip}`, kind: "relocation_context", summary: `${guide.summary}. Official sources a relocation or PCS guide cites by name: ${PCS_OFFICIAL_SOURCES.map((s) => s.name).join("; ")}`, observedAt: z.asOf, source: "market twin (RentCast /markets) + official DoD / VA sources by name" })
+        }
+      }
+    }
+  }
   return { evidence, notes }
 }
 
@@ -201,7 +231,7 @@ function fallback(territory: MarketReportTerritory, evidence: TopicEvidenceItem[
 export async function suggestMarketReportTopics(svc: Db, input: { brokerageId: string; territory: MarketReportTerritory }, deps: TopicDeps = {}): Promise<TopicSuggestionResult> {
   const now = deps.now ?? new Date()
   try {
-    const { evidence, notes } = await gatherRegistryEvidence(svc, { brokerageId: input.brokerageId, territory: input.territory, now })
+    const { evidence, notes } = await gatherRegistryEvidence(svc, { brokerageId: input.brokerageId, territory: input.territory, now, twin: deps.twin })
     if (evidence.length === 0) return { suggestions: [fallback(input.territory, [], "no verified market evidence on record — a plain snapshot of the territory")], evidenceCount: 0, notes: [...notes, "no evidence — fallback topic"] }
     const rank = deps.rank ?? (async (a) => (await (await import("@/lib/ai/models")).generateObjectRouted({
       feature: "market_insight_narrative", brokerageId: a.brokerageId, manager: "campaign_orchestrator",
@@ -220,7 +250,7 @@ export async function suggestMarketReportTopics(svc: Db, input: { brokerageId: s
     for (const s of draft.suggestions ?? []) {
       const cited = (s.evidence_ids ?? []).map((id) => { const e = byId.get(id); if (!e) dropped.push(id); return e }).filter((e): e is TopicEvidenceItem => !!e)
       // a suggestion must stand on MARKET evidence — a registry entry alone says what CAN be verified, not what is happening
-      if (!cited.some((e) => e.kind !== "registry_dataset")) continue
+      if (!cited.some((e) => CARRYING_KINDS.has(e.kind))) continue
       const title = s.title.toLowerCase().includes(input.territory.label.toLowerCase()) ? s.title : `${input.territory.label}: ${s.title}`
       suggestions.push({ title, angle: s.angle, format: s.format, evidence: cited, whyNow: s.why_now, by: "ai" })
     }

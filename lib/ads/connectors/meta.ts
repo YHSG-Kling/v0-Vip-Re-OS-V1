@@ -9,7 +9,7 @@
  * The response MAPPERS (mapInsights) are pure + exported for unit tests; the HTTP
  * is credential-gated (skips cleanly when no token / in the sandbox).
  */
-import type { AdConnector, AudiencePushArgs, AudienceSyncResult, LookalikeArgs, PerformanceQuery, ProviderPerformanceRow } from "./types"
+import type { AdConnector, AudiencePushArgs, AudienceStatusQuery, AudienceStatusResult, AudienceSyncResult, LookalikeArgs, PerformanceQuery, ProviderPerformanceRow, ProviderStatusQuery, ProviderStatusResult } from "./types"
 import { deriveMetrics } from "./types"
 import { graphGet, graphPost } from "@/lib/providers/meta/client"
 
@@ -137,15 +137,32 @@ export const metaConnector: AdConnector = {
       // Upload hashed users. Schema declares which keys each tuple carries.
       const schema = ["EMAIL", "PHONE"]
       const data = args.members.map((m) => [m.email_sha256 ?? "", m.phone_sha256 ?? ""])
-      const add = await graph(`${audienceId}/users`, {
-        method: "POST", token: args.cred.accessToken,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ payload: { schema, data } }),
-      })
+      // WAVE 150 (lane 150QTV — owner ruling R4, "revocations sync the same way"): an EXISTING audience is REPLACED, never appended
+      // to. `/users` only adds, so a person who opted out or was suppressed stayed in the Meta list forever; Meta's
+      // `/{audience_id}/usersreplace` (Marketing API "Replace Users", one session, single batch here) swaps the whole list for the
+      // consented, unsuppressed set the kernel resolved — the revocation leaves on the next sync. Documented endpoint, not yet
+      // read back from a live account by this OS (WAITING_EXTERNAL: a connected ad account). An empty set cannot be "replaced
+      // into": it is refused with the reason (a person must clear the list in Ads Manager) rather than leaving stale members
+      // silently.
+      const replacing = !!args.externalAudienceId
+      if (replacing && data.length === 0) {
+        return { ok: false, externalAudienceId: audienceId, recordsSynced: 0, recordsRejected: 0, error: "nobody in this audience is eligible any more (consent / suppression) — Meta cannot replace a list with an empty one; pause or clear this audience in Meta Ads Manager so nobody who opted out is still targeted" }
+      }
+      const add = replacing
+        ? await graph(`${audienceId}/usersreplace`, {
+            method: "POST", token: args.cred.accessToken,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ payload: { schema, data }, session: { session_id: Date.now(), batch_seq: 1, last_batch_flag: true, estimated_num_total: data.length } }),
+          })
+        : await graph(`${audienceId}/users`, {
+            method: "POST", token: args.cred.accessToken,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ payload: { schema, data } }),
+          })
       if (!add.ok) return { ok: false, externalAudienceId: audienceId, recordsSynced: 0, recordsRejected: args.members.length, error: add.json?.error?.message ?? `upload failed (${add.status})` }
       const received = Number(add.json?.num_received ?? args.members.length)
       const invalid = Number(add.json?.num_invalid_entries ?? 0)
-      return { ok: true, externalAudienceId: audienceId, recordsSynced: received - invalid, recordsRejected: invalid }
+      return { ok: true, externalAudienceId: audienceId, recordsSynced: received - invalid, recordsRejected: invalid, mode: replacing ? "replace" : "create" }
     } catch (e) {
       return { ok: false, recordsSynced: 0, recordsRejected: args.members.length, error: (e as Error).message }
     }
@@ -167,6 +184,43 @@ export const metaConnector: AdConnector = {
       return { ok: true, externalAudienceId: String(create.json.id), recordsSynced: 0, recordsRejected: 0 }
     } catch (e) {
       return { ok: false, recordsSynced: 0, recordsRejected: 0, error: (e as Error).message }
+    }
+  },
+
+  // WAVE 150 (lane 150QTV — R4 "the provider's acknowledgment and the campaign result are read back"): Meta's OWN view of the
+  // uploaded audience (Graph CustomAudience fields `approximate_count_lower_bound` / `approximate_count_upper_bound`,
+  // `operation_status`, `delivery_status`) — recorded verbatim on the sync run, never mapped onto our status ladder.
+  async fetchAudienceStatus(args: AudienceStatusQuery): Promise<AudienceStatusResult> {
+    if (!args.cred.accessToken) return { ok: false, reason: "meta credential not connected" }
+    try {
+      const res = await graph(`${args.externalAudienceId}?fields=approximate_count_lower_bound,approximate_count_upper_bound,operation_status,delivery_status`, { method: "GET", token: args.cred.accessToken })
+      if (!res.ok) return { ok: false, reason: res.json?.error?.message ?? `audience read failed (${res.status})` }
+      const j = res.json ?? {}
+      const op = j.operation_status ?? null, del = j.delivery_status ?? null
+      return {
+        ok: true,
+        state: String(op?.description ?? op?.code ?? "unknown").toLowerCase(),
+        delivery: del ? String(del.description ?? del.code ?? "").toLowerCase() || null : null,
+        approxSize: { lower: Number.isFinite(Number(j.approximate_count_lower_bound)) ? Number(j.approximate_count_lower_bound) : null, upper: Number.isFinite(Number(j.approximate_count_upper_bound)) ? Number(j.approximate_count_upper_bound) : null },
+      }
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
+    }
+  },
+
+  // WAVE 150 (lane 150QTV — R4 campaign result read-back): the campaign's own status on Meta (`effective_status`, with
+  // `configured_status`), polled by lib/ads/ad-performance-ingest.ts beside the insights pull and recorded on
+  // ad_campaigns.targeting_config.provider_status. Meta's ad review verdict lives on the AD (`ad_review_feedback`), not the
+  // campaign, so `review` is null here — said, never guessed.
+  async fetchStatus(args: ProviderStatusQuery): Promise<ProviderStatusResult> {
+    if (!args.cred.accessToken) return { ok: false, reason: "meta credential not connected" }
+    try {
+      const res = await graph(`${args.campaignExternalId}?fields=effective_status,configured_status`, { method: "GET", token: args.cred.accessToken })
+      if (!res.ok) return { ok: false, reason: res.json?.error?.message ?? `campaign read failed (${res.status})` }
+      const state = String(res.json?.effective_status ?? res.json?.configured_status ?? "").toLowerCase()
+      return state ? { ok: true, state, review: null } : { ok: false, reason: "Meta returned no campaign status" }
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
     }
   },
 

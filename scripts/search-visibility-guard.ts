@@ -283,8 +283,13 @@ console.log("§F  the dashboard door")
   // 149Z (lane 149E Outside-lane 1): the header search box is never an inert input — it opens the ONE app search (⌘K palette).
   const gs = code("app/components/layout/global-search.tsx")
   const INERT = (s: string) => /<Input\b/.test(s) && !/on(Click|Change|KeyDown|Focus|Submit)=/.test(s)
-  ok("the header search box opens the ⌘K command palette (an onClick that dispatches the palette's own key), not an inert input", !INERT(gs) && /onClick=\{openCommandPalette\}/.test(gs) && /document\.dispatchEvent\(new KeyboardEvent\('keydown', \{ key: 'k'/.test(gs))
-  ok("…and it promises only what the palette searches (pages and actions, never records)", !/contacts, listings, leads/.test(gs) && /Search pages and actions/.test(gs)) // gs is code() → already stripped by scripts/strip-comments.ts
+  // RE-ASSERTED — wave 150, lane 150QTV (owner ruling R6, 2026-11-06: "Global search finds contacts, listings AND leads — scoped
+  // strictly to what the signed-in user may see"): the two checks below pinned the 149Z waypoint (the box opens the palette and
+  // "promises only pages and actions, never records"). The RULE now: the box is never inert, it searches RECORDS through the
+  // session-scoped action (test:scoped-search proves the scope), and the ⌘K palette stays reachable from it.
+  ok("R6 — the header box searches records through the session-scoped action (searchWorkspaceRecords), never inert",
+    !INERT(gs) && /searchWorkspaceRecords\(/.test(gs) && /onChange=/.test(gs) && /Search contacts, listings, leads/.test(readFileSync("app/components/layout/global-search.tsx", "utf8")))
+  ok("…and the ⌘K palette stays one click away (the palette's own key, dispatched)", /onClick=\{\(\) => \{[^}]*openCommandPalette\(\)/.test(gs) && /document\.dispatchEvent\(new KeyboardEvent/.test(gs))
   ok("POSITIVE CONTROL: the inert finder flags the retired shape", INERT(`<Input placeholder="Search contacts, listings, leads..." className="pl-8" />`))
 }
 

@@ -142,10 +142,18 @@ const ACTIONABLE_TYPES = new Set(["deadline_conflict_finding", "stage_advance_ca
 
 export function ManagerTalkFeed({ talk: initialTalk }: { talk: ManagerTalkLine[] }) {
   const [talk, setTalk] = useState<ManagerTalkLine[]>(initialTalk ?? [])
-  if (!talk || talk.length === 0) return null
-  const open = talk.filter((t) => t.status === "open").length
   const markResolved = (id: string, actionText: string) =>
     setTalk((prev) => prev.map((t) => (t.id === id ? { ...t, status: "consumed", consumedAction: actionText } : t)))
+  // Wave 150 (lane 150DAC): an empty feed SAYS so — a section that vanished read as "not built".
+  if (!talk || talk.length === 0) {
+    return (
+      <section aria-label="Managers talking" className="space-y-1">
+        <h2 className="text-lg font-semibold">Managers talking</h2>
+        <p className="text-sm text-muted-foreground">No manager-to-manager messages yet in this view.</p>
+      </section>
+    )
+  }
+  const open = talk.filter((t) => t.status === "open").length
 
   return (
     <section className="space-y-3">

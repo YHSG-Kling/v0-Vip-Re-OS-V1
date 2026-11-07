@@ -499,7 +499,7 @@ function statedLotMinimum(sentence: string): LotMinimum | null {
       const aboutHouse = /^\s*(home|house|homes|houses|living|of living|interior|floor)\b/i.test(after)
       const value = Number(sq[1].replace(/,/g, ""))
       if (aboutLot && !aboutHouse && value > 0 && !isMaximum(sq.index)) {
-        return { value, unit: "sqft", stated_by: "buyer", literal: literalAt(sq.index, sq[0].length), confidence }
+        return { value, unit: "square_feet", stated_by: "buyer", literal: literalAt(sq.index, sq[0].length), confidence }
       }
     }
   }
@@ -540,8 +540,14 @@ export function extractLifestyleAsks(text: string): LifestyleAsk[] {
         ?? /\b(?:close to|near|minutes from)\s+(?:my\s+)?(work|the office|my office|[A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*){0,3}\s+(?:Medical Center|Campus|Hospital|Airport|Base))/.exec(s)
       const commuteWord = /\b(commute|commuting)\b/i.test(s)
       if (commute || commuteWord) {
+        // Wave 150 (150W, canary 7): "a 25-minute commute", "25 minute drive", "30 minutes or less", "40 min tops" state the
+        // buyer's limit as plainly as "under 25 minutes" — read them too (still only a number the buyer said).
         const minutes = /\b(?:under|less than|within|no more than|max(?:imum)?)\s+(\d{1,3})\s*(?:min|minutes)\b/i.exec(s)
-        const target = commute ? commute[1].trim() : null
+          ?? /\b(\d{1,3})[- ]?(?:min|minutes?)\s+(?:commute|drive)\b/i.exec(s)
+          ?? /\b(\d{1,3})\s*(?:min|minutes)\s+(?:or less|max(?:imum)?|tops|at most)\b/i.exec(s)
+        // Wave 150 (150W): a sentence-final period rode into the place name ("Fort Hood.") — so the measured drive (keyed
+        // by the buyer's place) never matched it and every commute read UNKNOWN. Trailing punctuation is not the place.
+        const target = commute ? commute[1].trim().replace(/[.'’-]+$/, "") || null : null
         push({
           kind: "commute",
           label: target ? `commute to ${target}` : "commute",

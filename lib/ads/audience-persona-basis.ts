@@ -66,9 +66,9 @@
 //     since m589 added `investor` — "investor is a persona and not a contact
 //     type", owner, 2026-08-31);
 //   · a persona that is a PROTECTED CHARACTERISTIC used to EXCLUDE or SUPPRESS
-//     an audience                                                → REFUSED.
-//     Excluding `senior` from a housing ad is withholding housing from the
-//     elderly whatever the field is called.
+//     an audience — REFUSED until 2026-11-06; owner ruling R1 REMOVED that
+//     refusal (tombstone in `personaAdsEligibility`): the platform's own
+//     housing-category rules and consent/suppression govern exclusions.
 //
 // THE MODEL CAN EXPRESS THAT, WHICH IS THE ONLY REASON THE SECOND HALF IS BUILT.
 // `SourceRule.type` already carries `exclusion_active_pipeline` — "an audience
@@ -127,7 +127,8 @@ import {
   audienceUseOf,
   type AudienceUse,
 } from "@/lib/ads/audience-source-rules"
-import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
+// `protectedClassReasonFor` is no longer imported here: its only reader was the exclusion arm removed by R1 (wave 150,
+// lane 150QTV) — see the tombstone in `personaAdsEligibility`.
 
 export type { AudienceUse }
 
@@ -161,15 +162,13 @@ export interface PersonaAdsEligibility {
   /** Null iff eligible. A sentence an operator reads, never a bare code. */
   reason: string | null
   /**
-   * Which of the two refusals this is, so callers and the simulator can tell them
-   * apart without parsing prose:
-   *   · "protected_characteristic" — the persona is a protected class AND the
-   *     audience SUPPRESSES people (exclusion only — inclusion is admitted for
-   *     every persona, owner ruling 2026-11-03);
-   *   · "no_basis"                 — the persona names no situation (`other`),
-   *     on either operation.
+   * Which refusal this is, so callers and the simulator can tell it apart without
+   * parsing prose:
+   *   · "no_basis" — the persona names no situation (`other`), on either operation.
+   * ("protected_characteristic" — a protected persona on a SUPPRESSING audience — was REMOVED by owner ruling R1,
+   * 2026-11-06; tombstone in `personaAdsEligibility`. Every persona is allowed on both operations.)
    */
-  refusalKind: "protected_characteristic" | "no_basis" | null
+  refusalKind: "no_basis" | null
 }
 
 /**
@@ -208,29 +207,20 @@ export function personaAdsEligibility(
         `mean "everyone". It stays valid for campaign sequences and copy.`,
     }
   }
-  const protectedReason = protectedClassReasonFor(persona)
   // ── TOMBSTONE (wave 149, lane 149A — owner ruling 2026-11-03) ───────────────────────────────────────────────────────
   // A `protectedReason && use === "inclusion"` refusal stood here (wave 148Z: "a housing ad audience is selected on a NEED,
   // never on who a person is"). REMOVED with no survivor — the restriction was the defect: "Every persona is allowed and
   // this can't change"; a persona describes the person's situation so the OS can speak to their pain points. Inclusion is
   // admitted for senior / probate / divorce / military exactly as the 2026-08-23 ruling admitted them.
-  if (use === "exclusion") {
-    if (protectedReason) {
-      return {
-        persona,
-        use,
-        eligible: false,
-        refusalKind: "protected_characteristic",
-        reason:
-          `persona "${persona}" names a PROTECTED CHARACTERISTIC, and this audience SUPPRESSES the ` +
-          `people it selects rather than reaching them. ${protectedReason} Reaching someone with ` +
-          `information written for their situation is the owner's them-first ruling and is allowed; ` +
-          `WITHHOLDING housing advertising from them on that same ground is the restricted act ` +
-          `(Fair Housing Act, 42 U.S.C. § 3604(c); HUD's 2019-2022 actions against Meta). Build this ` +
-          `audience as an inclusion basis, or exclude on a behaviour or pipeline state instead.`,
-      }
-    }
-  }
+  // ── TOMBSTONE (wave 150, lane 150QTV — owner ruling R1, 2026-11-06) ─────────────────────────────────────────────────
+  // A `use === "exclusion" && protectedClassReasonFor(persona)` refusal ("a protected-characteristic persona may not
+  // SUPPRESS a housing ad", refusalKind "protected_characteristic") stood here. REMOVED with no persona-level survivor:
+  // delivery exclusions are governed by the ad platform's OWN housing-category rules — Meta Special Ad Category, enforced
+  // at lib/ads/connectors/ad-payload.ts validateAdReadiness (no age / gender / ZIP narrowing, no lookalike) — and by
+  // consent / suppression (lib/kernel/compliance/check-suppression.ts). The exclusion SLOT stays gated for shape, tenancy and
+  // resolvability (lib/ads/audience-exclusion.ts resolveExclusionSlot) and raw demographic criteria stay refused by the token
+  // gate (lib/lead-governance/protected-class-signals.ts assertAudienceSegmentationAllowed). `use` is still carried on the
+  // verdict so the audit line can say which operation was performed.
   return { persona, use, eligible: true, refusalKind: null, reason: null }
 }
 
@@ -261,16 +251,16 @@ const PERSONA_BASIS_HINT =
 
 /**
  * Every canonical persona that may not be the basis of an audience which REMOVES
- * people (`exclusion_*` source-rule types). Computed at load from the classifier,
- * so it is the protected-characteristic personas plus the null basis and it
- * cannot drift from `PROTECTED_CLASS_TOKENS`.
+ * people (`exclusion_*` source-rule types). Computed at load from
+ * `personaAdsEligibility`, so it cannot drift from the rule. Since owner ruling R1
+ * (2026-11-06) it is the null basis ALONE (`other`): no persona is refused for
+ * being a protected characteristic on either operation.
  *
  * READ, not merely declared (CLAUDE.md §1 — a constant with no reader is an
  * orphan whatever it documents): `resolveAudiencePersonaBasis` names this set in
  * the exclusion refusal an operator reads, so the error says which personas may
  * not suppress an audience rather than only which one was rejected. The ads
- * dashboard has no surface for it yet; the simulator asserts it against an
- * independent re-derivation from `PROTECTED_CLASS_TOKENS`.
+ * dashboard has no surface for it yet; the simulators assert it equals `[other]`.
  */
 export const EXCLUSION_INELIGIBLE_PERSONAS: readonly CampaignPersona[] = Object.freeze(
   CAMPAIGN_PERSONAS.filter((p) => !personaAdsEligibility(p, "exclusion").eligible),
@@ -291,8 +281,6 @@ export type PersonaBasisResolution =
        * WHICH refusal this is, so a caller can tell them apart without parsing
        * prose. Mirrors `PersonaAdsEligibility["refusalKind"]` and adds the one
        * refusal that is about the DECLARATION rather than the persona:
-       *   · "protected_characteristic" — a protected-class persona in a slot
-       *     that SUPPRESSES (the fair-housing refusal);
        *   · "no_basis"                 — `other`, which names no situation;
        *   · "unresolvable"             — no personas, an empty list, a
        *     non-string entry, or a spelling outside the canonical roster.
@@ -302,7 +290,7 @@ export type PersonaBasisResolution =
        * `refusal.includes("PROTECTED")` is a second vocabulary waiting to
        * happen (CLAUDE.md §6).
        */
-      refusalKind: "protected_characteristic" | "no_basis" | "unresolvable"
+      refusalKind: "no_basis" | "unresolvable"
     }
 
 /**
@@ -334,8 +322,8 @@ export function declaresPersonaBasis(rule: unknown): boolean {
  *   · `other`                                 → refuse (no_basis)
  *   · senior / probate / divorce / military   → ADMITTED as an inclusion basis
  *                                               (owner ruling 2026-11-03, as on
- *                                               2026-08-23); REFUSED only on an
- *                                               exclusion (suppression) slot
+ *                                               2026-08-23) and, since R1 (2026-11-06),
+ *                                               on an exclusion slot too
  *
  * Deliberately NOT run through `normalizeContactPersona`: that function maps
  * DRIFTED DATABASE SPELLINGS forward for a reader, which is right for reading a
@@ -439,7 +427,7 @@ export function resolveAudiencePersonaBasis(
       // the set — referencing it there would be a temporal-dead-zone crash at
       // module load, not a cycle anybody would see in review.
       const suffix =
-        verdict.refusalKind === "protected_characteristic"
+        use === "exclusion"
           ? ` The personas that may not be an EXCLUSION basis are: ${EXCLUSION_INELIGIBLE_PERSONAS.join(", ")}.`
           : ""
       return { ok: false, refusal: verdict.reason! + suffix, refusalKind: verdict.refusalKind! }

@@ -387,6 +387,9 @@ export interface InboundProcessDeps extends InboundRecordDeps {
   promise?: (p: { brokerageId: string; contactId: string; now: Date }) => Promise<{ action: string; reason: string }>
   /** Wave 147 (contract C14): the completion ledger's seams (the durable timer, the clock); `false` = not tracked (a proof's choice). */
   completions?: false | import("@/lib/kernel/completion-tracking").CompletionDeps
+  /** Wave 150 (lane 150QTV, 150Q): the memory writer for preferences the person STATED (default: the survivor's
+   *  recordConversationFacts, through lib/kernel/conversation-memory.ts rememberStatedPreferences). */
+  preferenceWriter?: import("@/lib/kernel/conversation-memory").PreferenceWriter
 }
 
 /** What the chain hands the arbiter's inbound responder. */
@@ -419,6 +422,8 @@ export interface InboundProcessResult {
   promise: { action: string; reason: string } | null
   /** Wave 147 (C14): the completion this inbound opened (what is owed, by when, closed by evidence) — null when not tracked. */
   completion: { id: string; status: string; stage: string; redriven?: boolean } | null
+  /** Wave 150 (150Q): the preferences this message STATED and how many reached the memory ledger — null when not evaluated. */
+  preferences: { keys: string[]; recorded: number } | null
   blindSpots: string[]
 }
 
@@ -432,7 +437,7 @@ export async function processInboundCommunication(
 ): Promise<InboundProcessResult> {
   const blindSpots: string[] = []
   const out = (record: InboundCommunicationResult, over: Partial<InboundProcessResult> = {}): InboundProcessResult =>
-    ({ record, optOut: null, sequencesStopped: null, intent: null, lead: null, response: null, promise: null, completion: null, blindSpots, ...over })
+    ({ record, optOut: null, sequencesStopped: null, intent: null, lead: null, response: null, promise: null, completion: null, preferences: null, blindSpots, ...over })
 
   // ── a LEAD's reply on a lead-door transport: THE lead door records (same table, same key) and interprets it ──
   if (input.party?.kind === "lead" && LEAD_DOOR_CHANNELS.has(input.channel) && input.brokerageId && !input.platform) {
@@ -547,6 +552,17 @@ export async function processInboundCommunication(
     }
   }
 
+  // ── 2b. WAVE 150 (lane 150QTV, 150Q): PREFERENCE MEMORY FROM THE PERSON'S OWN WORDS — before the arbiter answers, so the
+  //    answer already honours "text me", "evenings", "en español", "too many messages", "explain it simply". Only a private
+  //    message from a known contact; the survivor ledger (contacts.metadata.context_spine.facts) supersedes and expires. ──
+  let preferences: InboundProcessResult["preferences"] = null
+  if (contactId && !isPublic && PRIVATE_REPLY_CHANNELS.has(input.channel) && body) {
+    const { rememberStatedPreferences } = await import("@/lib/kernel/conversation-memory")
+    const pm = await rememberStatedPreferences(svc, { brokerageId, contactId, body, channel: input.channel, providerRef: record.providerRef ?? null }, deps.preferenceWriter)
+    preferences = { keys: pm.stated.map((p) => p.key), recorded: pm.recorded }
+    if (pm.error) blindSpots.push(`stated preferences not remembered (${pm.error}) — the person said: ${pm.stated.map((p) => p.key).join(", ")}`)
+  }
+
   // ── 3. the kernel event the bell and the managers read (one per record — the dedupe key is the record id) ──
   try {
     const emit = deps.emit ?? (async (e) => (await import("@/lib/kernel/emit")).emitKernelEvent(e as never))
@@ -620,7 +636,7 @@ export async function processInboundCommunication(
   //       decision — the supervisor re-drives it at due. ──
   await settleDecision(settled)
 
-  return out(record, { optOut, sequencesStopped, intent, response, promise, completion })
+  return out(record, { optOut, sequencesStopped, intent, response, promise, completion, preferences })
 }
 
 /** The completion's source key for an inbound record (one obligation per messages row). */

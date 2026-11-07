@@ -28,6 +28,13 @@
  * templates off the shelf) asserted a restriction the owner REVERSED; they are reverted to the rule below, which
  * is the owner's. The exclusion arm and every fail-closed check are unchanged.
  *
+ * RE-ASSERTED — WAVE 150, LANE 150QTV (owner ruling R1, 2026-11-06: "the pre-147 rule that a protected persona cannot
+ * be used to EXCLUDE people from a housing ad is REMOVED — delivery exclusions are governed only by the platform's own
+ * rules and consent/suppression"): section 4 pinned "senior / probate / divorce / military as an EXCLUSION basis →
+ * REFUSED by both gates". It now pins the RULE: every canonical persona is an exclusion basis too (only `other`
+ * refuses), the token gate no longer switches its persona carve-out off for an exclusion rule, and raw demographic
+ * criteria still refuse on BOTH operations (section 4b). EXCLUSION_INELIGIBLE_PERSONAS is derived and equals [other].
+ *
  * WHAT IS PROVEN, AND IN BOTH DIRECTIONS:
  *   1. the canonical persona vocabulary is ONE vocabulary (CLAUDE.md §6) — the TS
  *      union, the runtime roster and the live CHECK agree;
@@ -181,9 +188,8 @@ function main() {
     independentlyProtected.every((p) => !(ADS_INELIGIBLE_PERSONAS as readonly string[]).includes(p))
     && independentlyProtected.length === 4)
 
-  check("EXCLUSION_INELIGIBLE_PERSONAS = the protected-token personas + the null basis (independently re-derived)",
-    JSON.stringify([...EXCLUSION_INELIGIBLE_PERSONAS].sort())
-      === JSON.stringify([...independentlyProtected, UNRESOLVED_PERSONA].sort()),
+  check("R1 — EXCLUSION_INELIGIBLE_PERSONAS = the null basis alone (independently re-derived: no protected persona is refused to suppress)",
+    JSON.stringify([...EXCLUSION_INELIGIBLE_PERSONAS]) === JSON.stringify([UNRESOLVED_PERSONA]),
     `exclusion-ineligible=${EXCLUSION_INELIGIBLE_PERSONAS.join(",")}`)
   check("the module hard-codes NO persona list of its own (both splits are computed)",
     !/ADS_INELIGIBLE_PERSONAS[^=]*=\s*\[/.test(code("lib/ads/audience-persona-basis.ts"))
@@ -219,18 +225,20 @@ function main() {
   // the second spelling look necessary — audience-persona-basis imports
   // protectedClassReasonFor from protected-class-signals, so the wire could not
   // go the other way.
+  // WAVE 150 (150QTV) — RE-ASSERTED to R1: the `suppresses` switch is REMOVED from protectedClassSegmentationIn (tombstone
+  // there). The §6 rule that survives: no SECOND spelling of "this audience subtracts" re-enters that module, and the carve-out
+  // is no longer conditioned on the operation.
   {
     const pcs = code("lib/lead-governance/protected-class-signals.ts")
-    const suppressesLine = /const\s+suppresses\s*=\s*([^\n]+)/.exec(pcs)?.[1] ?? ""
-    check("§6 — protectedClassSegmentationIn reads the operation with audienceUseOf, not a second spelling",
-      /audienceUseOf\s*\(/.test(suppressesLine)
-      && !/isExclusionSourceRuleType/.test(pcs))
-    // POSITIVE CONTROL — the finder still recognises the defect it was written for.
-    check("  control: the same finder REJECTS the inlined second spelling it replaced",
-      !/audienceUseOf\s*\(/.test("const suppresses = isExclusionSourceRuleType((rule as { type?: unknown } | null)?.type)"))
-    // POSITIVE CONTROL — and it is reading a real line, not an empty match.
-    check("  control: the suppresses assignment was actually found in the file",
-      suppressesLine.trim().length > 0)
+    const SWITCH = /const\s+suppresses\s*=|isExclusionSourceRuleType|&&\s*!suppresses/
+    check("§6 + R1 — protectedClassSegmentationIn carries no operation switch and no second spelling of 'subtracts'",
+      !SWITCH.test(pcs))
+    // POSITIVE CONTROL — the finder still recognises both removed shapes.
+    check("  control: the finder SEES the removed switch and the inlined second spelling",
+      SWITCH.test("const suppresses = audienceUseOf(rule) === \"exclusion\"")
+      && SWITCH.test("if (isCanonicalPersonaBasisValue(prefix, node) && !suppresses) return"))
+    check("  control: the tombstone naming R1 is present where the switch stood",
+      /owner ruling R1/.test(readFileSync(join(root, "lib/lead-governance/protected-class-signals.ts"), "utf8")))
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -267,28 +275,25 @@ function main() {
     !resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["first_time", "other"] } }).ok)
 
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[4 · EXCLUSION — a protected-characteristic persona may NOT suppress an audience]")
+  console.log("\n[4 · EXCLUSION (R1, 2026-11-06) — every situation persona MAY be an exclusion basis; platform rules + consent govern]")
 
   for (const p of independentlyProtected) {
     for (const exclusionType of EXCLUSION_SOURCE_RULE_TYPES) {
       const rule = { type: exclusionType, filters: { personas: [p] } }
       const verdict = personaAdsEligibility(p as CampaignPersona, "exclusion")
-      check(`"${p}" as an EXCLUSION basis → REFUSED, classified protected_characteristic`,
-        !verdict.eligible && verdict.refusalKind === "protected_characteristic" && verdict.use === "exclusion")
-      const msg = throws(() => assertAudiencePersonaBasis(rule, `${p} suppression`)) ?? ""
-      check(`"${p}" as an EXCLUSION basis → the persona gate REFUSES, naming the persona and the audience`,
-        msg.includes("REFUSED") && msg.includes(`"${p}"`) && msg.includes(`${p} suppression`))
-      check(`"${p}" as an EXCLUSION basis → the refusal draws the INCLUDE/WITHHOLD line in words`,
-        /SUPPRESSES/.test(msg) && /WITHHOLDING/.test(msg) && /3604\(c\)/.test(msg))
-      // DEFENCE IN DEPTH, KEPT WHERE IT STILL APPLIES. The token gate stands down
-      // for a canonical persona on an INCLUSION rule only; on an exclusion rule it
-      // refuses the same value it always did.
-      const tokenMsg = throws(() => assertAudienceSegmentationAllowed(rule, `${p} suppression`)) ?? ""
-      check(`"${p}" as an EXCLUSION basis → the protected-class gate ALSO refuses it (two independent gates)`,
-        tokenMsg.includes("REFUSED") && protectedClassSegmentationIn(rule).length > 0,
+      check(`"${p}" as an EXCLUSION basis → ADMITTED (use recorded as exclusion)`,
+        verdict.eligible && verdict.refusalKind === null && verdict.use === "exclusion")
+      check(`"${p}" as an EXCLUSION basis → the persona gate ADMITS it`,
+        throws(() => assertAudiencePersonaBasis(rule, `${p} suppression`)) === null)
+      check(`"${p}" as an EXCLUSION basis → the token gate ADMITS the canonical persona too (no carve-out switch)`,
+        throws(() => assertAudienceSegmentationAllowed(rule, `${p} suppression`)) === null && protectedClassSegmentationIn(rule).length === 0,
         `hits=${protectedClassSegmentationIn(rule).join(",")}`)
     }
   }
+  check("POSITIVE CONTROL — `other` is still refused as an exclusion basis (no_basis — a suppression list of nobody-classified)",
+    (() => { const r = resolveAudiencePersonaBasis({ type: EXCLUSION_SOURCE_RULE_TYPES[0], filters: { personas: ["other"] } }); return !r.ok && r.refusalKind === "no_basis" })())
+  check("POSITIVE CONTROL — a RAW demographic criterion on an exclusion rule is still refused by the token gate (no age narrowing)",
+    protectedClassSegmentationIn({ type: EXCLUSION_SOURCE_RULE_TYPES[0], filters: { min_owner_age: 65 } }).length > 0)
   check("POSITIVE CONTROL — a NON-protected persona may still be excluded (this is not refuse-every-exclusion)",
     (() => {
       const rule = { type: EXCLUSION_SOURCE_RULE_TYPES[0], filters: { personas: ["fsbo"] } }
@@ -300,9 +305,9 @@ function main() {
   check("POSITIVE CONTROL — the ordinary exclusion audience (no persona basis at all) is untouched",
     throws(() => assertAudiencePersonaBasis({ type: "exclusion_active_pipeline", filters: {} }, "x")) === null
     && throws(() => assertAudienceSegmentationAllowed({ type: "exclusion_active_pipeline", filters: {} }, "x")) === null)
-  check("the SAME persona flips verdict with the OPERATION and nothing else (one rule, one field changed)",
+  check("R1 — the SAME persona resolves the same on BOTH operations (one rule, one field changed, one verdict)",
     resolveAudiencePersonaBasis({ type: PERSONA_SEGMENT_TYPE, filters: { personas: ["senior"] } }).ok
-    && !resolveAudiencePersonaBasis({ type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }).ok)
+    && resolveAudiencePersonaBasis({ type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }).ok)
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[4b · THE RAW PROVIDER ATTRIBUTE PATH IS UNTOUCHED — the regression this lane risked]")
@@ -516,9 +521,9 @@ function main() {
     FB_AUDIENCE_TEMPLATES.every((t) =>
       throws(() => assertAudienceSegmentationAllowed(t.sourceRule, t.name)) === null
       && throws(() => assertAudiencePersonaBasis(t.sourceRule, t.name)) === null))
-  check("POSITIVE CONTROL — a hypothetical `senior` SUPPRESSION template WOULD be refused by that same check",
+  check("POSITIVE CONTROL — a hypothetical `other` SUPPRESSION template WOULD be refused by that same check (R1 left only the null basis)",
     (throws(() => assertAudiencePersonaBasis(
-      { type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }, "Exclude — Seniors")) ?? "").includes("REFUSED"))
+      { type: "exclusion_active_pipeline", filters: { personas: ["other"] } }, "Exclude — Unclassified")) ?? "").includes("REFUSED"))
 
   // The audience shelf looks the badge up UNGUARDED — `TEMPLATE_CATEGORY_META[
   // template.category].badge` — so a category in the union with no entry there is

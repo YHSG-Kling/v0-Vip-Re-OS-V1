@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { resolveReportScope } from "@/lib/kernel/reporting-scope"
 import { getSourcePerformance } from "@/app/actions/source-analytics"
 import { SourceAnalyticsClient } from "./source-analytics-client"
@@ -29,7 +29,9 @@ export default async function SourceAnalyticsPage() {
   // `userType === "broker" || "admin" || "superadmin"` literal it replaces gave a
   // broker OWNER the agent view — and that agent view filtered contacts.agent_id
   // (an agents.id) by ctx.userId (a users.id): a query that matched nothing (§3).
-  const supabase = await createClient()
+  // Wave 150 (lane 150DAC): the scope reader takes the SERVICE client with the SESSION's ids (gate above) — the
+  // C34 hierarchy reads organization_members / locations, which a session read could hide and so narrow wrongly.
+  const supabase = createServiceClient()
   const scope = await resolveReportScope(supabase, {
     userType: ctx.userType,
     userId: ctx.userId,

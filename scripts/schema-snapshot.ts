@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-06
+ * generated: 2026-11-07
  * source: public.live_schema_json()
- * body-sha256: a46ef11a7f4a0d4ac00839e921f045fe90653e2668ea8d184975dfa4e0eb690d
+ * body-sha256: 81a0a781e8f3c064c4d4d203be4c01ffb57cb57cc54b500d945b8c8e35af86fe
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -407,7 +407,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   listing_marketing_packages: ["activated_at", "brokerage_id", "created_at", "id", "included_services", "package_name", "package_type", "status", "total_estimated_cost", "transaction_id", "updated_at"],
   listing_marketing_services: ["actual_cost", "brokerage_id", "completed_at", "created_at", "estimated_cost", "id", "metadata", "package_id", "scheduled_date", "service_type", "status", "transaction_id", "updated_at", "vendor_id"],
   listing_marketing_tiers: ["brokerage_id", "created_at", "description", "id", "is_active", "max_price", "min_price", "tier_name"],
-  listing_media: ["ai_analysis_completed", "ai_analyzed_at", "ai_quality_score", "alt_text", "approval_required", "approved_at", "approved_by", "brokerage_id", "caption", "created_at", "enhancement_applied", "file_url", "has_brokerage_attribution", "has_eho_mark", "has_logo_overlay", "id", "is_approved", "is_primary", "kernel_compliance_passed", "listing_id", "media_type", "rejection_notes", "room_type", "sort_order", "tags", "template_id", "thumbnail_url", "uploaded_by", "usage_intent", "uses_approved_template"],
+  listing_media: ["ai_analysis_completed", "ai_analyzed_at", "ai_quality_score", "alt_text", "approval_required", "approved_at", "approved_by", "brokerage_id", "caption", "created_at", "enhancement_applied", "file_url", "has_brokerage_attribution", "has_eho_mark", "has_logo_overlay", "id", "is_approved", "is_primary", "kernel_compliance_passed", "listing_id", "media_type", "ownership_attestation_version", "ownership_attested_at", "ownership_attested_by", "photo_source", "rejection_notes", "room_type", "sort_order", "tags", "template_id", "thumbnail_url", "uploaded_by", "usage_intent", "uses_approved_template"],
   listing_metrics: ["brokerage_id", "created_at", "date", "id", "inquiries", "listing_id", "saves", "showings", "views"],
   listing_packet_jobs: ["agent_user_id", "brokerage_id", "completed_at", "config", "created_at", "error_message", "id", "job_type", "listing_id", "output_url", "started_at", "status"],
   listing_page_analytics: ["avg_time_seconds", "brokerage_id", "cta_clicks", "date", "id", "lead_captures", "listing_id", "showing_requests", "total_views", "unique_visitors"],
@@ -602,7 +602,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   review_requests: ["agent_id", "brokerage_id", "completed_at", "contact_id", "contact_name", "created_at", "id", "platform", "review_url", "sent_at", "status", "updated_at"],
   saved_ai_outputs: ["brokerage_id", "created_at", "entity_id", "entity_type", "id", "metadata", "output_text", "tags", "title", "tool_name", "user_id"],
   saved_calculations: ["brokerage_id", "calculation_data_json", "created_at", "id", "tool_name", "user_email", "user_name", "visitor_id"],
-  saved_properties: ["added_to_tour", "ai_match_score", "bathrooms", "bedrooms", "brokerage_id", "city", "contact_id", "dismissed", "dismissed_reason", "external_property_id", "id", "interest_level", "list_price", "listing_id", "listing_url", "match_reasons", "mls_number", "notes", "primary_photo_url", "property_address", "property_type", "saved_at", "source", "sqft", "state", "user_id"],
+  saved_properties: ["added_to_tour", "ai_match_score", "bathrooms", "bedrooms", "brokerage_id", "city", "contact_id", "dismissed", "dismissed_reason", "external_property_id", "id", "interest_level", "list_price", "listing_id", "listing_url", "match_reasons", "mls_name", "mls_number", "notes", "primary_photo_url", "property_address", "property_type", "saved_at", "source", "source_url", "sqft", "state", "user_id"],
   scheduled_touchpoints: ["agent_id", "ai_generated", "brokerage_id", "contact_id", "created_at", "id", "message_template", "scheduled_date", "sent_at", "status", "touchpoint_type"],
   scraper_actor_health: ["actor_id", "alive", "id", "last_checked", "last_error", "task"],
   scraper_executions: ["api_calls_made", "api_cost", "brokerage_id", "completed_at", "created_at", "duplicates_skipped", "duration_ms", "enrichment_cost", "error_message", "id", "leads_created", "leads_enriched", "scraper_type", "started_at", "status", "total_items_found", "triggered_by"],

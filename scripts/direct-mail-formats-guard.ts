@@ -177,8 +177,13 @@ async function main() {
   console.log("\n[F · one ledger vocabulary — the live status CHECK]")
   {
     const vocab = read("scripts/check-vocabularies.ts")
-    const cm = /direct_mail_campaigns:\s*\{\s*status:\s*\[([^\]]*)\]/.exec(vocab)
+    // The cache lists a table's columns in NAME order (m985 added mail_format / proof_status ahead of status), so the
+    // status row is found INSIDE the table's block, wherever it sits — pinning it as the first key read a live CHECK as absent.
+    const block = /direct_mail_campaigns:\s*\{([^}]*)\}/.exec(vocab)
+    const cm = block ? /\bstatus:\s*\[([^\]]*)\]/.exec(block[1]) : null
     const allowed = new Set(cm ? [...cm[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [])
+    check("POSITIVE CONTROL: the status row is read wherever it sits in the table block (a block whose first key is another column still yields it)",
+      (() => { const b = /direct_mail_campaigns:\s*\{([^}]*)\}/.exec('direct_mail_campaigns: {\n    mail_format: ["letter"],\n    status: ["mailed", "failed"],\n  },'); const m = b ? /\bstatus:\s*\[([^\]]*)\]/.exec(b[1]) : null; return !!m && /mailed/.test(m[1]) })())
     check("the generated vocabulary cache carries the direct_mail_campaigns status CHECK", allowed.has("mailed") && allowed.has("failed"))
     const writers = ["lib/direct-mail/campaign-drain.ts", "lib/direct-mail/listing-lifecycle-mail-reactor.ts", "app/actions/direct-mail.ts"]
     const statusLiteral = /\bstatus:\s*(?:[^,\n]*\?\s*)?"([a-z_]+)"(?:\s*:\s*"([a-z_]+)")?/g

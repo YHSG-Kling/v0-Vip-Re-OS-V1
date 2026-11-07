@@ -353,7 +353,7 @@ async function main() {
     "RESTRICTIVE policies are not judged (none on the canary tables at capture); column grants are not judged either — at capture anon and authenticated held SELECT on every credential column, so RLS is the ONLY barrier in front of a token",
     "storage buckets (media / mail-proof files) are lane 150AAF's O1 owner SQL — not in this catalogue",
     "mail PROOFS have no dedicated table: the proof URL rides the direct_mail_* rows judged here",
-    "global record search (contacts / listings / leads) has no survivor yet — app/components/layout/global-search.tsx searches pages only; lane 150QTV owns it, the RLS it must read through is judged here",
+    "global record search (contacts / listings / leads) is built by lane 150QTV (lib/search/scoped-record-search.ts, test:scoped-search) and reads through the SESSION client, so the RLS judged here sits underneath it; its office/team narrowing is code-side",
     "INSERT / UPDATE / DELETE policies are judged only where m999 rewrites them",
   ]) console.log(`  · ${b}`)
   console.log("\n──────────────────────────────────────────────────")

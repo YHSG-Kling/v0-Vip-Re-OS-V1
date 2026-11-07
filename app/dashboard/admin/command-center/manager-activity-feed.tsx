@@ -46,7 +46,15 @@ export function ManagerActivityFeed({ activity }: { activity: ManagerActivityEnt
     () => new Set(activity.map((a) => a.managerKey)).size,
     [activity],
   )
-  if (!activity || activity.length === 0) return null
+  // Wave 150 (lane 150DAC): an empty feed SAYS so — a section that vanished read as "not built".
+  if (!activity || activity.length === 0) {
+    return (
+      <section aria-label="What the managers did" className="space-y-1">
+        <h2 className="text-lg font-semibold">What the managers did</h2>
+        <p className="text-sm text-muted-foreground">No manager actions recorded yet in this view.</p>
+      </section>
+    )
+  }
   const rows = showAll ? activity : activity.slice(0, 12)
 
   return (

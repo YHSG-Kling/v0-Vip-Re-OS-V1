@@ -837,3 +837,85 @@ export async function watchUnresolvedTickets(svc: Svc, brokerageId: string, opts
   }
   return { opened, error: null }
 }
+
+// ── 8. A FAILED SEND BECOMES A STAFF ACTION IN NEAR-REAL TIME (wave 150, lane 150QTV — directive canary 12) ─────────────────
+//
+// "every supported channel two-way … provider ack / completion / outcome verified, failed send → near-real-time staff action; no
+// new timers". The failed_delivery detection above tells the thread's agent when an INBOUND-RESPONSE completion's reply is
+// contradicted (onProviderTruth). Every OTHER contradicted send — an email bounce, a returned postcard, a failed voice drop, an
+// SMS no completion was waiting on — reached only a FEED-ONLY manager signal (outcome_contradicted), never a person. This is the
+// person half, folded here beside its sibling (the crm page graph is at budget), called by lib/outcomes/reconciliation-ledger.ts
+// ingestProviderTruth on the SAME once-only guard (escalated_at) at the moment the provider's event arrives — no timer, no cron.
+// A HEADS-UP, NEVER A RE-SEND (failed_delivery.humanBoundary). The ONE arbiter refuses a channel whose latest provider verdict is
+// a contradiction (lib/ai-isa/followup-arbiter.ts deliveryFailures), so its next decision picks another channel, format and tone.
+// RECIPIENTS: the person's assigned agent (contacts.agent_id / leads.agent_id → agents.user_id — agents.id and users.id are
+// DISJOINT, CLAUDE.md §3); none → the tenant's staff roster (lib/kernel/org-recipients.ts). A lead stays on the lead desk.
+
+export interface FailedSendInput {
+  brokerageId: string
+  /** The outcome-ledger channel (lib/outcomes/reconciliation.ts OutcomeChannel). */
+  channel: string
+  contactId: string | null
+  leadId: string | null
+  /** The provider's own status word (bounce, undelivered, returned_to_sender …). */
+  providerStatus: string
+  /** The provider's own detail payload, if it gave one (reason / error text). */
+  providerDetail?: Record<string, unknown> | null
+  reconciliationId: string
+}
+
+const FAILED_SEND_CHANNEL_WORD: Readonly<Record<string, string>> = Object.freeze({
+  email: "email", sms: "text message", voice_drop: "voicemail drop", direct_mail: "mailed piece", in_app: "portal message", social: "social message",
+})
+
+/** PURE. The one neighbourly sentence the staff member reads — the provider's words, who, and what happens next. */
+function failedSendSentence(i: FailedSendInput, who: string): string {
+  const what = FAILED_SEND_CHANNEL_WORD[i.channel] ?? i.channel.replace(/_/g, " ")
+  const reason = typeof i.providerDetail?.reason === "string" && i.providerDetail.reason.trim() ? ` ("${String(i.providerDetail.reason).trim().slice(0, 140)}")` : ""
+  return `Our ${what} to ${who} did not arrive — the provider reported "${i.providerStatus}"${reason}. ` +
+    `Nothing was re-sent. The assistant will not use this channel for them until it is fixed and will choose another way to reach them; ` +
+    `you may want to check the ${i.channel === "direct_mail" ? "mailing address" : i.channel === "email" ? "email address" : "number"} on file.`
+}
+
+/**
+ * Tell the right person, once per contradicted claim (the caller holds the once-only guard: outcome_reconciliations.escalated_at).
+ * Returns how many people were told; a refused write is returned as `error`, never thrown.
+ */
+export async function notifyFailedSend(svc: Svc, input: FailedSendInput): Promise<{ notified: number; recipients: string[]; error?: string }> {
+  try {
+    if (!input.brokerageId || (!input.contactId && !input.leadId)) return { notified: 0, recipients: [], error: "no person on the claim — nobody to tell about" }
+    let who = "this person"
+    let agentId: string | null = null
+    if (input.contactId) {
+      const { data, error } = await svc.from("contacts").select("first_name, last_name, agent_id").eq("id", input.contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (error) return { notified: 0, recipients: [], error: `contact read refused (${error.message})` }
+      if (data) { who = [data.first_name, data.last_name].filter(Boolean).join(" ") || who; agentId = data.agent_id ?? null }
+    } else if (input.leadId) {
+      const { data, error } = await svc.from("leads").select("first_name, last_name, agent_id").eq("id", input.leadId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (error) return { notified: 0, recipients: [], error: `lead read refused (${error.message})` }
+      if (data) { who = [data.first_name, data.last_name].filter(Boolean).join(" ") || "a lead"; agentId = data.agent_id ?? null }
+    }
+    let recipients: string[] = []
+    if (agentId) {
+      const { data, error } = await svc.from("agents").select("user_id").eq("id", agentId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (error) return { notified: 0, recipients: [], error: `agent read refused (${error.message})` }
+      if (data?.user_id) recipients = [String(data.user_id)]
+    }
+    if (recipients.length === 0) {
+      const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+      recipients = await resolveOrgRecipients(svc as never, input.brokerageId, { limit: 3 })
+    }
+    if (recipients.length === 0) return { notified: 0, recipients: [], error: "no staff recipient resolved for this tenant" }
+    const body = failedSendSentence(input, who)
+    const { error } = await svc.from("notifications").insert(recipients.map((user_id) => ({
+      user_id, brokerage_id: input.brokerageId, type: "delivery_failed",
+      title: `Didn't arrive: ${FAILED_SEND_CHANNEL_WORD[input.channel] ?? input.channel} to ${who}`.slice(0, 200), body,
+      entity_type: input.contactId ? "contact" : "lead", entity_id: input.contactId ?? input.leadId,
+      contact_id: input.contactId, priority: "high", channel: "in_app", is_read: false,
+    })))
+    if (error) return { notified: 0, recipients, error: `notification refused (${error.message})` }
+    return { notified: recipients.length, recipients }
+  } catch (e) {
+    return { notified: 0, recipients: [], error: e instanceof Error ? e.message : String(e) }
+  }
+}

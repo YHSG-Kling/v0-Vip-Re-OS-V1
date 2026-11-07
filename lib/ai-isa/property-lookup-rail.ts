@@ -1710,3 +1710,83 @@ async function highValueEnrichmentEnvelope(a: { brokerageId: string; leadId: str
   })
   return { allowed: v.allowed, reason: v.reason }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ACTIVATION / LICENSING STATE — BESIDE THE ROUTE TABLE (wave 150, lane 150HIAB; placed here by the integrator: the route
+// table and the activation state are ONE declaration of which provider may be called, read by the scorecard, the config
+// healer and the platform console — test:proxy-graph-budget). Changing a state is a reviewed change, never a heal.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── activation / licensing state (BY NAME — never a value) ─────────────────────────────────────────────────────────
+
+/** The C39 data providers. Map / event providers (mapbox, zoom, …) are outside the acquisition stack and stay router-only. */
+export type ScorecardProvider = "rentcast" | "versium" | "batchdata" | "peopledata" | "tracerfy" | "datazapp" | "propertyradar" | "data_axle"
+
+export type ActivationState = "active" | "dormant_survivor" | "dormant_pending_rights"
+
+/** How far the provider's rights for THIS deployment (SaaS, many tenants, storage on tenant records) are verified. */
+export type RightsStatus = "signed_terms_unverified" | "standard_terms_read" | "api_page_statement_only" | "none_stated" | "not_read"
+
+export interface ProviderActivation {
+  state: ActivationState
+  /** For a dormant SURVIVOR whose live doors pre-date R9: whether those doors are already closed, or wait on the owner. */
+  survivorDoors?: "closed" | "owner_confirmation_pending"
+  rights: { status: RightsStatus; summary: string; source: string }
+  /** The credential by NAME — where it is obtained and how it is verified without spend. Never a value. */
+  credential: { envVars: readonly string[]; whereObtained: string; howVerified: string }
+  /** The three proofs activation needs (C39). null = not supplied. */
+  activationEvidence: { contract: string | null; incrementalCoverage: string | null; unitEconomics: string | null }
+}
+
+export const PROVIDER_ACTIVATION: Readonly<Record<ScorecardProvider, ProviderActivation>> = Object.freeze({
+  rentcast: {
+    state: "active",
+    rights: { status: "api_page_statement_only", summary: "\"flexible licensing terms … any use case that is not specifically prohibited under our Terms of Use\"; the Terms of Use themselves were not read", source: "rentcast.io/api (read 2026-11-03)" },
+    credential: { envVars: ["RENTCAST_API_KEY"], whereObtained: "RentCast dashboard → API", howVerified: "one cached property-record request on the Developer plan's free quota; spend booked through meterCall (lib/property/rentcast.ts)" },
+    activationEvidence: { contract: "owner stack ruling R9 (2026-11-06)", incrementalCoverage: "property facts / AVM / market — the owner-ordered primary", unitEconomics: "RENTCAST_USD_PER_REQUEST 0.074 (Foundation); $0.015 overage at Scale" },
+  },
+  versium: {
+    state: "active",
+    rights: { status: "signed_terms_unverified", summary: "existing contracted account; partner / SaaS / LLM rights in SIGNED terms are unverified — the standard terms forbid caching and service-bureau use (comparison §4)", source: "versium.com/terms-conditions (comparison §4, read 2026-10-29)" },
+    credential: { envVars: ["VERSIUM_API_KEY"], whereObtained: "Versium REACH account → API keys", howVerified: "the free B2C ListGen Estimates call (audience_estimate, $0)" },
+    activationEvidence: { contract: "existing Versium account (owner stack ruling R9)", incrementalCoverage: "real-time single-contact rung + audience estimate + online audience match", unitEconomics: "VERSIUM_MATCH_CREDIT_USD per matched output; a no-match is free" },
+  },
+  batchdata: {
+    state: "dormant_survivor",
+    survivorDoors: "owner_confirmation_pending",
+    rights: { status: "not_read", summary: "BatchData Terms were not read in waves 146–150; plans are annual commitments", source: "batchdata.io/pricing (comparison §10.4)" },
+    credential: { envVars: ["BATCHDATA_API_KEY"], whereObtained: "BatchData app → API tokens", howVerified: "a property lookup on an address already held; never a quicklist pull" },
+    activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: "BATCHDATA_SKIP_TRACE_COST_USD 0.07 per match; BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD 0.05 per record" },
+  },
+  peopledata: {
+    state: "dormant_survivor",
+    survivorDoors: "owner_confirmation_pending",
+    rights: { status: "standard_terms_read", summary: "cached data no longer than necessary; one end user; delete on termination (secondary source)", source: "comparison §4" },
+    credential: { envVars: ["PEOPLEDATA_API_KEY"], whereObtained: "PeopleData Labs dashboard → API keys", howVerified: "a no-match lookup (a 404 no-match is free)" },
+    activationEvidence: { contract: null, incrementalCoverage: "employment profile (F19) — no other vendor sells it", unitEconomics: "PEOPLEDATA_MATCH_COST_USD per match" },
+  },
+  tracerfy: {
+    state: "dormant_pending_rights",
+    rights: { status: "standard_terms_read", summary: "ToS §13 \"licensed for Customer's internal business use and lawful delivery to Customer's contracted end users\"; white-label \"Contact sales … with a contract\" — platform use likely, unconfirmed", source: "tracerfy.com/terms-of-service (effective 2026-01-03); tracerfy.com/faqs" },
+    credential: { envVars: ["TRACERFY_API_KEY"], whereObtained: "Tracerfy → Profile → Settings → API Key", howVerified: "the free check_balance tool and one call against the free mock sandbox (mock.tracerfy.com) — requested ONLY after written platform-use confirmation" },
+    activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: null },
+  },
+  datazapp: {
+    state: "dormant_pending_rights",
+    rights: { status: "none_stated", summary: "the Terms grant no licence in writing (resale / platform / storage are neither granted nor prohibited); API is prepaid ($1,000 minimum)", source: "datazapp.com/termsandcondition (no date); datazapp.com/apis" },
+    credential: { envVars: ["DATAZAPP_API_KEY"], whereObtained: "DataZapp sales enable the API on an emailed request (key sent as `ApiKey` in the body)", howVerified: "not requested — a written licence comes first; the $125 test deposit is a purchase" },
+    activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: null },
+  },
+  propertyradar: {
+    state: "dormant_pending_rights",
+    rights: { status: "not_read", summary: "partner / embedded product rights for tenant exposure are unverified; the methodology is used without a purchase", source: "owner-installed propertyradar-api playbook (read 2026-11-06)" },
+    credential: { envVars: ["PROPERTYRADAR_API_TOKEN"], whereObtained: "PropertyRadar → Account → API", howVerified: "a Purchase=0 preview (totalResultCount) — free, consumes no record quota" },
+    activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: null },
+  },
+  data_axle: {
+    state: "dormant_pending_rights",
+    rights: { status: "not_read", summary: "product, fields, reseller / embedded licence and quota unverified; only for a PROVEN market-level employer-event or licensed-acquisition gap (R9)", source: "data-axle.com/data-solutions/apis (directive source list)" },
+    credential: { envVars: [], whereObtained: "no product chosen — no credential name exists yet", howVerified: "not applicable until a product is chosen" },
+    activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: null },
+  },
+})

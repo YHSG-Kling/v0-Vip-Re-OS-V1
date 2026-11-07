@@ -16,7 +16,8 @@ import { createClient } from "@/lib/supabase/server"
 import { getWorkflowReport, type ReportScope } from "@/app/actions/workflow-reports"
 import WorkflowReportsClient from "./workflow-reports-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
-import { resolveEgressScope } from "@/lib/kernel/egress-scope"
+import { resolveEgressScopeForViewer } from "@/lib/kernel/egress-scope"
+import { createServiceClient } from "@/lib/supabase/service"
 import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
@@ -45,7 +46,7 @@ export default async function WorkflowReportsPage({ searchParams }: PageProps) {
 
   const role = userRow.user_type ?? userRow.platform_role ?? "agent"
   const requestedScope = (params.scope as ReportScope | undefined)
-    ?? defaultScopeForSeat({ ...userRow, brokerage_id: userRow.brokerage_id }, user.id)
+    ?? await defaultScopeForSeat({ ...userRow, brokerage_id: userRow.brokerage_id }, user.id)
 
   // Resolve agent.id (offers/sequences ref agents.id, not user_id) for agent-scoped reports
   let agentId: string | undefined
@@ -93,14 +94,18 @@ export default async function WorkflowReportsPage({ searchParams }: PageProps) {
  * default — the action (getWorkflowReport) would have admitted them to the
  * brokerage report all along.
  */
-function defaultScopeForSeat(seat: { user_type: string | null; platform_role: string | null; team_id: string | null; brokerage_id: string }, userId: string): ReportScope {
+// Wave 150 (lane 150DAC, C34): on a MULTI-LOCATION tenant the default comes from the hierarchy
+// (resolveEgressScopeForViewer — a broker without a leadership grant opens on their own work, never the whole house
+// because of a user_type); a single-office tenant keeps the ladder. Session ids only (the page's own user row).
+async function defaultScopeForSeat(seat: { user_type: string | null; platform_role: string | null; team_id: string | null; brokerage_id: string }, userId: string): Promise<ReportScope> {
   if (isPlatformStaffIdentity(seat.user_type, seat.platform_role)) return "brokerage"
-  const kind = resolveEgressScope({
+  const { scope } = await resolveEgressScopeForViewer(createServiceClient(), {
     userType: seat.user_type ?? "agent",
     userId,
     brokerageId: seat.brokerage_id,
     teamId: seat.team_id,
-  }).kind
+  })
+  const kind = scope.kind
   if (kind === "team") return "team"
   if (kind === "agent") return "agent"
   return "brokerage"

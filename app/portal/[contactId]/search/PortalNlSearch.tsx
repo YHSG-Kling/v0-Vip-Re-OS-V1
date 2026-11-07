@@ -33,6 +33,7 @@ import type { ClarifyingQuestion } from "@/lib/buyer-search/conversation-criteri
 import { voiceTurnPlan } from "@/lib/buyer-search/voice-turn"
 // Wave 148E (owner ruling 8, C18): the source labelled for what it is; a map only beside the evidence that drew it.
 import { describeListingSource, type MapEvidence } from "@/lib/buyer-search/explanation-evidence"
+import type { ConstraintAnswer } from "@/lib/buyer-search/explanation-evidence"
 import { usdOrDash } from "@/lib/format/money"
 
 // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrDash
@@ -57,6 +58,7 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
   const [heard, setHeard] = useState<Array<{ id: string; literal: string; understood: string }>>([])
   const [noteFor, setNoteFor] = useState<string | null>(null)
   const [noteText, setNoteText] = useState("")
+  const [hold, setHold] = useState<ConstraintAnswer | null>(null)
   const [voiceOk, setVoiceOk] = useState(false)
   const [listening, setListening] = useState(false)
   const [speaking, setSpeaking] = useState(false)
@@ -100,6 +102,8 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
         setNotes([t.error])
       }
       const r = await portalNaturalSearchAction({ contactId, query: said })
+      // Wave 150 (150W, canary 7): the engine's hold on the buyer's stated must-haves rides back with the page.
+      setHold(r.ok ? ((r as { constraints?: ConstraintAnswer | null }).constraints ?? null) : null)
       if (r.ok) { setResults(r.results); if (r.criteria.length) setChips(r.criteria); if (channel === "voice") speak(voiceTurnPlan({ results: r.results.map((m) => ({ label: m.address ?? m.city ?? "A home", price: m.price, fit: m.fit })), clarifications: t.ok ? t.clarifications : [], changedFields: t.ok ? t.changes.map((c) => c.field) : [] }).spoken) }
       else { setResults(null); setError(r.error) }
     })
@@ -131,7 +135,11 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
   const react = (m: PortalSearchResult, kind: "saved" | "dismissed" | "tour_requested" | "feedback", note?: string) => {
     if (!m.listingId) return
     startTransition(async () => {
-      const f = await buyerHomeFeedbackAction({ contactId, listingId: m.listingId!, kind, note })
+      // A RentCast listing's save carries its identifiers (MLS number, the MLS's name, the address) — never its facts.
+      const listingRef = m.source === "rentcast"
+        ? { mlsNumber: (m as { mlsNumber?: string | null }).mlsNumber ?? null, mlsName: (m as { mlsName?: string | null }).mlsName ?? null, address: m.address }
+        : undefined
+      const f = await buyerHomeFeedbackAction({ contactId, listingId: m.listingId!, kind, note, listingRef })
       if (!f.ok) { setNotes([f.error]); return }
       if (f.criteria.length) setChips(f.criteria)
       setProposals((prev) => [...f.proposals.filter((p) => p.id).map((p) => ({ id: p.id, field: p.field, reason: p.reason, status: p.status })), ...prev])
@@ -307,8 +315,23 @@ export function PortalNlSearch({ contactId }: { contactId: string }) {
         </div>
       )}
 
+      {hold && hold.constraints.length > 0 && (
+        <div className="rounded-md border p-2 text-xs space-y-1" aria-label="Your must-haves">
+          <p><span className="font-medium">Holding to what you asked for:</span> {hold.constraints.map((c) => c.said).join(" · ")}. Only active listings that meet {hold.constraints.length === 1 ? "it" : "all of them"} are shown.</p>
+          {hold.shortage && (
+            <>
+              <p className="font-medium">{hold.shortage.headline}</p>
+              <ul className="list-disc pl-4 space-y-0.5">{hold.shortage.lines.map((l, k) => <li key={`l${k}`}>{l}</li>)}</ul>
+              <ul className="list-disc pl-4 space-y-0.5">{hold.shortage.ideas.map((l, k) => <li key={`i${k}`}>{l}</li>)}</ul>
+              <p className="text-muted-foreground">{hold.shortage.transparency}</p>
+            </>
+          )}
+        </div>
+      )}
+
       {results !== null && (
         results.length === 0 ? (
+          hold?.shortage ? null :
           <p className="text-sm text-muted-foreground">Nothing matches that right now — try widening the price or area, and your agent will keep watching for you.</p>
         ) : (
           <ul className="space-y-2">

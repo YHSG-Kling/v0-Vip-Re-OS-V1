@@ -28,6 +28,8 @@
  * evidence kinds and cannot be claimed.
  */
 import type { CriteriaFit, FitItem } from "./explanation-generator"
+import type { LifestyleAsk } from "./conversation-criteria"
+import type { SavedHomeOrigin } from "./search-engine"
 
 export const EVIDENCE_SOURCES = [
   "listing", "public_record", "agent_remarks", "provider:rentcast", "provider:mapbox", "provider:osm", "provider:geoapify",
@@ -102,12 +104,16 @@ export interface ListingSourceLabel {
  * engine bounds them to the contact's tenant); `idx` rows are the MLS through the tenant's IDX feed; `rentcast` rows are
  * a property-data service's view — "a home RentCast shows as for sale", never "an active listing".
  */
-export function describeListingSource(source: string | null | undefined, opts: { brokerageName?: string | null } = {}): ListingSourceLabel {
+export function describeListingSource(source: string | null | undefined, opts: { brokerageName?: string | null; mlsName?: string | null } = {}): ListingSourceLabel {
   const brokerage = opts.brokerageName?.trim()
+  // Wave 150 (lane 150W, owner ruling 2026-11-06): a RentCast /listings/sale row carries the originating MLS's own name
+  // (`mlsName`) — that MLS is shown as the SOURCE of the listing and RentCast as the carrier of its facts. Still not a
+  // verified active listing (the agent confirms), and never a photo (RentCast's schema has no photo field).
+  const mls = opts.mlsName?.trim()
   if (source === "rentcast") {
     return {
       kind: "rentcast",
-      label: "From RentCast property data — not a verified active listing",
+      label: mls ? `Listed on ${mls} · facts via RentCast — not yet confirmed active by your agent` : "From RentCast property data — not a verified active listing",
       verified_active_listing: false,
       caveat: "RentCast gathers public property records and listing data from many places, so a home can show as for sale after it has gone under contract. Your agent will confirm it's really available before you plan a visit.",
       evidence_source: "provider:rentcast",
@@ -157,7 +163,11 @@ export function formatAcres(acres: number): string {
 // ONLY when the buyer said one, in their unit, with their words kept; the AI may ask what they mean and may convert
 // units, and nothing else. No platform-default bar ("1 acre is acreage", "0.25 acre is roomy") decides a fit.
 
-export const LOT_UNITS = ["acres", "sqft"] as const
+// Wave 150 (lane 150W, §6 one vocabulary): the buyer's unit is spelled EXACTLY as a listing states its own lot
+// (`listings.lot_size_unit` CHECK: 'acres' | 'square_feet', m954), so the buyer's minimum and the home's lot are read in
+// one vocabulary and a scorer can never miss a match across two spellings. The pre-150 spelling 'sqft' is read once on
+// the way in (readLotMinimum) — 0 stored rows carried it live (2026-11-06); the reader only guards a stale session.
+export const LOT_UNITS = ["acres", "square_feet"] as const
 export type LotUnit = (typeof LOT_UNITS)[number]
 
 export interface LotMinimum {
@@ -177,6 +187,13 @@ export function validLotMinimum(v: unknown): v is LotMinimum {
   return !!m && m.stated_by === "buyer" && typeof m.value === "number" && Number.isFinite(m.value) && m.value > 0
     && (LOT_UNITS as readonly string[]).includes(String(m.unit)) && typeof m.literal === "string" && m.literal.trim().length > 0
     && (m.confidence === "high" || m.confidence === "low")
+}
+
+/** PURE. A stored minimum read in the one vocabulary (the retired 'sqft' spelling becomes 'square_feet'); null if invalid. */
+export function readLotMinimum(v: unknown): LotMinimum | null {
+  const m = v as (Omit<Partial<LotMinimum>, "unit"> & { unit?: string }) | null | undefined
+  const fixed = m && m.unit === "sqft" ? { ...m, unit: "square_feet" } : m
+  return validLotMinimum(fixed) ? fixed : null
 }
 
 /** PURE. The minimum in acres (conversion is allowed; inventing is not). */
@@ -393,4 +410,159 @@ export function warmVoiceRubric(text: string, opts: { agentName?: string | null 
   if (words < 25) failures.push("too thin to be helpful")
   if (words > 190) failures.push("too long for a quick read")
   return { pass: failures.length === 0, failures }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STATED HARD CONSTRAINTS (wave 150, lane 150W, canary 7; folded in from lib/buyer-search/buyer-constraints.ts by the
+// integrator beside the lot-minimum evidence it is built on — test:proxy-graph-budget; the search engine is its caller). Original module header follows.
+// /**
+//  * lib/buyer-search/buyer-constraints.ts — THE BUYER'S OWN MUST-HAVES, HELD (wave 150, lane 150W — directive canary 7,
+//  * contracts C27 + C18).
+//  *
+//  * Directive canary 7: "One buyer requesting a 2-acre minimum and a 25-minute commute receives only licensed active
+//  * options with the stated constraints, or a helpful shortage explanation."
+//  *
+//  * A HARD constraint exists only when the BUYER stated a number for it (never a platform bar — C27):
+//  *   · lot minimum — `LifestyleAsk.lotMinimum` (stated_by buyer, in the buyer's own unit, the `lot_size_unit` vocabulary)
+//  *   · commute     — a commute ask with a named place AND a stated maximum (`maxMinutes`)
+//  * An option is OFFERED only when (1) it comes from a licensed source and is reported ACTIVE — the tenant's own listing,
+//  * the tenant's IDX/MLS feed, or a RentCast /listings/sale row whose status is Active (labelled, never photographed); a
+//  * home a buyer pasted from a link is their own find, kept in their saved homes and never offered back as a match — and
+//  * (2) the explanation already PROVED each stated constraint met (a C18 `match` carrying its evidence figures). A miss is
+//  * left out; an UNKNOWN (no lot size published, a drive not measured yet) is left out too and COUNTED, so the buyer hears
+//  * how many homes could not be judged rather than being shown a guess.
+//  *
+//  * When nothing qualifies, the answer is a SHORTAGE EXPLANATION built only from the measured figures: how many active
+//  * homes were looked at, how many failed which must-have, the nearest misses, and what would change if the buyer chose
+//  * to bend one — the buyer decides; we never relax a constraint for them. Care-first, plain, no pressure (R10).
+//  */
+
+export type ConstraintField = "lifestyle:outdoor_space" | "lifestyle:commute"
+
+export interface StatedConstraint {
+  field: ConstraintField
+  /** The bar said back in the buyer's own words/unit ("2 acres", "25 minutes to Fort Hood"). */
+  said: string
+  /** The bar in the unit the evidence is measured in (acres / minutes). */
+  bar: number
+}
+
+/** PURE. The buyer's HARD constraints — only what they stated with a number. */
+export function statedHardConstraints(lifestyle: readonly LifestyleAsk[] | null | undefined): StatedConstraint[] {
+  const out: StatedConstraint[] = []
+  for (const ask of lifestyle ?? []) {
+    if (ask.kind === "outdoor_space" && ask.direction !== "less") {
+      const min = readLotMinimum(ask.lotMinimum)
+      if (min && !out.some((c) => c.field === "lifestyle:outdoor_space")) out.push({ field: "lifestyle:outdoor_space", said: formatLotMinimum(min), bar: lotMinimumAcres(min) })
+    }
+    if (ask.kind === "commute" && ask.target && typeof ask.maxMinutes === "number" && ask.maxMinutes > 0 && !out.some((c) => c.field === "lifestyle:commute")) {
+      out.push({ field: "lifestyle:commute", said: `${ask.maxMinutes} minutes to ${ask.target}`, bar: ask.maxMinutes })
+    }
+  }
+  return out
+}
+
+/** Where a candidate came from — THE saved-home origin vocabulary (lib/portal/saved-homes.ts SAVED_HOME_ORIGINS; §6). */
+export type CandidateOrigin = SavedHomeOrigin
+
+export interface ConstraintCandidate {
+  ref: string
+  label: string
+  origin: CandidateOrigin
+  /** The status as the source reports it ("active", "Active", "pending" …); null = unknown, never upgraded. */
+  status: string | null
+  fit: CriteriaFit | null
+}
+
+/** PURE. Licensed AND reported active. A buyer's pasted link and a manual row are never offered as matches. */
+function isLicensedActive(c: Pick<ConstraintCandidate, "origin" | "status">): boolean {
+  if (c.origin !== "tenant_listing" && c.origin !== "idx_mls" && c.origin !== "rentcast_listing") return false
+  return String(c.status ?? "").trim().toLowerCase() === "active"
+}
+
+type Verdict = { state: "met" | "missed" | "unknown"; figure: number | null }
+
+function verdictOf(fit: CriteriaFit | null, field: ConstraintField): Verdict {
+  const fig = (i: FitItem | undefined) => {
+    const f = i?.evidence?.figures
+    if (!f) return null
+    const v = field === "lifestyle:commute" ? f.minutes : f.acres
+    return typeof v === "number" && Number.isFinite(v) ? v : null
+  }
+  const m = fit?.matches.find((i) => i.field === field)
+  if (m) return { state: fig(m) != null ? "met" : "unknown", figure: fig(m) } // a match with no measured figure is not proof
+  const x = fit?.misses.find((i) => i.field === field)
+  if (x) return { state: "missed", figure: fig(x) }
+  const f = [...(fit?.unknowns ?? []), ...(fit?.facts ?? [])].find((i) => i.field === field)
+  return { state: "unknown", figure: fig(f) }
+}
+
+export interface ConstraintAnswer {
+  constraints: StatedConstraint[]
+  /** Refs of the options that meet every stated constraint, licensed and active — the only ones shown. */
+  options: string[]
+  counts: { looked: number; notLicensedActive: number; meetsAll: number; missed: Record<ConstraintField, number>; unknown: Record<ConstraintField, number> }
+  /** null when at least one option qualifies. */
+  shortage: { headline: string; lines: string[]; ideas: string[]; transparency: string } | null
+}
+
+const NOUN: Record<ConstraintField, string> = { "lifestyle:outdoor_space": "land", "lifestyle:commute": "drive" }
+
+/**
+ * PURE. Hold the buyer's stated must-haves over a page of candidates. With no stated constraint every licensed active
+ * candidate passes (nothing to hold) and `shortage` stays null.
+ */
+export function answerStatedConstraints(candidates: readonly ConstraintCandidate[], constraints: readonly StatedConstraint[]): ConstraintAnswer {
+  const fields = constraints.map((c) => c.field)
+  const missed = { "lifestyle:outdoor_space": 0, "lifestyle:commute": 0 } as Record<ConstraintField, number>
+  const unknown = { "lifestyle:outdoor_space": 0, "lifestyle:commute": 0 } as Record<ConstraintField, number>
+  const active = candidates.filter(isLicensedActive)
+  const options: string[] = []
+  // Nearest misses: a home that meets every OTHER constraint and misses this one by the smallest margin.
+  const nearest: Partial<Record<ConstraintField, { figure: number; homes: number }>> = {}
+  for (const c of active) {
+    const vs = fields.map((f) => [f, verdictOf(c.fit, f)] as const)
+    for (const [f, v] of vs) { if (v.state === "missed") missed[f]++; if (v.state === "unknown") unknown[f]++ }
+    if (vs.every(([, v]) => v.state === "met")) { options.push(c.ref); continue }
+    const failing = vs.filter(([, v]) => v.state !== "met")
+    if (failing.length === 1 && failing[0][1].state === "missed" && failing[0][1].figure != null) {
+      const [f, v] = failing[0]
+      const prev = nearest[f]
+      const fig = v.figure!
+      const closer = !prev || (f === "lifestyle:commute" ? fig < prev.figure : fig > prev.figure)
+      nearest[f] = closer ? { figure: fig, homes: 1 } : prev && prev.figure === fig ? { figure: fig, homes: prev.homes + 1 } : prev
+    }
+  }
+  const counts = { looked: candidates.length, notLicensedActive: candidates.length - active.length, meetsAll: options.length, missed, unknown }
+  if (fields.length === 0 || options.length > 0) return { constraints: [...constraints], options, counts, shortage: null }
+
+  const said = constraints.map((c) => c.said)
+  const both = said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said[said.length - 1]}` : said[0]
+  const lines: string[] = []
+  lines.push(active.length === 0
+    ? "I didn't see any active listings in this search to check against what you asked for."
+    : `I checked ${active.length} active ${active.length === 1 ? "home" : "homes"} against ${both}.`)
+  for (const c of constraints) {
+    if (missed[c.field] > 0) lines.push(`${missed[c.field]} ${missed[c.field] === 1 ? "was" : "were"} measured and came up short on the ${NOUN[c.field]} (${c.said}).`)
+    if (unknown[c.field] > 0) lines.push(c.field === "lifestyle:commute"
+      ? `${unknown[c.field]} I couldn't measure the drive for yet — your agent can check those for you.`
+      : `${unknown[c.field]} don't publish a lot size, so I can't tell — your agent can find out.`)
+  }
+  const ideas: string[] = []
+  const lot = constraints.find((c) => c.field === "lifestyle:outdoor_space")
+  const drive = constraints.find((c) => c.field === "lifestyle:commute")
+  const nd = nearest["lifestyle:commute"]
+  if (drive && nd) ideas.push(`If about ${Math.ceil(nd.figure)} minutes could work for you, ${nd.homes} ${nd.homes === 1 ? "home already has" : "homes already have"} the ${lot ? lot.said : "space"} you want.`)
+  const nl = nearest["lifestyle:outdoor_space"]
+  if (lot && nl) ideas.push(`If ${formatAcres(nl.figure)} could feel like enough, ${nl.homes} ${nl.homes === 1 ? "home is" : "homes are"} within your ${drive ? drive.said : "range"}.`)
+  ideas.push("Or keep both exactly as they are — I'll keep watching and let you know the moment a home fits.")
+  return {
+    constraints: [...constraints], options, counts,
+    shortage: {
+      headline: `Nothing active fits ${both} right now — here's what I found.`,
+      lines,
+      ideas,
+      transparency: "This comes from the listing data and measured drive times; homes that don't publish a lot size, or that I couldn't measure yet, are counted rather than guessed. Your choices stay yours — I won't loosen what you asked for.",
+    },
+  }
 }

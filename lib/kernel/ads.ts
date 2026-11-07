@@ -1403,6 +1403,13 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
         externalAudienceId = res.externalAudienceId ?? externalAudienceId
         errorMessage = res.error ?? null
         providerResponse = { type: "custom", platform, audience_type: audienceType, ...res }
+        // WAVE 150 (lane 150QTV — owner ruling R4, "the provider's acknowledgment … read back"): right after an accepted upload,
+        // the platform's OWN view of the audience (Meta operation / delivery status + approximate size) is read and recorded
+        // verbatim on this run. A refused read is recorded as such — never as an acknowledgment.
+        if (res.ok && externalAudienceId && connector.fetchAudienceStatus) {
+          const ack = await connector.fetchAudienceStatus({ externalAudienceId, cred }).catch((e: unknown) => ({ ok: false as const, reason: e instanceof Error ? e.message : String(e) }))
+          providerResponse = { ...providerResponse, provider_ack: ack.ok ? { state: ack.state, delivery: ack.delivery, approx_size: ack.approxSize, read_at: new Date().toISOString() } : { read_error: ack.reason, read_at: new Date().toISOString() } }
+        }
       }
     }
 

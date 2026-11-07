@@ -38,6 +38,9 @@ import type { PlayableVideo } from "@/lib/video/playable-video"
 // implementations are still reached by dynamic import inside materialize.
 import type { RenderSectionsResult } from "./section-render"
 import type { NarrateResult } from "./section-narration-orchestrator"
+import { arbitrateSectionDelivery } from "@/lib/ai-isa/followup-arbiter"
+// The delivery arbiter lives beside this file; re-exported so its proof keeps one import root.
+export { arbitrateSectionDelivery } from "@/lib/ai-isa/followup-arbiter"
 
 export interface SectionSpec { key: string; title: string; body: Record<string, unknown> }
 
@@ -53,16 +56,12 @@ export const SECTION_SEQUENCE: SectionSpec[] = [
   { key: "closing",     title: "Let's Talk Strategy",      body: { kind: "closing" } },
 ]
 
-/**
- * The drip window used when a presentation carries NO appointment_at.
- *
- * Matched to the minimum lead time a listing appointment is booked with, so the
- * fallback schedule looks like a real one rather than compressing the seller's
- * whole sequence into a few days. planPresentationSections spreads across
- * whatever window it is given, so this is a default, never an assumption: a
- * presentation whose appointment is known always uses the real date.
- */
-const DEFAULT_DRIP_WINDOW_DAYS = 7
+// TOMBSTONE (wave 150, lane 150SZ — owner ruling "no fixed timetables anywhere"; wave-149 §4 carried C-4): the
+// 7-day fallback drip window (DEFAULT_DRIP_WINDOW_DAYS) used when a presentation has NO appointment_at is gone. Its
+// survivor is the arbiter: with no appointment every section is planned as due now (planPresentationSections given
+// appointmentAt = now), and each section after the first asks the ONE arbiter at delivery whether to send it now or
+// hold it a bounded time — deliverDueSections → arbitrateSectionDelivery (below), arbitrateFollowUp in
+// lib/ai-isa/followup-arbiter.ts. A known appointment still bounds the plan (the seller's own date is a service date).
 
 export interface PlanInput {
   presentationId: string
@@ -474,7 +473,8 @@ export async function materializePresentationSections(
 
   const brokerageId = presRow.brokerage_id as string
 
-  const appointmentAt = pres.appointment_at ?? new Date(Date.now() + DEFAULT_DRIP_WINDOW_DAYS * 86_400_000).toISOString()
+  // No appointment on file → no invented window: every section is due now and the arbiter spaces them at delivery.
+  const appointmentAt = pres.appointment_at ?? new Date().toISOString()
   const planned = planPresentationSections({
     presentationId,
     brokerageId,
@@ -619,7 +619,7 @@ export async function attachChapterReelsToSections(
   // the SAME now→appointment window. One timetable, no second scheduler.
   const overflow = plan.filter((a) => a.isNewSection)
   if (overflow.length) {
-    const appointmentAt = pres.appointment_at ?? new Date(Date.now() + DEFAULT_DRIP_WINDOW_DAYS * 86_400_000).toISOString()
+    const appointmentAt = pres.appointment_at ?? new Date().toISOString()
     const planned = planPresentationSections({
       presentationId,
       brokerageId: pres.brokerage_id,
@@ -746,6 +746,8 @@ export interface DeliverResult {
   emailsFailed:  number
   /** Due sections held back because their reel is still rendering. */
   waitingOnReel: number
+  /** Due sections the arbiter chose to hold a bounded time (rescheduled, never dropped). */
+  heldByArbiter: number
   /**
    * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
    *
@@ -829,7 +831,7 @@ interface PresentationContext {
  * query, not an absence.
  */
 export async function deliverDueSections(
-  opts: { now?: Date; limit?: number } = {},
+  opts: { now?: Date; limit?: number; decide?: import("@/lib/ai-isa/followup-arbiter").ArbiterDecide } = {},
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<DeliverResult> {
   const supabase = client ?? createServiceClient()
@@ -837,7 +839,7 @@ export async function deliverDueSections(
   const nowIso = now.toISOString()
   const result: DeliverResult = {
     delivered: 0, considered: 0, portalPosted: 0, emailsSent: 0, emailsFailed: 0,
-    waitingOnReel: 0, lastDeliveredAt: null, stalledPresentations: 0,
+    waitingOnReel: 0, heldByArbiter: 0, lastDeliveredAt: null, stalledPresentations: 0,
   }
 
   // GATE 2: a section is delivered only after a human RELEASED its presentation
@@ -845,7 +847,7 @@ export async function deliverDueSections(
   // keeps held (un-reviewed) presentations out of the drip entirely.
   const { data: due, error: dueErr } = await supabase
     .from("presentation_sections")
-    .select("id, presentation_id, brokerage_id, contact_id, title, section_key, section_order, channel, render_id, body, scheduled_for, listing_presentations!inner(delivery_approved_at)")
+    .select("id, presentation_id, brokerage_id, contact_id, title, section_key, section_order, channel, render_id, body, scheduled_for, listing_presentations!inner(delivery_approved_at, appointment_at)")
     .eq("status", "scheduled")
     .lte("scheduled_for", nowIso)
     .not("listing_presentations.delivery_approved_at", "is", null)
@@ -863,6 +865,19 @@ export async function deliverDueSections(
   result.stalledPresentations = stall.stalledPresentations
 
   const presCache = new Map<string, PresentationContext | null>()
+
+  // What the arbiter reads: when each presentation's previous part went out (a refused read is said and the arbiter is asked
+  // without it — never read as "nothing was sent"). One model budget per tick (the platform's per-run ceiling).
+  const lastDeliveryByPresentation = new Map<string, string>()
+  const presIds = [...new Set(rows.map((r) => r.presentation_id))]
+  if (presIds.length) {
+    const { data: prior, error: priorErr } = await supabase.from("presentation_sections").select("presentation_id, delivered_at").in("presentation_id", presIds).not("delivered_at", "is", null)
+    if (priorErr) console.error(`[section-drip] previous deliveries unreadable (${priorErr.message}) — the arbiter decides without them`)
+    for (const p of (prior ?? []) as Array<{ presentation_id: string; delivered_at: string | null }>) {
+      if (p.delivered_at && (lastDeliveryByPresentation.get(p.presentation_id) ?? "") < p.delivered_at) lastDeliveryByPresentation.set(p.presentation_id, p.delivered_at)
+    }
+  }
+  const arbiterBudget = { remaining: (await import("@/lib/ai-isa/followup-policy")).platformFollowupPolicy().arbiter.maxDecisionsPerRun }
 
   for (const s of rows) {
     const channel = s.channel ?? "both"
@@ -884,6 +899,18 @@ export async function deliverDueSections(
       }
     }
 
+    // THE ARBITER decides whether this part goes now or waits a bounded time (the plan's date is only its proposal).
+    // A hold RESCHEDULES the row (still 'scheduled'), counted and read back — never a silent skip.
+    const presJoin = (s as unknown as { listing_presentations?: { appointment_at?: string | null } | Array<{ appointment_at?: string | null }> }).listing_presentations
+    const appointmentAt = (Array.isArray(presJoin) ? presJoin[0]?.appointment_at : presJoin?.appointment_at) ?? null
+    const timing = await arbitrateSectionDelivery(supabase, s, { now, appointmentAt, lastDeliveredAt: lastDeliveryByPresentation.get(s.presentation_id) ?? null, sectionCount: null }, { decide: opts.decide, budget: arbiterBudget })
+    if (!timing.deliver && timing.holdUntil) {
+      const { data: held, error: holdErr } = await supabase.from("presentation_sections").update({ scheduled_for: timing.holdUntil }).eq("id", s.id).eq("status", "scheduled").select("id")
+      if (holdErr || !Array.isArray(held) || held.length !== 1) console.error(`[section-drip] the arbiter held section ${s.id} but the reschedule did not land (${holdErr?.message ?? "matched no row"}) — it stays due and is asked again next tick`)
+      else result.heldByArbiter++
+      continue
+    }
+
     // Claim the row (scheduled → delivered) so an overlapping tick can't double-send.
     const { data: claimed, error: claimErr } = await supabase
       .from("presentation_sections")
@@ -895,6 +922,8 @@ export async function deliverDueSections(
     if (claimErr) { console.error(`[section-drip] could not claim section ${s.id}: ${claimErr.message}`); continue }
     if (!claimed) continue
     result.delivered++
+    // The next due part of the SAME presentation in this tick reads this delivery (the arbiter's fatigue fact and the floor).
+    lastDeliveryByPresentation.set(s.presentation_id, new Date().toISOString())
 
     if (wantsPortal && s.contact_id) {
       try {

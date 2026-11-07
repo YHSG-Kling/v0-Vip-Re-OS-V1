@@ -13,6 +13,10 @@ import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
 import { FitBadge } from "@/app/components/portal/FitBadge"
 import { SavedSearchControls } from "./SavedSearchControls"
 import { ShareWithFamilyCard } from "./ShareWithFamilyCard"
+import { SaveHomeFromLinkCard } from "./SaveHomeFromLinkCard"
+// Wave 150 (lane 150W, owner R9 + ruling 2026-11-06): every saved home shows WHERE it came from, and a photo only from a
+// lawful source (the tenant's own listing media or its IDX/MLS feed) — never RentCast, never a pasted link.
+import { licensedPhotoFor, ownerUploadMediaIds, savedHomeSourceLine } from "@/lib/portal/saved-homes"
 // Personas that support family/collaborative search: ONE list, lib/portal/persona-config.ts offersFamilySearch
 // (wave 148, lane 148K — the local const that lived here merged onto it; the settings page asks the same predicate).
 import { DEFAULT_PORTAL_PERSONA, offersFamilySearch } from "@/lib/portal/persona-config"
@@ -61,7 +65,7 @@ export default async function SearchPage({
     // `property_interests` which holds search criteria).
     supabase
       .from("saved_properties")
-      .select("id, listing_id, external_property_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons")
+      .select("id, listing_id, external_property_id, source, source_url, mls_number, mls_name, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons, listings(photos)")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
@@ -72,6 +76,19 @@ export default async function SearchPage({
   const preferences = preferencesResult.data
   const alerts = alertsResult.data ?? []
   const savedRows = savedResult.data ?? []
+  // supabase-js RESOLVES a refusal: an unreadable list must not read as "No saved properties yet" (CLAUDE.md §3).
+  if (savedResult.error) console.error("[portal-search] saved homes read refused:", savedResult.error.message)
+  const savedUnreadable = !!savedResult.error
+
+  // 150XY's display rule: an owner-uploaded photo reaches a buyer-facing surface only once its listing_media row is
+  // APPROVED. Unreadable approvals → an empty set → no owner photo (fail closed), never an unapproved one.
+  const uploadIds = [...new Set(savedRows.flatMap((s: any) => ownerUploadMediaIds(s.listings?.photos)))]
+  const approvedMediaIds = new Set<string>()
+  if (uploadIds.length > 0) {
+    const { data: approved, error: approvedError } = await supabase.from("listing_media").select("id").in("id", uploadIds).eq("is_approved", true)
+    if (approvedError) console.error("[portal-search] listing photo approvals read refused:", approvedError.message)
+    for (const m of (approved ?? []) as Array<{ id: string }>) approvedMediaIds.add(m.id)
+  }
 
   const savedProperties     = savedRows.filter((s: any) => !s.dismissed)
   const dismissedProperties = savedRows.filter((s: any) => s.dismissed)
@@ -337,21 +354,25 @@ export default async function SearchPage({
           <CardContent>
             {savedProperties.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">
-                No saved properties yet
+                {savedUnreadable ? "Your saved homes couldn't be loaded just now — please refresh in a moment." : "No saved properties yet"}
               </p>
             ) : (
               <div className="space-y-2">
-                {savedProperties.slice(0, 5).map((item: any) => (
+                {savedProperties.slice(0, 5).map((item: any) => {
+                  const photo = licensedPhotoFor(item, item.listings?.photos, approvedMediaIds)
+                  return (
                   <Link
                     key={item.id}
-                    href={`/portal/${contactId}/properties/${item.listing_id}`}
+                    // A market / linked save has no listings row to open — its card stays on this page (no /properties/null).
+                    href={item.listing_id ? `/portal/${contactId}/properties/${item.listing_id}` : `/portal/${contactId}/search`}
                     className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors"
                   >
                     <div className="h-10 w-10 rounded bg-muted flex items-center justify-center shrink-0">
-                      {item.primary_photo_url ? (
+                      {photo ? (
                         <img
-                          src={item.primary_photo_url}
+                          src={photo.url}
                           alt=""
+                          title={photo.attribution}
                           className="h-full w-full object-cover rounded"
                         />
                       ) : (
@@ -371,9 +392,11 @@ export default async function SearchPage({
                       {Array.isArray(item.match_reasons) && item.match_reasons[0] && (
                         <p className="text-[11px] text-teal-700 italic truncate">✨ {item.match_reasons[0]}</p>
                       )}
+                      <p className="text-[11px] text-muted-foreground truncate">{savedHomeSourceLine(item)}</p>
                     </div>
                   </Link>
-                ))}
+                  )
+                })}
                 {savedProperties.length > 5 && (
                   <Button variant="ghost" className="w-full" asChild>
                     <Link href={`/portal/${contactId}/properties`}>
@@ -424,6 +447,9 @@ export default async function SearchPage({
           </CardContent>
         </Card>
       </div>
+
+      {/* Wave 150 (lane 150W): save a home found anywhere by pasting its link (origin buyer_url). */}
+      <SaveHomeFromLinkCard contactId={contactId} />
 
       {/* C28 (wave 149, lane 149B — owner ruling 6): EVERY buyer can share the homes they saved with a family member for
           their opinion. Not persona-gated: the persona decides the layout (the fuller family-consensus board below), never

@@ -77,7 +77,6 @@ import {
 import type { TargetingConfig } from "@/lib/ads/ad-creator-types"
 import {
   createAudience,
-  syncAudience,
   approveAudience,
   deleteAudience,
   getAudienceSyncHistory,
@@ -420,7 +419,6 @@ export function AdsDashboardClient({
     sourceRule: SourceRule
     audienceType: AudienceType
   } | null>(null)
-  const [isSyncing, setIsSyncing] = useState<string | null>(null)
   // Edit-before-launch (see handleSaveCampaignEdits).
   const [editingCampaign, setEditingCampaign] = useState<AdCampaign | null>(null)
   const [editCampaignForm, setEditCampaignForm] = useState({
@@ -760,16 +758,10 @@ export function AdsDashboardClient({
     setIsCreateAudienceOpen(true)
   }
 
-  const handleSyncAudience = async (audienceId: string) => {
-    setIsSyncing(audienceId)
-    const result = await syncAudience(userId, { brokerageId, agentId: userId, audienceId })
-    if (result.success) {
-      router.refresh()
-    } else {
-      toast.error(result.error || "Operation failed")
-    }
-    setIsSyncing(null)
-  }
+  // TOMBSTONE (wave 150, lane 150QTV — owner ruling R4, 2026-11-06: "no extra final 'Sync' button"): handleSyncAudience and the
+  // "Sync Now" button stood here. The upload now runs automatically on approval (lib/ads/facebook-audience-sync.ts
+  // approveAudience → the kernel syncAudience) and eligibility changes / revocations re-sync through the existing unattended door
+  // (app/api/cron/sync-facebook-audiences, evidence-selected by lib/ads/persona-audience.ts audiencesNeedingResync).
 
   // Resolve WHO this audience actually contains — without uploading anything.
   // Runs the same kernel resolution the sync runs, so what it reports is what
@@ -789,6 +781,9 @@ export function AdsDashboardClient({
     setIsLoading(true)
     const result = await approveAudience(userId, audienceId, brokerageId)
     if (result.success) {
+      // R4: approval uploads at once — say what the provider answered, in words.
+      if (result.synced) toast.success("Approved — the audience is uploading to the ad platform now.")
+      else if (result.syncError) toast.error(`Approved, but the upload did not go through yet: ${result.syncError}. It will try again on its own.`)
       router.refresh()
     } else {
       toast.error(result.error || "Operation failed")
@@ -1489,20 +1484,10 @@ export function AdsDashboardClient({
                                 Approve
                               </Button>
                             )}
-                            {audience.status === "approved" && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleSyncAudience(audience.id)}
-                                disabled={isSyncing === audience.id}
-                              >
-                                {isSyncing === audience.id ? (
-                                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                                ) : (
-                                  <RefreshCw className="h-4 w-4 mr-1" />
-                                )}
-                                Sync Now
-                              </Button>
+                            {(audience.status === "approved" || audience.status === "synced") && (
+                              <span className="text-xs text-gray-700" aria-live="polite">
+                                Syncs on its own — new eligible people join and anyone who opts out leaves
+                              </span>
                             )}
                             {/* BEFORE the sync leaves, not after. This is an
                                 egress path with no undo, so the operator gets the

@@ -3,7 +3,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
 import { isTenantScopeRefusal } from "@/lib/kernel/tenant-scope"
-import { resolveEgressScope, describeScope } from "@/lib/kernel/egress-scope"
+import { resolveEgressScope, resolveEgressScopeForViewer, describeScope } from "@/lib/kernel/egress-scope"
+import Link from "next/link"
 import { computeManagerTrust } from "@/lib/kernel/outcome-learning"
 import { loadDealPlayLift } from "@/lib/kernel/deal-play-outcomes"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -75,6 +76,14 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // tenancy has. A solo agent IS their own broker; a team lead governs a team
   // signup. Only brokerage/multi_location tiers require the broker/admin seat.
   let mayEnter = isAdminOrBroker({ user_type: userType })
+  // WAVE 150 (lane 150DAC, C34): on a multi-location tenant the OFFICE head / team lead enters by the hierarchy
+  // (a leadership grant or the managing-broker / team-lead fact), whatever their user_type — resolved once here and
+  // reused below as the base scope.
+  let viewerScope: Awaited<ReturnType<typeof resolveEgressScopeForViewer>> | null = null
+  if (!isSuperadmin && brokerageId) {
+    viewerScope = await resolveEgressScopeForViewer(createServiceClient(), { userType, userId: user.id, brokerageId })
+    if (!mayEnter && viewerScope.multiLocation && viewerScope.scope.kind !== "agent") mayEnter = true
+  }
   if (!mayEnter && brokerageId) {
     const svcGate = createServiceClient()
     const { data: brk } = await svcGate.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
@@ -103,23 +112,52 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     locationId = (agentRow as any)?.location_id ?? null
     teamId = (agentRow as any)?.team_id ?? null
   }
-  const baseScope = !isSuperadmin && brokerageId
-    ? resolveEgressScope({ userType, userId: user.id, brokerageId, locationId, teamId })
-    : undefined
+  // WAVE 150 (lane 150DAC — lane 150C Outside-lane #4): on a MULTI-LOCATION tenant the scope is the C34 hierarchy
+  // (resolveViewerHierarchy: seesAllLocations = scope.aggregate, otherwise the offices / teams the viewer leads) —
+  // users.user_type never widens a multi-location row. A single-office tenant keeps the ladder. The ids are the
+  // SESSION's (gate passed above); the reader fails closed to own work and says why.
+  let scopeRefusal: string | null = null
+  let multiLocation = false
+  let baseScope: ReturnType<typeof resolveEgressScope> | undefined
+  if (viewerScope && brokerageId) {
+    // Single-office tenant: the ladder with the agent row's office / team (byte-identical to before). Multi-location
+    // or a refused read: the reader's own answer (hierarchy, or own work with the reason).
+    baseScope = viewerScope.multiLocation || viewerScope.refusal
+      ? viewerScope.scope
+      : resolveEgressScope({ userType, userId: user.id, brokerageId, locationId, teamId })
+    scopeRefusal = viewerScope.refusal
+    multiLocation = viewerScope.multiLocation
+  }
 
   // A brokerage-wide viewer may DRILL DOWN to one office/team/agent via ?view=. A narrower viewer
   // (location admin / team lead / agent) cannot widen scope — their base scope caps what they see.
-  const canSwitch = !!brokerageId && (!baseScope || baseScope.kind === "brokerage")
+  // WAVE 150 (lane 150DAC, C34): a hierarchy head of SEVERAL offices / teams may drill into ONE of their own
+  // (the options are only their own ids, so a URL can never widen past the base scope).
+  const ownOffices = baseScope?.kind === "location" ? (baseScope.locationIds ?? []) : []
+  const ownTeams = baseScope?.kind === "location" || baseScope?.kind === "team" ? (baseScope.teamIds ?? []) : []
+  const narrowSwitch = ownOffices.length + ownTeams.length > 1
+  const canSwitch = !!brokerageId && (!baseScope || baseScope.kind === "brokerage" || narrowSwitch)
   let effectiveScope = baseScope
   let currentView = "all"
-  const scopeOptions: import("./scope-switcher").ScopeOption[] = [{ value: "all", label: "Whole brokerage" }]
+  const scopeOptions: import("./scope-switcher").ScopeOption[] = [{ value: "all", label: narrowSwitch ? `All of ${baseScope ? describeScope(baseScope).toLowerCase() : "my scope"}` : "Whole brokerage" }]
 
   if (canSwitch && brokerageId) {
-    const [{ data: locs }, { data: teams }, { data: agentsList }] = await Promise.all([
-      supabase.from("locations").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
-      supabase.from("teams").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
-      supabase.from("agents").select("user_id, users(first_name, last_name)").eq("brokerage_id", brokerageId).not("user_id", "is", null).limit(200),
+    const NONE = "00000000-0000-0000-0000-000000000000"
+    const [{ data: locs, error: locErr }, { data: teams, error: teamErr }, { data: agentsList, error: agentErr }] = await Promise.all([
+      narrowSwitch && ownOffices.length === 0
+        ? Promise.resolve({ data: [] as any[], error: null })
+        : (narrowSwitch
+            ? supabase.from("locations").select("id, name").eq("brokerage_id", brokerageId).in("id", ownOffices.length ? ownOffices : [NONE])
+            : supabase.from("locations").select("id, name").eq("brokerage_id", brokerageId)).order("name").limit(100),
+      narrowSwitch
+        ? supabase.from("teams").select("id, name").eq("brokerage_id", brokerageId).in("id", ownTeams.length ? ownTeams : [NONE]).order("name").limit(100)
+        : supabase.from("teams").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
+      narrowSwitch
+        ? Promise.resolve({ data: [] as any[], error: null })
+        : supabase.from("agents").select("user_id, users(first_name, last_name)").eq("brokerage_id", brokerageId).not("user_id", "is", null).limit(200),
     ])
+    const optErr = locErr ?? teamErr ?? agentErr
+    if (optErr) console.error(`[command-center] drill-down options read refused — fewer options shown: ${optErr.message}`)
     for (const l of (locs ?? []) as any[]) scopeOptions.push({ value: `location:${l.id}`, label: `Office — ${l.name}` })
     for (const t of (teams ?? []) as any[]) scopeOptions.push({ value: `team:${t.id}`, label: `Team — ${t.name}` })
     for (const a of (agentsList ?? []) as any[]) {
@@ -415,6 +453,23 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
           </span>
           <span className="text-muted-foreground"> · {lift.why}</span>
         </div>
+      )}
+      {/* OFFICES (wave 150, lane 150DAC — C34). A multi-location viewer sees WHICH offices this view covers and why
+          (the hierarchy's own basis), and the door to Settings → Offices (lane 150C's surface — linked, never copied).
+          A scope the reader could not resolve is said in words, never shown as brokerage-wide. */}
+      {brokerageId && !isSuperadmin && (multiLocation || scopeRefusal || scopeOptions.some((o) => o.value.startsWith("location:"))) && (
+        <section aria-label="Offices in this view" className="mx-6 mt-4 rounded-lg border p-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p>
+              <span className="font-medium">Showing: {scopeLabel}</span>
+              {baseScope?.basis?.length ? <span className="text-muted-foreground"> — {baseScope.basis.slice(0, 2).join("; ")}</span> : null}
+            </p>
+            <Link href="/dashboard/settings/offices" className="inline-flex min-h-9 items-center rounded-md border px-3 font-medium underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">
+              Offices and access
+            </Link>
+          </div>
+          {scopeRefusal && <p role="status" className="mt-1 text-red-700">{scopeRefusal}</p>}
+        </section>
       )}
       <CommandCenterClient
         data={data}

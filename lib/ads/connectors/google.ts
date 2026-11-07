@@ -106,10 +106,15 @@ export const googleConnector: AdConnector = {
         ...(mb.email_sha256 ? [{ hashedEmail: mb.email_sha256 }] : []),
         ...(mb.phone_sha256 ? [{ hashedPhoneNumber: mb.phone_sha256 }] : []),
       ] } }))
-      const add = await adsPost(cred, `/${jobResource}:addOperations`, { operations, enablePartialFailure: true })
+      // WAVE 150 (lane 150QTV — owner ruling R4, "revocations sync the same way"): an EXISTING Customer Match list is REPLACED —
+      // Google's OfflineUserDataJobOperation `removeAll` (first operation of the job) empties the list before the resolved,
+      // consented, unsuppressed set is added, so a person who opted out leaves on the next sync. Documented field, not yet read
+      // back from a live account by this OS (WAITING_EXTERNAL: a connected Google Ads account with Customer Match).
+      const replacing = !!args.externalAudienceId
+      const add = await adsPost(cred, `/${jobResource}:addOperations`, { operations: replacing ? [{ removeAll: true }, ...operations] : operations, enablePartialFailure: true })
       if (!add.ok) { const aj: any = await add.json().catch(() => null); return { ok: false, externalAudienceId: userListResource ?? undefined, recordsSynced: 0, recordsRejected: args.members.length, error: aj?.error?.message ?? `addOperations failed (${add.status})` } }
       await adsPost(cred, `/${jobResource}:run`, {})
-      return { ok: true, externalAudienceId: userListResource ?? undefined, recordsSynced: args.members.length, recordsRejected: 0 }
+      return { ok: true, externalAudienceId: userListResource ?? undefined, recordsSynced: args.members.length, recordsRejected: 0, mode: replacing ? "replace" : "create" }
     } catch (e) {
       return { ok: false, recordsSynced: 0, recordsRejected: args.members.length, error: (e as Error).message }
     }

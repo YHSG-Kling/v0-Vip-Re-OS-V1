@@ -43,6 +43,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto"
+import { licensedPhotoFor, ownerUploadMediaIds, savedHomeSourceLine } from "./saved-homes"
 
 type Svc = { from: (table: string) => any }
 
@@ -94,19 +95,42 @@ export interface SharedHomeFacts {
   sqft: number | null
   photo: string | null
   property_type: string | null
+  /** Wave 150 (150W): where the home came from, in plain words (MLS name for a RentCast listing, the site for a pasted link). */
+  source_line: string | null
 }
 
-const SHARED_FACT_KEYS: readonly (keyof SharedHomeFacts)[] = ["address", "city", "state", "price", "beds", "baths", "sqft", "photo", "property_type"]
+const SHARED_FACT_KEYS: readonly (keyof SharedHomeFacts)[] = ["address", "city", "state", "price", "beds", "baths", "sqft", "photo", "property_type", "source_line"]
 
 /** PURE. A saved_properties row → the public facts a collaborator sees. Notes, match reasons, scores and the
  *  buyer's dismissal reasons are the BUYER's — never copied. */
-export function sharedFactsFromSaved(r: Record<string, any>): SharedHomeFacts {
+export function sharedFactsFromSaved(r: Record<string, any>, approvedMediaIds: ReadonlySet<string> = new Set()): SharedHomeFacts {
   const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null)
   return {
     address: r.property_address ?? null, city: r.city ?? null, state: r.state ?? null,
     price: num(r.list_price), beds: num(r.bedrooms), baths: num(r.bathrooms), sqft: num(r.sqft),
-    photo: r.primary_photo_url ?? null, property_type: r.property_type ?? null,
+    // Owner R9 (wave 150): a shared home shows a photo only from a lawful source — the tenant listing's own ATTESTED and
+    // APPROVED uploads (`listings.photos`, 150XY's shape; approvals default to none = fail closed). IDX photos are never
+    // copied onto a stored row; a RentCast listing or a pasted link shares facts only. All three origins share (savedRef).
+    photo: licensedPhotoFor(r, r.listings?.photos, approvedMediaIds)?.url ?? null, property_type: r.property_type ?? null,
+    source_line: savedHomeSourceLine(r),
   }
+}
+
+/** The saved-home columns a share copies from (the origin columns ride so the source line and the photo gate can read them). */
+export const SHARE_SAVED_COLUMNS = "id, listing_id, external_property_id, source, source_url, mls_name, property_address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, dismissed, listings(photos)"
+
+/**
+ * 150XY's display rule: an owner-uploaded photo reaches a family member only once its `listing_media` row is APPROVED.
+ * Tenant-confined; an unreadable approval list returns no ids (fail closed — facts are still shared, photos are not).
+ */
+export async function approvedUploadIds(svc: Svc, brokerageId: string, rows: Array<Record<string, any>>): Promise<{ ids: Set<string>; error: string | null }> {
+  const ids = new Set<string>()
+  const uploadIds = [...new Set(rows.flatMap((r) => ownerUploadMediaIds(r.listings?.photos)))]
+  if (uploadIds.length === 0) return { ids, error: null }
+  const { data, error } = await svc.from("listing_media").select("id").eq("brokerage_id", brokerageId).eq("is_approved", true).in("id", uploadIds)
+  if (error) return { ids, error: error.message }
+  for (const m of (data ?? []) as Array<{ id: string }>) ids.add(m.id)
+  return { ids, error: null }
 }
 
 /** PURE. Strip anything but the public keys (defence in depth on read — an old row cannot leak extra fields). */
@@ -189,9 +213,11 @@ export async function shareCollection(svc: Svc, input: ShareCollectionInput, dep
 
   // 1. The homes — ONLY the buyer's own saved rows, in this tenant.
   const { data: saved, error: savedError } = await svc.from("saved_properties")
-    .select("id, listing_id, external_property_id, property_address, city, state, list_price, bedrooms, bathrooms, sqft, primary_photo_url, property_type, dismissed")
+    .select(SHARE_SAVED_COLUMNS)
     .eq("contact_id", input.buyerContactId).eq("brokerage_id", input.brokerageId)
   if (savedError) return { ok: false, error: `Your saved homes couldn't be read just now (${savedError.message}).` }
+  const { ids: approvedMediaIds, error: approvedError } = await approvedUploadIds(svc, input.brokerageId, (saved ?? []) as Array<Record<string, any>>)
+  if (approvedError) notes.push("Photos weren't included this time — the homes' facts are shared.")
   const byRef = new Map<string, Record<string, any>>()
   for (const r of (saved ?? []) as Array<Record<string, any>>) { const k = savedRef(r); if (k && !r.dismissed) byRef.set(k, r) }
   const unknownRefs = refs.filter((r) => !byRef.has(r))
@@ -231,7 +257,7 @@ export async function shareCollection(svc: Svc, input: ShareCollectionInput, dep
       continue
     }
     const { data: ins, error: insError } = await svc.from("collaborative_search_properties")
-      .insert({ collaborative_search_id: searchId, property_mls_id: ref, property_data: sharedFactsFromSaved(row), added_by_contact_id: input.buyerContactId, status: "active" })
+      .insert({ collaborative_search_id: searchId, property_mls_id: ref, property_data: sharedFactsFromSaved(row, approvedMediaIds), added_by_contact_id: input.buyerContactId, status: "active" })
       .select("id").single()
     if (insError || !ins) { notes.push(`A home couldn't be shared (${insError?.message ?? "no row"}).`); continue }
     sharedHomeIds.push(String((ins as { id: string }).id))

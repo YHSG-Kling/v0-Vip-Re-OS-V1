@@ -138,6 +138,15 @@ export async function persistProtectedResearch(
 //   · NEW PURPOSES: customer_service, persona_derivation (the persona study — lib/contacts/persona-builder.ts derivePersona — whose
 //     OUTPUT is firewalled in lib/contacts/persona-layers.ts so no protected value or proxy reaches a marketing persona or an
 //     audience), support_investigation.
+//   · WIDENED AGAIN (wave 150, lane 150QTV — owner ruling R3, 2026-11-06, verbatim: "an authorized tenant reader (staff seat, by
+//     purpose, within tenant + scope, audited) may read stored research attributes; the constraints apply at the ACTION (marketing
+//     wording, provider terms, tenancy, lawful use), not at the read. Never blanket-block collecting or reading person attributes."):
+//     EVERY tenant staff seat (agent, team lead, the broker tier, admin, compliance officer, tenant support, transaction
+//     coordinator) is admitted on EVERY recognised purpose, each within its own scope (TENANT_STAFF_READ_SCOPE below). The wave-148
+//     held-out set (team_lead and admin refused research / compliance_audit; agent refused research) is REMOVED — tombstone where
+//     ROLES_HELD_OUT_OF_PROTECTED_RESEARCH stood. What still bounds a read: the session tenant, the seat's scope (assigned / team /
+//     tenant), the purpose (an unrecognised one is refused), the per-purpose data-rights and field-minimisation rules (provider
+//     terms), the support-investigation justification, and the ledger on both outcomes.
 //   · UNCHANGED: the PROHIBITED purposes are refused whoever asks (ad audience / targeting, steering, eligibility, scoring,
 //     outreach targeting); an unrecognised purpose is refused (fail closed); platform `marketing` staff read nothing (marketing
 //     is the act fair housing restricts — the owner named "platform", and the platform seats that need this are admin + support).
@@ -151,11 +160,21 @@ export type ProtectedResearchReadPurpose = (typeof PROTECTED_RESEARCH_READ_PURPO
  *  decide eligibility, score, or target outreach). */
 const PROHIBITED_PROTECTED_READ_PURPOSES = ["ad_audience", "ad_targeting", "steering", "eligibility", "scoring", "outreach_targeting"] as const
 
-/** Research readers: the tenant-admin roster minus team_lead and admin (CLAUDE.md §4 — derive by named subtraction, never copy). */
-const ROLES_HELD_OUT_OF_PROTECTED_RESEARCH: ReadonlySet<string> = new Set(["team_lead", "admin"])
-export const PROTECTED_RESEARCH_READER_USER_TYPES: ReadonlySet<string> = new Set(
-  [...TENANT_ADMIN_USER_TYPES].filter((t) => !ROLES_HELD_OUT_OF_PROTECTED_RESEARCH.has(t)),
+// TOMBSTONE (wave 150, lane 150QTV — owner ruling R3, 2026-11-06): `ROLES_HELD_OUT_OF_PROTECTED_RESEARCH = ["team_lead", "admin"]`
+// stood here and subtracted those two seats (and, by omission, agents) from the research readers. REMOVED — every authorized tenant
+// staff seat reads by purpose within tenant + scope. Survivor: TENANT_STAFF_READ_SCOPE + PROTECTED_READ_MATRIX below.
+
+/** The BROKER TIER of the reader classes: the tenant-admin roster minus the seats that carry their own class (CLAUDE.md §4 —
+ *  derive by named subtraction, never copy). */
+const SEATS_WITH_THEIR_OWN_READER_CLASS: ReadonlySet<string> = new Set(["team_lead", "admin", "compliance_officer"])
+const BROKER_TIER_USER_TYPES: ReadonlySet<string> = new Set(
+  [...TENANT_ADMIN_USER_TYPES].filter((t) => !SEATS_WITH_THEIR_OWN_READER_CLASS.has(t)),
 )
+
+/** Every tenant STAFF user_type that may read research attributes (R3): the whole tenant-admin roster plus the staff seats outside
+ *  it — agent, tenant support, transaction coordinator. Derived by named addition, never retyped. `isa` is not here: the ISA is the
+ *  AI system (lib/auth/isa-actor.ts) and reads as `system`; `contact` / `vendor` are not staff. */
+export const PROTECTED_RESEARCH_READER_USER_TYPES: ReadonlySet<string> = new Set([...TENANT_ADMIN_USER_TYPES, "agent", "support", "tc"])
 
 /** The reader's role CLASS — resolved from the session seat (users.user_type / users.platform_role), or `system` for the
  *  autonomous persona study acting for one tenant. */
@@ -167,7 +186,7 @@ export const PROTECTED_RESEARCH_READER_USER_TYPES: ReadonlySet<string> = new Set
  * (users.user_type 'support' = tenant support staff, users.platform_role 'support' = platform support) and the platform's
  * admin class spans two platform_role values (superadmin, admin).
  */
-export const PROTECTED_READER_ROLES = ["platform_admin", "platform_support", "broker", "compliance_officer", "admin", "team_lead", "agent", "tenant_support", "system"] as const
+export const PROTECTED_READER_ROLES = ["platform_admin", "platform_support", "broker", "compliance_officer", "admin", "team_lead", "agent", "tenant_support", "tc", "system"] as const
 export type ProtectedReaderRole = (typeof PROTECTED_READER_ROLES)[number]
 /** How far a role's read reaches: `assigned` = contacts.agent_id is the reader's agents row; `team` = the contact is on a team the
  *  reader leads (teams.team_lead_id → users) or is their own; `tenant` = the session brokerage; `platform` = any tenant, with a
@@ -175,21 +194,30 @@ export type ProtectedReaderRole = (typeof PROTECTED_READER_ROLES)[number]
 export type ProtectedReadScope = "assigned" | "team" | "tenant" | "platform" | "system"
 
 /**
- * THE ROLE × PURPOSE MATRIX (owner ruling 1). A role absent from a purpose's row is refused (`role_not_admitted`). Every row is a
- * least-privilege decision recorded in the lane notes ("Role × purpose matrix"):
- *   research / compliance_audit — the PROTECTED_RESEARCH_READER_USER_TYPES roster (broker tier + compliance) and platform admins;
- *   data_subject_request        — the tenant-admin roster (the DSR fulfilment gate already ran) and platform admin / support;
- *   customer_service            — the seats that serve the person, each within its scope (field-minimised: accommodations only);
- *   persona_derivation          — the seats that market to the person, each within its scope, and the autonomous study;
- *   support_investigation       — support seats (tenant + platform) and platform admins, always with a justification.
+ * THE SCOPE EACH TENANT STAFF SEAT READS WITHIN (R3). An agent reaches the contacts assigned to them, a team lead their teams'
+ * (and their own), every other tenant staff seat the session tenant. One table, spread into every purpose row below — never
+ * restated per row (§6).
+ */
+const TENANT_STAFF_READ_SCOPE: Readonly<Partial<Record<ProtectedReaderRole, ProtectedReadScope>>> = Object.freeze({
+  agent: "assigned", team_lead: "team", broker: "tenant", admin: "tenant", compliance_officer: "tenant", tenant_support: "tenant", tc: "tenant",
+})
+
+/**
+ * THE ROLE × PURPOSE MATRIX (owner ruling 1, widened by R3). A role absent from a purpose's row is refused (`role_not_admitted`).
+ *   every purpose               — EVERY tenant staff seat within its scope (TENANT_STAFF_READ_SCOPE, R3);
+ *   research / compliance_audit — + platform admins (justified);
+ *   data_subject_request        — + platform admin / support (justified);
+ *   customer_service            — + platform support (justified); field-minimised to accommodations (purpose / provider terms);
+ *   persona_derivation          — + the autonomous study (system, one tenant); rights-gated;
+ *   support_investigation       — + platform support / admins; ALWAYS with a written justification (the case).
  */
 export const PROTECTED_READ_MATRIX: Readonly<Record<ProtectedResearchReadPurpose, Readonly<Partial<Record<ProtectedReaderRole, ProtectedReadScope>>>>> = Object.freeze({
-  research: { broker: "tenant", compliance_officer: "tenant", platform_admin: "platform" },
-  compliance_audit: { broker: "tenant", compliance_officer: "tenant", platform_admin: "platform" },
-  data_subject_request: { broker: "tenant", compliance_officer: "tenant", admin: "tenant", team_lead: "tenant", platform_admin: "platform", platform_support: "platform" },
-  customer_service: { agent: "assigned", team_lead: "team", broker: "tenant", admin: "tenant", compliance_officer: "tenant", tenant_support: "tenant", platform_support: "platform" },
-  persona_derivation: { agent: "assigned", team_lead: "team", broker: "tenant", admin: "tenant", compliance_officer: "tenant", system: "system" },
-  support_investigation: { tenant_support: "tenant", platform_support: "platform", platform_admin: "platform" },
+  research: { ...TENANT_STAFF_READ_SCOPE, platform_admin: "platform" },
+  compliance_audit: { ...TENANT_STAFF_READ_SCOPE, platform_admin: "platform" },
+  data_subject_request: { ...TENANT_STAFF_READ_SCOPE, platform_admin: "platform", platform_support: "platform" },
+  customer_service: { ...TENANT_STAFF_READ_SCOPE, platform_support: "platform" },
+  persona_derivation: { ...TENANT_STAFF_READ_SCOPE, system: "system" },
+  support_investigation: { ...TENANT_STAFF_READ_SCOPE, platform_support: "platform", platform_admin: "platform" },
 })
 
 /** Purposes that read only values held under a CLASSIFIED data right (the service purposes — a study or a service decision
@@ -210,7 +238,8 @@ function readerRoleOf(actor: ProtectedAttributeReadRequest["actor"]): ProtectedR
   if (t === "admin") return "admin"
   if (t === "agent") return "agent"
   if (t === "support") return "tenant_support"
-  if (PROTECTED_RESEARCH_READER_USER_TYPES.has(t)) return "broker" // the roster minus the classes named above = the broker tier
+  if (t === "tc") return "tc"
+  if (BROKER_TIER_USER_TYPES.has(t)) return "broker" // the tenant-admin roster minus the classes named above = the broker tier
   return null
 }
 

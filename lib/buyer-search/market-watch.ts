@@ -80,8 +80,12 @@ export async function runMarketWatchForBuyer(
   supabase: ReturnType<typeof createServiceClient>, brokerageId: string, contactId: string,
 ): Promise<MarketWatchResult> {
   if (!brokerageId || !contactId) return { matched: 0, newMatches: 0, reason: "missing ids" }
-  const { data: contact } = await supabase.from("contacts")
+  // Wave 150 (lane 150KLMO): every read's { error } is READ — a refused read used to resolve as "no persona" / "no inventory" /
+  // "nothing matched yet" (CLAUDE.md §3: supabase-js RESOLVES refusals), so a denied investor check served on-market listings
+  // and a denied match read counted every fit as NEW. Each refusal now stops this buyer's run with the reason (fail closed).
+  const { data: contact, error: cErr } = await supabase.from("contacts")
     .select("contact_persona").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (cErr) return { matched: 0, newMatches: 0, reason: `contact read refused: ${cErr.message}` }
   if ((contact as { contact_persona: string | null } | null)?.contact_persona === "investor") {
     return { matched: 0, newMatches: 0, reason: "investor_offmarket_only" }
   }
@@ -97,7 +101,8 @@ export async function runMarketWatchForBuyer(
     .eq("brokerage_id", brokerageId).in("status", (await import("./search-engine")).buyerShoppableListingStatuses()).is("deleted_at", null).limit(200)
   if (criteria.maxPrice != null) q = q.lte("list_price", criteria.maxPrice)
   if (criteria.minBeds != null) q = q.gte("bedrooms", criteria.minBeds)
-  const { data: listings } = await q
+  const { data: listings, error: lErr } = await q
+  if (lErr) return { matched: 0, newMatches: 0, reason: `listings read refused: ${lErr.message}` }
   const listingRows = ((listings ?? []) as Array<ListingFacts & { id: string }>)
     .map((r) => ({ ...r, __source: "market_watch" as const }))
 
@@ -120,7 +125,8 @@ export async function runMarketWatchForBuyer(
       .eq("brokerage_id", brokerageId).eq("current_status", "active").limit(200)
     if (criteria.maxPrice != null) mq = mq.lte("list_price", criteria.maxPrice)
     if (criteria.minBeds != null) mq = mq.gte("beds", criteria.minBeds)
-    const { data: marketActive } = await mq
+    const { data: marketActive, error: mErr } = await mq
+    if (mErr) return { matched: 0, newMatches: 0, reason: `market_active_listings read refused: ${mErr.message}` }
     marketRows = ((marketActive ?? []) as Array<{ id: string; list_price: number | null; beds: number | null; baths: number | null; property_type: string | null; city: string | null }>)
       .map((m) => ({ id: m.id, list_price: m.list_price, bedrooms: m.beds, bathrooms: m.baths, city: m.city, __source: "market_watch_active_feed" as const }))
   }
@@ -130,8 +136,9 @@ export async function runMarketWatchForBuyer(
 
   // Which of these are already matched for this buyer (to count NEW).
   const ids = rows.map((r) => r.id)
-  const { data: existing } = await supabase.from("property_matches")
+  const { data: existing, error: eErr } = await supabase.from("property_matches")
     .select("property_id").eq("contact_id", contactId).eq("brokerage_id", brokerageId).in("property_id", ids)
+  if (eErr) return { matched: 0, newMatches: 0, reason: `property_matches read refused: ${eErr.message}` }
   const already = new Set((existing ?? []).map((e: any) => e.property_id as string))
 
   let matched = 0, newMatches = 0

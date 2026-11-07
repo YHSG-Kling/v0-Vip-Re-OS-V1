@@ -1,15 +1,28 @@
 // lib/ads/audience-exclusion.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // THE EXCLUSION SLOT — an ad campaign says, IN THE PRODUCT, which audiences it
-// SUBTRACTS, and every audience it names is gated before it can subtract.
+// SUBTRACTS, and every audience it names is gated for SHAPE, TENANCY and
+// RESOLVABILITY before it can subtract.
 //
-// OWNER RULING, VERBATIM: "capability is vital to this os to have not exclude."
-//
-// Read it the way it is written. The OS must HAVE the capability — so that it
-// does NOT exclude protected people. This module is not an exclusion-targeting
-// feature; it is the instrument that makes exclusion VISIBLE to the gates that
-// already exist. An unguarded exclusion field would be the opposite of the
-// ruling.
+// ── OWNER RULING R1 (2026-11-06) — THE PROTECTED-PERSONA EXCLUSION RULE IS GONE ──
+// TOMBSTONE (wave 150, lane 150QTV). This module was written (2026-08-23, "capability
+// is vital to this os to have not exclude") to REFUSE a protected-characteristic
+// persona audience (senior / probate / divorce / military) in the exclude slot,
+// refusalKind "protected_characteristic". The owner REMOVED that rule: "the pre-147
+// rule that a protected persona cannot be used to EXCLUDE people from a housing ad is
+// REMOVED — delivery exclusions are governed only by the platform's own rules and
+// consent/suppression." Survivors, by name:
+//   · the platform's housing-category rules — lib/ads/connectors/ad-payload.ts
+//     `validateAdReadiness` (special_ad_categories=['HOUSING'], no age / gender /
+//     ZIP narrowing, no lookalike, an exclusion list must be GATED here first);
+//   · consent / suppression — lib/kernel/compliance/check-suppression.ts and the
+//     audience populate doors (lib/audiences/audience-sync.ts);
+//   · raw demographic criteria in a rule (`contact_tags: ["seniors-55plus"]`,
+//     `min_owner_age`) — still refused by the token gate below (gate 2), which is
+//     the platform's no-age-narrowing rule expressed on the rule.
+// What remains of gate 1 is the BASIS check: a persona audience must still resolve
+// to canonical personas, and `other` / an empty list still refuse, because a
+// suppression list nobody can resolve is "we could not read who you meant".
 //
 // ── THE GAP THIS CLOSES ─────────────────────────────────────────────────────
 // It was published as a blind spot in two places (lib/ads/audience-source-rules.ts
@@ -30,8 +43,8 @@
 //      exclusion an operator intends is EXPRESSED HERE rather than performed
 //      invisibly in Meta's UI;
 //   2. the GATE — this module, wired at every door that can write or act on that
-//      field, so a protected-characteristic persona audience in the exclude slot
-//      is REFUSED (CLAUDE.md §4, fail closed);
+//      field, so an unresolvable, cross-tenant or malformed audience in the
+//      exclude slot is REFUSED (CLAUDE.md §4, fail closed);
 //   3. the RECORD — `facebook_custom_audiences.used_as_suppression_at` /
 //      `used_as_suppression_by_campaign_id` (migration m538), so the fact that an
 //      audience was used to suppress is auditable after the fact, and read back
@@ -39,28 +52,19 @@
 //
 // ── WHY THE PLACEMENT, NOT THE RULE TYPE, DECIDES THE OPERATION HERE ────────
 // `audienceUseOf(rule)` answers "does this audience's OWN RULE declare that it
-// subtracts" — `exclusion_active_pipeline` does, `persona_segment` does not.
-// That is the right question at the audience's four define/populate doors and
-// the wrong question here: an audience of `senior` reads as an INCLUSION rule
-// right up until a campaign drops its id into the exclude slot, at which point
-// it withholds housing advertising from the elderly. So this module ESCALATES —
-// `resolveAudiencePersonaBasis(rule, "exclusion")` — and the escalation
-// parameter is typed so it can only ever make the verdict stricter.
+// subtracts". A `persona_segment` audience placed in the exclude slot subtracts
+// whatever its rule says, so this module calls
+// `resolveAudiencePersonaBasis(rule, "exclusion")` and the verdict records
+// `use: "exclusion"`. Since R1 that changes no persona's eligibility.
 //
 // ── IT COINS NO VOCABULARY (CLAUDE.md §6) ───────────────────────────────────
-// Nothing here decides which personas are protected, what a source rule means or
-// what "exclusion" is. It calls the gates that already own those answers:
-//   · `resolveAudiencePersonaBasis(rule, "exclusion")` → `personaAdsEligibility(
-//     persona, "exclusion")` → `protectedClassReasonFor` — the fair-housing arm;
+// Nothing here decides what a persona is, what a source rule means or what
+// "exclusion" is. It calls the gates that already own those answers:
+//   · `resolveAudiencePersonaBasis(rule, "exclusion")` — the basis must resolve;
 //   · `assertAudienceSegmentationAllowed` — the token gate, which still catches
-//     a protected class smuggled somewhere other than the personas key
-//     (`contact_tags: ["seniors-55plus"]`), and which the persona carve-out does
-//     not reach;
+//     a raw demographic criterion (`contact_tags: ["seniors-55plus"]`,
+//     `min_owner_age`) anywhere other than a canonical persona at the personas key;
 //   · `isSourceRuleType` — the one roster.
-// Both refusing gates run on every audience in the slot. They do not subsume
-// each other: the persona gate is the only one that refuses a CANONICAL persona
-// (the token gate carves those out for inclusion rules), and the token gate is
-// the only one that refuses a protected class that is not spelled as a persona.
 //
 // PURE, except for one explicitly-injected loader. The gate itself takes ROWS,
 // so the simulator can prove it refuses on fixtures; `verifyExclusionSlot` is
@@ -184,8 +188,7 @@ type ExclusionRefusalKind =
   | "unknown_audience"
   /** The audience's rule names no type this product can resolve. */
   | "unresolvable_rule"
-  /** A protected-characteristic persona used to SUPPRESS. THE fair-housing refusal. */
-  | "protected_characteristic"
+  // ("protected_characteristic" — a protected persona used to SUPPRESS — REMOVED by owner ruling R1, 2026-11-06.)
   /** `other` — a persona basis that names no situation. */
   | "no_basis"
   /** A persona basis that cannot be resolved at all (empty, non-canonical…). */
@@ -280,12 +283,11 @@ export function resolveExclusionSlot(
       }
     }
 
-    // ── GATE 1 — THE PERSONA ARM, ESCALATED TO THE OPERATION BEING PERFORMED ──
-    // This is the arm the owner's 2026-08-23 ruling left in force: a situation
-    // persona may TAILOR an ad (inclusion), and a protected-characteristic
-    // persona may not SUPPRESS one. The escalation is what makes it fire on an
-    // audience whose own rule type says "inclusion" — which is every persona
-    // audience in the catalog.
+    // ── GATE 1 — THE PERSONA BASIS, resolved for the operation being performed ──
+    // Since R1 (2026-11-06) every canonical persona may be a suppression basis
+    // (tombstone in lib/ads/audience-persona-basis.ts personaAdsEligibility). The
+    // escalation still records `use: "exclusion"` and this arm still refuses a
+    // basis that resolves to nothing (`other`, empty, non-canonical spellings).
     if (declaresPersonaBasis(rule)) {
       // `basis` starts NULL and a null basis REFUSES, rather than relying on the
       // control-flow reading of a try/catch. If the gate throws, nothing was
@@ -311,10 +313,7 @@ export function resolveExclusionSlot(
       if (!basis.ok) {
         return {
           ok: false,
-          refusalKind:
-            basis.refusalKind === "protected_characteristic" ? "protected_characteristic"
-            : basis.refusalKind === "no_basis" ? "no_basis"
-            : "unresolvable_basis",
+          refusalKind: basis.refusalKind === "no_basis" ? "no_basis" : "unresolvable_basis",
           audienceId: id,
           refusal:
             `[audience-exclusion] REFUSED: campaign "${campaignLabel}" lists audience "${name}" as an ` +
@@ -327,9 +326,8 @@ export function resolveExclusionSlot(
     // `assertAudienceSegmentationAllowed` scans keys AND string values, so it is
     // what still refuses `contact_tags: ["seniors-55plus"]`, `min_owner_age`,
     // `demographics.recentlyDivorced` and `quicklists: ["senior-owner"]` in the
-    // exclude slot. It carves out a CANONICAL persona at the personas key of an
-    // inclusion rule — which is precisely the shape gate 1 above just refused,
-    // so between the two there is no protected shape that passes.
+    // exclude slot. It carves out a CANONICAL persona at the personas key (R1:
+    // on both operations) and refuses every raw demographic criterion.
     try {
       assertAudienceSegmentationAllowed(rule, name)
     } catch (err) {

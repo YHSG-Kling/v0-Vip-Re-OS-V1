@@ -450,9 +450,14 @@ check("wired for real — lib/audiences/audience-sync.ts imports the refusal",
 check("PERSONA CARVE-OUT — a canonical persona at the `personas` key of an INCLUSION rule is admitted",
   throws(() => assertAudienceSegmentationAllowed(
     { type: "persona_segment", filters: { personas: ["senior", "probate", "divorce", "military"] } }, "A")) === null)
-check("…and the SAME personas on an EXCLUSION rule are still REFUSED (suppression is the restricted act)",
+// RE-ASSERTED — wave 150, lane 150QTV (owner ruling R1, 2026-11-06): this pinned "the SAME personas on an EXCLUSION rule are
+// still REFUSED". R1 removed that rule — the carve-out applies on both operations; raw criteria are still refused (next check).
+check("R1 — the SAME canonical personas on an EXCLUSION rule are ADMITTED too (platform rules + consent govern exclusions)",
+  throws(() => assertAudienceSegmentationAllowed(
+    { type: "exclusion_active_pipeline", filters: { personas: ["senior", "probate", "divorce", "military"] } }, "A")) === null)
+check("CONTROL — a RAW demographic criterion on an EXCLUSION rule is still REFUSED (no age narrowing)",
   (throws(() => assertAudienceSegmentationAllowed(
-    { type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }, "A")) ?? "").includes("REFUSED"))
+    { type: "exclusion_active_pipeline", filters: { min_owner_age: 65 } }, "A")) ?? "").includes("REFUSED"))
 check("CONTROL — the carve-out keys on the ROSTER: a provider slug at the same key is still refused",
   (throws(() => assertAudienceSegmentationAllowed(
     { type: "persona_segment", filters: { personas: ["senior-owner"] } }, "A")) ?? "").includes("REFUSED"))

@@ -24,6 +24,9 @@
 
 import { SOURCE_MAP, SOURCE_VENDOR, sourceRightsFor, type SourceKey } from "./source-intent-map"
 import { SOURCE_ACQUISITION } from "./acquisition-coverage"
+// The REI Playbook v5.5 method has ONE home (wave 150, lane 150KLMO): the investor buy-box criteria and the hunting/farming
+// reading come from lib/investor/rei-playbook.ts investorPlay — the two inline literals this planner carried are merged there.
+import { investorPlay } from "@/lib/investor/rei-playbook"
 
 /** The acquisition plays the owner named (buyer AND seller), one vocabulary. */
 const ACQUISITION_PLAYS = [
@@ -116,8 +119,8 @@ export interface AcquisitionPlan {
 
 const SOURCE_DISCOVERY_PLANNER_VERSION = "source-discovery@1"
 
-/** Preview count of distress candidates below which a market is FARMING, not hunting (playbook heuristic). */
-const FARMING_DISTRESS_FLOOR = 25
+// TOMBSTONE (wave 150, lane 150KLMO — orphan doctrine §1.1): FARMING_DISTRESS_FLOOR (25) moved to
+// lib/investor/rei-playbook.ts FARMING_DISTRESS_FLOOR, read through investorPlay({ audience: "market_mode" }) below.
 
 /**
  * PURE — the acquisition plan for one territory. Free first-party lines are always included (they spend nothing);
@@ -140,8 +143,10 @@ export function planSourceDiscovery(input: {
   const mos = input.marketGap?.monthsOfSupply
   const tilt: AcquisitionPlan["tilt"] = typeof mos === "number" ? (mos < 3 ? "seller" : mos > 6 ? "buyer" : "balanced") : "balanced"
   if (typeof mos !== "number") blindSpots.push("no verified months-of-supply for this territory — buyer and seller lines are weighed evenly")
-  const marketMode: AcquisitionPlan["marketMode"] = typeof input.distressPreviewCount === "number"
-    ? (input.distressPreviewCount < FARMING_DISTRESS_FLOOR ? "farming" : "hunting") : "unknown"
+  const mode = investorPlay({ audience: "market_mode", distressPreviewCount: input.distressPreviewCount ?? null })
+  const marketMode: AcquisitionPlan["marketMode"] = mode.ok && mode.kind === "market_mode" ? mode.marketMode : "unknown"
+  // The Buy Box (investor lines only): the playbook's PREVIEW criteria in PropertyRadar's confirmed vocabulary, purchase 0.
+  const buyBox = investorPlay({ audience: "investor", play: "buy_box" })
   if (marketMode === "unknown") blindSpots.push("no distress preview count — hunting vs farming is not known")
 
   const keys = (input.enabledSources && input.enabledSources.length > 0 ? input.enabledSources : (Object.keys(SOURCE_MAP) as SourceKey[]))
@@ -164,7 +169,9 @@ export function planSourceDiscovery(input: {
       quoteUsd: quote, quoteBasis: paid ? q?.basis ?? null : null,
       expectedNewLeads: expected, expectedBasis: ratio !== null ? "territory_history" : "no_history",
       costPerExpectedLead: paid && quote !== null && expected && expected > 0 ? Math.round((quote / expected) * 100) / 100 : null,
-      criteria: investor ? { equityPercentMin: 30, note: "buy-box overlay — investor plays only" } : null,
+      criteria: investor && buyBox.ok && buyBox.kind === "play"
+        ? { equityPercentMin: buyBox.equityPercentMin, note: "buy-box overlay — investor plays only (REI Playbook v5.5, a labelled heuristic)", preview: buyBox.preview, unconfirmed: buyBox.unconfirmed }
+        : null,
       status: "proposed", why: "",
     }
     if (rights === "unknown") { line.status = "blocked_rights"; line.why = "no rights basis names this source" }
@@ -249,7 +256,7 @@ export function paidPullApproval(
   plans: readonly StoredPlanRow[] | null,
   want: { brokerageId: string | null; source: string },
   now: Date = new Date(),
-): { allowed: true; planId: string; maxSpendUsd: number | null } | { allowed: false; reason: string } {
+): { allowed: true; planId: string; maxSpendUsd: number | null; approvedAt: string | null } | { allowed: false; reason: string } {
   if (plans === null) return { allowed: false, reason: "the acquisition-plan store could not be read" }
   if (!want.brokerageId) return { allowed: false, reason: "no tenant owns this share — a platform pull needs a tenant's approval" }
   for (const p of plans) {
@@ -257,7 +264,9 @@ export function paidPullApproval(
     if (!p.valid_until || Date.parse(p.valid_until) < now.getTime()) continue
     const lines = Array.isArray(p.lines) ? (p.lines as PlanLine[]) : []
     const line = lines.find((l) => l && l.source === want.source && l.status === "approved")
-    if (line) return { allowed: true, planId: p.id, maxSpendUsd: line.maxSpendUsd ?? null }
+    // approvedAt (wave 150, lane 150HIAB): the spend booked SINCE the approval is what the ceiling is measured against
+    // (pooled-pull.ts → budget-eval.ts decideSpendBackpressure).
+    if (line) return { allowed: true, planId: p.id, maxSpendUsd: line.maxSpendUsd ?? null, approvedAt: line.approvedAt ?? null }
   }
   return { allowed: false, reason: `no approved, unexpired acquisition plan approves ${want.source} for this tenant` }
 }

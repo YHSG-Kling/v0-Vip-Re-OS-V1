@@ -36,8 +36,8 @@
 
 import { resolveSystemTopicSource } from "./system-topic-source"
 import {
-  competitorPostThemes, viralPatternThemes, customerQuestionThemes, educationGapThemes, aiSearchGapThemes, marketThemes,
-  type CitationRow, type CompetitorContentRow, type IntelTheme, type MarketDataRow, type ModuleRow, type QuestionRow,
+  competitorPostThemes, viralPatternThemes, customerQuestionThemes, educationGapThemes, aiSearchGapThemes, marketThemes, publicResearchThemes,
+  type CitationRow, type CompetitorContentRow, type IntelTheme, type MarketDataRow, type ModuleRow, type PublicResearchRow, type QuestionRow,
   type TopicEvidence, type TopicFeed, type TopicSourceClass,
 } from "./topic-themes"
 
@@ -135,6 +135,22 @@ export async function runTopicIntelligencePass(db: Db, brokerageId: string, opts
       if (error) out.blindSpots.push(`market statistics not read (${error.message ?? "unknown"})`)
       else if ((data ?? []).length === 0) out.blindSpots.push("property values / market changes: no market statistics recorded for this tenant")
       else { const m = marketThemes(data as MarketDataRow[], now); addDropped(m.dropped); themes.push(...m.themes) }
+    }
+
+    // PUBLIC-MARKET RESEARCH (wave 150, lane 150KLMO — directive 150L): the cited Exa observations THE ONE RawData producer
+    // holds for this tenant's scraping territories as market / civic-event / anonymous-question EVIDENCE — the consumer that
+    // makes those rows more than a write (C35: writer + consumer + outcome). Never a person: the subject kinds are evidence-only.
+    {
+      const { data: mk, error: mkErr } = await db.from("lead_scraping_markets").select("id").eq("brokerage_id", brokerageId).limit(200)
+      if (mkErr) out.blindSpots.push(`public-market research not read — territories refused (${mkErr.message ?? "unknown"})`)
+      else if ((mk ?? []).length > 0) {
+        const { data, error } = await db.from("raw_scraped_leads")
+          .select("subject_kind, source_record_id, proof_urls, ttl_expires_at, observed_at, city, state, raw_data")
+          .in("market_id", (mk as Array<{ id: string }>).map((m) => m.id)).in("subject_kind", ["market", "job_civic_event", "anonymous_question"])
+          .gte("ttl_expires_at", now.toISOString()).limit(300)
+        if (error) out.blindSpots.push(`public-market research not read (${error.message ?? "unknown"})`)
+        else { const r = publicResearchThemes((data ?? []) as PublicResearchRow[], now); addDropped(r.dropped); themes.push(...r.themes) }
+      }
     }
 
     // File in the ONE pool (idempotent per theme while fresh), under the tenant's system source.

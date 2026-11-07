@@ -34,6 +34,8 @@ import {
 } from "./buyer-criteria"
 import { applyConversationTurn, type CriteriaStatement } from "./conversational-search"
 import type { ParsedBuyerCriteria } from "./parse-buyer-criteria"
+// Wave 150 (150W, C27): only a well-formed, BUYER-stated minimum in the lot_size_unit vocabulary is recorded as heard.
+import { validLotMinimum } from "./explanation-evidence"
 
 type Svc = Parameters<typeof loadBuyerCriteria>[0]
 
@@ -212,7 +214,7 @@ export async function recordStatedCriteriaTurn(
       literal: input.text,
       interpretation: {
         criteria: parsed.criteria,
-        lifestyle: parsed.lifestyle.map((l) => ({ kind: l.kind, label: l.label, direction: l.direction, target: l.target, maxMinutes: l.maxMinutes, minAcres: l.minAcres ?? null, lotMinimum: l.lotMinimum ?? null, evidence: l.evidence })),
+        lifestyle: parsed.lifestyle.map((l) => ({ kind: l.kind, label: l.label, direction: l.direction, target: l.target, maxMinutes: l.maxMinutes, minAcres: l.minAcres ?? null, lotMinimum: validLotMinimum(l.lotMinimum) ? l.lotMinimum : null, evidence: l.evidence })),
         deal_breakers: parsed.dealBreakers,
         priority: parsed.priority,
         gaps: parsed.gaps,

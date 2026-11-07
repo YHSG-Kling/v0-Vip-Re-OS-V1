@@ -155,10 +155,10 @@ function meterCall(params: {
   // make it one pull to keep the cost down"). A pooled area sweep is one billed request whose
   // identical rows every pool member receives, so the split by records received is EQUAL: one
   // ledger row per member at cost ÷ n (the last row absorbs the rounding so the rows sum to the
-  // vendor charge exactly — lib/lead-pipeline/pooled-pull.ts::splitPullCost is the one rule).
+  // vendor charge exactly — lib/vendor-governance/budget-eval.ts::splitPullCost is the one rule).
   const pool = [...new Set((params.pooledBrokerageIds ?? []).filter(Boolean))]
   if (pool.length > 1) {
-    void import("@/lib/lead-pipeline/pooled-pull").then(({ splitPullCost }) => {
+    void import("@/lib/vendor-governance/budget-eval").then(({ splitPullCost }) => {
       const shares = splitPullCost(params.cost, new Map(pool.map((b) => [b, 1])))
       for (const [brokerageId, share] of shares) {
         void logVendorUsage({

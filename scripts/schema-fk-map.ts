@@ -75,7 +75,7 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2113 edges across 754 source tables — one target per
+ * MEASURED AT GENERATION: 2114 edges across 754 source tables — one target per
  * (table, column), every ambiguous column excluded and listed separately. 2011 unordered
  * table pairs carry at least one FK; 78
  * carry more than one and are listed below. 20 of the constraints are self-referential.
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-06
+ * generated: 2026-11-07
  * source: public.live_foreign_keys_json()
- * body-sha256: 99ab0b2ba6efb932c13b42a64c53c2c2e47c4c1601f7eabdda3460085b9a3d4d
+ * body-sha256: 0ef9d69a6b09b3210638183e4ec431ad15d89cedfe70e67046533cb16db5c637
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -484,7 +484,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "listing_marketing_packages": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "listing_marketing_services": { "brokerage_id": "brokerages", "package_id": "listing_marketing_packages", "transaction_id": "transactions", "vendor_id": "vendors" },
   "listing_marketing_tiers": { "brokerage_id": "brokerages" },
-  "listing_media": { "approved_by": "users", "brokerage_id": "brokerages", "listing_id": "listings", "template_id": "video_templates", "uploaded_by": "users" },
+  "listing_media": { "approved_by": "users", "brokerage_id": "brokerages", "listing_id": "listings", "ownership_attested_by": "users", "template_id": "video_templates", "uploaded_by": "users" },
   "listing_metrics": { "brokerage_id": "brokerages", "listing_id": "listings" },
   "listing_packet_jobs": { "agent_user_id": "users", "brokerage_id": "brokerages", "listing_id": "listings" },
   "listing_page_analytics": { "brokerage_id": "brokerages", "listing_id": "listings" },
@@ -922,7 +922,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "feature_access_overrides|users": 2,
   "learning_assignments|users": 2,
   "learning_modules|users": 3,
-  "listing_media|users": 2,
+  "listing_media|users": 3,
   "listing_presentations|users": 2,
   "locations|users": 4,
   "marketing_assets|users": 3,

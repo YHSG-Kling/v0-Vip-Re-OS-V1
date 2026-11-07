@@ -14,7 +14,7 @@ import { EXCLUDED_TOPIC_RULES } from "./local-intel"
 
 export const TOPIC_SOURCE_CLASSES = [
   "competitor_ad", "competitor_post", "viral_pattern", "local_event", "local_news", "property_value_trend", "market_change",
-  "customer_question", "education_gap", "ai_search_gap", "community_interest", "tenant_performance",
+  "customer_question", "education_gap", "ai_search_gap", "community_interest", "tenant_performance", "public_market_research",
 ] as const
 export type TopicSourceClass = (typeof TOPIC_SOURCE_CLASSES)[number]
 
@@ -32,6 +32,7 @@ export const TOPIC_SOURCE_CENSUS: Readonly<Record<TopicSourceClass, { writer: st
   ai_search_gap:        { writer: "lib/content-intel/topic-intelligence.ts runTopicIntelligencePass", reads: "ai_search_citation_observations", since: "wave 145" },
   community_interest:   { writer: "app/api/cron/content-intel-reddit/route.ts (and the rss / apify / exa twins) + lib/competitive-intel/brand-listening.ts", reads: "public chatter, feeds, brand mentions", since: "waves 18-143" },
   tenant_performance:   { writer: "lib/content-intel/performance-aggregator.ts (content_topic_bank.performance_score)", reads: "content_topic_uses × engagement", since: "wave 19" },
+  public_market_research: { writer: "lib/content-intel/topic-intelligence.ts runTopicIntelligencePass", reads: "raw_scraped_leads subject_kind market / job_civic_event / anonymous_question (Exa cited public pages through the ONE RawData producer — lib/lead-pipeline/exa-sourcer.ts), within their TTL", since: "wave 150" },
 })
 
 /** What a topic can become (ruling 22: posts, lead magnets, education, local market content, property-value commentary, video, podcast, books, TV). */
@@ -391,6 +392,89 @@ function marketClassFromSupply(months: number): "strong_sellers" | "sellers" | "
 
 const MARKET_STALE_DAYS = 90
 
+/**
+ * CANARY 17 (wave 150, lane 150KLMO): what market_data.median_sale_price MEASURES depends on the tier that wrote it. RentCast
+ * `/markets` (and a scraped listing page) publish the median ASKING price of homes listed for sale — the column name is
+ * historical; only an MLS / IDX feed or a manual import of closed sales is a SALE price. An agents' CMA average is an opinion of
+ * value, never market data (lib/market-reports/research.ts says the same) — such a row is dropped, counted.
+ */
+function priceBasisOf(sourceType: string | null | undefined): { word: string; trendWord: string } | null {
+  switch (sourceType) {
+    case "mls_feed": case "idx_broker": case "manual_import": return { word: "Median sale price", trendWord: "Median sale-price trend" }
+    case "cma_aggregate": return null
+    default: return { word: "Median asking price of listed homes", trendWord: "Median asking-price trend (listings)" }
+  }
+}
+
+/** The theme a cited civic / job event takes when it names no housing topic (a market-level label, never a person). */
+const LOCAL_ECONOMY_THEME: ThemeRule = { key: "local_economy", label: "Local jobs and projects — what they mean for housing here", re: /$^/, categories: ["market_education", "neighborhood"], feeds: ["social_post", "video", "podcast", "local_market"] }
+
+/** A cited public-market observation (raw_scraped_leads, C35 evidence subject) as the topic pass reads it. */
+export interface PublicResearchRow {
+  subject_kind: string | null
+  source_record_id: string | null
+  proof_urls: string[] | null
+  ttl_expires_at: string | null
+  observed_at: string | null
+  city: string | null
+  state: string | null
+  raw_data: { title?: unknown; excerpt?: unknown; publisher?: unknown; published?: unknown; url?: unknown } | null
+}
+
+/**
+ * PURE. PUBLIC-MARKET RESEARCH → themes (wave 150, lane 150KLMO — directive 150L, canary 8). Each Exa observation that entered
+ * THE ONE producer as a market fact, a civic / job event or an anonymous question becomes a THEME label (the vocabulary above)
+ * with its CITATION (url, publisher, published date) as the only facts — never the page's words beyond its title, never a
+ * person, never an account. Expired observations (past their C35 TTL), steering topics and pages with no openable URL are
+ * dropped and counted.
+ */
+export function publicResearchThemes(rows: readonly PublicResearchRow[], now: Date): { themes: IntelTheme[]; dropped: Record<string, number> } {
+  const dropped: Record<string, number> = {}
+  const drop = (k: string) => { dropped[k] = (dropped[k] ?? 0) + 1 }
+  const byTheme = new Map<string, { rule: ThemeRule; rows: PublicResearchRow[]; urls: string[] }>()
+  for (const r of rows) {
+    if (!["market", "job_civic_event", "anonymous_question"].includes(String(r.subject_kind))) { drop("not_an_evidence_subject"); continue }
+    if (r.ttl_expires_at && Date.parse(r.ttl_expires_at) < now.getTime()) { drop("expired_observation"); continue }
+    const url = [...(r.proof_urls ?? []), typeof r.raw_data?.url === "string" ? r.raw_data.url : ""].find((u) => /^https?:\/\//i.test(u))
+    if (!url) { drop("no_citation"); continue }
+    const text = `${String(r.raw_data?.title ?? "")} ${String(r.raw_data?.excerpt ?? "")}`
+    if (excludedTopicReason(text)) { drop("steering_topic"); continue }
+    // A civic / job event (an employer expansion, a WARN closure, a base or campus project, a rezoning) rarely uses a housing
+    // word — it is still housing-relevant market evidence, so it takes the local-economy theme when no housing theme matches.
+    const rule = themesOf(text)[0] ?? (r.subject_kind === "job_civic_event" ? LOCAL_ECONOMY_THEME : null)
+    if (!rule) { drop("no_real_estate_theme"); continue }
+    const area = [r.city, r.state].filter(Boolean).join(", ") || "the market"
+    const key = `${rule.key}:${slug(area)}`
+    const e = byTheme.get(key) ?? { rule, rows: [], urls: [] }
+    e.rows.push(r); if (!e.urls.includes(url)) e.urls.push(url)
+    byTheme.set(key, e)
+  }
+  const themes: IntelTheme[] = []
+  for (const [key, e] of byTheme) {
+    const first = e.rows[0]
+    const area = [first.city, first.state].filter(Boolean).join(", ") || "the market"
+    const newest = e.rows.map((r) => r.observed_at ?? "").sort().pop() || now.toISOString()
+    const facts = e.rows.slice(0, 5).map((r) => `"${String(r.raw_data?.title ?? "untitled").slice(0, 160)}" — ${String(r.raw_data?.publisher ?? "public page")}${r.raw_data?.published ? `, published ${String(r.raw_data.published).slice(0, 10)}` : ""} (${(r.proof_urls ?? [])[0] ?? String(r.raw_data?.url ?? "")})`)
+    themes.push({
+      title: `${e.rule.label} — ${area}`.slice(0, 200),
+      valueAngle: `Explain what these cited public sources mean for neighbours in ${area}, naming each source — ${facts.join("; ")}. State only what the sources say; never name or describe a person, never identify who asked, never present a source's claim as this brokerage's own figure.`,
+      categories: [...e.rule.categories, "public_market_research", "topic_intelligence"],
+      engagementScore: Math.min(100, 40 + e.rows.length * 10),
+      sourceUrl: e.urls[0] ?? null,
+      topicPostedAt: newest,
+      expiresDays: 30,
+      geo: { ...(first.city ? { cities: [first.city] } : {}), ...(first.state ? { states: [first.state] } : {}) },
+      evidence: {
+        source_class: "public_market_research", source: "raw_scraped_leads (Exa public-market research, cited)", observed_at: newest, window_days: 120,
+        engagement: { basis: "observation_count", metrics: { observations: e.rows.length, sources: e.urls.length } }, confidence: clamp01(0.4 + 0.1 * e.urls.length),
+        confidence_basis: `${e.urls.length} cited public page(s); a page's claim is the page's, not verified market data`,
+        theme_key: `public_market_research:${key}`, theme_only: true, private_metrics: false, feeds: e.rule.feeds, facts,
+      },
+    })
+  }
+  return { themes, dropped }
+}
+
 /** PURE. PROPERTY-VALUE TRENDS and MARKET CHANGES from the tenant's own market statistics (facts with source + date; never a valuation). */
 export function marketThemes(rows: readonly MarketDataRow[], now: Date): { themes: IntelTheme[]; dropped: Record<string, number> } {
   const dropped: Record<string, number> = {}
@@ -423,6 +507,8 @@ export function marketThemes(rows: readonly MarketDataRow[], now: Date): { theme
   for (const [k, r] of latest) {
     const ageDays = (now.getTime() - Date.parse(r.data_date as string)) / 86_400_000
     if (!(ageDays <= MARKET_STALE_DAYS)) { dropped.stale_market_data = (dropped.stale_market_data ?? 0) + 1; continue }
+    const basis = priceBasisOf(r.source_type)
+    if (!basis) { dropped.opinion_not_market_data = (dropped.opinion_not_market_data ?? 0) + 1; continue }
     const area = r.zip_code ? `ZIP ${r.zip_code}` : (r.market_area ?? [r.city, r.state].filter(Boolean).join(", "))
     const asOf = String(r.data_date).slice(0, 10)
     const src = `market_data (${r.source_type ?? "source unrecorded"}, as of ${asOf})`
@@ -431,8 +517,8 @@ export function marketThemes(rows: readonly MarketDataRow[], now: Date): { theme
     const base = { sourceUrl: null, topicPostedAt: String(r.data_date), expiresDays: 30, geo }
     if (typeof r.price_trend_pct_1yr === "number") {
       const pct = Math.round(r.price_trend_pct_1yr * 10) / 10
-      const facts = [`Median sale-price trend over 12 months in ${area}: ${pct > 0 ? "+" : ""}${pct}% (${src})`]
-      if (typeof r.median_sale_price === "number") facts.push(`Median sale price in ${area}: $${Math.round(r.median_sale_price).toLocaleString("en-US")} (${src})`)
+      const facts = [`${basis.trendWord} over 12 months in ${area}: ${pct > 0 ? "+" : ""}${pct}% (${src})`]
+      if (typeof r.median_sale_price === "number") facts.push(`${basis.word} in ${area}: $${Math.round(r.median_sale_price).toLocaleString("en-US")} (${src})`)
       themes.push({
         ...base,
         title: `Home values in ${area}: ${pct > 0 ? "up" : pct < 0 ? "down" : "flat"} ${Math.abs(pct)}% over 12 months`,
@@ -447,14 +533,15 @@ export function marketThemes(rows: readonly MarketDataRow[], now: Date): { theme
         },
       })
     }
-    const supply = typeof r.months_of_inventory === "number" ? r.months_of_inventory : null
+    // The refresher writes 0 for "not observed" (RentCast exposes no sold counts) — a 0 is UNKNOWN, never a strong seller's market.
+    const supply = typeof r.months_of_inventory === "number" && r.months_of_inventory > 0 ? r.months_of_inventory : null
     const cls = supply !== null ? marketClassFromSupply(supply) : null
     const derived = move90Of(k, r)
     const move90 = derived ? derived.pct : null
     if ((cls && cls !== "balanced") || (move90 !== null && Math.abs(move90) >= 2)) {
       const facts = [
         ...(supply !== null ? [`Months of supply in ${area}: ${Math.round(supply * 10) / 10} (${src})`] : []),
-        ...(derived ? [`Median sale price in ${area}: $${Math.round(derived.from.median_sale_price as number).toLocaleString("en-US")} on ${String(derived.from.data_date).slice(0, 10)} → $${Math.round(r.median_sale_price as number).toLocaleString("en-US")} on ${asOf}, ${derived.pct > 0 ? "+" : ""}${derived.pct}% (market_data (${r.source_type ?? "source unrecorded"}), two dated rows)`] : []),
+        ...(derived ? [`${basis.word} in ${area}: $${Math.round(derived.from.median_sale_price as number).toLocaleString("en-US")} on ${String(derived.from.data_date).slice(0, 10)} → $${Math.round(r.median_sale_price as number).toLocaleString("en-US")} on ${asOf}, ${derived.pct > 0 ? "+" : ""}${derived.pct}% (market_data (${r.source_type ?? "source unrecorded"}), two dated rows)`] : []),
         ...(typeof r.avg_days_on_market === "number" ? [`Average days on market in ${area}: ${Math.round(r.avg_days_on_market)} (${src})`] : []),
       ]
       const label = cls ? cls.replace(/_/g, " ").replace("sellers", "seller's").replace("buyers", "buyer's") : null

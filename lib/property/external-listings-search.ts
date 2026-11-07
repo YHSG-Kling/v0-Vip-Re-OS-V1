@@ -103,6 +103,13 @@ export interface ExternalListing {
   hoaMonthly?: number | null
   /** The status AS THE SOURCE REPORTS IT. For RentCast this is a property-data service's view, not an MLS verification. */
   sourceStatus?: string | null
+  /**
+   * Wave 150 (lane 150W, owner ruling 2026-11-06): the originating MLS's name and listing number as a RentCast
+   * /listings/sale row reports them (`mlsName` / `mlsNumber` — rentcast.ts already maps both). The portal shows the MLS
+   * name as the listing's SOURCE, and a saved RentCast listing carries both. Null when absent (IDX rows: not read).
+   */
+  mlsName?: string | null
+  mlsNumber?: string | null
 }
 
 export interface ExternalSearchInput {
@@ -349,11 +356,15 @@ function rentcastToExternal(l: RentcastListing, listingType: ExternalListingType
     yearBuilt: l.yearBuilt,
     propertyType: l.propertyType,
     daysOnMarket: l.daysOnMarket,
-    photoUrl: l.photoUrl,
+    // Owner R9 (2026-11-06): RentCast is NEVER a photo source — its /listings/sale schema carries no photo field, and
+    // listing photos come only from the tenant's IDX/MLS feed or the tenant user's own uploads (lib/portal/saved-homes.ts).
+    photoUrl: null,
     latitude: l.latitude ?? null,
     longitude: l.longitude ?? null,
     lotSizeSqft: l.lotSizeSqft ?? null,
     hoaMonthly: l.hoaMonthly ?? null,
     sourceStatus: l.status ?? null,
+    mlsName: l.mlsName ?? null,
+    mlsNumber: l.mlsNumber ?? null,
   }
 }
