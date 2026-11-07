@@ -371,7 +371,7 @@
     "lib/lead-pipeline/exa-sourcer.ts": 2,
     "lib/lead-pipeline/osint-sourcer.ts": 2,
     "lib/lead-pipeline/parked-retention.ts": 4,
-    "lib/lead-pipeline/permit-sourcer.ts": 4,
+    "lib/lead-pipeline/permit-sourcer.ts": 3,
     "lib/lead-pipeline/pooled-pull.ts": 3,
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
@@ -2495,7 +2495,7 @@
     "app/dashboard/settings/license-ce/ce-center-panel.tsx": 1,
     "app/dashboard/settings/license-ce/license-ce-client.tsx": 1,
     "app/dashboard/settings/listing-task-templates/listing-task-templates-client.tsx": 1,
-    "app/dashboard/settings/offices/actions.ts": 1,
+    "app/dashboard/settings/offices/actions.ts": 2,
     "app/dashboard/settings/podcast-channels/podcast-channels-client.tsx": 1,
     "app/dashboard/settings/required-documents/required-doc-row-actions.tsx": 1,
     "app/dashboard/settings/required-documents/required-docs-settings-client.tsx": 1,
@@ -3023,7 +3023,7 @@
     "lib/ai-isa/direct-mail-trigger.ts": 2,
     "lib/ai-isa/email-generator.ts": 2,
     "lib/ai-isa/first-touch-copy.ts": 1,
-    "lib/ai-isa/followup-arbiter.ts": 16,
+    "lib/ai-isa/followup-arbiter.ts": 17,
     "lib/ai-isa/followup-policy.ts": 4,
     "lib/ai-isa/generate-handoff-brief.ts": 1,
     "lib/ai-isa/ghost-escalation.ts": 2,
@@ -3182,12 +3182,11 @@
     "lib/buyer-offers/address-analysis.ts": 1,
     "lib/buyer-offers/affordability.ts": 4,
     "lib/buyer-offers/home-comparison.ts": 1,
-    "lib/buyer-search/buyer-constraints.ts": 2,
     "lib/buyer-search/buyer-criteria.ts": 9,
     "lib/buyer-search/conversation-criteria.ts": 18,
     "lib/buyer-search/conversational-search.ts": 13,
     "lib/buyer-search/criteria-turn.ts": 2,
-    "lib/buyer-search/explanation-evidence.ts": 12,
+    "lib/buyer-search/explanation-evidence.ts": 14,
     "lib/buyer-search/explanation-generator.ts": 6,
     "lib/buyer-search/external-match.ts": 4,
     "lib/buyer-search/fair-housing.ts": 4,
@@ -3201,7 +3200,7 @@
     "lib/buyer-search/parse-buyer-criteria.ts": 1,
     "lib/buyer-search/persona-inference.ts": 2,
     "lib/buyer-search/portal-cards.ts": 2,
-    "lib/buyer-search/search-engine.ts": 4,
+    "lib/buyer-search/search-engine.ts": 7,
     "lib/buyer-search/search-logger.ts": 4,
     "lib/buyer-search/voice-turn.ts": 2,
     "lib/buyer-search/written-criteria-alert.ts": 1,
@@ -4136,7 +4135,7 @@
     "lib/lead-pipeline/offer-rejection-recovery.ts": 1,
     "lib/lead-pipeline/osint-sourcer.ts": 4,
     "lib/lead-pipeline/parked-retention.ts": 6,
-    "lib/lead-pipeline/permit-sourcer.ts": 6,
+    "lib/lead-pipeline/permit-sourcer.ts": 5,
     "lib/lead-pipeline/perplexity-enrichment.ts": 1,
     "lib/lead-pipeline/persona-drift-runner.ts": 1,
     "lib/lead-pipeline/persona-drift.ts": 1,
@@ -4145,7 +4144,6 @@
     "lib/lead-pipeline/portal-lead-intake.ts": 3,
     "lib/lead-pipeline/processing-status.ts": 3,
     "lib/lead-pipeline/promotion-gate-health.ts": 2,
-    "lib/lead-pipeline/pull-cost.ts": 1,
     "lib/lead-pipeline/raw-record-types.ts": 6,
     "lib/lead-pipeline/reactivation-cadence.ts": 1,
     "lib/lead-pipeline/reactivation-enroller.ts": 1,
@@ -4211,7 +4209,6 @@
     "lib/listing-presentation/marketing-system-resolver.ts": 1,
     "lib/listing-presentation/marketing-system.ts": 2,
     "lib/listing-presentation/prelisting-delivery.ts": 5,
-    "lib/listing-presentation/section-delivery-arbiter.ts": 1,
     "lib/listing-presentation/section-drip.ts": 6,
     "lib/listing-presentation/section-narration-orchestrator.ts": 3,
     "lib/listing-presentation/section-narration.ts": 3,
@@ -4478,7 +4475,7 @@
     "lib/portal/require-contact-access.ts": 2,
     "lib/portal/resolve-education-context.ts": 1,
     "lib/portal/resolve-seller-context.ts": 4,
-    "lib/portal/saved-homes.ts": 9,
+    "lib/portal/saved-homes.ts": 7,
     "lib/portal/seller-context-presentation.ts": 2,
     "lib/portal/seller-journey-copy.ts": 2,
     "lib/portal/static-lesson-bridge.ts": 3,
@@ -4732,7 +4729,6 @@
     "lib/transactions/earnest-terms.ts": 4,
     "lib/transactions/esign-doc-sync-sweep.ts": 1,
     "lib/transactions/final-compliance-check.ts": 2,
-    "lib/transactions/gift-order-trigger.ts": 1,
     "lib/transactions/hazard-insurance.ts": 4,
     "lib/transactions/milestone-auto-trigger.ts": 1,
     "lib/transactions/milestone-catalog.ts": 3,
@@ -4765,7 +4761,7 @@
     "lib/validations/index.ts": 6,
     "lib/vendor/assignment-access.ts": 2,
     "lib/vendor-governance/attribution.ts": 2,
-    "lib/vendor-governance/budget-eval.ts": 5,
+    "lib/vendor-governance/budget-eval.ts": 6,
     "lib/vendor-governance/budget-gate.ts": 4,
     "lib/vendor-governance/budget-visibility.ts": 2,
     "lib/vendor-governance/cost-normalizer.ts": 7,
@@ -13110,7 +13106,8 @@
       "ListingTaskTemplatesClient"
     ],
     "app/dashboard/settings/offices/actions.ts": [
-      "grantOfficeMembershipAction"
+      "grantOfficeMembershipAction",
+      "revokeOfficeMembershipAction"
     ],
     "app/dashboard/settings/podcast-channels/podcast-channels-client.tsx": [
       "PodcastChannelsClient"
@@ -15026,7 +15023,8 @@
       "respondToLifeChangeSignal",
       "arbitrateAndRecordExperience",
       "respondToPromisedDeliverable",
-      "arbitrateProspectFollowup"
+      "arbitrateProspectFollowup",
+      "arbitrateSectionDelivery"
     ],
     "lib/ai-isa/followup-policy.ts": [
       "resolveFollowupPolicy",
@@ -16122,10 +16120,6 @@
     "lib/buyer-offers/home-comparison.ts": [
       "compareHomes"
     ],
-    "lib/buyer-search/buyer-constraints.ts": [
-      "statedHardConstraints",
-      "answerStatedConstraints"
-    ],
     "lib/buyer-search/buyer-criteria.ts": [
       "defaultCriteriaConsent",
       "provenanceOf",
@@ -16188,7 +16182,9 @@
       "claimsFromFit",
       "validateClaims",
       "inventedPlaces",
-      "warmVoiceRubric"
+      "warmVoiceRubric",
+      "statedHardConstraints",
+      "answerStatedConstraints"
     ],
     "lib/buyer-search/explanation-generator.ts": [
       "generateMatchExplanation",
@@ -16260,7 +16256,10 @@
       "buyerShoppableListingStatuses",
       "loadExplanationVoice",
       "searchPropertiesCore",
-      "explainPropertyMatchCore"
+      "explainPropertyMatchCore",
+      "savedHomeOrigin",
+      "licensedResultPhotoUrl",
+      "isHttpUrl"
     ],
     "lib/buyer-search/search-logger.ts": [
       "logBuyerSearchMatch",
@@ -21658,7 +21657,6 @@
     ],
     "lib/lead-pipeline/permit-sourcer.ts": [
       "buildPermitSearchQueries",
-      "extractApplicantName",
       "extractPropertyAddress",
       "normalizePermitSearchResult",
       "sourcePermitPrelistingIntent",
@@ -21699,9 +21697,6 @@
     "lib/lead-pipeline/promotion-gate-health.ts": [
       "isPermanentlyStuck",
       "reportStuckRawLeads"
-    ],
-    "lib/lead-pipeline/pull-cost.ts": [
-      "splitPullCost"
     ],
     "lib/lead-pipeline/raw-record-types.ts": [
       "stableContentDigest",
@@ -22059,9 +22054,6 @@
       "proposePrelistingDeliveryWhenReady",
       "sendPrelistingAnnouncementEmail",
       "sweepPrelistingDeliveryGate"
-    ],
-    "lib/listing-presentation/section-delivery-arbiter.ts": [
-      "arbitrateSectionDelivery"
     ],
     "lib/listing-presentation/section-drip.ts": [
       "planPresentationSections",
@@ -23568,11 +23560,9 @@
       "getOfferSummary"
     ],
     "lib/portal/saved-homes.ts": [
-      "savedHomeOrigin",
       "savedHomeSourceLine",
       "ownerUploadMediaIds",
       "licensedPhotoFor",
-      "licensedResultPhotoUrl",
       "parsePropertyLink",
       "saveHomeFromLink",
       "cleanListingRef",
@@ -24825,9 +24815,6 @@
       "evaluateFinalCompliance",
       "runFinalComplianceCheck"
     ],
-    "lib/transactions/gift-order-trigger.ts": [
-      "checkAndTriggerGiftOrder"
-    ],
     "lib/transactions/hazard-insurance.ts": [
       "selectHazardService",
       "readHazardInsurance",
@@ -24975,7 +24962,8 @@
       "decideSpendBackpressure",
       "vendorBudgetForTier",
       "aggregateBrokerageSpend",
-      "aggregateVendorBreakdown"
+      "aggregateVendorBreakdown",
+      "splitPullCost"
     ],
     "lib/vendor-governance/budget-gate.ts": [
       "checkVendorBudget",

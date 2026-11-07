@@ -251,10 +251,13 @@ console.log("\n[the truth can actually ARRIVE — the intakes exist]")
   check("the Lob event webhook exists", lobHook.length > 0)
   check("…secret-gated the same way",
     /LOB_WEBHOOK_SECRET/.test(lobHook) && /status: 404/.test(lobHook))
-  check("…and only mirrors TERMINAL events onto the campaign, not every hop",
-    /campaignStatusFor/.test(lobHook) && /return null/.test(lobHook))
-  check("…keyed on lob_order_id, the column five writers already populate",
-    /lob_order_id/.test(lobHook))
+  // Re-asserted to the RULE (wave 150, lane 150Z): a piece's outcome is the PIECE's — never mirrored onto the campaign
+  // (the live campaign CHECK refuses "delivered"; one returned piece must not fail a whole campaign).
+  const lobCode = stripComments(lobHook)
+  check("…never mirrors a per-piece outcome onto the campaign's status (no direct_mail_campaigns UPDATE in the receiver)",
+    !/from\("direct_mail_campaigns"\)\s*\.update\(/.test(lobCode) && !/campaignStatusFor\(/.test(lobCode))
+  check("…keyed on lob_order_id AND on every later piece's direct_mail_recipients.provider_piece_id (m985)",
+    /\.eq\("lob_order_id", pieceId\)/.test(lobCode) && /\.eq\("provider_piece_id", pieceId\)/.test(lobCode))
 
   const dispatch = src("lib/providers/dispatch.ts")
   check("dispatchSms opens a PENDING claim on the Twilio sid",

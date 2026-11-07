@@ -296,6 +296,17 @@ check("T5 AFTER the consented move: pinned to Beaches, location + team membershi
   placed.complete && svc.tables.users.find((u) => u.id === sam)?.location_id === bch!.id && samMems.some((m) => m.scope_kind === "location" && m.location_id === bch!.id && m.source === "transfer" && m.evidence?.transfer_request_id === transferEvidence.transfer_request_id)
     && samMems.some((m) => m.scope_kind === "team" && m.team_id === ridge!.id && m.source === "transfer") && mems(multi.brokerageId, multi.userId).filter((m) => m.scope_kind === "tenant").length === 1, placed.errors.join("; "))
 check("T5 the placed member's scope: own work (membership ≠ leadership) — two active memberships that grant no aggregation", samMems.length === 2 && (await scopeOf(sam, multi.brokerageId)).ok && ((await scopeOf(sam, multi.brokerageId)) as any).scope.kind === "own")
+// T5b (wave 150, lane 150Z): the RAIL itself calls the placement — read from STRIPPED source (a tombstone is not a call site).
+{
+  const railCode = stripComments(read("lib/kernel/brokerage-transfer.ts"))
+  const calls = /provisionTenantStructure\(svc, \{/.test(blankStrings(railCode)) && /source: "transfer"/.test(railCode) && /tier: "transfer_placement"/.test(railCode)
+  const carried = /placement: req\.verification\.placement/.test(railCode)
+  const verified = /from\("locations"\)\.select\("id"\)\.eq\("id", locId\)\.eq\("brokerage_id", targetId\)/.test(railCode) && /from\("teams"\)\.select\("id, location_id"\)\.eq\("id", teamId\)\.eq\("brokerage_id", targetId\)/.test(railCode)
+  const noOffice = planTenantOffices("transfer_placement", "X", null)
+  const control = planTenantOffices("brokerage", "X", null)
+  check("T5b brokerage-transfer.ts's membership step CALLS provisionTenantStructure (source 'transfer', non-office tier), carries the request's tenant-verified office/team through verification, and the placement tier mints no office (positive control: a brokerage tier plans its head office)",
+    calls && carried && verified && noOffice.ok && noOffice.offices.length === 0 && control.ok && control.offices.length === 1, JSON.stringify({ calls, carried, verified }))
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[T6 · static — migrations, vocabulary, the stripped-source name census]")
@@ -350,7 +361,7 @@ check("T7 every export of the door is async (a \"use server\" export is a public
 console.log("\n[blind spots]")
 console.log("  · Supabase Auth (the member invite) and Stripe (the paid checkout) are injected; the REAL inviteTenantMember path is driven by test:subscriber-provisioning")
 console.log("  · RLS and the composite FKs are read from m957/m958, not exercised against Postgres; the legacy UNIQUE is modelled only in the 23505 fixture")
-console.log("  · brokerage-transfer.ts does not yet CALL the placement (Outside-lane hook, notes); T5 drives the placement after simulating the rail's membership step")
+console.log("  · T5 drives the placement after simulating the rail's membership step; T5b proves the rail CALLS it by stripped source — the full rail run is test:brokerage-identity's (no office fixture there)")
 console.log("  · consumers that still scope by egress-scope.ts user_type ladder (command center, exception center, reporting) are not re-pointed here (Outside-lane)")
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

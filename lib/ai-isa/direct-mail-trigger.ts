@@ -18,6 +18,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { dispatchDirectMail, type DirectMailPieceType } from '@/lib/providers/dispatch'
+import { routeMailFormat } from '@/lib/direct-mail/piece-type'
 
 /**
  * DUAL-CLASS LANE (lane W3 2026-09-01). `leads.id` and `contacts.id` are
@@ -302,8 +303,13 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
   }
 
   try {
-    const postcardTpl = context.templateId ?? process.env.LOB_DEFAULT_TEMPLATE_ID ?? ''
-    const letterTpl   = context.letterTemplateId ?? process.env.LOB_DEFAULT_LETTER_TEMPLATE_ID ?? postcardTpl
+    // ONE FORMAT ROUTER (wave 150, lane 150Z — lane 150R Outside-lane 6, R5): a caller-named template wins; otherwise each
+    // piece takes its OWN global format template through routeMailFormat. The letter NEVER defaults to the postcard id
+    // (exactly the alias the router refuses); an unconfigured format is '' and the dispatcher refuses it before spend.
+    const postcardRoute = routeMailFormat('postcard')
+    const letterRoute   = routeMailFormat('letter')
+    const postcardTpl = context.templateId ?? (postcardRoute.ok ? postcardRoute.templates.templateId : '')
+    const letterTpl   = context.letterTemplateId ?? (letterRoute.ok ? letterRoute.templates.templateId : '')
 
     const results = []
     for (const piece of pieceTypes) {

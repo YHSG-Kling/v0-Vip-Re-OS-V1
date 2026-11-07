@@ -392,11 +392,15 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // (the simulator's "Exa seller content → seller intent" fixture) as BUYER leads. The KEY keeps
   // its historical spelling: it is the ledger's usage_type on every Exa row already booked, and a
   // rename would split one source's cost history in two (CLAUDE.md §6 — one vocabulary).
+  // R9 (owner 2026-11-06; wave 150, lane 150Z — lane 150KLMO Outside-lane 3): the Exa lane is now PUBLIC-MARKET
+  // RESEARCH, never people — exa-sourcer.ts normalizeExaResult emits cited market / job_civic_event / anonymous_question
+  // evidence (behaviorType 'market_research') and the subject gate keeps it off the Lead door. The map entry says the
+  // same; the boost list stays only as the page's topic lexicon (it never scores a person).
   exa_buyer_intent: {
     intentType:                'unknown',
     leadType:                  'unknown',
     motivationType:            'ai_neural_intent',
-    behaviorType:              'search_signal',
+    behaviorType:              'market_research',
     scoreRange:                [35, 65],
     baseScore:                 50,
     boostSignals:              ['pre_approved', 'looking_to_buy', 'house_hunting', 'first_home', 'relocating', 'timeline', 'selling', 'fsbo', 'must_sell', 'need_a_realtor', 'recommend_a_realtor', 'investor', 'cash_buyer'],

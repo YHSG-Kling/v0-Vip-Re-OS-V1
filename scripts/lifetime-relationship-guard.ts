@@ -16,7 +16,7 @@
 //      playbooks carry no offsets and no "day-N" timing in their briefs; the two carried constants are gone from the census.
 // The summary line is `RESULT: N passed, M failed` (never the chain runner's own exit token).
 
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { memSupabase } from "./in-memory-supabase"
 import { stripComments } from "./strip-comments"
@@ -70,10 +70,15 @@ async function main() {
   check("closing a transaction plants the closing-gift TASK for the agent (activity closing_gift_due)", /activity_type:\s*"closing_gift_due"/.test(tx))
   const PURCHASE = /\b(?:stripe\.|paymentIntents|charges\.create|placeOrder|createOrder|checkout\.sessions)\b/
   check("POSITIVE CONTROL: a planted purchase call is seen", PURCHASE.test(stripComments("await stripe.paymentIntents.create({ amount })\n")))
-  const giftFiles = ["lib/kernel/transactions.ts", "lib/listing-lifecycle/lifecycle-event-tasks.ts", "lib/transactions/gift-order-trigger.ts"]
+  const giftFiles = ["lib/kernel/transactions.ts", "lib/listing-lifecycle/lifecycle-event-tasks.ts"].filter((f) => existsSync(join(ROOT, f)))
   check("no gift path spends money on its own (no purchase call in the gift writers)", !giftFiles.some((f) => PURCHASE.test(code(f))))
-  const giftTriggerCallers = product.filter((f) => f !== "lib/transactions/gift-order-trigger.ts" && /checkAndTriggerGiftOrder\(/.test(code(f)))
-  console.log(`    info (not a waypoint assertion): lib/transactions/gift-order-trigger.ts live callers = ${giftTriggerCallers.length} — an orphan duplicate of the close command's gift task (Outside-lane, lane 150SZ notes)`)
+  // ONE closing-gift writer (wave 150, lane 150Z — the duplicate checkAndTriggerGiftOrder was merged onto the close command
+  // and deleted): no product file DEFINES a second gift-order trigger, and the survivor carries the at-most-once check.
+  const secondTrigger = product.filter((f) => /function\s+checkAndTriggerGiftOrder\b/.test(code(f)))
+  check("ONE closing-gift writer: no second gift-order trigger is defined anywhere (the duplicate was merged onto the close command)", secondTrigger.length === 0, secondTrigger.join(", "))
+  check("the survivor plants the gift task at most once per client (an existing closing_gift_due for the transaction + contact is read, its error read)",
+    /\.eq\("activity_type", "closing_gift_due"\)/.test(tx) && /priorGiftErr/.test(tx))
+  check("POSITIVE CONTROL: a planted second trigger definition is seen", /function\s+checkAndTriggerGiftOrder\b/.test(stripComments("export async function checkAndTriggerGiftOrder(p) {}\n")))
 
   // ══ §D ══════════════════════════════════════════════════════════════════════════════════════
   section("D · education, and the support FAQ → education loop")

@@ -191,6 +191,11 @@ const FORBIDDEN_POLICY_PATHS: ReadonlyArray<{ re: RegExp; surface: ForbiddenSurf
   { re: /^ai_isa_settings(:[^.]*)?\.(require_broker_approval|auto_send[a-z_]*)$/, surface: "authority_policy", why: "whether the ISA may act without a human" },
   { re: /^ai_isa_settings(:[^.]*)?\.(blocked_lifecycle_states|lead_allowed_channels|contact_allowed_channels|quiet_hours[a-z_]*|[a-z_]*consent[a-z_]*|[a-z_]*opt_out[a-z_]*|[a-z_]*dnc[a-z_]*)$/, surface: "compliance_boundary", why: "who may be contacted, on which channel, when" },
   { re: /(^|\.)([a-z_]*fair_housing[a-z_]*|[a-z_]*compliance[a-z_]*|[a-z_]*tcpa[a-z_]*)(\.|$)/, surface: "compliance_boundary", why: "a compliance boundary" },
+  // wave 150, lane 150Z (lane 150BAA Outside-lane): entitlements named at the FIRST gate, so a learner's proposal is refused at
+  // classifyProposalSurface too (it was caught one step later by classifyGovernedChange / promotionDecision). Tenant VISIBILITY is
+  // deliberately NOT added here: classifyGovernedChange names it rls_security (test:cross-office-rls), and an earlier
+  // authority_policy match would relabel it — the refusal already holds at that step and at promotion.
+  { re: /^(entitlements?|feature_flags?|plan_features)(\.|:|$)/, surface: "financial_rule", why: "what a tenant's plan entitles it to — billing, never a learned adjustment" },
 ]
 
 /** PURE — the forbidden surface a policy path touches (null = not named forbidden). */

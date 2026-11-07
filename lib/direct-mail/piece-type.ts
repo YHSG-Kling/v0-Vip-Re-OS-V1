@@ -446,7 +446,8 @@ export function buildMailMergeVariables(brand: MailBrandFacts, piece: MailPieceF
 /** Where each brand tier came from (resolveBrandContext.source) + office / return-address provenance. */
 export interface MailBrandProvenance {
   logo: string; color: string; tagline: string; license: string
-  office: "not_in_brand_cascade"; returnAddress: "brokerage_of_record" | "none"
+  /** Where the sender's office came from — THE one office rule (lib/kernel/resolve-user-office.ts resolveUserOffice). */
+  office: "user" | "agent" | "none"; returnAddress: "brokerage_of_record" | "none"
   readErrors: string[]
 }
 
@@ -455,12 +456,11 @@ export interface MailBrandProvenance {
  * with buildMailMergeVariables): tenant (brokerage of record), team, the agent's license / photo, and the
  * return address of the brokerage of record.
  *
- * THE OFFICE IS NOT READ HERE, and that is said, not hidden: the one office rule is
- * lib/kernel/resolve-user-office.ts, and importing it from this module pushed app/crm/page.tsx to 1302
- * first-party modules (test:proxy-graph-budget, cap 1300). The office belongs in the ONE brand cascade
- * (resolveBrandContext) — Outside-lane for its owner (lane 150R notes); until then `office_name` prints
- * empty and provenance.office reads "not_in_brand_cascade". `locations` carries no ZIP, so the return
- * address stays the brokerage of record's either way. The tenant is the CALLER's session tenant (passed in by a gated server
+ * THE SENDER'S OFFICE (wave 150, lane 150Z — lane 150R Outside-lane 3): read through THE one office rule
+ * (lib/kernel/resolve-user-office.ts resolveUserOffice — the person's office of record, else their agent row's), then the
+ * office's own name from `locations`, pinned to this tenant. The module was already in app/crm/page.tsx's graph when
+ * this was wired (measured 1300 → 1300; the earlier +2 was before 150C put it there). `locations` carries no ZIP, so the
+ * return address stays the brokerage of record's. The tenant is the CALLER's session tenant (passed in by a gated server
  * caller, never a request body). Every refused read is SAID in readErrors and falls through.
  */
 export async function readMailBrandFacts(args: {
@@ -494,12 +494,25 @@ export async function readMailBrandFacts(args: {
     agentPhotoUrl = ((ag as { photo_url?: string | null } | null)?.photo_url ?? "").trim() || null
   }
 
+  let officeName: string | null = null
+  let officeSource: MailBrandProvenance["office"] = "none"
+  if (args.agentUserId) {
+    const { resolveUserOffice } = await import("@/lib/kernel/resolve-user-office")
+    const office = await resolveUserOffice(svc as never, args.agentUserId)
+    if (office.locationId) {
+      const { data: loc, error: locErr } = await svc.from("locations").select("name").eq("id", office.locationId).eq("brokerage_id", args.brokerageId).maybeSingle()
+      if (locErr) readErrors.push(`locations(name): ${locErr.message}`)
+      officeName = ((loc as { name?: string | null } | null)?.name ?? "").trim() || null
+      if (officeName) officeSource = office.source
+    }
+  }
+
   const facts: MailBrandFacts = {
     displayName: brand.displayName,
     legalBrokerageName: brand.brokerageName,
     dba: b.dba ?? null,
     teamName: brand.teamName ?? null,
-    officeName: null,
+    officeName,
     agentName: brand.agentName ?? null,
     agentLicenseLine: brand.display.licenseLine,
     agentPhotoUrl,
@@ -519,7 +532,7 @@ export async function readMailBrandFacts(args: {
     facts,
     provenance: {
       logo: brand.source.logo, color: brand.source.color, tagline: brand.source.tagline, license: brand.source.license,
-      office: "not_in_brand_cascade", returnAddress: returnAddress ? "brokerage_of_record" : "none", readErrors,
+      office: officeSource, returnAddress: returnAddress ? "brokerage_of_record" : "none", readErrors,
     },
   }
 }

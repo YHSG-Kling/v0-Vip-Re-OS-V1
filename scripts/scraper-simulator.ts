@@ -66,7 +66,6 @@ import {
 import {
   buildPermitSearchQueries,
   normalizePermitSearchResult,
-  extractApplicantName,
   extractPropertyAddress,
   sourcePermitPrelistingIntent,
   routePermitPrelistingHits,
@@ -1658,10 +1657,13 @@ function testLane73DPermitSourcerPure() {
   )
   check("permit hit → source tagged permit_prelisting_intent", permitHit.source === "permit_prelisting_intent")
   check("permit hit → seller intent (a permit/pre-listing hit is definitionally a seller signal, never buyer)", permitHit.intentType === "seller")
-  check("permit hit → applicant name extracted from 'permit was issued to <Name>'", permitHit.firstName === "John" && permitHit.lastName === "Smith")
+  // R9 (wave 150, lane 150Z re-assertion): Exa is public-market research, NEVER people — the named applicant is NOT read.
+  check("R9: permit hit names NO person even when the page says 'permit was issued to <Name>' (no first/last name, no author in the payload)",
+    !permitHit.firstName && !permitHit.lastName && !("author" in (permitHit.rawPayload ?? {})))
   check("permit hit → property address extracted", permitHit.propertyAddress === "123 Main St")
+  check("R9: an address-bearing permit hit is PROPERTY evidence on the C35 envelope, with the page as its proof URL",
+    permitHit.envelope?.subjectKind === "property" && (permitHit.envelope?.proofUrls ?? []).includes("https://county.gov/permits/1"))
   check("permit hit → category + lane signal present", permitHit.intentSignals.includes("permit_prelisting_intent") && permitHit.intentSignals.includes("permit"))
-  check("permit hit is viable (name + city)", isViableRecord(permitHit))
 
   const demoHit = normalizePermitSearchResult(
     {
@@ -1680,11 +1682,11 @@ function testLane73DPermitSourcerPure() {
     } as any,
     { city: "Austin", state: "TX" }, "probate",
   )
-  check("probate hit → applicant name extracted from 'estate of <Name>'", probateHit.firstName === "Mary" && probateHit.lastName === "Jones")
+  check("R9: probate hit names NO person ('estate of <Name>' is not read) and, with no address, is a job/civic event — never a person subject",
+    !probateHit.firstName && !probateHit.lastName && probateHit.envelope?.subjectKind === "job_civic_event")
   check("probate hit → probate signal present", probateHit.intentSignals.includes("probate"))
 
-  // POSITIVE CONTROLS — the extractors must never fabricate a match out of unrelated text.
-  check("POSITIVE CONTROL: extractApplicantName never fabricates a name from unrelated text", extractApplicantName("Nothing here mentions anyone at all.") === null)
+  // POSITIVE CONTROL — the address extractor must never fabricate a match out of unrelated text.
   check("POSITIVE CONTROL: extractPropertyAddress never fabricates an address from unrelated text", extractPropertyAddress("Nothing here mentions any address at all.") === null)
 
   check("permit_prelisting_intent has a REAL scoring entry (not the silent fallback)", hasScoringEntry("permit_prelisting_intent"))

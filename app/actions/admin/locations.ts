@@ -24,18 +24,31 @@
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
-import { pickUserOffice } from "@/lib/kernel/resolve-user-office"
+import { pickUserOffice, resolveViewerHierarchy } from "@/lib/kernel/resolve-user-office"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
-async function requireAdmin(): Promise<
-  | { ok: true; brokerageId: string; userType: string }
+/**
+ * THE OFFICE GATE (wave 150, lane 150Z — lane 150C Outside-lane 2, C34). The role check is the floor; the SCOPE is the
+ * C34 hierarchy (resolveViewerHierarchy, session ids only): the whole-tenant office roster — list, create, delete, place
+ * people — needs the aggregated view (a tenant leadership grant, or the single-office roster admin); editing ONE office's
+ * identity is also open to that office's own leadership (`officeId` in scope.locationIds). A user_type alone never
+ * widens a multi-location tenant. Fail closed: an unreadable hierarchy refuses.
+ */
+async function requireAdmin(opts: { officeId?: string } = {}): Promise<
+  | { ok: true; brokerageId: string; userType: string; userId: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
-  return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType }
+  const h = await resolveViewerHierarchy(createServiceClient() as never, { userId: ctx.userId, brokerageId: ctx.brokerageId })
+  if (!h.ok) return { ok: false, error: `Your office scope could not be read (${h.error}) — refused.` }
+  const mayAct = h.scope.aggregate || (!!opts.officeId && h.scope.locationIds.includes(opts.officeId))
+  if (!mayAct) return { ok: false, error: opts.officeId ? "That office is outside your scope." : "Managing every office needs tenant leadership." }
+  return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType, userId: ctx.userId }
 }
+
+const trimOr = (v: unknown, max = 160): string | null => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null)
 
 export interface OfficeLocation {
   id: string
@@ -100,11 +113,20 @@ export async function createLocationAction(input: {
   address?: string
   city?: string
   state?: string
+  /** C34 office identity (m957): the office's own legal identity, licence and seat ownership. */
+  legalName?: string
+  dba?: string
+  licenseNumber?: string
+  licenseState?: string
+  seatCap?: number | null
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const auth = await requireAdmin()
   if (!auth.ok) return auth
   const name = input.name?.trim()
   if (!name) return { ok: false, error: "Office name is required" }
+  const licenseState = trimOr(input.licenseState, 2)?.toUpperCase() ?? null
+  if (licenseState && !/^[A-Z]{2}$/.test(licenseState)) return { ok: false, error: "Licence state must be a two-letter US state code" }
+  if (input.seatCap !== undefined && input.seatCap !== null && (!Number.isInteger(input.seatCap) || input.seatCap < 0)) return { ok: false, error: "Seat ownership must be a whole number of seats (0 or more)" }
 
   const svc = createServiceClient()
   const { data, error } = await svc
@@ -115,6 +137,15 @@ export async function createLocationAction(input: {
       address: input.address?.trim() || null,
       city: input.city?.trim() || null,
       state: input.state?.trim() || null,
+      // The office's idempotency key inside the tenant (m957 UNIQUE (brokerage_id, office_code)) — never the name.
+      office_code: `office-${crypto.randomUUID().slice(0, 8)}`,
+      created_by_user_id: auth.userId,
+      legal_name: trimOr(input.legalName),
+      dba: trimOr(input.dba),
+      license_number: trimOr(input.licenseNumber, 64),
+      license_state: licenseState,
+      seat_cap: input.seatCap ?? null,
+      status: "active",
     })
     .select("id")
     .single()
@@ -125,9 +156,15 @@ export async function createLocationAction(input: {
 
 export async function updateLocationAction(
   id: string,
-  patch: { name?: string; address?: string; city?: string; state?: string },
+  patch: {
+    name?: string; address?: string; city?: string; state?: string
+    /** C34 office identity (m957). */
+    legalName?: string; dba?: string; licenseNumber?: string; licenseState?: string
+    territories?: string[]; brandOverrides?: Record<string, unknown>; settings?: Record<string, unknown>
+    seatCap?: number | null; status?: "active" | "archived"
+  },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const auth = await requireAdmin()
+  const auth = await requireAdmin({ officeId: id })
   if (!auth.ok) return auth
   const update: Record<string, unknown> = {}
   if (patch.name !== undefined) {
@@ -138,11 +175,42 @@ export async function updateLocationAction(
   if (patch.address !== undefined) update.address = patch.address.trim() || null
   if (patch.city !== undefined) update.city = patch.city.trim() || null
   if (patch.state !== undefined) update.state = patch.state.trim() || null
+  if (patch.legalName !== undefined) update.legal_name = trimOr(patch.legalName)
+  if (patch.dba !== undefined) update.dba = trimOr(patch.dba)
+  if (patch.licenseNumber !== undefined) update.license_number = trimOr(patch.licenseNumber, 64)
+  if (patch.licenseState !== undefined) {
+    const ls = trimOr(patch.licenseState, 2)?.toUpperCase() ?? null
+    if (ls && !/^[A-Z]{2}$/.test(ls)) return { ok: false, error: "Licence state must be a two-letter US state code" }
+    update.license_state = ls
+  }
+  if (patch.territories !== undefined) {
+    if (!Array.isArray(patch.territories)) return { ok: false, error: "Territories must be a list" }
+    update.territories = patch.territories.map((t) => String(t).trim()).filter(Boolean).slice(0, 200)
+  }
+  if (patch.brandOverrides !== undefined) {
+    if (!patch.brandOverrides || typeof patch.brandOverrides !== "object" || Array.isArray(patch.brandOverrides)) return { ok: false, error: "Brand overrides must be an object" }
+    update.brand_overrides = patch.brandOverrides
+  }
+  if (patch.settings !== undefined) {
+    if (!patch.settings || typeof patch.settings !== "object" || Array.isArray(patch.settings)) return { ok: false, error: "Office settings must be an object" }
+    update.settings = patch.settings
+  }
+  if (patch.seatCap !== undefined) {
+    if (patch.seatCap !== null && (!Number.isInteger(patch.seatCap) || patch.seatCap < 0)) return { ok: false, error: "Seat ownership must be a whole number of seats (0 or more)" }
+    update.seat_cap = patch.seatCap
+  }
+  // locations.status CHECK (m957, scripts/check-vocabularies.ts): active | archived.
+  if (patch.status !== undefined) {
+    if (patch.status !== "active" && patch.status !== "archived") return { ok: false, error: "Office status must be active or archived" }
+    update.status = patch.status
+  }
   if (Object.keys(update).length === 0) return { ok: true }
+  update.updated_at = new Date().toISOString()
 
   const svc = createServiceClient()
-  const { error } = await svc.from("locations").update(update).eq("id", id).eq("brokerage_id", auth.brokerageId)
+  const { data: changed, error } = await svc.from("locations").update(update).eq("id", id).eq("brokerage_id", auth.brokerageId).select("id")
   if (error) return { ok: false, error: error.message }
+  if ((changed ?? []).length !== 1) return { ok: false, error: "Office not found in your workspace" }
   revalidatePath("/dashboard/admin/locations")
   return { ok: true }
 }

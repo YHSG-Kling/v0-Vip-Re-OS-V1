@@ -680,6 +680,116 @@ ORDER BY a.id;
 
 **Positive control for Q4/Q5:** before §F/§G are run, Q5 must read `bucket_wide_on_five ≥ 19` (the 2026-11-03 live count). Zero while Q3 still says `open` means the regex is blind — re-read Q4 raw before believing any count.
 
+## L. Wave 150 — owner SQL and owner decisions carried by the convergence lane (150Z, 2026-11-07)
+
+Nothing in this section has been run. Project `hrvaqgvukzxfskkcrwbt`. Each item names the lane that found it, the exact step, and the
+read-only check that says it is done. None of them blocks the code that already shipped — each says what stays narrowed until it is done.
+
+### L1. O-150C-1 — the legacy one-membership-per-tenant UNIQUE (lane 150C; SQL editor, a constraint drop)
+
+Until this runs, a person holds ONE `organization_members` row per tenant: an office member who is also on a team keeps only the first
+grant, and the second is refused 23505 and reported by name ("O-150C-1 pending"). 0 live rows at the time of writing, so the drop is safe.
+```sql
+ALTER TABLE public.organization_members DROP CONSTRAINT organization_members_brokerage_id_user_id_key;
+-- done when this returns 0 rows:
+SELECT conname FROM pg_constraint WHERE conname = 'organization_members_brokerage_id_user_id_key';
+```
+
+### L2. The global cross-tenant UNIQUE on raw observations (lane 150EFG; SQL editor, an index drop — m961 is applied)
+
+The C35 producer keys every observation by a tenant-scoped `idempotency_key`; the old GLOBAL `(source_record_id)` UNIQUE lets one
+tenant's observation refuse another's. 0 live rows depended on it.
+```sql
+DROP INDEX IF EXISTS public.raw_scraped_leads_source_record_id_key;
+-- done when this returns 0 rows:
+SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'raw_scraped_leads_source_record_id_key';
+```
+
+### L3. `listing-media` storage policies for owner-uploaded listing photos (lane 150XY; Dashboard → Storage → Policies, or SQL editor as `supabase_storage_admin` — `postgres` is refused 42501, as in §F)
+
+RESTRICTIVE policies narrow only paths whose first folder is a UUID (`<brokerageId>/<listingId>/<file>`); other prefixes and the
+existing permissive policies are untouched; reads stay public (marketing media).
+```sql
+BEGIN;
+DROP POLICY IF EXISTS "listing-media tenant listing folder insert" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder update" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder delete" ON storage.objects;
+CREATE POLICY "listing-media tenant listing folder insert" ON storage.objects
+  AS RESTRICTIVE FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+        AND EXISTS (SELECT 1 FROM public.listings l
+                     WHERE l.id::text = (storage.foldername(name))[2]
+                       AND l.brokerage_id = public.current_user_brokerage_id()))
+  );
+CREATE POLICY "listing-media tenant listing folder update" ON storage.objects
+  AS RESTRICTIVE FOR UPDATE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+  )
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+  );
+CREATE POLICY "listing-media tenant listing folder delete" ON storage.objects
+  AS RESTRICTIVE FOR DELETE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+  );
+COMMIT;
+-- done when this lists the three RESTRICTIVE rows (plus the pre-existing permissive ones):
+SELECT policyname, permissive, cmd FROM pg_policies
+ WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') ILIKE '%listing-media%' OR coalesce(with_check,'') ILIKE '%listing-media%')
+ ORDER BY policyname;
+```
+
+### L4. S3 — a team lead's contacts read is brokerage-wide at the database (lane 150BAA; owner decision, then SQL editor)
+
+CLAUDE.md §4 says teams see only their own board; `contacts.team_lead_read_team_contacts` admits the whole tenant. Verify the bodies of
+`current_user_led_team_id()` and `is_tenant_principal_team_lead()` first, then:
+```sql
+ALTER POLICY team_lead_read_team_contacts ON public.contacts
+  USING ((brokerage_id = public.current_user_brokerage_id())
+    AND EXISTS (SELECT 1 FROM public.users WHERE users.id = auth.uid() AND users.user_type = ANY (ARRAY['team_lead'::text, 'team_leader'::text]))
+    AND (public.is_tenant_principal_team_lead()
+         OR team_id = public.current_user_led_team_id()
+         OR agent_id IN (SELECT tm.agent_id FROM public.team_members tm WHERE tm.team_id = public.current_user_led_team_id())));
+-- done when, as a seeded non-principal team lead (set_config request.jwt.claims), SELECT count(*) FROM contacts falls from tenant-wide to team-only.
+```
+
+### L5. S4 — `users_same_brokerage_select` shows every tenant `users` row to contact and vendor seats (lane 150BAA; owner decision)
+
+Decide first whether any portal page reads another `users` row through the session client (lane 150W added none). If none:
+```sql
+ALTER POLICY users_same_brokerage_select ON public.users
+  USING (public.is_platform_staff() OR (id = auth.uid()) OR ((brokerage_id = public.current_user_brokerage_id()) AND public.is_tenant_staff_seat()));
+```
+
+### L6. Owner decisions (no SQL until ruled — nothing is built on a guess)
+
+| # | Decision | Found by | Options / what the code does today |
+|---|---|---|---|
+| L6.1 | Office isolation at the DATABASE (cross-office RLS) | 150BAA / 150C | Today office scope is code-side (resolveViewerHierarchy → resolveEgressScopeForViewer; the exception center, workflow reports and office CRUD now read it). DB-enforced isolation needs an office column (or a join through the creator's `users.location_id`) on media / QR / mail / events. Rule: DB-narrowed, or code-scoped? |
+| L6.2 | Closing attestation for a brokerage WITHOUT a CDA | 150XY (wave-149 §4) | (a) none (today); (b) ask `closing_verification.unrecorded_changes` of the deal agent / TC at the gated close, informational; (c) blocking for brokerages that opt in by setting. |
+| L6.3 | A commissioned photographer's delivery — an "owned" upload or a third photo source? | 150XY | `app/actions/photo-management.ts processVendorPhotos` writes `listing_media` rows with `photo_source` NULL (not recorded) until ruled. |
+| L6.4 | The AI split coach: may the agent see their own split on the CDA they fill? | 150XY | The coach (explains the waterfall, never proposes a number) is not built (PARTIAL); CLAUDE.md §5 keeps commission off agent-facing display — the CDA flow already shows the agent their own figures. |
+| L6.5 | Do BatchData's / PeopleData's existing live doors close under R9? | 150HIAB | Yes → `PROVIDER_ACTIVATION.survivorDoors = "closed"` (lib/providers/provider-scorecard.ts). Today they stay open as dormant survivors. |
+| L6.6 | A no-cost sandbox run / a bounded paid pilot (Tracerfy vs DataZapp) | 150HIAB | Not approved; the $1,000 cap is NOT approved; the 2,400-candidate pilot runs only as an offline simulation. |
+| L6.7 | **Per-territory paid scraping now needs an approved acquisition plan** | 150Z (150EFG Outside-lane 2) | `app/api/cron/lead-scraping/route.ts` refuses every per-territory PAID source (Apify / Exa / ZenRows / Tavily / Zyte / non-pooled BatchData) without the tenant's approved, unexpired `acquisition_plans` line, and says so in the run's errors. Each tenant's commerce admin approves lines in Settings → Territories → Acquisition plan. Until then those lanes do not spend. Platform-pool territories (no tenant) cannot be approved by rule — decide whether a platform pull may run under a platform approval. |
+| L6.8 | The 5 % movement-outreach holdout default | 150JNAD | On wherever a tenant's experiments policy is readable; per-tenant kill switch `brokerage_settings.settings.experiments.disabled ⊇ ["movement_outreach_holdout"]`. |
+| L6.9 | `contacts.created_by_user_id` vs `contacts.source_agent_id` (one concept, one column exists) | 150PU | Rename / alias is the owner's call; no second column is written. |
+| L6.10 | Alerts on a saved RentCast-listing or pasted-link home (price / status change) | 150W | Needs a periodic RentCast re-read per saved home — metered provider spend. Not built until the owner approves that spend per tenant. |
+| L6.11 | PostcardMania / PCM quotes | 150R | Getting a quote is outreach — the owner's call. |
+| L6.12 | The Meta lead-form `legal_content` verification | 150PU | The verifying UPDATE is in m978's header; it runs only after a live Lead Ads Testing Tool check confirms `custom_disclaimer.body.text`. |
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

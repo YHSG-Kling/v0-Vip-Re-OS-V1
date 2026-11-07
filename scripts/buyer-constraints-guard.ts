@@ -134,7 +134,9 @@ async function main() {
   const live = CHECK_VOCABULARIES.saved_properties?.source ?? []
   check("m991 keeps every live source value and adds buyer_url (the CHECK is widened, never narrowed)", live.length > 0 && live.every((v) => m991Sources.includes(v)) && m991Sources.includes("buyer_url"), `${m991Sources} ⊇ ${live}`)
   check("every m991 source value maps to an origin the owner named or the two existing ones", m991Sources.every((v) => (homes.SAVED_HOME_ORIGINS as readonly string[]).includes(o({ source: v }))) && ["idx_mls", "rentcast_listing", "buyer_url"].every((x) => m991Sources.map((v) => o({ source: v })).includes(x as never)))
-  check("m991 line 1 carries the lane stamp or the APPLIED stamp", /^-- WRITTEN, NOT APPLIED \(wave 150, lane 150W\)|^-- ── APPLIED LIVE /.test(m991))
+  // THE RULE, not the waypoint: line 1 is the lane stamp while the file waits, the APPLIED LIVE stamp once the integrator applied it.
+  const STAMP_LINE_1 = /^-- WRITTEN, NOT APPLIED \(wave 150, lane 150W\)|^-- ── APPLIED LIVE /
+  check("the migration's line 1 carries a stamp (lane or applied)", STAMP_LINE_1.test(m991))
   check("m991 adds the two columns the code writes (source_url, mls_name) and the link-shape CHECKs", /ADD COLUMN IF NOT EXISTS source_url text/.test(m991) && /ADD COLUMN IF NOT EXISTS mls_name\s+text/.test(m991) && /saved_properties_buyer_url_has_link/.test(m991) && /saved_properties_source_url_shape/.test(m991))
   check("ONE vocabulary: m991 adds no parallel `origin` column", !/ADD COLUMN[^;]*\borigin\b/i.test(stripComments(m991.replace(/^--.*$/gm, ""))))
 

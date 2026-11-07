@@ -99,7 +99,17 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
 
     // "Teams see only their own board" (CLAUDE.md §4): team_lead sits in the tenant
     // roster, but its board is the team it leads (teams.team_lead_id), never the brokerage.
-    const brokerageAdmin = admin.isTenantAdmin && me?.user_type !== "team_lead"
+    let brokerageAdmin = admin.isTenantAdmin && me?.user_type !== "team_lead"
+    // C34 (wave 150, lane 150Z — lane 150DAC Outside-lane 2): on a MULTI-LOCATION tenant a role alone never earns the
+    // brokerage-wide report — the all-office view needs a tenant leadership grant (resolveEgressScopeForViewer →
+    // resolveViewerHierarchy, session ids, service client). Without it the caller falls back to the teams they lead and
+    // their own work. Fail closed: an unreadable hierarchy narrows (the resolver returns the own-work scope).
+    if (brokerageAdmin && !isStaff) {
+      const { resolveEgressScopeForViewer } = await import("@/lib/kernel/egress-scope")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const viewer = await resolveEgressScopeForViewer(createServiceClient() as never, { userType: String(me?.user_type ?? ""), userId: user.id, brokerageId, teamId: me?.team_id ?? null })
+      if (viewer.multiLocation && !viewer.scope.seesAllLocations) brokerageAdmin = false
+    }
 
     // null = brokerage view (every enrollment); otherwise the agents.id set whose
     // CURRENT contacts are in scope.

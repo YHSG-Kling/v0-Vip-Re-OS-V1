@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { auditStaffAction, gateStaffAction } from "@/lib/platform/staff-action-gate"
-import { createTenantCore } from "@/lib/kernel/tenant-creation"
+import { createTenantCore, type TenantStructureInput } from "@/lib/kernel/tenant-creation"
 import { invitationLandingUrl } from "@/lib/platform/site-url"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { stripe } from "@/lib/stripe"
@@ -28,6 +28,10 @@ export interface CreateSubscriberParams {
    *  "when the platform prospect is converted, the account should also create
    *  the account with a snapshot"). Best-effort — never fails the provisioning. */
   snapshotId?: string
+  /** THE TENANT HIERARCHY (wave 150, lane 150Z — lane 150C Outside-lane 3, C34): the offices and initial members the
+   *  staffer entered. Validated and provisioned by the core (planTenantOffices + provisionTenantStructure); a gap is
+   *  recorded on the provisioning record and routed to the recruiting manager — never a rollback. */
+  structure?: TenantStructureInput | null
 }
 
 /**
@@ -57,6 +61,9 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   snapshotApplied?: string[]
   snapshotName?: string
   snapshotError?: string
+  /** C34 structure outcome (offices / teams / initial members) — honest per-part reporting. */
+  structureComplete?: boolean
+  structureErrors?: string[]
 }> {
   // GATE PARITY (round 19). This used to demand a literal 'superadmin' read off
   // `platform_role ?? user_type ?? role` — including the RETIRED users.role
@@ -93,6 +100,7 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       billing: { mode: "active", billingCycle: params.billingCycle, stripeCustomerId: params.stripeCustomerId ?? null },
       snapshotId: params.snapshotId ?? null,
       callerUserId: callerUser.id,
+      structure: params.structure ?? null,
     })
     if (!created.ok || !created.brokerageId || !created.userId) {
       return { success: false, error: created.error ?? "Tenant creation failed" }
@@ -189,6 +197,8 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       snapshotApplied: created.snapshotApplied,
       snapshotName: created.snapshotName ?? undefined,
       snapshotError: created.snapshotError,
+      structureComplete: created.structure ? created.structure.complete : undefined,
+      structureErrors: created.structure?.errors?.length ? created.structure.errors.slice(0, 10) : undefined,
     }
   } catch (err: any) {
     console.error("[createSubscriber] Error:", err)

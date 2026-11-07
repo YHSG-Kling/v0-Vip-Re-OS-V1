@@ -1449,8 +1449,18 @@ export async function closeTransactionCommand(params: {
     //    high-priority next-action so they don't forget to send a gift.
     //    Recommendation engine (aiRecommendGift) runs when the agent opens
     //    the task; we just need to plant the prompt here.
+    //    MERGED HERE (wave 150, lane 150Z — lane 150SZ Outside-lane 3, orphan doctrine §1.1): the at-most-once check the
+    //    deleted duplicate lib/transactions/gift-order-trigger.ts checkAndTriggerGiftOrder carried ("gift already
+    //    ordered" → no second task) — a re-run close never plants a second gift task for the same client. Its other parts
+    //    were NOT merged: the conditional-approval milestone trigger with a fixed 7-day due date is a fixed timetable the
+    //    owner's rulings forbid (the close is the moment; timing is the person's), and it had 0 live callers.
     try {
       for (const contactId of lifetimeContactIds) {
+        const { data: priorGift, error: priorGiftErr } = await supabase.from("activities").select("id")
+          .eq("brokerage_id", params.brokerageId).eq("transaction_id", params.transactionId).eq("contact_id", contactId)
+          .eq("activity_type", "closing_gift_due").limit(1)
+        if (priorGiftErr) { console.error("[transactions] closing-gift task check refused — not planted twice blind:", priorGiftErr.message); continue }
+        if ((priorGift ?? []).length > 0) continue
         await sentinelWrite(
           supabase,
           supabase.from("activities").insert({

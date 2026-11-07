@@ -1035,6 +1035,9 @@ export async function sendCampaign(params: SendCampaignParams) {
           pieceType: route.templates.pieceType,
           color: isPersonal ? true : undefined,
           mergeVars: { ...brand.mergeVars, recipient_name: `${recipient.first_name} ${recipient.last_name}`.trim() },
+          // THE TENANT's return address (wave 150, lane 150Z — lane 150QTV Outside-lane 3): the brokerage of record's address
+          // from the brand cascade, so a letter's window never shows the platform's; absent → the dispatcher's platform default.
+          fromAddress: brandRead.facts.returnAddress ?? null,
           // Human approval is unchanged: this export is session-gated, and the dispatcher's autonomy gate arms
           // only for a manager send. humanApproved is NOT asserted here — the workflow tool (app/actions/
           // workflows.ts "send-direct-mail") reaches this door too, and the ledger must not read HUMAN_REQUESTED

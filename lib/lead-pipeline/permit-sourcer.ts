@@ -16,9 +16,10 @@
 // This lane is the acquisition half the owner asked for, on a DIFFERENT provider and a
 // DIFFERENT shape of evidence: Exa neural search over the open web for recent building-
 // permit NEWS/filings, estate/probate notices, "coming soon" pre-listing chatter, and
-// contractor-bid posts — content that (unlike a bare portal row) can carry a NAME (an
-// applicant, an estate executor, a poster) alongside the address, which is what makes it
-// safe to SOURCE rather than merely attach. When a hit's address turns out to match a
+// contractor-bid posts. REVERSED IN PART (wave 150, owner ruling R9 — "Exa for public-market
+// research, never for people"): the name such a page carries is NOT read any more; every hit
+// is PROPERTY evidence (an address) or a job/civic event, stated on the C35 envelope, and the
+// subject gate keeps both off the Lead door. When a hit's address turns out to match a
 // lead/contact the brokerage already owns, this lane defers to the SAME attach path
 // instead of minting a duplicate person — see `routePermitPrelistingHits` below, which
 // reuses `normalizeStreetAddress` + `matchPermitsToLeads` from permit-signals.ts (one
@@ -118,37 +119,15 @@ export function buildPermitSearchQueries(market: PermitMarket): PermitSearchQuer
   return out
 }
 
-// ── Applicant/owner name + property address extraction (best-effort, never fabricated) ──
+// ── Property address extraction (best-effort, never fabricated) ──
 
-/** Patterns for a NAMED applicant/owner/poster in permit, probate or bid-request text.
- *  Ordered most-specific first; the first match wins. Deliberately conservative — a
- *  false NO-NAME (falling back to `result.author`, then null) is the safe failure, not a
- *  fabricated one. */
-const APPLICANT_PATTERNS: RegExp[] = [
-  /permit\s+(?:was\s+|is\s+|has been\s+)?(?:issued|filed|granted)\s+(?:to|for)\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){1,2})/,
-  /estate of\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){1,2})/i,
-  /(?:homeowner|property owner|owner)[:\s]+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){1,2})/,
-  /posted by\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){1,2})/,
-]
-
-/** PURE. Best-effort name extraction from free text; null when nothing matches
- *  (never guessed from an unrelated capitalized phrase). */
-export function extractApplicantName(text: string): string | null {
-  for (const re of APPLICANT_PATTERNS) {
-    const m = re.exec(text)
-    if (m?.[1]) return m[1].trim()
-  }
-  return null
-}
-
-/** PURE. Splits a display name into first/last, same shape social-sourcer.ts's
- *  nameFromHandle produces — kept local (a two-field split, not an address
- *  normalizer) rather than importing a module-private helper. */
-function splitDisplayName(name: string | null): { firstName: string | null; lastName: string | null } {
-  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean)
-  if (parts.length >= 2) return { firstName: parts[0], lastName: parts.slice(1).join(" ") }
-  return { firstName: null, lastName: null }
-}
+// TOMBSTONE (wave 150, lane 150Z — lane 150KLMO Outside-lane 2, owner ruling R9 "Exa for public-market research with
+// citations, NEVER for people"): APPLICANT_PATTERNS, extractApplicantName and splitDisplayName — which lifted an
+// applicant / executor / poster NAME (and fell back to the page's `author`) out of an Exa page to mint a seller PERSON —
+// are deleted, not moved: the capability is REVERSED by R9. What survives is the property EVIDENCE path below
+// (extractPropertyAddress → routePermitPrelistingHits attaches to a lead/contact the tenant already owns), and a person
+// is only ever identified through the licensed owner-contact rail (lib/ai-isa/property-lookup-rail.ts
+// CONTACT_PROVIDER_ROUTES), never from an Exa page.
 
 /** A conservative US street-address pattern: house number + 1-4 word tokens + a
  *  recognized suffix. Matches the FIRST occurrence only — text about a permit or a
@@ -166,7 +145,8 @@ export function extractPropertyAddress(text: string): string | null {
 // ── Normalizer ──────────────────────────────────────────────────────────────
 
 /**
- * PURE. An Exa result → a permit/pre-listing SELLER raw record. Quicklist-style tags
+ * PURE. An Exa result → a permit/pre-listing seller-side EVIDENCE record (property or job/civic event — never a
+ * person, R9). Quicklist-style tags
  * (mirroring the vocabulary BatchData's quicklist tags use elsewhere in this pipeline —
  * `demolition` / `probate` / `coming_soon` / `contractor_bid` — plus the query's own
  * `category`) ride in `intentSignals`.
@@ -177,8 +157,9 @@ export function normalizePermitSearchResult(
   category: PermitSearchCategory,
 ): NormalizedScrapedRecord {
   const text = `${result.title ?? ""} ${result.text ?? ""}`
-  const applicantName = extractApplicantName(text) ?? result.author ?? null
-  const { firstName, lastName } = splitDisplayName(applicantName)
+  // R9: no person is read from the page (no applicant name, no `author`) — the record is PROPERTY evidence when the page
+  // names an address, else a job/civic event; the subject gate (raw-record-types subjectKindLeadProblem) keeps both off
+  // the Lead door, and the attach path below still files it on a lead/contact the tenant already owns.
   const propertyAddress = extractPropertyAddress(text)
 
   const intentSignals = ["permit_prelisting_intent", category]
@@ -193,8 +174,6 @@ export function normalizePermitSearchResult(
     behaviorType: "search_signal",
     intentType: "seller",
     intentSignals,
-    firstName,
-    lastName,
     city: market.city,
     state: market.state,
     propertyAddress,
@@ -206,7 +185,8 @@ export function normalizePermitSearchResult(
       classifyPermitStrength({ description: text, valuation: null }) === "strong" ? 65
       : classifyPermitStrength({ description: text, valuation: null }) === "moderate" ? 55
       : 45,
-    rawPayload: { id: result.id, url: result.url, title: result.title, author: result.author, category },
+    rawPayload: { id: result.id, url: result.url, title: result.title, category },
+    envelope: { subjectKind: propertyAddress ? "property" : "job_civic_event", proofUrls: result.url ? [result.url] : [] },
   }
 }
 

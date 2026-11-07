@@ -444,6 +444,8 @@ export interface TransferMigrationRecord {
     /** wave 146 (lane 146A): restriction rows COPIED into the target (never moved — the source keeps its evidence); per table, the
      *  rows this run inserted. A table absent here was not copied (authorized to move instead, or the copy is not on). */
     restrictions_copied?: Record<string, number> }
+  /** wave 150 (lane 150Z): the C34 office/team placement of the re-seated members (provisionTenantStructure, source 'transfer'). */
+  placement?: { complete: boolean; placed: number; errors: string[]; at: string }
 }
 
 export interface TransferConsentEvidence {
@@ -466,7 +468,9 @@ export interface TransferRequestRow {
   status: TransferStatus
   reason: string | null
   consent: TransferConsentEvidence | null
-  verification: { at: string; ok: boolean; checks: Array<{ key: string; ok: boolean; detail: string }> } | null
+  /** `placement` (wave 150, lane 150Z): the target office / team the adopting admin named at request time, each verified
+   *  inside the target tenant; carried through the verification step and read by the membership step's placement. */
+  verification: { at?: string; ok?: boolean; checks?: Array<{ key: string; ok: boolean; detail: string }>; placement?: { target_location_id: string | null; target_team_id: string | null } } | null
   migration: TransferMigrationRecord | null
   billing_handoff: SubscriberBillingHandoffResult | null
   readiness: TenantReadinessVerdict | null
@@ -619,6 +623,10 @@ export interface RequestBrokerageTransferInput {
   subjectEmail: string
   targetRole: TransferTargetRole
   reason?: string | null
+  /** wave 150 (lane 150Z, C34): the office / team of the ADOPTING tenant the moved seats are placed in — each verified
+   *  `.eq("brokerage_id", target)` before the request is filed; omitted = a tenant membership (or the member's own team). */
+  targetLocationId?: string | null
+  targetTeamId?: string | null
 }
 
 export type RequestBrokerageTransferResult =
@@ -671,6 +679,25 @@ export async function requestBrokerageTransfer(svc: any, input: RequestBrokerage
   const access = await afford({ brokerageId: targetId, capability: "app.access", client: svc })
   if (!access.allowed) return { ok: false, error: `Your subscription cannot take on a workspace right now (${access.reason}).` }
 
+  // C34 placement target — verified INSIDE the adopting tenant (never another tenant's office or team).
+  const locId = input.targetLocationId ? String(input.targetLocationId) : null
+  const teamId = input.targetTeamId ? String(input.targetTeamId) : null
+  if (locId) {
+    if (!UUID_RE.test(locId)) return { ok: false, error: "That office is not one of your workspace's offices." }
+    const { data: loc, error: locErr } = await svc.from("locations").select("id").eq("id", locId).eq("brokerage_id", targetId).limit(1)
+    if (locErr) return { ok: false, error: `Could not read the office: ${locErr.message}` }
+    if (!(loc ?? []).length) return { ok: false, error: "That office is not one of your workspace's offices." }
+  }
+  if (teamId) {
+    if (!UUID_RE.test(teamId)) return { ok: false, error: "That team is not one of your workspace's teams." }
+    const { data: tm, error: tmErr } = await svc.from("teams").select("id, location_id").eq("id", teamId).eq("brokerage_id", targetId).is("deleted_at", null).limit(1)
+    if (tmErr) return { ok: false, error: `Could not read the team: ${tmErr.message}` }
+    const row = (tm ?? [])[0] as { location_id: string | null } | undefined
+    if (!row) return { ok: false, error: "That team is not one of your workspace's teams." }
+    if (locId && row.location_id && row.location_id !== locId) return { ok: false, error: "That team works out of another office." }
+  }
+  const placement = locId || teamId ? { placement: { target_location_id: locId, target_team_id: teamId } } : null
+
   const at = nowIso(deps)
   const key = `transfer:request:${sourceId}:${targetId}:${at}`
   return ledgered<RequestBrokerageTransferResult>(svc, {
@@ -681,7 +708,7 @@ export async function requestBrokerageTransfer(svc: any, input: RequestBrokerage
       brokerage_id: targetId, source_brokerage_id: sourceId, target_brokerage_id: targetId,
       subject_user_id: subject.id, initiated_by_user_id: input.initiatedByUserId, target_role: input.targetRole,
       status: "requested", reason: (input.reason ?? "").trim().slice(0, 500) || null,
-      consent: null, verification: null, migration: null, billing_handoff: null, readiness: null,
+      consent: null, verification: placement, migration: null, billing_handoff: null, readiness: null,
       effective_at: null, completed_at: null, created_at: at, updated_at: at,
     }).select("*").single()
     if (insErr || !inserted) return { ok: false as const, error: `Transfer request not recorded: ${insErr?.message ?? "no row"}` }
@@ -882,7 +909,7 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
       const classProblems = transferClassificationProblems(TRANSFER_DATA_FAMILIES.map((f) => f.table), authorizedChildren)
       checks.push({ key: "child_classification", ok: classProblems.length === 0, detail: classProblems.length ? classProblems.join("; ") : `${TRANSFER_DATA_FAMILIES.length} families + ${authorizedChildren.length} authorized child table(s), all follows_parent` })
       const failed = checks.filter((c) => !c.ok)
-      const verification = { at: nowIso(deps), ok: failed.length === 0, checks }
+      const verification = { at: nowIso(deps), ok: failed.length === 0, checks, ...(req.verification?.placement ? { placement: req.verification.placement } : {}) }
       const r = await patchRequest(svc, req.id, { verification, ...(failed.length === 0 ? { status: "migrating" } : {}) }, deps)
       if (!r.ok) return { error: `verification could not be recorded: ${r.error}` }
       if (failed.length) return { error: `verification failed: ${failed.map((c) => `${c.key} (${c.detail})`).join("; ")}` }
@@ -975,7 +1002,33 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
       if (stragglers.length) return { error: `post-condition failed: ${stragglers.length} seat(s) still in the source tenant` }
       const { data: subjNow } = await svc.from("users").select("brokerage_id").eq("id", req.subject_user_id).maybeSingle()
       if ((subjNow as { brokerage_id?: string } | null)?.brokerage_id !== targetId) return { error: "post-condition failed: the adopted owner is not in the target tenant" }
-      return { detail: `${moved} member(s), ${(teams ?? []).length} team(s)${teamPacketNote}${teamChecklistNote}` }
+      // C34 OFFICE PLACEMENT (wave 150, lane 150Z — lane 150C Outside-lane 1): the re-seated members get their explicit
+      // memberships in the target through THE ONE structure provisioner (lib/kernel/tenant-creation.ts provisionTenantStructure,
+      // source 'transfer', the request + consent as evidence) — the target office/team the adopting admin named and verified at
+      // request time, else each member's own (moved) team, else a tenant membership. The office seat gate (locationSeatGate)
+      // governs seat ownership inside it. NON-BLOCKING like the checklist carry above: a gap is recorded on
+      // record.placement and routed by the provisioner to the recruiting manager and the office head ("invite immediately,
+      // repair asynchronously"); the adoption is never stalled over a placement, because a stalled membership step would not
+      // re-read the already-moved members on retry. The tier passed is a non-office marker: a transfer places seats into the
+      // target's EXISTING structure and never plans (or mints) an office.
+      let placementNote = ""
+      if (members.length) {
+        try {
+          const placement = req.verification?.placement ?? null
+          const { provisionTenantStructure } = await import("@/lib/kernel/tenant-creation")
+          const placed = await provisionTenantStructure(svc, {
+            brokerageId: targetId, tier: "transfer_placement", ownerUserId: req.initiated_by_user_id, brokerageName: ref.target?.name ?? "",
+            actorUserId: approvingAdminUserId, source: "transfer", evidence: { transfer_request_id: req.id, consent_at: req.consent?.at ?? null, consent_channel: req.consent?.channel ?? null },
+            input: { members: members.map((u) => ({ existingUserId: u.id, userType: memberTargetRole(u.user_type, u.id === req.subject_user_id, req.target_role), locationId: placement?.target_location_id ?? null, teamId: u.team_id ?? placement?.target_team_id ?? null })) },
+          })
+          record.placement = { complete: placed.complete, placed: placed.members.filter((m) => m.status === "placed").length, errors: placed.errors.slice(0, 10), at: placed.at }
+          placementNote = placed.complete ? `, ${record.placement.placed} seat(s) placed` : `, placement pending for ${placed.errors.length} item(s) — the recruiting manager was told`
+        } catch (err) {
+          record.placement = { complete: false, placed: 0, errors: [String((err as Error)?.message ?? err).slice(0, 300)], at: nowIso(deps) }
+          placementNote = `, placement pending (${record.placement.errors[0]})`
+        }
+      }
+      return { detail: `${moved} member(s), ${(teams ?? []).length} team(s)${teamPacketNote}${teamChecklistNote}${placementNote}` }
     })
     if (!okM) return stall("membership", "data_move_failed", `Membership migration stalled: ${record.last_error}. Retry from Settings → Users once the cause is fixed.`, true)
 

@@ -75,7 +75,9 @@ export { setContractDate, assertAdjustmentsUnlocked } from './contract-governanc
 export { checkTransactionDeadlines } from './deadline-monitor'
 
 // ─── GIFT ORDER TRIGGER ───────────────────────────────────────────────────────
-export { checkAndTriggerGiftOrder } from './gift-order-trigger'
+// TOMBSTONE (wave 150, lane 150Z — orphan doctrine §1.1): checkAndTriggerGiftOrder (./gift-order-trigger, 0 live
+// callers) duplicated the close command's closing-gift task. SURVIVOR: lib/kernel/transactions.ts closeTransaction step 5
+// (activity_type "closing_gift_due"), which absorbed its at-most-once check.
 
 // ─── STAGE AUTO TASKS ─────────────────────────────────────────────────────────
 export { seedStageAutoTasks } from './stage-auto-tasks'

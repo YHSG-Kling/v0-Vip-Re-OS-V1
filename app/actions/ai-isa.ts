@@ -748,6 +748,11 @@ export async function sendCampaignTestTouch(params: {
   }
 
   if (params.channel === "direct_mail") {
+    // ONE FORMAT ROUTER (wave 150, lane 150Z — lane 150R Outside-lane 6, R5): the test postcard uses the global postcard
+    // front + its DISTINCT back; an unconfigured or aliased pair refuses before any spend.
+    const { routeMailFormat } = await import("@/lib/direct-mail/piece-type")
+    const route = routeMailFormat("postcard")
+    if (!route.ok) return { success: false, error: `Lob postcard templates not configured: ${route.reason}` }
     const result = await dispatchDirectMail({
       brokerageId:    auth.brokerageId,
       userId:         auth.userId,
@@ -756,7 +761,9 @@ export async function sendCampaignTestTouch(params: {
       city:           "San Francisco",
       state:          "CA",
       zip:            "94105",
-      templateId:     process.env.LOB_DEFAULT_TEMPLATE_ID ?? "",
+      templateId:     route.templates.templateId,
+      backTemplateId: route.templates.backTemplateId,
+      pieceType:      "postcard",
       systemSource:   "ai_isa",
       leadId:         params.campaignId,
     })

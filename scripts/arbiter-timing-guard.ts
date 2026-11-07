@@ -90,7 +90,7 @@ const DISPOSITIONS: Record<string, Disposition> = {
   "lib/kernel/strategy-library.ts#cadenceDays": { kind: "carried", owner: "lane 149C (Still open 2)", reason: "strategy-library step cadence (activateStrategy delegations) — guidance the strategy engine schedules on; arbitration of each delegated touch is Still open" },
   // CLOSED (wave 150, lane 150SZ — wave-149 §4 C-3): creative-playbooks `sendAfterMinutes` removed; the playbook proposes order only and
   // the dispatch-time arbiter door is the bundle dispatcher owner's (lane 150SZ notes, Outside-lane). The bundle builder default below stays carried.
-  "app/settings/campaign-bundles/client.tsx#send_after_minutes": { kind: "carried", owner: "campaign_orchestrator (Outside-lane 3)", reason: "the bundle builder's default offset (same setting)" },
+  "app/settings/campaign-bundles/client.tsx#send_after_minutes": { kind: "carried", owner: "campaign_orchestrator (lane 150Z: BLOCKED — needs a persisted follow-on item the step executor drains)", reason: "the stored column only (new items save 0); the builder no longer offers an offset input (wave 150, lane 150Z — 'order only') and the dispatcher never honoured it; the dispatch-time arbiter door for follow-on items is the named dependency" },
   // CLOSED (wave 150, lane 150SZ — wave-149 §4 C-4): section-drip `DEFAULT_DRIP_WINDOW_DAYS` removed; deliverDueSections asks the arbiter
   // (arbitrateSectionDelivery → arbitrateFollowUp) before each part after the first; proven by scripts/lifetime-relationship-guard.ts.
 }

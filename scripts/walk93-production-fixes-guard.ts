@@ -289,6 +289,10 @@ const orch = code("lib/lead-pipeline/enrichment-orchestrator.ts")
 check("the queue writer and the drain both ask it (no phone leg for an email-bearing contact)",
   QUEUE_RULE.test(code("lib/enrichment/contact-enrichment-core.ts")) && /contactPointLegs && route\.providers\[0\] === 'versium'/.test(orch) && /!batchDataFallback && contactPointLegs/.test(orch))
 check("POSITIVE CONTROL: the pre-93D2 queue (phone_append always) is flagged", !QUEUE_RULE.test(`const enrichments_needed = ["skip_trace", "phone_append", "email_append"]`))
+// wave 150, lane 150Z (lane 150HIAB Still open 1): the missing-field filter reaches LEADS too — a lead needs only an email.
+const LEAD_RULE = /contactPointLegs = entityType === 'lead' \? leadMissingEmail :/
+check("a LEAD that already holds an email buys no contact point either (the live owner_contact ladder asks only for what is missing)", LEAD_RULE.test(orch))
+check("POSITIVE CONTROL: the pre-150 rule (every lead traced) is flagged", !LEAD_RULE.test(`const contactPointLegs = entityType === 'lead' || contactPointsToBuy({ email: entity.email, phone: entity.phone }).length > 0`))
 const BOOK_ON_OK = /if \(callOk\) void logVendorUsage\(/
 check("a failed AI comp search books no cost", BOOK_ON_OK.test(code("lib/cma/perplexity-comp-finder.ts")))
 check("POSITIVE CONTROL: an unconditional booking is flagged", !BOOK_ON_OK.test(`void logVendorUsage({ vendor: "perplexity" })`))

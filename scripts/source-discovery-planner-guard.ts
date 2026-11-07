@@ -134,6 +134,22 @@ async function main() {
   check("m962 exists with the lane stamp (or APPLIED LIVE) and the approval-shape CHECK", existsSync(join(ROOT, mig)) && (read(mig).split("\n")[0].includes("(wave 150, lane 150EFG)") || read(mig).startsWith("-- ── APPLIED LIVE ")) && /acquisition_plans_approval_shape/.test(read(mig)))
   check("m962's status vocabulary covers what the code writes", ["proposed", "approved"].every((s) => new RegExp(`'${s}'`).test(read(mig))))
 
+  // ── wave 150, lane 150Z (lane 150EFG Outside-lane 2 / Still open 2): the PER-TERRITORY cron pulls ask the SAME gate ──
+  const cron = stripped("app/api/cron/lead-scraping/route.ts")
+  check("the cron reads the approved plans ONCE per cycle and a refused read is null (fail closed)",
+    /from\("acquisition_plans"\)\.select\("id, brokerage_id, status, valid_until, lines"\)\.eq\("status", "approved"\)/.test(cron) && /planErr \? null :/.test(cron))
+  check("every per-territory PAID source (vendor not internal / osint, not a pooled lane) asks paidPullApproval before enabledSources is built, and a refusal is SAID in results.errors",
+    /return !paidPullApproval\(approvedAcquisitionPlans, \{ brokerageId: market\.brokerage_id \?\? null, source: key \}\)\.allowed/.test(cron)
+      && /const enabledSources = expandEnabledSources\(configuredSources\.filter\(\(v\) => !unapprovedPaid\.includes\(v\)\)\)/.test(cron)
+      && /results\.errors\.push\(`\$\{market\.name\}: paid source\(s\)/.test(cron))
+  {
+    const plans = [{ ...approvedRow, lines: [{ source: "facebook_group", status: "approved", approvedAt: now.toISOString() }] }] as never
+    check("RUN: an approved per-territory line admits that source for that tenant only; an unapproved source and a tenant-less market are refused (POSITIVE + NEGATIVE)",
+      pl.paidPullApproval(plans, { brokerageId: T1, source: "facebook_group" }, now).allowed
+        && !pl.paidPullApproval(plans, { brokerageId: T1, source: "zenrows_zillow" }, now).allowed
+        && !pl.paidPullApproval(plans, { brokerageId: null, source: "facebook_group" }, now).allowed)
+  }
+
   console.log(`\nSOURCE DISCOVERY PLANNER — ${passed} passed, ${failed} failed ${failed === 0 ? "✅ SOURCE_DISCOVERY_PLANNER_PASS" : "❌ SOURCE_DISCOVERY_PLANNER_FAIL"}`)
   if (failed > 0) process.exit(1)
 }

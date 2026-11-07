@@ -17,7 +17,7 @@ import {
   type ExceptionLedgerRow,
   type ExceptionScope,
 } from "@/lib/kernel/exception-center"
-import { resolveEgressScope } from "@/lib/kernel/egress-scope"
+import { resolveEgressScopeForViewer } from "@/lib/kernel/egress-scope"
 import { pickUserOffice } from "@/lib/kernel/resolve-user-office"
 
 // PRINCIPAL seats (owner: not every subscription is a brokerage) — whoever
@@ -150,18 +150,28 @@ export async function getExceptionCenter(opts?: { locationId?: string | null }):
     (userRow as any)?.location_id ?? null,
     (agentRow as any)?.location_id ?? null,
   )
-  const egress = resolveEgressScope({
+  // C34 (wave 150, lane 150Z — lane 150DAC Outside-lane 1): on a multi-location tenant the scope is the HIERARCHY's
+  // (resolveEgressScopeForViewer → resolveViewerHierarchy): the all-office view needs a tenant leadership grant, an office
+  // head sees their office(s), and a role alone never widens it. Fail closed: a scope that admits no office and not the
+  // whole tenant is refused rather than defaulting to "all locations".
+  const egress = (await resolveEgressScopeForViewer(svc as never, {
     userType: caller.userType,
     userId: caller.userId,
     brokerageId: caller.brokerageId,
     locationId: office.locationId,
     teamId: (agentRow as any)?.team_id ?? null,
-  })
+  })).scope
+  const admitted = egress.seesAllLocations ? null : (egress.locationIds?.length ? egress.locationIds : egress.locationId ? [egress.locationId] : [])
+  if (admitted && admitted.length === 0) return { success: false, error: "Your access covers no office's exceptions — ask your broker for office or tenant leadership access" }
+  if (admitted) scope.locations = scope.locations.filter((l) => admitted.includes(l.id))
 
   let selected: string | null = null
-  if (egress.kind === "location" && egress.locationId) {
-    selected = egress.locationId
+  if (admitted && admitted.length === 1) {
+    selected = admitted[0]
     scope.forced = true
+  } else if (admitted) {
+    // An office head of SEVERAL offices may narrow among their own — never to another office, never to "all".
+    selected = opts?.locationId && admitted.includes(opts.locationId) ? opts.locationId : admitted[0]
   } else if (opts?.locationId && scope.locations.some((l) => l.id === opts.locationId)) {
     selected = opts.locationId
   }

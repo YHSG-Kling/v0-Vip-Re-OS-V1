@@ -140,7 +140,8 @@ async function main() {
     }
     check("the builder prints an office when the brand facts carry one", a.mergeVars.office_name === "Riverside Office" && b.mergeVars.office_name === "Harbor Office")
     const pt = noComments("lib/direct-mail/piece-type.ts")
-    check("…and the async reader SAYS the office is not yet in the brand cascade (never a silent blank)", /officeName: null/.test(pt) && /office: "not_in_brand_cascade"/.test(pt))
+    check("…and the async reader resolves the sender's office through THE one office rule (resolveUserOffice), reads its name pinned to the tenant, and records where it came from",
+      /resolveUserOffice\(svc as never, args\.agentUserId\)/.test(pt) && /from\("locations"\)\.select\("name"\)\.eq\("id", office\.locationId\)\.eq\("brokerage_id", args\.brokerageId\)/.test(pt) && /office: officeSource/.test(pt) && !/officeName: null,/.test(pt))
     check("the legal brokerage identity is the brokerage of record (not the team display name)", a.mergeVars.brand_legal_name === "Alder Realty LLC" && a.mergeVars.brand_display_name === "The Alder Team")
     check("the hosted @font-face stylesheet is built from the tenant's font family", a.mergeVars.brand_font_css_url === "https://fonts.googleapis.com/css2?family=Libre+Baskerville&display=swap")
     check("disclosures pass VERBATIM (legal text never rewritten)", a.mergeVars.disclosure_long === brandA().disclosureLong && a.mergeVars.disclosure_short === brandA().disclosureShort)
@@ -265,12 +266,25 @@ async function main() {
     check("m985 line 1 is the lane stamp or the APPLIED stamp", mig.startsWith("-- WRITTEN, NOT APPLIED (wave 150, lane 150R)") || mig.startsWith("-- ── APPLIED LIVE "))
   }
 
+  // ── wave 150, lane 150Z convergence: the dispatcher and every Lob-id caller go through the ONE router ──
+  {
+    const disp = noComments("lib/providers/dispatch.ts")
+    check("the dispatcher refuses a back that IS the front (no LOB_POSTCARD_BACK_ID ?? front fallback) and accepts the tenant's inline `from`",
+      /back === params\.templateId/.test(disp) && !/backTemplateId \?\? process\.env\.LOB_POSTCARD_BACK_ID/.test(disp) && /const fa = params\.fromAddress/.test(disp))
+    const DIRECT_LOB_ID = /process\.env\.LOB_(?:DEFAULT_TEMPLATE_ID|DEFAULT_LETTER_TEMPLATE_ID|PRELISTING_[A-Z_]+|POSTCARD_BACK_ID)\b/
+    check("POSITIVE CONTROL: the direct-Lob-id finder sees a planted read", DIRECT_LOB_ID.test(stripComments("const t = process.env.LOB_DEFAULT_TEMPLATE_ID ?? ''\n")))
+    const callers = ["lib/ai-isa/direct-mail-trigger.ts", "app/actions/ai-isa.ts", "lib/agents/marketing-agent-actions.ts", "lib/workflow-orchestrator/chains/listing-appt-prep.ts"]
+    const direct = callers.filter((f) => DIRECT_LOB_ID.test(noComments(f)))
+    check("the four former direct Lob-id readers take routeMailFormat(format).templates — none reads a Lob template env name itself", direct.length === 0 && callers.every((f) => /routeMailFormat\(/.test(noComments(f))), direct.join(", "))
+    check("the campaign door passes the tenant's return address to the dispatcher (fromAddress from the brand cascade)", /fromAddress: brandRead\.facts\.returnAddress/.test(noComments("app/actions/direct-mail.ts")))
+  }
+
   console.log("\n  Blind spots:")
   console.log("  · sendCampaign / trackDelivery / the reputation card are server actions with a cookie session: their wiring is proven on STRIPPED source, the decisions they call (router, merge builder, outcome map, ledger key) at runtime")
-  console.log("  · readMailBrandFacts (the async reader over resolveBrandContext) is not driven here — it reads real server clients; buildMailMergeVariables, which it feeds, is. The sender's OFFICE is not in the brand cascade yet (Outside-lane), so office_name prints empty end-to-end")
+  console.log("  · readMailBrandFacts (the async reader over resolveBrandContext) is not driven here — it reads real server clients; buildMailMergeVariables, which it feeds, is. The sender's office is read through resolveUserOffice (stripped-source proof above); an office return address does not exist (`locations` has no ZIP)")
   console.log("  · memSupabase has no CHECKs: the live status CHECK is read from the generated cache scripts/check-vocabularies.ts; m985's CHECKs are read from the migration file, whose line-1 stamp says whether it is applied")
   console.log("  · whether a Google Fonts family exists, and whether Lob renders a merge-variable font URL, are unverified without a Lob test render (LOB_TEST_API_KEY)")
-  console.log("  · the dispatcher (lib/providers/dispatch.ts, lane 150QTV) still defaults a missing postcard back to LOB_POSTCARD_BACK_ID ?? front and uses the platform LOB_RETURN_ADDRESS_ID as `from`: every caller in this lane now passes a distinct back; the dispatcher fix is Outside-lane")
+  console.log("  · the dispatcher falls back to the platform LOB_RETURN_ADDRESS_ID as `from` only when the caller passes no complete tenant address (the brokerage of record's address lives in the brand cascade; an office address does not exist — `locations` has no ZIP)")
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)
 }

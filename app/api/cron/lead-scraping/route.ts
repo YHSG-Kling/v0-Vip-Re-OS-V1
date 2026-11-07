@@ -77,7 +77,11 @@ import {
   isViableRecord,
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { buildTerritoryPhrases, expandEnabledSources, DEFAULT_MARKET_SOURCES } from "@/lib/lead-pipeline/source-intent-map"
+import { buildTerritoryPhrases, expandEnabledSources, DEFAULT_MARKET_SOURCES, resolveSourceKey, SOURCE_VENDOR } from "@/lib/lead-pipeline/source-intent-map"
+import { paidPullApproval, type StoredPlanRow } from "@/lib/lead-pipeline/source-discovery-planner"
+
+/** The record-priced pooled lanes — gated (approval + dollar backpressure) in lib/lead-pipeline/pooled-pull.ts, not here. */
+const POOLED_PAID_LANES: ReadonlySet<string> = new Set(["batchdata_motivated", "batchdata_cash_buyer", "expired_listing"])
 // Lane 82B — every scrape's spend books PER SOURCE on the platform ledger through the ONE
 // source→vendor contract (source-intent-map.ts::SOURCE_VENDOR via source-cost-ledger.ts), which
 // itself rides meterVendorSpend. The composite "apify_social" row is gone (see the social block).
@@ -301,6 +305,12 @@ export async function GET(request: Request) {
     // per-territory one — a renter contact does not belong to any one market row.
     const rentalGraduationBrokeragesRun = new Set<string>()
 
+    // The tenants' approved acquisition plans — read ONCE per cycle for the per-territory paid-call gate (STEP 4 below);
+    // a refused read is `null`, which paidPullApproval refuses (fail closed).
+    const { data: planRows, error: planErr } = await supabase.from("acquisition_plans").select("id, brokerage_id, status, valid_until, lines").eq("status", "approved")
+    if (planErr) results.errors.push(`acquisition_plans read refused — every per-territory paid source is refused this cycle: ${planErr.message}`)
+    const approvedAcquisitionPlans: StoredPlanRow[] | null = planErr ? null : ((planRows ?? []) as StoredPlanRow[])
+
     for (const market of markets) {
       results.markets_processed++
       console.log(`[Lead Scraping Cron] Processing market: ${market.name} (${market.city}, ${market.state})`)
@@ -308,7 +318,24 @@ export async function GET(request: Request) {
       // STEP 4 — Resolve the set of enabled sources for this territory. Expanded
       // through GATE_TOKEN so the gate matches whether the DB stored short names
       // ("facebook"), canonical keys ("facebook_group"), or aliases ("zillow").
-      const enabledSources = expandEnabledSources(market.enabled_sources ?? [...DEFAULT_MARKET_SOURCES])
+      // THE PAID-CALL APPROVAL GATE (wave 150, lane 150Z — lane 150EFG Outside-lane 2 / Still open 2, owner rule 7
+      // "never a paid call without approval"): a per-territory PAID source (Apify / Exa / ZenRows / Tavily / Zyte /
+      // BatchData outside the pooled lanes) runs only under the tenant's APPROVED, unexpired acquisition plan line for
+      // that source — THE ONE gate, lib/lead-pipeline/source-discovery-planner.ts paidPullApproval, over the plans read
+      // once per cycle above (a refused read refuses every paid source: fail closed). First-party (`internal`) and
+      // public OSINT lanes spend nothing and are never gated; the three pooled lanes are gated (with dollar backpressure)
+      // inside pooled-pull.ts runPooledBatchDataLane. A refused source is named in results.errors, never silently dropped.
+      const configuredSources: readonly string[] = market.enabled_sources ?? [...DEFAULT_MARKET_SOURCES]
+      const unapprovedPaid = configuredSources.filter((v) => {
+        const key = resolveSourceKey(v)
+        const vendor = (SOURCE_VENDOR as Record<string, string>)[key]
+        if (!vendor || vendor === "internal" || vendor === "osint" || POOLED_PAID_LANES.has(key)) return false
+        return !paidPullApproval(approvedAcquisitionPlans, { brokerageId: market.brokerage_id ?? null, source: key }).allowed
+      })
+      if (unapprovedPaid.length > 0) {
+        results.errors.push(`${market.name}: paid source(s) ${unapprovedPaid.join(", ")} not run — ${approvedAcquisitionPlans === null ? "the acquisition-plan store could not be read" : "no approved, unexpired acquisition plan approves them for this tenant"} (Settings → Territories → Acquisition plan)`)
+      }
+      const enabledSources = expandEnabledSources(configuredSources.filter((v) => !unapprovedPaid.includes(v)))
 
       // ── FREE RUNGS FIRST (wave 82 lane A) ───────────────────────────────────
       // Owner verbatim (wave 82): "osint is supposed to be a free provider for intent behavior

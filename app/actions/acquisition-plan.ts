@@ -109,7 +109,7 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
     const svc = createServiceClient()
     // Tenant-pinned: a territory id from the browser is only a NAME for one of THIS tenant's rows.
     const { data: terr, error: terrErr } = await svc.from("lead_scraping_markets")
-      .select("id, name, city, state, enabled_sources").eq("id", input.territoryId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, name, city, state, enabled_sources, zip_codes").eq("id", input.territoryId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (terrErr) return { success: false, error: `Territory could not be read: ${terrErr.message}` }
     if (!terr) return { success: false, error: "That territory is not one of yours" }
 
@@ -139,12 +139,18 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
     }
     const enabled = [...expandEnabledSources((terr as any).enabled_sources ?? [])].map((s) => resolveSourceKey(s)).filter((k) => k in SOURCE_MAP)
     const label = (terr as any).name || [(terr as any).city, (terr as any).state].filter(Boolean).join(", ") || "Territory"
+    // VERIFIED MARKET CONTEXT (wave 150, lane 150Z — lane 150KLMO Outside-lane 1 / lane 150EFG Still open 1): the Market
+    // Twin's observed months of supply for THIS territory's zips, from STORED readings only (allowProviderRead:false — a
+    // proposal never spends on a provider). Absent / unobserved = null with the twin's reason, and the planner says
+    // "balanced" in its blind spots — never a derived number.
+    const { loadMarketTwin } = await import("@/lib/market-reports/market-twin")
+    const twin = await loadMarketTwin(svc, { brokerageId: ctx.brokerageId, zips: (((terr as any).zip_codes ?? []) as string[]), cities: (terr as any).city ? [String((terr as any).city)] : [], allowProviderRead: false })
     const plan = planSourceDiscovery({
       territory: { id: terr.id, brokerageId: ctx.brokerageId, label },
       budgetUsd: budget,
       enabledSources: enabled.length > 0 ? [...new Set(enabled)] : null,
       history, previews, quotes,
-      marketGap: null,
+      marketGap: twin.marketGap.monthsOfSupply === null ? null : { monthsOfSupply: twin.marketGap.monthsOfSupply, asOf: twin.marketGap.asOf, source: twin.marketGap.source },
       distressPreviewCount: null,
     })
     const { data: inserted, error: insErr } = await svc.from("acquisition_plans").insert({

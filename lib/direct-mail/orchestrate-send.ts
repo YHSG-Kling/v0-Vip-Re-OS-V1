@@ -253,6 +253,7 @@ export async function orchestrateRenderAndSend(
   // reads the tenant id only as a measured legacy fallback, and REFUSES a postcard with no distinct back.
   // The tenant/user/office brand is resolved now and passed as merge_variables.
   let fallbackMergeVars: Record<string, string> | undefined
+  let fallbackFrom: { name: string; line1: string; line2?: string | null; city: string; state: string; zip: string } | null = null
   let templateSource: string = rendered ? "rendered_piece" : "none"
   if (!templateForLob) {
     const { fallbackLobTemplates, readMailBrandFacts, buildMailMergeVariables } = await import("@/lib/direct-mail/piece-type")
@@ -273,6 +274,8 @@ export async function orchestrateRenderAndSend(
       return { success: false, rendered: false, fellBackReason, variantPick, complianceEventId, error: "Not mailed — merge variables exceed Lob's 25,000-character limit" }
     }
     fallbackMergeVars = brand.mergeVars
+    // The tenant's return address on the Lob `from` (wave 150, lane 150Z — lane 150QTV Outside-lane 3).
+    fallbackFrom = brandRead.facts.returnAddress ?? null
   }
 
   const dispatch = await dispatchDirectMail({
@@ -294,6 +297,7 @@ export async function orchestrateRenderAndSend(
     // actually order the larger card from Lob.
     size:           args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
     ...(fallbackMergeVars ? { mergeVars: fallbackMergeVars } : {}),
+    ...(fallbackFrom ? { fromAddress: fallbackFrom } : {}),
     systemSource:   args.systemSource ?? "orchestrated",
     // Wave 101 (101B): the bandit's arm rides the send's ledger row as detail.experiment, so 100A
     // attribution rolls outcomes up by arm beside the A/B arms (lib/kernel/experiments.ts). The

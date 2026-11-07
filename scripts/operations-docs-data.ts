@@ -295,7 +295,7 @@ add("voice", "config", [
   ["CONVERSATION_RELAY_WSS_URL", "wss:// URL of the voice relay brain the TwiML points Twilio ConversationRelay at."],
   ["PLATFORM_RECEPTION_FORWARD_NUMBER", "Forwarding number for the platform's own reception line (lib/voice/platform-reception.ts:102).", "OPTIONAL"],
   ["VOICE_TOOL_ROUND_DEADLINE_MS", "Voice tool-round deadline in ms; default 4000 (lib/voice/twilio-voice.ts:420).", "OPTIONAL"],
-  ["VAPI_ISA_ASSISTANT_ID", "RETIRED Vapi lane (replaced by Twilio-native). The census sees it only because lib/kernel/manager-registry.ts:964 quotes it in prose.", "RETIRED"],
+  ["VAPI_ISA_ASSISTANT_ID", "RETIRED Vapi lane (replaced by Twilio-native). The census sees it only because lib/kernel/manager-registry.ts quotes it in prose (the voice manager's RETIRED-lane note).", "RETIRED"],
 ])
 
 // ── Email ──────────────────────────────────────────────────────────────────
@@ -324,8 +324,8 @@ add("mail", "secret", [
 ])
 add("mail", "config", [
   ["LOB_RETURN_ADDRESS_ID", "Lob saved return-address id (lib/providers/dispatch.ts:1214).", "OPTIONAL"],
-  ["LOB_DEFAULT_TEMPLATE_ID", "Default Lob template id (app/actions/ai-isa.ts:759).", "OPTIONAL"],
-  ["LOB_DEFAULT_LETTER_TEMPLATE_ID", "Default letter template (lib/ai-isa/direct-mail-trigger.ts:306).", "OPTIONAL"],
+  ["LOB_DEFAULT_TEMPLATE_ID", "Legacy name of the postcard FRONT template, read after LOB_POSTCARD_FRONT_TEMPLATE_ID (lib/direct-mail/piece-type.ts LOB_TEMPLATE_ENV; no caller reads it directly since wave 150).", "OPTIONAL"],
+  ["LOB_DEFAULT_LETTER_TEMPLATE_ID", "Legacy name of the LETTER template, read after LOB_LETTER_TEMPLATE_ID (lib/direct-mail/piece-type.ts LOB_TEMPLATE_ENV).", "OPTIONAL"],
   ["LOB_NOTECARD_ID", "Notecard template id — the thank-you card's postcard fallback (app/actions/reputation-kernel.ts).", "OPTIONAL"],
   ["LOB_PERSONAL_LETTER_TEMPLATE_ID", "Personal-letter template id (a Lob HTML letter, platform-owned): when set the thank-you card mails as a color letter in an envelope; else LOB_NOTECARD_ID (app/actions/reputation-kernel.ts, DIRECT-MAIL §11.3).", "OPTIONAL"],
   ["LOB_POSTCARD_FRONT_ID", "Postcard front template id (legacy name, read after LOB_POSTCARD_FRONT_TEMPLATE_ID — lib/direct-mail/piece-type.ts).", "OPTIONAL"],
@@ -334,9 +334,9 @@ add("mail", "config", [
   ["LOB_POSTCARD_BACK_TEMPLATE_ID", "Global Lob POSTCARD BACK template id (wave 150 R5; must differ from the front).", "OPTIONAL"],
   ["LOB_HANDWRITTEN_CARD_PROVIDER", "Name of an optional genuine-handwriting provider (handwrytten | lettrlabs); dormant — no adapter (lib/direct-mail/piece-type.ts routeMailFormat).", "OPTIONAL"],
   ["LOB_TEST_API_KEY", "Lob TEST key (test_…) for zero-spend proofs (lib/providers/lob/client.ts createLobProof refuses a live key).", "OPTIONAL"],
-  ["LOB_POSTCARD_BACK_ID", "Postcard back template id (lib/providers/dispatch.ts:1243).", "OPTIONAL"],
-  ["LOB_PRELISTING_LETTER_TEMPLATE_ID", "Pre-listing appointment letter template (lib/workflow-orchestrator/chains/listing-appt-prep.ts:667).", "OPTIONAL"],
-  ["LOB_PRELISTING_POSTCARD_TEMPLATE_ID", "Pre-listing appointment postcard template (same file, :668).", "OPTIONAL"],
+  ["LOB_POSTCARD_BACK_ID", "Legacy name of the postcard BACK template, read after LOB_POSTCARD_BACK_TEMPLATE_ID (lib/direct-mail/piece-type.ts LOB_TEMPLATE_ENV); the dispatcher never falls back to the front.", "OPTIONAL"],
+  // TOMBSTONE (wave 150, lane 150Z): LOB_PRELISTING_LETTER_TEMPLATE_ID / LOB_PRELISTING_POSTCARD_TEMPLATE_ID — the pre-listing
+  // chain now takes the global format templates through routeMailFormat (lib/workflow-orchestrator/chains/listing-appt-prep.ts).
   ["VOICEDROP_FROM_PHONE", "Caller id for ringless voicemail; falls back to the brand phone.", "OPTIONAL"],
   ["VOICEDROP_PROVIDER", "Ringless provider key; code default 'slybroadcast' (lib/voicedrop/orchestrate-voicedrop-send.ts:273).", "OPTIONAL"],
 ])

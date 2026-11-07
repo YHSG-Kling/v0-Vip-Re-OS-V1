@@ -482,9 +482,6 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
                 <span className="font-mono text-gray-400">{idx + 1}.</span>
                 <span className="font-medium">{CHANNEL_LABEL[it.channel]}</span>
                 <span className="text-gray-500 truncate">{presetName(it.channel, it.preset_id)}</span>
-                {it.send_after_minutes > 0 && (
-                  <span className="text-gray-400">· +{it.send_after_minutes}min</span>
-                )}
               </li>
             ))}
           </ol>
@@ -734,13 +731,9 @@ function ItemEditor({ idx, item, catalog, onMove, onRemove, onUpdate, isFirst, i
             <option key={p.id} value={p.id}>{p.name} [{p.scope_type}]</option>
           ))}
         </select>
-        <label className="text-xs text-gray-700 flex items-center gap-1 whitespace-nowrap">
-          <span>+</span>
-          <input type="number" min={0} step={1} value={item.send_after_minutes}
-            onChange={(e) => onUpdate({ send_after_minutes: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-            className="w-16 border rounded px-1 py-0.5 text-xs" />
-          <span>min</span>
-        </label>
+        {/* wave 150, lane 150Z (lane 150SZ Outside-lane 2): the "send after N min" input is removed — the dispatcher never
+            honoured it and owner rulings forbid a fixed timetable. The list sets ORDER only; timing is the arbiter's. */}
+        <span className="text-xs text-gray-700 whitespace-nowrap" title="Items go out in this order; the OS decides when each follow-on is useful">order only</span>
         <div className="flex gap-0.5">
           <button type="button" onClick={() => onMove(-1)} disabled={isFirst}
             title="Move up" className="text-xs px-1.5 py-0.5 border border-gray-200 rounded disabled:opacity-30">↑</button>

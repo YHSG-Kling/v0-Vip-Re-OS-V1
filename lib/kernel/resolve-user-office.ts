@@ -177,7 +177,7 @@ function resolveHierarchyScope(f: HierarchyFacts): HierarchyScope {
  * A viewer who does not sit in that tenant is REFUSED (the cross-tenant / cross-tier read refusal). Every read's
  * error is read; any refusal refuses (fail closed).
  */
-/** Consumers: loadOfficeDirectory (Settings → Offices) and grantOfficeMembershipAction (app/dashboard/settings/offices/actions.ts — the grant door checks the GRANTER's scope with it). */
+/** Consumers: loadOfficeDirectory (Settings → Offices), grantOfficeMembershipAction (app/dashboard/settings/offices/actions.ts — the grant door checks the GRANTER's scope with it), lib/kernel/egress-scope.ts resolveEgressScopeForViewer (command center, exception center, workflow reports) and app/actions/admin/locations.ts requireAdmin (office CRUD — wave 150, lane 150Z). */
 export async function resolveViewerHierarchy(svc: HierarchySvc, viewer: { userId: string; brokerageId: string }): Promise<{ ok: true; scope: HierarchyScope; tier: string | null } | { ok: false; error: string }> {
   const { data: u, error: uErr } = await svc.from("users").select("id, brokerage_id, user_type, location_id").eq("id", viewer.userId).maybeSingle()
   if (uErr) return { ok: false, error: `viewer read refused (${uErr.message})` }

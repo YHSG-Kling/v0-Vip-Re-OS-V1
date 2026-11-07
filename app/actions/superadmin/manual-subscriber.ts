@@ -21,6 +21,7 @@ import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createSubscriber } from "@/app/actions/admin/create-subscriber"
 import { headers } from "next/headers"
+import type { TenantStructureInput } from "@/lib/kernel/tenant-creation"
 
 export interface ManualProvisionInput {
   brokerageName:   string
@@ -40,6 +41,8 @@ export interface ManualProvisionInput {
    *  (snapshotForTier), so a manually provisioned tenant still snapshots at
    *  creation like every other creation path. */
   snapshotId?:     string
+  /** C34 (wave 150, lane 150Z): offices + initial members for a brokerage / multi-location tenant. */
+  structure?:      TenantStructureInput | null
 }
 
 export interface ManualProvisionResult {
@@ -53,6 +56,8 @@ export interface ManualProvisionResult {
   /** Layers applied from the config snapshot (when snapshotId was given). */
   snapshotApplied?: string[]
   snapshotError?: string
+  structureComplete?: boolean
+  structureErrors?: string[]
 }
 
 export async function manualProvisionSubscriberAction(
@@ -112,6 +117,7 @@ export async function manualProvisionSubscriberAction(
     billingCycle:    input.billingCycle,
     notes:           input.notes,
     snapshotId:      input.snapshotId,
+    structure:       input.structure ?? null,
   })
 
   // TOMBSTONE (orphan doctrine §1.1, 2026-08-27): the applySnapshotPayload call
@@ -188,5 +194,7 @@ export async function manualProvisionSubscriberAction(
     inviteError:    result.inviteError,
     snapshotApplied,
     snapshotError,
+    structureComplete: result.structureComplete,
+    structureErrors: result.structureErrors,
   }
 }

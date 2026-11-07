@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * scripts/outcome-learning-guard.ts  (npm run test:outcome-learning)
+ * scripts/outcome-learning-guard.ts  (npm run test:movement-outcome-learning — the key was renamed by lane 150I2: `test:outcome-learning` already named another proof)
  * ────────────────────────────────────────────────────────────────────────
  * WAVE 150, LANE 150JNAD — directive 150AD: outcome learning by buyer / seller window, source, territory, play, campaign and tenant;
  * attribution and false positives, confirmed seller / buyer moves, independent holdouts, spend per INCREMENTAL outcome.

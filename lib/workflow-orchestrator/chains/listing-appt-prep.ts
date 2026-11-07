@@ -664,8 +664,15 @@ export const listingApptPrepChain: WorkflowChain = {
         // Optional Lob templates the broker uploads ahead of time. If
         // neither is configured this step is a documented no-op rather
         // than a hard failure (the chain still ships the digital drip).
-        const letterTpl   = process.env.LOB_PRELISTING_LETTER_TEMPLATE_ID ?? ""
-        const postcardTpl = process.env.LOB_PRELISTING_POSTCARD_TEMPLATE_ID ?? ""
+        // ONE FORMAT ROUTER (wave 150, lane 150Z — lane 150R Outside-lane 6, owner ruling R5): the letter and the postcard
+        // come from the GLOBAL format templates (distinct ids, aliasing refused) through routeMailFormat — never a
+        // chain-private env name. TOMBSTONE: LOB_PRELISTING_LETTER_TEMPLATE_ID / LOB_PRELISTING_POSTCARD_TEMPLATE_ID
+        // retired onto LOB_LETTER_TEMPLATE_ID / LOB_POSTCARD_FRONT_TEMPLATE_ID (lib/direct-mail/piece-type.ts LOB_TEMPLATE_ENV).
+        const { routeMailFormat } = await import("@/lib/direct-mail/piece-type")
+        const letterRoute = routeMailFormat("letter")
+        const postcardRoute = routeMailFormat("postcard")
+        const letterTpl   = letterRoute.ok ? letterRoute.templates.templateId : ""
+        const postcardTpl = postcardRoute.ok ? postcardRoute.templates.templateId : ""
         if (!letterTpl && !postcardTpl) {
           return {
             success: true,

@@ -1150,7 +1150,7 @@ export function ReputationPanel({
               <CardTitle className="text-sm flex items-center gap-2">
                 <MessageSquare className="w-4 h-4 text-blue-500" /> Thank You Notes
               </CardTitle>
-              <CardDescription>AI-drafted, template-backed notes sent via email, SMS, or handwritten</CardDescription>
+              <CardDescription>AI-drafted, template-backed notes sent via email, SMS, or a printed personal note</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {recentClosings.length === 0 ? (

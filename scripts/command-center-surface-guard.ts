@@ -272,6 +272,13 @@ async function main() {
     check("OFFICE tier: on a multi-location tenant an office head / team lead enters by the HIERARCHY (never by user_type alone)", /if \(!mayEnter && viewerScope\.multiLocation && viewerScope\.scope\.kind !== "agent"\) mayEnter = true/.test(page))
     check("a head of several offices / teams may drill into ONE of their OWN (options read only their ids — a URL cannot widen)", /\.in\("id", ownOffices\.length \? ownOffices : \[NONE\]\)/.test(page) && /\.in\("id", ownTeams\.length \? ownTeams : \[NONE\]\)/.test(page) && /scopeOptions\.some\(\(o\) => o\.value === view\)/.test(page))
     check("CONSUMER: the workflow-report default scope reads the same resolver (a multi-location broker without a grant opens on own work)", /resolveEgressScopeForViewer\(createServiceClient\(\),/.test(stripped("app/dashboard/campaigns/workflow-reports/page.tsx")))
+    // wave 150, lane 150Z (lane 150DAC Outside-lane 1–2): the AUTHORIZING actions read the hierarchy too, not only the pages.
+    const wr = stripped("app/actions/workflow-reports.ts")
+    check("CONSUMER: getWorkflowReport refuses the brokerage report to a multi-location broker without a tenant leadership grant (the resolver decides, not user_type)",
+      /resolveEgressScopeForViewer\(createServiceClient\(\) as never,/.test(wr) && /viewer\.multiLocation && !viewer\.scope\.seesAllLocations\) brokerageAdmin = false/.test(wr))
+    const ec = stripped("app/actions/exception-center.ts")
+    check("CONSUMER: the exception center scopes by the hierarchy — a narrowed viewer sees only their admitted offices, never 'all locations', and a scope with no office is refused",
+      /resolveEgressScopeForViewer\(svc as never,/.test(ec) && !/\bresolveEgressScope\(/.test(ec) && /admitted\.includes\(opts\.locationId\)/.test(ec) && /admitted && admitted\.length === 0\) return \{ success: false/.test(ec))
   }
 
   console.log("\n[G · NATURAL-LANGUAGE / VOICE NAVIGATION — the NAVIGATION branch of C17]")

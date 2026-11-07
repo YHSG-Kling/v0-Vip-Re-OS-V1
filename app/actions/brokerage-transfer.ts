@@ -113,10 +113,11 @@ export async function getBrokerageAdoptionPanelAction(): Promise<{ ok: true; pan
   return { ok: true, panel: { canManage: planTier !== "solo_agent", planTier, roles: TRANSFER_TARGET_ROLES, requests: await viewOf(gate.svc, list.requests) } }
 }
 
-export async function requestBrokerageAdoptionAction(input: { subjectEmail: string; targetRole: TransferTargetRole; reason?: string | null }): Promise<{ ok: true; request: TransferRequestView } | { ok: false; error: string }> {
+export async function requestBrokerageAdoptionAction(input: { subjectEmail: string; targetRole: TransferTargetRole; reason?: string | null; targetLocationId?: string | null; targetTeamId?: string | null }): Promise<{ ok: true; request: TransferRequestView } | { ok: false; error: string }> {
   const gate = await requireAdoptingAdmin()
   if (!gate.ok) return gate
-  const r = await requestBrokerageTransfer(gate.svc, { targetBrokerageId: gate.brokerageId, initiatedByUserId: gate.userId, subjectEmail: input?.subjectEmail ?? "", targetRole: input?.targetRole, reason: input?.reason ?? null })
+  // wave 150 (lane 150Z, C34): the optional office / team is verified inside the SESSION tenant by the kernel before filing.
+  const r = await requestBrokerageTransfer(gate.svc, { targetBrokerageId: gate.brokerageId, initiatedByUserId: gate.userId, subjectEmail: input?.subjectEmail ?? "", targetRole: input?.targetRole, reason: input?.reason ?? null, targetLocationId: input?.targetLocationId ?? null, targetTeamId: input?.targetTeamId ?? null })
   if (!r.ok) return r
   return { ok: true, request: (await viewOf(gate.svc, [r.request]))[0] }
 }

@@ -29,14 +29,12 @@ import { secretsEqual } from "@/lib/security/constant-time"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-/** The campaign status a terminal Lob event implies. In-flight events leave it be —
- *  a campaign flipping between statuses as a piece crosses the country is noise. */
-function campaignStatusFor(eventType: string): string | null {
-  const spec = TRUTH_SOURCES.direct_mail
-  if (spec.confirms.includes(eventType)) return "delivered"
-  if (spec.contradicts.includes(eventType)) return "failed"
-  return null
-}
+// TOMBSTONE (wave 150, lane 150Z — lane 150R Outside-lane 2): campaignStatusFor + the campaign status mirror. It wrote
+// "delivered", which the LIVE direct_mail_campaigns status CHECK (planning | approved | printed | mailed | cancelled |
+// failed — scripts/check-vocabularies.ts) refuses, so the UPDATE was refused and only logged; and one returned piece
+// would have marked a whole multi-recipient campaign "failed". A piece's outcome is the PIECE's: trackDelivery records it
+// on the recipient row (direct_mail_recipients, m985) and the mail_tracking ledger — SURVIVOR app/actions/direct-mail.ts
+// trackDelivery, called below for every campaign the piece belongs to.
 
 export async function POST(request: NextRequest) {
   const secret = process.env.LOB_WEBHOOK_SECRET
@@ -79,35 +77,25 @@ export async function POST(request: NextRequest) {
   // 2. Resolve the campaign(s) this piece belongs to. Used by BOTH the terminal
   //    status mirror and the per-piece tracking ledger below, so one read.
   //    An unknown piece id resolves to nothing and both steps no-op.
+  //    Two keys: the campaign's first piece (direct_mail_campaigns.lob_order_id) AND every later piece of a multi-recipient
+  //    campaign (direct_mail_recipients.provider_piece_id, m985 — wave 150, lane 150Z / lane 150R Outside-lane 2), so the
+  //    per-piece settle fires for every piece, not only the one the campaign row names.
   let campaignIds: string[] = []
   try {
     const svc = createServiceClient()
     // Destructure error: a refused read must not read as "no such campaign".
-    const { data, error } = await svc
-      .from("direct_mail_campaigns")
-      .select("id")
-      .eq("lob_order_id", pieceId)
-    if (!error) campaignIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id)
+    const [byOrder, byPiece] = await Promise.all([
+      svc.from("direct_mail_campaigns").select("id").eq("lob_order_id", pieceId),
+      svc.from("direct_mail_recipients").select("campaign_id").eq("provider_piece_id", pieceId),
+    ])
+    if (byOrder.error) console.error(`[lob-events] campaign read by lob_order_id refused: ${byOrder.error.message}`)
+    if (byPiece.error) console.error(`[lob-events] recipient read by provider_piece_id refused: ${byPiece.error.message}`)
+    const ids = new Set<string>()
+    for (const r of (byOrder.error ? [] : (byOrder.data ?? [])) as Array<{ id: string }>) ids.add(r.id)
+    for (const r of (byPiece.error ? [] : (byPiece.data ?? [])) as Array<{ campaign_id: string | null }>) if (r.campaign_id) ids.add(r.campaign_id)
+    campaignIds = [...ids]
   } catch {
     // Reconciliation already landed; a lookup failure must not un-ACK.
-  }
-
-  // 3. Mirror a TERMINAL outcome onto the campaign the agent looks at.
-  let campaignUpdated = false
-  const status = campaignStatusFor(eventType)
-  if (status && campaignIds.length > 0) {
-    try {
-      const svc = createServiceClient()
-      const { data, error: lobStatusErr } = await svc
-        .from("direct_mail_campaigns")
-        .update({ status })
-        .in("id", campaignIds)
-        .select("id")
-      if (lobStatusErr) console.error(`[lob-events] campaign status update refused: ${lobStatusErr.message}`)
-      campaignUpdated = ((data ?? []) as unknown[]).length > 0
-    } catch {
-      // Reconciliation already landed; a mirror failure must not un-ACK.
-    }
   }
 
   // 4. PER-PIECE DELIVERY LEDGER — the rows the campaign Tracking tab reads
@@ -162,7 +150,7 @@ export async function POST(request: NextRequest) {
     eventType,
     verdict: recon.verdict,
     escalated: recon.escalated,
-    campaignUpdated,
+    campaignUpdated: false, // wave 150: per-piece outcomes are never mirrored onto the campaign (see the tombstone above)
     trackingRecorded,
   })
 }

@@ -487,9 +487,13 @@ async function runHandler(
         return { status: "failed", result: { error: "no verified address available for retry" } }
       }
 
-      const tplId = process.env.LOB_DEFAULT_TEMPLATE_ID ?? ""
-      if (!tplId) {
-        return { status: "failed", result: { error: "LOB_DEFAULT_TEMPLATE_ID not configured" } }
+      // ONE FORMAT ROUTER (wave 150, lane 150Z — lane 150R Outside-lane 6, R5): the retried piece's own format resolves its
+      // distinct global templates (a postcard's back is never its front); a format with no global template refuses, said so.
+      const pieceType = (r.piece_type as "letter" | "postcard" | "self_mailer" | undefined) ?? "postcard"
+      const { routeMailFormat } = await import("@/lib/direct-mail/piece-type")
+      const route = pieceType === "letter" || pieceType === "postcard" ? routeMailFormat(pieceType) : null
+      if (!route || !route.ok) {
+        return { status: "failed", result: { error: route ? `Lob ${pieceType} template not configured: ${route.reason}` : `a ${pieceType} has no global format template — retry it from the mail dashboard` } }
       }
 
       const { dispatchDirectMail } = await import("@/lib/providers/dispatch")
@@ -503,8 +507,9 @@ async function runHandler(
         city:           address.city,
         state:          address.state,
         zip:            address.zip,
-        templateId:     tplId,
-        pieceType:      (r.piece_type as "letter" | "postcard" | "self_mailer" | undefined) ?? "postcard",
+        templateId:     route.templates.templateId,
+        backTemplateId: route.templates.backTemplateId,
+        pieceType,
         systemSource:   "marketing_agent_retry",
       })
 

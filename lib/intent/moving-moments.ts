@@ -115,6 +115,8 @@ const VENDOR_SCORE_UNITS: Readonly<Record<string, string>> = Object.freeze({
   "propertyradar:LikelyPurchaseScore": "PropertyRadar's vendor-defined purchase-likelihood score (units not documented in the installed playbook — verify before use)",
   "datazapp:Signal_Seller_Score": "DataZapp's 0x–4x seller-signal label",
   "tracerfy:seller_score": "Tracerfy's Lead Builder seller score (vendor scale)",
+  // wave 150, lane 150Z (150HIAB Outside-lane 1): BatchData's BatchRank add-on, labelled in its own unit.
+  "batchdata:salePropensity": "BatchData's BatchRank sale-propensity score (vendor scale; the add-on is not on the platform account)",
 })
 
 export interface LabelledVendorScore { provider: string; field: string; value: number | string; unit: string; label: string; probability: null }

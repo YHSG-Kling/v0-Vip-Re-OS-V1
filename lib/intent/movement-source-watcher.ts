@@ -402,14 +402,17 @@ function acquisitionPostsSource(opts: { maxClassifications?: number; classify?: 
   return {
     key: "stored:raw_scraped_leads.posts", registryKeys: Object.values(POST_SOURCE_REGISTRY), cadenceMinutes: 60,
     async fetch({ svc, brokerageId, now, lastSuccessAt }) {
-      const { data, error } = await svc.from("raw_scraped_leads").select("id, lead_id, source, raw_data, normalized_preview, city, state, created_at")
+      // C35 (wave 150, lane 150Z — lane 150EFG Outside-lane 1): the producer's idempotency key is the item key (ten replays of
+      // one observation are ONE movement item), and an observation past its TTL is not read as current evidence.
+      const { data, error } = await svc.from("raw_scraped_leads").select("id, lead_id, source, raw_data, normalized_preview, city, state, created_at, idempotency_key, ttl_expires_at")
         .eq("brokerage_id", brokerageId).in("source", Object.keys(POST_SOURCE_REGISTRY)).gte("created_at", readSince(now, lastSuccessAt)).order("created_at", { ascending: true }).limit(200)
       if (error) return { ok: false, error: `raw_scraped_leads read refused: ${error.message}` }
       let budget = opts.maxClassifications ?? 20
+      const nowMs = now.getTime()
       return {
         ok: true,
-        items: ((data ?? []) as Array<Record<string, any>>).map((r) => ({
-          itemKey: `raw:${r.id}`,
+        items: ((data ?? []) as Array<Record<string, any>>).filter((r) => !(typeof r.ttl_expires_at === "string" && Date.parse(r.ttl_expires_at) < nowMs)).map((r) => ({
+          itemKey: `raw:${r.idempotency_key ?? r.id}`,
           material: { source: r.source, lead: r.lead_id ?? null },
           observedAt: typeof r.created_at === "string" ? r.created_at : null,
           toSignal: async (): Promise<MovementBuild> => {

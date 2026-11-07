@@ -610,7 +610,12 @@ export async function processEnrichmentQueue(
       // email-only buyer queued for a phone lookup. Same rule the queue writer records
       // (contactPointsToBuy). Leads keep their own route (93B2: Versium asks a lead for email only).
       // PeopleData demographics below are not contact points and are unaffected.
-      const contactPointLegs = entityType === 'lead' || contactPointsToBuy({ email: entity.email, phone: entity.phone }).length > 0
+      // THE MISSING-FIELD FILTER on the live owner_contact ladder (wave 150, lane 150Z — lane 150HIAB Still open 1; the
+      // rule lib/providers/provider-scorecard.ts planProviderWaterfall states: "nothing is missing — no provider is asked").
+      // A LEAD needs only an email (email + direct mail, never SMS/voice — 93B2), so a lead that already holds one buys
+      // no contact point either: before this, every lead was traced (BatchData / PeopleData phones it never uses).
+      const leadMissingEmail = !String(entity.email ?? '').trim()
+      const contactPointLegs = entityType === 'lead' ? leadMissingEmail : contactPointsToBuy({ email: entity.email, phone: entity.phone }).length > 0
       if (!contactPointLegs) console.info('[enrichment-orchestrator] contact already has an email — no contact-point purchase')
 
       // ── Step 5-pre: VERSIUM FIRST (wave 93, lane 93B2 — owner cost decision: "Versium first for

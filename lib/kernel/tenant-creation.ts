@@ -1270,7 +1270,7 @@ async function grantMembership(svc: Svc, row: { brokerageId: string; userId: str
  * resumeTenantProvisioning re-runs it) and routed to the right manager immediately; the tenant is never rolled back
  * for a structure gap ("invite immediately, repair asynchronously, notify the right manager").
  */
-/** Consumers: createTenantCore / resumeTenantProvisioning (provisioning), app/dashboard/settings/offices/actions.ts grantOfficeMembershipAction (admin_grant) and — once the Outside-lane hook lands — lib/kernel/brokerage-transfer.ts (transfer). */
+/** Consumers: createTenantCore / resumeTenantProvisioning (provisioning), app/dashboard/settings/offices/actions.ts grantOfficeMembershipAction (admin_grant) and lib/kernel/brokerage-transfer.ts runBrokerageTransferMigration membership step (transfer; wave 150 lane 150Z). */
 export async function provisionTenantStructure(svc: Svc, p: ProvisionStructureParams, deps: StructureDeps = {}): Promise<TenantStructureRecord> {
   const rec: TenantStructureRecord = { version: 1, complete: false, offices: [], teams: [], memberships: 0, members: [], errors: [], notes: [], at: new Date().toISOString() }
   const prior = p.prior ?? null

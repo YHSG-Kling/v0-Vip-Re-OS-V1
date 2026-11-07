@@ -26,8 +26,8 @@
 // none and the tenant's closed sales are a sample, so otherwise it is null WITH the reason — never derived from a sample.
 //
 // Consumers: lib/market-reports/topics.ts (demand-gap + relocation evidence for the report strategist); `marketGap` is the
-// shape lib/lead-pipeline/source-discovery-planner.ts planSourceDiscovery takes (wiring at app/actions/acquisition-plan.ts —
-// lane 150KLMO notes, Outside-lane). Tenant-pinned on every tenant read; every { error } is read. Never throws.
+// shape lib/lead-pipeline/source-discovery-planner.ts planSourceDiscovery takes (read by app/actions/acquisition-plan.ts
+// proposeAcquisitionPlan with allowProviderRead:false — wired wave 150, lane 150Z). Tenant-pinned on every tenant read; every { error } is read. Never throws.
 
 type Db = { from: (table: string) => any }
 
