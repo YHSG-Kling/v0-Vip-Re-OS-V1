@@ -209,9 +209,21 @@ export interface PersistConsentResult {
  * contacts write's error is now read and handed back, and the caller stops
  * reporting success on it.
  */
+// The consent ledger's "newest row decides" rule (consentScopeFor → answerConsentQuestion, and the supersedes pointer below)
+// needs a TOTAL order on created_at. Two writes from one process can share a wall-clock millisecond — CI run 42352161625
+// (2026-11-07) answered a narrow valuation-only consent as covering equity_review because the broad QR consent written
+// microseconds earlier tied with it and the tie fell to insertion order — so every stamp this process writes is strictly
+// later than the one before it. One millisecond of drift on a tie is the price of an unambiguous ledger.
+let lastConsentStampMs = 0
+function monotonicConsentStamp(): string {
+  const ms = Math.max(Date.now(), lastConsentStampMs + 1)
+  lastConsentStampMs = ms
+  return new Date(ms).toISOString()
+}
+
 export async function persistContactConsent(params: PersistConsentParams): Promise<PersistConsentResult> {
   const supabase = params.client ?? createServiceClient()
-  const now = new Date().toISOString()
+  const now = monotonicConsentStamp()
   const channel = params.channel ?? 'phone'
   const stampParty = params.stampPartyColumns !== false
   const scope = params.scope ?? null

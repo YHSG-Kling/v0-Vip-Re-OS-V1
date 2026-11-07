@@ -191,6 +191,17 @@ async function main() {
   const narrowAns = consent.answerConsentQuestion(scopeB, { channel: "email", purpose: "equity_review" })
   check("a NARROW consent (home_valuation) does not cover equity_review — purpose_not_covered, citing the row", !!narrow.consentEventId && !narrowAns.allowed && narrowAns.basis === "purpose_not_covered" && narrowAns.consentEventId === narrow.consentEventId, JSON.stringify(narrowAns))
   check("…but it covers home_valuation itself", consent.answerConsentQuestion(scopeB, { channel: "email", purpose: "home_valuation" }).allowed)
+  // POSITIVE CONTROL — "newest decides" needs a TOTAL order: the writer's stamps are strictly monotonic within a process.
+  // CI run 42352161625 (2026-11-07) wrote Bea's broad QR consent and this narrow one in the SAME millisecond; the in-memory
+  // client's stable sort then kept insertion order and the broad row read as newest (allowed:true). Two back-to-back writes
+  // must never share a created_at, and the later one must be the one the scope reader puts first.
+  const bea = r5c.contactId!
+  const t1 = await consent.persistContactConsent({ brokerageId: B, contactId: bea, channel: "email", consentText: "Email me market updates.", consentSource: "test", consented: true, client: svc, stampPartyColumns: false, scope: { purposes: ["market_updates"], channels: ["email"] } })
+  const t2 = await consent.persistContactConsent({ brokerageId: B, contactId: bea, channel: "email", consentText: "Email me my home valuation report only.", consentSource: "test", consented: true, client: svc, stampPartyColumns: false, scope: { purposes: ["home_valuation"], channels: ["email"] } })
+  const stampOf = (id: string | null | undefined) => String(rows(svc, "contact_consent_events").find((e) => e.id === id)?.created_at ?? "")
+  const scopeB2 = await consent.consentScopeFor(svc, { brokerageId: B, contactId: bea })
+  check("POSITIVE CONTROL — two consents written back-to-back never share a created_at (strictly monotonic stamps), and the scope reader puts the later one first", !!t1.consentEventId && !!t2.consentEventId && stampOf(t1.consentEventId) < stampOf(t2.consentEventId) && scopeB2.rows[0]?.id === t2.consentEventId, JSON.stringify({ t1: stampOf(t1.consentEventId), t2: stampOf(t2.consentEventId), first: scopeB2.rows[0]?.id === t2.consentEventId }))
+  check("…so the newest (valuation-only) consent decides even when the one before it was broader: market_updates is purpose_not_covered now", consent.answerConsentQuestion(scopeB2, { channel: "email", purpose: "market_updates" }).basis === "purpose_not_covered" && consent.answerConsentQuestion(scopeB2, { channel: "email", purpose: "home_valuation" }).allowed)
   // a later preference change — the legacy opt-out caller (tcpa panel / unsubscribe shape: no scope)
   const optOut = await consent.persistContactConsent({ brokerageId: A, contactId: r1.contactId!, channel: "phone", consentText: "Opted out by reply STOP", consentSource: "sms_stop", consented: false, client: svc })
   const outRow = rows(svc, "contact_consent_events").find((e) => e.id === optOut.consentEventId)
