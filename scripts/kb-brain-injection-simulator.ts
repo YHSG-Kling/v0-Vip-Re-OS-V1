@@ -102,8 +102,14 @@ console.log("\n── one article-rating path, and it does not lose votes ──
     /\.rpc\("increment", \{[\s\S]*?table_name:\s+"knowledge_articles"/.test(support))
   check("…not a read-modify-write any more",
     !/from\("knowledge_articles"\)\.select\(col\)/.test(support))
+  // THE RULE: a refused increment comes back as a refusal that carries the database's own message — through the
+  // tenant-safe filter (wave 150, lane 150DAC: a tenant never reads raw database text; staff keep the detail), never a
+  // retry down the racy read-modify-write path. The old assertion pinned the pre-150 literal `error: error.message`.
   check("a refused increment is reported, not silently retried down the racy path",
-    /if \(error\) \{[\s\S]{0,200}?return \{ ok: false, error: error\.message \}/.test(support))
+    /if \(error\) \{[\s\S]{0,300}?return \{ ok: false, error: (?:error\.message|tenantSafeError\([^)]*error\.message\)) \}/.test(support)
+    && !/if \(error\) \{[\s\S]{0,300}?from\("knowledge_articles"\)\.select/.test(support))
+  check("POSITIVE CONTROL: a refusal that is swallowed (no return in the error branch) would be caught",
+    !/if \(error\) \{[\s\S]{0,300}?return \{ ok: false, error: (?:error\.message|tenantSafeError\([^)]*error\.message\)) \}/.test('if (error) {\n  console.warn(error.message)\n}\nreturn { ok: true }'))
 }
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
