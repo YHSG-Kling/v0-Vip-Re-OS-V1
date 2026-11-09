@@ -213,6 +213,51 @@ export async function getHealingConsoleAction(): Promise<
   return { ok: true, incidents: inc.incidents, windowDays: inc.windowDays, ceiling: ceil.raw, ceilingApplied: ceil.applied, defaults: { ...HEALING_POLICY_DEFAULTS }, actingClasses }
 }
 
+// ── PLATFORM ACQUISITION BUDGET CAPS (wave 151, lane 151F) ───────────────────────────────────────────────────────────
+// The owner's caps on the platform's OWN acquisition spend (platform_settings.acquisition_budget_caps, m976 — the m753
+// idiom). NULL = stop before spend; no default exists anywhere (lib/vendor-governance/platform-acquisition-caps.ts).
+// Read behind the providers capability (the connector-healing console), written by the superadmin only, audited.
+
+export async function getAcquisitionCapsAction(): Promise<
+  | { ok: true; caps: import("@/lib/vendor-governance/platform-acquisition-caps").PlatformAcquisitionCaps | null; applied: boolean; spend: { platformUsd: number | null; rows: number; error: string | null }; verdict: import("@/lib/vendor-governance/platform-acquisition-caps").PlatformAcquisitionSpendVerdict }
+  | { ok: false; error: string }
+> {
+  const gate = await requirePlatformCapability("providers")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden — requires platform 'providers' capability" }
+  const svc = createServiceClient()
+  const { loadPlatformAcquisitionCaps, loadPlatformAcquisitionSpend, platformCapRemainingFor } = await import("@/lib/vendor-governance/platform-acquisition-caps")
+  // The SAME remaining-dollars derivation the pooled lane hands decideSpendBackpressure (platformCapRemainingFor) — the console
+  // shows the live verdict, never a second computation of it.
+  const [caps, spend, remaining] = await Promise.all([loadPlatformAcquisitionCaps(svc), loadPlatformAcquisitionSpend(svc, { tenantId: null }), platformCapRemainingFor(svc, null)])
+  if (!caps.ok) return { ok: false, error: caps.error }
+  return { ok: true, caps: caps.caps, applied: caps.applied, spend: { platformUsd: spend.platformUsd, rows: spend.rows, error: spend.error }, verdict: remaining.verdict }
+}
+
+/** Set the platform acquisition caps (superadmin only; audited like the god switch). A null field is an explicit STOP. */
+export async function setAcquisitionCapsAction(input: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const { setPlatformAcquisitionCaps } = await import("@/lib/vendor-governance/platform-acquisition-caps")
+  const r = await setPlatformAcquisitionCaps(svc, input && typeof input === "object" ? input : {}, { userId: auth.userId })
+  if (!r.ok) return r
+  // LAW 5 — who changed the owner's caps, from what to what.
+  try {
+    const hdrs = await headers()
+    const { error: auditErr } = await svc.from("superadmin_audit_log").insert({
+      actor_user_id: auth.userId, actor_email: auth.email,
+      action: "acquisition_budget_caps.set", target_type: "platform_settings", target_id: null,
+      details: { before: r.before, after: r.after },
+      ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+      user_agent: hdrs.get("user-agent"),
+    })
+    if (auditErr) console.error("[acquisition-caps] audit write refused:", auditErr.message)
+  } catch (err) {
+    console.error("[acquisition-caps] audit write failed:", err)
+  }
+  return { ok: true }
+}
+
 /** Set the platform self-healing ceiling (superadmin only; audited like the god switch). */
 export async function setHealingCeilingsAction(input: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string }> {
   const auth = await requireSuperadmin()

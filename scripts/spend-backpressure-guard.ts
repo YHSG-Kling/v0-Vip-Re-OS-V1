@@ -123,6 +123,60 @@ async function main() {
   const live = classifyProviderConfigChange({ kind: "runtime_failover", connector: "versium", capability: "owner_contact", toProvider: "batchdata", summary: "route around", confidence: 0.9 }, { declaredConfigAlternate: false })
   check("positive control: failover onto a dormant SURVIVOR whose doors wait on the owner stays a failover", live.class === "provider_failover", JSON.stringify(live))
 
+  // ═══ Wave 151 (lane 151F): the OWNER'S platform acquisition caps (null = stop before spend) and the PRE-PULL VALUE verdict ═══
+  console.log("\nE — the owner's platform acquisition caps: no made-up default, null = stop before spend")
+  const caps = await import("../lib/vendor-governance/platform-acquisition-caps")
+  const full = { monthly_usd: 100, per_tenant_monthly_usd: 20, per_pull_usd: 5, set_by: "owner", set_at: "2026-11-09T00:00:00.000Z" }
+  check("no caps row → REFUSE (stop before spend), escalate", (() => { const v = caps.decidePlatformAcquisitionSpend({ caps: null, platformSpentMonthUsd: 0, tenantSpentMonthUsd: 0, wantUsd: 1 }); return v.action === "refuse" && v.escalate && /not configured/.test(v.reasons.join()) })())
+  check("ANY null cap → REFUSE naming the field (never a substituted default)", (() => { const v = caps.decidePlatformAcquisitionSpend({ caps: { ...full, per_pull_usd: null }, platformSpentMonthUsd: 0, tenantSpentMonthUsd: 0, wantUsd: 1 }); return v.action === "refuse" && /Per paid pull/.test(v.reasons.join()) })())
+  check("an unreadable ledger → REFUSE (never zero spend assumed)", caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: null, tenantSpentMonthUsd: 0, wantUsd: 1 }).action === "refuse" && caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: 0, tenantSpentMonthUsd: null, wantUsd: 1 }).action === "refuse")
+  check("positive control: a want that fits every cap proceeds, naming the binding cap and its remainder", (() => { const v = caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: 10, tenantSpentMonthUsd: 2, wantUsd: 4 }); return v.action === "proceed" && v.allowedUsd === 4 && v.remainingUsd === 5 && !v.escalate })())
+  check("the per-tenant cap binds when it is the smallest → throttle to the remainder, escalate", (() => { const v = caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: 10, tenantSpentMonthUsd: 18, wantUsd: 4 }); return v.action === "throttle" && v.allowedUsd === 2 && /Per-tenant/.test(v.reasons.join()) && v.escalate })())
+  check("an exhausted monthly cap → refuse", caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: 100, tenantSpentMonthUsd: 0, wantUsd: 1 }).action === "refuse")
+  check("the edit validator: a negative or non-numeric cap is an error; blank keeps; explicit null is STOP; a number is kept to cents", (() => {
+    const bad = caps.validateAcquisitionCapsEdit({ monthly_usd: -1 }, null, { userId: "u" }); const neg = !bad.ok
+    const nan = !caps.validateAcquisitionCapsEdit({ monthly_usd: "abc" }, null, { userId: "u" }).ok
+    const keep = caps.validateAcquisitionCapsEdit({ monthly_usd: "" }, full, { userId: "u" }); const stop = caps.validateAcquisitionCapsEdit({ monthly_usd: null }, full, { userId: "u" }); const num = caps.validateAcquisitionCapsEdit({ monthly_usd: "12.345" }, full, { userId: "u" })
+    return neg && nan && keep.ok && keep.value.monthly_usd === 100 && stop.ok && stop.value.monthly_usd === null && num.ok && num.value.monthly_usd === 12.35 && num.value.set_by === "u"
+  })())
+  check("parseAcquisitionCaps: an absent / non-number field reads NULL, never a default", (() => { const p = caps.parseAcquisitionCaps({ monthly_usd: 5, per_pull_usd: "x" }); return !!p && p.monthly_usd === 5 && p.per_tenant_monthly_usd === null && p.per_pull_usd === null && caps.parseAcquisitionCaps("nope") === null })())
+  const { memSupabase } = await import("./in-memory-supabase")
+  const dbAbsent = memSupabase({ platform_settings: [{ id: true, created_at: "2026-01-01" }] }, { missingColumns: { platform_settings: ["acquisition_budget_caps"] } })
+  const absent = await caps.loadPlatformAcquisitionCaps(dbAbsent as never)
+  check("loader: the column absent (m976 unapplied) reads applied:false, caps null — and the writer refuses to write", absent.ok && !absent.applied && absent.caps === null && !(await caps.setPlatformAcquisitionCaps(dbAbsent as never, { monthly_usd: 1 }, { userId: "u" })).ok)
+  const dbRefused = memSupabase({ platform_settings: [] }, { refuse: { platform_settings: "permission denied" } })
+  check("loader: a REFUSED read is ok:false (never 'no caps set')", !(await caps.loadPlatformAcquisitionCaps(dbRefused as never)).ok)
+  const dbLive = memSupabase({ platform_settings: [{ id: true, created_at: "2026-01-01", acquisition_budget_caps: null }], vendor_usage_tracking: [
+    { brokerage_id: "b1", total_cost: 3, request_metadata: { system_source: "lead_scraping", coverage: "platform_covered" }, created_at: new Date().toISOString() },
+    { brokerage_id: "b2", total_cost: 2, request_metadata: { system_source: "lead_scraping" }, created_at: new Date().toISOString() },
+    { brokerage_id: "b1", total_cost: 9, request_metadata: { system_source: "tenant_provider_connection", coverage: "tenant_paid" }, created_at: new Date().toISOString() },
+    { brokerage_id: "b1", total_cost: 7, request_metadata: { system_source: "ai_isa" }, created_at: new Date().toISOString() },
+  ] })
+  const w = await caps.setPlatformAcquisitionCaps(dbLive as never, { monthly_usd: 10, per_tenant_monthly_usd: 4, per_pull_usd: 2 }, { userId: "owner" })
+  const spend = await caps.loadPlatformAcquisitionSpend(dbLive as never, { tenantId: "b1" })
+  check("writer: a counted update lands all three caps with the actor; the spend read sums ONLY platform-covered acquisition rows (tenant-paid and non-acquisition rows excluded)", w.ok && w.after.monthly_usd === 10 && w.after.set_by === "owner" && spend.platformUsd === 5 && spend.tenantUsd === 3 && spend.rows === 2)
+  const rem = await caps.platformCapRemainingFor(dbLive as never, "b1")
+  check("platformCapRemainingFor hands backpressure the binding remainder ($1 left under b1's $4 per-tenant cap after $3)", rem.remainingUsd === 1 && rem.verdict.action === "proceed")
+  const remNone = await caps.platformCapRemainingFor(memSupabase({ platform_settings: [{ id: true, created_at: "2026-01-01", acquisition_budget_caps: null }], vendor_usage_tracking: [] }) as never, "b1")
+  check("…and null when the caps are unset (the backpressure then refuses)", remNone.remainingUsd === null && remNone.verdict.action === "refuse")
+  check("backpressure: platformCapRemainingUsd null → REFUSE with the stop-before-spend reason, escalate", (() => { const v = decideSpendBackpressure({ ...base, platformCapRemainingUsd: null }); return v.action === "refuse" && /not configured/.test(v.reason) && v.escalate })())
+  check("backpressure: the platform cap binds when it is the smallest → throttle, named as the owner's cap", (() => { const v = decideSpendBackpressure({ ...base, platformCapRemainingUsd: 1 }); return v.action === "throttle" && v.records === 20 && /platform acquisition cap/.test(v.reason) })())
+  check("backpressure: undefined (a tenant-owned call / legacy fixture) leaves the decision exactly as before", JSON.stringify(decideSpendBackpressure(base)) === JSON.stringify(decideSpendBackpressure({ ...base, platformCapRemainingUsd: undefined })) && decideSpendBackpressure(base).action === "proceed")
+
+  console.log("\nF — the pre-pull value verdict (lane 151C's interface) inside paidPullApproval")
+  const plans = [{ id: "p1", brokerage_id: "b", status: "approved", valid_until: "2099-01-01T00:00:00Z", lines: [{ source: "batchdata_motivated", status: "approved", maxSpendUsd: 12, approvedAt: "2026-11-02T00:00:00Z" }] }]
+  const wantPull = { brokerageId: "b", source: "batchdata_motivated" }
+  check("omitted → unchanged (allowed under the approved line)", paidPullApproval(plans, wantPull).allowed === true)
+  check("a worthwhile verdict → allowed", paidPullApproval(plans, wantPull, new Date(), { value: 0.7, worthwhile: true, reasons: ["fresh", "territory match"] }).allowed === true)
+  const no = paidPullApproval(plans, wantPull, new Date(), { value: 0.1, worthwhile: false, reasons: ["stale signal", "duplicates known"] })
+  check("not worthwhile → REFUSED at the approval gate, with the planner's reasons", no.allowed === false && /not worthwhile/.test((no as { reason: string }).reason) && /stale signal/.test((no as { reason: string }).reason))
+  const held = paidPullApproval(plans, wantPull, new Date(), { value: 0.9, worthwhile: true, reasons: [], holdReason: "price unknown for this provider" })
+  check("held pending configuration (unknown price / license) → refused as held", held.allowed === false && /held/.test((held as { reason: string }).reason))
+  check("an out-of-bounds value is refused (a bounded 0..1 signal is the contract)", paidPullApproval(plans, wantPull, new Date(), { value: 7, worthwhile: true, reasons: [] }).allowed === false)
+  const { prePullRefusal } = await import("../lib/vendor-governance/budget-eval")
+  check("positive control: prePullRefusal(null) is null (nothing to refuse)", prePullRefusal(null) === null && prePullRefusal(undefined) === null)
+  check("the planner consumes the ONE verdict reading (prePullRefusal) rather than re-spelling it", /prePullRefusal\(prePull\)/.test(stripped("lib/lead-pipeline/source-discovery-planner.ts")) && /import \{ prePullRefusal, type PrePullValueVerdict \} from "@\/lib\/vendor-governance\/budget-eval"/.test(stripped("lib/lead-pipeline/source-discovery-planner.ts")))
+
   console.log(`\nSPEND BACKPRESSURE — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ SPEND_BACKPRESSURE_PASS" : "❌ SPEND_BACKPRESSURE_FAIL"}`)
   if (failed > 0) process.exit(1)
 }

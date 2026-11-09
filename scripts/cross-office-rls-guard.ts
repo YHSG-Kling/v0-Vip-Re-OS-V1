@@ -339,7 +339,7 @@ function sectionD(m999: { policies: ParsedAlter[]; views: ParsedView[] } | null)
   const usersRead = c.policies.find((p) => p.table === "users" && /current_user_brokerage_id\(\)/.test(p.qual) && !STAFF_GATE.test(p.qual.replace(/is_platform_staff\(\)\s*OR/, "")))
   // WAVE 151 (lane 151B): S4 is now a migration — m964 (users rows stay with staff seats, the own row and the assigned agent);
   // once applied this line stops printing because the qual carries is_tenant_staff_seat(). Until then it is the live finding.
-  if (usersRead) publish(`PII: ${usersRead.table}.${usersRead.policy} lets every seat of the tenant (contacts and vendors included) read every users row of that tenant — fixed by m964 (WRITTEN, NOT APPLIED; test:access-matrix projects it)`)
+  if (usersRead) publish(`PII: ${usersRead.table}.${usersRead.policy} lets every seat of the tenant (contacts and vendors included) read every users row of that tenant — fixed by m964 (lane or applied stamp on its line 1; test:access-matrix projects it)`)
 
   if (!m999) return
   const after = judge(project(c, m999))

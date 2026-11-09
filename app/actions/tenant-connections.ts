@@ -147,3 +147,192 @@ export async function getTenantConnectionsAction(): Promise<{
     portalLeads: [...counts.entries()].map(([portal, last30d]) => ({ portal, last30d })),
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// TENANT-OWNED ACQUISITION PROVIDERS — route B (wave 151, lane 151F; directive 151F steps 1–14).
+// The tenant chooses a SUPPORTED provider from the catalogue (lib/providers/tenant-provider-connections.ts — never a generic
+// "paste any API" field), authenticates with that provider's documented fields, attests the agreement (scopes, LICENSE,
+// retention, AI processing, redistribution prohibited, cost payer tenant), names a territory / frequency / rate limit, and the
+// row lands ENCRYPTED in the existing vault (platform_credentials, owner_type brokerage) through the same gate every tenant
+// credential write uses here (requireAdmin("write") — the tenant comes from the SESSION, never a body). The key is verified by
+// the provider's FREE account read under the tenant's own token (step 4); the push door's signing secret is minted here and
+// shown ONCE. Disconnect stops polls (inactive), revokes our push secret, keeps lawful history (step 13).
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+import { randomBytes } from "node:crypto"
+import { isEncryptionConfigured } from "@/lib/security/secret-crypto"
+import {
+  TENANT_ACQUISITION_PROVIDERS,
+  TENANT_PROVIDER_FREQUENCIES,
+  TENANT_WEBHOOK_CONNECTION_PARAM,
+  buildTenantProviderCredentialRow,
+  classifyTenantProviderFailure,
+  deriveTenantProviderConnectionState,
+  tenantAcquisitionProvider,
+  tenantProviderDisconnectPatch,
+  validateProviderAgreement,
+  validateProviderTerritory,
+  type TenantProviderConnectionConfig,
+  type TenantProviderConnectionState,
+  type TenantProviderFrequency,
+} from "@/lib/providers/tenant-provider-connections"
+
+export interface TenantAcquisitionProviderStatus {
+  key: string
+  label: string
+  state: TenantProviderConnectionState
+  reason: string
+  actionable: string | null
+  /** The documented transports and fields (empty for an unsupported provider — no form is offered). */
+  transports: readonly string[]
+  fields: ReadonlyArray<{ key: string; label: string; secret?: boolean; required: boolean; placeholder?: string }>
+  capabilities: readonly string[]
+  docs: string
+  pricingNote: string
+  why: string
+  /** For a connected push provider: the URL path the tenant pastes at the provider (the secret is never re-shown). */
+  webhookPath: string | null
+  /** The non-secret half of the stored connection (never a token, never the signing secret). */
+  connection: { accountLabel: string | null; territory: TenantProviderConnectionConfig["territory"] | null; frequency: TenantProviderFrequency | null; rateLimitPerDay: number | null; agreement: Omit<TenantProviderConnectionConfig["agreement"], "accepted_by_user_id"> | null; lastHealth: TenantProviderConnectionConfig["last_health"]; disconnectedAt: string | null } | null
+}
+
+/** Every catalogue provider with its DERIVED state for this tenant (read_only grant may see it — §5, like the slots above). */
+export async function getTenantAcquisitionProvidersAction(): Promise<{ ok: true; providers: TenantAcquisitionProviderStatus[]; encryptionConfigured: boolean } | { ok: false; error: string }> {
+  const ctx = await requireAdmin("read")
+  if (!ctx) return { ok: false, error: "Brokerage admin access required." }
+  const svc = createServiceClient()
+  const keys = Object.keys(TENANT_ACQUISITION_PROVIDERS)
+  const { data: rows, error } = await svc.from("platform_credentials")
+    .select("id, platform, api_key, config, is_active, test_status")
+    .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).in("platform", keys)
+  // A refused read is said, never rendered as "nothing connected" (CLAUDE.md §3).
+  if (error) return { ok: false, error: `connections could not be read: ${error.message}` }
+  const byProvider = new Map<string, { id: string; api_key: string | null; config: Partial<TenantProviderConnectionConfig> | null; is_active: boolean; test_status: "pass" | "fail" | "pending" | null }>()
+  for (const r of (rows ?? []) as Array<{ id: string; platform: string; api_key: string | null; config: unknown; is_active: boolean | null; test_status: string | null }>) {
+    byProvider.set(r.platform, { id: r.id, api_key: r.api_key, config: (r.config ?? null) as Partial<TenantProviderConnectionConfig> | null, is_active: r.is_active === true, test_status: (r.test_status as "pass" | "fail" | "pending" | null) ?? null })
+  }
+  const providers = keys.map((key): TenantAcquisitionProviderStatus => {
+    const p = TENANT_ACQUISITION_PROVIDERS[key]
+    const row = byProvider.get(key) ?? null
+    const v = deriveTenantProviderConnectionState(key, row ? { exists: true, isActive: row.is_active, testStatus: row.test_status, hasApiKey: !!row.api_key, config: row.config } : null)
+    const cfg = row?.config ?? null
+    const agreement = cfg?.agreement ? { scopes: cfg.agreement.scopes, license_acknowledged: cfg.agreement.license_acknowledged, retention_days: cfg.agreement.retention_days, ai_processing_permitted: cfg.agreement.ai_processing_permitted, redistribution: cfg.agreement.redistribution, cost_payer: cfg.agreement.cost_payer, accepted_at: cfg.agreement.accepted_at } : null
+    return {
+      key, label: p.label, state: v.state, reason: v.reason, actionable: v.actionable, transports: p.transports, fields: p.fields, capabilities: p.capabilities, docs: p.docs, pricingNote: p.pricing.note, why: p.why,
+      webhookPath: row && p.webhook && row.is_active && cfg?.webhook_secret ? `${p.webhook.path}?${TENANT_WEBHOOK_CONNECTION_PARAM}=${row.id}` : null,
+      connection: row ? { accountLabel: cfg?.account_label ?? null, territory: cfg?.territory ?? null, frequency: cfg?.frequency ?? null, rateLimitPerDay: typeof cfg?.rate_limit_per_day === "number" ? cfg.rate_limit_per_day : null, agreement, lastHealth: cfg?.last_health ?? null, disconnectedAt: cfg?.disconnected_at ?? null } : null,
+    }
+  })
+  return { ok: true, providers, encryptionConfigured: isEncryptionConfigured() }
+}
+
+export interface ConnectTenantAcquisitionProviderInput {
+  provider: string
+  fields: Record<string, string>
+  agreement: unknown
+  territory: unknown
+  frequency: TenantProviderFrequency
+  rateLimitPerDay: number
+  sandbox?: boolean
+}
+
+/**
+ * Connect (or rotate) the tenant's OWN account for a supported acquisition provider. Refuses: a non-admin seat, an unknown or
+ * unsupported provider, an incomplete agreement or territory, a missing encryption key (FAIL CLOSED — never plaintext; the
+ * platform incident is raised). Verifies the token by the provider's free account read and records the honest result on the
+ * row; returns the push signing secret ONCE (it is stored encrypted and never re-shown).
+ */
+export async function connectTenantAcquisitionProviderAction(input: ConnectTenantAcquisitionProviderInput): Promise<
+  | { ok: true; state: TenantProviderConnectionState; reason: string; webhookPath: string | null; webhookSecretOnce: string | null }
+  | { ok: false; error: string; state?: TenantProviderConnectionState }
+> {
+  const ctx = await requireAdmin("write")
+  if (!ctx) return { ok: false, error: "Unauthorized" }
+  const p = tenantAcquisitionProvider(input?.provider ?? "")
+  if (!p) return { ok: false, error: `${String(input?.provider)} is not a supported acquisition provider — there is no generic API connection`, state: "unavailable" }
+  const preState = deriveTenantProviderConnectionState(p.provider, null)
+  if (preState.state === "unsupported" || preState.state === "pending_owner_licensing") return { ok: false, error: preState.reason, state: preState.state }
+  if (!TENANT_PROVIDER_FREQUENCIES.includes(input.frequency)) return { ok: false, error: `frequency: one of ${TENANT_PROVIDER_FREQUENCIES.join(" / ")}` }
+  const agreement = validateProviderAgreement(p.provider, input.agreement, { userId: ctx.userId })
+  if (!agreement.ok) return { ok: false, error: `agreement incomplete — ${agreement.problems.join("; ")}` }
+  const territory = validateProviderTerritory(input.territory)
+  if (!territory.ok) return { ok: false, error: territory.problems.join("; ") }
+
+  const svc = createServiceClient()
+  // FAIL CLOSED on the encryption key (owner, wave 139): no key → no row, and the platform incident is raised.
+  if (!isEncryptionConfigured()) {
+    const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+    await raiseSecretStorageIncident(svc, { surface: "tenant acquisition provider connect", brokerageId: ctx.brokerageId, code: "secrets_key_missing" })
+    return { ok: false, error: "Secret storage is not configured on this deployment — your token was NOT stored (never in plaintext). Platform staff have been notified." }
+  }
+  const webhookSecret = p.webhook ? randomBytes(24).toString("base64url") : null
+  const built = buildTenantProviderCredentialRow(p, {
+    brokerageId: ctx.brokerageId, fields: input.fields ?? {}, agreement: agreement.agreement, territory: territory.territory, frequency: input.frequency,
+    rateLimitPerDay: Number(input.rateLimitPerDay ?? 0), webhookSecret, sandbox: input.sandbox === true, encrypt: encryptSecret,
+  })
+  if (!built.ok) return { ok: false, error: built.problems.join("; ") }
+
+  const { data: existing, error: existingErr } = await svc.from("platform_credentials").select("id")
+    .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).eq("platform", p.provider).maybeSingle()
+  if (existingErr) return { ok: false, error: `existing connection could not be read: ${existingErr.message} — nothing written` }
+  const write = existing
+    ? await svc.from("platform_credentials").update(built.row).eq("id", (existing as { id: string }).id).eq("brokerage_id", ctx.brokerageId).select("id")
+    : await svc.from("platform_credentials").insert(built.row).select("id")
+  if (write.error) return { ok: false, error: write.error.message }
+  const rowId = ((write.data ?? []) as Array<{ id: string }>)[0]?.id ?? (existing as { id: string } | null)?.id ?? null
+  if (!rowId) return { ok: false, error: "the connection row did not land (the write matched no row) — nothing is connected" }
+
+  // Step 4 — verify LIVE under the tenant's own token: the provider's free account read, never a record purchase, never the
+  // platform key. The verdict is written on the row; the state the tenant sees is derived from it.
+  const apiKey = (input.fields?.apiKey ?? "").trim()
+  let health: NonNullable<TenantProviderConnectionConfig["last_health"]>
+  if (p.healthCheck.kind === "free_account_read" && p.provider === "batchdata") {
+    const { fetchBatchDataWalletBalance } = await import("@/lib/external/batchdata-client")
+    const r = await fetchBatchDataWalletBalance({ apiKey, brokerageId: ctx.brokerageId })
+    const f = r.ok ? classifyTenantProviderFailure({ httpStatus: 200 }, p.label) : classifyTenantProviderFailure({ httpStatus: r.httpStatus ?? null, networkError: r.httpStatus === null || r.httpStatus === undefined, message: r.error ?? null }, p.label)
+    health = { kind: "wallet_balance", status: f.probe, at: new Date().toISOString(), detail: r.ok ? null : f.tenantMessage }
+  } else {
+    health = { kind: "none", status: "not_configured", at: new Date().toISOString(), detail: "no free health read for this provider" }
+  }
+  const { data: stamped, error: stampErr } = await svc.from("platform_credentials")
+    .update({ test_status: health.status === "ok" ? "pass" : "fail", last_tested_at: health.at, config: { ...(built.row.config as object), last_health: health }, updated_at: new Date().toISOString() })
+    .eq("id", rowId).eq("brokerage_id", ctx.brokerageId).select("id")
+  if (stampErr || (stamped ?? []).length !== 1) console.error("[tenant-connections] acquisition connection health NOT stamped:", stampErr?.message ?? "update matched no row")
+
+  // IMMEDIATE POST-CONDITION (wave 141B — provider_connection): the same survivor the slots use.
+  const { verifyCredentialRow, reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+  const verified = await verifyCredentialRow(svc, { brokerageId: ctx.brokerageId, platform: p.provider })
+  const state = deriveTenantProviderConnectionState(p.provider, { exists: verified.ok, isActive: verified.ok, testStatus: health.status === "ok" ? "pass" : "fail", hasApiKey: true, config: { ...(built.row.config as TenantProviderConnectionConfig), last_health: health } })
+  await reportOperationOutcome(svc, {
+    operation: "provider_connection", brokerageId: ctx.brokerageId, ok: verified.ok && state.state !== "revoked",
+    subjectType: "platform_credentials", subjectId: rowId, actorUserId: ctx.userId, source: "ui",
+    evidence: { provider: p.provider, state: state.state, health: health.status, scopes: agreement.agreement.scopes, cost_payer: "tenant", ...verified.evidence }, error: verified.ok ? (state.state === "revoked" ? health.detail : null) : verified.error,
+    tenantFacing: verified.ok ? (state.state === "revoked" ? health.detail : null) : `your ${p.label} connection was saved but could not be verified as active — re-enter it from Settings › Integrations › Lead sources`,
+  })
+  if (!verified.ok) return { ok: false, error: `${p.label} was saved but did not verify as an active connection: ${verified.error}` }
+  return { ok: true, state: state.state, reason: state.reason, webhookPath: p.webhook && webhookSecret ? `${p.webhook.path}?${TENANT_WEBHOOK_CONNECTION_PARAM}=${rowId}` : null, webhookSecretOnce: webhookSecret }
+}
+
+/** Disconnect (step 13): polls stop, our push secret is revoked, lawful history stays. Counted; a no-match is a failure. */
+export async function disconnectTenantAcquisitionProviderAction(provider: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await requireAdmin("write")
+  if (!ctx) return { ok: false, error: "Unauthorized" }
+  const p = tenantAcquisitionProvider(provider)
+  if (!p) return { ok: false, error: "Unknown provider" }
+  const svc = createServiceClient()
+  const { data: row, error: readErr } = await svc.from("platform_credentials").select("id, config")
+    .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).eq("platform", p.provider).maybeSingle()
+  if (readErr) return { ok: false, error: `connection could not be read: ${readErr.message}` }
+  if (!row) return { ok: false, error: `${p.label} is not connected` }
+  const { data: moved, error } = await svc.from("platform_credentials")
+    .update(tenantProviderDisconnectPatch(((row as { config?: unknown }).config ?? null) as Partial<TenantProviderConnectionConfig> | null))
+    .eq("id", (row as { id: string }).id).eq("brokerage_id", ctx.brokerageId).select("id")
+  if (error) return { ok: false, error: error.message }
+  if ((moved ?? []).length !== 1) return { ok: false, error: "the disconnect matched no row — nothing changed" }
+  const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+  await reportOperationOutcome(svc, {
+    operation: "provider_connection", brokerageId: ctx.brokerageId, ok: true, subjectType: "platform_credentials", subjectId: (row as { id: string }).id, actorUserId: ctx.userId, source: "ui",
+    evidence: { provider: p.provider, action: "disconnect", polls_stopped: true, push_secret_revoked: true, history_kept: true }, error: null, tenantFacing: null,
+  })
+  return { ok: true }
+}

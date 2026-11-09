@@ -194,7 +194,7 @@ export const BATCHDATA_MOTIVATION_TYPES = [
   //   mailing_vacant → 'mailing-address-vacant' — the owner's OWN mailing address is vacant: they
   //                                                moved without updating the county — the lawful
   //                                                change-of-address proxy (USPS NCOALink may NOT be
-  //                                                used to build new-mover lists; its licence confines
+  //                                                used to build new-mover lists; its license confines
   //                                                it to correcting a mailer's own list).
   //   failed_listing → 'failed-listing'         — a listing that failed to close (stale/withdrawn
   //                                                sibling of canceled/expired).
@@ -657,6 +657,10 @@ export interface FetchMotivatedSellersOptions {
   searchCriteria?: Record<string, unknown>
   limit?: number
   skip?: number
+  /** Wave 151 (151F, route B): a TENANT's own token for a tenant-owned scheduled pull — when named, the platform key is
+   *  never a fallback (an empty tenant key refuses). `brokerageId` pins the gateway log row to the tenant. */
+  apiKey?: string | null
+  brokerageId?: string | null
 }
 
 /**
@@ -799,7 +803,10 @@ export function buildPropertySearchBody(opts: FetchMotivatedSellersOptions): { s
 
 // Single egress: all BatchData Property Search calls route through the connector-gateway
 // (one way in/out). Throws on error to preserve the callers' contract.
-async function batchDataPropertySearch(body: unknown, errorLabel: string): Promise<any> {
+async function batchDataPropertySearch(body: unknown, errorLabel: string, tenant?: { apiKey?: string | null; brokerageId?: string | null }): Promise<any> {
+  // Wave 151 (151F): a tenant-keyed search uses the TENANT's token and nothing else — an empty tenant key refuses here.
+  const tenantKeyed = !!tenant && "apiKey" in tenant
+  if (tenantKeyed && !(tenant!.apiKey ?? "").trim()) throw new Error(`${errorLabel}: tenant BatchData key absent — no fallback to the platform key`)
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   const res = await callConnector<any>({
     connector: "batchdata",
@@ -807,8 +814,9 @@ async function batchDataPropertySearch(body: unknown, errorLabel: string): Promi
     path: "property/search",
     method: "POST",
     // Token strategy (lib/external/batchdata-tokens.ts, wave 67): property/search is
-    // the "search" purpose — always BATCHDATA_API_KEY.
-    auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
+    // the "search" purpose — always BATCHDATA_API_KEY. Tenant-keyed (151F): the tenant's own token.
+    auth: { style: "bearer", token: tenantKeyed ? (tenant!.apiKey as string).trim() : (resolveBatchDataToken("search") ?? BATCHDATA_API_KEY) },
+    ...(tenant?.brokerageId ? { brokerageId: tenant.brokerageId } : {}),
     body,
   })
   if (!res.ok) throw new Error(`${errorLabel}: ${res.status ?? "network"} ${res.error ?? ""}`.trim())
@@ -832,6 +840,7 @@ export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions
   const data = await batchDataPropertySearch(
     buildPropertySearchBody(params),
     "BatchData API error",
+    "apiKey" in params ? { apiKey: params.apiKey, brokerageId: params.brokerageId ?? null } : undefined,
   )
   const properties: any[] = data?.results?.properties ?? data?.results ?? []
   const records = properties.map((p) => normalizeBatchDataProperty(p, types[0] ?? 'distressed'))
@@ -1789,6 +1798,9 @@ export interface BatchDataLookupResult {
   properties: Array<Record<string, unknown>>
   cost: number
   error?: string
+  /** Wave 151 (151F): the provider's HTTP status when a TENANT-keyed lookup was refused (401/403/402/429) — the tenant
+   *  connection classifies it (revoked / quota); absent on success and on the platform path's best-effort chunks. */
+  httpStatus?: number | null
 }
 
 /** Chunked to the same batch-size discipline as the V3 skip trace (no documented cap
@@ -1798,11 +1810,18 @@ const PROPERTY_LOOKUP_BATCH_LIMIT = 100
 
 export async function lookupBatchDataPropertiesByIds(
   propertyIds: readonly string[],
-  opts?: { dataset?: string[] },
+  // Wave 151 (lane 151F, route B): `apiKey` names a TENANT's own BatchData token. When the key is in `opts`, THAT token is
+  // used and the platform key is NEVER a fallback — an empty tenant key refuses (the tenant's connection is unconfigured /
+  // revoked, not "use the platform's account"). `brokerageId` pins the gateway's api_response_logs row to the tenant.
+  opts?: { dataset?: string[]; apiKey?: string | null; brokerageId?: string | null },
 ): Promise<BatchDataLookupResult> {
   const ids = [...new Set(propertyIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
   if (ids.length === 0) return { ok: true, properties: [], cost: 0 }
-  if (!process.env.BATCHDATA_API_KEY) {
+  const tenantKeyed = !!opts && "apiKey" in opts
+  if (tenantKeyed && !(opts!.apiKey ?? "").trim()) {
+    return { ok: false, properties: [], cost: 0, error: "tenant BatchData key absent — no fallback to the platform key", httpStatus: null }
+  }
+  if (!tenantKeyed && !process.env.BATCHDATA_API_KEY) {
     return { ok: false, properties: [], cost: 0, error: "BATCHDATA_API_KEY not configured" }
   }
   const chunks: string[][] = []
@@ -1820,9 +1839,16 @@ export async function lookupBatchDataPropertiesByIds(
         method: "POST",
         // Token strategy: property-lookup hydration backs the listing/monitoring
         // lanes (Smart Search hydrate, active-listing discovery) — BATCHDATA_LISTING_TOKEN.
-        auth: { style: "bearer", token: resolveBatchDataToken("listing") ?? BATCHDATA_API_KEY },
+        // Tenant-keyed (151F): the tenant's own token, nothing else.
+        auth: { style: "bearer", token: tenantKeyed ? (opts!.apiKey as string).trim() : (resolveBatchDataToken("listing") ?? BATCHDATA_API_KEY) },
+        ...(opts?.brokerageId ? { brokerageId: opts.brokerageId } : {}),
         body: { requests: chunk.map((propertyId) => ({ propertyId })), ...(opts?.dataset ? { dataset: opts.dataset } : {}) },
       })
+      // Tenant-keyed: a refusal of the tenant's OWN token (401/403 revoked, 402/429 quota) is the tenant connection's fact —
+      // surfaced at once so the connection is marked and the delivery parked; never silently fewer rows.
+      if (tenantKeyed && !res.ok && (res.status === 401 || res.status === 403 || res.status === 402 || res.status === 429)) {
+        return { ok: false, properties, cost, error: res.error ?? `HTTP ${res.status}`, httpStatus: res.status }
+      }
       if (!res.ok || !res.data) continue // best-effort hydrate — a failed chunk yields fewer hydrated rows, never throws
       const rows: any[] = res.data?.results?.properties ?? res.data?.results ?? []
       for (const r of rows) if (r && typeof r === "object") properties.push(r)
@@ -2194,10 +2220,18 @@ export interface BatchDataWalletBalance {
   ok: boolean
   balanceUsd: number | null
   error?: string
+  /** Wave 151 (151F): the provider's HTTP status on a refusal (a tenant-keyed health read classifies 401/403 as revoked). */
+  httpStatus?: number | null
 }
 
-export async function fetchBatchDataWalletBalance(): Promise<BatchDataWalletBalance> {
-  if (!process.env.BATCHDATA_API_KEY) return { ok: false, balanceUsd: null, error: "BATCHDATA_API_KEY not configured" }
+/**
+ * The account-wide wallet read. Wave 151 (lane 151F, route B): with `opts.apiKey` this is the FREE health check of a TENANT's
+ * own token (directive step 4 — "verify live sandbox/health" without buying a record); the platform key is never a fallback.
+ */
+export async function fetchBatchDataWalletBalance(opts?: { apiKey?: string | null; brokerageId?: string | null }): Promise<BatchDataWalletBalance> {
+  const tenantKeyed = !!opts && "apiKey" in opts
+  if (tenantKeyed && !(opts!.apiKey ?? "").trim()) return { ok: false, balanceUsd: null, error: "tenant BatchData key absent — no fallback to the platform key", httpStatus: null }
+  if (!tenantKeyed && !process.env.BATCHDATA_API_KEY) return { ok: false, balanceUsd: null, error: "BATCHDATA_API_KEY not configured" }
   try {
     const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
     const res = await callConnector<Record<string, any>>({
@@ -2205,10 +2239,11 @@ export async function fetchBatchDataWalletBalance(): Promise<BatchDataWalletBala
       baseUrl: BATCHDATA_API_URL,
       path: "wallet/balance",
       method: "GET",
-      // Account-wide read — always the master key regardless of purpose tokens.
-      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
+      // Account-wide read — always the master key regardless of purpose tokens; tenant-keyed → the tenant's own token.
+      auth: { style: "bearer", token: tenantKeyed ? (opts!.apiKey as string).trim() : (resolveBatchDataToken("search") ?? BATCHDATA_API_KEY) },
+      ...(opts?.brokerageId ? { brokerageId: opts.brokerageId } : {}),
     })
-    if (!res.ok || !res.data) return { ok: false, balanceUsd: null, error: res.error ?? `HTTP ${res.status ?? "network"}` }
+    if (!res.ok || !res.data) return { ok: false, balanceUsd: null, error: res.error ?? `HTTP ${res.status ?? "network"}`, httpStatus: res.status ?? null }
     const raw = res.data.results?.balance ?? res.data.result?.balance ?? res.data.balance
     const balanceUsd = typeof raw === "number" ? raw : (typeof raw === "string" ? Number(raw) : null)
     return { ok: true, balanceUsd: Number.isFinite(balanceUsd) ? balanceUsd : null }

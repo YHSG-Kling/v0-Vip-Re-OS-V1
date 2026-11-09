@@ -27,6 +27,9 @@ import { SOURCE_ACQUISITION } from "./acquisition-coverage"
 // The REI Playbook v5.5 method has ONE home (wave 150, lane 150KLMO): the investor buy-box criteria and the hunting/farming
 // reading come from lib/investor/rei-playbook.ts investorPlay — the two inline literals this planner carried are merged there.
 import { investorPlay } from "@/lib/investor/rei-playbook"
+// Wave 151 (lane 151F): the pre-pull value verdict (lane 151C's lib/lead-pipeline/pre-pull-value.ts interface) and the ONE
+// reading of why it refuses — paidPullApproval consumes it before the approval is looked up.
+import { prePullRefusal, type PrePullValueVerdict } from "@/lib/vendor-governance/budget-eval"
 
 /** The acquisition plays the owner named (buyer AND seller), one vocabulary. */
 const ACQUISITION_PLAYS = [
@@ -256,9 +259,15 @@ export function paidPullApproval(
   plans: readonly StoredPlanRow[] | null,
   want: { brokerageId: string | null; source: string },
   now: Date = new Date(),
+  // Wave 151 (lane 151F, consuming lane 151C's lib/lead-pipeline/pre-pull-value.ts): the pre-pull value verdict for this want
+  // — a bounded planning signal with reasons. Supplied → a want the planner judges not worthwhile (or holds pending an unknown
+  // price / license) is REFUSED here, before the approval is even looked up. Omitted → unchanged (the pooled lane's fixtures).
+  prePull?: PrePullValueVerdict | null,
 ): { allowed: true; planId: string; maxSpendUsd: number | null; approvedAt: string | null } | { allowed: false; reason: string } {
   if (plans === null) return { allowed: false, reason: "the acquisition-plan store could not be read" }
   if (!want.brokerageId) return { allowed: false, reason: "no tenant owns this share — a platform pull needs a tenant's approval" }
+  const unworthy = prePullRefusal(prePull)
+  if (unworthy) return { allowed: false, reason: unworthy }
   for (const p of plans) {
     if (p.brokerage_id !== want.brokerageId || p.status !== "approved") continue
     if (!p.valid_until || Date.parse(p.valid_until) < now.getTime()) continue

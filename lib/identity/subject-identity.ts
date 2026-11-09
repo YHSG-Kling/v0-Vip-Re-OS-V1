@@ -29,7 +29,14 @@ type OwnerNameKind = "person" | "household" | "business" | "entity_trust_estate"
 
 const TRUST_ESTATE_TOKENS = ["trust", "trustee", "trustees", "tr", "revocable", "irrevocable", "estate of", "et al", "etal", "llc", "l l c", "pllc", "lp", "llp"] as const
 
-function norm(s: string): string {
+// Wave 151 (lane 151F): type-tolerant. A hydrated BatchData record carries `address` as an OBJECT ({ street, city, state,
+// zip } — the documented Property Lookup shape) and lib/lead-pipeline/scraper-parsers.ts normalizeBatchDataRecord hands it
+// through as `mailingAddress`; `householdKey → addressKey → norm` then THREW `s.toLowerCase is not a function`, and because
+// lib/kernel/scraping.ts ingestRawSourceBatch wraps its whole record loop in one try/catch, ONE such record failed the ENTIRE
+// batch with every counter at zero (found by the tenant-provider canary on the real producer). An identity-key helper must
+// never throw on a non-string: anything that is not a string normalizes to "" (no key), and the batch keeps going.
+function norm(s: unknown): string {
+  if (typeof s !== "string") return ""
   return s.toLowerCase().replace(/[^\p{L}\p{N}&\s]/gu, " ").replace(/\s+/g, " ").trim()
 }
 

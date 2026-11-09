@@ -56,7 +56,7 @@ async function main() {
   check("providers pending rights are skipped LIVE with the activation reason", ["tracerfy", "datazapp", "propertyradar"].every((p) => live.skipped.some((s) => s.provider === p && /blocks activation/.test(s.reason))))
   check("the dormant survivor is flagged as live only until the owner closes its doors", live.steps.find((s) => s.provider === "batchdata")?.why.includes("dormant survivor") === true)
   const off = sc.planProviderWaterfall({ capability: "owner_contact", missingFields: ["owner_phone"], mode: "offline_simulation" })
-  check("offline simulation adds the dormant candidates — mayCallLive=false (licence unknown blocks activation, not testing)", ["tracerfy", "datazapp", "propertyradar"].every((p) => off.steps.some((s) => s.provider === p && s.source === "dormant_candidate" && s.mayCallLive === false)))
+  check("offline simulation adds the dormant candidates — mayCallLive=false (license unknown blocks activation, not testing)", ["tracerfy", "datazapp", "propertyradar"].every((p) => off.steps.some((s) => s.provider === p && s.source === "dormant_candidate" && s.mayCallLive === false)))
   check("nothing missing → no provider is asked", sc.planProviderWaterfall({ capability: "owner_contact", missingFields: [], mode: "live" }).noCallReason !== null)
   const failing = sc.planProviderWaterfall({ capability: "owner_contact", missingFields: ["owner_email"], mode: "live", health: { versium: { state: "failing", routeAround: true, reason: "5xx streak" } } })
   check("a failing provider is routed around through routeCapability, with its reason", failing.steps[0]?.provider === "batchdata" && failing.skipped.some((s) => s.provider === "versium" && /provider_failing/.test(s.reason)))
@@ -146,6 +146,18 @@ async function main() {
   const { normalizeExaRow } = await import("../lib/external/exa-client")
   const row = { title: "Moving to Austin", text: "we plan to buy" }
   check("the same id-less Exa row twice → the same id (replay is one observation)", normalizeExaRow(row).id === normalizeExaRow({ ...row }).id && normalizeExaRow(row).id !== normalizeExaRow({ ...row, title: "x" }).id)
+
+  // ═══ Wave 151 (lane 151F): the TENANT-CONNECTABLE catalogue agrees with the activation state and carries no transport ═══
+  console.log("\nF — the tenant-connectable catalogue (route B) agrees with R9 activation")
+  const tp = await import("../lib/providers/tenant-provider-connections")
+  const catalogue = Object.keys(tp.TENANT_ACQUISITION_PROVIDERS)
+  check("every dormant-pending-rights provider in the catalogue has NO transport and NO fields (a tenant is never offered a key the repo cannot use)", pending.every((p) => { const e = tp.TENANT_ACQUISITION_PROVIDERS[p as string]; return !e || (e.adapter.state === "no_transport" && e.transports.length === 0 && e.fields.length === 0) }))
+  check("the one transport_built provider (batchdata) is a dormant SURVIVOR, not a provider pending rights — a tenant key rides the survivor's transport", catalogue.filter((k) => tp.TENANT_ACQUISITION_PROVIDERS[k].adapter.state === "transport_built").every((k) => sc.PROVIDER_ACTIVATION[k as keyof typeof sc.PROVIDER_ACTIVATION].state === "dormant_survivor"))
+  check("the catalogue module carries no transport (the same TRANSPORT regex as the dormant files)", !TRANSPORT.test(stripped("lib/providers/tenant-provider-connections.ts")), (stripped("lib/providers/tenant-provider-connections.ts").match(TRANSPORT) ?? [""])[0])
+  check("the wave-149 R19 regexes stay clean on it too (no vendor-named file, no credential read, no vendor host)", !VENDOR_FILE.test("lib/providers/tenant-provider-connections.ts") && !TRACE.test(stripped("lib/providers/tenant-provider-connections.ts")))
+  // A pending-rights provider IN the catalogue derives `unsupported` (no transport); one with no catalogue row (Data Axle — no
+  // product chosen) derives `unavailable`. Either way: never a stored credential, never a key field.
+  check("a tenant connection for a pending-rights provider derives `unsupported` (catalogued, no transport) or `unavailable` (no product) — never a stored credential", pending.every((p) => { const s = tp.deriveTenantProviderConnectionState(p as string, null).state; return (catalogue.includes(p as string) ? s === "unsupported" : s === "unavailable") }))
 
   console.log(`\nPROVIDER WATERFALL — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ PROVIDER_WATERFALL_PASS" : "❌ PROVIDER_WATERFALL_FAIL"}`)
   if (failed > 0) process.exit(1)

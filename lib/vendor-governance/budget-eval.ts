@@ -106,6 +106,41 @@ export interface SpendBackpressureInput {
   territoryRemainingUsd?: number | null
   /** The provider is in a failing cool-down (connector-gateway routeAround). */
   providerFailing?: boolean
+  /**
+   * Wave 151 (lane 151F) — THE OWNER'S PLATFORM ACQUISITION CAP for a PLATFORM-PAID want (lib/vendor-governance/
+   * platform-acquisition-caps.ts platformCapRemainingFor). Three readings:
+   *   undefined  not a platform-paid want (a tenant-owned connection's call, or the legacy fixtures) — not consulted;
+   *   null       the caps are NOT CONFIGURED (or the ledger they are measured against could not be read) → REFUSE: a null cap
+   *              is stop-before-spend, never a made-up default;
+   *   number     the remaining dollars under the binding cap this cycle — one more ceiling in the min().
+   */
+  platformCapRemainingUsd?: number | null
+}
+
+/**
+ * Wave 151 (lane 151F) — THE PRE-PULL VALUE VERDICT, lane 151C's interface (lib/lead-pipeline/pre-pull-value.ts): a BOUNDED
+ * planning signal (0..1) with its reasons, computed BEFORE a paid call from territory match × freshness × source reliability ×
+ * expected new usable fields × identity-match likelihood × useful-opportunity factor, adjusted for existing-data completeness,
+ * overlap, uncertainty, price, enrichment / AI cost and the authorized budget. `worthwhile` is the planner's own call under
+ * its CONFIGURED floor — never a probability that a person will sell or close. paidPullApproval consumes it
+ * (source-discovery-planner.ts): a want the planner judges not worthwhile is refused at the approval gate, with the reasons.
+ */
+export interface PrePullValueVerdict {
+  /** 0..1, bounded — a planning signal, not a probability of an outcome. */
+  value: number
+  worthwhile: boolean
+  reasons: readonly string[]
+  /** Set when the planner HOLDS the pull pending configuration (an unknown price or license). */
+  holdReason?: string | null
+}
+
+/** PURE — why a paid want is refused on its pre-pull value, or null when it may proceed to the approval check. */
+export function prePullRefusal(v: PrePullValueVerdict | null | undefined): string | null {
+  if (!v) return null
+  if (v.holdReason) return `pre-pull value: held — ${v.holdReason}`
+  if (!Number.isFinite(v.value) || v.value < 0 || v.value > 1) return `pre-pull value: out of bounds (${String(v.value)}) — a bounded 0..1 signal is required`
+  if (!v.worthwhile) return `pre-pull value ${v.value.toFixed(2)}: not worthwhile — ${v.reasons.join("; ") || "no reason given"}`
+  return null
 }
 
 export interface SpendBackpressureVerdict {
@@ -140,13 +175,18 @@ export function decideSpendBackpressure(input: SpendBackpressureInput): SpendBac
   if (input.providerFailing) {
     return { action: "defer", records: 0, usd: 0, reason: "the provider is failing (cool-down) — deferred to the next cycle, not retried blindly", escalate: true }
   }
+  // Wave 151 (151F): a PLATFORM-PAID want under the owner's caps. null = not configured → stop before spend.
+  if (input.platformCapRemainingUsd === null) {
+    return { action: "refuse", records: 0, usd: 0, reason: "the platform acquisition caps are not configured (or their ledger is unreadable) — a null cap stops spend; the owner sets caps on the platform console", escalate: true }
+  }
   const approvedLeft = Math.max(0, input.approvedMaxUsd - Math.max(0, input.approvedSpentUsd))
   const territoryLeft = typeof input.territoryRemainingUsd === "number" ? Math.max(0, input.territoryRemainingUsd) : Number.POSITIVE_INFINITY
-  const left = Math.min(approvedLeft, territoryLeft)
+  const platformLeft = typeof input.platformCapRemainingUsd === "number" ? Math.max(0, input.platformCapRemainingUsd) : Number.POSITIVE_INFINITY
+  const left = Math.min(approvedLeft, territoryLeft, platformLeft)
   const affordable = Math.floor((left + 1e-9) / input.unitUsd)
   const records = Math.min(want, affordable)
   const usd = Math.round(records * input.unitUsd * 100) / 100
-  const which = territoryLeft < approvedLeft ? "the territory's monthly budget" : "the approved plan line"
+  const which = platformLeft < approvedLeft && platformLeft <= territoryLeft ? "the platform acquisition cap (owner)" : territoryLeft < approvedLeft ? "the territory's monthly budget" : "the approved plan line"
   if (records === 0) {
     return { action: "defer", records: 0, usd: 0, reason: `${which} is spent ($${left.toFixed(2)} left, $${input.unitUsd} a record)`, escalate: true }
   }

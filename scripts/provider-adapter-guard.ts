@@ -106,7 +106,11 @@ function censusSignals(files: Array<{ path: string; src: string }>): CensusSigna
   // providers — no client, no key, no egress (scripts/provider-waterfall-guard.ts proves "no transport" on stripped source).
   // Their providers are declared where they route: a dormant provider has NO route row until its activation change adds the
   // row, the ADAPTER_FACTS declaration and the transport together. Own proofs: test:provider-scorecard / test:provider-waterfall.
-  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions", "channel-provider-matrix", "provider-scorecard", "provider-pilot", "dormant-adapters"])
+  // Wave 151 (lane 151F, route B): tenant-provider-connections is the PURE catalogue + state derivation + agreement validator for a
+  // TENANT's own provider account — no client, no key, no egress (test:provider-waterfall F and test:tenant-provider-connections A
+  // prove "no transport" on stripped source). Its one provider with a transport (batchdata) is already declared by its own adapter;
+  // the dormant ones have no route row by construction. Own proof: test:tenant-provider-connections.
+  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions", "channel-provider-matrix", "provider-scorecard", "provider-pilot", "dormant-adapters", "tenant-provider-connections"])
   for (const { path, src } of files) {
     const p = path.replace(/^\.\//, "")
     const s = stripComments(src)

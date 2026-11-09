@@ -127,7 +127,9 @@ const CANARY_UNIQUE: Record<string, string[][]> = {
  * RLS-style, a missing table, a missing column) so a canary can prove a best-effort rail is best-effort — the
  * immediate-enrichment canary refuses lead_enrichment_queue and asserts the capture still succeeds. Ignored live.
  */
-export function canaryClient(seed: Record<string, Row[]> = {}, opts: Pick<MemOptions, "refuse" | "missingTables" | "missingColumns"> = {}): CanarySvc {
+// WAVE 151 (lane 151F): `unique` adds a canary's OWN modelled UNIQUE constraints beside CANARY_UNIQUE (the tenant-provider
+// canary models m961's raw_scraped_leads idempotency key so a replayed webhook delivery is refused 23505 and counted `replayed`).
+export function canaryClient(seed: Record<string, Row[]> = {}, opts: Pick<MemOptions, "refuse" | "missingTables" | "missingColumns" | "unique"> = {}): CanarySvc {
   if (LIVE) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createClient } = require("@supabase/supabase-js") as typeof import("@supabase/supabase-js")
@@ -136,7 +138,7 @@ export function canaryClient(seed: Record<string, Row[]> = {}, opts: Pick<MemOpt
     ;(live as unknown as { canary: CanaryControls }).canary = { authCalls: [], faults: {}, sessionUserId: null }
     return live as unknown as CanarySvc
   }
-  const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true, unique: CANARY_UNIQUE, ...opts })
+  const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true, ...opts, unique: { ...CANARY_UNIQUE, ...(opts.unique ?? {}) } })
   const authUsers: Array<{ id: string; email: string }> = []
   const controls: CanaryControls = { authCalls: [], faults: {}, sessionUserId: null }
   const admin = {

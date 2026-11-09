@@ -61,6 +61,8 @@ export const CANARY_KEYS = [
   "transaction-provider", "cda-esign", "legal-description", "crm-outbound", "crm-inbound", "coupon", "custom-domain", "mobile",
   "support-isolation", "listing-lifecycle", "offer-lifecycle", "form-wizard", "preliminary-cd", "cda-closing", "commission-payment",
   "lifetime", "immediate-enrichment", "autonomous-marketing", "video-pipeline", "ai-by-your-side", "commercial-platform",
+  // Wave 151 (lane 151F): tenant-owned acquisition provider connections — two tenants, same provider, different keys, no crossover.
+  "tenant-provider-connections",
 ] as const
 export type CanaryKey = (typeof CANARY_KEYS)[number]
 

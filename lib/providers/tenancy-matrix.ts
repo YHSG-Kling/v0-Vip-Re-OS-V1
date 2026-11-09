@@ -80,8 +80,13 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   },
   {
     provider: "batchdata",
-    models: ["platform_metered"],
-    why: "The MOTIVATED-SELLER + niche-seller sourcing engine (investor buy-box, distress/equity niches, comparables, AVM chain input, geocoding, relisting detection) PLUS the compliance utilities (DNC/TCPA phone scrub, address/phone verification) — skip tracing is one feature among many. LEGAL LINE: contact data is NON-FCRA — never for credit, tenancy, or employment screening; every sourced contact stays behind the TCPA/DNC gates.",
+    // Wave 151 (lane 151F, directive 151F route B): + tenant_optional_key — the IDX Broker mirror. A tenant that holds its OWN
+    // BatchData account connects it under Settings → Integrations → Lead sources (lib/providers/tenant-provider-connections.ts;
+    // platform_credentials.platform 'batchdata', m975), its calls carry ITS token (batchdata-client `apiKey`) and book
+    // coverage 'tenant_paid'; the platform account (env BATCHDATA_API_KEY, route A, a dormant survivor under R9) is never
+    // substituted for a tenant's and a tenant's key is never used for a platform pull.
+    models: ["platform_metered", "tenant_optional_key"],
+    why: "The MOTIVATED-SELLER + niche-seller sourcing engine (investor buy-box, distress/equity niches, comparables, AVM chain input, geocoding, relisting detection) PLUS the compliance utilities (DNC/TCPA phone scrub, address/phone verification) — skip tracing is one feature among many. LEGAL LINE: contact data is NON-FCRA — never for credit, tenancy, or employment screening; every sourced contact stays behind the TCPA/DNC gates. Wave 151F: a tenant may connect its OWN account (tenant_optional_key) and pays BatchData directly; the platform account and a tenant account are never mixed.",
     envVars: ["BATCHDATA_API_KEY"],
   },
   {

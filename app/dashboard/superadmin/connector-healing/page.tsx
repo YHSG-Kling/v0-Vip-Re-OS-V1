@@ -24,8 +24,15 @@ import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
 import { HEALING_PROPOSAL_STATUSES, type HealingProposalStatus } from "@/lib/kernel/provider-config-healing"
 // Wave 150 (lane 150HIAB, owner ruling R9 / C39): the provider stack's activation state and field gaps sit beside the healing
 // queue, because activating a provider is the one provider-config change the healer may NEVER make (classifyProviderConfigChange).
-import { PROVIDER_ACTIVATION, activationVerdict, providerFieldMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
+import { PROVIDER_ACTIVATION, PROVIDER_FIELD_SCORECARD, activationVerdict, providerFieldMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
 import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
+// Wave 151 (lane 151F): the owner's platform acquisition caps (null = stop before spend), the internal acquisition economics and
+// each provider's TENANT-connectability (route B) sit beside the provider stack — one console for what the platform may spend,
+// what it has spent, and what a tenant may bring of its own.
+import { deriveTenantProviderConnectionState } from "@/lib/providers/tenant-provider-connections"
+import { loadAcquisitionEconomics } from "@/lib/vendor-governance/acquisition-economics"
+import { getAcquisitionCapsAction } from "@/app/actions/superadmin/platform-controls"
+import { AcquisitionCapsPanel } from "./acquisition-caps-panel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { AlertTriangle, CheckCircle2, XCircle, ExternalLink } from "lucide-react"
@@ -74,6 +81,16 @@ export default async function ConnectorHealingPage() {
   if (!gate.userId) redirect("/login")
   // Lane 90D (89D P3-11): refuse IN PLACE like the sibling superadmin pages.
   if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: requires platform providers capability</div>
+
+  // Wave 151 (151F): the owner's acquisition caps + month-to-date platform spend (gated action), and the measured economics
+  // over the last 90 days — a refused read is a caveat on the page, never a zero.
+  const [capsRes, economics] = await Promise.all([
+    getAcquisitionCapsAction(),
+    loadAcquisitionEconomics(createServiceClient(), {
+      sinceIso: new Date(Date.now() - 90 * 86_400_000).toISOString(),
+      duplicateUnitUsd: PROVIDER_FIELD_SCORECARD.find((r) => r.provider === "batchdata" && r.capability === "motivated_seller_list")?.unitUsd ?? null,
+    }),
+  ])
 
   // Pending queue (the actionable list) + the recent-history strip for context.
   const [pendingRes, recentRes] = await Promise.all([
@@ -269,17 +286,23 @@ export default async function ConnectorHealingPage() {
           <CardContent className="p-0">
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-muted-foreground">
-                <tr><th className="p-3">Provider</th><th className="p-3">State</th><th className="p-3">Live calls</th><th className="p-3">What blocks activation</th></tr>
+                <tr><th className="p-3">Provider</th><th className="p-3">State</th><th className="p-3">Live calls</th><th className="p-3">What blocks activation</th><th className="p-3">Tenant-owned connection (route B)</th></tr>
               </thead>
               <tbody>
-                {providerStack.map((r) => (
-                  <tr key={r.provider} className="border-t">
-                    <td className="p-3">{r.provider}</td>
-                    <td className="p-3"><Badge variant={r.state === "active" ? "default" : "outline"}>{r.state.replace(/_/g, " ")}</Badge></td>
-                    <td className="p-3">{r.mayActivate ? "allowed" : "blocked (offline simulation only)"}</td>
-                    <td className="p-3 text-xs text-muted-foreground">{r.blockers.length === 0 ? "nothing" : r.blockers.join("; ")}</td>
-                  </tr>
-                ))}
+                {providerStack.map((r) => {
+                  // Wave 151F: what a TENANT may bring of its own for this provider — derived from the catalogue + activation state,
+                  // never from a tenant's row (this is the platform console; no tenant credential is read here).
+                  const tenant = deriveTenantProviderConnectionState(r.provider, null)
+                  return (
+                    <tr key={r.provider} className="border-t">
+                      <td className="p-3">{r.provider}</td>
+                      <td className="p-3"><Badge variant={r.state === "active" ? "default" : "outline"}>{r.state.replace(/_/g, " ")}</Badge></td>
+                      <td className="p-3">{r.mayActivate ? "allowed" : "blocked (offline simulation only)"}</td>
+                      <td className="p-3 text-xs text-muted-foreground">{r.blockers.length === 0 ? "nothing" : r.blockers.join("; ")}</td>
+                      <td className="p-3 text-xs text-muted-foreground">{tenant.state === "unconfigured" ? "connectable (tenant's own account, tenant-paid)" : tenant.state.replace(/_/g, " ")}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </CardContent>
@@ -304,6 +327,34 @@ export default async function ConnectorHealingPage() {
               {pilot.activation.map((a) => <li key={a.provider}>{a.provider}: {a.mayActivate ? "may activate" : `may not activate — ${a.blockers.join("; ")}`}</li>)}
             </ul>
             <p className="text-xs text-muted-foreground">Projection basis: {pilot.projection.basis} — {pilot.projection.monthlyRecords.toLocaleString("en-US")} records a month is arithmetic, never a request size.</p>
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* ── PLATFORM ACQUISITION BUDGET (wave 151F) — the owner's caps; null = stop before spend, no default ─────────── */}
+      <section className="space-y-3">
+        <h2 className="text-lg font-medium">Platform acquisition budget (owner caps)</h2>
+        <Card>
+          <CardContent className="p-4">
+            {capsRes.ok
+              ? <AcquisitionCapsPanel caps={capsRes.caps} applied={capsRes.applied} spend={capsRes.spend} verdict={capsRes.verdict} />
+              : <p className="text-sm text-destructive">Caps unreadable: {capsRes.error} — every platform-paid acquisition pull refuses while this cannot be read.</p>}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="space-y-2 p-4 text-sm">
+            <h3 className="font-medium">Internal acquisition economics — last 90 days (measured, never projected)</h3>
+            <div className="grid gap-2 sm:grid-cols-3 text-xs">
+              <div>Platform-covered acquisition spend: <strong>${economics.platformSpendUsd.toFixed(2)}</strong></div>
+              <div>Tenant-paid provider spend (tenants&apos; own accounts): <strong>${economics.tenantSpendUsd.toFixed(2)}</strong></div>
+              <div>Ledger rows / API units: {economics.ledgerRows} / {economics.apiUnits}</div>
+              <div>Duplicate rows avoided at intake: {economics.duplicateRows}{economics.duplicateAvoidanceSavingsUsd === null ? " (savings unpriced)" : ` (≈ $${economics.duplicateAvoidanceSavingsUsd.toFixed(2)} not re-bought)`}</div>
+              <div>Cost per usable raw record: {economics.costPerUsableRecordUsd === null ? "n/a" : `$${economics.costPerUsableRecordUsd.toFixed(4)}`}</div>
+              <div>Raw Lead gate yield: {economics.rawLeadGateYield === null ? "n/a" : `${(economics.rawLeadGateYield * 100).toFixed(1)}%`}</div>
+              <div>Contact conversion (leads from raw): {economics.contactConversion === null ? "n/a" : `${(economics.contactConversion * 100).toFixed(1)}%`}</div>
+              <div>Appointments / accepted relationships / attributed transactions: {economics.appointments ?? "—"} / {economics.acceptedRelationships ?? "—"} / {economics.attributedTransactions ?? "—"}</div>
+            </div>
+            <ul className="list-disc pl-5 text-[11px] text-muted-foreground">{economics.caveats.map((c) => <li key={c}>{c}</li>)}</ul>
           </CardContent>
         </Card>
       </section>

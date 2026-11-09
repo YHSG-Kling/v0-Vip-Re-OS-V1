@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { getTenantConnectionsAction } from "@/app/actions/tenant-connections"
+import { getTenantConnectionsAction, getTenantAcquisitionProvidersAction } from "@/app/actions/tenant-connections"
 import { LeadSourcesClient } from "./lead-sources-client"
+import { AcquisitionProvidersPanel } from "./acquisition-providers-panel"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "Lead Sources & Listing Feeds" }
@@ -24,11 +25,20 @@ export default async function LeadSourcesPage() {
 
   const res = await getTenantConnectionsAction()
   if (!res.ok) return <div className="p-6 text-red-600">Brokerage admin access required.</div>
+  // Wave 151 (lane 151F, route B): the tenant's OWN acquisition provider accounts, with their honest derived states.
+  const acq = await getTenantAcquisitionProvidersAction()
 
   return (
-    <LeadSourcesClient
-      connections={res.connections}
-      portalLeads={res.portalLeads}
-    />
+    <>
+      <LeadSourcesClient
+        connections={res.connections}
+        portalLeads={res.portalLeads}
+      />
+      <div className="px-6 pb-6 max-w-3xl mx-auto">
+        {acq.ok
+          ? <AcquisitionProvidersPanel providers={acq.providers} encryptionConfigured={acq.encryptionConfigured} />
+          : <p className="text-xs text-destructive">Acquisition providers could not be read: {acq.error}</p>}
+      </div>
+    </>
   )
 }
