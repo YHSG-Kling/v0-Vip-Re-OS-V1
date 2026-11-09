@@ -122,7 +122,8 @@ export interface SavedHomeVerifiedState {
   at: string
 }
 
-export interface SavedHomeChange {
+// Module-private (wave 151 integrator): the change shape is produced and consumed inside the watch only.
+interface SavedHomeChange {
   kind: SavedHomeChangeKind
   /** The dedup key: the new price for a drop; the MLS number + status for a status change. */
   digest: string
@@ -393,7 +394,8 @@ const defaultDeliver: NonNullable<SavedHomeWatchDeps["deliver"]> = async (db, a,
 
 // ─── ONE CHANGE → THE ARBITER → THE DELEGATION → HISTORY ──────────────────────────────────────────────────────────────
 
-export interface SavedHomeAlertOutcome {
+// Module-private (wave 151 integrator): the outcome shape is read inside the watch only; nothing cross-file names it.
+interface SavedHomeAlertOutcome {
   route: SavedHomeNudgeRoute | "replayed" | "refused"
   rationale: string
   /** The delegation landed (a signal / the agent's activity). */
