@@ -240,7 +240,7 @@ export function parseCraigslistHtml(html: string): NormalizedScrapedRecord[] {
  * normalizer threw on it — one bad record then zeroed the whole batch. A string stays a string; an object is formatted;
  * anything else is unknown (null), never invented.
  */
-export function formatProviderAddress(a: unknown): string | null {
+function formatProviderAddress(a: unknown): string | null {
   if (typeof a === "string") return a.trim() || null
   if (a && typeof a === "object") {
     const o = a as Record<string, unknown>

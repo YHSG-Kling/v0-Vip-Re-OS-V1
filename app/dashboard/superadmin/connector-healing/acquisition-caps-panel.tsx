@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { setAcquisitionCapsAction } from "@/app/actions/superadmin/platform-controls"
-import { ACQUISITION_CAP_FIELDS, ACQUISITION_CAP_LABELS, type PlatformAcquisitionCaps, type PlatformAcquisitionSpendVerdict } from "@/lib/vendor-governance/platform-acquisition-caps"
+import { ACQUISITION_CAP_FIELDS, ACQUISITION_CAP_LABELS, decidePlatformAcquisitionSpend, type PlatformAcquisitionCaps, type PlatformAcquisitionSpendVerdict } from "@/lib/vendor-governance/platform-acquisition-caps"
 
 export function AcquisitionCapsPanel({ caps, applied, spend, verdict }: { caps: PlatformAcquisitionCaps | null; applied: boolean; spend: { platformUsd: number | null; rows: number; error: string | null }; verdict: PlatformAcquisitionSpendVerdict }) {
   const router = useRouter()
@@ -18,6 +18,9 @@ export function AcquisitionCapsPanel({ caps, applied, spend, verdict }: { caps: 
   const [stop, setStop] = useState<Record<string, boolean>>(Object.fromEntries(ACQUISITION_CAP_FIELDS.map((f) => [f, false])))
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [pending, start] = useTransition()
+  // "What would a $X pull do right now?" — the same decision the pooled lane makes, on the caps as saved (nothing is spent).
+  const [tryUsd, setTryUsd] = useState("5")
+  const tryVerdict = decidePlatformAcquisitionSpend({ caps, platformSpentMonthUsd: spend.platformUsd, tenantSpentMonthUsd: 0, wantUsd: Math.max(0, Number(tryUsd) || 0) })
   return (
     <div className="space-y-3 text-sm">
       <p className="text-xs text-muted-foreground">
@@ -25,6 +28,11 @@ export function AcquisitionCapsPanel({ caps, applied, spend, verdict }: { caps: 
         {" "}Month-to-date platform acquisition spend: {spend.error ? <span className="text-destructive">unreadable — {spend.error}</span> : `$${(spend.platformUsd ?? 0).toFixed(2)} over ${spend.rows} ledger rows`}.
         {" "}Live verdict: <strong>{verdict.action}</strong> — {verdict.reasons.join("; ")}
       </p>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span>Try a platform-paid pull of $</span>
+        <Input type="number" min={0} step="0.01" className="h-7 w-24" value={tryUsd} onChange={(e) => setTryUsd(e.target.value)} />
+        <span>→ <strong>{tryVerdict.action}</strong>{tryVerdict.action === "proceed" ? ` (allowed $${tryVerdict.allowedUsd.toFixed(2)})` : ""} — {tryVerdict.reasons.join("; ")}</span>
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         {ACQUISITION_CAP_FIELDS.map((f) => (
           <label key={f} className="space-y-1 text-xs">

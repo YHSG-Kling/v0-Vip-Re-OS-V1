@@ -101,7 +101,7 @@ export function decidePlatformAcquisitionSpend(input: PlatformAcquisitionSpendIn
 
 /** PURE — parse a stored caps object. A field absent or not a finite non-negative number reads NULL (never a default).
  *  @proofSeam scripts/spend-backpressure-guard.ts section E drives the null-never-default reading directly */
-export function parseAcquisitionCaps(raw: unknown): PlatformAcquisitionCaps | null {
+function parseAcquisitionCaps(raw: unknown): PlatformAcquisitionCaps | null {
   if (!isObj(raw)) return null
   const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null)
   return {
@@ -129,7 +129,7 @@ export async function loadPlatformAcquisitionCaps(svc: Svc): Promise<{ ok: true;
  * keep the current value. A negative, NaN or non-numeric value is an error, never clamped.
  * @proofSeam scripts/spend-backpressure-guard.ts section E drives bounds, blank-keeps and the explicit-null STOP
  */
-export function validateAcquisitionCapsEdit(input: Record<string, unknown>, current: PlatformAcquisitionCaps | null, actor: { userId: string; now?: Date }): { ok: true; value: PlatformAcquisitionCaps } | { ok: false; errors: string[] } {
+function validateAcquisitionCapsEdit(input: Record<string, unknown>, current: PlatformAcquisitionCaps | null, actor: { userId: string; now?: Date }): { ok: true; value: PlatformAcquisitionCaps } | { ok: false; errors: string[] } {
   const errors: string[] = []
   const value: PlatformAcquisitionCaps = { monthly_usd: current?.monthly_usd ?? null, per_tenant_monthly_usd: current?.per_tenant_monthly_usd ?? null, per_pull_usd: current?.per_pull_usd ?? null, set_by: actor.userId, set_at: (actor.now ?? new Date()).toISOString() }
   for (const f of ACQUISITION_CAP_FIELDS) {

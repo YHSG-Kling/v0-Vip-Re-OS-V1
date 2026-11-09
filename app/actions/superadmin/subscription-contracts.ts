@@ -45,7 +45,7 @@ import {
 } from "@/lib/storage/signed-upload-url"
 import {
   reviseSubscriptionTemplate, approveSubscriptionTemplate, activateSubscriptionTemplate, templateActivationRefusal,
-  agreementBytesHash, agreementContentHash, isDraftMarked, AGREEMENT_APPROVAL_STATUSES,
+  agreementBytesHash, agreementContentHash, isDraftMarked, AGREEMENT_APPROVAL_STATUSES, type AgreementApprovalStatus,
 } from "@/lib/legal/subscription-agreement"
 
 export interface SubscriptionContractTemplate {
@@ -65,6 +65,8 @@ export interface SubscriptionContractTemplate {
   content_sha256: string | null
   approval_status: string | null
   approved_at: string | null
+  /** wave 151: who recorded the approval (users.id) — read beside approved_at so the record is auditable, never write-only. */
+  approved_by: string | null
   approval_note: string | null
   source_path: string | null
   supersedes_template_id: string | null
@@ -111,7 +113,7 @@ export async function listSubscriptionContractTemplatesAction(): Promise<
 
   const { data, error } = await svc
     .from("platform_contract_templates")
-    .select("id, name, contract_type, body_text, body_storage_path, version, is_active, created_at, updated_at, version_label, content_sha256, approval_status, approved_at, approval_note, source_path, supersedes_template_id")
+    .select("id, name, contract_type, body_text, body_storage_path, version, is_active, created_at, updated_at, version_label, content_sha256, approval_status, approved_at, approved_by, approval_note, source_path, supersedes_template_id")
     .order("created_at", { ascending: false })
   if (error) return { ok: false, error: error.message }
 
@@ -128,7 +130,7 @@ export async function listSubscriptionContractTemplatesAction(): Promise<
     ok: true,
     templates: ((data ?? []) as Array<Omit<SubscriptionContractTemplate, "signature_count" | "draft_marked" | "hash_matches" | "activation_blocker">>).map((t) => {
       // ONE vocabulary: a stored status outside AGREEMENT_APPROVAL_STATUSES reads as a draft (never as approved).
-      const status = (AGREEMENT_APPROVAL_STATUSES as readonly string[]).includes(t.approval_status ?? "") ? (t.approval_status as string) : "draft"
+      const status: AgreementApprovalStatus = (AGREEMENT_APPROVAL_STATUSES as readonly string[]).includes(t.approval_status ?? "") ? (t.approval_status as AgreementApprovalStatus) : "draft"
       const row = { ...t, approval_status: status, version_label: t.version_label ?? null, content_sha256: t.content_sha256 ?? null, approved_at: t.approved_at ?? null, approval_note: t.approval_note ?? null, source_path: t.source_path ?? null, supersedes_template_id: t.supersedes_template_id ?? null }
       return {
         ...row,

@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 751 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 752 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-07
+ * generated: 2026-11-09
  * source: public.live_schema_json()
- * body-sha256: 81a0a781e8f3c064c4d4d203be4c01ffb57cb57cc54b500d945b8c8e35af86fe
+ * body-sha256: 6a47f40c0564542ced80ba729d046212eb9ebf80345614b19138f630ce9e5407
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -407,7 +407,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   listing_marketing_packages: ["activated_at", "brokerage_id", "created_at", "id", "included_services", "package_name", "package_type", "status", "total_estimated_cost", "transaction_id", "updated_at"],
   listing_marketing_services: ["actual_cost", "brokerage_id", "completed_at", "created_at", "estimated_cost", "id", "metadata", "package_id", "scheduled_date", "service_type", "status", "transaction_id", "updated_at", "vendor_id"],
   listing_marketing_tiers: ["brokerage_id", "created_at", "description", "id", "is_active", "max_price", "min_price", "tier_name"],
-  listing_media: ["ai_analysis_completed", "ai_analyzed_at", "ai_quality_score", "alt_text", "approval_required", "approved_at", "approved_by", "brokerage_id", "caption", "created_at", "enhancement_applied", "file_url", "has_brokerage_attribution", "has_eho_mark", "has_logo_overlay", "id", "is_approved", "is_primary", "kernel_compliance_passed", "listing_id", "media_type", "ownership_attestation_version", "ownership_attested_at", "ownership_attested_by", "photo_source", "rejection_notes", "room_type", "sort_order", "tags", "template_id", "thumbnail_url", "uploaded_by", "usage_intent", "uses_approved_template"],
+  listing_media: ["ai_analysis_completed", "ai_analyzed_at", "ai_quality_score", "alt_text", "approval_required", "approved_at", "approved_by", "brokerage_id", "caption", "created_at", "enhancement_applied", "file_url", "has_brokerage_attribution", "has_eho_mark", "has_logo_overlay", "id", "is_approved", "is_primary", "kernel_compliance_passed", "listing_id", "media_type", "ownership_attestation_version", "ownership_attested_at", "ownership_attested_by", "photo_source", "rejection_notes", "room_type", "sort_order", "tags", "template_id", "thumbnail_url", "uploaded_by", "usage_intent", "uses_approved_template", "vendor_booking_id"],
   listing_metrics: ["brokerage_id", "created_at", "date", "id", "inquiries", "listing_id", "saves", "showings", "views"],
   listing_packet_jobs: ["agent_user_id", "brokerage_id", "completed_at", "config", "created_at", "error_message", "id", "job_type", "listing_id", "output_url", "started_at", "status"],
   listing_page_analytics: ["avg_time_seconds", "brokerage_id", "cta_clicks", "date", "id", "lead_captures", "listing_id", "showing_requests", "total_views", "unique_visitors"],
@@ -520,7 +520,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   platform_affiliates: ["code", "commission_percent", "created_at", "created_by", "duration_months", "email", "id", "name", "notes", "payout_details", "status", "updated_at"],
   platform_config_snapshots: ["captured_by", "created_at", "description", "id", "name", "payload", "source_brokerage_id"],
   platform_content_topics: ["competitor", "created_at", "id", "note", "source", "status", "topic", "url", "used_at"],
-  platform_contract_templates: ["body_storage_path", "body_text", "contract_type", "created_at", "created_by", "id", "is_active", "name", "updated_at", "version"],
+  platform_contract_templates: ["approval_note", "approval_status", "approved_at", "approved_by", "body_storage_path", "body_text", "content_sha256", "contract_type", "created_at", "created_by", "id", "is_active", "name", "source_path", "supersedes_template_id", "updated_at", "version", "version_label"],
   platform_coupon_redemptions: ["brokerage_id", "coupon_id", "id", "redeemed_at", "redeemed_by", "stripe_applied_at", "stripe_discount_id"],
   platform_coupons: ["active", "amount_off_cents", "applies_to_tier", "code", "created_at", "created_by", "description", "duration", "duration_months", "expires_at", "id", "max_redemptions", "percent_off", "redeemed_count", "stripe_coupon_id", "updated_at"],
   platform_credentials: ["access_token", "account_id", "account_name", "agent_user_id", "api_key", "api_url", "brokerage_id", "config", "created_at", "id", "is_active", "last_synced_at", "last_tested_at", "owner_id", "owner_type", "platform", "refresh_token", "scope", "sync_error", "test_status", "token_expires_at", "updated_at"],
@@ -533,7 +533,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   platform_reception_calls: ["call_sid", "ended_at", "id", "outcome", "phone_from", "phone_to", "prospect_id", "started_at", "status", "transcript"],
   platform_role_capability_overrides: ["access", "allowed", "capability", "id", "role", "updated_at", "updated_by"],
   platform_sentinel_actions: ["acted_at", "acted_by", "brokerage_id", "created_at", "dedupe_key", "detail", "draft_channel", "draft_text", "id", "kind", "severity", "status", "title"],
-  platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "referral_fee_basis", "referral_fee_duration_months", "referral_fee_flat_cents", "referral_fee_percent", "retention_offer", "self_healing_ceilings", "show_brokerage_budget_warning", "status_notice", "tos_version", "updated_at"],
+  platform_settings: ["acquisition_budget_caps", "ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "referral_fee_basis", "referral_fee_duration_months", "referral_fee_flat_cents", "referral_fee_percent", "retention_offer", "self_healing_ceilings", "show_brokerage_budget_warning", "status_notice", "tos_version", "updated_at"],
   platform_social_accounts: ["account_name", "connected_at", "connected_by", "created_at", "credential_ref", "id", "last_verified_at", "platform", "status", "updated_at"],
   platform_social_drafts: ["angle", "channel", "content", "created_at", "created_by", "format", "hashtags", "id", "media_type", "permalink", "scheduled_for", "script", "status", "updated_at", "video_url"],
   platform_staff_profiles: ["agreement_acknowledged_at", "created_at", "created_by", "employment_agreement_text", "notes", "start_date", "title", "updated_at", "user_id"],
@@ -576,13 +576,14 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   property_smart_insights: ["ai_summary", "brokerage_id", "comparable_sales", "created_at", "days_on_market", "id", "last_analyzed_at", "market_position", "neighborhood_score", "price_per_sqft", "price_reduction_count", "property_mls_id", "school_score", "walkability_score"],
   property_upgrades: ["brokerage_id", "created_at", "estimated_cost", "id", "listing_id", "roi_estimate", "status", "upgrade_description"],
   property_views: ["brokerage_id", "contact_id", "first_viewed_at", "id", "last_viewed_at", "property_id", "source", "time_spent_seconds", "view_count"],
+  provider_monitors: ["brokerage_id", "cadence", "created_at", "created_by_user_id", "deliveries", "id", "last_delivery_at", "last_delivery_event_id", "market_id", "play_key", "provider", "provider_monitor_id", "search", "secret_env", "status", "updated_at", "webhook_path", "webhook_secret_ciphertext"],
   provider_overrides: ["config", "created_at", "enabled", "id", "provider_key", "provider_type", "scope_id", "scope_type", "updated_at"],
   push_notification_queue: ["body", "brokerage_id", "created_at", "data", "delivered_at", "error_message", "failed_at", "id", "status", "title", "user_id"],
   push_subscriptions: ["auth", "brokerage_id", "created_at", "disabled_at", "disabled_reason", "endpoint", "id", "last_seen_at", "p256dh", "user_agent", "user_id"],
   qr_codes: ["agent_id", "brokerage_id", "created_at", "destination_type", "expires_at", "id", "is_active", "label", "lead_count", "listing_id", "marketing_campaign_id", "purpose", "scan_count", "slug", "target_url"],
   qr_scan_events: ["brokerage_id", "campaign_id", "contact_id", "id", "ip_address", "is_first_scan", "qr_code_id", "referrer", "scanned_at", "user_agent"],
   raw_recruit_prospects: ["brokerage_id", "created_at", "id", "market_id", "normalized_preview", "processed_at", "processing_status", "raw_data", "recruit_id", "scraper_execution_id", "source", "source_record_id"],
-  raw_scraped_leads: ["address", "brokerage_id", "city", "cost_per_record", "created_at", "dedupe_status", "email", "email_verified", "enriched_at", "error_message", "evidence", "external_ids", "first_name", "id", "idempotency_key", "last_name", "last_promotion_attempt_at", "lead_id", "mailing_address", "mailing_address_source", "mailing_address_verified", "mailing_city", "mailing_state", "mailing_zip", "market_id", "normalized_preview", "observed_at", "phone", "processed_at", "processing_status", "producer_actor_id", "producer_actor_type", "producer_version", "promotion_attempts", "proof_urls", "raw_data", "scrape_category", "scraper_execution_id", "signal_at", "source", "source_channel", "source_family", "source_licence", "source_origin", "source_record_id", "source_rights", "source_subtype", "state", "subject_kind", "ttl_expires_at", "updated_at", "zip_code"],
+  raw_scraped_leads: ["address", "brokerage_id", "city", "cost_per_record", "created_at", "dedupe_status", "email", "email_verified", "enriched_at", "error_message", "evidence", "external_ids", "first_name", "freshness_verdict", "id", "idempotency_key", "last_name", "last_promotion_attempt_at", "last_verified_at", "lead_id", "mailing_address", "mailing_address_source", "mailing_address_verified", "mailing_city", "mailing_state", "mailing_zip", "market_id", "normalized_preview", "observed_at", "phone", "processed_at", "processing_status", "producer_actor_id", "producer_actor_type", "producer_version", "promotion_attempts", "proof_urls", "raw_data", "scrape_category", "scraper_execution_id", "signal_at", "source", "source_channel", "source_family", "source_licence", "source_origin", "source_record_id", "source_rights", "source_subtype", "state", "subject_kind", "ttl_expires_at", "updated_at", "zip_code"],
   reaper_runs: ["brokerage_id", "detail", "domain", "escalated", "id", "manager", "ran_at", "reaped", "scanned"],
   recruiting_analytics: ["brokerage_id", "brokerage_net_from_agent", "computed_at", "gross_commission_generated", "id", "recruit_id", "recruited_agent_id", "transaction_count", "year_number"],
   recruiting_costs: ["amount", "brokerage_id", "cost_type", "created_at", "id", "incurred_date", "notes", "recruit_id", "recruited_agent_id"],
@@ -677,7 +678,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   template_feedback: ["comment", "created_at", "id", "rating", "template_id", "user_id"],
   template_marketplace: ["author_user_id", "brokerage_id", "created_at", "id", "metadata", "rating", "template_body", "template_name", "template_type", "updated_at", "usage_count", "visibility"],
   tenant_ai_teammates: ["autonomy", "base_manager_key", "brokerage_id", "charter", "created_at", "created_by", "focus_tags", "id", "name", "role_title", "status", "updated_at"],
-  tenant_contract_signatures: ["brokerage_id", "created_at", "id", "signature", "signed_at", "signed_by", "signed_name", "template_id", "template_version"],
+  tenant_contract_signatures: ["accepted_body_text", "accepted_document_path", "accepted_ip", "accepted_user_agent", "brokerage_id", "content_sha256", "created_at", "id", "signatory", "signature", "signed_at", "signed_by", "signed_name", "template_id", "template_version", "version_label"],
   tenant_custom_domains: ["added_by", "brokerage_id", "created_at", "domain", "error_detail", "id", "last_checked_at", "status", "verification", "verified_at"],
   tenant_phone_numbers: ["agent_user_id", "brokerage_id", "created_at", "department", "id", "is_active", "number_source", "phone_digits", "phone_number", "scope_type", "team_id", "twilio_number_sid"],
   tenant_policy_versions: ["actor_type", "brokerage_id", "changed_by", "created_at", "id", "policy_key", "previous", "reason", "value", "version"],

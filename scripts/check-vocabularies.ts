@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 482 tables, 944 columns.
+ * MEASURED AT GENERATION: 483 tables, 949 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-07
+ * generated: 2026-11-09
  * source: public.live_check_constraints_json()
- * body-sha256: 114252082a174a359eea488099cd4560a21c43b65dc8e51e2cc3ae871fff8ba9
+ * body-sha256: 0a8be5d28f9468b2e06addfe2e02d9e3a16ed7c63f178eb81bc0c5244400b5a2
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -990,7 +990,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   listing_media: {
     media_type: ["document", "floorplan", "graphic", "photo", "reel", "story", "video", "virtual_tour"],
-    photo_source: ["idx_mls", "owner_upload"],
+    photo_source: ["idx_mls", "owner_upload", "vendor_delivery"],
     usage_intent: ["both", "mls", "public_marketing"],
   },
   listing_packet_jobs: {
@@ -1335,6 +1335,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["dismissed", "new", "used"],
   },
   platform_contract_templates: {
+    approval_status: ["approved", "draft"],
     contract_type: ["subscription_agreement"],
   },
   platform_coupons: {
@@ -1343,7 +1344,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   platform_credentials: {
     owner_type: ["agent", "brokerage", "contact", "platform", "team", "vendor"],
-    platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_ads", "google_calendar", "google_flow", "groundtruth", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stackadapt", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
+    platform: ["authentisign", "bandwidth", "batchdata", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_ads", "google_calendar", "google_flow", "groundtruth", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stackadapt", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
     scope: ["agent", "brokerage", "platform", "team"],
     test_status: ["fail", "pass", "pending"],
   },
@@ -1485,6 +1486,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     basis: ["public_record", "self_identified", "vendor_modeled"],
     purpose: ["research"],
   },
+  provider_monitors: {
+    play_key: ["contact_second_window", "moving_corridor_radar", "negative_evidence_saver", "property_candidate_queue", "public_request_assist"],
+    provider: ["exa"],
+    status: ["active", "disabled", "paused"],
+  },
   provider_overrides: {
     provider_type: ["accounting", "ai", "ai_voice", "avatar", "calendar", "crm", "crm_sync", "direct_mail", "email", "enrichment", "esign", "idx", "payment", "phone", "scraper", "showing", "sms", "social", "transaction", "video", "voice_clone"],
     scope_type: ["admin", "brokerage", "superadmin", "team", "user"],
@@ -1497,7 +1503,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     purpose: ["business_card", "campaign", "event", "general", "lead_capture", "lead_magnet", "listing", "listing_inquiry", "open_house"],
   },
   raw_scraped_leads: {
-    processing_status: ["duplicate_post_enrich", "duplicate_pre_enrich", "enriching", "error", "insufficient_contact_data", "insufficient_identity", "insufficient_identity_for_promotion", "pending", "processing", "promoted", "queued_for_enrichment", "territory_mismatch", "unassigned_no_market"],
+    freshness_verdict: ["aging", "contradicted", "fresh", "history", "stale", "undated"],
+    processing_status: ["duplicate_post_enrich", "duplicate_pre_enrich", "enriching", "error", "held_stale", "insufficient_contact_data", "insufficient_identity", "insufficient_identity_for_promotion", "pending", "processing", "promoted", "queued_for_enrichment", "territory_mismatch", "unassigned_no_market"],
     producer_actor_type: ["actor", "cron", "csv_import", "manager_action", "manual", "research", "sdk_mcp", "vendor_event", "webhook"],
     source_family: ["contact_direct", "lead", "raw"],
     source_origin: ["brokerage", "platform"],

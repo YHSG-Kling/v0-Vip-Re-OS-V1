@@ -168,7 +168,8 @@ async function main() {
   check("a scraper-fleet vendor resolves its own credential name (not the whole fleet's) and reads as a live platform lane", apify.configured && apify.credentialNames.join() === "APIFY_API_TOKEN" && apify.activation === "scraper_fleet")
   const { PROVIDER_TENANCY } = await import("../lib/providers/tenancy-matrix")
   const fleet = PROVIDER_TENANCY.find((p) => p.provider === "scrapers")!.envVars
-  check("every scraper-fleet credential name is one the tenancy matrix declares (one registry)", ["apify", "zenrows", "zyte"].every((v) => pp.platformCredentialNames(v).every((n) => fleet.includes(n))))
+  const fleetDoors = await Promise.all(["apify", "zenrows", "zyte"].map((v) => pp.platformProviderDoorFacts(v)))
+  check("every scraper-fleet credential name the door facts carry is one the tenancy matrix declares (one registry)", fleetDoors.every((d) => d.credentialNames.length > 0 && d.credentialNames.every((n) => fleet.includes(n))))
   const withBudget = pp.withTerritoryBudget(factsOn, { monthly_budget_usd: null, spend_this_month: 30 })
   const defaultBudget = pp.withTerritoryBudget(factsOn, { monthly_budget_usd: null, spend_this_month: 0 })!.monthlyBudgetUsd
   check("a territory naming no budget runs on the cron's default ceiling ($100) minus its spend", defaultBudget === 100 && withBudget?.monthlyBudgetUsd === 100 && withBudget?.remainingBudgetUsd === 70)

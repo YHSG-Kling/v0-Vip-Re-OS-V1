@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getTenantConnectionsAction, getTenantAcquisitionProvidersAction } from "@/app/actions/tenant-connections"
 import { LeadSourcesClient } from "./lead-sources-client"
 import { AcquisitionProvidersPanel } from "./acquisition-providers-panel"
+import { TENANT_PROVIDER_CONNECTION_STATES } from "@/lib/providers/tenant-provider-connections"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "Lead Sources & Listing Feeds" }
@@ -36,7 +37,7 @@ export default async function LeadSourcesPage() {
       />
       <div className="px-6 pb-6 max-w-3xl mx-auto">
         {acq.ok
-          ? <AcquisitionProvidersPanel providers={acq.providers} encryptionConfigured={acq.encryptionConfigured} />
+          ? <AcquisitionProvidersPanel providers={acq.providers} encryptionConfigured={acq.encryptionConfigured} stateLegend={TENANT_PROVIDER_CONNECTION_STATES} />
           : <p className="text-xs text-destructive">Acquisition providers could not be read: {acq.error}</p>}
       </div>
     </>

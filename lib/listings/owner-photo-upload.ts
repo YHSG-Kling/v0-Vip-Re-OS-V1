@@ -287,7 +287,7 @@ export async function recordPhotographerDelivery(db: Db, input: PhotographerDeli
   if (fresh.length === 0) return { ok: true, listingId, mediaIds: [], skipped, notifiedUserId: null, notifyWarning: null }
 
   const at = (input.now ?? new Date()).toISOString()
-  const rows = fresh.map((url, i) => ({
+  const rows = fresh.map((url) => ({
     brokerage_id: input.brokerageId,
     listing_id: listingId,
     media_type: "photo",
@@ -311,8 +311,7 @@ export async function recordPhotographerDelivery(db: Db, input: PhotographerDeli
     ownership_attested_at: at,
     ownership_attestation_version: PHOTOGRAPHER_DELIVERY_ATTESTATION_VERSION,
     vendor_booking_id: input.bookingId,
-    _i: i,
-  })).map(({ _i, ...r }) => r)
+  }))
   const { data: ins, error: iErr } = await db.from("listing_media").insert(rows).select("id")
   if (iErr) {
     const missing = iErr.code === "PGRST204" || /vendor_booking_id|photo_source_check/.test(iErr.message)

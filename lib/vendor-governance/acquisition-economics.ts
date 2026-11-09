@@ -16,7 +16,7 @@ import { ACQUISITION_LEDGER_SYSTEM_SOURCE, type AcquisitionLedgerRow } from "./p
 
 type Svc = { from: (table: string) => any }
 
-export interface AcquisitionEconomicsInput {
+interface AcquisitionEconomicsInput {
   ledger: readonly AcquisitionLedgerRow[]
   raw: { total: number; duplicates: number; promotedToLead: number }
   leads: { fromRaw: number; converted: number }
@@ -51,7 +51,7 @@ const r4 = (n: number) => Math.round(n * 10000) / 10000
 
 /** PURE — fold the inputs into the report. Deterministic; never invents a rate from a zero denominator.
  *  @proofSeam scripts/tenant-provider-connections-guard.ts section H drives the fold (payer split, null-not-zero rates) */
-export function foldAcquisitionEconomics(i: AcquisitionEconomicsInput): AcquisitionEconomicsReport {
+function foldAcquisitionEconomics(i: AcquisitionEconomicsInput): AcquisitionEconomicsReport {
   let platform = 0, tenant = 0, units = 0, rows = 0
   for (const r of i.ledger) {
     const m = r.request_metadata ?? {}

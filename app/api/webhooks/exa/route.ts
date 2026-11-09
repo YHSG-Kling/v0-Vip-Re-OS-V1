@@ -14,17 +14,23 @@
 // (lib/kernel/scraping.ts ingestRawSourceBatch) — no second raw-insert implementation, no provider call.
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { handleExaWebhookDelivery } from "@/lib/providers/exa/monitors"
+import { EXA_WEBHOOK_PATH, EXA_SIGNATURE_TOLERANCE_SEC, handleExaWebhookDelivery } from "@/lib/providers/exa/monitors"
 
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
+  // The ONE registered path (lib/providers/exa/monitors.ts EXA_WEBHOOK_PATH is what ensureExaMonitors registers at Exa). A delivery
+  // arriving on a rewritten / mis-mounted path is said and refused — the signature check below would fail anyway, by name here.
+  const pathname = new URL(request.url).pathname
+  if (!pathname.endsWith(EXA_WEBHOOK_PATH)) {
+    return NextResponse.json({ error: `exa deliveries are registered to ${EXA_WEBHOOK_PATH}, not ${pathname}` }, { status: 404 })
+  }
   const rawBody = await request.text()
   const signatureHeader = request.headers.get("exa-signature")
   // The env fallback is a NAME — a monitor created by hand in the Exa dashboard; registered monitors verify with their sealed secret.
   const envSecret = process.env.EXA_WEBHOOK_SECRET ?? null
   if (!envSecret && !signatureHeader) {
-    return NextResponse.json({ error: "unverifiable delivery: no Exa-Signature header and EXA_WEBHOOK_SECRET is unset" }, { status: 401 })
+    return NextResponse.json({ error: `unverifiable delivery: no Exa-Signature header and EXA_WEBHOOK_SECRET is unset (a signed delivery is accepted within ${EXA_SIGNATURE_TOLERANCE_SEC}s of its timestamp)` }, { status: 401 })
   }
   const supabase = createServiceClient()
   const r = await handleExaWebhookDelivery(supabase as never, { rawBody, signatureHeader, envSecret })

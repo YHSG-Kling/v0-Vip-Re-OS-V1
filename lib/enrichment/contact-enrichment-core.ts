@@ -63,7 +63,7 @@ import {
 import { OSINTClient } from "@/lib/osint-client"
 import { mergeLifeEvents } from "@/lib/enrichment/life-event-vocabulary"
 import { validateEmail, validatePhone } from "@/lib/contact-validation"
-import { trackVendorUsageService } from "@/lib/vendor-governance"
+import { trackVendorUsageService } from "@/lib/vendor-governance/track-vendor-usage"
 import { isContactInLiveDeal, contactsInLiveDeals } from "./deal-suppression"
 import { hasUsableIdentifier, contactPointsToBuy } from "./identifier-guard"
 // Wave 142 (lane 142D): the inline drain dispatch — pure, the drain itself is imported lazily inside it.

@@ -81,7 +81,7 @@ const SCRAPER_FLEET_CREDENTIALS: Readonly<Record<"apify" | "zenrows" | "zyte", r
 /** PURE — the env NAMES the platform's connection for `vendor` is configured by (the one registry: tenancy-matrix).
  *  @proofSeam scripts/acquisition-door-guard.ts holds every scraper name ⊆ the tenancy row; the product reader is
  *  platformProviderDoorFacts below. */
-export function platformCredentialNames(vendor: string): readonly string[] {
+function platformCredentialNames(vendor: string): readonly string[] {
   const v = vendor.trim().toLowerCase()
   if (v in SCRAPER_FLEET_CREDENTIALS) return SCRAPER_FLEET_CREDENTIALS[v as keyof typeof SCRAPER_FLEET_CREDENTIALS]
   return providerTenancy(v)?.envVars ?? []

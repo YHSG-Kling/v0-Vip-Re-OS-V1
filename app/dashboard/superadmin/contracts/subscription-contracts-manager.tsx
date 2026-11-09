@@ -192,6 +192,7 @@ export function SubscriptionContractsManager({
               <span className="font-medium">{t.name}</span>
               <Badge variant="outline">{t.version_label ? `${t.version_label} (v${t.version})` : `v${t.version}`}</Badge>
               <Badge variant={t.approval_status === "approved" ? "default" : "secondary"}>{t.approval_status === "approved" ? "Approved" : "Draft"}</Badge>
+              {t.approval_status === "approved" && <Badge variant="outline" title={t.approved_by ? `approved by user ${t.approved_by}` : "approver not recorded"}>{t.approved_at ? `approved ${new Date(t.approved_at).toLocaleDateString("en-US")}` : "approved"}{t.approved_by ? ` · by ${t.approved_by.slice(0, 8)}…` : " · approver not recorded"}</Badge>}
               <Badge variant={t.is_active ? "default" : "outline"}>{t.is_active ? "Active" : "Not active"}</Badge>
               <Badge variant="outline">{t.signature_count} accepted</Badge>
               {t.draft_marked && <Badge variant="outline" className="text-amber-700">draft banner present</Badge>}

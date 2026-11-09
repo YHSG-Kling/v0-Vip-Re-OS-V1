@@ -91,6 +91,14 @@ export default async function ConnectorHealingPage() {
       duplicateUnitUsd: PROVIDER_FIELD_SCORECARD.find((r) => r.provider === "batchdata" && r.capability === "motivated_seller_list")?.unitUsd ?? null,
     }),
   ])
+  // Wave 151 (151D, integrator): the provider monitors registry — every delivery resolves (provider, monitor id) to a row here,
+  // so platform staff must be able to READ what is registered, where it posts, which secret NAME signs it and when it last fired.
+  const { data: monitorRows, error: monitorsErr } = await createServiceClient()
+    .from("provider_monitors")
+    .select("id, brokerage_id, market_id, provider, provider_monitor_id, play_key, status, cadence, search, webhook_path, secret_env, deliveries, last_delivery_at, last_delivery_event_id, created_by_user_id, created_at")
+    .order("created_at", { ascending: false })
+    .limit(200)
+  const monitors = (monitorRows ?? []) as Array<{ id: string; brokerage_id: string; market_id: string | null; provider: string; provider_monitor_id: string; play_key: string; status: string; cadence: string | null; search: Record<string, unknown> | null; webhook_path: string; secret_env: string; deliveries: number; last_delivery_at: string | null; last_delivery_event_id: string | null; created_by_user_id: string | null; created_at: string }>
 
   // Pending queue (the actionable list) + the recent-history strip for context.
   const [pendingRes, recentRes] = await Promise.all([
@@ -327,6 +335,42 @@ export default async function ConnectorHealingPage() {
               {pilot.activation.map((a) => <li key={a.provider}>{a.provider}: {a.mayActivate ? "may activate" : `may not activate — ${a.blockers.join("; ")}`}</li>)}
             </ul>
             <p className="text-xs text-muted-foreground">Projection basis: {pilot.projection.basis} — {pilot.projection.monthlyRecords.toLocaleString("en-US")} records a month is arithmetic, never a request size.</p>
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* ── PROVIDER MONITORS (wave 151D) — what is registered at Exa, where it posts, which secret NAME signs it, when it last fired ── */}
+      <section className="space-y-3">
+        <h2 className="text-lg font-medium">Provider monitors (signed delta webhooks)</h2>
+        <Card>
+          <CardContent className="p-0 overflow-x-auto">
+            {monitorsErr ? (
+              <p className="p-4 text-sm text-destructive">Monitor registry unreadable: {monitorsErr.message} — deliveries cannot be attributed while this cannot be read.</p>
+            ) : monitors.length === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">No provider monitors registered yet. A monitor is created by the acquisition-plays runner for an Exa-hunted play once EXA_API_KEY and EXA_WEBHOOK_SECRET are set by name; nothing is created without them.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs text-muted-foreground">
+                  <tr><th className="p-3">Tenant</th><th className="p-3">Play</th><th className="p-3">Status</th><th className="p-3">Cadence</th><th className="p-3">Posts to</th><th className="p-3">Signed by</th><th className="p-3">Deliveries</th><th className="p-3">Last delivery</th><th className="p-3">Created by</th><th className="p-3">Search</th></tr>
+                </thead>
+                <tbody>
+                  {monitors.map((m) => (
+                    <tr key={m.id} className="border-t align-top">
+                      <td className="p-3 font-mono text-xs">{m.brokerage_id.slice(0, 8)}…{m.market_id ? ` · market ${m.market_id.slice(0, 8)}…` : ""}</td>
+                      <td className="p-3">{m.play_key.replace(/_/g, " ")}<div className="text-xs text-muted-foreground">{m.provider} · {m.provider_monitor_id}</div></td>
+                      <td className="p-3"><Badge variant={m.status === "active" ? "default" : m.status === "paused" ? "secondary" : "destructive"}>{m.status}</Badge></td>
+                      <td className="p-3 text-xs">{m.cadence ?? "—"}</td>
+                      <td className="p-3 font-mono text-xs">{m.webhook_path}</td>
+                      <td className="p-3 text-xs">{m.secret_env} <span className="text-muted-foreground">(name only{m.deliveries > 0 ? ", sealed per monitor" : ""})</span></td>
+                      <td className="p-3 text-xs">{m.deliveries}</td>
+                      <td className="p-3 text-xs">{agoOrDash(m.last_delivery_at)}{m.last_delivery_event_id ? <div className="font-mono text-[11px] text-muted-foreground">event {m.last_delivery_event_id.slice(0, 16)}</div> : null}</td>
+                      <td className="p-3 font-mono text-xs">{m.created_by_user_id ? `${m.created_by_user_id.slice(0, 8)}…` : "runner"}</td>
+                      <td className="p-3 text-[11px] text-muted-foreground max-w-[18rem] truncate" title={JSON.stringify(m.search ?? {})}>{JSON.stringify(m.search ?? {}).slice(0, 80)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </CardContent>
         </Card>
       </section>

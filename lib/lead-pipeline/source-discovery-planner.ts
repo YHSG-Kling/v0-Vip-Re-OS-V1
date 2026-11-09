@@ -460,7 +460,7 @@ export function resolveSourceDoor(input: {
     else {
       const cap = typeof pf.platformCapUsd === "number" ? Math.min(pf.monthlyBudgetUsd, pf.platformCapUsd) : pf.monthlyBudgetUsd
       return withValue(base("platform_provider", true,
-        `platform-connected ${vendor} (${rights.rights}, ${rights.license}) within the territory's monthly budget — $${Math.round(pf.remainingBudgetUsd * 100) / 100} of $${pf.monthlyBudgetUsd} left this month`,
+        `platform-connected ${vendor} (${rights.rights}, ${rights.licence}) within the territory's monthly budget — $${Math.round(pf.remainingBudgetUsd * 100) / 100} of $${pf.monthlyBudgetUsd} left this month`,
         true, { maxSpendUsd: cap, approvedAt: monthStartIso(now), planId: `door:platform_provider:${vendor}` }))
     }
     // 3. A tenant-owned connection.
@@ -479,7 +479,7 @@ export function resolveSourceDoor(input: {
     return base("unavailable", false, `provider unavailable for ${input.source} — ${tried.join(" · ")}`, true)
   }
   // 4. A keyless public source (OSINT public records) — rights named, no vendor bill.
-  return withValue(base("public_source", true, `permissible public source (${rights.rights}, ${rights.license}) — no vendor cost`, false, { maxSpendUsd: 0 }))
+  return withValue(base("public_source", true, `permissible public source (${rights.rights}, ${rights.licence}) — no vendor cost`, false, { maxSpendUsd: 0 }))
 }
 
 /**

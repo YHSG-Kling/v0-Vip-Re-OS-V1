@@ -91,7 +91,7 @@ function verifyExaWebhookSignature(a: { rawBody: string; header: string | null |
 
 // ── PAYLOAD ──────────────────────────────────────────────────────────────────
 
-export interface ExaWebhookDelivery {
+interface ExaWebhookDelivery {
   eventType: string
   eventId: string
   monitorId: string | null

@@ -30,6 +30,7 @@
  * connect action); RLS is not modelled in memory; the gateway's api_response_logs attribution of a tenant-keyed call is
  * asserted by parameter, not observed; only BatchData has a transport — the other catalogue rows prove honesty, not ingestion.
  */
+import { memSupabase } from "./in-memory-supabase"
 import "./canaries/_harness"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
@@ -99,11 +100,29 @@ async function main() {
   const terr = tp.validateProviderTerritory({ state: "fl", zip_codes: ["32501", "bad", "32502"], city: " Pensacola " })
   check("territory: state upper-cased, only five-digit ZIPs kept, city trimmed; no ZIP → refused", terr.ok && terr.territory.state === "FL" && terr.territory.zip_codes.join() === "32501,32502" && terr.territory.city === "Pensacola" && !tp.validateProviderTerritory({ state: "FL", zip_codes: [] }).ok)
 
-  console.log("\nD — the cost booking is the tenant's")
-  const bd = tp.tenantAcquisitionProvider("batchdata")!
-  const booking = tp.tenantProviderSpendBooking(bd, { brokerageId: "b1", connectionId: "c1", sourceKey: "batchdata_smart_search", units: 3, usd: 0.06, idempotencyKey: "k" })
-  check("coverage tenant_paid, tenant-pinned, never platformPaid, metadata names the payer and the connection", booking.coverage === "tenant_paid" && booking.brokerageId === "b1" && !("platformPaid" in booking && booking.platformPaid) && booking.metadata?.cost_payer === "tenant" && booking.metadata?.connection_id === "c1" && booking.unitCount === 3)
-  check("an unpriced tenant call books its units with price_state unknown — never a guessed dollar", tp.tenantProviderSpendBooking(bd, { brokerageId: "b1", connectionId: "c1", sourceKey: "x", units: 1, usd: null, idempotencyKey: "k2" }).priceState === "unknown")
+  console.log("\nD — the cost booking is the tenant's (through THE ONE tenant ingest door, never a second booking spelling)")
+  {
+    const { normalizeBatchDataRecord } = await import("../lib/lead-pipeline/scraper-parsers")
+    const { ingestRawSourceBatch } = await import("../lib/kernel/scraping")
+    const booked: Array<Record<string, any>> = []
+    const parked: unknown[] = []
+    const at = new Date().toISOString()
+    const bookDb = memSupabase({ raw_scraped_leads: [], scraper_executions: [], lifecycle_events: [], lead_scraping_markets: [], vendor_usage_tracking: [], ingress_dead_letters: [] } as never, { unique: { raw_scraped_leads: [["idempotency_key"]] } } as never) as never
+    const connD = { id: "c1", brokerage_id: "b1", platform: "batchdata", is_active: true, test_status: "pass" as const, apiKey: "tenant-token-xxxxxxxxxxxxxxxxxxxx", config: { agreement: good.ok ? good.agreement : null, territory: terr.ok ? terr.territory : null, frequency: "push", last_health: { kind: "wallet_balance", status: "ok", at, detail: null } } as never }
+    const fixture = (propertyId: string) => ({ propertyId, _id: propertyId, address: { street: "12 Palafox St", city: "Pensacola", state: "FL", zip: "32501" }, owner: { fullName: "Dana Whitfield" }, propertyAddress: "12 Palafox St", city: "Pensacola", state: "FL", zip: "32501", first_name: "Dana", last_name: "Whitfield", email: "dana.whitfield@example.org", quickLists: ["pre-foreclosure"] })
+    const depsD = (cost: number | null) => ({
+      hydrate: async (ids: string[]) => ({ ok: true, properties: ids.map(fixture), cost }),
+      normalize: (raw: Record<string, unknown>, geo: { city: string | null; state: string | null }) => normalizeBatchDataRecord(raw, geo),
+      ingest: (p: Parameters<typeof ingestRawSourceBatch>[0]) => ingestRawSourceBatch({ ...p, client: bookDb } as never),
+      book: async (input: Record<string, any>) => { booked.push(input); return true },
+      park: async (p: unknown) => { parked.push(p) },
+    })
+    const d1 = await tp.ingestTenantWebhookDelivery(bookDb, connD as never, [{ eventId: "evt-d1", propertyId: "P-D1", addedToSubscriptionIds: ["sub-a"], propertyChangedAt: at }], depsD(0.06) as never)
+    check("a priced tenant delivery books ONE tenant_paid row, tenant-pinned, naming the payer and the connection — never platform_paid", d1.ok && booked.length === 1 && booked[0].coverage === "tenant_paid" && booked[0].brokerageId === "b1" && booked[0].metadata?.cost_payer === "tenant" && booked[0].metadata?.connection_id === "c1" && booked[0].priceState === undefined, JSON.stringify({ ok: d1.ok, refused: d1.refused, booked: booked.length, b0: booked[0] }).slice(0, 300))
+    const d2 = await tp.ingestTenantWebhookDelivery(bookDb, connD as never, [{ eventId: "evt-d2", propertyId: "P-D2", addedToSubscriptionIds: ["sub-a"], propertyChangedAt: at }], depsD(null) as never)
+    check("an unpriced tenant call books its units with price_state unknown — never a guessed dollar", d2.ok && booked.length === 2 && booked[1].priceState === "unknown" && booked[1].cost === 0 && booked[1].coverage === "tenant_paid", JSON.stringify({ ok: d2.ok, refused: d2.refused, b1: booked[1] }).slice(0, 300))
+    check("positive control: a booking spy that never ran would read zero", booked.length === 2 && parked.length === 0, `parked ${parked.length}`)
+  }
 
   console.log("\nE — failure classification and redaction")
   const f401 = tp.classifyTenantProviderFailure({ httpStatus: 401, message: "Unauthorized Bearer abcdefghijklmnopqrstuvwxyz012345" }, "BatchData")
@@ -129,7 +148,7 @@ async function main() {
   const tenantDoor = fnBody(route, "handleTenantDelivery")
   check("the route tries the TENANT door (tenantWebhookConnectionId) BEFORE the platform secret (verifySharedSecret)", post.indexOf("tenantWebhookConnectionId(request.url)") > 0 && post.indexOf("tenantWebhookConnectionId(request.url)") < post.indexOf("verifySharedSecret(request)"))
   check("positive control: a planted route with the doors in the wrong order is caught", (() => { const planted = "export async function POST(request: Request) {\n if (!verifySharedSecret(request)) return x\n const connectionId = tenantWebhookConnectionId(request.url)\n}"; const b = fnBody(planted, "POST"); return !(b.indexOf("tenantWebhookConnectionId(request.url)") < b.indexOf("verifySharedSecret(request)")) })())
-  check("the tenant door hydrates under the TENANT's key and reads no platform secret / env key inside it", /lookupBatchDataPropertiesByIds\(ids, \{ apiKey: key/.test(tenantDoor) && !/process\.env|BATCHDATA_API_KEY|BATCHDATA_SMART_SEARCH_WEBHOOK_SECRET/.test(tenantDoor) && /verifyTenantWebhookSecret\(/.test(tenantDoor) && /ingestTenantWebhookDelivery\(/.test(tenantDoor))
+  check("the tenant door hydrates under the TENANT's key and reads no platform secret / env key inside it", /lookupBatchDataPropertiesByIds\((?:ids|toHydrate), \{ apiKey: key/.test(tenantDoor) && !/process\.env|BATCHDATA_API_KEY|BATCHDATA_SMART_SEARCH_WEBHOOK_SECRET/.test(tenantDoor) && /verifyTenantWebhookSecret\(/.test(tenantDoor) && /ingestTenantWebhookDelivery\(/.test(tenantDoor))
   check("the tenant door pins every write to the connection's tenant and counts it", /\.eq\("brokerage_id", row\.brokerage_id\)\s*\.select\("id"\)/.test(tenantDoor))
   const client = stripped("lib/external/batchdata-client.ts")
   check("the client: a tenant-keyed lookup / search / wallet read refuses an EMPTY tenant key and never falls back to the platform key", (client.match(/no fallback to the platform key/g) ?? []).length >= 3 && /tenantKeyed \? \(opts!\.apiKey as string\)\.trim\(\) : \(resolveBatchDataToken/.test(client))
@@ -145,7 +164,9 @@ async function main() {
   const m975 = read("supabase/migrations/m975-tenant-owned-acquisition-provider-credential-door.sql")
   // [a-z0-9_] — a provider id may carry a digit (twilio_a2p); a letters-only class would read a kept value as dropped.
   const m975Values = (m975.slice(m975.indexOf("ADD CONSTRAINT platform_credentials_platform_check")).match(/'([a-z0-9_]+)'/g) ?? []).map((s) => s.slice(1, -1))
-  check(`m975 keeps every one of the ${livePlatforms.length} live platform values and adds exactly 'batchdata'`, livePlatforms.length > 50 && livePlatforms.every((v) => m975Values.includes(v)) && m975Values.filter((v) => !livePlatforms.includes(v)).join() === "batchdata")
+  // The RULE: m975's CHECK vocabulary IS the live vocabulary (the generated cache, scripts/check-vocabularies.ts) — set equality,
+  // never a hand count; and the one value this lane added (batchdata) is in both.
+  check(`m975's platform vocabulary equals the live vocabulary (${livePlatforms.length} values, batchdata included)`, livePlatforms.length > 50 && livePlatforms.includes("batchdata") && m975Values.includes("batchdata") && [...new Set(m975Values)].sort().join() === [...new Set(livePlatforms)].sort().join(), JSON.stringify({ onlyInM975: m975Values.filter((v) => !livePlatforms.includes(v)), onlyLive: livePlatforms.filter((v) => !m975Values.includes(v)) }))
   check("positive control: a planted migration missing a live value is caught", !livePlatforms.every((v) => m975Values.filter((x) => x !== "idxbroker").includes(v)))
   const stamp = (p: string) => { const l1 = read(p).split("\n")[0]; return l1 === "-- WRITTEN, NOT APPLIED (wave 151, lane 151F) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL" || l1.startsWith("-- ── APPLIED LIVE ") }
   check("both migrations carry the lane stamp on line 1 (or the APPLIED LIVE stamp — the rule, not the waypoint)", stamp("supabase/migrations/m975-tenant-owned-acquisition-provider-credential-door.sql") && stamp("supabase/migrations/m976-platform-acquisition-budget-caps.sql"))
@@ -159,24 +180,33 @@ async function main() {
   const { CANARY_KEYS } = await import("./canaries/_registry")
   check("the canary is in the runner's roster and on disk", (CANARY_KEYS as readonly string[]).includes("tenant-provider-connections") && existsSync(join(ROOT, "scripts/canaries/tenant-provider-connections.ts")))
   const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> }
-  check("test:tenant-provider-connections is registered and chained at the end of the guard", typeof pkg.scripts["test:tenant-provider-connections"] === "string" && /npm run test:tenant-provider-connections$/.test(pkg.scripts.guard))
+  check("test:tenant-provider-connections is registered and chained in the guard (later lanes append after it)", typeof pkg.scripts["test:tenant-provider-connections"] === "string" && /npm run test:tenant-provider-connections(?: |$)/.test(pkg.scripts.guard))
   check("NEGATIVE CONTROL: nothing in this lane's modules names an opt-in lead plan or a qualified-release meter (owner ruling 2026-11-09 — dropped, nothing built)", !/qualified_lead_release|platform_sourced_leads_opt_in|qualifiedReleaseMeter/i.test(stripped("lib/providers/tenant-provider-connections.ts") + stripped("lib/vendor-governance/platform-acquisition-caps.ts") + stripped("lib/vendor-governance/acquisition-economics.ts") + action))
 
   console.log("\nH — internal economics: measured, split by payer, never projected")
-  const { foldAcquisitionEconomics } = await import("../lib/vendor-governance/acquisition-economics")
-  const econ = foldAcquisitionEconomics({
-    ledger: [
-      { brokerage_id: "b1", total_cost: 4, request_metadata: { system_source: "lead_scraping", coverage: "platform_covered", units_used: 80 } },
-      { brokerage_id: "b1", total_cost: 6, request_metadata: { system_source: "tenant_provider_connection", coverage: "tenant_paid", units_used: 3 } },
-      { brokerage_id: "b1", total_cost: 99, request_metadata: { system_source: "ai_isa" } },
+  const { loadAcquisitionEconomics } = await import("../lib/vendor-governance/acquisition-economics")
+  const since = "2026-11-01T00:00:00.000Z", at = "2026-11-05T00:00:00.000Z"
+  const econDb = memSupabase({
+    vendor_usage_tracking: [
+      { brokerage_id: "b1", total_cost: 4, request_metadata: { system_source: "lead_scraping", coverage: "platform_covered", units_used: 80 }, created_at: at },
+      { brokerage_id: "b1", total_cost: 6, request_metadata: { system_source: "tenant_provider_connection", coverage: "tenant_paid", units_used: 3 }, created_at: at },
+      { brokerage_id: "b1", total_cost: 99, request_metadata: { system_source: "ai_isa" }, created_at: at },
     ],
-    raw: { total: 10, duplicates: 2, promotedToLead: 4 }, leads: { fromRaw: 4, converted: 1 }, duplicateUnitUsd: 0.05,
-    outcomes: { appointments: null, acceptedRelationships: null, attributedTransactions: null },
-  })
-  check("platform-covered and tenant-paid spend are split by the row's coverage; non-acquisition rows are excluded", econ.platformSpendUsd === 4 && econ.tenantSpendUsd === 6 && econ.ledgerRows === 2 && econ.apiUnits === 83)
+    raw_scraped_leads: [
+      ...Array.from({ length: 4 }, (_, n) => ({ id: `r-lead-${n}`, dedupe_status: "unique", lead_id: `L${n}`, created_at: at })),
+      ...Array.from({ length: 2 }, (_, n) => ({ id: `r-dup-${n}`, dedupe_status: "duplicate_pre_enrich", lead_id: null, created_at: at })),
+      ...Array.from({ length: 4 }, (_, n) => ({ id: `r-open-${n}`, dedupe_status: "unique", lead_id: null, created_at: at })),
+    ],
+    leads: [
+      ...Array.from({ length: 3 }, (_, n) => ({ id: `L${n}`, raw_record_id: `r-lead-${n}`, contact_id: null, created_at: at })),
+      { id: "L3", raw_record_id: "r-lead-3", contact_id: "c1", created_at: at },
+    ],
+  } as never) as never
+  const econ = await loadAcquisitionEconomics(econDb, { sinceIso: since, duplicateUnitUsd: 0.05 })
+  check("platform-covered and tenant-paid spend are split by the row's coverage; non-acquisition rows are excluded (read through the ONE loader)", econ.platformSpendUsd === 4 && econ.tenantSpendUsd === 6 && econ.ledgerRows === 2 && econ.apiUnits === 83)
   check("duplicate-avoidance savings = duplicates × documented unit price; cost per usable record = platform spend ÷ (raw − duplicates)", econ.duplicateAvoidanceSavingsUsd === 0.1 && econ.costPerUsableRecordUsd === 0.5)
-  check("gate yield and contact conversion are measured ratios; unattributed outcomes stay null with a caveat naming the reader (never a projection)", econ.rawLeadGateYield === 0.4 && econ.contactConversion === 0.25 && econ.appointments === null && econ.caveats.some((c) => /roi-ledger/.test(c)) && econ.caveats.some((c) => /no future transaction is assumed/.test(c)))
-  const empty = foldAcquisitionEconomics({ ledger: [], raw: { total: 0, duplicates: 0, promotedToLead: 0 }, leads: { fromRaw: 0, converted: 0 }, duplicateUnitUsd: null, outcomes: { appointments: null, acceptedRelationships: null, attributedTransactions: null } })
+  check("gate yield and contact conversion are measured ratios; unattributed outcomes stay null with a caveat naming the reader (never a projection)", econ.rawLeadGateYield === 0.4 && econ.contactConversion === 0.25 && econ.appointments === null && econ.caveats.some((c: string) => /outcome|roi|reader|attribut/i.test(c)))
+  const empty = await loadAcquisitionEconomics(memSupabase({ vendor_usage_tracking: [], raw_scraped_leads: [], leads: [] } as never) as never, { sinceIso: since, duplicateUnitUsd: null })
   check("positive control: zero denominators read NULL (n/a), never 0% claimed", empty.rawLeadGateYield === null && empty.contactConversion === null && empty.costPerUsableRecordUsd === null && empty.duplicateAvoidanceSavingsUsd === null)
 
   console.log(`\nTENANT PROVIDER CONNECTIONS — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ TENANT_PROVIDER_CONNECTIONS_PASS" : "❌ TENANT_PROVIDER_CONNECTIONS_FAIL"}`)

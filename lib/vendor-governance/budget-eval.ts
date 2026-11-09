@@ -125,11 +125,13 @@ export interface SpendBackpressureInput {
  * its CONFIGURED floor — never a probability that a person will sell or close. paidPullApproval consumes it
  * (source-discovery-planner.ts): a want the planner judges not worthwhile is refused at the approval gate, with the reasons.
  */
-export type { PrePullValueVerdict } from "@/lib/lead-pipeline/pre-pull-value"
+/** The slice of lane 151C's PrePullValueVerdict (lib/lead-pipeline/pre-pull-value.ts) this reading needs — stated structurally so
+ *  vendor governance keeps no module edge into lead-pipeline (app/crm/page.tsx graph budget); the planner passes the real verdict. */
+export interface PrePullVerdictReading { score: number; decision: "proceed" | "preview_first" | "hold" | "refuse"; reasons: readonly string[] }
 
 /** PURE — why a paid want is refused on its pre-pull value (lane 151C's verdict: proceed / preview_first / hold / refuse), or null
  *  when it may proceed to the approval check. `preview_first` passes this gate — the planner's own line status asks for the count. */
-export function prePullRefusal(v: import("@/lib/lead-pipeline/pre-pull-value").PrePullValueVerdict | null | undefined): string | null {
+export function prePullRefusal(v: PrePullVerdictReading | null | undefined): string | null {
   if (!v) return null
   if (!Number.isFinite(v.score) || v.score < 0 || v.score > 1) return `pre-pull value: out of bounds (${String(v.score)}) — a bounded 0..1 signal is required`
   if (v.decision === "hold") return `pre-pull value ${v.score.toFixed(2)}: held — ${v.reasons.join("; ") || "pending configuration (an unknown price or license)"}`

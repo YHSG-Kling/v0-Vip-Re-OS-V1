@@ -133,13 +133,20 @@ async function main() {
   check("positive control: a want that fits every cap proceeds, naming the binding cap and its remainder", (() => { const v = caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: 10, tenantSpentMonthUsd: 2, wantUsd: 4 }); return v.action === "proceed" && v.allowedUsd === 4 && v.remainingUsd === 5 && !v.escalate })())
   check("the per-tenant cap binds when it is the smallest → throttle to the remainder, escalate", (() => { const v = caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: 10, tenantSpentMonthUsd: 18, wantUsd: 4 }); return v.action === "throttle" && v.allowedUsd === 2 && /Per-tenant/.test(v.reasons.join()) && v.escalate })())
   check("an exhausted monthly cap → refuse", caps.decidePlatformAcquisitionSpend({ caps: full, platformSpentMonthUsd: 100, tenantSpentMonthUsd: 0, wantUsd: 1 }).action === "refuse")
-  check("the edit validator: a negative or non-numeric cap is an error; blank keeps; explicit null is STOP; a number is kept to cents", (() => {
-    const bad = caps.validateAcquisitionCapsEdit({ monthly_usd: -1 }, null, { userId: "u" }); const neg = !bad.ok
-    const nan = !caps.validateAcquisitionCapsEdit({ monthly_usd: "abc" }, null, { userId: "u" }).ok
-    const keep = caps.validateAcquisitionCapsEdit({ monthly_usd: "" }, full, { userId: "u" }); const stop = caps.validateAcquisitionCapsEdit({ monthly_usd: null }, full, { userId: "u" }); const num = caps.validateAcquisitionCapsEdit({ monthly_usd: "12.345" }, full, { userId: "u" })
-    return neg && nan && keep.ok && keep.value.monthly_usd === 100 && stop.ok && stop.value.monthly_usd === null && num.ok && num.value.monthly_usd === 12.35 && num.value.set_by === "u"
-  })())
-  check("parseAcquisitionCaps: an absent / non-number field reads NULL, never a default", (() => { const p = caps.parseAcquisitionCaps({ monthly_usd: 5, per_pull_usd: "x" }); return !!p && p.monthly_usd === 5 && p.per_tenant_monthly_usd === null && p.per_pull_usd === null && caps.parseAcquisitionCaps("nope") === null })())
+  {
+    // The validator and the parser are the setter's and the loader's own (in-file); they are judged through those public doors.
+    const { memSupabase: mem } = await import("./in-memory-supabase")
+    const capsDb = () => mem({ platform_settings: [{ id: true, created_at: "2026-01-01", acquisition_budget_caps: { ...full } }] })
+    const neg = await caps.setPlatformAcquisitionCaps(capsDb() as never, { monthly_usd: -1 }, { userId: "u" })
+    const nan = await caps.setPlatformAcquisitionCaps(capsDb() as never, { monthly_usd: "abc" }, { userId: "u" })
+    const keep = await caps.setPlatformAcquisitionCaps(capsDb() as never, { monthly_usd: "" }, { userId: "u" })
+    const stop = await caps.setPlatformAcquisitionCaps(capsDb() as never, { monthly_usd: null }, { userId: "u" })
+    const num = await caps.setPlatformAcquisitionCaps(capsDb() as never, { monthly_usd: "12.345" }, { userId: "u" })
+    check("the edit validator (through the setter): a negative or non-numeric cap is an error; blank keeps; explicit null is STOP; a number is kept to cents", !neg.ok && /number/.test(neg.ok ? "" : neg.error) && !nan.ok && keep.ok && keep.after.monthly_usd === 100 && stop.ok && stop.after.monthly_usd === null && num.ok && num.after.monthly_usd === 12.35 && num.after.set_by === "u")
+    const parsed = await caps.loadPlatformAcquisitionCaps(mem({ platform_settings: [{ id: true, created_at: "2026-01-01", acquisition_budget_caps: { monthly_usd: 5, per_pull_usd: "x" } }] }) as never)
+    const garbage = await caps.loadPlatformAcquisitionCaps(mem({ platform_settings: [{ id: true, created_at: "2026-01-01", acquisition_budget_caps: "garbage" }] }) as never)
+    check("the parser (through the loader): an absent / non-number field reads NULL, never a default; a non-object reads no caps at all", parsed.ok && !!parsed.caps && parsed.caps.monthly_usd === 5 && parsed.caps.per_tenant_monthly_usd === null && parsed.caps.per_pull_usd === null && garbage.ok && garbage.caps === null)
+  }
   const { memSupabase } = await import("./in-memory-supabase")
   const dbAbsent = memSupabase({ platform_settings: [{ id: true, created_at: "2026-01-01" }] }, { missingColumns: { platform_settings: ["acquisition_budget_caps"] } })
   const absent = await caps.loadPlatformAcquisitionCaps(dbAbsent as never)

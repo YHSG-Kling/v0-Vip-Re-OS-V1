@@ -11,7 +11,7 @@
 -- superadmin_audit_log).
 --
 -- NULL = NO CAP SET = STOP BEFORE SPEND. Unlike m753 there is NO code default behind a null: a platform-paid acquisition want
--- is REFUSED until the owner writes every cap. Before this is applied the reader sees 42703 / PGRST204 and reports "not applied"
+-- is REFUSED until the owner writes every cap. Before this is applied the reader sees 42703 / PGRST204 and reports the column as absent
 -- — the backpressure decision refuses exactly as for a null cap (said, never silently).
 --
 -- Shape (validated in code by validateAcquisitionCapsEdit; the CHECK pins only that it is an object or NULL):

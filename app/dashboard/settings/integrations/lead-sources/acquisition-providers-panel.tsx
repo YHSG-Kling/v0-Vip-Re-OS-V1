@@ -110,7 +110,7 @@ function ConnectForm({ p, onDone }: { p: TenantAcquisitionProviderStatus; onDone
   )
 }
 
-export function AcquisitionProvidersPanel({ providers, encryptionConfigured }: { providers: TenantAcquisitionProviderStatus[]; encryptionConfigured: boolean }) {
+export function AcquisitionProvidersPanel({ providers, encryptionConfigured, stateLegend }: { providers: TenantAcquisitionProviderStatus[]; encryptionConfigured: boolean; stateLegend: readonly TenantAcquisitionProviderStatus["state"][] }) {
   const router = useRouter()
   const [open, setOpen] = useState<string | null>(null)
   const [once, setOnce] = useState<Record<string, { webhookPath: string | null; webhookSecretOnce: string | null; state: string; reason: string }>>({})
@@ -126,6 +126,7 @@ export function AcquisitionProvidersPanel({ providers, encryptionConfigured }: {
           other source. The provider bills you directly — nothing here is a platform lead charge. Only providers with a real transport in this
           OS can be connected; the others show their honest status.
         </CardDescription>
+        <p className="text-[11px] text-muted-foreground">Connection states, in order: {stateLegend.map((st) => STATE_LABEL[st].label).join(" · ")}.</p>
         {!encryptionConfigured && <p className="text-xs text-destructive">Secret storage is not configured on this deployment — connections are refused until platform staff set it (nothing is ever stored in plaintext).</p>}
       </CardHeader>
       <CardContent className="space-y-3">

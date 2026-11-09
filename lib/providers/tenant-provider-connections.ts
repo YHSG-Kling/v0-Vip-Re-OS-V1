@@ -394,7 +394,7 @@ export function deriveTenantProviderConnectionState(provider: string, facts: Ten
  * with price_state 'unknown' rather than guessing. Called by ingestTenantWebhookDelivery below (the push door's booking).
  * @proofSeam scripts/tenant-provider-connections-guard.ts section D asserts the booking shape directly (coverage, pin, no platformPaid)
  */
-export function tenantProviderSpendBooking(
+function tenantProviderSpendBooking(
   provider: TenantAcquisitionProvider,
   input: { brokerageId: string; connectionId: string; sourceKey: string; units: number; usd: number | null; idempotencyKey: string; systemSource?: string; metadata?: Record<string, unknown> },
 ): MeterVendorInput {
@@ -528,7 +528,7 @@ export interface TenantProviderConnectionRow {
 
 export interface TenantWebhookIngestDeps {
   /** The tenant-keyed hydrate (lookupBatchDataPropertiesByIds with { apiKey, brokerageId }). */
-  hydrate: (ids: string[], apiKey: string) => Promise<{ ok: boolean; properties: Array<Record<string, unknown>>; cost: number; error?: string; httpStatus?: number | null }>
+  hydrate: (ids: string[], apiKey: string) => Promise<{ ok: boolean; properties: Array<Record<string, unknown>>; cost: number | null; error?: string; httpStatus?: number | null }>
   normalize: (raw: Record<string, unknown>, geo: { city: string | null; state: string | null }) => NormalizedScrapedRecord
   /** THE ONE RawData producer (lib/kernel/scraping.ts ingestRawSourceBatch). */
   ingest: (p: IngestRawSourceBatchParams) => Promise<IngestBatchResult>
@@ -607,7 +607,8 @@ export async function ingestTenantWebhookDelivery(svc: Svc, connection: TenantPr
   const additionIds = [...eventIdByProperty.keys()]
 
   let raws: Array<Record<string, unknown>> = [...inline]
-  let hydrateCost = 0
+  // The provider's stated cost for this hydrate; null = it answered WITHOUT a price (booked as units with price_state unknown — never a guessed dollar).
+  let hydrateCost: number | null = 0
   if (additionIds.length > 0) {
     const h = await deps.hydrate(additionIds, connection.apiKey)
     if (!h.ok) {
@@ -620,7 +621,7 @@ export async function ingestTenantWebhookDelivery(svc: Svc, connection: TenantPr
       return { ...base, connectionState: f.state, parked, held: additions.length, refused: f.tenantMessage, healthPatch, notify: f.notify }
     }
     raws = [...raws, ...h.properties]
-    hydrateCost = h.cost
+    hydrateCost = typeof h.cost === "number" && Number.isFinite(h.cost) ? h.cost : null
   }
   if (raws.length === 0) return { ...base, ok: true, hydrated: 0 }
 
@@ -644,13 +645,15 @@ export async function ingestTenantWebhookDelivery(svc: Svc, connection: TenantPr
   })
 
   let tenantPaidUsd = 0
-  if (hydrateCost > 0) {
+  // A paid hydrate books the TENANT's spend; an unpriced one books its units with price_state unknown (the directive: tenant-paid
+  // expenses are presented accurately — a missing price is said, never substituted).
+  if (additionIds.length > 0 && (hydrateCost === null || hydrateCost > 0)) {
     const booked = await deps.book(tenantProviderSpendBooking(p, {
       brokerageId: connection.brokerage_id, connectionId: connection.id, sourceKey: "batchdata_smart_search", units: additionIds.length, usd: hydrateCost,
       idempotencyKey: `tenant_webhook:${connection.id}:${[...eventIdByProperty.values()].sort().join(",").slice(0, 200)}`,
       metadata: { door: "batchdata_smart_search_push" },
     }))
-    if (booked) tenantPaidUsd = hydrateCost
+    if (booked) tenantPaidUsd = hydrateCost ?? 0
   }
   return {
     ...base, ok: true, hydrated: additionIds.length, inserted: res.inserted, replayed: res.replayed, skippedTerritory: res.skipped_territory, tenantPaidUsd,

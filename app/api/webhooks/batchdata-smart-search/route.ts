@@ -160,7 +160,19 @@ async function handleTenantDelivery(request: Request, connectionId: string): Pro
     events,
     {
       // The TENANT's token, pinned to the tenant for the gateway's api_response_logs attribution; never the platform key.
-      hydrate: (ids, key) => lookupBatchDataPropertiesByIds(ids, { apiKey: key, brokerageId: String(row.brokerage_id) }),
+      // Wave 151 (lane 151C, wired by the integrator): PRE-PULL DEDUP BEFORE THE PAID HYDRATE — ids this tenant already holds
+      // (a known source id, a fresh prior answer) are not bought again; an unreadable known-set hydrates as before and says so.
+      hydrate: async (ids, key) => {
+        const { loadKnownAcquisitionKeys, planPrePullDedup } = await import("@/lib/lead-pipeline/pre-pull-dedup")
+        const candidates = ids.map((id) => ({ ref: id, source: "batchdata_smart_search", sourceRecordId: id }))
+        const known = await loadKnownAcquisitionKeys(svc as never, { brokerageId: String(row.brokerage_id), marketIds: [] }, { candidates })
+        const plan = known ? planPrePullDedup(candidates, known, { lookupKind: "property" }) : null
+        const toHydrate = plan ? plan.buy.map((c) => c.ref) : ids
+        if (!known) console.warn("[batchdata-smart-search] pre-pull dedup could not read the known keys — hydrating every id as before")
+        else if (plan && plan.skipped > 0) console.log(`[batchdata-smart-search] pre-pull dedup saved ${plan.skipped} paid hydrate(s) of ${ids.length} for tenant ${String(row.brokerage_id)}`)
+        if (toHydrate.length === 0) return { ok: true, properties: [], cost: 0 } as Awaited<ReturnType<typeof lookupBatchDataPropertiesByIds>>
+        return lookupBatchDataPropertiesByIds(toHydrate, { apiKey: key, brokerageId: String(row.brokerage_id) })
+      },
       normalize: (raw, geo) => normalizeBatchDataRecord(raw, geo),
       ingest: (p) => ingestRawSourceBatch(p),
       book: (input) => meterVendorSpend(input),

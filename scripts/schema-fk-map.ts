@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1934 of 2012 pairs) — storing them would be
+ * overwhelming majority (1938 of 2017 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,18 +75,18 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2115 edges across 754 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2012 unordered
- * table pairs carry at least one FK; 78
- * carry more than one and are listed below. 20 of the constraints are self-referential.
+ * MEASURED AT GENERATION: 2121 edges across 755 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2017 unordered
+ * table pairs carry at least one FK; 79
+ * carry more than one and are listed below. 21 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-07
+ * generated: 2026-11-09
  * source: public.live_foreign_keys_json()
- * body-sha256: ca3611c4bfdb6b4df5e6589f09de01afb20e72b69bbf610f725157258dd5f08c
+ * body-sha256: 226340b69eb4ac6a8f87b7fddc974f076ad7a3fcc282a6f63276080b6482f621
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -484,7 +484,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "listing_marketing_packages": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "listing_marketing_services": { "brokerage_id": "brokerages", "package_id": "listing_marketing_packages", "transaction_id": "transactions", "vendor_id": "vendors" },
   "listing_marketing_tiers": { "brokerage_id": "brokerages" },
-  "listing_media": { "approved_by": "users", "brokerage_id": "brokerages", "listing_id": "listings", "ownership_attested_by": "users", "template_id": "video_templates", "uploaded_by": "users" },
+  "listing_media": { "approved_by": "users", "brokerage_id": "brokerages", "listing_id": "listings", "ownership_attested_by": "users", "template_id": "video_templates", "uploaded_by": "users", "vendor_booking_id": "vendor_bookings" },
   "listing_metrics": { "brokerage_id": "brokerages", "listing_id": "listings" },
   "listing_packet_jobs": { "agent_user_id": "users", "brokerage_id": "brokerages", "listing_id": "listings" },
   "listing_page_analytics": { "brokerage_id": "brokerages", "listing_id": "listings" },
@@ -595,7 +595,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "plan_tasks": { "brokerage_id": "brokerages", "plan_id": "copilot_plans" },
   "platform_affiliates": { "created_by": "users" },
   "platform_config_snapshots": { "captured_by": "users", "source_brokerage_id": "brokerages" },
-  "platform_contract_templates": { "created_by": "users" },
+  "platform_contract_templates": { "approved_by": "users", "created_by": "users", "supersedes_template_id": "platform_contract_templates" },
   "platform_coupon_redemptions": { "brokerage_id": "brokerages", "coupon_id": "platform_coupons", "redeemed_by": "users" },
   "platform_coupons": { "created_by": "users" },
   "platform_credentials": { "agent_user_id": "users", "brokerage_id": "brokerages" },
@@ -651,6 +651,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "property_upgrades": { "brokerage_id": "brokerages", "listing_id": "listings" },
   "property_views": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "protected_research_attributes": { "brokerage_id": "brokerages", "contact_id": "contacts" },
+  "provider_monitors": { "brokerage_id": "brokerages", "created_by_user_id": "users", "market_id": "lead_scraping_markets" },
   "push_notification_queue": { "brokerage_id": "brokerages" },
   "push_subscriptions": { "brokerage_id": "brokerages", "user_id": "users" },
   "qr_codes": { "agent_id": "agents", "brokerage_id": "brokerages", "listing_id": "listings", "marketing_campaign_id": "marketing_campaigns" },
@@ -933,6 +934,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "offers|transactions": 2,
   "organization_members|users": 3,
   "outside_offer_messages|users": 2,
+  "platform_contract_templates|users": 2,
   "platform_form_packets|users": 2,
   "platform_impersonation_sessions|users": 2,
   "platform_staff_profiles|users": 2,
