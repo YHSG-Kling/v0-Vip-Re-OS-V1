@@ -333,8 +333,20 @@ export async function executeSequenceStep(
         planned: "send_now",
         moment: { key: "sequence_step_due", intent: `A ${step.channel} step the tenant wrote is due for this person — decide whether now is right, or hold it a bounded time.` },
         relationship: { type: subject.type, persona: null, hasAssignedAgent: false },
+        // WAVE 151 (151E, 150Z row 38): the channel this step would ride — the arbiter halts the sequence ONCE when no lawful
+        // channel is left for this person (every channel opted out / refused), instead of each later step refusing at dispatch.
+        requiredChannels: [step.channel],
         blindSpots: ["the person's recent touches across other senders are not read here — the de-confliction gate at dispatch decides frequency"],
       })
+      if (arb.halt) {
+        const { data: ended, error: endErr } = await supabase.from("sequence_enrollments")
+          .update({ status: arb.halt.suggestedEnrollmentStatus, completed_at: new Date().toISOString() })
+          .eq("id", enrollmentId).eq("brokerage_id", brokerageId).in("status", ["active", "paused"]).select("id")
+        if (endErr || (ended ?? []).length === 0) {
+          console.error(`[step-executor] enrollment ${enrollmentId} NOT ended after a no-lawful-channel halt: ${endErr?.message ?? "matched no row"}`)
+        }
+        return { status: "skipped", reason: `no lawful channel is left for this sequence: ${arb.decision.rationale}`.slice(0, 500) }
+      }
       if (arb.decision.kind === "wait" && arb.decision.waitHours !== null) {
         const retryAt = new Date(Date.now() + arb.decision.waitHours * 3_600_000).toISOString()
         const { data: held, error: holdErr } = await supabase.from("sequence_enrollments")

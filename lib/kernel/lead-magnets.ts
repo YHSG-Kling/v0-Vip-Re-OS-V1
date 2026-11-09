@@ -1374,7 +1374,7 @@ export async function captureFormSubmission(
 
   // If it was a home valuation, create a valuation_request record
   if (data.property_address && contactId) {
-    const { error: valuationReqErr } = await supabase.from("valuation_requests").insert({
+    const { data: valuationRow, error: valuationReqErr } = await supabase.from("valuation_requests").insert({
       brokerage_id: input.brokerageId,
       agent_id: form.agent_id,
       contact_id: contactId,
@@ -1388,8 +1388,21 @@ export async function captureFormSubmission(
       condition: data.condition ?? null,
       qualification_data: input.submissionData,
       submitted_at: submittedAt,
-    })
+    }).select("id").maybeSingle()
     if (valuationReqErr) console.error(`[lead-magnets] home-valuation request NOT recorded: ${valuationReqErr.message}`)
+    // WAVE 151 (151E): an EXISTING contact asking what their home is worth is a first-party seller fact on the SAME contact —
+    // the moving-moment arbiter reassesses need and timing (never a new Lead, never a provider call). A contact this
+    // submission CREATED is the C8 intake's business (its welcome / speed-to-lead baton), so only the merged case re-enters.
+    else if (captureAction === "merged" && (valuationRow as { id?: string } | null)?.id) {
+      const { reassessExistingContact } = await import("@/lib/intent/movement-signals")
+      const reassessed = await reassessExistingContact(supabase as never, {
+        brokerageId: input.brokerageId,
+        contactId,
+        change: { kind: "valuation_request", referenceId: String((valuationRow as { id: string }).id), summary: "asked what their home is worth through the tenant's home-valuation magnet", at: submittedAt },
+        capturedBy: "person",
+      }).catch((e: unknown) => ({ status: "refused" as const, reason: e instanceof Error ? e.message : String(e) }))
+      if (reassessed.status === "refused") console.error(`[lead-magnets] existing-contact reassessment refused: ${reassessed.reason}`)
+    }
 
     // MANAGER-ORCHESTRATED — a valuation lead magnet (they gave us a property address) is strong
     // inbound seller intent. Hand it to the Listing Concierge over the bus for a gated precise-CMA

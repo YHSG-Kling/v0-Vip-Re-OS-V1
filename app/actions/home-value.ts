@@ -513,6 +513,20 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       return { success: false, error: "Failed to create valuation request" }
     }
 
+    // WAVE 151 (151E): an EXISTING contact asking what their home is worth is a first-party seller fact on the SAME contact —
+    // the moving-moment arbiter reassesses need and timing (never a new Lead, never a provider call). A brand-new contact
+    // is already the C8 intake's business (its welcome / speed-to-lead baton), so only the merged case re-enters here.
+    if (intake.action === "merged") {
+      const { reassessExistingContact } = await import("@/lib/intent/movement-signals")
+      const reassessed = await reassessExistingContact(supabase as never, {
+        brokerageId: resolvedBrokerageId,
+        contactId,
+        change: { kind: "valuation_request", referenceId: String((valuationRequest as { id: string }).id), summary: "asked what their home is worth on the home-value tool", at: new Date().toISOString() },
+        capturedBy: "person",
+      }).catch((e: unknown) => ({ status: "refused" as const, reason: e instanceof Error ? e.message : String(e) }))
+      if (reassessed.status === "refused") console.error(`[home-value] existing-contact reassessment refused: ${reassessed.reason}`)
+    }
+
     // ── Kernel OS seller intake chain ────────────────────────────────────────
     // Home value form submitters have given explicit TCPA consent and are
     // created as contacts directly above. No raw_scraped_leads row is needed —
