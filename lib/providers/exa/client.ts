@@ -108,3 +108,137 @@ export async function neuralSearch(apiKey: string, params: NeuralSearchParams): 
     return mapError(err)
   }
 }
+
+// ── WAVE 151 (lane 151D) — THE HUNTING SURFACE OF THE SAME ADAPTER ───────────
+// Owner correction (2026-11-09, verbatim): "exa is to find people when it is a scraper or
+// hunting." Exa's real API surface beyond `/search` text: STRUCTURED EXTRACTION (a JSON schema on
+// the summary — the page's facts come back as fields, not prose), SEARCH MONITORS (`/monitors`: a
+// scheduled search whose NEW results are PUSHED to a signed webhook — monitored deltas instead of a
+// repeated search), and their RUNS. All three ride the ONE SDK client above; every call maps a thrown
+// SDK error to ok:false and never throws. Research (`/research`) and Websets are deliberately NOT
+// wrapped here: no play consumes them yet (an export nothing calls is an orphan — CLAUDE.md §1).
+// The API key is the CALLER's (lib/providers/exa/hunting.ts productionExaHuntClient reads
+// EXA_API_KEY by NAME and hands null when absent — WAITING_EXTERNAL, never a fabricated result).
+
+export interface StructuredSearchParams {
+  query: string
+  numResults?: number
+  startPublishedDate?: string
+  includeDomains?: string[]
+  excludeDomains?: string[]
+  /** Exa's content category ("news", "company", "tweet", …) — narrows the corpus, not the territory. */
+  category?: string
+  /** A JSON schema for Exa's structured summary — the page's facts as fields. null = plain summary. */
+  schema?: Record<string, unknown> | null
+  /** Page-text cap per result. The hunting path keeps an EXCERPT only (no reuse license is assumed). */
+  maxCharacters?: number
+}
+
+export interface StructuredSearchData {
+  results: Array<Record<string, unknown>>
+  costDollarsTotal: number | null
+}
+
+/** `POST /search` (type: "auto") with highlights and a SCHEMA-SHAPED summary — Exa's structured extraction. */
+export async function structuredSearch(apiKey: string, params: StructuredSearchParams): Promise<AdapterResult<StructuredSearchData>> {
+  try {
+    const res = await client(apiKey).search(params.query, {
+      type: "auto",
+      numResults: params.numResults ?? 10,
+      ...(params.startPublishedDate ? { startPublishedDate: params.startPublishedDate } : {}),
+      ...(params.includeDomains?.length ? { includeDomains: params.includeDomains } : {}),
+      ...(params.excludeDomains?.length ? { excludeDomains: params.excludeDomains } : {}),
+      ...(params.category ? { category: params.category } : {}),
+      contents: {
+        text: { maxCharacters: params.maxCharacters ?? 2000 },
+        highlights: { numSentences: 3 },
+        summary: params.schema ? { schema: params.schema } : true,
+      },
+    } as any)
+    return {
+      ok: true,
+      status: 200,
+      data: { results: res.results as unknown as Array<Record<string, unknown>>, costDollarsTotal: (res as { costDollars?: { total?: number } }).costDollars?.total ?? null },
+      error: null,
+    }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+export interface CreateSearchMonitorInput {
+  name: string
+  query: string
+  numResults?: number
+  includeDomains?: string[]
+  excludeDomains?: string[]
+  /** Exa interval period — "1h" | "6h" | "1d" | "7d" (minimum 1h; the play chooses by freshness, never by outreach). */
+  period: string
+  outputSchema?: Record<string, unknown> | null
+  /** Echoed back on every delivery — NEVER trusted for tenancy (the provider_monitors row decides). */
+  metadata?: Record<string, string>
+  webhookUrl: string
+}
+
+export interface CreatedSearchMonitor {
+  monitorId: string
+  /** Returned ONCE by Exa at creation — the caller seals it (lib/security/secret-crypto.ts) and never logs it. */
+  webhookSecret: string
+  status: string
+  nextRunAt: string | null
+}
+
+/** `POST /monitors` — a scheduled search whose new results are pushed to our signed webhook (monitor.run.completed). */
+export async function createSearchMonitor(apiKey: string, input: CreateSearchMonitorInput): Promise<AdapterResult<CreatedSearchMonitor>> {
+  try {
+    const res = await client(apiKey).monitors.create({
+      name: input.name,
+      search: {
+        query: input.query,
+        numResults: input.numResults ?? 10,
+        ...(input.includeDomains?.length ? { includeDomains: input.includeDomains } : {}),
+        ...(input.excludeDomains?.length ? { excludeDomains: input.excludeDomains } : {}),
+        contents: { text: { maxCharacters: 2000 }, highlights: { numSentences: 3 } } as any,
+      },
+      trigger: { type: "interval", period: input.period },
+      ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+      webhook: { url: input.webhookUrl, events: ["monitor.run.completed"] },
+    })
+    return {
+      ok: true,
+      status: 200,
+      data: { monitorId: res.id, webhookSecret: res.webhookSecret, status: res.status, nextRunAt: res.nextRunAt ?? null },
+      error: null,
+    }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+export interface SearchMonitorRunData {
+  status: string
+  results: Array<Record<string, unknown>>
+  content: unknown
+  completedAt: string | null
+}
+
+/** `GET /monitors/{id}/runs/{runId}` — the run a delivery names, read back from Exa (the payload's ids are never trusted alone). */
+export async function getSearchMonitorRun(apiKey: string, monitorId: string, runId: string): Promise<AdapterResult<SearchMonitorRunData>> {
+  try {
+    const run = await client(apiKey).monitors.runs.get(monitorId, runId)
+    return {
+      ok: true,
+      status: 200,
+      data: {
+        status: run.status,
+        results: ((run.output?.results ?? []) as Array<Record<string, unknown>>),
+        content: run.output?.content ?? null,
+        completedAt: run.completedAt ?? null,
+      },
+      error: null,
+    }
+  } catch (err) {
+    return mapError(err)
+  }
+}

@@ -45,6 +45,11 @@ export const RAW_PROCESSING_STATUSES = [
   "insufficient_identity",
   "insufficient_identity_for_promotion",
   "unassigned_no_market",
+  // Wave 151 (lane 151C — owner: "you don't want to bring in old and stale data"): the observation is HELD by its
+  // freshness policy (lib/lead-pipeline/freshness.ts — stale, contradicted, TTL lapsed, or property history read as
+  // intent) BEFORE any enrichment spend. Not a rejection of the data — it stays at its evidence level — and never a
+  // purchase. error_message carries the policy's reason. m967 widens the CHECK.
+  "held_stale",
   // ── terminal ──
   "promoted",
   "error",
@@ -65,6 +70,7 @@ export const REJECTION_STATUSES = [
   "insufficient_identity",
   "insufficient_identity_for_promotion",
   "unassigned_no_market",
+  "held_stale",
 ] as const satisfies readonly RawProcessingStatus[]
 
 export type RejectionStatus = (typeof REJECTION_STATUSES)[number]

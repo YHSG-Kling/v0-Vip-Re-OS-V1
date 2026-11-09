@@ -36,7 +36,8 @@
  */
 import type { BatchDataRecord, FetchMotivatedSellersOptions } from "@/lib/external/batchdata-client"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
-import { paidPullApproval, type StoredPlanRow } from "@/lib/lead-pipeline/source-discovery-planner"
+import { paidPullApproval, type StoredPlanRow, type PlatformProviderDoor } from "@/lib/lead-pipeline/source-discovery-planner"
+import { providerTenancy } from "@/lib/providers/tenancy-matrix"
 import { decideSpendBackpressure } from "@/lib/vendor-governance/budget-eval"
 import { splitPullCost } from "@/lib/vendor-governance/budget-eval"
 
@@ -55,6 +56,77 @@ export interface PoolTerritory {
 }
 
 export type PoolGeoKind = "zip" | "county" | "city"
+
+// ─── THE PLATFORM PROVIDER DOOR FACTS (wave 151, lane 151C) ──────────────────────────────────────────────────────────
+//
+// The IF / THEN source door (source-discovery-planner.ts resolveSourceDoor) is PURE: it never reads an environment value.
+// This is the ONE place the platform's own connection facts are established for the acquisition lanes — a presence check
+// BY NAME (never a value, never logged), the activation state the route table records (lib/ai-isa/property-lookup-rail.ts
+// PROVIDER_ACTIVATION, R9), and the territory's monthly budget. The cron and the pooled lane both read it here.
+
+/** The monthly scrape budget a territory runs on when its row names none — the SAME number the cron's STEP 3 gate and its
+ *  pooled `live` filter apply as the literal `monthly_budget_usd ?? 100` (scripts/one-pull-guard.ts:241 pins that literal;
+ *  scripts/acquisition-door-guard.ts holds this constant equal to it). */
+const DEFAULT_TERRITORY_MONTHLY_BUDGET_USD = 100
+
+/**
+ * The credential NAMES each acquisition vendor's transport reads. The scraper fleet shares one tenancy row
+ * (lib/providers/tenancy-matrix.ts "scrapers" — Apify / ZenRows / Zyte), so the per-vendor split is stated here and the
+ * proof holds every name ⊆ that row's envVars; the others read their own tenancy rows. Names only — never values.
+ */
+const SCRAPER_FLEET_CREDENTIALS: Readonly<Record<"apify" | "zenrows" | "zyte", readonly string[]>> = Object.freeze({
+  apify: ["APIFY_API_TOKEN"], zenrows: ["ZENROWS_API_KEY"], zyte: ["ZYTE_API_KEY"],
+})
+
+/** PURE — the env NAMES the platform's connection for `vendor` is configured by (the one registry: tenancy-matrix).
+ *  @proofSeam scripts/acquisition-door-guard.ts holds every scraper name ⊆ the tenancy row; the product reader is
+ *  platformProviderDoorFacts below. */
+export function platformCredentialNames(vendor: string): readonly string[] {
+  const v = vendor.trim().toLowerCase()
+  if (v in SCRAPER_FLEET_CREDENTIALS) return SCRAPER_FLEET_CREDENTIALS[v as keyof typeof SCRAPER_FLEET_CREDENTIALS]
+  return providerTenancy(v)?.envVars ?? []
+}
+
+/**
+ * The platform's connection facts for ONE acquisition vendor — configured by NAME presence, activation from the route
+ * table (dynamic import: the rail is heavy and this module is reached by the vendor clients), budget left for the caller
+ * to attach per territory (withTerritoryBudget). `env` is injectable so the proof never touches the real environment.
+ */
+export async function platformProviderDoorFacts(
+  vendor: string,
+  opts: { env?: Record<string, string | undefined>; activation?: Partial<Record<string, { state: PlatformProviderDoor["activation"]; survivorDoors?: PlatformProviderDoor["survivorDoors"] }>> } = {},
+): Promise<PlatformProviderDoor> {
+  const v = vendor.trim().toLowerCase()
+  const names = platformCredentialNames(v)
+  const env = opts.env ?? process.env
+  const configured = names.length > 0 && names.some((n) => typeof env[n] === "string" && env[n]!.trim().length > 0)
+  let activation: PlatformProviderDoor["activation"] = "unknown"
+  let survivorDoors: PlatformProviderDoor["survivorDoors"] = null
+  const stated = opts.activation?.[v]
+  if (stated) { activation = stated.state; survivorDoors = stated.survivorDoors ?? null }
+  else {
+    try {
+      const rail = await import("@/lib/ai-isa/property-lookup-rail")
+      const a = (rail.PROVIDER_ACTIVATION as Record<string, { state: PlatformProviderDoor["activation"]; survivorDoors?: PlatformProviderDoor["survivorDoors"] }>)[v]
+      if (a) { activation = a.state; survivorDoors = a.survivorDoors ?? null }
+    } catch { /* the rail could not load — activation stays unknown; the door still needs a named credential and a budget */ }
+    if (activation === "unknown") {
+      // Not in PROVIDER_ACTIVATION: the platform-metered research / scraper lanes (tenancy-matrix) are live platform lanes.
+      const tenancy = providerTenancy(v in SCRAPER_FLEET_CREDENTIALS ? "scrapers" : v)
+      if (tenancy?.models.includes("platform_metered")) activation = v in SCRAPER_FLEET_CREDENTIALS ? "scraper_fleet" : "active"
+    }
+  }
+  return { vendor: v, configured, credentialNames: names, activation, survivorDoors, monthlyBudgetUsd: null, remainingBudgetUsd: null }
+}
+
+/** PURE — the door facts with THIS territory's monthly budget attached (the cron's STEP 3 default when the row names none). */
+export function withTerritoryBudget(door: PlatformProviderDoor | null, territory: Pick<PoolTerritory, "monthly_budget_usd" | "spend_this_month"> | null): PlatformProviderDoor | null {
+  if (!door) return null
+  if (!territory) return { ...door, monthlyBudgetUsd: null, remainingBudgetUsd: null }
+  const monthly = typeof territory.monthly_budget_usd === "number" ? territory.monthly_budget_usd : DEFAULT_TERRITORY_MONTHLY_BUDGET_USD
+  const remaining = Math.round((monthly - (territory.spend_this_month ?? 0)) * 100) / 100
+  return { ...door, monthlyBudgetUsd: monthly, remainingBudgetUsd: remaining }
+}
 
 /** One limit-sized pooled request: one state, one geography kind, ≤maxValues values. */
 export interface PooledGeoChunk {
@@ -241,8 +313,11 @@ export interface PooledBatchDataDeps {
    * want BEFORE any request is issued: may this tenant's share of a `lane` pull be bought? Production answers from the
    * tenant's APPROVED acquisition plans (source-discovery-planner.ts paidPullApproval over acquisition_plans, m962); an
    * unreadable store refuses every want. REQUIRED — a deps object without it does not type-check, so no caller forgets it.
+   * Wave 151 (lane 151C): the lane also hands the TERRITORY, so production can open the IF / THEN door with the territory's
+   * monthly budget as the ceiling (approved plan OR a configured, licensed platform provider within budget — never an
+   * unconfigured one). A fixture that ignores the third argument is unchanged.
    */
-  approval: (brokerageId: string | null, lane: string) => { allowed: true; maxSpendUsd?: number | null; approvedAt?: string | null } | { allowed: false; reason: string }
+  approval: (brokerageId: string | null, lane: string, territory?: PoolTerritory) => { allowed: true; maxSpendUsd?: number | null; approvedAt?: string | null } | { allowed: false; reason: string }
   /**
    * SPEND BACKPRESSURE (wave 150, lane 150HIAB — directive 150AB). When the approval carries its ceiling
    * (`maxSpendUsd`, a number or null) AND `unitUsd` is set, every approved want is sized in DOLLARS by
@@ -252,6 +327,10 @@ export interface PooledBatchDataDeps {
    */
   unitUsd?: number
   spentSinceApproval?: (brokerageId: string, lane: string, sinceIso: string | null) => number | null
+  /** Wave 151 (lane 151F, wired by the integrator): the owner's PLATFORM acquisition cap remaining this cycle for a platform-paid
+   *  want (lib/vendor-governance/platform-acquisition-caps.ts platformCapRemainingFor, read ONCE per cycle). undefined = not supplied
+   *  (a tenant-owned connection's call, the legacy fixtures) → not consulted; null = caps not configured → stop before spend. */
+  platformCapRemainingUsd?: (brokerageId: string | null) => number | null | undefined
   providerFailing?: boolean
   /** The same-cycle escalation to a manager (production: publishManagerSignal → finance_manager). Never throws. */
   escalate?: (e: { brokerageId: string; territoryId: string; lane: string; action: string; reason: string }) => Promise<void> | void
@@ -284,8 +363,16 @@ export async function productionPooledBatchDataDeps(): Promise<PooledBatchDataDe
     spendRows = spendErr ? null : ((rows ?? []) as typeof spendRows)
   }
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+  // Wave 151 (lane 151C): the platform's own BatchData connection facts, established ONCE per cycle by NAME — the door's
+  // ELSE-IF when no plan line names the lane (R9: a dormant survivor's live doors stay open until the owner closes them).
+  const platformDoor = await platformProviderDoorFacts("batchdata")
+  // Wave 151 (lane 151F): the owner's platform acquisition caps, read ONCE per cycle (platform-level; the per-tenant cap is
+  // judged by the same module when a tenant id is known). null = not configured → the backpressure stops before spend.
+  const { platformCapRemainingFor } = await import("@/lib/vendor-governance/platform-acquisition-caps")
+  const platformCap = await platformCapRemainingFor(createServiceClient() as never, null, new Date()).catch((e: unknown) => { console.error("[pooled-pull] platform acquisition caps unreadable — platform-paid wants stop before spend:", e instanceof Error ? e.message : String(e)); return { remainingUsd: null } })
   return {
-    approval: (brokerageId, lane) => paidPullApproval(plans, { brokerageId, source: lane }),
+    approval: (brokerageId, lane, territory) => paidPullApproval(plans, { brokerageId, source: lane }, new Date(), { platform: withTerritoryBudget(platformDoor, territory ?? null) }),
+    platformCapRemainingUsd: () => platformCap.remainingUsd,
     unitUsd: bd.BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD,
     spentSinceApproval: (brokerageId, lane, sinceIso) => spendRows === null ? null
       : Math.round(spendRows.filter((r) => r.brokerage_id === brokerageId && r.usage_type === lane && (!sinceIso || r.created_at >= sinceIso))
@@ -329,7 +416,7 @@ export async function runPooledBatchDataLane(
   // Records each territory may fund PER TRIGGER after the dollar check (absent = the record cap alone).
   const dollarCap = new Map<string, number>()
   for (const w of allWants) {
-    const verdict = deps.approval(w.territory.brokerage_id, lane)
+    const verdict = deps.approval(w.territory.brokerage_id, lane, w.territory)
     if (!verdict.allowed) {
       unapproved++
       errors.push(`${lane}: territory ${w.territory.id} not pulled — ${verdict.reason}`)
@@ -346,6 +433,7 @@ export async function runPooledBatchDataLane(
         approvedMaxUsd: verdict.maxSpendUsd,
         approvedSpentUsd: deps.spentSinceApproval ? deps.spentSinceApproval(t.brokerage_id as string, lane, verdict.approvedAt ?? null) : null,
         territoryRemainingUsd: typeof t.monthly_budget_usd === "number" ? t.monthly_budget_usd - (t.spend_this_month ?? 0) : null,
+        platformCapRemainingUsd: deps.platformCapRemainingUsd ? deps.platformCapRemainingUsd((t.brokerage_id as string | null) ?? null) : undefined,
         providerFailing: deps.providerFailing === true,
       })
       if (bp.escalate) {

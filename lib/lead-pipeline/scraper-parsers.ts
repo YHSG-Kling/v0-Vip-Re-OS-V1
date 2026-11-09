@@ -234,6 +234,23 @@ export function parseCraigslistHtml(html: string): NormalizedScrapedRecord[] {
  * Normalize a raw BatchData motivated-seller record into the canonical shape.
  * The motivationScore is clamped to [0, 100].
  */
+/**
+ * Wave 151 (lane 151F finding, lane 151C file): BatchData's Property Lookup shape carries `address` as an OBJECT
+ * ({ street, city, state, zip }); the record normalizer used to hand that object through as a string, and the identity
+ * normalizer threw on it — one bad record then zeroed the whole batch. A string stays a string; an object is formatted;
+ * anything else is unknown (null), never invented.
+ */
+export function formatProviderAddress(a: unknown): string | null {
+  if (typeof a === "string") return a.trim() || null
+  if (a && typeof a === "object") {
+    const o = a as Record<string, unknown>
+    const pick = (...keys: string[]) => { for (const k of keys) { const v = o[k]; if (typeof v === "string" && v.trim()) return v.trim(); if (typeof v === "number") return String(v) } return "" }
+    const parts = [pick("street", "line1", "address", "streetAddress"), pick("city"), pick("state"), pick("zip", "zipCode", "postal_code", "postalCode")].filter(Boolean)
+    return parts.length ? parts.join(", ") : null
+  }
+  return null
+}
+
 export function normalizeBatchDataRecord(
   record: Record<string, unknown>,
   market: MarketGeo,
@@ -288,7 +305,7 @@ export function normalizeBatchDataRecord(
     city:            (record.city   as string | null | undefined) ?? market.city,
     state:           (record.state  as string | null | undefined) ?? market.state,
     zip:             (record.zip    as string | null | undefined) ?? null,
-    mailingAddress:  (record.address as string | null | undefined) ?? null,
+    mailingAddress:  formatProviderAddress(record.address),
     propertyAddress: (record.propertyAddress ?? record.property_address) as string | null | undefined ?? null,
     motivationScore: score,
     // Lane 89B — the provider sold the person with the record (BatchData `contact` dataset); the raw

@@ -1263,6 +1263,18 @@ export const DEFAULT_MARKET_SOURCES: readonly SourceKey[] = ['batchdata_motivate
  * verbatim. This is the single bridge between DB `enabled_sources` config and the
  * cron gate, eliminating the short-name/canonical-key drift.
  */
+/**
+ * Wave 151 (lane 151C) — the REVERSE of GATE_TOKEN: the SourceKeys a cron gate token stands for ("zillow_behavior" →
+ * the three ZenRows property sources). The source-door contract (source-discovery-planner.ts resolveSourceDoor) judges a
+ * configured token by its sources' vendor contract; a pass-through token with no SourceKey (e.g. "recruiting_intent")
+ * returns [] and is reported as unresolved, never guessed paid or free.
+ */
+export function sourceKeysForGateToken(token: string): SourceKey[] {
+  const t = (token ?? "").trim()
+  if (!t) return []
+  return (Object.keys(GATE_TOKEN) as SourceKey[]).filter((k) => GATE_TOKEN[k] === t)
+}
+
 export function expandEnabledSources(raw: readonly string[] | null | undefined): Set<string> {
   const out = new Set<string>()
   for (const v of raw ?? []) {

@@ -125,21 +125,15 @@ export interface SpendBackpressureInput {
  * its CONFIGURED floor — never a probability that a person will sell or close. paidPullApproval consumes it
  * (source-discovery-planner.ts): a want the planner judges not worthwhile is refused at the approval gate, with the reasons.
  */
-export interface PrePullValueVerdict {
-  /** 0..1, bounded — a planning signal, not a probability of an outcome. */
-  value: number
-  worthwhile: boolean
-  reasons: readonly string[]
-  /** Set when the planner HOLDS the pull pending configuration (an unknown price or license). */
-  holdReason?: string | null
-}
+export type { PrePullValueVerdict } from "@/lib/lead-pipeline/pre-pull-value"
 
-/** PURE — why a paid want is refused on its pre-pull value, or null when it may proceed to the approval check. */
-export function prePullRefusal(v: PrePullValueVerdict | null | undefined): string | null {
+/** PURE — why a paid want is refused on its pre-pull value (lane 151C's verdict: proceed / preview_first / hold / refuse), or null
+ *  when it may proceed to the approval check. `preview_first` passes this gate — the planner's own line status asks for the count. */
+export function prePullRefusal(v: import("@/lib/lead-pipeline/pre-pull-value").PrePullValueVerdict | null | undefined): string | null {
   if (!v) return null
-  if (v.holdReason) return `pre-pull value: held — ${v.holdReason}`
-  if (!Number.isFinite(v.value) || v.value < 0 || v.value > 1) return `pre-pull value: out of bounds (${String(v.value)}) — a bounded 0..1 signal is required`
-  if (!v.worthwhile) return `pre-pull value ${v.value.toFixed(2)}: not worthwhile — ${v.reasons.join("; ") || "no reason given"}`
+  if (!Number.isFinite(v.score) || v.score < 0 || v.score > 1) return `pre-pull value: out of bounds (${String(v.score)}) — a bounded 0..1 signal is required`
+  if (v.decision === "hold") return `pre-pull value ${v.score.toFixed(2)}: held — ${v.reasons.join("; ") || "pending configuration (an unknown price or license)"}`
+  if (v.decision === "refuse") return `pre-pull value ${v.score.toFixed(2)}: not worthwhile — ${v.reasons.join("; ") || "no reason given"}`
   return null
 }
 

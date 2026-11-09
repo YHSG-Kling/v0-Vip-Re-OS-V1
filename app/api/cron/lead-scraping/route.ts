@@ -77,11 +77,19 @@ import {
   isViableRecord,
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { buildTerritoryPhrases, expandEnabledSources, DEFAULT_MARKET_SOURCES, resolveSourceKey, SOURCE_VENDOR } from "@/lib/lead-pipeline/source-intent-map"
-import { paidPullApproval, type StoredPlanRow } from "@/lib/lead-pipeline/source-discovery-planner"
+import { buildTerritoryPhrases, expandEnabledSources, DEFAULT_MARKET_SOURCES, resolveSourceKey, SOURCE_VENDOR, SOURCE_MAP, sourceKeysForGateToken } from "@/lib/lead-pipeline/source-intent-map"
+// Wave 151 (lane 151C): THE ONE source door — IF / THEN over approved plan → platform provider → tenant provider → public
+// source → a real unavailable (lib/lead-pipeline/source-discovery-planner.ts); its platform facts come from pooled-pull.ts.
+import { resolveSourceDoor, type StoredPlanRow, type PlatformProviderDoor, type SourceDoor } from "@/lib/lead-pipeline/source-discovery-planner"
+import { platformProviderDoorFacts, withTerritoryBudget } from "@/lib/lead-pipeline/pooled-pull"
 
-/** The record-priced pooled lanes — gated (approval + dollar backpressure) in lib/lead-pipeline/pooled-pull.ts, not here. */
+/** The record-priced pooled lanes — gated (door + dollar backpressure) in lib/lead-pipeline/pooled-pull.ts, not here. */
 const POOLED_PAID_LANES: ReadonlySet<string> = new Set(["batchdata_motivated", "batchdata_cash_buyer", "expired_listing"])
+/** Configured tokens that ALIAS a pooled lane's key but run a PER-TERRITORY pull of their own (lib/kernel/listings-batchdata-feed.ts
+ *  runIncrementalPropertySearchForMarket) — they ask the door here on their lane's line; the wave-150 gate skipped them. */
+const PER_TERRITORY_ALIASES_OF_POOLED_LANES: ReadonlySet<string> = new Set(["batchdata_incremental"])
+/** The acquisition vendors whose platform connection facts the door reads (one lookup per cycle, by NAME — never a value). */
+const PLATFORM_ACQUISITION_VENDORS = ["batchdata", "apify", "zenrows", "zyte", "exa", "tavily"] as const
 // Lane 82B — every scrape's spend books PER SOURCE on the platform ledger through the ONE
 // source→vendor contract (source-intent-map.ts::SOURCE_VENDOR via source-cost-ledger.ts), which
 // itself rides meterVendorSpend. The composite "apify_social" row is gone (see the social block).
@@ -180,9 +188,16 @@ export async function GET(request: Request) {
 
   const results = {
     markets_processed: 0,
+    // Stage contract (wave 151, lane 151C): these two count RAW records (a Raw Lead at most), never Leads — only
+    // `leads_promoted` below counts Leads (the promotion gate's output). The names are a slip kept for the proof that pins
+    // them (scripts/one-pull-guard.ts:305); the rename is recorded in lane 151C's notes, Outside-lane.
     total_leads_found: 0,
     total_leads_created: 0,
     leads_promoted: 0,
+    // Wave 151 (lane 151C): which DOOR each configured per-territory source went through this cycle (resolveSourceDoor) —
+    // `unavailable` is a REAL provider-unavailable result (named per token in `errors`); `unresolved_vendor` is a pass-through
+    // token no vendor contract names (runs as before, never guessed paid or free).
+    source_doors: { first_party: 0, approved_plan: 0, platform_provider: 0, tenant_provider: 0, public_source: 0, unavailable: 0, unresolved_vendor: 0 } as Record<SourceDoor | "unresolved_vendor", number>,
     recruits_sourced: 0,
     recruits_promoted: 0,
     errors: [] as string[],
@@ -310,6 +325,11 @@ export async function GET(request: Request) {
     const { data: planRows, error: planErr } = await supabase.from("acquisition_plans").select("id, brokerage_id, status, valid_until, lines").eq("status", "approved")
     if (planErr) results.errors.push(`acquisition_plans read refused — every per-territory paid source is refused this cycle: ${planErr.message}`)
     const approvedAcquisitionPlans: StoredPlanRow[] | null = planErr ? null : ((planRows ?? []) as StoredPlanRow[])
+    // Wave 151 (lane 151C): the platform's own connection facts per acquisition vendor, ONCE per cycle — a presence check
+    // by env NAME (never a value) + the route table's activation state; the territory's budget is attached per market below.
+    const cycleNow = new Date()
+    const platformDoors = new Map<string, PlatformProviderDoor>()
+    for (const vendor of PLATFORM_ACQUISITION_VENDORS) platformDoors.set(vendor, await platformProviderDoorFacts(vendor))
 
     for (const market of markets) {
       results.markets_processed++
@@ -318,24 +338,38 @@ export async function GET(request: Request) {
       // STEP 4 — Resolve the set of enabled sources for this territory. Expanded
       // through GATE_TOKEN so the gate matches whether the DB stored short names
       // ("facebook"), canonical keys ("facebook_group"), or aliases ("zillow").
-      // THE PAID-CALL APPROVAL GATE (wave 150, lane 150Z — lane 150EFG Outside-lane 2 / Still open 2, owner rule 7
-      // "never a paid call without approval"): a per-territory PAID source (Apify / Exa / ZenRows / Tavily / Zyte /
-      // BatchData outside the pooled lanes) runs only under the tenant's APPROVED, unexpired acquisition plan line for
-      // that source — THE ONE gate, lib/lead-pipeline/source-discovery-planner.ts paidPullApproval, over the plans read
-      // once per cycle above (a refused read refuses every paid source: fail closed). First-party (`internal`) and
-      // public OSINT lanes spend nothing and are never gated; the three pooled lanes are gated (with dollar backpressure)
-      // inside pooled-pull.ts runPooledBatchDataLane. A refused source is named in results.errors, never silently dropped.
+      // THE SOURCE DOOR — IF / THEN (wave 151, lane 151C; owner: "if a provider is hooked up from platform, the provider
+      // will pull in raw leads from scrapers and/or a list provider and you set it up way too strict which could possibly
+      // block providers completely"). The wave-150 gate (lane 150Z; OWNER-SQL §L L6.7) refused EVERY per-territory paid
+      // source without an approved plan line — a configured, licensed platform provider included. Each configured token
+      // now asks THE ONE door (lib/lead-pipeline/source-discovery-planner.ts resolveSourceDoor) in the owner's order:
+      // approved plan line → platform-connected provider (credential present BY NAME, licensed, within the territory's
+      // monthly budget) → tenant-owned connection (none is connectable today — the door says so) → keyless public source →
+      // a REAL provider-unavailable result, named per token in results.errors (never silently dropped). First-party lanes
+      // spend nothing. The three record-priced pooled lanes are gated (door + dollar backpressure) inside pooled-pull.ts;
+      // an ALIAS of one that runs its own per-territory pull (batchdata_incremental) asks its lane's door here. A
+      // pass-through token no vendor contract names (recruiting_intent) is counted `unresolved_vendor` and runs as before.
       const configuredSources: readonly string[] = market.enabled_sources ?? [...DEFAULT_MARKET_SOURCES]
-      const unapprovedPaid = configuredSources.filter((v) => {
-        const key = resolveSourceKey(v)
-        const vendor = (SOURCE_VENDOR as Record<string, string>)[key]
-        if (!vendor || vendor === "internal" || vendor === "osint" || POOLED_PAID_LANES.has(key)) return false
-        return !paidPullApproval(approvedAcquisitionPlans, { brokerageId: market.brokerage_id ?? null, source: key }).allowed
-      })
-      if (unapprovedPaid.length > 0) {
-        results.errors.push(`${market.name}: paid source(s) ${unapprovedPaid.join(", ")} not run — ${approvedAcquisitionPlans === null ? "the acquisition-plan store could not be read" : "no approved, unexpired acquisition plan approves them for this tenant"} (Settings → Territories → Acquisition plan)`)
+      const closedTokens: string[] = []
+      const doorTrail: string[] = []
+      for (const token of configuredSources) {
+        const key = resolveSourceKey(token)
+        if (POOLED_PAID_LANES.has(token) || (POOLED_PAID_LANES.has(key) && !PER_TERRITORY_ALIASES_OF_POOLED_LANES.has(token))) continue
+        const keysForToken = key in SOURCE_MAP ? [key] : sourceKeysForGateToken(token)
+        if (keysForToken.length === 0) { results.source_doors.unresolved_vendor++; continue }
+        const verdicts = keysForToken.map((k) => resolveSourceDoor({
+          source: k, brokerageId: market.brokerage_id ?? null, plans: approvedAcquisitionPlans,
+          platform: withTerritoryBudget(platformDoors.get((SOURCE_VENDOR as Record<string, string>)[k] ?? "") ?? null, market),
+          tenant: null, now: cycleNow,
+        }))
+        const verdict = verdicts.find((v) => v.allowed) ?? verdicts[0]
+        results.source_doors[verdict.door]++
+        if (!verdict.allowed) { closedTokens.push(token); doorTrail.push(`${token}: ${verdict.reason}`) }
       }
-      const enabledSources = expandEnabledSources(configuredSources.filter((v) => !unapprovedPaid.includes(v)))
+      if (closedTokens.length > 0) {
+        results.errors.push(`${market.name}: source(s) not run — ${doorTrail.join(" · ")} (approve a plan line in Settings → Territories → Acquisition plan, or connect the provider at the platform)`)
+      }
+      const enabledSources = expandEnabledSources(configuredSources.filter((v) => !closedTokens.includes(v)))
 
       // ── FREE RUNGS FIRST (wave 82 lane A) ───────────────────────────────────
       // Owner verbatim (wave 82): "osint is supposed to be a free provider for intent behavior
@@ -1982,6 +2016,8 @@ async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted:
     executionId:   params.executionId ?? null,
     batchCostUsd:  params.batchCostUsd ?? null,
     marketGeo:     params.marketGeo ?? null,
+    // C35 (lane 150EFG Outside-lane 2): the cron names its own door explicitly (the producer's default is 'cron' too).
+    actor:         { type: "cron" },
   })
 
   return { inserted: res.inserted, rawIds: res.rawIds }

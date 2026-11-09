@@ -399,6 +399,7 @@ add("propdata", "config", [
 // ── Research / scraping ────────────────────────────────────────────────────
 add("research", "secret", [
   ["EXA_API_KEY", "Exa search/research key."],
+  ["EXA_WEBHOOK_SECRET", "Exa Search Monitor webhook signing secret — app/api/webhooks/exa verifies every delta delivery's signature with it before resolving (provider, monitor id) to a tenant (lane 151D). OPTIONAL: absent, monitors are not created and the route refuses deliveries by name."],
   ["TAVILY_API_KEY", "Tavily search key."],
   ["NEWSAPI_AI_KEY", "NewsAPI.ai key."],
   ["APIFY_API_TOKEN", "Apify token (the survivor spelling, lib/env/aliases.ts apifyToken)."],

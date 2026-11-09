@@ -36,6 +36,8 @@ import {
   type RawDataEnvelope,
 } from '@/lib/lead-pipeline/raw-record-types'
 import { ownerNameKind, subjectIdentityKeys, verifyOwnership } from '@/lib/identity/subject-identity'
+// Wave 151 (lane 151C): the freshness policy per signal type — judged at intake on the envelope's own dates.
+import { evaluateFreshness, type FreshnessAssessment } from '@/lib/lead-pipeline/freshness'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // ─── INPUT / OUTPUT CONTRACTS ────────────────────────────────────────────────
@@ -148,6 +150,20 @@ export interface IngestBatchResult {
   /** C35: rows written while m961's envelope columns were absent (the envelope rode normalized_preview.rawdata
    *  only, and only the legacy (source, source_record_id) UNIQUE could catch a replay). 0 once m961 is applied. */
   envelope_columns_absent: number
+  /** Wave 151 (lane 151C): property / place HISTORY (an old deed, an old permit) written as EVIDENCE under
+   *  processing_status 'held_stale' + freshness_verdict 'history' — never enriched or promoted on this signal. Counted
+   *  inside `inserted` too (a row exists). */
+  held_history: number
+  /** Wave 151: WHY the stale ones were not written, per rule — `source_window` (the wave-91 per-source window) or the
+   *  freshness policy's signal class (lib/lead-pipeline/freshness.ts) — so "the gate cut N" says which rule cut them. */
+  skipped_stale_reasons: Record<string, number>
+  /** Wave 151: replays that RE-VERIFIED a held observation (last_verified_at bumped — m967). */
+  reverified: number
+  /** Wave 151: rows written while m967's freshness columns were absent (the verdict rode evidence.freshness only). */
+  freshness_columns_absent: number
+  /** Wave 151: history rows written as 'pending' because m967's processing_status CHECK is not applied yet (the
+   *  pipeline's freshness gate holds them before any spend). */
+  held_status_absent: number
   rawIds: string[]
 }
 
@@ -172,6 +188,15 @@ function isEnvelopeColumnAbsent(err: { code?: string; message?: string } | null 
   if (!err) return false
   if (err.code !== 'PGRST204' && err.code !== '42703') return false
   return RAWDATA_ENVELOPE_COLUMNS.some((c) => (err.message ?? '').includes(c))
+}
+
+/** The m967 freshness columns (wave 151, lane 151C) — a refusal naming one means m967 is not applied yet. */
+const RAWDATA_FRESHNESS_COLUMNS = ['freshness_verdict', 'last_verified_at'] as const
+
+function isFreshnessColumnAbsent(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false
+  if (err.code !== 'PGRST204' && err.code !== '42703') return false
+  return RAWDATA_FRESHNESS_COLUMNS.some((c) => (err.message ?? '').includes(c))
 }
 
 export interface NormalizeRawRecordParams {
@@ -592,10 +617,19 @@ export async function ingestRawSourceBatch(
     skipped_rights: 0,
     replayed: 0,
     envelope_columns_absent: 0,
+    held_history: 0,
+    skipped_stale_reasons: {},
+    reverified: 0,
+    freshness_columns_absent: 0,
+    held_status_absent: 0,
     rawIds: [],
   }
   // m961 not applied yet → the envelope rides normalized_preview.rawdata only (counted, said once).
   let envelopeColumnsLive = true
+  // m967 not applied yet → the freshness verdict / verification anchor ride evidence.freshness only; a history hold is
+  // written 'pending' and the pipeline's freshness gate holds it (both counted, said once).
+  let freshnessColumnsLive = true
+  let heldStatusLive = true
 
   // PLATFORM ('platform') = scheduled, territory-driven, brokerage_id NULL until Engine 1 /
   // the promotion gate resolves an owner. BROKERAGE ('brokerage') = an explicit brokerageId
@@ -686,7 +720,47 @@ export async function ingestRawSourceBatch(
       const recencyDays = params.recencyDays !== undefined ? params.recencyDays : recencyWindowForSource(record.source)
       if (!isWithinRecencyWindow(record, recencyDays)) {
         result.skipped_stale++
+        result.skipped_stale_reasons.source_window = (result.skipped_stale_reasons.source_window ?? 0) + 1
         continue
+      }
+
+      // THE ENVELOPE (C35) is built BEFORE the freshness gate so the gate judges the SAME signal_at / observed_at / TTL /
+      // subject the row will carry. Nothing is written before Gate 3's rights refusal below.
+      const recordRights = sourceRightsFor(record.source)
+      const rights = recordRights.rights !== 'unknown' ? recordRights : sourceRightsFor(params.sourceChannel)
+      const envelope = buildRawDataEnvelope(record, {
+        brokerageId: params.brokerageId,
+        rights,
+        entityKindOf: (name) => ownerNameKind(name),
+        actorType: params.actor?.type ?? 'cron',
+        actorId: params.actor?.id ?? null,
+        costUsd: costPerRecord,
+      })
+
+      // Gate 1c — FRESHNESS PER SIGNAL TYPE (wave 151, lane 151C; owner: "you don't want to bring in old and stale
+      // data"). The window above is one number per SOURCE; this is the policy per SIGNAL CLASS
+      // (lib/lead-pipeline/freshness.ts evaluateFreshness): an expressed-intent post ages from its own date, an owner
+      // record from its verification, a deed / permit becomes property HISTORY past its window. A stale INTENT signal is
+      // not written (counted per class — the reason is said); HISTORY is written as evidence under processing_status
+      // 'held_stale' (never enriched or promoted on this signal); every written row carries evidence.freshness and, once
+      // m967 is applied, freshness_verdict + last_verified_at.
+      const freshness: FreshnessAssessment = evaluateFreshness({
+        source: record.source, behaviorType: record.behaviorType, intentSignals: record.intentSignals, subjectKind: envelope.subject_kind,
+        signalAt: envelope.signal_at, observedAt: envelope.observed_at, ttlExpiresAt: envelope.ttl_expires_at,
+        sourceWindowDays: recencyDays ?? null, now: Date.parse(envelope.observed_at),
+      })
+      let heldAsHistory = false
+      if (freshness.hold) {
+        if (!freshness.propertyHistory) {
+          result.skipped_stale++
+          result.skipped_stale_reasons[freshness.signalClass] = (result.skipped_stale_reasons[freshness.signalClass] ?? 0) + 1
+          continue
+        }
+        heldAsHistory = true
+      }
+      envelope.evidence.freshness = {
+        verdict: freshness.verdict, signal_class: freshness.signalClass, policy: freshness.policy, anchor: freshness.anchor,
+        age_days: freshness.ageDays, score: freshness.score, hold: freshness.hold, hold_reason: freshness.holdReason, why: freshness.why,
       }
 
       // Gate 2 — territory: drop records that clearly belong to a different area.
@@ -699,16 +773,6 @@ export async function ingestRawSourceBatch(
 
       // Gate 3 — C35 THE PRODUCER CONTRACT (wave 150, lane 150EFG). Rights are DERIVED from the vendor contract
       // (record.source, then the batch's channel); a record whose source names no basis is REFUSED, never guessed.
-      const recordRights = sourceRightsFor(record.source)
-      const rights = recordRights.rights !== 'unknown' ? recordRights : sourceRightsFor(params.sourceChannel)
-      const envelope = buildRawDataEnvelope(record, {
-        brokerageId: params.brokerageId,
-        rights,
-        entityKindOf: (name) => ownerNameKind(name),
-        actorType: params.actor?.type ?? 'cron',
-        actorId: params.actor?.id ?? null,
-        costUsd: costPerRecord,
-      })
       const envelopeProblem = rawDataEnvelopeProblem(envelope)
       if (envelopeProblem) {
         result.skipped_rights++
@@ -813,10 +877,15 @@ export async function ingestRawSourceBatch(
             // C35 — the producer contract verbatim (the first-class m961 columns below carry the same values).
             rawdata: envelope,
           },
-          processing_status:    'pending',
+          // Wave 151 (lane 151C): property HISTORY is written as evidence, HELD — never 'pending' for the pipeline
+          // (until m967's CHECK admits the word, it is written 'pending' and processRawRecord's freshness gate holds it).
+          processing_status:    heldAsHistory && heldStatusLive ? 'held_stale' : 'pending',
+          ...(heldAsHistory && heldStatusLive && freshness.holdReason ? { error_message: freshness.holdReason } : {}),
           scraper_execution_id: execId ?? null,
           cost_per_record:      costPerRecord,
           ...(envelopeColumnsLive ? envelopeColumns(envelope) : {}),
+          // m967 (wave 151): the verdict column + the verification anchor; absent → evidence.freshness still carries both.
+          ...(freshnessColumnsLive ? { freshness_verdict: freshness.verdict, last_verified_at: envelope.observed_at } : {}),
         })
         .select('id')
         .maybeSingle()
@@ -824,6 +893,12 @@ export async function ingestRawSourceBatch(
       }
 
       let { data: inserted, error: insertError } = await insertRow()
+      if (isFreshnessColumnAbsent(insertError)) {
+        // m967 is written, not yet applied: the verdict and the verification anchor ride evidence.freshness only (counted, said once).
+        console.error('[kernel/scraping] m967 freshness columns absent — writing freshness to evidence.freshness only:', insertError?.message)
+        freshnessColumnsLive = false
+        ;({ data: inserted, error: insertError } = await insertRow())
+      }
       if (isEnvelopeColumnAbsent(insertError)) {
         // m961 is written, not yet applied: say so ONCE, keep the envelope in normalized_preview.rawdata, and
         // write the row the legacy way rather than refusing every observation (counted, never silent).
@@ -831,13 +906,36 @@ export async function ingestRawSourceBatch(
         envelopeColumnsLive = false
         ;({ data: inserted, error: insertError } = await insertRow())
       }
+      if (heldAsHistory && heldStatusLive && insertError?.code === '23514' && /processing_status/.test(insertError.message ?? '')) {
+        // m967's CHECK is not applied yet: the live vocabulary refuses 'held_stale'. Write the observation 'pending' —
+        // evidence.freshness still says HISTORY and the pipeline's freshness gate holds it before any spend (counted, said once).
+        console.error('[kernel/scraping] m967 processing_status CHECK not applied — held history written as pending; the pipeline gate holds it:', insertError?.message)
+        heldStatusLive = false
+        ;({ data: inserted, error: insertError } = await insertRow())
+      }
       if (!envelopeColumnsLive && !insertError) result.envelope_columns_absent++
+      if (!freshnessColumnsLive && !insertError) result.freshness_columns_absent++
+      if (heldAsHistory && !heldStatusLive && !insertError) result.held_status_absent++
 
       // 23505 = unique_violation — the same observation is already held: under the C35 idempotency key
       // (m961, scope-qualified — a REPLAY) or the legacy (source, source_record_id) UNIQUE.
       if (insertError?.code === '23505') {
         result.skipped_duplicate++
-        if (/idempotency/i.test(insertError.message ?? '')) result.replayed++
+        if (/idempotency/i.test(insertError.message ?? '')) {
+          result.replayed++
+          // Wave 151 (lane 151C): a replay RE-VERIFIES the held observation — last_verified_at (m967) is the anchor the
+          // owner-record / investor-population freshness policies age from. Error read; an absent column is said once.
+          if (freshnessColumnsLive) {
+            const { data: bumped, error: bumpErr } = await supabase
+              .from('raw_scraped_leads')
+              .update({ last_verified_at: envelope.observed_at })
+              .eq('idempotency_key', envelope.idempotency_key)
+              .select('id')
+            if (isFreshnessColumnAbsent(bumpErr)) freshnessColumnsLive = false
+            else if (bumpErr) console.error('[kernel/scraping] last_verified_at bump refused:', bumpErr.message)
+            else if ((bumped ?? []).length > 0) result.reverified++
+          }
+        }
         continue
       }
       if (insertError || !inserted) {
@@ -849,6 +947,7 @@ export async function ingestRawSourceBatch(
       }
 
       result.inserted++
+      if (heldAsHistory) result.held_history++
       result.rawIds.push((inserted as any).id)
 
       // Emit RAW_RECORD_CREATED per record — used for audit trail
@@ -857,7 +956,7 @@ export async function ingestRawSourceBatch(
         entity_id:   (inserted as any).id,
         event_type:  KernelEvent.RAW_RECORD_CREATED,
         brokerage_id: params.brokerageId,
-        metadata:    { source: record.source, identity_key: identityKey, intent_type: record.intentType, subject_kind: envelope.subject_kind, idempotency_key: envelope.idempotency_key, source_rights: envelope.source_rights },
+        metadata:    { source: record.source, identity_key: identityKey, intent_type: record.intentType, subject_kind: envelope.subject_kind, idempotency_key: envelope.idempotency_key, source_rights: envelope.source_rights, freshness: freshness.verdict, held: heldAsHistory },
         created_at:  new Date().toISOString(),
       })
     }
@@ -880,7 +979,7 @@ export async function ingestRawSourceBatch(
       entity_id:   params.marketId,
       event_type:  KernelEvent.SCRAPE_SOURCE_RUN_COMPLETED,
       brokerage_id: params.brokerageId,
-      metadata:    { source: params.source, inserted: result.inserted, skipped: result.skipped_duplicate + result.skipped_not_viable },
+      metadata:    { source: params.source, inserted: result.inserted, skipped: result.skipped_duplicate + result.skipped_not_viable, skipped_stale: result.skipped_stale, stale_reasons: result.skipped_stale_reasons, held_history: result.held_history, reverified: result.reverified },
       created_at:  new Date().toISOString(),
     })
 

@@ -116,7 +116,10 @@ async function main() {
   await pp.runPooledBatchDataLane("batchdata_motivated", wants as any, deps((b, lane) => pl.paidPullApproval(null, { brokerageId: b, source: lane }, now)))
   check("an unreadable plan store → ZERO paid requests", calls.length === 0)
   const ppSrc = stripped("lib/lead-pipeline/pooled-pull.ts")
-  check("production deps read approved acquisition_plans and fail closed on a refused read", /from\("acquisition_plans"\)/.test(ppSrc) && /planErr \? null :/.test(ppSrc) && /approval: \(brokerageId, lane\) => paidPullApproval\(plans,/.test(ppSrc))
+  // Wave 151 (lane 151C): the production approval also opens the IF / THEN door with the platform's connection facts and the
+  // territory's budget (approval: (brokerageId, lane, territory) → paidPullApproval(plans, …, { platform })) — the rule is
+  // "plans read once, a refused read is null, every want asks paidPullApproval over those plans", not the arity.
+  check("production deps read approved acquisition_plans and fail closed on a refused read", /from\("acquisition_plans"\)/.test(ppSrc) && /planErr \? null :/.test(ppSrc) && /approval: \(brokerageId, lane(, territory)?\) => paidPullApproval\(plans,/.test(ppSrc))
   check("the gate runs BEFORE pooling (no unapproved geography widens a request)", ppSrc.indexOf("deps.approval(") > 0 && ppSrc.indexOf("deps.approval(") < ppSrc.indexOf("planPooledGeography(territories"))
 
   console.log("\n[D] wiring")
@@ -138,10 +141,14 @@ async function main() {
   const cron = stripped("app/api/cron/lead-scraping/route.ts")
   check("the cron reads the approved plans ONCE per cycle and a refused read is null (fail closed)",
     /from\("acquisition_plans"\)\.select\("id, brokerage_id, status, valid_until, lines"\)\.eq\("status", "approved"\)/.test(cron) && /planErr \? null :/.test(cron))
-  check("every per-territory PAID source (vendor not internal / osint, not a pooled lane) asks paidPullApproval before enabledSources is built, and a refusal is SAID in results.errors",
-    /return !paidPullApproval\(approvedAcquisitionPlans, \{ brokerageId: market\.brokerage_id \?\? null, source: key \}\)\.allowed/.test(cron)
-      && /const enabledSources = expandEnabledSources\(configuredSources\.filter\(\(v\) => !unapprovedPaid\.includes\(v\)\)\)/.test(cron)
-      && /results\.errors\.push\(`\$\{market\.name\}: paid source\(s\)/.test(cron))
+  // Wave 151 (lane 151C): re-asserted to the RULE — every configured per-territory token asks THE ONE door (resolveSourceDoor,
+  // the IF / THEN over approved plan → platform provider → tenant provider → public source → unavailable) BEFORE
+  // enabledSources is built, with the plans read above and the platform facts, and a closed door is SAID in results.errors.
+  // (Was pinned to the wave-150 shape `!paidPullApproval(...).allowed` / `unapprovedPaid` — a waypoint, not the rule.)
+  check("every per-territory configured source asks THE ONE door (resolveSourceDoor, plans + platform facts) before enabledSources is built, and a closed door is SAID in results.errors",
+    /resolveSourceDoor\(\{[\s\S]{0,200}plans: approvedAcquisitionPlans,[\s\S]{0,300}platform: withTerritoryBudget\(/.test(cron)
+      && cron.indexOf("resolveSourceDoor({") > 0 && cron.indexOf("resolveSourceDoor({") < cron.indexOf("const enabledSources = expandEnabledSources(configuredSources.filter((v) => !closedTokens.includes(v)))")
+      && /results\.errors\.push\(`\$\{market\.name\}: source\(s\) not run — /.test(cron))
   {
     const plans = [{ ...approvedRow, lines: [{ source: "facebook_group", status: "approved", approvedAt: now.toISOString() }] }] as never
     check("RUN: an approved per-territory line admits that source for that tenant only; an unapproved source and a tenant-less market are refused (POSITIVE + NEGATIVE)",

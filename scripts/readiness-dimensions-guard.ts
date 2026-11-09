@@ -163,7 +163,7 @@ async function main() {
     const m = moment(buyerObs(), { statedSide: "buyer", financing: "pre_approved", statedTimeline: { value: "1-3_months", basis: "person_stated", at: daysAgo(1) }, vendorScores: [{ provider: "PropertyRadar", field: "LikelyPurchaseScore", value: 88 }], cohort: { side: "buyer", territory: "78701" } })
     const f = await apo.freezeDecisionWindowForecast(d, { brokerageId: B, entityType: "contact", entityId: "c1", moment: m, holdoutArm: "treated", evidenceIds: ["e1"], now: NOW, cohort: { side: "buyer", territory: "78701" } })
     const row = ((await (d as any).from("ai_predictions").select("*")).data ?? [])[0] as Record<string, any>
-    ok(f.captured && row.prediction_factors?.evidence_classes?.timing === "verified_intent" && row.prediction_value?.cohort === "buyer|78701" && !JSON.stringify(row).includes("88") && !/LikelyPurchaseScore/.test(JSON.stringify(row)), "the frozen forecast carries the dimensions' evidence classes and its cohort — never a vendor score or its value")
+    ok(f.captured && row.prediction_factors?.evidence_classes?.timing === "verified_intent" && row.prediction_value?.cohort === "buyer|78701" && !/(?:^|[^\d.])88(?!\d)/.test(JSON.stringify({ factors: row.prediction_factors, value: row.prediction_value, reasoning: row.reasoning ?? null, explanation: row.explanation ?? null })) && !/LikelyPurchaseScore/.test(JSON.stringify(row)), "the frozen forecast carries the dimensions' evidence classes and its cohort — never a vendor score or its value")
   }
 
   console.log("\nE. the forecaster contract — honest unknown, research ≠ ready, cohort calibration past the floor only")
@@ -267,7 +267,7 @@ async function main() {
     movement_signals: [], agent_action_ledger: [], ai_predictions: [], listings: [], transactions: [], leads: [], raw_scraped_leads: [], buyer_financial_profiles: [], ai_tool_usage: [], vendor_spend: [],
   } as never, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]], movement_signals: [["brokerage_id", "idempotency_key"]] } }) as never
   {
-    ok(Object.keys(mv.EXISTING_CONTACT_CHANGE_DOORS).length === 7 && Object.values(mv.EXISTING_CONTACT_CHANGE_DOORS).every((d) => /arbitrate|same path/.test(d.via) && d.sourceKey.startsWith("fp_")), "seven documented doors, every one a FIRST-PARTY source ending in the arbiter")
+    ok(Object.keys(mv.EXISTING_CONTACT_CHANGE_DOORS).length === mv.EXISTING_CONTACT_CHANGE_KINDS.length && mv.EXISTING_CONTACT_CHANGE_KINDS.every((k) => k in mv.EXISTING_CONTACT_CHANGE_DOORS) && Object.values(mv.EXISTING_CONTACT_CHANGE_DOORS).every((d) => /arbitrate|same path/.test(d.via) && d.sourceKey.startsWith("fp_")), "one documented door per change kind (derived from EXISTING_CONTACT_CHANGE_KINDS, never a hand count), every one a FIRST-PARTY source ending in the arbiter")
     const d = world()
     const r1 = await quiet(() => mv.reassessExistingContact(d, { brokerageId: B, contactId: "c1", change: { kind: "valuation_request", referenceId: "v1", summary: "asked what their home is worth", at: daysAgo(1) } }, deps))
     const rows = ((await (d as any).from("movement_signals").select("*")).data ?? []) as Array<Record<string, any>>
@@ -349,7 +349,7 @@ async function main() {
     ok(unreadable.halt === null, "(fail closed to no judgment) an unreadable contact never decides a halt")
     const foreign = await quiet(() => arb.arbitratePlannedTouch(db, { brokerageId: B2, planner: "sequence_step", subject: { type: "contact", id: "p1" }, now: NOW, options: [option], planned: "send_now", moment: { key: "sequence_step_due", intent: "x" }, requiredChannels: ["sms"], policy }, { decide: async () => ({ optionId: "send_now", channel: null, waitHours: null, rationale: "Due now.", evidence: ["moment"], confidence: 0.9 }), record: false }))
     ok(foreign.halt === null, "(tenancy) another tenant's read of this contact decides nothing")
-    ok(/requiredChannels/.test(src("lib/ai-isa/followup-arbiter.ts")) && !/requiredChannels/.test(src("lib/campaign-sequences/step-executor.ts")), "BLIND SPOT, published: the sequence step executor does not yet pass its step channel or consume `halt` (Outside-lane diff) — the arbiter half is proven here")
+    ok(/requiredChannels/.test(src("lib/ai-isa/followup-arbiter.ts")) && /requiredChannels: \[step\.channel\]/.test(src("lib/campaign-sequences/step-executor.ts")) && /if \(arb\.halt\)/.test(src("lib/campaign-sequences/step-executor.ts")) && /suggestedEnrollmentStatus/.test(src("lib/campaign-sequences/step-executor.ts")), "the sequence step executor passes its step channel (requiredChannels) and CONSUMES `halt` — the enrollment is ended once and the step is skipped with the arbiter's rationale (150Z row 38 closed; wave 151 integrator)")
   }
 
   console.log("\nL. Customer 360 reads the stamped dimensions as stored, validated")

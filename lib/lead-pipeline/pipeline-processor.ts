@@ -24,6 +24,10 @@ import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichmen
 import { recordAcquisitionIntents } from './acquisition-coverage'
 // Lane 90B — THE email rule (pure, no I/O) decides what is an enrichment anchor before any spend.
 import { leadEmailProblem as leadEmailProblemPure, subjectKindLeadProblem } from './canonical-lead-eligibility'
+// Wave 151 (lane 151C) — the freshness policy per signal type HOLDS a stale / history / contradicted observation BEFORE any
+// enrichment spend, and the ONE leads.enrichment_status vocabulary says 'partial' when no provider answered.
+import { evaluateFreshness, isFreshnessVerdict } from './freshness'
+import { leadEnrichmentStatusFor } from './enrichment-retry'
 import { mergeSourceFacts } from '@/lib/identity/subject-identity'
 import { KernelEvent } from '@/lib/kernel/events'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
@@ -39,6 +43,7 @@ import {
   recordMatchesTerritory,
   hasScoringEntry,
   deliversPaidPersonData,
+  recencyWindowForSource,
 } from './source-intent-map'
 
 // ─── Processing status state machine ─────────────────────────────────────────
@@ -59,6 +64,15 @@ interface RawRecord {
   brokerage_id: string
   /** C35 (m961) — the RawData subject; null on a pre-m961 row (normalized_preview.rawdata carries it too). */
   subject_kind?: string | null
+  /** C35 (m961) + wave 151 (m967): the dates the freshness gate reads (null on a pre-m961 row; normalized_preview.rawdata
+   *  carries the m961 ones; last_verified_at / freshness_verdict exist once m967 is applied). */
+  signal_at?: string | null
+  observed_at?: string | null
+  ttl_expires_at?: string | null
+  last_verified_at?: string | null
+  freshness_verdict?: string | null
+  evidence?: Record<string, unknown> | null
+  created_at?: string | null
   market_id: string | null
   source: string
   source_record_id: string | null
@@ -223,6 +237,42 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       new_enrichment_confidence: null,
     }, supabase)
     return { success: false, action: 'skipped', reason: subjectProblem, stage: 'subject_gate' }
+  }
+
+  // ── FRESHNESS HOLD — before ANY spend (wave 151, lane 151C; owner: "you don't want to bring in old and stale data") ──
+  // The producer judged the observation at intake (evidence.freshness); it is judged AGAIN here because time has passed
+  // in the queue (TTL), a replay may have re-verified it (last_verified_at, m967) and the policy may have changed
+  // (lib/lead-pipeline/freshness.ts evaluateFreshness — one policy per signal class). A stale, contradicted, TTL-lapsed or
+  // history-as-intent observation is HELD: processing_status 'held_stale' with the reason on the row. It stays at its
+  // evidence level and never buys a lookup or walks to the Lead door on this signal. No dedupe verdict is claimed.
+  const rawdataEnvelope = ((rec.normalized_preview as any)?.rawdata ?? null) as { signal_at?: string | null; observed_at?: string | null; ttl_expires_at?: string | null } | null
+  // The producer's own verdict (raw_scraped_leads.freshness_verdict, m967) is read FIRST: a row it already judged stale /
+  // history / contradicted is held on that verdict — the policy's stored reason — before any re-judgement; only a fresh /
+  // aging / undated (or pre-m967 null) row is re-judged against today's clock below.
+  const storedVerdict = isFreshnessVerdict(rec.freshness_verdict) ? rec.freshness_verdict : null
+  if (storedVerdict === "stale" || storedVerdict === "history" || storedVerdict === "contradicted") {
+    const storedReason = String((rec.evidence as { freshness?: { hold_reason?: unknown } } | null)?.freshness?.hold_reason ?? rec.error_message ?? `the producer judged this observation ${storedVerdict} under its freshness policy`)
+    const heldWritten = await setStatus(supabase, rawRecordId, 'held_stale', storedReason)
+    return { success: false, action: 'skipped', reason: heldWritten ? storedReason : `${storedReason} (the held_stale status write was refused — m967 not applied?)`, stage: 'freshness_gate' }
+  }
+  const freshness = evaluateFreshness({
+    source: rec.source, behaviorType: rec.normalized_preview?.behaviorType ?? null, intentSignals: rec.normalized_preview?.intentSignals ?? null, subjectKind,
+    signalAt: rec.signal_at ?? rawdataEnvelope?.signal_at ?? null,
+    observedAt: rec.observed_at ?? rawdataEnvelope?.observed_at ?? rec.created_at ?? null,
+    lastVerifiedAt: rec.last_verified_at ?? null,
+    ttlExpiresAt: rec.ttl_expires_at ?? rawdataEnvelope?.ttl_expires_at ?? null,
+    sourceWindowDays: recencyWindowForSource(rec.source),
+  })
+  if (freshness.hold) {
+    const holdReason = freshness.holdReason ?? freshness.why
+    const heldWritten = await setStatus(supabase, rawRecordId, 'held_stale', holdReason)
+    // The verdict is evidence on the row too (m961 jsonb) — error read, never silent.
+    const { error: freshnessEvidenceErr } = await supabase
+      .from('raw_scraped_leads')
+      .update({ evidence: { ...(rec.evidence ?? {}), freshness: { verdict: freshness.verdict, signal_class: freshness.signalClass, policy: freshness.policy, anchor: freshness.anchor, age_days: freshness.ageDays, score: freshness.score, hold: true, hold_reason: holdReason, judged_at: new Date().toISOString() } } })
+      .eq('id', rawRecordId)
+    if (freshnessEvidenceErr) console.warn('[pipeline-processor] freshness evidence write refused:', freshnessEvidenceErr.message)
+    return { success: false, action: 'skipped', reason: heldWritten ? holdReason : `${holdReason} (the held_stale status write was refused — m967 not applied? — the row stays out of the pending sweep)`, stage: 'freshness_gate' }
   }
 
   // ── Territory gate — block before enrichment spend ────────────────────────
@@ -562,7 +612,12 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         updated_at:            new Date().toISOString(),
       }
       if (targetTable === 'leads') {
-        mergeUpdate.enrichment_status = 'completed'
+        // Wave 151 (lane 151C): ONE spelling — the governance readers' 'complete' (lib/lead-governance); 'partial' when no
+        // provider answered or the anchor gap remains (enrichment-retry.ts leadEnrichmentStatusFor). Was 'completed'.
+        mergeUpdate.enrichment_status = leadEnrichmentStatusFor({
+          providerAnswered: !!(enriched.peopleDataProfile?.provider || enriched.enrichmentSource),
+          gapsRemain: !(enriched.email ?? postEnrichDuplicate.email),
+        })
       }
 
       // Tenant-pinned and COUNTED (CLAUDE.md §3): an update that matches nothing resolves exactly like one that worked.
@@ -825,7 +880,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       motivation_confidence: fusedMotivationConfidence,
       urgency_level:         fusedUrgency,
       lead_score:            stackedScore,
-      enrichment_status:     'completed',
+      // Wave 151 (lane 151C): ONE spelling ('complete' — the governance readers' word) and an honest 'partial' when no
+      // provider answered (the 0.3 miss path used to stamp 'completed' with no provider record at all).
+      enrichment_status:     leadEnrichmentStatusFor({ providerAnswered: !!(enriched.peopleDataProfile?.provider || enriched.enrichmentSource), gapsRemain: !enriched.email }),
       enrichment_confidence: enriched.enrichmentConfidence,
       last_enriched_at:      new Date().toISOString(),
       // Lane 83A — the PDL demographics this path already paid for (was dropped here): the

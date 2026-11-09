@@ -167,15 +167,17 @@ async function main() {
   const plans = [{ id: "p1", brokerage_id: "b", status: "approved", valid_until: "2099-01-01T00:00:00Z", lines: [{ source: "batchdata_motivated", status: "approved", maxSpendUsd: 12, approvedAt: "2026-11-02T00:00:00Z" }] }]
   const wantPull = { brokerageId: "b", source: "batchdata_motivated" }
   check("omitted → unchanged (allowed under the approved line)", paidPullApproval(plans, wantPull).allowed === true)
-  check("a worthwhile verdict → allowed", paidPullApproval(plans, wantPull, new Date(), { value: 0.7, worthwhile: true, reasons: ["fresh", "territory match"] }).allowed === true)
-  const no = paidPullApproval(plans, wantPull, new Date(), { value: 0.1, worthwhile: false, reasons: ["stale signal", "duplicates known"] })
+  // Lane 151C's verdict shape (lib/lead-pipeline/pre-pull-value.ts), handed through the door context the planner reads.
+  const verdict = (score: number, decision: "proceed" | "preview_first" | "hold" | "refuse", reasons: string[]) => ({ version: "test", score, decision, factors: {}, expectedUsableRecords: 0, totalCostUsd: null, costPerUsableUsd: null, affordableRecords: null, uncertainty: 0, reasons, disclaimer: "test", calibration: "unvalidated" }) as never
+  check("a worthwhile verdict → allowed", paidPullApproval(plans, wantPull, new Date(), { value: verdict(0.7, "proceed", ["fresh", "territory match"]) }).allowed === true)
+  const no = paidPullApproval(plans, wantPull, new Date(), { value: verdict(0.1, "refuse", ["stale signal", "duplicates known"]) })
   check("not worthwhile → REFUSED at the approval gate, with the planner's reasons", no.allowed === false && /not worthwhile/.test((no as { reason: string }).reason) && /stale signal/.test((no as { reason: string }).reason))
-  const held = paidPullApproval(plans, wantPull, new Date(), { value: 0.9, worthwhile: true, reasons: [], holdReason: "price unknown for this provider" })
+  const held = paidPullApproval(plans, wantPull, new Date(), { value: verdict(0.9, "hold", ["price unknown for this provider"]) })
   check("held pending configuration (unknown price / license) → refused as held", held.allowed === false && /held/.test((held as { reason: string }).reason))
-  check("an out-of-bounds value is refused (a bounded 0..1 signal is the contract)", paidPullApproval(plans, wantPull, new Date(), { value: 7, worthwhile: true, reasons: [] }).allowed === false)
+  check("an out-of-bounds value is refused (a bounded 0..1 signal is the contract)", paidPullApproval(plans, wantPull, new Date(), { value: verdict(7, "proceed", []) }).allowed === false)
   const { prePullRefusal } = await import("../lib/vendor-governance/budget-eval")
   check("positive control: prePullRefusal(null) is null (nothing to refuse)", prePullRefusal(null) === null && prePullRefusal(undefined) === null)
-  check("the planner consumes the ONE verdict reading (prePullRefusal) rather than re-spelling it", /prePullRefusal\(prePull\)/.test(stripped("lib/lead-pipeline/source-discovery-planner.ts")) && /import \{ prePullRefusal, type PrePullValueVerdict \} from "@\/lib\/vendor-governance\/budget-eval"/.test(stripped("lib/lead-pipeline/source-discovery-planner.ts")))
+  check("the planner consumes the ONE verdict reading (prePullRefusal, at the source door) rather than re-spelling it; the verdict type is lane 151C's", /prePullRefusal\(value\)/.test(stripped("lib/lead-pipeline/source-discovery-planner.ts")) && /import \{ prePullRefusal \} from "@\/lib\/vendor-governance\/budget-eval"/.test(stripped("lib/lead-pipeline/source-discovery-planner.ts")) && /type PrePullValueVerdict \} from "\.\/pre-pull-value"/.test(stripped("lib/lead-pipeline/source-discovery-planner.ts")) && !/holdReason|worthwhile:/.test(stripped("lib/vendor-governance/budget-eval.ts")))
 
   console.log(`\nSPEND BACKPRESSURE — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ SPEND_BACKPRESSURE_PASS" : "❌ SPEND_BACKPRESSURE_FAIL"}`)
   if (failed > 0) process.exit(1)

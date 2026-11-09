@@ -17,6 +17,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
 import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { resolveSourceKey, SOURCE_MAP, SOURCE_VENDOR, expandEnabledSources, type SourceKey } from "@/lib/lead-pipeline/source-intent-map"
+import { PEOPLEDATA_MATCH_COST_USD } from "@/lib/external/peopledata-client"
 import {
   planSourceDiscovery,
   approvePlanLines,
@@ -121,10 +122,13 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
     for (const r of (rows ?? []) as Array<{ source: string; lead_id: string | null; processing_status: string | null; cost_per_record: number | null }>) {
       const key = resolveSourceKey(r.source)
       if (!(key in SOURCE_MAP)) continue
-      const h = (history[key] ??= { rawRows: 0, promoted: 0, duplicates: 0, costUsd: 0 })
+      // heldStale (wave 151, lane 151C): rows the freshness policy held — counted from the status vocabulary the live CHECK
+      // admits today (m967 widens it); freshness_verdict is read only once m967 is applied (the planner says so).
+      const h = (history[key] ??= { rawRows: 0, promoted: 0, duplicates: 0, costUsd: 0, heldStale: 0 })
       h.rawRows++
       if (r.lead_id || r.processing_status === "promoted") h.promoted++
       if (r.processing_status === "duplicate_pre_enrich" || r.processing_status === "duplicate_post_enrich") h.duplicates++
+      if (r.processing_status === "held_stale") h.heldStale = (h.heldStale ?? 0) + 1
       h.costUsd += Number(r.cost_per_record ?? 0)
     }
     const quotes: Partial<Record<SourceKey, SourceQuote>> = {}
@@ -152,6 +156,10 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
       history, previews, quotes,
       marketGap: twin.marketGap.monthsOfSupply === null ? null : { monthsOfSupply: twin.marketGap.monthsOfSupply, asOf: twin.marketGap.asOf, source: twin.marketGap.source },
       distressPreviewCount: null,
+      // Wave 151 (lane 151C): the pre-pull value formula's downstream cost per USABLE record — the person-profile provider's
+      // published match price (lib/external/peopledata-client.ts); AI cost per record is not metered per source yet (null = unknown).
+      enrichmentUsdPerRecord: PEOPLEDATA_MATCH_COST_USD,
+      aiUsdPerRecord: null,
     })
     const { data: inserted, error: insErr } = await svc.from("acquisition_plans").insert({
       brokerage_id: ctx.brokerageId,

@@ -3,11 +3,17 @@
  * scripts/public-market-research-guard.ts (test:public-market-research) — EXA PUBLIC-MARKET RESEARCH, NEVER PEOPLE (wave 150,
  * lane 150KLMO; directive 150L, owner ruling R9, contract C35, canary 8).
  *
+ * SCOPE NOTE (wave 151, lane 151D — owner correction 2026-11-09, verbatim: "exa is to find people when it is a scraper or
+ * hunting"): R9 is reversed in SCOPE, not here. lib/lead-pipeline/exa-sourcer.ts STAYS the cited public-MARKET research lane
+ * these checks hold (no first-person query, no author on a row). Person / entity DISCOVERY lives in lib/providers/exa/hunting.ts
+ * and lib/acquisition-plays/** under their own gates (first-person request + a contact point the author published + a page class
+ * whose terms permit it + freshness; property ↔ owner only through verifyOwnership) — test:early-opportunity-plays.
+ *
  *   A  QUERIES: every population the acquisition registry declares for the Exa lane asks a MARKET question (inventory, prices,
  *      rents, costs, employer / WARN / base / campus / infrastructure / zoning events, the questions people ask) — never a
  *      first-person "I am looking to buy / sell" hunt; each query states its C35 evidence subject.
  *   B  NORMALIZER: an Exa page → a CITED evidence record; the author, a name, an email or a phone on the page never ride it;
- *      only a short excerpt is kept (no reuse licence assumed); rights + TTL come from the C35 producer.
+ *      only a short excerpt is kept (no reuse license assumed); rights + TTL come from the C35 producer.
  *   C  ONE PRODUCER (C35): the real lib/kernel/scraping.ts ingestRawSourceBatch writes the record as subject_kind
  *      market / job_civic_event / anonymous_question with source_rights public_web, its proof URL and its TTL — and the
  *      Lead door refuses every such kind (canary 8: an anonymous question never creates a person).

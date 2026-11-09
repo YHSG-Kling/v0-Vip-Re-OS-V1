@@ -566,6 +566,21 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
   // webhook subscription, delivered by lib/platform/tenant-webhooks.ts
   // drainTenantWebhookDeliveries → postSignedWebhook. Ingress doors that a Zap could
   // still be aimed at refuse it: lib/integrations/zapier-direction.ts isZapierInbound.
+  // ── Exa Search Monitors (wave 151, lane 151D — monitored deltas for the early-opportunity plays) ──
+  {
+    provider: "exa",
+    eventKind: "search-monitor-run-completed",
+    path: "/api/webhooks/exa",
+    routeFile: "app/api/webhooks/exa/route.ts",
+    scheme: "hmac-sha256",
+    verificationHeaders: ["exa-signature"],
+    secretEnv: ["EXA_WEBHOOK_SECRET"],
+    implementedIn: ["lib/providers/exa/monitors.ts"],
+    protocolVersion: "Exa webhook signature (docs.exa.ai, read 2026-11-09): Exa-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 over `${t}.${rawBody}`>; ONE secret per monitor, returned once by POST /monitors and sealed per registry row (provider_monitors.webhook_secret_ciphertext, lib/security/secret-crypto.ts); EXA_WEBHOOK_SECRET is the fallback for a dashboard-created monitor; 5-minute replay window",
+    consoleField: "Not console-pasted — the webhook.url lib/providers/exa/monitors.ts registerExaMonitor passes to POST /monitors (dashboard.exa.ai lists the monitor)",
+    failureVisibility: "provider_monitors.last_delivery_at stops advancing; Exa sets a monitor `disabled` after 10 consecutive authentication failures",
+    notes: "Tenant and territory come from the provider_monitors row the delivery's monitor id names — never from the payload (its metadata is echo, not authority). Unregistered monitor → 202 no-op; replay (same event id, 7 days) → 200 replayed (emitKernelEvent dedupe key) with the C35 idempotency key on every raw row as the longer guard; the run's results walk the registered play (lib/acquisition-plays/runner.ts) into THE ONE RawData producer. Unset secret → 503; bad / stale signature → 401. Proof: test:early-opportunity-plays.",
+  },
   {
     provider: "ce_provider",
     eventKind: "course-completions",

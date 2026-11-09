@@ -1534,13 +1534,14 @@ export async function movementSignalsForArbiter(
 //   · DEDUP is the record's idempotency key (one change observed twice is one record → `replayed`).
 //   · A person's OWN WORDS (a stated date, a timeline) are `reported` by self with the verbatim quote — VERIFIED INTENT evidence.
 
-export const EXISTING_CONTACT_CHANGE_KINDS = Object.freeze(["saved_home_shift", "valuation_request", "criteria_change", "education_engagement", "seller_appointment_request", "stated_date", "stated_timeline"] as const)
+export const EXISTING_CONTACT_CHANGE_KINDS = Object.freeze(["saved_home_shift", "saved_home_activity", "valuation_request", "criteria_change", "education_engagement", "seller_appointment_request", "stated_date", "stated_timeline"] as const)
 export type ExistingContactChangeKind = (typeof EXISTING_CONTACT_CHANGE_KINDS)[number]
 
 /** The documented doors — change kind → the C9 source that carries it and how it reaches the arbiter. Read by the proof; production
  *  reads it through reassessExistingContact below. */
 export const EXISTING_CONTACT_CHANGE_DOORS: Readonly<Record<ExistingContactChangeKind, { sourceKey: string; relevance: MovementRelevance; side: MovementSide; what: string; via: string }>> = Object.freeze({
   saved_home_shift: { sourceKey: "fp_saved_homes", relevance: "property_event", side: "buyer", what: "the person changed what they save (a new area, price band or home type) in their own portal / site search", via: "recordMovementSignal → evaluateMovementSubject → online_intent_detected → respondToLifeChangeSignal → arbitrateAndRecordExperience" },
+  saved_home_activity: { sourceKey: "fp_saved_homes", relevance: "property_event", side: "buyer", what: "the person saved several homes on the tenant's own surfaces inside the window with no stated baseline to shift from (or inside what they told us) — activity, a verified first-party fact the manager weighs lightly (lane 151D's second-window radar)", via: "the same path" },
   valuation_request: { sourceKey: "fp_valuation_request", relevance: "property_event", side: "seller", what: "the homeowner asked what their home is worth / for an equity look on the tenant's own tool", via: "the same path; the listing concierge's home_value_seller_intent handler stays the CMA half" },
   criteria_change: { sourceKey: "fp_criteria_revisions", relevance: "property_event", side: "buyer", what: "the buyer revised their stated search criteria again (repeated — one change is never a pattern)", via: "the same path" },
   education_engagement: { sourceKey: "fp_content_engagement", relevance: "property_event", side: "unknown", what: "repeated engagement with the tenant's own education on a home-decision topic (an inference — the tracking call is unauthenticated)", via: "the same path; education stays helpful_education unless other evidence agrees" },
@@ -1551,6 +1552,7 @@ export const EXISTING_CONTACT_CHANGE_DOORS: Readonly<Record<ExistingContactChang
 
 export type ExistingContactChange =
   | { kind: "saved_home_shift"; referenceId: string; summary: string; at: string }
+  | { kind: "saved_home_activity"; referenceIds: readonly string[]; summary: string; at: string }
   | { kind: "valuation_request"; referenceId: string; summary: string; at: string }
   | { kind: "criteria_change"; referenceIds: readonly string[]; fields: readonly string[]; at: string }
   | { kind: "education_engagement"; referenceIds: readonly string[]; topic: string; at: string }
@@ -1577,6 +1579,10 @@ function movementInputForContactChange(brokerageId: string, contactId: string, c
   switch (change.kind) {
     case "saved_home_shift":
       return { ...base, eventRelevance: door.relevance, intents: ["home_purchase"], side: "buyer", evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `saved_properties:${change.referenceId}`, retrievedAt: change.at }, summary: change.summary } }
+    case "saved_home_activity": {
+      if (change.referenceIds.length < 2) return { refused: "one saved home is interest, not activity (needs 2 or more)" }
+      return { ...base, eventRelevance: door.relevance, intents: ["home_purchase"], side: "buyer", evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `saved_properties:${[...change.referenceIds].sort().join("+")}`, retrievedAt: change.at }, summary: change.summary } }
+    }
     case "valuation_request":
       return { ...base, eventRelevance: door.relevance, intents: ["home_sale", "refinance"], side: "seller", evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `valuation_requests:${change.referenceId}`, retrievedAt: change.at }, summary: change.summary } }
     case "criteria_change": {

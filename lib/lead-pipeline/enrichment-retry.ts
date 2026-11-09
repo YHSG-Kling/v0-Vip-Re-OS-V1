@@ -7,6 +7,34 @@
 /** Max enrichment attempts before a queue entry is terminalized. */
 export const MAX_RETRIES = 3
 
+// ─── leads.enrichment_status — ONE vocabulary (wave 151, lane 151C; CLAUDE.md §6) ──────────────────────────────────
+//
+// Measured 2026-11-09 (live: text, DEFAULT 'pending', NO CHECK, 0 rows): the column was written in THREE spellings —
+// 'completed' (pipeline-processor.ts ×2, lead-promoter.ts), 'complete' (enrichment-orchestrator.ts ×2) and 'enriched'
+// (lead-application-service.ts) — while the two governance READERS (lib/lead-governance/promotion-readiness.ts:37,
+// routing-evaluator.ts:153) test `=== 'complete'`. A lead born from the scrape pipeline therefore never read as enriched
+// to the readiness gate, and lib/enrichment/lead-freshness.ts had to refuse the column as evidence. The survivor spelling
+// is the readers' word. 'partial' is the honest state the pipeline lacked (directive 151C: "Delayed/partial provider
+// results stay retryable and cannot report success as a complete profile") — the miss path used to stamp 'completed'
+// with enrichmentConfidence 0.3 and no provider record at all.
+export const LEAD_ENRICHMENT_STATUSES = ["pending", "partial", "complete"] as const
+export type LeadEnrichmentStatus = (typeof LEAD_ENRICHMENT_STATUSES)[number]
+
+/**
+ * PURE — what a lead's enrichment_status may honestly say after a pass. 'complete' needs EVIDENCE (a provider-built
+ * profile or a provider-delivered / vendor-sold contact point) AND no gap on the required anchor; anything less is
+ * 'partial' — retryable by the queue (enrichmentRetryOutcome) and the re-queue runners, never reported as a full profile.
+ */
+export function leadEnrichmentStatusFor(input: {
+  /** A provider actually answered (a built profile with a provider, or an enrichmentSource naming who delivered). */
+  providerAnswered: boolean
+  /** The gap the pass existed to close is still open (e.g. no usable email after the seek). */
+  gapsRemain: boolean
+}): LeadEnrichmentStatus {
+  if (!input.providerAnswered) return "partial"
+  return input.gapsRemain ? "partial" : "complete"
+}
+
 /**
  * enrichmentRetryOutcome — the retry/terminal decision shared by BOTH enrichment
  * failure paths (exception AND no-match). On the FINAL attempt the entry must

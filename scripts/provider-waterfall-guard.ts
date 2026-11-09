@@ -104,7 +104,7 @@ async function main() {
       { what: "incremental cursor: client-side listing-status window", file: "lib/external/batchdata-client.ts", symbol: "export function withinListingStatusWindow" },
       { what: "rate limit: vendor take / in-list limits", file: "lib/external/batchdata-client.ts", symbol: "export const BATCHDATA_POOLED_MAX_TAKE" },
       { what: "failure: a failed chunk is reported, costs nothing, never throws", file: "lib/lead-pipeline/pooled-pull.ts", symbol: "pooled ${pool.trigger} pull for" },
-      { what: "paid gate: the approved acquisition plan", file: "lib/lead-pipeline/pooled-pull.ts", symbol: "deps.approval(w.territory.brokerage_id, lane)" },
+      { what: "paid gate: the approved acquisition plan", file: "lib/lead-pipeline/pooled-pull.ts", symbol: "deps.approval(w.territory.brokerage_id, lane, w.territory)" },
       { what: "paid gate: dollar backpressure", file: "lib/lead-pipeline/pooled-pull.ts", symbol: "decideSpendBackpressure(" },
     ] },
     { adapter: "ArcGIS permits", claims: [

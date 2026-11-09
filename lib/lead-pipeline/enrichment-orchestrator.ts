@@ -21,7 +21,10 @@ import {
   carryForwardHouseholdFinancials,
   stampFieldProvenance, withFieldProvenance, fieldProvenanceOf, peopleDataContactPointProvenance,
 } from '@/lib/lead-pipeline/enrichment-column-map'
-import { trackVendorUsageService } from '@/lib/vendor-governance'
+// Wave 151 (lane 151C): the MODULE, not the barrel (lib/vendor-governance/index.ts) — the crm page graph sits at its
+// 1300-module budget and the barrel was one of its modules; lib/enrichment/contact-enrichment-core.ts:66 is the other
+// importer of that barrel (lane 151C notes, Outside-lane).
+import { trackVendorUsageService } from '@/lib/vendor-governance/track-vendor-usage'
 import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 // THE ONE BATCHDATA GATE + the owner-contact provider route (wave 80B / 81B) are
 // imported DYNAMICALLY at their call sites (same reason as queueContactEnrichment
