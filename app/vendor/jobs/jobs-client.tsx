@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Receipt, Loader2, CheckCircle2, X, MessageSquarePlus } from "lucide-react"
+import { Receipt, Loader2, CheckCircle2, X, MessageSquarePlus, Camera } from "lucide-react"
 import { VendorRequestDialog } from "./vendor-request-dialog"
 import { createAndSendVendorClientInvoice } from "@/app/actions/vendor-payments"
 import {
@@ -29,6 +29,20 @@ import {
   submitVendorQuoteAction,
 } from "@/app/actions/vendor-portal"
 import { markBookingComplete } from "@/app/actions/vendor-marketplace"
+// WAVE 151 (lane 151B — owner ruling L6.3): the assigned photographer's own delivery door. The files go straight to the
+// tenant's listing-media bucket under THIS booking's listing folder (the same path convention the Media Manager writes),
+// and the delivery is RECORDED through app/actions/photo-management.ts submitPhotographerDelivery — which proves the vendor
+// seat, the booking and the folder, and lands the rows for the agent's REVIEW (never published on its own).
+import { submitPhotographerDelivery } from "@/app/actions/photo-management"
+import { createClient } from "@/lib/supabase/client"
+import { checkUpload } from "@/lib/storage/file-limits"
+import {
+  LISTING_MEDIA_BUCKET,
+  LISTING_MEDIA_DELIVERY_VENDOR_CATEGORIES,
+  DELIVERABLE_BOOKING_STATUSES,
+  PHOTOGRAPHER_DELIVERY_ATTESTATION_TEXT,
+  PHOTOGRAPHER_DELIVERY_ATTESTATION_VERSION,
+} from "@/lib/listings/owner-photo-upload"
 
 interface Booking {
   id: string
@@ -40,8 +54,19 @@ interface Booking {
   listing_id: string | null
   transaction_id: string | null
   vendor_id: string | null
-  vendors?: { id: string; name?: string } | null
+  /** The booking's tenant — the listing-media folder is `<brokerage_id>/<listing_id>/…`. */
+  brokerage_id?: string | null
+  approval_status?: string | null
+  vendors?: { id: string; name?: string; category?: string | null } | null
   transactions?: { id: string; property_address?: string } | null
+}
+
+/** PURE — may THIS booking take a photo delivery from this vendor seat? A listing booking, accepted (or complete), of a
+ *  photographer vendor. The server re-decides every one of these; this only decides whether to show the door. */
+function canDeliverPhotos(b: Booking): boolean {
+  return !!b.listing_id && !!b.vendor_id && !!b.brokerage_id
+    && (DELIVERABLE_BOOKING_STATUSES as readonly string[]).includes(b.status ?? "")
+    && (LISTING_MEDIA_DELIVERY_VENDOR_CATEGORIES as readonly string[]).includes(String(b.vendors?.category ?? "").toLowerCase())
 }
 
 interface QuoteRequest {
@@ -75,6 +100,8 @@ export function JobsClient({ bookings: initial, quoteRequests: initialQuotes = [
   const [quoteRequests, setQuoteRequests] = useState(initialQuotes)
   const [invoiceFor, setInvoiceFor] = useState<Booking | null>(null)
   const [requestFor, setRequestFor] = useState<Booking | null>(null)
+  const [deliverFor, setDeliverFor] = useState<Booking | null>(null)
+  const [delivered, setDelivered] = useState<Record<string, number>>({})
   const [invoiced, setInvoiced] = useState<Set<string>>(new Set())
   const [actionPending, startAction] = useTransition()
   const [actingOn, setActingOn] = useState<string | null>(null)
@@ -258,6 +285,18 @@ export function JobsClient({ bookings: initial, quoteRequests: initialQuotes = [
                     Complete
                   </Button>
                 )}
+                {canDeliverPhotos(b) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs gap-1 text-blue-700 border-blue-200 hover:bg-blue-50"
+                    onClick={() => setDeliverFor(b)}
+                    title="Deliver the photos for this listing — they go to the agent for review"
+                  >
+                    <Camera className="h-3 w-3" />
+                    {delivered[b.id] ? `Deliver more (${delivered[b.id]} sent)` : "Deliver photos"}
+                  </Button>
+                )}
                 {b.transaction_id && b.vendor_id && b.status !== "cancelled" && b.status !== "completed" && b.status !== "no_show" && (
                   <Button
                     size="sm"
@@ -309,7 +348,158 @@ export function JobsClient({ bookings: initial, quoteRequests: initialQuotes = [
           onInvoiced={(id) => setInvoiced((s) => new Set([...s, id]))}
         />
       )}
+
+      {deliverFor && (
+        <PhotoDeliveryDialog
+          booking={deliverFor}
+          onClose={() => setDeliverFor(null)}
+          onDelivered={(id, count) => setDelivered((d) => ({ ...d, [id]: (d[id] ?? 0) + count }))}
+        />
+      )}
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// THE PHOTOGRAPHER'S DELIVERY (wave 151, lane 151B — owner ruling L6.3)
+//
+// ASSIGNED LISTING (this booking's listing_id) → authenticated photographer (the vendor seat, proved server-side)
+// → permitted listing-media upload (direct to the tenant bucket under `<brokerage_id>/<listing_id>/…`, size + type gated
+//   by the bucket's own limits through checkUpload) → media validation + provenance (the rights statement, versioned)
+// → asset REVIEW (the rows land unapproved; the agent approves them in the Media Manager) → availability → agent notice.
+// ---------------------------------------------------------------------------
+
+function PhotoDeliveryDialog({
+  booking,
+  onClose,
+  onDelivered,
+}: {
+  booking: Booking
+  onClose: () => void
+  onDelivered: (bookingId: string, count: number) => void
+}) {
+  const [files, setFiles] = useState<File[]>([])
+  const [attested, setAttested] = useState(false)
+  const [progress, setProgress] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
+  function pickFiles(list: FileList | null) {
+    const next = Array.from(list ?? [])
+    const refused = next.map((f) => ({ f, gate: checkUpload({ bucket: LISTING_MEDIA_BUCKET, transport: "direct_to_storage", bytes: f.size, contentType: f.type }) }))
+      .filter((x) => !x.gate.ok)
+    if (refused.length > 0) {
+      setError(refused.map((x) => `${x.f.name}: ${(x.gate as { reason: string }).reason}`).join(" · "))
+      setFiles(next.filter((f) => !refused.some((x) => x.f === f)))
+      return
+    }
+    setError(null)
+    setFiles(next)
+  }
+
+  function handleDeliver() {
+    setError(null)
+    setResult(null)
+    if (!booking.listing_id || !booking.brokerage_id || !booking.vendor_id) { setError("This booking names no listing to deliver to."); return }
+    if (files.length === 0) { setError("Choose the photo files to deliver."); return }
+    if (!attested) { setError("Confirm the rights statement before delivering."); return }
+    const listingId = booking.listing_id
+    const brokerageId = booking.brokerage_id
+    const vendorId = booking.vendor_id
+    startTransition(async () => {
+      try {
+        const supabase = createClient()
+        const urls: string[] = []
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i]
+          setProgress(`Uploading ${i + 1} of ${files.length} — ${file.name}`)
+          const ext = (file.name.split(".").pop() ?? "jpg").toLowerCase()
+          // The Media Manager's own path convention: <brokerageId>/<listingId>/<timestamp>-<random>.<ext>. The bucket's
+          // RESTRICTIVE policy (owner SQL, OWNER-SQL §M) admits this vendor seat into exactly this listing's folder.
+          const path = `${brokerageId}/${listingId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+          const { error: upErr } = await supabase.storage.from(LISTING_MEDIA_BUCKET).upload(path, file, { contentType: file.type, upsert: false })
+          if (upErr) { setError(`${file.name} was not uploaded: ${upErr.message}`); setProgress(null); return }
+          const { data: pub } = supabase.storage.from(LISTING_MEDIA_BUCKET).getPublicUrl(path)
+          urls.push(pub.publicUrl)
+        }
+        setProgress("Recording the delivery for the agent's review…")
+        const res = await submitPhotographerDelivery({
+          vendorId,
+          bookingId: booking.id,
+          fileUrls: urls,
+          attestation: { accepted: true, version: PHOTOGRAPHER_DELIVERY_ATTESTATION_VERSION },
+        })
+        setProgress(null)
+        if (!res.success) { setError(res.error); return }
+        onDelivered(booking.id, res.recorded)
+        setResult(
+          `${res.recorded} photo${res.recorded === 1 ? "" : "s"} delivered for review` +
+          (res.skipped ? ` · ${res.skipped} already delivered` : "") +
+          (res.notified ? " · the listing agent has been notified" : res.warning ? ` · ${res.warning}` : ""),
+        )
+        setFiles([])
+      } catch (e) {
+        setProgress(null)
+        setError(e instanceof Error ? e.message : "The delivery could not be completed")
+      }
+    })
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Camera className="h-4 w-4 text-blue-600" />
+            Deliver listing photos
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Photos go to the listing agent for review before they are used anywhere. Only this booking&apos;s listing can receive them.
+          </p>
+          <div>
+            <Label className="text-xs" htmlFor={`photo-delivery-${booking.id}`}>Photo files (jpg, png, webp, heic)</Label>
+            <Input
+              id={`photo-delivery-${booking.id}`}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/gif"
+              multiple
+              className="mt-1"
+              onChange={(e) => pickFiles(e.target.files)}
+              disabled={isPending}
+            />
+            {files.length > 0 && (
+              <p className="text-xs text-muted-foreground mt-1">{files.length} file{files.length === 1 ? "" : "s"} selected</p>
+            )}
+          </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={attested}
+              onChange={(e) => setAttested(e.target.checked)}
+              disabled={isPending}
+              aria-describedby={`photo-attestation-${booking.id}`}
+            />
+            <span id={`photo-attestation-${booking.id}`}>{PHOTOGRAPHER_DELIVERY_ATTESTATION_TEXT}</span>
+          </label>
+          {progress && <p className="text-xs text-muted-foreground">{progress}</p>}
+          {error && <p className="text-xs text-red-600" role="alert">{error}</p>}
+          {result && <p className="text-xs text-emerald-700">{result}</p>}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>{result ? "Done" : "Cancel"}</Button>
+          <Button onClick={handleDeliver} disabled={isPending || files.length === 0 || !attested}>
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Camera className="h-4 w-4 mr-2" />}
+            Deliver for review
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

@@ -1,9 +1,11 @@
 "use server"
 
+import { createHash } from "node:crypto"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
+import { requireVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import {
   persistPhotoAnalysis,
   enhanceListingPhoto,
@@ -587,6 +589,104 @@ export async function processVendorPhotos(params: {
     skipped,
     analyzed,
     reordered: ordering.success ? (ordering as { reordered?: number }).reordered ?? 0 : 0,
+  }
+}
+
+// ============================================
+// THE PHOTOGRAPHER'S OWN DELIVERY (wave 151, lane 151B — owner ruling L6.3)
+// ============================================
+
+/**
+ * An ASSIGNED photographer delivers photos for the listing of ITS booking.
+ *
+ *   ASSIGNED LISTING → authenticated photographer → permitted listing-media upload → media validation
+ *   → source / rights and ownership provenance → asset review (never auto-published) → availability → agent notification.
+ *
+ * GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4, the manager-registry pattern): requireVendorActor proves the SESSION
+ * user holds the claimed vendor seat (user_role_assignments.vendor_id) and hands back the vendor's tenant — the body
+ * supplies NO tenant and NO identity. The recording itself is lib/listings/owner-photo-upload.ts recordPhotographerDelivery
+ * (the ONE writer of a vendor_delivery photo): it refuses a booking that is not this vendor's, not a listing booking, not
+ * accepted / approved, a vendor that is not a photographer, a file outside THIS listing's folder of the tenant's bucket or
+ * not a photo type, and a missing attestation. Rows land for REVIEW (approval_required, is_approved false) and never on
+ * listings.photos. The service client is needed because listing_media_tenant_insert admits tenant STAFF seats only.
+ *
+ * LAW 5 — the delivery is a consequential write into a tenant's listing by an outside party, so it runs under
+ * withActionLedger: who (the vendor seat), why (HUMAN_REQUESTED — the photographer's own act), what (the booking, the file
+ * count), what happened (recorded_for_review / the refusal by name). Idempotency key = booking + the file set, so a retried
+ * submit of the same files replays instead of recording twice; a refused delivery is re-claimable.
+ *
+ * processVendorPhotos above stays the STAFF ingest of delivered URLs (photo_source NULL = not recorded, no attestation);
+ * this door is the photographer's own, with provenance — the two are different actors, not two spellings of one path.
+ */
+export async function submitPhotographerDelivery(params: {
+  vendorId: string
+  bookingId: string
+  fileUrls: string[]
+  attestation: { accepted: boolean; version: string } | null
+}): Promise<
+  | { success: true; listingId: string; recorded: number; skipped: number; notified: boolean; warning: string | null }
+  | { success: false; error: string; refusal?: string }
+> {
+  if (!isValidUUID(params.vendorId) || !isValidUUID(params.bookingId)) {
+    return { success: false, error: "Invalid booking or vendor id" }
+  }
+  const urls = (params.fileUrls ?? []).map((u) => String(u ?? "").trim()).filter(Boolean)
+  if (urls.length === 0) return { success: false, error: "No photo files were delivered" }
+
+  // THE GATE: the session owns the claimed vendor seat. Nothing below runs without it.
+  let actor: Awaited<ReturnType<typeof requireVendorActor>>
+  try {
+    actor = await requireVendorActor(params.vendorId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
+  const { recordPhotographerDelivery } = await import("@/lib/listings/owner-photo-upload")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const svc = createServiceClient()
+  const fileSet = createHash("sha1").update([...urls].sort().join("\n")).digest("hex").slice(0, 16)
+
+  const result = await withActionLedger(
+    {
+      brokerageId: actor.brokerageId,
+      action: "listing_media.photographer_delivery",
+      actor: { type: "user", userId: actor.userId },
+      subject: { type: "vendor_booking", id: params.bookingId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: "an assigned photographer delivered listing photos for review",
+      idempotencyKey: `photographer_delivery:${params.bookingId}:${fileSet}`,
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "photo-management:submitPhotographerDelivery",
+      detail: { vendor_id: actor.vendorId, file_count: urls.length },
+    },
+    () => recordPhotographerDelivery(svc, {
+      brokerageId: actor.brokerageId,
+      vendorId: actor.vendorId,
+      userId: actor.userId,
+      bookingId: params.bookingId,
+      fileUrls: urls,
+      attestation: params.attestation,
+    }),
+    {
+      settle: (r) => r.ok
+        ? { status: "executed", outcome: r.mediaIds.length > 0 ? "recorded_for_review" : "already_recorded", provider: null, providerRef: r.listingId, costUsd: null }
+        : { status: "skipped", outcome: r.refusal, error: r.error },
+      replay: (claim) => ({ ok: false as const, refusal: "nothing" as const, error: `This delivery was already submitted (${claim.kind}).` }),
+    },
+    { client: svc },
+  )
+
+  if (!result.ok) return { success: false, error: result.error, refusal: result.refusal }
+  revalidatePath(`/dashboard/listings/${result.listingId}`)
+  revalidatePath(`/dashboard/listings/${result.listingId}/media`)
+  return {
+    success: true,
+    listingId: result.listingId,
+    recorded: result.mediaIds.length,
+    skipped: result.skipped,
+    notified: !!result.notifiedUserId,
+    warning: result.notifyWarning,
   }
 }
 

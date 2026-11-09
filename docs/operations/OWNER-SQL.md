@@ -790,6 +790,109 @@ ALTER POLICY users_same_brokerage_select ON public.users
 | L6.11 | PostcardMania / PCM quotes | 150R | Getting a quote is outreach — the owner's call. |
 | L6.12 | The Meta lead-form `legal_content` verification | 150PU | The verifying UPDATE is in m978's header; it runs only after a live Lead Ads Testing Tool check confirms `custom_disclaimer.body.text`. |
 
+## M. Wave 151 — owner decisions applied to §L, and the one piece of owner SQL that remains (lane 151B, 2026-11-09)
+
+The owner ruled on §L items L1–L6 in the wave-151 directive (§151B). What each became:
+
+| §L item | Owner decision | Where it went |
+|---|---|---|
+| L1 (`organization_members_brokerage_id_user_id_key` drop) | DROP from the pending scope — the integrator applies it live | Not this lane's; nothing written. |
+| L2 (`raw_scraped_leads_source_record_id_key` drop) | DROP from the pending scope — the integrator applies it live | Not this lane's; nothing written. |
+| L3 (`listing-media` storage policies) | KEEP **only if they match the code's ownership / access contracts** | Verified below: **AMEND** — corrected SQL in M.1. Still owner SQL (storage.objects). |
+| L4 (S3, team lead contacts) | Team leaders see the Contacts of the teams they lead, never brokerage-wide | A MIGRATION now, not owner SQL: `supabase/migrations/m963-team-lead-reads-contacts-of-the-teams-they-lead.sql` (the integrator applies via MCP). The §L L4 draft is superseded: it used `current_user_led_team_id()`, which is `LIMIT 1` — one team, not "the teams they lead". |
+| L5 (S4, `users_same_brokerage_select`) | Contacts see only their own; vendors only their assigned work | A MIGRATION: `supabase/migrations/m964-users-rows-stay-with-staff-seats-own-row-and-the-assigned-agent.sql` — the §L L5 draft plus the lawful narrow read the portal needs (the assigned agent's row for a contact; the booking / assigning agent's row for a vendor), measured from every `.from("users")` under app/portal, app/vendor, lib/portal, lib/vendors. The vendor-side tenant-wide reads S4 also names are `m965-vendor-seats-read-only-their-assigned-work.sql`. |
+| L6.3 (photographer deliveries) | An assigned photographer uploads for exactly its booked listing; review, never auto-publish | A MIGRATION: `supabase/migrations/m966-photographer-delivery-is-a-third-photo-source.sql` + code (`lib/listings/owner-photo-upload.ts recordPhotographerDelivery`, `app/actions/photo-management.ts submitPhotographerDelivery`, the vendor jobs page). |
+
+### M.1. L3 verdict — AMEND the `listing-media` `storage.objects` policies (owner SQL; Dashboard → Storage → Policies, or SQL editor as `supabase_storage_admin` — `postgres` is refused 42501, as in §F)
+
+**What is live today (measured 2026-11-09, `pg_policies` on `storage.objects`):** four PERMISSIVE policies — `Agents can upload listing media` (INSERT, `authenticated`, `bucket_id = 'listing-media'`), `Agents can update listing media` (UPDATE), `Agents can delete listing media` (DELETE), `Public can read listing media` (SELECT, `public`). Any signed-in seat of ANY tenant — a contact, a vendor, a stranger with an account — may PUT, overwrite or delete any object in the bucket. The bucket is `public`, 50 MB, image + video mime list.
+
+**The code's contracts, censused (every path that writes or reads the bucket):**
+
+1. `app/dashboard/listings/[id]/media/components/media-grid.tsx uploadFile` → a TENANT STAFF seat PUTs `<brokerageId>/<listingId>/<file>` with the browser session, then `app/actions/listing-media.ts uploadListingMedia` → `lib/listings/owner-photo-upload.ts recordOwnerUploadedListingPhoto` records the row (refuses a URL outside `listing-media/<tenant>/<listing>/`; m993 attestation). `listing_media_tenant_insert` admits `is_tenant_staff_seat()` only, so a contact or vendor seat can never RECORD such a file — but the storage policy still lets them WRITE it.
+2. **NEW (wave 151, L6.3):** `app/vendor/jobs/jobs-client.tsx` → the ASSIGNED PHOTOGRAPHER (a `vendor` seat whose `vendors.category = 'photographer'` holds a `vendor_bookings` row for the listing, status `confirmed` / `completed`, approval not pending / declined) PUTs into exactly `<brokerageId>/<listingId>/` of its booking, then `app/actions/photo-management.ts submitPhotographerDelivery` records it for review.
+3. Deletes / overwrites: `app/actions/listing-media.ts deleteListingMedia` and the Media Manager act on ROWS through the staff seat; no vendor or contact path overwrites or deletes an object.
+4. Reads: public (the listing page, portals, producers read public URLs) — unchanged.
+5. Other prefixes (`stock-clips/…`, `video-backgrounds/…`, rendered videos) are written by server routes with the service role; untouched.
+
+**Why §L L3 as written does NOT match:** its RESTRICTIVE INSERT admits `(storage.foldername(name))[1] = current_user_brokerage_id()::text` for EVERY authenticated seat of the tenant — a contact seat and ANY vendor seat (the stager, a vendor assigned to a different listing) may write into ANY listing folder of the tenant, which is wider than contract 1 (staff) and contract 2 (the photographer's ONE booked listing). Its UPDATE / DELETE arms admit every tenant seat to overwrite or delete any listing object (no code path needs that for a non-staff seat). So: AMEND. The corrected policies below keep §L's shape (RESTRICTIVE, UUID-first-folder paths only, other prefixes untouched, reads public) and add the seat rule.
+
+```sql
+BEGIN;
+DROP POLICY IF EXISTS "listing-media tenant listing folder insert" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder update" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder delete" ON storage.objects;
+
+-- INSERT: a tenant STAFF seat into any listing folder of its tenant; an ASSIGNED PHOTOGRAPHER vendor seat into exactly the
+-- folder of the listing its deliverable booking names (the same rule lib/listings/owner-photo-upload.ts recordPhotographerDelivery
+-- applies to the row). Paths whose first folder is not a UUID (stock-clips, video-backgrounds, renders) are not touched.
+CREATE POLICY "listing-media tenant listing folder insert" ON storage.objects
+  AS RESTRICTIVE FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (
+      (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+      AND EXISTS (SELECT 1 FROM public.listings l
+                   WHERE l.id::text = (storage.foldername(name))[2]
+                     AND l.brokerage_id = public.current_user_brokerage_id())
+      AND (
+        public.is_tenant_staff_seat()
+        OR EXISTS (
+          SELECT 1
+            FROM public.vendor_bookings vb
+            JOIN public.vendors v ON v.id = vb.vendor_id
+            JOIN public.user_role_assignments ura ON ura.vendor_id = vb.vendor_id
+           WHERE ura.user_id = auth.uid()
+             AND vb.brokerage_id = public.current_user_brokerage_id()
+             AND vb.listing_id::text = (storage.foldername(name))[2]
+             AND vb.status IN ('confirmed', 'completed')
+             AND (vb.approval_status IS NULL OR vb.approval_status IN ('approved', 'auto_approved'))
+             AND v.category = 'photographer'
+        )
+      )
+    )
+  );
+
+-- UPDATE / DELETE: tenant STAFF seats, inside their own tenant's listing folders. No non-staff path overwrites or deletes.
+CREATE POLICY "listing-media tenant listing folder update" ON storage.objects
+  AS RESTRICTIVE FOR UPDATE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text AND public.is_tenant_staff_seat())
+  )
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text AND public.is_tenant_staff_seat())
+  );
+
+CREATE POLICY "listing-media tenant listing folder delete" ON storage.objects
+  AS RESTRICTIVE FOR DELETE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text AND public.is_tenant_staff_seat())
+  );
+COMMIT;
+```
+
+Pre-check and verification (read-only) — §L L3's queries still apply; add:
+```sql
+-- the helpers the policy names exist
+SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND proname IN ('current_user_brokerage_id', 'is_tenant_staff_seat');
+-- done when this lists the three RESTRICTIVE rows (plus the four pre-existing permissive ones):
+SELECT policyname, permissive, cmd FROM pg_policies
+ WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') ILIKE '%listing-media%' OR coalesce(with_check,'') ILIKE '%listing-media%')
+ ORDER BY policyname;
+```
+Negative tests (owner, in a browser session): a tenant-A agent → `listing-media/<tenant-B id>/<tenant-B listing>/x.jpg` → 403; the same agent → its own listing folder → 200; a tenant-A CONTACT seat → any listing folder → 403; a tenant-A photographer vendor with a `confirmed` booking for listing L → `listing-media/<A>/<L>/x.jpg` → 200, and → another listing's folder → 403; the same vendor with only a `booked` (unaccepted) booking → 403; a stager vendor → 403.
+
+**Ordering:** apply m963–m966 (integrator, MCP) in any order; this owner SQL is independent of them. Until it is applied, the photographer's upload still SUCCEEDS at storage under the live permissive policy (as does anyone's), and only the RECORD is gated — the release-gate reading "overbroad storage access BLOCKED" stays true until the three RESTRICTIVE rows exist.
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

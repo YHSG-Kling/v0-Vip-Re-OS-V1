@@ -621,6 +621,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'movement-signals', label: 'Movement Signals', href: '/dashboard/intelligence/movement-signals', icon: 'Activity' },
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
+      // WAVE 151 (lane 151B — directive §151B: the header / global navigation must expose Transactions to authorized roles).
+      // The tenant admin reads the brokerage's deals at the database (transactions_brokerage_staff_read admits
+      // can_read_brokerage_books(), which names 'admin') and had NO navigation entry for them — only Transaction Propensity.
+      // Same id / href as the broker's entry, so a multi-role user sees it once (getNavigationForRole dedupes by id), and the
+      // header shortcut (app/components/layout/header.tsx findTransactionsNavItem) derives from this row.
+      { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
       // Orphan-route sweep: the agent roster's ONLY link lived in RootRoleShortcuts,
       // a component that was never rendered — so the page was already unreachable

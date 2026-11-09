@@ -4,14 +4,29 @@
 // strictly to what the signed-in user may see (tenant, office, team, assignment, role; agents never see raw tenant leads merely
 // because they exist)").
 //
+// WAVE 151 (lane 151B — directive §151B "User types and navigation invariants": "global search must include scoped
+// Transactions and Contacts without making the acquisition Lead queue visible to agents"; owner ruling L4: "Team leaders may
+// see Contacts belonging to the teams they are authorized to lead", never brokerage-wide merely for being a team lead):
+//   · TRANSACTIONS join the search, scoped the way the live transactions policies scope them — the brokerage's books readers
+//     and the TC tenant-wide (transactions_brokerage_staff_read: can_read_brokerage_books() OR is_tc_role()), a team lead the
+//     deals of their team's agents (team_leader_read_team_transactions), an agent their own deals on any of the three agent
+//     columns (agent_read_own_transactions);
+//   · a TEAM LEAD's contacts and transactions come from lib/auth/lead-visibility.ts resolveTeamLeadContactScope — the ONE
+//     team roster (agents.team_id + active team_members + the lead's own agents row), collapsing to the tenant only for the
+//     tenant principal of a team / solo tenant (m526) — the same answer m963 installs at the database. Before this, the
+//     single-office roster rule inside resolveViewerHierarchy handed a team lead an AGGREGATE scope, so the box searched the
+//     whole brokerage's contacts for them and said "your whole workspace".
+//
 // SURVIVOR VERDICT. There was no app-wide RECORD search: the header box (app/components/layout/global-search.tsx) only opened the
 // ⌘K command palette (pages and actions), and the per-desk searches (app/actions/crm.ts searchContacts — agentId from a
 // PARAMETER) are desk-local. MISSING → this is the smallest complete implementation, composed ONLY of the scope survivors:
 //   · tenant          — the SESSION brokerage (app/actions/global-search.ts takes it from requireCaller, never from the box);
 //   · office / team   — resolveViewerHierarchy (lib/kernel/resolve-user-office.ts, C34 — the scope answer on multi-location
-//                       tenants; a single-office tenant keeps the CLAUDE.md §4 roster rule inside it);
-//   · assignment      — contacts.agent_id / leads.agent_id / listings.agent_id against the viewer's OWN agents rows
-//                       (agents.user_id — agents.id and users.id are DISJOINT, CLAUDE.md §3);
+//                       tenants; a single-office tenant keeps the CLAUDE.md §4 roster rule inside it) and, for a team lead,
+//                       resolveTeamLeadContactScope (above);
+//   · assignment      — contacts.agent_id / leads.agent_id / listings.agent_id / transactions.{agent_id,seller_agent_id,
+//                       buyer_agent_id} against the viewer's OWN agents rows (agents.user_id — agents.id and users.id are
+//                       DISJOINT, CLAUDE.md §3);
 //   · role / leads    — resolveLeadVisibility + applyLeadRowScope (lib/auth/lead-visibility.ts), the ONE lead-desk rule. A seat
 //                       outside the lead desk (an agent) sees a lead ONLY when it is assigned to one of their own agents rows —
 //                       never the brokerage's raw pool (lane 150PU Outside-lane; lane 150BAA Outside-lane).
@@ -21,8 +36,9 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveViewerHierarchy, type HierarchyScope } from "@/lib/kernel/resolve-user-office"
-import { resolveLeadVisibility, applyLeadRowScope } from "@/lib/auth/lead-visibility"
+import { resolveLeadVisibility, applyLeadRowScope, resolveTeamLeadContactScope, teamContactOrFilter, type TeamContactScope } from "@/lib/auth/lead-visibility"
 import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 type Client = SupabaseClient<any, any, any>
 
@@ -43,9 +59,10 @@ export type ScopedRecordSearch =
       query: string
       contacts: RecordHit[]
       listings: RecordHit[]
+      transactions: RecordHit[]
       leads: RecordHit[]
       /** How far this viewer's search reached, per record kind — shown under the results, asserted by the proof. */
-      reach: { contacts: string; listings: string; leads: string }
+      reach: { contacts: string; listings: string; transactions: string; leads: string }
     }
   | { ok: false; error: string }
 
@@ -64,6 +81,12 @@ function inClauses(parts: Array<[string, string[]]>): string[] {
   return parts.filter(([, ids]) => ids.length > 0).map(([col, ids]) => `${col}.in.(${ids.join(",")})`)
 }
 
+/** PURE. The tenant-wide transaction readers, as the live policy spells them: can_read_brokerage_books() (the finance roster
+ *  + compliance_officer) OR is_tc_role(). Derived from the ONE roster, never retyped. */
+function readsBrokerageTransactions(userType: string): boolean {
+  return isBrokerageFinanceAdmin({ user_type: userType }) || userType === "compliance_officer" || userType === "tc"
+}
+
 /**
  * The search, scoped. `client` MUST be the caller's session client; `viewer` MUST come from the session.
  */
@@ -72,7 +95,7 @@ export async function searchScopedRecords(client: Client, viewer: RecordSearchVi
   if (!viewer.userId || !viewer.brokerageId) return { ok: false, error: "Search needs your workspace — sign in again." }
   const t = String(viewer.userType ?? "").toLowerCase()
   if (t === "contact" || t === "vendor") return { ok: false, error: "Search is for your team's workspace." }
-  if (!q) return { ok: true, query: "", contacts: [], listings: [], leads: [], reach: { contacts: "type at least two letters", listings: "", leads: "" } }
+  if (!q) return { ok: true, query: "", contacts: [], listings: [], transactions: [], leads: [], reach: { contacts: "type at least two letters", listings: "", transactions: "", leads: "" } }
 
   // ── scope facts (each read's error is READ; any refusal refuses) ──
   const hier = await resolveViewerHierarchy(client, { userId: viewer.userId, brokerageId: viewer.brokerageId })
@@ -84,22 +107,41 @@ export async function searchScopedRecords(client: Client, viewer: RecordSearchVi
   const own = (ownRows ?? []) as Array<{ id: string; location_id: string | null }>
   const ownAgentIds = own.map((a) => a.id)
 
+  // THE TEAM LEAD (wave 151, L4): a team_lead seat — or any seat the hierarchy knows leads a team — reads contacts and
+  // transactions through the ONE team roster, unless a TENANT LEADERSHIP GRANT (an explicit C34 grant, not the seat) widened
+  // them to the whole tenant. The single-office roster rule never widens a team lead here.
+  const leadershipGrant = scope.aggregate && scope.basis.includes("tenant leadership grant")
+  const leadsATeam = t === "team_lead" || scope.basis.some((b) => /^leads team /.test(b))
+  let teamScope: TeamContactScope | null = null
+  if (leadsATeam && !leadershipGrant) {
+    const ts = await resolveTeamLeadContactScope(client, { userId: viewer.userId, brokerageId: viewer.brokerageId })
+    if (!ts.ok) return { ok: false, error: `Search could not confirm your team (${ts.reason}).` }
+    teamScope = ts.scope
+  }
+  const teamTenantWide = teamScope?.kind === "brokerage"
+
   // The agents inside a non-aggregate office / team scope — the only way a lead (which carries no office or team) is placed.
   let scopeAgentIds: string[] = [...ownAgentIds]
-  if (!scope.aggregate && (scope.locationIds.length > 0 || scope.teamIds.length > 0)) {
+  if (teamScope?.kind === "team") {
+    scopeAgentIds = [...new Set([...ownAgentIds, ...teamScope.agentIds])]
+  } else if (!scope.aggregate && (scope.locationIds.length > 0 || scope.teamIds.length > 0)) {
     const { data: inScope, error: sErr } = await client.from("agents").select("id").eq("brokerage_id", viewer.brokerageId)
       .or(inClauses([["location_id", scope.locationIds], ["team_id", scope.teamIds]]).join(","))
     if (sErr) return { ok: false, error: `Search could not read your office's agents (${sErr.message}).` }
     scopeAgentIds = [...new Set([...ownAgentIds, ...((inScope ?? []) as Array<{ id: string }>).map((a) => a.id)])]
   }
 
-  // ── CONTACTS: tenant for an aggregate view (or back-office contact staff on a single-office tenant, the contact-access rule),
-  //    otherwise the viewer's offices / teams / own assignments. ──
-  const contactsTenantWide = scope.aggregate || (!multi && isCrmContactStaff(t) && t !== "agent")
-  const contactScope = contactsTenantWide ? [] : inClauses([["location_id", scope.locationIds], ["team_id", scope.teamIds], ["agent_id", ownAgentIds]])
+  // ── CONTACTS: a team lead their team's (or the tenant, as its principal); tenant for an aggregate view (or back-office
+  //    contact staff on a single-office tenant, the contact-access rule), otherwise the viewer's offices / teams / own assignments. ──
+  const contactsTenantWide = teamScope ? teamTenantWide : (scope.aggregate || (!multi && isCrmContactStaff(t) && t !== "agent"))
+  const contactScope = teamScope && !teamTenantWide
+    ? [teamContactOrFilter(teamScope) ?? ""]
+    : contactsTenantWide ? [] : inClauses([["location_id", scope.locationIds], ["team_id", scope.teamIds], ["agent_id", ownAgentIds]])
   let contacts: RecordHit[] = []
-  let contactsReach = contactsTenantWide ? "your whole workspace" : scope.kind === "offices" ? "your office(s)" : scope.kind === "teams" ? "your team(s) and your own" : "contacts assigned to you"
-  if (contactsTenantWide || contactScope.length > 0) {
+  let contactsReach = teamScope
+    ? (teamTenantWide ? "your whole workspace (you lead this team's workspace)" : teamScope.kind === "none" ? "no team is anchored to your account" : "your team(s)' contacts and your own")
+    : contactsTenantWide ? "your whole workspace" : scope.kind === "offices" ? "your office(s)" : scope.kind === "teams" ? "your team(s) and your own" : "contacts assigned to you"
+  if (contactsTenantWide || contactScope.filter(Boolean).length > 0) {
     let cq = client.from("contacts").select("id, first_name, last_name, email, city").eq("brokerage_id", viewer.brokerageId).is("deleted_at", null)
       .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%`)
     if (!contactsTenantWide) cq = cq.or(contactScope.join(","))
@@ -130,8 +172,34 @@ export async function searchScopedRecords(client: Client, viewer: RecordSearchVi
     }))
   } else listingsReach = "no listings in your scope yet"
 
+  // ── TRANSACTIONS (wave 151): the books readers and the TC tenant-wide (narrowed to the office scope on a multi-location
+  //    tenant); a team lead the deals of their team's agents; everyone else their OWN deals on any of the three agent columns. ──
+  const txTenantWide = teamScope ? teamTenantWide : (readsBrokerageTransactions(t) && (!multi || scope.aggregate))
+  const txAgentIds = teamScope?.kind === "team" ? scopeAgentIds : readsBrokerageTransactions(t) && multi && !scope.aggregate ? scopeAgentIds : ownAgentIds
+  const txScope = txTenantWide ? [] : inClauses([["agent_id", txAgentIds], ["seller_agent_id", txAgentIds], ["buyer_agent_id", txAgentIds]])
+  let transactions: RecordHit[] = []
+  let transactionsReach = teamScope
+    ? (teamTenantWide ? "your whole workspace's deals" : teamScope.kind === "none" ? "no team is anchored to your account" : "your team(s)' deals and your own")
+    : txTenantWide ? "your workspace's deals" : readsBrokerageTransactions(t) ? "your office's deals" : "deals you are the agent on"
+  if (txTenantWide || txScope.length > 0) {
+    let tq = client.from("transactions").select("id, deal_name, client_name, property_address, property_city, stage, status").eq("brokerage_id", viewer.brokerageId).is("deleted_at", null)
+      .or(`deal_name.ilike.%${q}%,client_name.ilike.%${q}%,property_address.ilike.%${q}%,property_city.ilike.%${q}%`)
+    if (!txTenantWide) tq = tq.or(txScope.join(","))
+    const { data, error } = await tq.limit(PER_KIND)
+    if (error) return { ok: false, error: `Transaction search was refused (${error.message}).` }
+    transactions = ((data ?? []) as Array<Record<string, string | null>>).map((x) => ({
+      id: String(x.id), label: x.property_address || x.deal_name || x.client_name || "Transaction",
+      detail: [x.client_name, x.property_city, x.stage ?? x.status].filter(Boolean).join(" · ") || null, href: `/dashboard/transactions/${x.id}`,
+    }))
+  } else transactionsReach = "no deals are assigned to you yet"
+
   // ── LEADS: the lead desk reads through its ONE rule (narrowed to the office / team scope on a multi-location tenant); every
   //    other seat sees only leads ASSIGNED to its own agents rows — never the raw tenant pool. ──
+  // A team_lead SEAT that leads no team has no board: the ONE roster above already resolved that fact, and the lead rule's
+  // fail-closed branch would refuse the whole search for it. The leads kind is empty with the reason instead; nothing widens.
+  if (teamScope?.kind === "none") {
+    return { ok: true, query: q, contacts, listings, transactions, leads: [], reach: { contacts: contactsReach, listings: listingsReach, transactions: transactionsReach, leads: "no team is anchored to your account — the lead desk cannot be resolved for it" } }
+  }
   const vis = await resolveLeadVisibility(client, { userId: viewer.userId, userType: viewer.userType, platformRole: viewer.platformRole, brokerageId: viewer.brokerageId })
   if (!vis.allowed && vis.status === "unresolved") return { ok: false, error: `Search could not confirm your lead access (${vis.reason}).` }
   let leads: RecordHit[] = []
@@ -163,5 +231,5 @@ export async function searchScopedRecords(client: Client, viewer: RecordSearchVi
     }))
   }
 
-  return { ok: true, query: q, contacts, listings, leads, reach: { contacts: contactsReach, listings: listingsReach, leads: leadsReach } }
+  return { ok: true, query: q, contacts, listings, transactions, leads, reach: { contacts: contactsReach, listings: listingsReach, transactions: transactionsReach, leads: leadsReach } }
 }

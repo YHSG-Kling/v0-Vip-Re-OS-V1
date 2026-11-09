@@ -337,7 +337,9 @@ function sectionD(m999: { policies: ParsedAlter[]; views: ParsedView[] } | null)
   const officeReads = c.policies.filter((p) => officeTables.includes(p.table) && /\blocation_id\b/.test(p.qual))
   publish(`office columns live on ${officeTables.length} canary tables (${officeTables.join(", ")}); ${officeReads.length} read policies reference location_id — DB-level cross-office isolation does not exist; only the code-side egress scope (section B) separates offices`)
   const usersRead = c.policies.find((p) => p.table === "users" && /current_user_brokerage_id\(\)/.test(p.qual) && !STAFF_GATE.test(p.qual.replace(/is_platform_staff\(\)\s*OR/, "")))
-  if (usersRead) publish(`PII: ${usersRead.table}.${usersRead.policy} lets every seat of the tenant (contacts and vendors included) read every users row of that tenant — integrator SQL S4`)
+  // WAVE 151 (lane 151B): S4 is now a migration — m964 (users rows stay with staff seats, the own row and the assigned agent);
+  // once applied this line stops printing because the qual carries is_tenant_staff_seat(). Until then it is the live finding.
+  if (usersRead) publish(`PII: ${usersRead.table}.${usersRead.policy} lets every seat of the tenant (contacts and vendors included) read every users row of that tenant — fixed by m964 (WRITTEN, NOT APPLIED; test:access-matrix projects it)`)
 
   if (!m999) return
   const after = judge(project(c, m999))

@@ -65,6 +65,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   TENANT_ADMIN_USER_TYPES,
   isPlatformStaffIdentity,
+  resolveTenantPrincipalTeamLead,
 } from "@/lib/auth/resolve-user-role"
 import { readRoleGrants } from "@/lib/auth/role-grants"
 import { SYSTEM_AI_USER_TYPES } from "@/lib/kernel/tier-role-matrix"
@@ -399,63 +400,58 @@ export async function resolveLeadVisibilityForSession(supabase: AnySupabase): Pr
  * failure this module exists to prevent. In the collapsed case above the pool is
  * visible because the scope is brokerage scope, not because a team owns it.
  */
-async function resolveTeamLeadScope(
+/**
+ * THE LED-TEAM ROSTER — the ONE derivation of "which teams does this session user lead, and
+ * which agents are on them" (wave 151, lane 151B). It used to live inline in the lead scope
+ * below; the CONTACT scope at the foot of this file (owner ruling L4: a team lead sees the
+ * Contacts of the teams they lead) needs the identical roster, and two copies of a roster
+ * read is how leads and contacts start disagreeing about who is on a team (§6).
+ *
+ *   · teamIds   — teams.team_lead_id = userId, in the caller's OWN tenant, not deleted.
+ *   · allTeamIds — every live team of the tenant (the lead scope's collapse rule reads it).
+ *   · agentIds  — BOTH membership sources, because both are live: `agents.team_id` is the
+ *                 denormalised one every agent row carries, and `team_members` is the roster
+ *                 table with effective dating. A row present in one and not the other is a
+ *                 member either way; taking only one would silently drop the rows the team is
+ *                 actually working. Plus the team lead's OWN agents row — a record assigned to
+ *                 the team lead in person is their team's, and their agents row may carry a
+ *                 NULL team_id and be missed by both reads.
+ *
+ * Every read's error is READ (§3): a refused roster read is `{ ok: false }`, never an empty
+ * roster — for a widening gate, "empty" would mean "no restriction".
+ */
+async function readLedTeamRoster(
   supabase: AnySupabase,
   userId: string,
   brokerageId: string,
-  via: "user_type" | "grant",
-): Promise<LeadVisibility> {
-  // The teams this SESSION user leads, inside their OWN tenant.
+): Promise<{ ok: true; teamIds: string[]; allTeamIds: string[]; agentIds: string[] } | { ok: false; reason: string }> {
   const { data: ledRows, error: ledError } = await supabase
     .from("teams")
     .select("id")
     .eq("brokerage_id", brokerageId)
     .eq("team_lead_id", userId)
     .is("deleted_at", null)
-  if (ledError) {
-    return { allowed: false, status: "unresolved", reason: "Could not resolve your team" }
-  }
+  if (ledError) return { ok: false, reason: "Could not resolve your team" }
   const teamIds = ((ledRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean)
-  // FAIL CLOSED. A team_lead with no team has no board, and a board that cannot
-  // be resolved is not an empty board — both refuse rather than falling through
-  // to the tenant's rows.
-  if (teamIds.length === 0) {
-    return { allowed: false, status: "unresolved", reason: "No team is anchored to your account" }
-  }
 
-  // Does this actor lead EVERY team in the tenant? (the collapse rule)
   const { data: allRows, error: allError } = await supabase
     .from("teams")
     .select("id")
     .eq("brokerage_id", brokerageId)
     .is("deleted_at", null)
-  if (allError) {
-    return { allowed: false, status: "unresolved", reason: "Could not resolve your brokerage's teams" }
-  }
+  if (allError) return { ok: false, reason: "Could not resolve your brokerage's teams" }
   const allTeamIds = ((allRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean)
-  const led = new Set(teamIds)
-  if (allTeamIds.length > 0 && allTeamIds.every((id) => led.has(id))) {
-    return { allowed: true, via, scope: { kind: "brokerage", brokerageId }, soleTeamTenant: true }
-  }
 
-  // TRUE team scope: the agents.id values that belong to this actor's team(s).
-  // BOTH membership sources are read, because both are live: `agents.team_id`
-  // is the denormalised one every agent row carries, and `team_members` is the
-  // roster table with effective dating. A row present in one and not the other
-  // is a member either way; taking only one of them would silently drop leads
-  // the team is actually working.
+  if (teamIds.length === 0) return { ok: true, teamIds, allTeamIds, agentIds: [] }
+
   const [byAgents, byMembers, ownAgent] = await Promise.all([
     supabase.from("agents").select("id").eq("brokerage_id", brokerageId).in("team_id", teamIds),
     supabase.from("team_members").select("agent_id").eq("brokerage_id", brokerageId).in("team_id", teamIds).eq("is_active", true),
-    // The team lead's OWN agents row. A lead assigned to the team lead in person
-    // is their team's; their agents row may carry a NULL team_id and would then
-    // be missed by both reads above.
     supabase.from("agents").select("id").eq("brokerage_id", brokerageId).eq("user_id", userId),
   ])
   if (byAgents.error || byMembers.error || ownAgent.error) {
-    return { allowed: false, status: "unresolved", reason: "Could not resolve your team roster" }
+    return { ok: false, reason: "Could not resolve your team roster" }
   }
-
   const agentIds = [
     ...new Set([
       ...((byAgents.data ?? []) as Array<{ id: string }>).map((r) => r.id),
@@ -463,8 +459,31 @@ async function resolveTeamLeadScope(
       ...((ownAgent.data ?? []) as Array<{ id: string }>).map((r) => r.id),
     ]),
   ].filter(Boolean)
+  return { ok: true, teamIds, allTeamIds, agentIds }
+}
 
-  return { allowed: true, via, scope: { kind: "team", brokerageId, teamIds, agentIds } }
+async function resolveTeamLeadScope(
+  supabase: AnySupabase,
+  userId: string,
+  brokerageId: string,
+  via: "user_type" | "grant",
+): Promise<LeadVisibility> {
+  const roster = await readLedTeamRoster(supabase, userId, brokerageId)
+  if (!roster.ok) return { allowed: false, status: "unresolved", reason: roster.reason }
+  // FAIL CLOSED. A team_lead with no team has no board, and a board that cannot
+  // be resolved is not an empty board — both refuse rather than falling through
+  // to the tenant's rows.
+  if (roster.teamIds.length === 0) {
+    return { allowed: false, status: "unresolved", reason: "No team is anchored to your account" }
+  }
+
+  // Does this actor lead EVERY team in the tenant? (the collapse rule)
+  const led = new Set(roster.teamIds)
+  if (roster.allTeamIds.length > 0 && roster.allTeamIds.every((id) => led.has(id))) {
+    return { allowed: true, via, scope: { kind: "brokerage", brokerageId }, soleTeamTenant: true }
+  }
+
+  return { allowed: true, via, scope: { kind: "team", brokerageId, teamIds: roster.teamIds, agentIds: roster.agentIds } }
 }
 
 /**
@@ -621,4 +640,70 @@ export async function leadDeskRecipientUserIds(
   }
   for (const r of (data ?? []) as Array<{ id: string }>) out.add(r.id)
   return [...out]
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE TEAM LEAD'S CONTACT SCOPE (wave 151, lane 151B — owner ruling L4 / S3, 2026-11-09, verbatim:
+// "Team leaders may see Contacts belonging to the teams they are authorized to lead. Do not grant
+// brokerage-wide Contact visibility merely because the person is a team leader.")
+//
+// WHY IT LIVES HERE. This file's header argues that a per-surface row policy should not be
+// folded into the identity module — and it is not: this is the TEAM ANCHOR's second reader, built
+// on readLedTeamRoster above, so leads and contacts derive "who is on my team" from ONE roster
+// (§6). The database twin is supabase/migrations/m963 (contacts.team_lead_read_team_contacts),
+// and the two are written to give the same answer for the same inputs:
+//
+//   · tenant principal (m526 is_tenant_principal_team_lead(): plan_tier team / solo_agent AND
+//     exactly one live team, led by the caller) → the whole tenant. The team IS the tenant.
+//     Resolved by resolveTenantPrincipalTeamLead (lib/auth/resolve-user-role.ts), the app-side
+//     twin of that function — NOT the lead scope's "leads every team" collapse, which is wider
+//     (a brokerage-tier tenant with one team) and is a lead-desk ruling, not a contact one.
+//   · otherwise the led teams' rows: contacts whose team_id is a led team, or whose agent_id is
+//     an agent of a led team (agents.team_id OR active team_members) or the lead's own agents row.
+//   · a seat that leads no team is `none` — the policy admits nothing extra, whatever the
+//     user_type says (CLAUDE.md §4: the anchor is teams.team_lead_id, not the seat).
+//
+// FAIL CLOSED: a refused read is `{ ok: false }` and the caller refuses the surface.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export type TeamContactScope =
+  | { kind: "brokerage"; brokerageId: string; via: "tenant_principal" }
+  | { kind: "team"; brokerageId: string; teamIds: string[]; agentIds: string[] }
+  | { kind: "none"; brokerageId: string }
+
+export async function resolveTeamLeadContactScope(
+  supabase: AnySupabase,
+  session: { userId: string; brokerageId: string },
+): Promise<{ ok: true; scope: TeamContactScope } | { ok: false; reason: string }> {
+  const userId = String(session.userId ?? "")
+  const brokerageId = String(session.brokerageId ?? "")
+  if (!userId || !brokerageId) return { ok: false, reason: "No session identity" }
+
+  const principal = await resolveTenantPrincipalTeamLead(
+    supabase as unknown as Parameters<typeof resolveTenantPrincipalTeamLead>[0],
+    userId,
+    brokerageId,
+  )
+  if (!principal.ok) return { ok: false, reason: principal.reason }
+  if (principal.isPrincipal) return { ok: true, scope: { kind: "brokerage", brokerageId, via: "tenant_principal" } }
+
+  const roster = await readLedTeamRoster(supabase, userId, brokerageId)
+  if (!roster.ok) return { ok: false, reason: roster.reason }
+  if (roster.teamIds.length === 0) return { ok: true, scope: { kind: "none", brokerageId } }
+  return { ok: true, scope: { kind: "team", brokerageId, teamIds: roster.teamIds, agentIds: roster.agentIds } }
+}
+
+/**
+ * PURE. The PostgREST `or=(…)` filter a team contact scope becomes on a CONTACT-bearing table
+ * (team_id + agent_id columns): null for a brokerage scope (no narrowing beyond the tenant), an
+ * impossible filter for `none` (no rows — never "no filter"), otherwise the led teams and their
+ * agents. One applicator, so a surface cannot spell the scope a second way.
+ */
+export function teamContactOrFilter(scope: TeamContactScope): string | null {
+  if (scope.kind === "brokerage") return null
+  if (scope.kind === "none") return `id.eq.${NIL_UUID}`
+  const parts: string[] = []
+  if (scope.teamIds.length > 0) parts.push(`team_id.in.(${scope.teamIds.join(",")})`)
+  if (scope.agentIds.length > 0) parts.push(`agent_id.in.(${scope.agentIds.join(",")})`)
+  return parts.length > 0 ? parts.join(",") : `id.eq.${NIL_UUID}`
 }
