@@ -1104,6 +1104,12 @@ export async function resumeTenantProvisioning(service: any, brokerageId: string
 //   4. A placement of an EXISTING user is refused unless that user already sits in this tenant — so a solo agent
 //      whose declared affiliation spells this brokerage's name is never captured; only the consented transfer rail
 //      moves a person between tenants.
+//   5. SEVERAL MEMBERSHIPS PER PERSON, ONE PER SCOPE (wave 151, lane 151A). Owner SQL L1 (OWNER-SQL.md §L1) dropped the
+//      legacy `organization_members_brokerage_id_user_id_key`; the live rule is `organization_members_active_scope_key`
+//      — one ACTIVE row per (tenant, user, scope_kind, office, team). A person may be placed in two offices (an add),
+//      or MOVED (`reassign`, which revokes the other office placements); a revocation is a stamped row, never a delete
+//      (revokeScopeMemberships). No reader of this table may assume one row per person per tenant
+//      (scripts/multi-location-tenancy-guard.ts T6 / T8 hold this).
 
 type Svc = any
 
@@ -1161,6 +1167,16 @@ export interface StructureMemberInput {
   officeLeadership?: boolean
   /** Lead the team: anchors teams.team_lead_id when the team has no lead, and records a team leadership grant. */
   leadsTeam?: boolean
+  /**
+   * SEAT REASSIGNMENT (wave 151, lane 151A — owner: "seat reassignment, revocation and membership changes must work").
+   * A placement ADDS a membership by default — a person may hold several (owner: "a user may hold several memberships
+   * without global promotion"). `reassign: true` is a MOVE: the person's other active office placements in this tenant
+   * (and the team placements that sit inside those other offices) are revoked, stamped with the actor and the move as
+   * evidence, before the new office is pinned. Before owner SQL L1 dropped the legacy one-row-per-tenant UNIQUE a
+   * second office placement was refused 23505, so a "move" silently failed; after it, a move without this flag would
+   * silently leave the stale placement active. Neither is what an admin moving a person means.
+   */
+  reassign?: boolean
 }
 
 export interface TenantStructureInput {
@@ -1174,6 +1190,8 @@ export interface TenantStructureRecord {
   offices: Array<{ code: string; id: string; name: string }>
   teams: Array<{ key: string; id: string; name: string; locationId: string | null }>
   memberships: number
+  /** Memberships REVOKED by a `reassign` move in this run (wave 151, lane 151A). Optional: records written before it carry none. */
+  revoked?: number
   members: Array<{ key: string; status: "placed" | "failed"; userId?: string | null; locationId?: string | null; teamId?: string | null; error?: string }>
   errors: string[]
   notes: string[]
@@ -1236,10 +1254,14 @@ export function planTenantOffices(tier: string, brokerageName: string, offices: 
 async function grantMembership(svc: Svc, row: { brokerageId: string; userId: string; scope: MembershipScopeKind; locationId?: string | null; teamId?: string | null; access: MembershipAccessLevel; source: MembershipSource; grantedBy: string | null; evidence?: Record<string, unknown> | null; role?: string | null }): Promise<{ ok: true; created: boolean } | { ok: false; error: string }> {
   const locationId = row.scope === "location" ? row.locationId ?? null : null
   const teamId = row.scope === "team" ? row.teamId ?? null : null
-  let q = svc.from("organization_members").select("id, access_level").eq("brokerage_id", row.brokerageId).eq("user_id", row.userId).eq("scope_kind", row.scope).is("revoked_at", null)
-  q = locationId ? q.eq("location_id", locationId) : q.is("location_id", null)
-  q = teamId ? q.eq("team_id", teamId) : q.is("team_id", null)
-  const { data: existing, error: readErr } = await q.limit(1)
+  // A FRESH builder per read (a consumed builder is not re-awaited): the ACTIVE row of exactly this scope key.
+  const readActive = () => {
+    let q = svc.from("organization_members").select("id, access_level").eq("brokerage_id", row.brokerageId).eq("user_id", row.userId).eq("scope_kind", row.scope).is("revoked_at", null)
+    q = locationId ? q.eq("location_id", locationId) : q.is("location_id", null)
+    q = teamId ? q.eq("team_id", teamId) : q.is("team_id", null)
+    return q.limit(1)
+  }
+  const { data: existing, error: readErr } = await readActive()
   if (readErr) return { ok: false, error: `membership read refused: ${readErr.message}` }
   const hit = (existing ?? [])[0] as { id: string; access_level: string } | undefined
   if (hit) {
@@ -1255,10 +1277,80 @@ async function grantMembership(svc: Svc, row: { brokerageId: string; userId: str
     granted_by_user_id: row.grantedBy, evidence: row.evidence ?? {}, joined_at: new Date().toISOString(),
   })
   if (error) {
-    if (error.code === "23505") return { ok: false, error: `a second scope membership was refused by the legacy one-row-per-tenant UNIQUE — owner SQL O-150C-1 pending (${error.message})` }
+    // 23505 (wave 151, lane 151A): owner SQL L1 dropped the legacy one-row-per-tenant UNIQUE (applied live; the live
+    // catalogue holds ONLY organization_members_active_scope_key — one ACTIVE row per (tenant, user, scope, office, team)).
+    // So a duplicate key here can only be THIS SAME active scope row, written between the read above and this insert: the
+    // grant already exists, which is the idempotent outcome, not a refusal. The winner is re-read and reported as such;
+    // if nothing is found the refusal is reported by name — never "pending owner SQL" (a waypoint, CLAUDE.md §2) and never
+    // success over a row that is not there.
+    if (error.code === "23505") {
+      const { data: winner, error: reErr } = await readActive()
+      if (!reErr && (winner ?? []).length) return { ok: true, created: false }
+      return { ok: false, error: `membership write refused as a duplicate, yet no active ${row.scope} row was found to reuse (${error.message})` }
+    }
     return { ok: false, error: `membership write refused: ${error.message}` }
   }
   return { ok: true, created: true }
+}
+
+/**
+ * REVOKE a person's active scope memberships in ONE tenant (wave 151, lane 151A — owner: "seat reassignment, revocation
+ * and membership changes must work"). The row is never deleted: revoked_at / revoked_by_user_id are stamped and the
+ * evidence is merged (the audit stays; lib/kernel/resolve-user-office.ts reads only active rows). Every update is
+ * COUNTED (CLAUDE.md §3 — an UPDATE matching nothing also resolves) and every read's error is read.
+ *
+ * `keep` names the office / team the person is being placed in: that office's row and the team rows INSIDE it stay;
+ * a team row whose team works out of another office (teams.location_id) goes with the old office. A team not placed
+ * in any office is kept — it is not the old office's.
+ *
+ * Consumers: placeSeat below (a `reassign` move), app/actions/admin/locations.ts assignUserToLocationAction (unpin),
+ * lib/kernel/brokerage-transfer.ts runBrokerageTransferMigration (the SOURCE tenant's memberships of an adopted seat).
+ */
+export async function revokeScopeMemberships(svc: Svc, p: {
+  brokerageId: string
+  userId: string
+  actorUserId: string | null
+  scopes: readonly MembershipScopeKind[]
+  keep?: { locationId?: string | null; teamId?: string | null } | null
+  evidence?: Record<string, unknown> | null
+}): Promise<{ ok: true; revoked: number; ids: string[] } | { ok: false; error: string }> {
+  if (!p.scopes.length) return { ok: true, revoked: 0, ids: [] }
+  const { data, error } = await svc.from("organization_members").select("id, scope_kind, location_id, team_id, evidence")
+    .eq("brokerage_id", p.brokerageId).eq("user_id", p.userId).in("scope_kind", [...p.scopes]).is("revoked_at", null)
+  if (error) return { ok: false, error: `memberships read refused: ${error.message}` }
+  const rows = (data ?? []) as Array<{ id: string; scope_kind: string; location_id: string | null; team_id: string | null; evidence: Record<string, unknown> | null }>
+  const keepLocation = p.keep?.locationId ?? null
+  const keepTeam = p.keep?.teamId ?? null
+  // The office of every team row, read once — a team row goes with the office its team works out of.
+  const teamIds = rows.filter((r) => r.scope_kind === "team" && r.team_id).map((r) => r.team_id as string)
+  const teamOffice = new Map<string, string | null>()
+  if (teamIds.length && keepLocation) {
+    const { data: teams, error: tErr } = await svc.from("teams").select("id, location_id").eq("brokerage_id", p.brokerageId).in("id", teamIds)
+    if (tErr) return { ok: false, error: `teams read refused: ${tErr.message}` }
+    for (const t of (teams ?? []) as Array<{ id: string; location_id: string | null }>) teamOffice.set(t.id, t.location_id ?? null)
+  }
+  const doomed = rows.filter((r) => {
+    if (r.scope_kind === "location") return !(keepLocation && r.location_id === keepLocation)
+    if (r.scope_kind === "team") {
+      if (keepTeam && r.team_id === keepTeam) return false
+      if (!keepLocation) return true
+      const office = r.team_id ? teamOffice.get(r.team_id) ?? null : null
+      return office !== null && office !== keepLocation
+    }
+    return true
+  })
+  const nowIso = new Date().toISOString()
+  const ids: string[] = []
+  for (const r of doomed) {
+    const evidence = { ...(r.evidence ?? {}), revoked: { ...(p.evidence ?? {}), kept_location_id: keepLocation, kept_team_id: keepTeam } }
+    const { data: up, error: upErr } = await svc.from("organization_members")
+      .update({ revoked_at: nowIso, revoked_by_user_id: p.actorUserId, evidence, updated_at: nowIso })
+      .eq("id", r.id).eq("brokerage_id", p.brokerageId).is("revoked_at", null).select("id")
+    if (upErr) return { ok: false, error: `membership revocation refused: ${upErr.message}` }
+    if ((up ?? []).length !== 1) return { ok: false, error: `membership revocation matched ${(up ?? []).length} rows for ${r.id} (expected 1)` }
+    ids.push(r.id)
+  }
+  return { ok: true, revoked: ids.length, ids }
 }
 
 // ── Provisioning ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -1409,6 +1501,17 @@ async function placeSeat(svc: Svc, p: ProvisionStructureParams, m: StructureMemb
     const r = await invite({ brokerageId: p.brokerageId, teamId, email, firstName: trimOrNull(m.firstName) ?? "", lastName: trimOrNull(m.lastName) ?? "", userType: m.userType, callerUserId: p.actorUserId ?? p.ownerUserId, client: svc })
     if (!r.success || !r.userId) return { status: "failed", locationId, teamId, error: `invite refused: ${r.error ?? "unknown"}` }
     userId = r.userId
+  }
+
+  // A MOVE (reassign): end the person's other office placements in this tenant first — stamped with the actor and the
+  // move as evidence, counted. Only for an existing user (a new invitee holds nothing to move).
+  if (m.reassign && locationId && m.existingUserId) {
+    const rv = await revokeScopeMemberships(svc, {
+      brokerageId: p.brokerageId, userId, actorUserId: p.actorUserId, scopes: ["location", "team"], keep: { locationId, teamId },
+      evidence: { ...(p.evidence ?? {}), reason: "reassigned", reassigned_to_location_id: locationId, reassigned_to_team_id: teamId, source: p.source },
+    })
+    if (!rv.ok) return { status: "failed", userId, locationId, teamId, error: `reassignment refused: ${rv.error}` }
+    rec.revoked = (rec.revoked ?? 0) + rv.revoked
   }
 
   // Pin the office (the person's office of record, users.location_id m423) — COUNTED, pinned to this tenant.

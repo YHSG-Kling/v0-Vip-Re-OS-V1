@@ -21,11 +21,15 @@
  *   T5  CONSENTED-TRANSFER PLACEMENT — after the rail moved the person, the structure places them in the target office
  *       with source 'transfer' and the request's evidence; before the move it refuses.
  *   T6  STATIC — migrations' line-1 stamps, m958's dropped session write policies and composite FKs, the vocabulary
- *       matching the CHECKs, and the stripped-source census: no tenant / office / team read filters by name.
+ *       matching the CHECKs, and the stripped-source census: no tenant / office / team read filters by name; the
+ *       post-L1 membership RULE (one active row per scope, several scopes per person; a racing 23505 is idempotent).
+ *   T8  SEAT REASSIGNMENT / SEVERAL MEMBERSHIPS / REVOCATION (wave 151, lane 151A) — a `reassign` move ends the other
+ *       office placements (stamped, kept), an add keeps them (several memberships promote nobody), revokeScopeMemberships
+ *       is the ONE counted revocation, the keep rule, and the reader census (no one-row-per-person read anywhere).
  *
  * BLIND SPOTS: Supabase Auth and Stripe are injected (counted, not run); RLS policies are proven by reading m958, not
- * by a live session; the composite FKs are read from SQL, not exercised against Postgres; the legacy UNIQUE
- * (brokerage_id, user_id) that O-150C-1 drops is NOT modelled here (the code's 23505 branch is asserted by fixture).
+ * by a live session; the composite FKs are read from SQL, not exercised against Postgres; the live per-scope UNIQUE
+ * (NULLS NOT DISTINCT, partial on revoked_at IS NULL) is modelled only on team rows (the in-memory UNIQUE skips NULL keys).
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -340,12 +344,103 @@ const widensByStaff = (src: string) => /platform_role|["'`]superadmin["'`]/.test
 check("T6 the hierarchy answer never reads platform_role or a 'superadmin' user_type (stripped source)", hierSrc.length > 1000 && !widensByStaff(hierSrc))
 check("T6 POSITIVE CONTROL — the staff-widening finder catches both spellings", widensByStaff(`if (u.platform_role) return all`) && widensByStaff(`userType === "superadmin"`) && !widensByStaff(`const x = 1`))
 check("T6 structSrc is non-empty (the census actually read the section)", structSrc.length > 2000)
-const fx = memSupabase({ organization_members: [] }, { unique: { organization_members: [["brokerage_id", "user_id"]] } })
-const legacy = await provisionTenantStructure(fx as never, { brokerageId: "b1", tier: "solo_agent", ownerUserId: "u1", brokerageName: "Solo", actorUserId: "u1", source: "provisioning", input: null }, { report: async () => ({}) })
-;(fx as any).tables.teams = [{ id: "t1", brokerage_id: "b1", location_id: null, deleted_at: null }]
-;(fx as any).tables.users = [{ id: "u1", brokerage_id: "b1" }]
-const legacy2 = await provisionTenantStructure(fx as never, { brokerageId: "b1", tier: "solo_agent", ownerUserId: "u1", brokerageName: "Solo", actorUserId: "u1", source: "admin_grant", input: { members: [{ existingUserId: "u1", userType: "agent", teamId: "t1" }] } }, { report: async () => ({}) })
-check("T6 until O-150C-1 runs, a SECOND scope membership refused 23505 is reported by name — never as success", legacy.complete && !legacy2.complete && /O-150C-1 pending/.test(legacy2.errors.join(" ")), legacy2.errors.join("; "))
+// ONE ACTIVE ROW PER SCOPE, SEVERAL SCOPES PER PERSON (wave 151, lane 151A). Owner SQL L1 dropped the legacy
+// one-row-per-tenant UNIQUE (verified live 2026-11-09: only organization_members_active_scope_key remains, 0 rows), so the
+// RULE is asserted — never the waypoint "O-150C-1 pending" (CLAUDE.md §2): a second SCOPE is admitted; the same scope
+// twice is idempotent; a 23505 that races the read re-reads the winner (idempotent, never a refusal); a 23505 with NO
+// winner is reported as the refusal it is (positive control).
+{
+  const fx = memSupabase({ organization_members: [], teams: [{ id: "t1", brokerage_id: "b1", location_id: null, deleted_at: null }], users: [{ id: "u1", brokerage_id: "b1" }] }, { unique: { organization_members: [["brokerage_id", "user_id", "scope_kind", "team_id"]] } })
+  const first = await provisionTenantStructure(fx as never, { brokerageId: "b1", tier: "solo_agent", ownerUserId: "u1", brokerageName: "Solo", actorUserId: "u1", source: "provisioning", input: null }, { report: async () => ({}) })
+  const second = await provisionTenantStructure(fx as never, { brokerageId: "b1", tier: "solo_agent", ownerUserId: "u1", brokerageName: "Solo", actorUserId: "u1", source: "admin_grant", input: { members: [{ existingUserId: "u1", userType: "agent", teamId: "t1" }] } }, { report: async () => ({}) })
+  const again = await provisionTenantStructure(fx as never, { brokerageId: "b1", tier: "solo_agent", ownerUserId: "u1", brokerageName: "Solo", actorUserId: "u1", source: "admin_grant", input: { members: [{ existingUserId: "u1", userType: "agent", teamId: "t1" }] } }, { report: async () => ({}) })
+  const active = (fx as any).tables.organization_members.filter((m: Row) => m.user_id === "u1" && !m.revoked_at)
+  check("T6 RULE (post-L1): a person holds a TENANT membership AND a TEAM membership at once — two active rows, two scopes; the same team grant again is idempotent (no third row, no error)",
+    first.complete && second.complete && again.complete && active.length === 2 && new Set(active.map((m: Row) => m.scope_kind)).size === 2 && second.memberships === 1 && again.memberships === 0, [...first.errors, ...second.errors, ...again.errors].join("; "))
+  // The RACE: the read misses once (another writer landed the identical active row between read and insert) → 23505 → the
+  // winner is re-read → created:false. Modelled by hiding the first organization_members read of the next run.
+  let hide = 1
+  const origFrom = (fx as any).from.bind(fx)
+  ;(fx as any).from = (t: string) => {
+    const q: any = origFrom(t)
+    if (t === "organization_members") { const lim = q.limit.bind(q); q.limit = async (n: number) => { if (hide > 0) { hide--; return { data: [], error: null } } return lim(n) } }
+    return q
+  }
+  ;(fx as any).tables.teams.push({ id: "t2", brokerage_id: "b1", location_id: null, deleted_at: null })
+  ;(fx as any).tables.organization_members.push({ id: "pre-t2", brokerage_id: "b1", user_id: "u1", scope_kind: "team", location_id: null, team_id: "t2", access_level: "member", source: "admin_grant", revoked_at: null })
+  const raced = await provisionTenantStructure(fx as never, { brokerageId: "b1", tier: "solo_agent", ownerUserId: "u1", brokerageName: "Solo", actorUserId: "u1", source: "admin_grant", input: { members: [{ existingUserId: "u1", userType: "agent", teamId: "t2" }] } }, { report: async () => ({}) })
+  ;(fx as any).from = origFrom
+  check("T6 a 23505 that RACES the read is idempotent: the winner is re-read, the placement completes, no second row, nothing reported as pending owner SQL",
+    raced.complete && raced.memberships === 0 && (fx as any).tables.organization_members.filter((m: Row) => m.team_id === "t2" && !m.revoked_at).length === 1 && !/O-150C-1/.test(raced.errors.join(" ")), raced.errors.join("; "))
+  // POSITIVE CONTROL: a 23505 with NO winner to re-read is a refusal, reported by name — never success.
+  const ghost = memSupabase({ organization_members: [], teams: [{ id: "t1", brokerage_id: "b1", location_id: null, deleted_at: null }], users: [{ id: "u1", brokerage_id: "b1" }] })
+  const ghostFrom = (ghost as any).from.bind(ghost)
+  ;(ghost as any).from = (t: string) => { const q: any = ghostFrom(t); if (t === "organization_members") q.insert = async () => ({ data: null, error: { code: "23505", message: "duplicate key value violates unique constraint (fixture)" } }); return q }
+  const refused = await provisionTenantStructure(ghost as never, { brokerageId: "b1", tier: "solo_agent", ownerUserId: "u1", brokerageName: "Solo", actorUserId: "u1", source: "admin_grant", input: { members: [{ existingUserId: "u1", userType: "agent", teamId: "t1" }] } }, { report: async () => ({}) })
+  check("T6 POSITIVE CONTROL — a 23505 whose re-read finds no active row is REFUSED by name (duplicate, nothing to reuse), never success", !refused.complete && /duplicate/.test(refused.errors.join(" ")) && !/O-150C-1/.test(refused.errors.join(" ")), refused.errors.join("; "))
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[T8 · seat reassignment, several memberships, revocation — wave 151 (lane 151A)]")
+{
+  const { revokeScopeMemberships } = await import("../lib/kernel/tenant-creation")
+  const actor = multi.userId as string
+  const ovaId = userByEmail("overflow@coastal.test")!.id
+  const dtMem = () => mems(multi.brokerageId, ovaId).filter((m) => m.scope_kind === "location" && m.location_id === dt!.id)
+  check("T8 pre-condition: the overflow agent sits in Downtown with ONE active location membership", dtMem().length === 1 && userByEmail("overflow@coastal.test")!.location_id === dt!.id)
+  // A MOVE: Downtown → Beaches with `reassign` — the Downtown placement is ENDED (stamped, never deleted), Beaches is active, the pin follows.
+  const moved = await provisionTenantStructure(svc as never, { brokerageId: multi.brokerageId, tier: "multi_location", ownerUserId: actor, brokerageName: "Coastal Realty", actorUserId: actor, source: "admin_grant", evidence: { granted_via: "proof" }, input: { members: [{ existingUserId: ovaId, userType: "agent", locationId: bch!.id, reassign: true }] } }, { report: async () => ({}) })
+  const ovaRows = svc.tables.organization_members.filter((m) => m.brokerage_id === multi.brokerageId && m.user_id === ovaId)
+  const ended = ovaRows.find((m) => m.scope_kind === "location" && m.location_id === dt!.id)
+  check("T8 MOVE (reassign): Downtown's placement is revoked — row kept, revoked_at + revoked_by = the actor, evidence names the move and the office it went to; Beaches is the one active office placement; users.location_id = Beaches; the record counts 1 revoked",
+    moved.complete && moved.revoked === 1 && !!ended?.revoked_at && ended?.revoked_by_user_id === actor && ended?.evidence?.revoked?.reason === "reassigned" && ended?.evidence?.revoked?.reassigned_to_location_id === bch!.id
+      && mems(multi.brokerageId, ovaId).filter((m) => m.scope_kind === "location").map((m) => m.location_id).join() === bch!.id && userByEmail("overflow@coastal.test")!.location_id === bch!.id, moved.errors.join("; ") || JSON.stringify(ended))
+  // An ADD (no reassign): placed in Downtown too — SEVERAL memberships, no promotion (scope stays own work).
+  const added = await provisionTenantStructure(svc as never, { brokerageId: multi.brokerageId, tier: "multi_location", ownerUserId: actor, brokerageName: "Coastal Realty", actorUserId: actor, source: "admin_grant", input: { members: [{ existingUserId: ovaId, userType: "agent", locationId: dt!.id }] } }, { report: async () => ({}) })
+  const twoOffices = mems(multi.brokerageId, ovaId).filter((m) => m.scope_kind === "location").map((m) => m.location_id).sort()
+  const scopeAfter = await scopeOf(ovaId, multi.brokerageId)
+  check("T8 ADD (no reassign): a person may hold SEVERAL office memberships — Beaches AND Downtown active (L1), nothing revoked, and holding two offices promotes nobody (scope still own work)",
+    added.complete && (added.revoked ?? 0) === 0 && twoOffices.join() === [bch!.id, dt!.id].sort().join() && scopeAfter.ok && scopeAfter.scope.kind === "own" && !scopeAfter.scope.aggregate, added.errors.join("; ") || JSON.stringify(twoOffices))
+  // REVOCATION through the ONE helper: everything the person holds in the tenant's offices ends; the rows stay as audit; the reader sees none.
+  const revoked = await revokeScopeMemberships(svc as never, { brokerageId: multi.brokerageId, userId: ovaId, actorUserId: actor, scopes: ["location", "team"], evidence: { reason: "unassigned" } })
+  const after = svc.tables.organization_members.filter((m) => m.brokerage_id === multi.brokerageId && m.user_id === ovaId)
+  check("T8 REVOKE: both office placements ended in one counted call (2 revoked, 0 active); every row kept with revoked_at / revoked_by / evidence; a second call revokes 0 (idempotent)",
+    revoked.ok && revoked.revoked === 2 && mems(multi.brokerageId, ovaId).length === 0 && after.length === 3 && after.every((m) => !!m.revoked_at && m.revoked_by_user_id === actor) && (await revokeScopeMemberships(svc as never, { brokerageId: multi.brokerageId, userId: ovaId, actorUserId: actor, scopes: ["location", "team"] })).revoked === 0, revoked.ok ? JSON.stringify(after.map((m) => [m.scope_kind, !!m.revoked_at])) : revoked.error)
+  const refusedRevoke = await revokeScopeMemberships(memSupabase({}, { refuse: { organization_members: "permission denied (fixture)" } }) as never, { brokerageId: multi.brokerageId, userId: ovaId, actorUserId: actor, scopes: ["location"] })
+  check("T8 FAIL CLOSED — a refused memberships read refuses the revocation by name (never '0 to revoke')", !refusedRevoke.ok && /refused/.test(refusedRevoke.error))
+  // The keep rule: a team INSIDE the kept office stays; a team in another office goes with it. Pure fixture.
+  const keepFx = memSupabase({
+    organization_members: [
+      { id: "m-loc-a", brokerage_id: "b", user_id: "u", scope_kind: "location", location_id: "A", team_id: null, revoked_at: null },
+      { id: "m-loc-b", brokerage_id: "b", user_id: "u", scope_kind: "location", location_id: "B", team_id: null, revoked_at: null },
+      { id: "m-team-a", brokerage_id: "b", user_id: "u", scope_kind: "team", location_id: null, team_id: "tA", revoked_at: null },
+      { id: "m-team-b", brokerage_id: "b", user_id: "u", scope_kind: "team", location_id: null, team_id: "tB", revoked_at: null },
+      { id: "m-team-free", brokerage_id: "b", user_id: "u", scope_kind: "team", location_id: null, team_id: "tFree", revoked_at: null },
+    ],
+    teams: [{ id: "tA", brokerage_id: "b", location_id: "A" }, { id: "tB", brokerage_id: "b", location_id: "B" }, { id: "tFree", brokerage_id: "b", location_id: null }],
+  })
+  const kept = await revokeScopeMemberships(keepFx as never, { brokerageId: "b", userId: "u", actorUserId: "x", scopes: ["location", "team"], keep: { locationId: "A" } })
+  const keptActive = (keepFx as any).tables.organization_members.filter((m: Row) => !m.revoked_at).map((m: Row) => m.id).sort()
+  check("T8 the KEEP rule on a move into A: office A and its team stay, office B and ITS team go, a team placed in no office stays (it is not B's)", kept.ok && kept.revoked === 2 && keptActive.join() === ["m-loc-a", "m-team-a", "m-team-free"].sort().join(), JSON.stringify(keptActive))
+  // READER CENSUS: no reader of organization_members in lib/ or app/ asks for ONE row per person per tenant (stripped source).
+  const { readdirSync, statSync } = await import("node:fs")
+  const walk = (dir: string, out: string[] = []): string[] => { for (const e of readdirSync(join(ROOT, dir))) { const rel = `${dir}/${e}`; if (e === "node_modules" || e.startsWith(".")) continue; if (statSync(join(ROOT, rel)).isDirectory()) walk(rel, out); else if (/\.tsx?$/.test(e)) out.push(rel) } return out }
+  /** PURE — a ONE-ROW-PER-PERSON read of organization_members: a maybeSingle / single whose filter chain is not keyed on the
+   *  row's primary key (`.eq("id", …)` — one membership row by id, the revoke door's shape — is a row read, not a per-person
+   *  assumption). Stripped source, whitespace folded. */
+  const singleRowMembershipRead = (src: string) => {
+    const flat = src.replace(/\s+/g, " ")
+    for (const m of flat.matchAll(/from\( ?["'`]organization_members["'`] ?\)([^;]{0,600}?)\.(maybeSingle|single)\(/g)) {
+      if (!/\.eq\( ?["'`]id["'`]/.test(m[1])) return true
+    }
+    return false
+  }
+  const offenders = [...walk("lib"), ...walk("app")].filter((f) => { const s = read(f); return /organization_members/.test(s) && singleRowMembershipRead(stripComments(s)) })
+  check("T8 CENSUS — no lib/ or app/ reader of organization_members reads ONE row per person (a maybeSingle / single not keyed on the row id); every per-person reader takes the list (several memberships per person is the rule)", offenders.length === 0, offenders.join(", "))
+  check("T8 POSITIVE CONTROL — the census catches a per-person one-row read, ignores a list read, a by-id row read and a commented one",
+    singleRowMembershipRead(`const { data } = await svc.from("organization_members").select("id").eq("brokerage_id", b).eq("user_id", u).maybeSingle()`) && !singleRowMembershipRead(`const { data } = await svc.from("organization_members").select("id").eq("user_id", u)`)
+      && !singleRowMembershipRead(`const { data } = await svc.from("organization_members").select("id, user_id").eq("id", membershipId).eq("brokerage_id", b).is("revoked_at", null).maybeSingle()`) && !singleRowMembershipRead(stripComments(`// svc.from("organization_members").select("id").eq("user_id", u).maybeSingle()\nconst a = 1`)))
+}
 
 console.log("\n[T7 · the explicit grant door — Settings → Offices (source-read; the session client cannot run in memory)]")
 const actSrc = stripComments(read("app/dashboard/settings/offices/actions.ts"))
@@ -360,7 +455,7 @@ check("T7 every export of the door is async (a \"use server\" export is a public
 
 console.log("\n[blind spots]")
 console.log("  · Supabase Auth (the member invite) and Stripe (the paid checkout) are injected; the REAL inviteTenantMember path is driven by test:subscriber-provisioning")
-console.log("  · RLS and the composite FKs are read from m957/m958, not exercised against Postgres; the legacy UNIQUE is modelled only in the 23505 fixture")
+console.log("  · RLS and the composite FKs are read from m957/m958, not exercised against Postgres; the live per-scope UNIQUE (NULLS NOT DISTINCT, partial) is modelled on team rows only; owner SQL L1 (the legacy UNIQUE drop) was verified LIVE on 2026-11-09, not here")
 console.log("  · T5 drives the placement after simulating the rail's membership step; T5b proves the rail CALLS it by stripped source — the full rail run is test:brokerage-identity's (no office fixture there)")
 console.log("  · consumers that still scope by egress-scope.ts user_type ladder (command center, exception center, reporting) are not re-pointed here (Outside-lane)")
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)

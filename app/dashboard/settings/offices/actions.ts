@@ -46,6 +46,9 @@ export async function grantOfficeMembershipAction(formData: FormData): Promise<v
   const locationId = String(formData.get("locationId") ?? "").trim()
   const teamId = String(formData.get("teamId") ?? "").trim() || null
   const access = String(formData.get("access") ?? "member").trim()
+  // MOVE vs ADD (wave 151, lane 151A): "move" ends the person's other office placements (seat reassignment); the default
+  // adds a placement and keeps the others (a person may hold several memberships).
+  const reassign = String(formData.get("move") ?? "") === "1"
   if (!memberId || !locationId) redirect(done("error", "Choose a person and an office."))
   if (!(MEMBERSHIP_ACCESS_LEVELS as readonly string[]).includes(access)) redirect(done("error", "Unknown access level."))
 
@@ -61,6 +64,8 @@ export async function grantOfficeMembershipAction(formData: FormData): Promise<v
   const row = person as { id: string; user_type: string | null; location_id: string | null } | null
   if (!row) redirect(done("error", "That person is not a member of this workspace."))
   if (!scope.aggregate && row.location_id && !scope.locationIds.includes(row.location_id)) redirect(done("error", "That person works out of another office — ask the brokerage's leadership to move them."))
+  // A MOVE ends placements in offices the granter may not see; only the aggregated view may do that.
+  if (reassign && !scope.aggregate) redirect(done("error", "Only the brokerage's leadership can move a person between offices — you can add them to an office you lead."))
 
   const { data: tenant, error: tierErr } = await svc.from("brokerages").select("plan_tier, name").eq("id", brokerageId).maybeSingle()
   if (tierErr || !tenant) redirect(done("error", "Your workspace's plan could not be read — nothing was changed."))
@@ -68,12 +73,13 @@ export async function grantOfficeMembershipAction(formData: FormData): Promise<v
 
   const rec = await provisionTenantStructure(svc, {
     brokerageId, tier: t.plan_tier ?? "", ownerUserId: user.id, brokerageName: t.name ?? "", actorUserId: user.id,
-    source: "admin_grant", evidence: { granted_via: "settings_offices", granter_scope: scope.kind },
-    input: { members: [{ existingUserId: row.id, userType: row.user_type ?? "agent", locationId, teamId, officeLeadership: access === "leadership" }] },
+    source: "admin_grant", evidence: { granted_via: "settings_offices", granter_scope: scope.kind, mode: reassign ? "move" : "add" },
+    input: { members: [{ existingUserId: row.id, userType: row.user_type ?? "agent", locationId, teamId, officeLeadership: access === "leadership", reassign }] },
   })
   revalidatePath(BACK)
   if (!rec.complete) redirect(done("error", rec.errors.join("; ") || "The placement was refused."))
-  redirect(done("placed", access === "leadership" ? "Office head named." : "Placed in the office."))
+  const moved = rec.revoked ? ` ${rec.revoked} earlier placement${rec.revoked === 1 ? "" : "s"} ended.` : ""
+  redirect(done("placed", (access === "leadership" ? "Office head named." : reassign ? "Moved to this office." : "Placed in the office.") + moved))
 }
 
 export async function revokeOfficeMembershipAction(formData: FormData): Promise<void> {

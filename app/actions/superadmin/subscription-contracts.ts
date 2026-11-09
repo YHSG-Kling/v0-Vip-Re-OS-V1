@@ -16,6 +16,21 @@
 // RLS (m481) backs both: templates writable only under is_platform_staff().
 // NO e-sign provider is involved anywhere in this lane — the tenant signs
 // IN-APP and the record is the signature; nothing here simulates a send.
+//
+// WAVE 151 (lane 151A — the owner's acceptance ruling). The rules moved to ONE
+// module, lib/legal/subscription-agreement.ts, and this door became thin:
+//   · a saved text is HASHED (content_sha256) and its docs/legal header read
+//     (version label, the DRAFT banner);
+//   · a NEW template is a DRAFT and INACTIVE; a body edit of a template that is
+//     active, approved or already accepted by a tenant becomes a NEW version row
+//     (supersedes_template_id) — the accepted text is never edited underneath a
+//     tenant (reviseSubscriptionTemplate);
+//   · APPROVAL is a recorded owner/counsel decision (who, when, the note) on a
+//     text that carries no draft banner (approveSubscriptionTemplate);
+//   · ACTIVATION refuses a draft or unapproved version (the m959 CHECK says the
+//     same) and tells the signers of the superseded version to re-accept
+//     (activateSubscriptionTemplate);
+//   · an attached document is hashed from its bytes before the row claims it.
 
 import { headers } from "next/headers"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -28,6 +43,10 @@ import {
   type SignedUploadTicket,
   type SignedUploadRefusal,
 } from "@/lib/storage/signed-upload-url"
+import {
+  reviseSubscriptionTemplate, approveSubscriptionTemplate, activateSubscriptionTemplate, templateActivationRefusal,
+  agreementBytesHash, agreementContentHash, isDraftMarked, AGREEMENT_APPROVAL_STATUSES,
+} from "@/lib/legal/subscription-agreement"
 
 export interface SubscriptionContractTemplate {
   id: string
@@ -41,6 +60,20 @@ export interface SubscriptionContractTemplate {
   updated_at: string
   /** How many tenants have signed this template. */
   signature_count: number
+  /** wave 151: the document's own version label (docs/legal header), the content hash, the approval record, provenance. */
+  version_label: string | null
+  content_sha256: string | null
+  approval_status: string | null
+  approved_at: string | null
+  approval_note: string | null
+  source_path: string | null
+  supersedes_template_id: string | null
+  /** The body still carries the draft banner — it can be neither approved nor activated. */
+  draft_marked: boolean
+  /** The recorded hash still equals the hash of the body on the row (false = the text was changed outside this door). */
+  hash_matches: boolean | null
+  /** Why this version cannot be made active right now — null when it can. */
+  activation_blocker: string | null
 }
 
 // Audit — same conventions as plan-catalog: every mutation → superadmin_audit_log,
@@ -78,7 +111,7 @@ export async function listSubscriptionContractTemplatesAction(): Promise<
 
   const { data, error } = await svc
     .from("platform_contract_templates")
-    .select("id, name, contract_type, body_text, body_storage_path, version, is_active, created_at, updated_at")
+    .select("id, name, contract_type, body_text, body_storage_path, version, is_active, created_at, updated_at, version_label, content_sha256, approval_status, approved_at, approval_note, source_path, supersedes_template_id")
     .order("created_at", { ascending: false })
   if (error) return { ok: false, error: error.message }
 
@@ -93,21 +126,41 @@ export async function listSubscriptionContractTemplatesAction(): Promise<
 
   return {
     ok: true,
-    templates: ((data ?? []) as Array<Omit<SubscriptionContractTemplate, "signature_count">>).map((t) => ({
-      ...t,
-      signature_count: counts.get(t.id) ?? 0,
-    })),
+    templates: ((data ?? []) as Array<Omit<SubscriptionContractTemplate, "signature_count" | "draft_marked" | "hash_matches" | "activation_blocker">>).map((t) => {
+      // ONE vocabulary: a stored status outside AGREEMENT_APPROVAL_STATUSES reads as a draft (never as approved).
+      const status = (AGREEMENT_APPROVAL_STATUSES as readonly string[]).includes(t.approval_status ?? "") ? (t.approval_status as string) : "draft"
+      const row = { ...t, approval_status: status, version_label: t.version_label ?? null, content_sha256: t.content_sha256 ?? null, approved_at: t.approved_at ?? null, approval_note: t.approval_note ?? null, source_path: t.source_path ?? null, supersedes_template_id: t.supersedes_template_id ?? null }
+      return {
+        ...row,
+        signature_count: counts.get(t.id) ?? 0,
+        draft_marked: isDraftMarked(t.body_text),
+        hash_matches: t.body_text?.trim() && t.content_sha256 ? agreementContentHash(t.body_text) === t.content_sha256 : null,
+        activation_blocker: templateActivationRefusal(row),
+      }
+    }),
   }
 }
 
-// ─── Create / update a template (superadmin only) ────────────────────────────
+// ─── Create / revise a template (superadmin only) ────────────────────────────
+// A NEW template is a draft and inactive. A body revision bumps the version — an
+// edit of an active / approved / accepted text is a NEW version row, so every
+// signature stays pinned to the exact text (template_version + content hash)
+// that was read. `bodyChanged` is reported so the audit says what moved.
 
-export async function upsertSubscriptionContractTemplateAction(input: {
+export interface UpsertSubscriptionContractTemplateInput {
   id?: string
   name: string
   bodyText: string
-  isActive?: boolean
-}): Promise<{ ok: true; id: string; version: number } | { ok: false; error: string }> {
+  /** The document's own version label (docs/legal header `Version:`); parsed from the body when omitted. */
+  versionLabel?: string | null
+  /** Provenance: the docs/legal path the text was taken from. */
+  sourcePath?: string | null
+}
+export type UpsertSubscriptionContractTemplateResult =
+  | { ok: true; id: string; version: number; created: boolean; supersededId: string | null; draftMarked: boolean; contentSha256: string; versionLabel: string | null }
+  | { ok: false; error: string }
+
+export async function upsertSubscriptionContractTemplateAction(input: UpsertSubscriptionContractTemplateInput): Promise<UpsertSubscriptionContractTemplateResult> {
   const gate = await requireSuperadmin()
   if (!gate.ok) return { ok: false, error: gate.error }
 
@@ -117,53 +170,34 @@ export async function upsertSubscriptionContractTemplateAction(input: {
   if (!bodyText) return { ok: false, error: "A contract with no body is not a contract anyone can sign" }
 
   const svc = createServiceClient()
-
-  if (input.id) {
-    // A body revision bumps the version — signatures snapshot the version they
-    // were given, so what a tenant signed stays provable after an edit.
-    const { data: existing, error: readErr } = await svc
-      .from("platform_contract_templates")
-      .select("id, body_text, version")
-      .eq("id", input.id)
-      .maybeSingle()
-    if (readErr) return { ok: false, error: readErr.message }
-    if (!existing) return { ok: false, error: "Template not found" }
-    const bodyChanged = (existing as { body_text: string | null }).body_text !== bodyText
-    const nextVersion = (existing as { version: number }).version + (bodyChanged ? 1 : 0)
-
-    const { error } = await svc
-      .from("platform_contract_templates")
-      .update({
-        name,
-        body_text: bodyText,
-        version: nextVersion,
-        ...(typeof input.isActive === "boolean" ? { is_active: input.isActive } : {}),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", input.id)
-    if (error) return { ok: false, error: error.message }
-    await audit(gate.userId, "subscription_contract_template.updated", input.id, { name, version: nextVersion, bodyChanged })
-    revalidatePath("/dashboard/superadmin/contracts")
-    return { ok: true, id: input.id, version: nextVersion }
-  }
-
-  const { data, error } = await svc
-    .from("platform_contract_templates")
-    .insert({
-      name,
-      contract_type: "subscription_agreement",
-      body_text: bodyText,
-      version: 1,
-      is_active: input.isActive ?? true,
-      created_by: gate.userId,
-    })
-    .select("id")
-    .single()
-  if (error) return { ok: false, error: error.message }
-  const id = (data as { id: string }).id
-  await audit(gate.userId, "subscription_contract_template.created", id, { name })
+  const r = await reviseSubscriptionTemplate(svc, { id: input.id ?? null, name, bodyText, versionLabel: input.versionLabel ?? null, sourcePath: input.sourcePath ?? null, actorUserId: gate.userId })
+  if (!r.ok) return r
+  await audit(gate.userId, r.created ? (r.supersededId ? "subscription_contract_template.new_version" : "subscription_contract_template.created") : "subscription_contract_template.updated", r.id,
+    { name, version: r.version, bodyChanged: r.bodyChanged, supersededId: r.supersededId, contentSha256: r.contentSha256, versionLabel: r.versionLabel, draftMarked: r.draftMarked })
   revalidatePath("/dashboard/superadmin/contracts")
-  return { ok: true, id, version: 1 }
+  return { ok: true, id: r.id, version: r.version, created: r.created, supersededId: r.supersededId, draftMarked: r.draftMarked, contentSha256: r.contentSha256, versionLabel: r.versionLabel }
+}
+
+// ─── Record the owner's / counsel's approval (superadmin only; wave 151) ─────
+// Approval is a RECORD of a decision made outside this code — who approved the
+// text and when — on a version that carries no draft banner. Nothing here infers
+// approval; the note is required so the record names its source.
+
+export async function approveSubscriptionContractTemplateAction(input: {
+  templateId: string
+  /** Who approved (owner / counsel), the date or reference — stored verbatim. */
+  note: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const gate = await requireSuperadmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+  const templateId = (input.templateId ?? "").trim()
+  if (!templateId) return { ok: false, error: "No template selected" }
+  const svc = createServiceClient()
+  const r = await approveSubscriptionTemplate(svc, { templateId, actorUserId: gate.userId, note: input.note })
+  if (!r.ok) return r
+  await audit(gate.userId, "subscription_contract_template.approved", templateId, { note: (input.note ?? "").trim().slice(0, 500) })
+  revalidatePath("/dashboard/superadmin/contracts")
+  return { ok: true }
 }
 
 // ─── Attach an uploaded document (superadmin only) ────────────────────────────
@@ -218,11 +252,15 @@ export async function planPlatformContractDocumentUploadAction(input: {
  *  record the path. Validated against the SAME purpose prefix the mint used, so
  *  a caller cannot point a template at an object outside this lane's own tree —
  *  the path is untrusted input at this call (it came back from the browser),
- *  even though it was this server that minted the URL that produced it. */
+ *  even though it was this server that minted the URL that produced it.
+ *  WAVE 151: the object is READ BACK and HASHED before the row claims it — a
+ *  document that cannot be read is not attached (fail closed), and the hash is
+ *  what every acceptance of this version is pinned to. Attaching a document to a
+ *  template that is active / approved / accepted is refused: that is a new version. */
 export async function attachPlatformContractDocumentAction(input: {
   templateId: string
   storagePath: string
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<{ ok: true; contentSha256: string } | { ok: false; error: string }> {
   const gate = await requireSuperadmin()
   if (!gate.ok) return { ok: false, error: gate.error }
 
@@ -240,9 +278,24 @@ export async function attachPlatformContractDocumentAction(input: {
   }
 
   const svc = createServiceClient()
+  const { data: t, error: tErr } = await svc.from("platform_contract_templates").select("id, is_active, approval_status").eq("id", templateId).maybeSingle()
+  if (tErr) return { ok: false, error: tErr.message }
+  if (!t) return { ok: false, error: "Template not found" }
+  const { data: sigs, error: sigErr } = await svc.from("tenant_contract_signatures").select("id").eq("template_id", templateId).limit(1)
+  if (sigErr) return { ok: false, error: `Could not count the template's acceptances: ${sigErr.message}` }
+  const tpl = t as { is_active: boolean; approval_status: string | null }
+  if (tpl.is_active || tpl.approval_status === "approved" || (sigs ?? []).length > 0) {
+    return { ok: false, error: "This version is active, approved or already accepted by a tenant — its document cannot be replaced. Create a new version and attach the document there." }
+  }
+
+  // READ BACK + HASH: the bytes the tenant will be shown are the bytes the acceptance is pinned to.
+  const { data: blob, error: dlErr } = await svc.storage.from(UPLOAD_PURPOSES.platform_contract_document.bucket).download(storagePath)
+  if (dlErr || !blob) return { ok: false, error: `The uploaded document could not be read back (${dlErr?.message ?? "no object"}) — not attached.` }
+  const contentSha256 = agreementBytesHash(new Uint8Array(await blob.arrayBuffer()))
+
   const { data: updated, error } = await svc
     .from("platform_contract_templates")
-    .update({ body_storage_path: storagePath, updated_at: new Date().toISOString() })
+    .update({ body_storage_path: storagePath, content_sha256: contentSha256, approval_status: "draft", approved_at: null, approved_by: null, approval_note: null, updated_at: new Date().toISOString() })
     .eq("id", templateId)
     .select("id")
   if (error) return { ok: false, error: error.message }
@@ -250,41 +303,43 @@ export async function attachPlatformContractDocumentAction(input: {
   // what came back rather than trusting the absence of `error`.
   if (!updated || updated.length === 0) return { ok: false, error: "Template not found" }
 
-  await audit(gate.userId, "subscription_contract_template.document_attached", templateId, { storagePath })
+  await audit(gate.userId, "subscription_contract_template.document_attached", templateId, { storagePath, contentSha256 })
   revalidatePath("/dashboard/superadmin/contracts")
-  return { ok: true }
+  return { ok: true, contentSha256 }
 }
 
 // ─── Activate / retire a template (superadmin only) ──────────────────────────
 // ONE active subscription agreement at a time: the tenant activation surface
-// shows "the active agreement", so activating one retires the others.
+// shows "the active agreement", so activating one retires the others. WAVE 151:
+// only an APPROVED version with no draft banner can be activated (the m959 CHECK
+// platform_contract_templates_active_is_approved refuses the same at the
+// database), and the signers of a superseded version are told to re-accept.
 
 export async function setSubscriptionContractTemplateActiveAction(
   templateId: string,
   active: boolean,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; retired?: number; reacceptanceNotified?: number } | { ok: false; error: string }> {
   const gate = await requireSuperadmin()
   if (!gate.ok) return { ok: false, error: gate.error }
   const svc = createServiceClient()
 
   if (active) {
-    const { error: retireErr } = await svc
-      .from("platform_contract_templates")
-      .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq("contract_type", "subscription_agreement")
-      .neq("id", templateId)
-    if (retireErr) return { ok: false, error: retireErr.message }
+    const r = await activateSubscriptionTemplate(svc, { templateId, actorUserId: gate.userId })
+    if (!r.ok) return r
+    await audit(gate.userId, "subscription_contract_template.activated", templateId, { retired: r.retired, reacceptanceNotified: r.reacceptanceNotified, notifyErrors: r.notifyErrors.slice(0, 10) })
+    revalidatePath("/dashboard/superadmin/contracts")
+    return { ok: true, retired: r.retired, reacceptanceNotified: r.reacceptanceNotified }
   }
 
   const { data: updated, error } = await svc
     .from("platform_contract_templates")
-    .update({ is_active: active, updated_at: new Date().toISOString() })
+    .update({ is_active: false, updated_at: new Date().toISOString() })
     .eq("id", templateId)
     .select("id")
   if (error) return { ok: false, error: error.message }
   if (!updated || updated.length === 0) return { ok: false, error: "Template not found" }
 
-  await audit(gate.userId, active ? "subscription_contract_template.activated" : "subscription_contract_template.retired", templateId, {})
+  await audit(gate.userId, "subscription_contract_template.retired", templateId, {})
   revalidatePath("/dashboard/superadmin/contracts")
   return { ok: true }
 }
@@ -320,6 +375,11 @@ export interface TenantContractSignatureRow {
   /** TRUE only when the jsonb was present but did not carry a readable method —
    *  a malformed record is a different fact from an absent one and reads that way. */
   attestation_malformed: boolean
+  /** wave 151: the version label and content hash the acceptance is pinned to, and the signatory's typed title / authority. */
+  version_label: string | null
+  content_sha256: string | null
+  signatory_title: string | null
+  signatory_authority: string[]
 }
 
 /** Read the `signature` jsonb defensively. Anything that is not an object with a
@@ -351,6 +411,15 @@ function readAttestation(raw: unknown): {
   return { method, signedAt, typedName, malformed: method === null }
 }
 
+function readSignatory(raw: unknown): { title: string | null; authority: string[] } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { title: null, authority: [] }
+  const o = raw as Record<string, unknown>
+  return {
+    title: typeof o.typed_title === "string" && o.typed_title.trim() ? o.typed_title.trim() : null,
+    authority: Array.isArray(o.authority_basis) ? o.authority_basis.filter((x): x is string => typeof x === "string") : [],
+  }
+}
+
 export async function listTenantContractSignaturesAction(): Promise<
   { ok: true; signatures: TenantContractSignatureRow[] } | { ok: false; error: string }
 > {
@@ -363,13 +432,14 @@ export async function listTenantContractSignaturesAction(): Promise<
 
   const { data, error } = await svc
     .from("tenant_contract_signatures")
-    .select("id, brokerage_id, template_id, template_version, signed_name, signed_at, signed_by, signature")
+    .select("id, brokerage_id, template_id, template_version, signed_name, signed_at, signed_by, signature, version_label, content_sha256, signatory")
     .order("signed_at", { ascending: false })
     .limit(200)
   if (error) return { ok: false, error: error.message }
   const rows = (data ?? []) as Array<{
     id: string; brokerage_id: string; template_id: string; template_version: number | null
     signed_name: string; signed_at: string; signed_by: string | null; signature: unknown
+    version_label: string | null; content_sha256: string | null; signatory: unknown
   }>
 
   const brokerageIds = Array.from(new Set(rows.map((r) => r.brokerage_id)))
@@ -410,6 +480,7 @@ export async function listTenantContractSignaturesAction(): Promise<
     signatures: rows.map((r) => {
       const att = readAttestation(r.signature)
       const signer = r.signed_by ? signers.get(r.signed_by) : undefined
+      const who = readSignatory(r.signatory)
       return {
         id: r.id,
         brokerage_id: r.brokerage_id,
@@ -425,6 +496,10 @@ export async function listTenantContractSignaturesAction(): Promise<
         attestation_signed_at: att.signedAt,
         attestation_typed_name: att.typedName,
         attestation_malformed: att.malformed,
+        version_label: r.version_label ?? null,
+        content_sha256: r.content_sha256 ?? null,
+        signatory_title: who.title,
+        signatory_authority: who.authority,
       }
     }),
   }

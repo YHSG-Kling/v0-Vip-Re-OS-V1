@@ -331,33 +331,70 @@ export async function listBrokerageAgentsAction(): Promise<
  * holding the same fact is how they start disagreeing; the read side
  * (pickUserOffice) already prefers this one and falls back to the agent row for
  * anyone provisioned before m423.
+ *
+ * THE PIN AND THE PLACEMENT ARE ONE ACT (wave 151, lane 151A). Since m958 the
+ * hierarchy's placements are `organization_members` rows (lib/kernel/
+ * resolve-user-office.ts reads them; Settings → Offices lists them), and this
+ * door wrote only the pin — so a person moved here was counted against the
+ * office's seats (locationSeatGate counts pins) while "People placed here"
+ * never listed them, and their old office kept its placement row active. It
+ * now goes through THE ONE placement (lib/kernel/tenant-creation.ts
+ * provisionTenantStructure, `reassign: true`): the office seat gate runs, the
+ * other office placements are revoked with the actor as evidence, the pin is
+ * written and the membership recorded. Unassigning (null) revokes the office
+ * and office-team placements and clears the pin — counted. Scope: the office
+ * must be inside the caller's hierarchy (an office head places into their own
+ * office; a move out of another office needs the aggregated view, which
+ * requireAdmin without an officeId already demands).
  */
 export async function assignUserToLocationAction(
   userId: string,
   locationId: string | null,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const auth = await requireAdmin()
+  const auth = await requireAdmin(locationId ? { officeId: locationId } : {})
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  if (locationId) {
-    const { data: loc, error: locErr } = await svc.from("locations")
-      .select("id").eq("id", locationId).eq("brokerage_id", auth.brokerageId).maybeSingle()
-    if (locErr) return { ok: false, error: locErr.message }
-    if (!loc) return { ok: false, error: "Office not found in your brokerage" }
-  }
-
   // `.eq("brokerage_id", …)` is the tenancy check on the SUBJECT: without it an
   // admin could pin a user from another brokerage into one of their offices.
-  const { data: updated, error } = await svc
-    .from("users")
-    .update({ location_id: locationId })
-    .eq("id", userId)
-    .eq("brokerage_id", auth.brokerageId)
-    .select("id")
-    .maybeSingle()
-  if (error) return { ok: false, error: error.message }
-  if (!updated) return { ok: false, error: "User not found in your brokerage" }
+  const { data: person, error: personErr } = await svc.from("users")
+    .select("id, user_type, location_id").eq("id", userId).eq("brokerage_id", auth.brokerageId).maybeSingle()
+  if (personErr) return { ok: false, error: personErr.message }
+  const subject = person as { id: string; user_type: string | null; location_id: string | null } | null
+  if (!subject) return { ok: false, error: "User not found in your brokerage" }
+
+  const { revokeScopeMemberships, provisionTenantStructure } = await import("@/lib/kernel/tenant-creation")
+
+  if (!locationId) {
+    // Unassign: end the office (and office-team) placements, then clear the pin — both counted.
+    const revoked = await revokeScopeMemberships(svc, {
+      brokerageId: auth.brokerageId, userId: subject.id, actorUserId: auth.userId, scopes: ["location", "team"],
+      evidence: { reason: "unassigned", granted_via: "admin_locations" },
+    })
+    if (!revoked.ok) return { ok: false, error: `The person's office placements could not be ended: ${revoked.error}` }
+    const { data: updated, error } = await svc.from("users").update({ location_id: null }).eq("id", subject.id).eq("brokerage_id", auth.brokerageId).select("id")
+    if (error) return { ok: false, error: error.message }
+    if ((updated ?? []).length !== 1) return { ok: false, error: "User not found in your brokerage" }
+    revalidatePath("/dashboard/admin/locations")
+    return { ok: true }
+  }
+
+  // A move out of another office needs the aggregated view (requireAdmin above admitted an office head for THEIR
+  // office only; the person's current office must then be that same office or none).
+  if (subject.location_id && subject.location_id !== locationId) {
+    const whole = await requireAdmin()
+    if (!whole.ok) return { ok: false, error: "That person works out of another office — moving them needs tenant leadership." }
+  }
+
+  const { data: tenant, error: tierErr } = await svc.from("brokerages").select("plan_tier, name").eq("id", auth.brokerageId).maybeSingle()
+  if (tierErr || !tenant) return { ok: false, error: `Your workspace's plan could not be read${tierErr ? ` (${tierErr.message})` : ""} — nothing was changed.` }
+  const t = tenant as { plan_tier: string | null; name: string | null }
+  const rec = await provisionTenantStructure(svc, {
+    brokerageId: auth.brokerageId, tier: t.plan_tier ?? "", ownerUserId: auth.userId, brokerageName: t.name ?? "", actorUserId: auth.userId,
+    source: "admin_grant", evidence: { granted_via: "admin_locations", mode: "move" },
+    input: { members: [{ existingUserId: subject.id, userType: subject.user_type ?? "agent", locationId, reassign: true }] },
+  })
+  if (!rec.complete) return { ok: false, error: rec.errors.join("; ") || "The placement was refused." }
 
   revalidatePath("/dashboard/admin/locations")
   return { ok: true }

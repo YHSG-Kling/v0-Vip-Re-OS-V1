@@ -943,6 +943,19 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
         if (!rl.success) return { error: `${u.email ?? u.id} moved, but their ${role} seat was refused: ${rl.error ?? "refused"}` }
         const dr = await domain({ userId: u.id, email: u.email ?? "", firstName: u.first_name ?? "", lastName: u.last_name ?? "", userType: role, brokerageId: targetId, teamId: u.team_id ?? null, tier: ref.target?.plan_tier ?? null, callerUserId: actorUserId })
         if (!dr.success) return { error: `${u.email ?? u.id} seated, but their domain records were refused: ${dr.error ?? "refused"}` }
+        // UPDATE MEMBERSHIPS (wave 151, lane 151A — owner's adoption rule: "update seat memberships and billing
+        // responsibility"): the seat's SOURCE-tenant scope memberships (its tenant leadership of the independent
+        // workspace, any office/team placement) are REVOKED — stamped with the approving admin and this request as
+        // evidence, never deleted (the history stays with the archived source). Left active they would be stale
+        // authorization facts in a tenant the person no longer sits in. Blocking: a membership is an authorization
+        // fact, and a refused read/update here is a refusal, not "none to revoke".
+        const { revokeScopeMemberships } = await import("@/lib/kernel/tenant-creation")
+        const rv = await revokeScopeMemberships(svc, {
+          brokerageId: sourceId, userId: u.id, actorUserId: approvingAdminUserId, scopes: ["tenant", "location", "team"],
+          evidence: { transfer_request_id: req.id, reason: "adopted", target_brokerage_id: targetId },
+        })
+        if (!rv.ok) return { error: `${u.email ?? u.id} moved, but their memberships in the independent workspace could not be ended: ${rv.error}` }
+        record.counts.memberships_revoked = (record.counts.memberships_revoked ?? 0) + rv.revoked
         moved += 1
       }
       record.counts.members = (record.counts.members ?? 0) + moved

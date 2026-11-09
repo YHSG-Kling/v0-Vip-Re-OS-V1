@@ -158,7 +158,9 @@ check("J0.3 the hosted checkout refuses a RELATIVE return URL before Stripe (and
 const TIERS = ["solo_agent", "team", "brokerage", "multi_location"]
 function seed(): Record<string, Row[]> {
   return {
-    subscription_tiers: TIERS.map((t) => ({ id: randomUUID(), tier_name: t, is_active: true, max_agents: t === "solo_agent" ? 2 : t === "team" ? 10 : null, monthly_price_cents: 0, annual_price_cents: 0, setup_fee_cents: 0, display_name: t })),
+    // The catalogue the seat gate reads (subscription_tiers.max_agents) carries the owner's bands — solo 2 · team 10 ·
+    // brokerage 30 · multi-location custom (NULL) — so J9 judges the gate against the same numbers TIER_SEAT_BANDS states.
+    subscription_tiers: TIERS.map((t) => ({ id: randomUUID(), tier_name: t, is_active: true, max_agents: t === "solo_agent" ? 2 : t === "team" ? 10 : t === "brokerage" ? 30 : null, monthly_price_cents: 0, annual_price_cents: 0, setup_fee_cents: 0, display_name: t })),
     platform_config_snapshots: TIERS.map((t) => ({ id: randomUUID(), name: `${t} funnel`, created_at: "2026-10-01T00:00:00.000Z", payload: { recommendedTier: t, global: { app_name: "VIP" }, brand: { tagline: `${t} tagline` }, site: { about_text: "about" }, features: [] } })),
     learning_modules: [{ id: randomUUID(), brokerage_id: null, status: "published", audience_roles: ["agent", "broker"], display_priority: 2 }],
     // A pre-existing tenant whose slug the new tenant's FIRST candidate collides with (the website must re-suffix).
@@ -335,7 +337,63 @@ check(`J8 CROSS-TIER READ REFUSAL: ${crossChecked} reads (each tenant's owner + 
 const own8 = await Promise.all(made8.map((m) => resolveViewerHierarchy(svc8 as never, { userId: m.ownerId, brokerageId: m.brokerageId })))
 check("J8 POSITIVE CONTROL — each owner reading their OWN tenant is admitted with the aggregated view (their tenant leadership grant)", own8.every((s) => s.ok && s.scope.aggregate))
 
+// ═════════════════════════════════════════════════════════════════════════════
+// J9 — THE SUBSCRIPTION TIER DETERMINES THE SEAT CAP (wave 151, lane 151A — owner: "the subscription TIER determines the
+// seat cap; existing seat service"). On the four J8 tenants each plan is FILLED through the REAL inviteTenantMember (users +
+// agents + grants, the rows resolveSeatUsage counts) up to its band, and then THE ONE gate (lib/kernel/seat-usage.ts
+// seatGate — the gate app/actions/admin/invite-user.ts, update-user.ts, the god console and the recruiting door all call;
+// scripts/seat-cap-simulator.ts Layer 3 holds that census) is asked for one more producer: refused by the tier's number,
+// naming the next tier up, never a price the catalogue does not hold; staff never a seat; the custom tier unbounded. The
+// positive control changes the CATALOGUE's number for one tier and watches the verdict follow it.
+console.log("\n[J9 · the subscription tier determines the seat cap — the ONE gate, each plan filled through the REAL invite]")
+const { seatGate, resolveSeatUsage } = await import("../lib/kernel/seat-usage")
+const { TIER_SEAT_LIMITS, TIER_ORDER } = await import("../lib/kernel/tier-role-matrix")
+const catalogCap = (t: string): number | null => (svc8.tables.subscription_tiers.find((x) => x.tier_name === t)?.max_agents as number | null | undefined) ?? null
+check("J9 the catalogue the gate reads equals the ONE band statement (TIER_SEAT_BANDS ≡ TIER_SEAT_LIMITS): solo 2 · team 10 · brokerage 30 · multi-location custom",
+  TIERS.every((t) => catalogCap(t) === TIER_SEAT_LIMITS[t as keyof typeof TIER_SEAT_LIMITS]) && TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 10 && TIER_SEAT_LIMITS.brokerage === 30 && TIER_SEAT_LIMITS.multi_location === null,
+  TIERS.map((t) => `${t}=${catalogCap(t)}`).join(" "))
+for (const m of made8) {
+  const limit = catalogCap(m.tier)
+  let invited = 0, fillRefusal: string | null = null
+  if (limit !== null) {
+    for (let guard = 0; guard < 60; guard++) {
+      const u = await resolveSeatUsage(svc8 as never, m.brokerageId)
+      if (!u.ok) { fillRefusal = "seat count unreadable"; break }
+      if (u.seatCount >= limit) break
+      const r = await inviteTenantMember({ brokerageId: m.brokerageId, email: `fill${invited}@${m.tier.replace(/_/g, "")}.test`, firstName: "Fill", lastName: String(invited), userType: "agent", callerUserId: m.ownerId, client: svc8 as never })
+      if (!r.success) { fillRefusal = r.error ?? "refused"; break }
+      invited++
+    }
+  }
+  const usage = await resolveSeatUsage(svc8 as never, m.brokerageId)
+  const next = await seatGate(svc8 as never, m.brokerageId, "agent")
+  const staff = await seatGate(svc8 as never, m.brokerageId, "tc")
+  const nextTier = TIER_ORDER[TIER_ORDER.indexOf(m.tier as (typeof TIER_ORDER)[number]) + 1] ?? null
+  if (limit === null) {
+    check(`J9 ${m.tier}: no band (custom pricing) — the gate admits another producer with limit null (${usage.seatCount} seated)`, usage.ok && next.allowed && next.reason === "within_limit" && next.decision?.limit === null)
+  } else {
+    check(`J9 ${m.tier}: filled to ${limit} producers through the REAL invite (${invited} invited, ${usage.seatCount} counted); the ${limit + 1}th is REFUSED by the ONE gate (over_limit), the refusal names the next tier up (${nextTier}) and quotes no price the catalogue does not hold`,
+      usage.ok && usage.seatCount === limit && fillRefusal === null && !next.allowed && next.reason === "over_limit" && next.decision?.limit === limit && next.decision?.upgradeTo === nextTier
+        && !next.decision?.paths.some((p) => p.kind === "buy_seats") && /upgrade to/i.test(next.message ?? ""),
+      JSON.stringify({ fillRefusal, seatCount: usage.seatCount, reason: next.reason, upgradeTo: next.decision?.upgradeTo, paths: next.decision?.paths.map((p) => p.kind) }))
+  }
+  check(`J9 ${m.tier}: staff (tc) never consumes a seat — admitted on a full plan as not_a_seat`, staff.allowed && staff.reason === "not_a_seat")
+}
+{
+  const solo = made8.find((m) => m.tier === "solo_agent")!
+  const soloTier = svc8.tables.subscription_tiers.find((x) => x.tier_name === "solo_agent")!
+  soloTier.max_agents = 3
+  const widened = await seatGate(svc8 as never, solo.brokerageId, "agent")
+  soloTier.max_agents = 2
+  const narrowed = await seatGate(svc8 as never, solo.brokerageId, "agent")
+  check("J9 POSITIVE CONTROL — the cap is the TIER's catalogue number, not a literal: solo's max_agents raised to 3 admits the 3rd producer; restored to 2 refuses it again", widened.allowed && widened.reason === "within_limit" && !narrowed.allowed && narrowed.reason === "over_limit")
+  const refusedCatalog = memSupabase({ ...Object.fromEntries(Object.entries(svc8.tables).map(([t, rows]) => [t, rows.map((r) => ({ ...r }))])) }, { refuse: { subscription_tiers: "permission denied (fixture)" } })
+  const blind = await seatGate(refusedCatalog as never, solo.brokerageId, "agent")
+  check("J9 FAIL CLOSED — a catalogue the gate cannot read REFUSES the seat by name (catalog_unreadable), never 'unlimited'", !blind.allowed && blind.reason === "catalog_unreadable")
+}
+
 console.log("\n[blind spots]")
+console.log("  · J9 drives the ONE gate (seatGate) directly after filling each plan through the REAL invite; the session doors that call it (invite-user.ts, update-user.ts, the god console) are source-censused by test:seat-cap Layer 3, not run here (cookies)")
 console.log("  · Supabase Auth is not run: the magic link's delivery and the PKCE code exchange in the recipient's browser need a deployment (the callback's exchange is read from source)")
 console.log("  · the readiness verdict is injected here (proven by test:tenant-readiness); its effect on the immediate outcome is what this journey asserts")
 console.log("  · the ISA actor, starter assistant, curriculum author and Stripe checkout are env-bound executors, counted not run (test:subscriber-convergence owns the door matrix)")

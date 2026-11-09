@@ -5,6 +5,7 @@ import {
   listTenantContractSignaturesAction,
 } from "@/app/actions/superadmin/subscription-contracts"
 import { SubscriptionContractsManager } from "./subscription-contracts-manager"
+import { DRAFT_BANNER } from "@/lib/legal/subscription-agreement"
 
 export const dynamic = "force-dynamic"
 
@@ -12,6 +13,9 @@ export const dynamic = "force-dynamic"
 // signs to activate their subscription (owner ruling: "platform contracts for
 // tenants has to be written in order for the tenant to sign"). Reads under the
 // 'billing' capability; writes are superadmin-only in the actions.
+// WAVE 151 (lane 151A): a version is hashed, approved (recorded) and then made
+// active; a draft (the banner lane 151A2's docs/legal drafts carry) is never the
+// accepted version — lib/legal/subscription-agreement.ts.
 export default async function SuperadminContractsPage() {
   const gate = await requirePlatformCapability("billing")
   if (!gate.userId) redirect("/login")
@@ -30,7 +34,7 @@ export default async function SuperadminContractsPage() {
           The platform-authored agreement a tenant signs to put their subscription in writing.
           One template is active at a time; tenants sign it in-app on their billing page and the
           signature lands in tenant_contract_signatures. Editing the body bumps the version —
-          every signature stays pinned to the version that was on screen.
+          every signature stays pinned to the version that was on screen, by version and by content hash.
         </p>
       </div>
       {!templatesRes.ok && (
@@ -43,6 +47,7 @@ export default async function SuperadminContractsPage() {
         initialTemplates={templatesRes.ok ? templatesRes.templates : []}
         initialSignatures={signaturesRes.ok ? signaturesRes.signatures : []}
         canWrite={gate.role === "superadmin"}
+        draftBanner={DRAFT_BANNER}
       />
     </div>
   )

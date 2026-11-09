@@ -34,7 +34,17 @@ export async function run() {
   const c = canary("Brokerage adoption: independent → verified location joins → consent → migrate → billing stopped (prorated) → brokerage seat → no data loss → no double billing")
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: the transfer rail moves tenancy — in-memory only")
   const S = uuid(), B = uuid(), X = uuid(), SOLO = uuid(), SOLO_AG = uuid(), ADMIN = uuid(), SUB_S = uuid(), SUB_B = uuid(), FORM = uuid()
+  // WAVE 151 (lane 151A): the adopting brokerage's OFFICE (C34, m957) the seat is placed in, an UNRELATED tenant's office
+  // (the wrong-location negative), and the solo's own tenant-leadership membership (m958) that adoption must END.
+  const OFFICE = uuid(), X_OFFICE = uuid(), SOLO_MEMBERSHIP = uuid()
   const svc = canaryClient({
+    locations: [
+      { id: OFFICE, brokerage_id: B, name: `${CANARY_TAG} Harbor Realty HQ`, office_code: "hq", status: "active", seat_cap: null, managing_broker_user_id: ADMIN },
+      { id: X_OFFICE, brokerage_id: X, name: `${CANARY_TAG} Unrelated Office`, office_code: "x1", status: "active", seat_cap: null },
+    ],
+    organization_members: [
+      { id: SOLO_MEMBERSHIP, brokerage_id: S, user_id: SOLO, scope_kind: "tenant", location_id: null, team_id: null, access_level: "leadership", role: "leadership", source: "provisioning", granted_by_user_id: null, revoked_at: null, evidence: { note: CANARY_TAG }, joined_at: nowIso() },
+    ],
     brokerages: [
       { id: S, name: `${CANARY_TAG} Harbor Realty`, plan_tier: "solo_agent", status: "active", slug: `${CANARY_TAG}-solo`, brokerage_on_platform: false, team_on_platform: false, created_at: nowIso() },
       { id: B, name: `${CANARY_TAG} Harbor Realty`, plan_tier: "brokerage", status: "active", slug: `${CANARY_TAG}-hq`, brokerage_on_platform: true, team_on_platform: true, created_at: nowIso() },
@@ -130,10 +140,15 @@ export async function run() {
     // id-resolved value is not a name-keyed identity, so the bare token is not the rule and is not what is asserted.
     const BROKERAGE_NAME_INPUT = /subjectBrokerageName|\binput\.brokerageName\b|\bbrokerageName\??:\s*string\b/
     c.step("POSITIVE CONTROL: the brokerage-name-INPUT finder still recognises the wave-141 input shapes and ignores an id-resolved pass-through", BROKERAGE_NAME_INPUT.test("subjectBrokerageName: string") && BROKERAGE_NAME_INPUT.test("const n = input.brokerageName") && BROKERAGE_NAME_INPUT.test("brokerageName?: string") && !BROKERAGE_NAME_INPUT.test('brokerageName: ref.target?.name ?? ""'), "")
-    const req = await requestBrokerageTransfer(svc, { targetBrokerageId: B, initiatedByUserId: ADMIN, subjectEmail: `solo@${CANARY_EMAIL_DOMAIN}`, targetRole: "agent", reason: `${CANARY_TAG} adoption` })
+    // WAVE 151 (lane 151A) — VERIFY THE CORRECT BROKERAGE LOCATION: an office that is not the adopting tenant's own is refused
+    // BEFORE any request row exists (the wrong-location negative), and no request is left open by it.
+    const wrongOffice = await requestBrokerageTransfer(svc, { targetBrokerageId: B, initiatedByUserId: ADMIN, subjectEmail: `solo@${CANARY_EMAIL_DOMAIN}`, targetRole: "agent", targetLocationId: X_OFFICE })
+    c.step("151A target location is VERIFIED inside the adopting tenant: naming another tenant's office is refused by name and files no request", !wrongOffice.ok && /not one of your workspace's offices/.test(wrongOffice.error) && (svc.tables.brokerage_transfer_requests ?? []).length === 0, wrongOffice.ok ? "accepted" : wrongOffice.error)
+    const req = await requestBrokerageTransfer(svc, { targetBrokerageId: B, initiatedByUserId: ADMIN, subjectEmail: `solo@${CANARY_EMAIL_DOMAIN}`, targetRole: "agent", reason: `${CANARY_TAG} adoption`, targetLocationId: OFFICE })
     const R = req.ok ? req.request.id : ""
     const row = () => (svc.tables.brokerage_transfer_requests ?? []).find((r) => r.id === R) as Row | undefined
     c.step(`141A landed (${landed.get("141A")}) — request: the TARGET admin asks by the owner's ACCOUNT EMAIL (never a brokerage name) → ONE brokerage_transfer_requests row pinned to the target (brokerage_id = target), status requested, consent null, the subject told on their own tenant; ledgered (tenant.transfer.request) and evented (brokerage_transfer_requested)`, req.ok && req.request.brokerage_id === B && req.request.source_brokerage_id === S && req.request.target_brokerage_id === B && req.request.subject_user_id === SOLO && req.request.status === "requested" && req.request.consent === null && req.notified.subject && (svc.tables.notifications ?? []).some((n) => n.user_id === SOLO && n.brokerage_id === S && /consent_requested/.test(String(n.type))) && (svc.tables.agent_action_ledger ?? []).some((l) => l.brokerage_id === B && l.action === "tenant.transfer.request") && events(B, /^brokerage_transfer_requested$/).length === 1, req.ok ? R : req.error)
+    c.step("151A the verified office rides the request (verification.placement.target_location_id) — the adopting admin named WHERE the seat lands, verified by id", req.ok && req.request.verification?.placement?.target_location_id === OFFICE && req.request.verification?.placement?.target_team_id === null, req.ok ? JSON.stringify(req.request.verification) : req.error)
     c.step("141A identity is CANONICAL: the rail reads brokerages by id only (0 name-keyed brokerages reads, stripped), the request input is an email + the session tenant, and every data update is pinned to the source id", nameKeyedBrokerageReads(rail) === 0 && /subjectEmail/.test(rail) && !BROKERAGE_NAME_INPUT.test(rail) && /\.update\(\{\s*brokerage_id:\s*targetId\s*\}\)\.eq\("brokerage_id",\s*sourceId\)/.test(rail), "")
     const second = await requestBrokerageTransfer(svc, { targetBrokerageId: X, initiatedByUserId: ADMIN, subjectEmail: `solo@${CANARY_EMAIL_DOMAIN}`, targetRole: "agent" })
     c.step("141A one open request per workspace: a second brokerage asking for the same owner while a request is open is REFUSED (the m765 partial unique index says the same)", !second.ok && /open adoption request/.test(second.error), second.ok ? "accepted" : second.error)
@@ -166,6 +181,14 @@ export async function run() {
     }
     const grants = svc.tables.user_role_assignments ?? []
     c.step("141A membership through the canonical movers: the owner is in the target as a PRODUCING agent (never an admin by adoption), their agents row moved, the source grant retired, a target grant exists", user(SOLO)?.brokerage_id === B && user(SOLO)?.user_type === "agent" && (svc.tables.agents ?? []).find((a) => a.id === SOLO_AG)?.brokerage_id === B && !grants.some((g) => g.user_id === SOLO && g.brokerage_id === S) && grants.some((g) => g.user_id === SOLO && g.brokerage_id === B && g.role === "agent"), `user_type=${user(SOLO)?.user_type}`)
+    // WAVE 151 (lane 151A) — SEAT MEMBERSHIPS UPDATED (owner: "update seat memberships and billing responsibility"): the seat is
+    // PLACED in the verified office through THE ONE placement (provisionTenantStructure, source 'transfer', the request as
+    // evidence; the office seat gate ran) and its memberships in the independent workspace are ENDED (stamped, never deleted).
+    const mem = (svc.tables.organization_members ?? []) as Row[]
+    const placedRows = mem.filter((m) => m.brokerage_id === B && m.user_id === SOLO && !m.revoked_at)
+    const sourceRows = mem.filter((m) => m.brokerage_id === S && m.user_id === SOLO)
+    c.step("151A placed in the verified office: ONE active location membership in the target (source 'transfer', evidence names this request), users.location_id pinned to it, the rail's placement record complete", placedRows.length === 1 && placedRows[0].scope_kind === "location" && placedRows[0].location_id === OFFICE && placedRows[0].source === "transfer" && placedRows[0].evidence?.transfer_request_id === R && placedRows[0].granted_by_user_id === ADMIN && user(SOLO)?.location_id === OFFICE && final?.migration?.placement?.complete === true && final?.migration?.placement?.placed === 1, JSON.stringify({ placed: placedRows.map((m) => [m.scope_kind, m.source]), placement: final?.migration?.placement }).slice(0, 200))
+    c.step("151A the source workspace's memberships are ENDED, not deleted: the solo's tenant leadership row stays, stamped revoked_at + revoked_by = the approving admin, evidence names this request; the count is on the record", sourceRows.length === 1 && sourceRows[0].id === SOLO_MEMBERSHIP && !!sourceRows[0].revoked_at && sourceRows[0].revoked_by_user_id === ADMIN && sourceRows[0].evidence?.revoked?.transfer_request_id === R && final?.migration?.counts?.memberships_revoked === 1, JSON.stringify({ revoked_at: sourceRows[0]?.revoked_at, by: sourceRows[0]?.revoked_by_user_id, counts: final?.migration?.counts?.memberships_revoked }))
     c.step("141A no double billing: the target's subscription is untouched; the source keeps ONE row (cancel_at written, status mirrored by Stripe's webhook — never a second row, never an invented refund); two subscription rows in all", sub(SUB_B)?.stripe_subscription_id === "sub_canary_hq" && !sub(SUB_B)?.cancel_at && (svc.tables.subscriptions ?? []).filter((s) => s.brokerage_id === S).length === 1 && (svc.tables.subscriptions ?? []).length === 2, "")
     const ledgerActions = new Set((svc.tables.agent_action_ledger ?? []).map((l) => String(l.action)))
     const migrateRows = (svc.tables.agent_action_ledger ?? []).filter((l) => l.action === "tenant.transfer.migrate")

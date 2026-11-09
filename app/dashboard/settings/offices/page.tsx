@@ -46,7 +46,8 @@ export default async function DashboardSettingsOfficesPage({ searchParams }: { s
         <h1 className="text-3xl font-bold tracking-tight">Offices</h1>
         <p className="text-muted-foreground mt-1">
           Each office keeps its own legal identity, markets, brand touches and seats; teams work out of an office.
-          Two offices may share a name — they are still two offices.
+          Two offices may share a name — they are still two offices. A person may be placed in more than one office;
+          &ldquo;Move here&rdquo; ends their other office placements instead.
         </p>
       </div>
 
@@ -141,6 +142,12 @@ export default async function DashboardSettingsOfficesPage({ searchParams }: { s
                           </select>
                         </label>
                       ) : <input type="hidden" name="access" value="member" />}
+                      {dir.scope.aggregate ? (
+                        <label className="flex items-center gap-2 pb-1.5">
+                          <input type="checkbox" name="move" value="1" className="h-4 w-4" />
+                          <span>Move here (end their other office placements)</span>
+                        </label>
+                      ) : null}
                       <button type="submit" className="rounded bg-primary px-3 py-1.5 font-medium text-primary-foreground">Place</button>
                     </form>
                   ) : null}
