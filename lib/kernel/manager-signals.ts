@@ -269,10 +269,29 @@ export async function routeSavedHomeNudge(
     hoursSinceAnyTouch: Number.isFinite(lastTouch) ? Math.max(0, Math.round((Date.now() - lastTouch) / 3_600_000)) : null,
   })
   if (decided.route === "hold") return false
+  return deliverSavedHomeNudgeDecision(ctx, { contactId: params.contactId, listingId: params.listingId ?? null, propertyAddress: params.propertyAddress ?? null, agentId: person?.agent_id ?? null }, nudge, decided)
+}
+
+/**
+ * WAVE 151 (lane 151J): the DELIVERY half of routeSavedHomeNudge, factored out so the saved-home WATCH
+ * (lib/property-alerts/saved-home-watch.ts — the diff-based alert path for homes saved from RentCast, a pasted link or
+ * the tenant's own board) can ask the arbiter itself (decideSavedHomeNudge, with an injectable decision in proofs — a
+ * HOLD must be visible to it, because a held change is re-asked on the next sweep instead of being forgotten) and then
+ * hand the decided route to this ONE delegation. Byte-identical to what routeSavedHomeNudge did inline: the agent →
+ * routeToAgent's activity; an avatar-worthy moment → the Asset Manager; anything else → the Campaign Orchestrator's
+ * gated personal note. A `hold` delivers nothing (false). Never a second router.
+ */
+export async function deliverSavedHomeNudgeDecision(
+  ctx: { brokerageId: string; supabase: ReturnType<typeof createServiceClient> },
+  params: { contactId: string; listingId?: string | null; propertyAddress?: string | null; agentId?: string | null },
+  nudge: import("@/lib/ai-isa/saved-home-nudge").SavedHomeNudge,
+  decided: { route: import("@/lib/ai-isa/saved-home-nudge").SavedHomeNudgeRoute; rationale: string },
+): Promise<boolean> {
+  if (decided.route === "hold") return false
   if (decided.route === "agent") {
     const { routeToAgent } = await import("@/lib/ai-isa/followup-arbiter")
     return routeToAgent(ctx.supabase, {
-      brokerageId: ctx.brokerageId, contactId: params.contactId, agentId: person?.agent_id ?? null, now: new Date(),
+      brokerageId: ctx.brokerageId, contactId: params.contactId, agentId: params.agentId ?? null, now: new Date(),
       title: `A home your buyer saved changed — ${nudge.headline}`,
       description: `${params.propertyAddress ?? "A saved home"}: ${nudge.kind.replace(/_/g, " ")}. The AI follow-up judged this needs your personal touch. Why: ${decided.rationale}`,
     })

@@ -118,8 +118,12 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   let subjectTemplate = input.step.subject ?? ""
   let bodyTemplate    = input.step.body ?? ""
   if (input.personaIntent && input.personaIntent.trim()) {
-    const { buildPersonaContext } = await import("./persona-render")
+    const { buildPersonaContext, loadAudienceBrief } = await import("./persona-render")
     const personaCtx = buildPersonaContext((contact ?? {}) as any, entity)
+    // WAVE 151 (lane 151I): the person's own stated needs (them first) — a contact's brief; a lead has no spine (honest null).
+    const audience = entity === "contact"
+      ? await loadAudienceBrief(supabase as never, { brokerageId: input.brokerageId, contactId: input.contactId }).catch(() => null)
+      : null
     // THE ONE RESOLVER (§6). "contact" only — resolveContactLanguageFromDb reads
     // the `contacts` table by id, and a lead's id is not a contacts.id (entity
     // "lead" keeps the prior English-implicit behavior byte-for-byte). Best-
@@ -140,6 +144,10 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
         persona: personaCtx.persona,
         words: input.step.channel === "sms" ? 40 : 80,
         language,
+        // WAVE 151 (lane 151I): WHO IS WRITING and WHO IT IS FOR condition the FIRST draft — the sender's versioned
+        // voice brief (words, tagline, tone, signature, examples) and the person's stated needs. Not a rewrite pass.
+        sender: { brokerageId: input.brokerageId, teamId: (agentInfo as any)?.team_id ?? null, agentUserId: input.agentUserId ?? null },
+        audience,
       },
       { subject: input.step.subject ?? undefined, body: input.step.body ?? "" },
       { generator: input.generator },

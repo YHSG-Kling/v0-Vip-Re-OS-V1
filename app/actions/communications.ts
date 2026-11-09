@@ -761,6 +761,8 @@ export async function draftTeamAnnouncementAction(input: {
         channel: "in_app",
         persona: { audience: "agent", tone: tone ?? undefined },
         words: 80,
+        // 151I: the announcement is drafted in the BROKER's own voice (compiled from the identity ref inside the generator).
+        sender: { brokerageId: ctx.brokerageId, agentUserId: ctx.userId },
       },
       fallback,
       { generator: realCopyGenerator },

@@ -16,7 +16,8 @@ export interface BrokerageAdminNotification {
   body: string
   entityType?: string | null
   entityId?: string | null
-  priority?: "low" | "medium" | "high"
+  /** The notifications.priority vocabulary (scripts/check-vocabularies.ts): critical is an escalation a person must review. */
+  priority?: "low" | "medium" | "high" | "critical"
 }
 
 /** Resolve the broker/admin user ids for a brokerage, deduped. */

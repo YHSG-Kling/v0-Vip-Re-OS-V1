@@ -114,7 +114,10 @@ export async function prepareMagnetDelivery(
     if (!r.allowed) gateHeld = r.violations.join("; ") || "the compliance gate refused the copy"
     return r
   }
-  const deliverable = await prepareMagnetDeliverable(args.magnetType, args.ctx, { topics, copyGenerator: realCopyGenerator, gate: heldGate }).catch(() => null)
+  // WAVE 151 (lane 151I): the deliverable is written in the SENDER's voice from the first draft — the identity ref the copy
+  // engine compiles the versioned voice brief from (an explicit ctx.sender wins; otherwise this delivery's agent).
+  const copyCtx = { ...(args.ctx ?? {}), sender: args.ctx?.sender ?? { brokerageId: args.brokerageId, agentUserId: args.agentUserId ?? null } }
+  const deliverable = await prepareMagnetDeliverable(args.magnetType, copyCtx, { topics, copyGenerator: realCopyGenerator, gate: heldGate }).catch(() => null)
   if (!deliverable) {
     return {
       deliverable: null, fromTopics: false, pdfUrl: null, documentId: null, deliverableKind: "copy",

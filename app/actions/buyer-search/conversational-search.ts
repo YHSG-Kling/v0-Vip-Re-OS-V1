@@ -260,6 +260,26 @@ export async function buyerHomeFeedbackAction(input: {
       },
     )
     if (!reacted.success) return { ok: false, error: reacted.error ?? "That didn't save — please try again." }
+    // WAVE 151 (lane 151J — lane-150Z convergence row 77): a TOUR ask on a home that has NO listings row (a RentCast
+    // listing or a pasted link, `ext_<source>_<id>`) used to end at the reaction + the Shopping Agent line — the showings
+    // page then had nothing to request against. It now goes through the survivor showing door with the saved row's own
+    // facts (listingId undefined + savedPropertyId — its BBA / financial gates run as for any showing) and opens ONE agent
+    // task carrying the source record. Never a fake listing row. An in-house listing keeps its existing path (the
+    // showings page requests against the listing).
+    if (input.kind === "tour_requested" && listingId.startsWith("ext_")) {
+      const rest = listingId.slice(4)
+      const us = rest.indexOf("_")
+      const extSource = us > 0 ? rest.slice(0, us) : "external"
+      const externalId = us > 0 ? rest.slice(us + 1) : rest
+      const { requestExternalShowing } = await import("@/lib/portal/saved-homes")
+      const { requestShowing } = await import("@/app/actions/showings")
+      const r = await requestExternalShowing(
+        g.svc, { brokerageId: g.brokerageId, contactId: input.contactId, ownerUserId: g.actorUserId, agentId: g.agentId },
+        { source: extSource, externalId },
+        { requestShowing: (data, caller) => requestShowing(data, caller) },
+      )
+      notes.push(r.note)
+    }
     // The survivor writer stores a market save as source + external id only; a RentCast listing's origin also carries
     // its MLS number and the MLS's name (m991 mls_name). Count-checked on the buyer's own row in this tenant.
     if (input.kind === "saved" && listingId.startsWith(RENTCAST_REF_PREFIX)) {

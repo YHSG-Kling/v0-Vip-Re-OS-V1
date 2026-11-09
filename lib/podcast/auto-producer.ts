@@ -153,6 +153,10 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
     const facts = await buildBrokerageTidbits(svc, input.brokerageId)
 
     // 5. Draft + pre-flight compliance — VALUE-FIRST prompt.
+    // WAVE 151 (lane 151I): the host's versioned sender-voice brief (THE brand-voice reader) is compiled BEFORE the draft.
+    const voiceBrief = await import("@/lib/kernel/brand-voice")
+      .then(async ({ loadSenderVoiceBrief, renderSenderVoiceBrief }) => renderSenderVoiceBrief(await loadSenderVoiceBrief(svc as never, { brokerageId: input.brokerageId, agentUserId: input.hostUserId })))
+      .catch((e: unknown) => { console.error("[auto-podcast] sender-voice brief unavailable — the script is written without the host's voice:", (e as Error)?.message ?? String(e)); return null })
     const script = await draftAndClearScript({
       svc,
       brokerageId: input.brokerageId,
@@ -160,6 +164,7 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       facts,
       topics,
       isoWeek: input.isoWeek,
+      voiceBrief,
     })
 
     // 5. ElevenLabs TTS → Supabase `media`. MODEL + PACING through the ONE
@@ -324,12 +329,14 @@ async function draftAndClearScript(args: {
   facts: FactPack
   topics: TopicCandidate[]
   isoWeek: string
+  /** WAVE 151 (lane 151I): the HOST's rendered sender-voice brief — the script is spoken in their voice from the first draft. */
+  voiceBrief: string | null
 }): Promise<string> {
   const draft = async (violations: string[]): Promise<string> => {
     const fix = violations.length > 0
       ? `\n\nResolve these violations from your prior draft:\n- ${violations.join("\n- ")}\n`
       : ""
-    const prompt = `Write a 5-7 minute spoken podcast script for a real-estate agent's weekly show, ISO week ${args.isoWeek}.
+    const prompt = `${args.voiceBrief ? `${args.voiceBrief}\n\n` : ""}Write a 5-7 minute spoken podcast script for a real-estate agent's weekly show, ISO week ${args.isoWeek}.
 
 THIS SHOW IS NOT ABOUT THE AGENT'S BUSINESS. The audience is buyers, sellers, owners, and curious neighbors. Lead with VALUE TO THEM. The agent's own listings/closings are folded in ONLY where they support a value point — never as the headline.
 

@@ -34,6 +34,8 @@ import { chooseTerritoryGrain, researchMarket, resolveReportTerritory, MIN_RECOR
 import { validateMarketReport, MIN_DATED_SOURCED_DATA } from "./validator"
 import { buildMarketReportWriterPrompt, MARKET_REPORT_WRITER_SYSTEM, MarketReportNarrativeSchema, type MarketReportNarrativeDraft } from "./prompts"
 import { suggestMarketReportTopics, type TopicDeps, type TopicSuggestionResult } from "./topics"
+// 151I: THE brand-voice reader's render + stamp (the compile itself is the injectable `senderVoice` dep — a simulator hands one in).
+import { renderSenderVoiceBrief, voiceSourceStamp, type SenderVoiceBrief } from "@/lib/kernel/brand-voice"
 
 type Db = { from: (table: string) => any }
 
@@ -74,7 +76,9 @@ export interface ProducerDeps extends ResearchDeps {
   /** Fair housing on the composed public copy (default scanPublicCopy(text, "lead_magnet")). */
   fairHousing?: (text: string) => Promise<{ ok: boolean; findings: string[] }>
   /** The C4 final phase per text block (default lib/marketing/humanize-final.ts with the tenant's brand). */
-  finalize?: (a: { brokerageId: string; agentUserId: string | null; texts: string[] }) => Promise<{ ok: true; texts: string[]; tagline: string | null } | { ok: false; reason: string }>
+  finalize?: (a: { brokerageId: string; agentUserId: string | null; texts: string[]; voiceBrief?: SenderVoiceBrief | null }) => Promise<{ ok: true; texts: string[]; tagline: string | null } | { ok: false; reason: string }>
+  /** THE sender-voice brief (lib/kernel/brand-voice.ts loadSenderVoiceBrief) — the writer is conditioned on it BEFORE the first draft (151I). Null = written without it (said). */
+  senderVoice?: (a: { brokerageId: string; agentUserId: string | null }) => Promise<SenderVoiceBrief | null>
   brand?: (a: { brokerageId: string; agentUserId: string | null }) => Promise<PdfBrandLike>
   /** The presenting agent's OFFICE (C34 brand cascade: office over tenant) — default reads users/agents.location_id → locations. */
   officeBrand?: (a: { brokerageId: string; agentUserId: string | null }) => Promise<OfficeBrandRow | null>
@@ -258,13 +262,19 @@ const defaultFairHousing: NonNullable<ProducerDeps["fairHousing"]> = async (text
   return { ok: scan.ok, findings: scan.findings.map((f) => `${f.phrase} — ${f.fix}`) }
 }
 
+/** THE sender-voice reader (LAW 2): one compile per report, on the producer's client pinned to the tenant. */
+const defaultSenderVoice = (svc: Db): NonNullable<ProducerDeps["senderVoice"]> => async (a) => {
+  const { loadSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+  return loadSenderVoiceBrief(svc as never, { brokerageId: a.brokerageId, agentUserId: a.agentUserId })
+}
+
 const defaultFinalize = (svc: Db): NonNullable<ProducerDeps["finalize"]> => async (a) => {
   const { finalizeForDistribution, resolveTenantBrandForFinal } = await import("@/lib/marketing/humanize-final")
   const brand = await resolveTenantBrandForFinal(svc as never, { brokerageId: a.brokerageId, agentUserId: a.agentUserId })
   const out: string[] = []
   let tagline: string | null = null
   for (const text of a.texts) {
-    const f = await finalizeForDistribution({ assetKind: "lead_magnet", text, tenantBrand: brand.brand })
+    const f = await finalizeForDistribution({ assetKind: "lead_magnet", text, tenantBrand: brand.brand, voiceBrief: a.voiceBrief ?? null })
     const hard = [...f.fairHousing, ...f.brandVoice.prohibited.map((w) => `prohibited by the brand voice: "${w}"`)]
     if (hard.length) return { ok: false, reason: hard.join("; ") }
     out.push(f.tagline.applied === "appended" && f.tagline.text ? f.text.replace(f.tagline.text, "").trim() : f.text)
@@ -347,11 +357,17 @@ export async function produceMarketReport(svc: Db, input: ProduceMarketReportInp
     // 4 · NARRATIVE — the routed writer (tokens only), falling back to the data composer; the validator decides either way.
     let narrative = template
     let ai: { tokens: number | null; model: string | null } = { tokens: null, model: null }
+    // 151I: THE sender's voice brief is compiled ONCE and LEADS the writer's system prompt — the first draft is written in the
+    // agent's own words, tagline and tone; the same brief reaches the final phase and the ledger (voice_source).
+    const voiceBrief = research.data.length >= MIN_DATED_SOURCED_DATA
+      ? await (deps.senderVoice ?? defaultSenderVoice(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null }).catch(() => null)
+      : null
+    if (research.data.length >= MIN_DATED_SOURCED_DATA && !voiceBrief) notes.push("the sender-voice brief could not be compiled — the report is written in the brand's default voice")
     if (research.data.length >= MIN_DATED_SOURCED_DATA) {
       try {
         const brandName = (await (deps.brand ?? defaultBrand(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null }).catch(() => ({ brokerageName: "the brokerage" }))).brokerageName
         const written = await (deps.write ?? defaultWrite)({
-          brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null, system: MARKET_REPORT_WRITER_SYSTEM,
+          brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null, system: `${voiceBrief ? `${renderSenderVoiceBrief(voiceBrief)}\n\n` : ""}${MARKET_REPORT_WRITER_SYSTEM}`,
           prompt: buildMarketReportWriterPrompt({ territory, asOf, topic, format, brandName, data: research.data, unavailable: research.unavailable, comparables: research.comparables }),
         })
         ai = { tokens: written.tokens, model: written.model }
@@ -380,7 +396,7 @@ export async function produceMarketReport(svc: Db, input: ProduceMarketReportInp
 
     // 6 · THE FINAL PHASE (humanize + the tenant's brand voice), per block, then re-validated (a rewrite must not move a figure).
     const blocks = [narrative.headline, ...narrative.sections.map((s) => s.body), ...narrative.buyerTakeaways, ...narrative.sellerTakeaways, narrative.callToAction]
-    const fin = await (deps.finalize ?? defaultFinalize(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null, texts: blocks })
+    const fin = await (deps.finalize ?? defaultFinalize(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null, texts: blocks, voiceBrief })
       .catch((e: unknown) => ({ ok: false as const, reason: `the final phase could not run: ${e instanceof Error ? e.message : String(e)}` }))
     if (!fin.ok) return { ok: false, stage: "compliance", reason: `held by the final phase — ${fin.reason}`, notes }
     let i = 0
@@ -431,6 +447,7 @@ export async function produceMarketReport(svc: Db, input: ProduceMarketReportInp
           cost_rails: { ai_tool_usage: { feature: "market_report", tokens: ai.tokens, model: ai.model }, vendor_meter: research.refreshed.attempted ? "rentcast meterCall (lib/property/rentcast.ts) via refreshMarketData" : "none (stored market data)" },
           approver: { basis: approver.basis, primary: approver.primaryUserIds, permitted: approver.permittedUserIds.length },
           office_id: office?.id ?? null,
+          voice_source: voiceBrief ? voiceSourceStamp(voiceBrief) : null,
         },
       },
       async () => {

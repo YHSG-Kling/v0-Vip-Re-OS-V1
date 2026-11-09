@@ -345,10 +345,15 @@ export async function engageContact(
           let portalBody = portalFallback
           try {
             const { generatePersonaCopy, realCopyGenerator } = await import('@/lib/kernel/ai-copy')
+            // 151I: the assigned agent's voice (the compiled cascade when a mission preloaded it; else compiled from the identity
+            // ref inside the generator) and THIS person's own-words audience brief condition the note BEFORE the first draft.
+            const { loadAudienceBrief } = await import('@/lib/campaign-sequences/persona-render')
+            const audienceBrief = await loadAudienceBrief(supabase as never, { brokerageId, contactId: contact.id }).catch(() => null)
             const drafted = await generatePersonaCopy(
               { goal: `a short, warm, them-first IN-APP PORTAL note for a real-estate ${portalPersona} client — reference where they are, ~60–80 words, end with "reply here". No protected-class or age language.`,
                 facts: portalStage ? [`Stage/intent: ${portalStage}`] : [], channel: 'portal',
-                persona: { name: contact.first_name ?? undefined, audience: portalPersona, situation: portalStage }, words: 75 },
+                persona: { name: contact.first_name ?? undefined, audience: portalPersona, situation: portalStage }, words: 75,
+                sender: { brokerageId, agentId: contact.agent_id ?? null }, senderVoice: preloadedVoice?.voiceBrief ?? undefined, audience: audienceBrief ?? undefined },
               { body: portalFallback }, { generator: realCopyGenerator },
             )
             if (drafted.body?.trim()) portalBody = drafted.body.trim()
@@ -1053,10 +1058,15 @@ async function tryVoiceDrop(
       if (stageHint) vmFacts.push(`Stage/intent: ${stageHint}`)
       if (contact.timeline) vmFacts.push(`Timeline: ${contact.timeline}`)
       if (typeof contact.budget_min === 'number' && typeof contact.budget_max === 'number') vmFacts.push(`Budget: $${Number(contact.budget_min).toLocaleString()}–$${Number(contact.budget_max).toLocaleString()}`)
+      // 151I: the assigned agent's voice (compiled from the identity ref inside the generator) and THIS person's own-words
+      // audience brief condition the voicemail BEFORE the first draft.
+      const { loadAudienceBrief } = await import('@/lib/campaign-sequences/persona-render')
+      const audienceBrief = await loadAudienceBrief(supabase as never, { brokerageId, contactId: contact.id }).catch(() => null)
       const drafted = await generatePersonaCopy(
         { goal: `a warm, them-first ringless VOICEMAIL for a real-estate ${side} client — reference where they actually are, ≤25 seconds spoken (~50 words), natural and personal, end with a soft "call me back when you get a sec". No protected-class or age language.`,
           facts: vmFacts, channel: 'voicedrop',
-          persona: { name: contact.first_name ?? undefined, audience: side, situation: stageHint }, words: 50 },
+          persona: { name: contact.first_name ?? undefined, audience: side, situation: stageHint }, words: 50,
+          sender: { brokerageId, agentId: contact.agent_id ?? null }, audience: audienceBrief ?? undefined },
         { body: fallbackVm }, { generator: realCopyGenerator },
       )
       if (drafted.body?.trim()) scriptOverride = drafted.body.trim()

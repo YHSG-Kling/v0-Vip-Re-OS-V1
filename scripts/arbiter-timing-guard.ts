@@ -100,6 +100,7 @@ const POLICY_FILES = new Set(["lib/ai-isa/followup-policy.ts"])
 const NOT_A_SCHEDULE: Record<string, string> = {
   outreachLast30Days: "a COUNT of past outreach (a reading), not a schedule",
   cadenceMinutes: "lib/intent/movement-source-*: how often a PUBLIC DATASET is polled (research) — never a touch to a person (lane H's)",
+  updateCadenceDays: "lib/lead-pipeline/freshness.ts FRESHNESS_POLICIES (wave 151, lane 151C): how often a HELD provider record may be RE-VERIFIED (a re-read interval that bounds provider spend — pre-pull-dedup / the planner read it) — never a touch to a person; any contact is the arbiter's",
 }
 
 function classify(h: Hit): { cls: "floor" | "policy" | "disposed" | "not_schedule" | "defect"; why: string } {

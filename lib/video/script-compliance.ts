@@ -260,31 +260,51 @@ export function detectFairHousingRedFlags(
  * has no brand voice", so nothing is said rather than writing the prompt
  * off-brand under a fabricated default.
  */
+/**
+ * WHO IS SPEAKING (wave 151, lane 151I). A script is written in the SENDER's voice from the first draft: the cascade is
+ * asked for the agent (and team) when the generator knows them, and the versioned sender-voice brief the cascade compiles
+ * (lib/kernel/brand-voice.ts loadSenderVoiceBrief — words, tagline, tone, signature, authorized examples, positioning)
+ * rides the Gate 1 block. A `toneOverride` still wins the TONE line (the wizard's per-script choice); it no longer
+ * silences the rest of the sender's voice when a sender is known.
+ */
+interface ScriptSender {
+  /** agents.id when the caller holds it. */
+  agentId?: string | null
+  /** users.id when the caller holds it (disjoint from agents.id, CLAUDE.md §3 — the brief resolves either). */
+  agentUserId?: string | null
+  teamId?: string | null
+}
+
 async function brandVoiceCascadeBlock(
   brokerageId: string,
   toneOverride?: string,
+  sender?: ScriptSender | null,
 ): Promise<string> {
-  if (toneOverride) return `\nBrand voice tone: ${toneOverride}`
+  if (toneOverride && !sender) return `\nBrand voice tone: ${toneOverride}`
 
+  // The sender's ids in their own slots (agents.id / users.id are disjoint, CLAUDE.md §3); the cascade's brief reader classifies.
+  const voiceCtx = { brokerageId, agentId: sender?.agentId ?? undefined, agentUserId: sender?.agentUserId ?? null, teamId: sender?.teamId ?? undefined }
   let result: Awaited<ReturnType<typeof import("@/lib/ai-isa/brand-voice-prompt").loadBrandVoicePrompt>>
   try {
     const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")
-    result = await loadBrandVoicePrompt({ brokerageId })
+    result = await loadBrandVoicePrompt(voiceCtx)
   } catch {
     return ""
   }
 
-  if (!result.tone && !result.formalityLevel && result.prohibitedWords.length === 0 && result.preferredWords.length === 0 && !result.tagline) {
-    return ""
+  const briefBlock = result.voiceBriefBlock ? `\n${result.voiceBriefBlock}` : ""
+  if (!result.tone && !result.formalityLevel && result.prohibitedWords.length === 0 && result.preferredWords.length === 0 && !result.tagline && !briefBlock) {
+    return toneOverride ? `\nBrand voice tone: ${toneOverride}` : ""
   }
 
   return [
     `\nBrand voice guidelines (Gate 1 — follow strictly):`,
-    `- Tone: ${result.tone ?? "professional"}`,
+    `- Tone: ${toneOverride ?? result.tone ?? "professional"}`,
     result.formalityLevel ? `- Formality: ${result.formalityLevel}` : "",
     result.preferredWords.length ? `- Preferred words/phrases: ${result.preferredWords.join(", ")}` : "",
     result.prohibitedWords.length ? `- NEVER use these words/phrases: ${result.prohibitedWords.join(", ")}` : "",
     result.tagline ? `- Brand tagline (may reference): ${result.tagline}` : "",
+    briefBlock,
   ]
     .filter(Boolean)
     .join("\n")
@@ -644,8 +664,10 @@ export async function buildComplianceSystemBlocks(
   brokerageId: string,
   toneOverride?: string,
   client?: QueryableClient | null,
+  /** WAVE 151 (151I): who is speaking — the cascade compiles the SENDER's voice brief into Gate 1 when the generator knows them. */
+  sender?: ScriptSender | null,
 ): Promise<string[]> {
-  const brandVoiceBlock = await brandVoiceCascadeBlock(brokerageId, toneOverride)
+  const brandVoiceBlock = await brandVoiceCascadeBlock(brokerageId, toneOverride, sender)
   const phraseBlock = buildProhibitedPhraseBlock(await loadProhibitedPhraseCatalogue({ brokerageId, client }))
   return [brandVoiceBlock, THEM_FIRST_BLOCK, FAIR_HOUSING_BLOCK, phraseBlock].filter(Boolean)
 }

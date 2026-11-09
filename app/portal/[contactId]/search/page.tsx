@@ -16,7 +16,7 @@ import { ShareWithFamilyCard } from "./ShareWithFamilyCard"
 import { SaveHomeFromLinkCard } from "./SaveHomeFromLinkCard"
 // Wave 150 (lane 150W, owner R9 + ruling 2026-11-06): every saved home shows WHERE it came from, and a photo only from a
 // lawful source (the tenant's own listing media or its IDX/MLS feed) — never RentCast, never a pasted link.
-import { licensedPhotoFor, ownerUploadMediaIds, savedHomeSourceLine } from "@/lib/portal/saved-homes"
+import { licensedPhotoFor, ownerUploadMediaIds, savedHomeSourceLine, savedHomeVerificationLine } from "@/lib/portal/saved-homes"
 // Personas that support family/collaborative search: ONE list, lib/portal/persona-config.ts offersFamilySearch
 // (wave 148, lane 148K — the local const that lived here merged onto it; the settings page asks the same predicate).
 import { DEFAULT_PORTAL_PERSONA, offersFamilySearch } from "@/lib/portal/persona-config"
@@ -65,7 +65,9 @@ export default async function SearchPage({
     // `property_interests` which holds search criteria).
     supabase
       .from("saved_properties")
-      .select("id, listing_id, external_property_id, source, source_url, mls_number, mls_name, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons, listings(photos)")
+      // Wave 151 (lane 151J, m983): the last verified state rides along so the card can say when the source was last
+      // checked and what it reported (savedHomeVerificationLine) — never the hold's internal reason.
+      .select("id, listing_id, external_property_id, source, source_url, mls_number, mls_name, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons, last_verified_at, last_verified_status, verification_hold, listings(photos)")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
@@ -393,6 +395,8 @@ export default async function SearchPage({
                         <p className="text-[11px] text-teal-700 italic truncate">✨ {item.match_reasons[0]}</p>
                       )}
                       <p className="text-[11px] text-muted-foreground truncate">{savedHomeSourceLine(item)}</p>
+                      {/* Wave 151 (151J): when the source was last checked and what it reported — the saved-home watch's line. */}
+                      <p className="text-[11px] text-muted-foreground truncate">{savedHomeVerificationLine(item)}</p>
                     </div>
                   </Link>
                   )

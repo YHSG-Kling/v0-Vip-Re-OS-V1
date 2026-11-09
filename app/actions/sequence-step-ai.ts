@@ -95,7 +95,19 @@ ${PERSONALIZATION_HINT}
 ${refineNote}${subjectInstruction}`
 
   try {
+    // WAVE 151 (lane 151I): THE sender's versioned voice brief is the SYSTEM prompt — the step is drafted in the agent's own
+    // words, tagline and tone from the first draft (the service client, pinned to the caller's verified tenant). Unreadable =
+    // written without it (logged); the brand-voice gate below still binds.
+    let senderVoiceBlock = ""
+    try {
+      const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+      const brief = await loadSenderVoiceBrief(createServiceClient() as never, { brokerageId: ctx.brokerageId, agentUserId: ctx.userId ?? null })
+      senderVoiceBlock = renderSenderVoiceBrief(brief)
+    } catch (e) {
+      console.error("[sequence-step-ai] sender-voice brief unavailable — the step is written without it:", e instanceof Error ? e.message : String(e))
+    }
     const response = await generateAIResponse({
+      ...(senderVoiceBlock ? { system: senderVoiceBlock } : {}),
       prompt,
       temperature: 0.6,
       maxTokens: 600,

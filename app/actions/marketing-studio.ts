@@ -1035,36 +1035,22 @@ export async function generateCampaignContent(params: {
     .eq("id", params.campaignId)
     .maybeSingle()
 
-  // Load brand voice profile for this brokerage
-  const { data: aiIdentity } = await supabase
-    .from("brand_voice_profile")
-    .select("tone, formality_level, key_brand_messages, prohibited_words, preferred_words, mission_statement, custom_instructions")
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-
-  const systemPrompt = [
-    `You are ${aiIdentity?.tone ? `a ${aiIdentity.tone}` : "a professional"} real estate marketing AI.`,
-    aiIdentity?.formality_level === "formal"
-      ? "Use formal, professional language."
-      : aiIdentity?.formality_level === "casual"
-      ? "Use approachable, conversational language."
-      : "Use semi-formal, warm language.",
-    aiIdentity?.key_brand_messages?.length
-      ? `Brand pillars: ${aiIdentity.key_brand_messages.join(", ")}.`
-      : "",
-    aiIdentity?.prohibited_words?.length
-      ? `Never use these words or phrases: ${aiIdentity.prohibited_words.join(", ")}.`
-      : "",
-    aiIdentity?.preferred_words?.length
-      ? `Prefer these words and phrases: ${aiIdentity.preferred_words.join(", ")}.`
-      : "",
-    aiIdentity?.mission_statement
-      ? `Brand mission: ${aiIdentity.mission_statement}`
-      : "",
-    aiIdentity?.custom_instructions ?? "",
-  ]
+  // WAVE 151 (lane 151I, integrator fold — LAW 2): THE ONE sender-voice reader compiles the signed-in agent's VERSIONED brief
+  // (words, tagline, tone, formality, mission, key messages, signature, their own sentences) at agent → team → brokerage scope
+  // and LEADS the system prompt, so the first draft is written in the sender's voice. TOMBSTONE: the private
+  // brokerage-scope `.from("brand_voice_profile")` read that lived here is DELETED — SURVIVOR: lib/kernel/brand-voice.ts
+  // loadSenderVoiceBrief (rendered by renderSenderVoiceBrief). The session client keeps the read inside the caller's tenant.
+  let senderVoiceBlock = ""
+  try {
+    const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+    const brief = await loadSenderVoiceBrief(supabase as never, { brokerageId: brokerageId ?? "", agentUserId: userId ?? null, agentId: agentId ?? null })
+    senderVoiceBlock = renderSenderVoiceBrief(brief)
+  } catch (e) {
+    console.error("[marketing-studio] sender-voice brief unavailable — the copy is written without it:", e instanceof Error ? e.message : String(e))
+  }
+  const systemPrompt = [senderVoiceBlock, "You are the sender's real estate marketing writer: write AS the sender described above, in their words and tone, from the first line."]
     .filter(Boolean)
-    .join(" ")
+    .join("\n\n")
 
   const listing = (campaign as any)?.listing
   const contentPrompt = [

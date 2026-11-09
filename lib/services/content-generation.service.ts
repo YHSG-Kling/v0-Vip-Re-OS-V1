@@ -223,19 +223,26 @@ async function gatherContextData(params: ContentGenerationParams) {
   // schema-snapshot.ts:137) — its avoid-list was always undefined — so the
   // capability lands on the columns that exist: preferred_words /
   // prohibited_words / tone / style / formality_level / custom_instructions.
+  // WAVE 151 (lane 151I, integrator fold — LAW 2): THE ONE sender-voice reader compiles the agent's VERSIONED brief at
+  // agent → team → brokerage scope; the prompt builders read the same six fields they always did (kept on
+  // context.brandVoice) and the rendered brief LEADS the writing prompt (context.senderVoiceBlock). TOMBSTONE: the private
+  // `.from("brand_voice_profile")` read that lived here is DELETED — SURVIVOR: lib/kernel/brand-voice.ts loadSenderVoiceBrief.
   if (params.agentId && isValidUUID(params.agentId)) {
-    const { data: brandVoice, error: brandVoiceError } = await supabase
-      .from("brand_voice_profile")
-      .select("tone, style, formality_level, preferred_words, prohibited_words, custom_instructions")
-      .eq("agent_id", params.agentId)
-      .eq("is_active", true)
-      .maybeSingle()
-
-    if (brandVoiceError) {
-      // A refused read is not "this agent has no brand voice" (§3).
-      console.error("[gatherContextData] brand voice read failed:", brandVoiceError.message)
+    try {
+      const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+      // The tenant is the SESSION's (never a param): the same resolver generateContent stamps the saved row with.
+      const ctx = await getAgentContext()
+      if (!ctx.brokerageId) throw new Error("no brokerage on this session")
+      const brief = await loadSenderVoiceBrief(supabase as never, { brokerageId: ctx.brokerageId, agentId: params.agentId })
+      context.brandVoice = {
+        tone: brief.tone, style: brief.style, formality_level: brief.formality,
+        preferred_words: brief.preferredWords, prohibited_words: brief.prohibitedWords, custom_instructions: brief.styleNotes,
+      }
+      context.senderVoiceBlock = renderSenderVoiceBrief(brief)
+    } catch (e) {
+      // A refused compile is not "this agent has no brand voice" (§3) — said, and the draft is written without it.
+      console.error("[gatherContextData] sender-voice brief unavailable:", e instanceof Error ? e.message : String(e))
     }
-    context.brandVoice = brandVoice
   }
 
   // Get transaction details if provided
@@ -301,6 +308,12 @@ async function generateContentWithAI(params: ContentGenerationParams, contextDat
  */
 function buildPrompt(params: ContentGenerationParams, contextData: any): string {
   let prompt = ""
+
+  // WAVE 151 (151I): THE sender's versioned voice brief LEADS the writing prompt — the first draft is written in the
+  // agent's own words, tagline and tone; the BRAND VOICE lines below stay as the rule list the gate also enforces.
+  if (typeof contextData?.senderVoiceBlock === "string" && contextData.senderVoiceBlock) {
+    prompt += `${contextData.senderVoiceBlock}\n\n`
+  }
 
   // Base context
   if (params.customPrompt) {

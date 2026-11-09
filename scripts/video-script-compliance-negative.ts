@@ -64,9 +64,11 @@ const mutations: Mutation[] = [
     // outage degrades to "no brand-voice block", never a thrown gate.
     id: "GATE-BRAND-VOICE-CASCADE-FAILS-SAFE",
     file: "lib/video/script-compliance.ts",
+    // Wave 151 (lane 151I): the cascade is now asked for the SENDER too (voiceCtx carries agentId / agentUserId / teamId);
+    // the anchor follows the call, the mutation is the same — the try goes, the gate must go red.
     apply: sub(
-      '  try {\n    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")\n    result = await loadBrandVoicePrompt({ brokerageId })\n  } catch {\n    return ""\n  }',
-      '  {\n    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")\n    result = await loadBrandVoicePrompt({ brokerageId })\n  }',
+      '  try {\n    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")\n    result = await loadBrandVoicePrompt(voiceCtx)\n  } catch {\n    return ""\n  }',
+      '  {\n    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")\n    result = await loadBrandVoicePrompt(voiceCtx)\n  }',
     ),
   },
   {
@@ -74,8 +76,8 @@ const mutations: Mutation[] = [
     id: "GATE-NO-PRIVATE-BRAND-VOICE-READ",
     file: "lib/video/script-compliance.ts",
     apply: sub(
-      "    result = await loadBrandVoicePrompt({ brokerageId })",
-      '    result = await loadBrandVoicePrompt({ brokerageId })\n    await (globalThis as any).svc.from("brand_voice_profile").select("tone")',
+      "    result = await loadBrandVoicePrompt(voiceCtx)",
+      '    result = await loadBrandVoicePrompt(voiceCtx)\n    await (globalThis as any).svc.from("brand_voice_profile").select("tone")',
     ),
   },
   {

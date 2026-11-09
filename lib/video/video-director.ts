@@ -1264,6 +1264,8 @@ export async function commissionVideo(
               : { audience: audienceFor(situation.kind), tone: brandVoice?.tone ?? undefined },
             words: 8,
             directives: directorHookDirectives(),
+            // WAVE 151 (lane 151I): the sender's versioned voice brief the cascade compiled conditions the hook's FIRST draft.
+            senderVoice: brandVoice?.voiceBrief ?? null,
           },
           { body: fallbackHook },
           { generator: opts.copyGenerator },
@@ -1782,6 +1784,8 @@ async function draftAndGateHook(
             persona: { audience: audienceFor(situation.kind), tone: opts.brandVoiceTone ?? undefined },
             words: 8,
             directives: directorHookDirectives(),
+            // WAVE 151 (lane 151I): the A/B variants are written in the SENDER's voice too — the copy engine compiles the brief.
+            sender: { brokerageId: opts.brokerageId, agentUserId: opts.agentUserId },
           },
           { body: fallbackHook },
           { generator: opts.copyGenerator },

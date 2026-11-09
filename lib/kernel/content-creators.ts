@@ -85,7 +85,12 @@ type FinalizedLocal = import("@/lib/marketing/humanize-final").FinalizedDistribu
 async function finalPhase(supabase: ContentClient, ctx: MarketingActorContext, a: { assetKind: HumanizeAssetKindLocal; text?: string; html?: string; authoredBy?: "ai" | "human"; agentUserId?: string | null }): Promise<FinalizedLocal> {
   const hf = await import("@/lib/marketing/humanize-final")
   const { brand, error } = await hf.resolveTenantBrandForFinal(supabase as never, { brokerageId: ctx.brokerageId, agentUserId: a.agentUserId ?? ctx.userId })
-  const final = await hf.finalizeForDistribution({ assetKind: a.assetKind, text: a.text, html: a.html, tenantBrand: brand, authoredBy: a.authoredBy ?? "ai" })
+  // WAVE 151 (lane 151I): the SAME versioned sender-voice brief the writer was conditioned on is handed to the final phase,
+  // so the final checks the draft against the sender's own rules (formality, signature, prohibited words) and the staged
+  // version records which voice version it was written in (distribution_finals.findings.voice_source).
+  const { loadSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+  const voiceBrief = await loadSenderVoiceBrief(supabase as never, { brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: a.agentUserId ?? ctx.userId }).catch(() => null)
+  const final = await hf.finalizeForDistribution({ assetKind: a.assetKind, text: a.text, html: a.html, tenantBrand: brand, authoredBy: a.authoredBy ?? "ai", voiceBrief })
   if (error) final.reviewNotes.push(error)
   return final
 }
@@ -278,12 +283,17 @@ export async function authorNewsletterContent(input: AuthorNewsletterContentInpu
   // brand_voice_profile.agent_id is agents-class; the users id is not a stand-in (it matches
   // nothing and the issue silently generates in the default voice). Tenant-pinned: this is the
   // service client.
-  let brandVoice: Record<string, unknown> | null = null
-  if (agentId) {
-    const { data, error: bvErr } = await supabase
-      .from("brand_voice_profile").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
-    if (bvErr) console.error("[content-creators] newsletter brand voice read failed:", bvErr.message)
-    brandVoice = data as Record<string, unknown> | null
+  // WAVE 151 (lane 151I, integrator fold — LAW 2): THE ONE sender-voice reader compiles the newsletter author's versioned brief
+  // (words, tagline, tone, signature, their own sentences) at agent → team → brokerage scope; it LEADS the prompt below.
+  // TOMBSTONE: the private `.from("brand_voice_profile").select("*")` read that lived here is DELETED — SURVIVOR:
+  // lib/kernel/brand-voice.ts loadSenderVoiceBrief (rendered by renderSenderVoiceBrief).
+  let senderVoiceBlock = ""
+  try {
+    const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+    const brief = await loadSenderVoiceBrief(supabase as never, { brokerageId, agentId: agentId ?? null })
+    senderVoiceBlock = renderSenderVoiceBrief(brief)
+  } catch (e) {
+    console.error("[content-creators] newsletter sender-voice brief unavailable — written without it:", e instanceof Error ? e.message : String(e))
   }
 
   const template = NEWSLETTER_TEMPLATES.find((t) => t.id === (input.template ?? "modern")) || NEWSLETTER_TEMPLATES[0]
@@ -380,7 +390,9 @@ than the direction asks for, write fewer — and with none, write the section wi
 
   // COMPLIANCE-FIRST: the rules are an INPUT to the writer (§5), read for THIS tenant through
   // THIS client (the webhook has no session for the phrase catalogue's RLS to evaluate).
-  const complianceBlocks = await compliance.buildComplianceSystemBlocks(brokerageId, undefined, supabase)
+  // WAVE 151 (lane 151I): the newsletter is written in the SENDER's voice from the first draft — the gate's Gate 1 block carries
+  // the agent's versioned voice brief when the cascade is asked for them (users.id + the actor's agents.id and team).
+  const complianceBlocks = await compliance.buildComplianceSystemBlocks(brokerageId, undefined, supabase, { agentId: ctx.agentId ?? null, agentUserId: userId, teamId: ctx.teamId ?? null })
   const system = [isInsiderTemplate ? insider.INSIDER_CURATOR_SYSTEM_PROMPT : "", ...complianceBlocks]
     .filter(Boolean).join("\n\n")
 
@@ -406,12 +418,11 @@ than the direction asks for, write fewer — and with none, write the section wi
       estimatedReadTime: z.number(),
       wordCount: z.number(),
     }),
-    prompt: `Write newsletter content for a real estate agent.
+    prompt: `${senderVoiceBlock ? `${senderVoiceBlock}\n\n` : ""}Write newsletter content for a real estate agent — in the sender's voice above, from the first line.
 
 Template Style: ${template.style}
 Topic: ${input.topic}
 Sections needed: ${template.sections.join(", ")}
-${brandVoice ? `Brand Voice: ${brandVoice.tone}, ${brandVoice.style}` : ""}
 ${input.tone ? `Tone: ${input.tone}` : ""}
 
 ${input.featuredListings?.length ? `Featured Listings: ${JSON.stringify(input.featuredListings)}` : ""}
@@ -1084,7 +1095,8 @@ ${topicBank.renderTopicsForPrompt(topicSeeds)}`
     : ""
 
   // ── 6. Write — compliance-first: the rules are in the SYSTEM prompt ───────
-  const blocks = await compliance.buildComplianceSystemBlocks(brokerageId, undefined, supabase)
+  // WAVE 151 (lane 151I): the post is written in the SENDER's voice from the first draft (the attributed agent, else the actor).
+  const blocks = await compliance.buildComplianceSystemBlocks(brokerageId, undefined, supabase, { agentId: ctx.agentId ?? null, agentUserId: agentUserId ?? userId, teamId: ctx.teamId ?? null })
   const systemPrompt = [
     `You are a real estate content writer for a professional brokerage. Write in a ${toneDescription} style.
 ${brandVoice.keyBrandMessages?.length ? `Key messages to incorporate: ${brandVoice.keyBrandMessages.join(", ")}` : ""}
@@ -1310,7 +1322,8 @@ export async function writePodcastScript(input: {
   const pre = await compliance.precheckBriefForFairHousing(actor, brief, "buyer", { client: supabase })
   if (pre.blocked) return { success: false, error: `This topic cannot be written as asked: ${pre.reason}` }
 
-  const blocks = await compliance.buildComplianceSystemBlocks(ctx.brokerageId, undefined, supabase)
+  // WAVE 151 (lane 151I): spoken in the HOST's voice from the first draft — the cascade is asked for the actor.
+  const blocks = await compliance.buildComplianceSystemBlocks(ctx.brokerageId, undefined, supabase, { agentId: ctx.agentId ?? null, agentUserId: ctx.userId, teamId: ctx.teamId ?? null })
   // A podcast script is SPOKEN (ElevenLabs renders it in the agent's voice), so it carries the
   // shared spoken-script standards (SCRIPT_QUALITY_CHARTER + SPOKEN_REALISM_DIRECTIVE) through
   // the ONE composer, and the AI-tell scan grades the output (advisory, never a hold).

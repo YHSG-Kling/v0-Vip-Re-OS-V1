@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-09
  * source: public.live_schema_json()
- * body-sha256: c3a3b351269378b93c01bb81e13bffab7dd06d81a69225a5688e5369b4bdd0b9
+ * body-sha256: 1391e8660ae5c4b31b5c16c3373391686bd9c67290504aef3abd116a44f1df2e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -604,7 +604,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   review_requests: ["agent_id", "brokerage_id", "completed_at", "contact_id", "contact_name", "created_at", "id", "platform", "review_url", "sent_at", "status", "updated_at"],
   saved_ai_outputs: ["brokerage_id", "created_at", "entity_id", "entity_type", "id", "metadata", "output_text", "tags", "title", "tool_name", "user_id"],
   saved_calculations: ["brokerage_id", "calculation_data_json", "created_at", "id", "tool_name", "user_email", "user_name", "visitor_id"],
-  saved_properties: ["added_to_tour", "ai_match_score", "bathrooms", "bedrooms", "brokerage_id", "city", "contact_id", "dismissed", "dismissed_reason", "external_property_id", "id", "interest_level", "list_price", "listing_id", "listing_url", "match_reasons", "mls_name", "mls_number", "notes", "primary_photo_url", "property_address", "property_type", "saved_at", "source", "source_url", "sqft", "state", "user_id"],
+  saved_properties: ["added_to_tour", "ai_match_score", "bathrooms", "bedrooms", "brokerage_id", "city", "contact_id", "dismissed", "dismissed_reason", "external_property_id", "id", "interest_level", "last_verified_at", "last_verified_mls_number", "last_verified_price", "last_verified_source", "last_verified_status", "list_price", "listing_id", "listing_url", "match_reasons", "mls_name", "mls_number", "notes", "primary_photo_url", "property_address", "property_type", "saved_at", "source", "source_url", "sqft", "state", "user_id", "verification_hold"],
   scheduled_touchpoints: ["agent_id", "ai_generated", "brokerage_id", "contact_id", "created_at", "id", "message_template", "scheduled_date", "sent_at", "status", "touchpoint_type"],
   scraper_actor_health: ["actor_id", "alive", "id", "last_checked", "last_error", "task"],
   scraper_executions: ["api_calls_made", "api_cost", "brokerage_id", "completed_at", "created_at", "duplicates_skipped", "duration_ms", "enrichment_cost", "error_message", "id", "leads_created", "leads_enriched", "scraper_type", "started_at", "status", "total_items_found", "triggered_by"],

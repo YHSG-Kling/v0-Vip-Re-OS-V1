@@ -17,11 +17,17 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { composeTeammateContext, isManagerKey } from "@/lib/kernel/ai-teammates"
+// WAVE 151 (lane 151I): THE ONE brand-voice reader compiles the versioned sender-voice brief (words, tagline, tone,
+// signature, authorized examples, positioning, local areas) that every rail built on this block is conditioned on BEFORE
+// its first draft. lib/kernel/brand-voice.ts is already on the app/crm/page.tsx import graph — no module is added.
+import { loadSenderVoiceBrief, renderSenderVoiceBrief, voiceSourceStamp, type SenderVoiceBrief, type VoiceSourceStamp } from "@/lib/kernel/brand-voice"
 
 export interface BrandVoicePromptContext {
   brokerageId: string
   agentId?: string | null
   teamId?: string | null
+  /** WAVE 151 (151I): the sender's users.id when the caller holds it (agents.id and users.id are disjoint, CLAUDE.md §3) — the sender-voice brief resolves either. */
+  agentUserId?: string | null
   /**
    * Which built-in manager's domain this draft belongs to — used to thread the
    * tenant's ACTIVE custom AI teammates (tenant_ai_teammates) whose base
@@ -68,6 +74,12 @@ export interface BrandVoicePromptResult {
   /** The tenant's custom AI teammate answering for this domain, when one is
    *  chartered and active — callers may surface the name in attributions. */
   teammate: { name: string; roleTitle: string; baseManagerKey: string } | null
+  /** WAVE 151 (151I): the versioned sender-voice brief this block was built from (null = unreadable, said in the log). */
+  voiceBrief: SenderVoiceBrief | null
+  /** Its provenance stamp — what a produced asset records (distribution_finals.findings.voice_source). */
+  voiceSource: VoiceSourceStamp | null
+  /** The brief as rendered into systemBlock — for callers that compose their own prompt from the parts. */
+  voiceBriefBlock: string
 }
 
 /**
@@ -93,6 +105,8 @@ export interface BrandVoiceVideoContext {
   tagline: string | null
   assistantName: string
   source: "loadBrandVoicePrompt"
+  /** WAVE 151 (151I): the sender-voice brief version the script was written in (null when the brief was unreadable). */
+  voiceVersion?: string | null
 }
 
 export function brandVoiceContextForVideo(result: BrandVoicePromptResult): BrandVoiceVideoContext {
@@ -104,6 +118,7 @@ export function brandVoiceContextForVideo(result: BrandVoicePromptResult): Brand
     tagline: result.tagline,
     assistantName: result.assistantName,
     source: "loadBrandVoicePrompt",
+    voiceVersion: result.voiceBrief?.version ?? null,
   }
 }
 
@@ -251,10 +266,24 @@ export async function loadBrandVoicePrompt(
     brokIdentity?.followup_style ??
     "warm_persistent"
 
+  // ── THE SENDER'S VOICE BRIEF (wave 151, lane 151I) ─────────────────────────
+  // Compiled by THE brand-voice reader BEFORE the block is built, so every rail that drafts from this block (inbound email,
+  // engagement outreach, the portal and widget assistants, the live avatar, every video-script generator through
+  // lib/video/script-compliance.ts) writes in the sender's words from the first draft. Unreadable = logged and absent,
+  // never a guessed voice. Cached in-process by the reader (2 min; a saved setting is a new version).
+  let voiceBrief: SenderVoiceBrief | null = null
+  try {
+    voiceBrief = await loadSenderVoiceBrief(supabase as never, { brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: ctx.agentUserId ?? null, agentId: ctx.agentId ?? null })
+  } catch (e) {
+    console.error("[brand-voice-prompt] sender-voice brief unavailable — the block carries the cascade's settings only:", (e as Error)?.message ?? String(e))
+  }
+  const voiceBriefBlock = voiceBrief ? renderSenderVoiceBrief(voiceBrief) : ""
+
   // ── Build system prompt block ─────────────────────────────────────────
   const parts: string[] = []
 
   parts.push(`You are ${assistantName}${personaLabel ? `, ${personaLabel}` : ""}.`)
+  if (voiceBriefBlock) parts.push(voiceBriefBlock)
 
   // The tenant's charters for this domain — injected ONCE here so every rail
   // that builds its prompt from this block (inbound email drafts, engagement
@@ -402,5 +431,8 @@ export async function loadBrandVoicePrompt(
     teammate: domainTeammates[0]
       ? { name: domainTeammates[0].name, roleTitle: domainTeammates[0].role_title, baseManagerKey: domainTeammates[0].base_manager_key }
       : null,
+    voiceBrief,
+    voiceSource: voiceBrief ? voiceSourceStamp(voiceBrief) : null,
+    voiceBriefBlock,
   }
 }

@@ -44,7 +44,7 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 const P = "app/portal/[contactId]"
-type Verdict = "BUILT" | "PARTIAL" | "BUILT (149B)" | "WIRED (149B)" | "BUILT (149J)"
+type Verdict = "BUILT" | "PARTIAL" | "BUILT (149B)" | "WIRED (149B)" | "BUILT (149J)" | "BUILT (151J)"
 interface Capability { key: string; verdict: Verdict; surface: string; door: string; token: string; missing?: string }
 
 /** The audit (lane 149B notes "Verdict per requirement" carries the same table). `token` must appear in BOTH the
@@ -76,6 +76,11 @@ const CAPABILITIES: Capability[] = [
   // (updateContactProfile → portalChannelWithdrawals → the ONE opt-out writer writeOptOut, source 'portal'), gated by the
   // contact's own access, instead of a processPortalOptOut twin. §A' below holds the door to the writer.
   { key: "communication preferences", verdict: "BUILT (149J)", surface: "app/components/portal/PortalSettingsPage.tsx", door: "app/actions/portal-settings.ts", token: "updateContactProfile" },
+  // Wave 151 (lane 151J): a saved HOME is its own subscription — the watch re-reads the source (metered re-reads behind
+  // approval), diffs the last verified state and hands a change to the ONE arbiter door; the card says when it was checked.
+  { key: "saved-home alerts (last verified state on the card)", verdict: "BUILT (151J)", surface: `${P}/search/page.tsx`, door: "lib/portal/saved-homes.ts", token: "savedHomeVerificationLine" },
+  // Wave 151 (lane 151J, row 77): a tour ask on a saved home with NO listing row → the survivor showing door + an agent task.
+  { key: "showing request on an outside saved home (row 77)", verdict: "BUILT (151J)", surface: `${P}/search/PortalNlSearch.tsx`, door: "app/actions/buyer-search/conversational-search.ts", token: "buyerHomeFeedbackAction" },
 ]
 
 /** PURE: a capability resolves when both files exist and both carry the token in stripped source. */

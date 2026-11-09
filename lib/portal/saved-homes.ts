@@ -53,6 +53,197 @@ function hostOf(url: string | null | undefined): string | null {
   try { return url ? new URL(url).hostname.replace(/^www\./, "") : null } catch { return null }
 }
 
+// ─── THE LAST VERIFIED STATE, IN THE BUYER'S WORDS (wave 151, lane 151J — m983) ──────────────────────────────────────
+//
+// The saved-home watch (lib/property-alerts/saved-home-watch.ts) stamps when a saved home's SOURCE was last read and
+// what it said; a home it could not verify carries `verification_hold` (an internal reason — a metered re-read held for
+// want of approval, no IDX by-id read, a pasted link whose status is unverifiable). The BUYER reads none of that
+// machinery: they read when the home was last checked and what the source reported, and otherwise that their agent
+// confirms availability. No approval, cap, budget, spend or provider word ever reaches this line (the guard censuses it).
+
+/** The buyer-facing words for a source status on the normalizeVendorStatus vocabulary (null = not reported). */
+function statusWords(status: string | null | undefined): string {
+  switch ((status ?? "").toLowerCase()) {
+    case "active": return "still listed"
+    case "coming_soon": return "coming soon"
+    case "pending": return "under contract"
+    case "sold": return "sold"
+    case "withdrawn": case "expired": case "off_market": return "no longer listed"
+    default: return "status not reported"
+  }
+}
+
+const checkedOn = (iso: string) => {
+  const t = new Date(iso)
+  return Number.isFinite(t.getTime()) ? t.toLocaleDateString("en-US", { month: "short", day: "numeric" }) : null
+}
+
+/** PURE. "Checked Nov 9 · still listed", or an honest "not re-checked" line — never the hold's internal reason. */
+export function savedHomeVerificationLine(row: { source?: string | null; listing_id?: string | null; last_verified_at?: string | null; last_verified_status?: string | null; verification_hold?: string | null }): string {
+  const origin = savedHomeOrigin(row)
+  const when = row.last_verified_at ? checkedOn(row.last_verified_at) : null
+  if (when) {
+    const words = statusWords(row.last_verified_status)
+    return row.verification_hold ? `Checked ${when} · ${words} · your agent confirms availability` : `Checked ${when} · ${words}`
+  }
+  if (origin === "tenant_listing") return "Status from your agent's own board"
+  return "Not re-checked yet — your agent confirms availability"
+}
+
+// ─── A SHOWING ON A HOME WITH NO LISTING ROW (wave 151, lane 151J — lane-150Z convergence row 77) ────────────────────
+//
+// A buyer may ask to tour a home they saved from RentCast or a pasted link. There is NO listings row for it and there
+// must never be a fake one. The survivor door already supports an outside home — app/actions/showings.ts requestShowing
+// takes `listingId: undefined` plus the property's own fields and `savedPropertyId` — so the honest path is: the saved
+// row's FACTS (never the browser's) → that door (its BBA and buyer-financial gates run as for any showing) → ONE agent
+// TASK carrying the SOURCE RECORD (which saved row, which origin, the MLS number and its MLS, or the link), so the agent
+// arranges it with the listing side. The task is idempotent per showing request (the action ledger's key).
+
+export interface ExternalShowingRequestFacts {
+  listingId: undefined
+  propertyAddress: string
+  propertyCity?: string
+  propertyState?: string
+  mlsNumber?: string
+  listPrice?: number
+  source: "buyer_portal"
+  savedPropertyId: string
+  preferredDates: Array<{ date: string; time: string }>
+  clientNotes: string
+}
+
+/** PURE. The showing-request facts for a saved home WITHOUT a listings row, from the saved row only. Null when the saved
+ *  row has no address (a link we never resolved — the agent looks at the link itself; there is nothing to show yet).
+ *  Module-private: reached through requestExternalShowing (the one door). */
+function externalShowingRequestFor(row: { id: string; listing_id?: string | null; source?: string | null; property_address?: string | null; city?: string | null; state?: string | null; mls_number?: string | null; mls_name?: string | null; list_price?: number | string | null; source_url?: string | null }): ExternalShowingRequestFacts | null {
+  if (row.listing_id) return null
+  const address = (row.property_address ?? "").trim()
+  if (!address) return null
+  const price = row.list_price == null ? NaN : Number(row.list_price)
+  return {
+    listingId: undefined,
+    propertyAddress: address,
+    ...(row.city ? { propertyCity: row.city } : {}),
+    ...(row.state ? { propertyState: row.state } : {}),
+    ...(row.mls_number ? { mlsNumber: row.mls_number } : {}),
+    ...(Number.isFinite(price) && price > 0 ? { listPrice: price } : {}),
+    source: "buyer_portal",
+    savedPropertyId: row.id,
+    preferredDates: [],
+    clientNotes: `Outside listing — ${savedHomeSourceLine(row)}`,
+  }
+}
+
+/** PURE. The agent's task for an outside-listing showing request: title + description carry the SOURCE RECORD. Module-private. */
+function externalShowingTaskFor(row: { id: string; source?: string | null; listing_id?: string | null; property_address?: string | null; city?: string | null; mls_number?: string | null; mls_name?: string | null; source_url?: string | null }, showingRequestId: string): { title: string; description: string } {
+  const origin = savedHomeOrigin(row)
+  const where = [row.property_address, row.city].filter(Boolean).join(", ") || "a saved home"
+  const sourceRecord = origin === "rentcast_listing"
+    ? `RentCast listing ${row.mls_number ? `MLS ${row.mls_number}` : "(no MLS number reported)"}${row.mls_name ? ` on ${row.mls_name}` : ""}`
+    : origin === "buyer_url"
+      ? `a link the buyer pasted (${row.source_url ?? "link not kept"})`
+      : origin === "idx_mls"
+        ? `the IDX/MLS feed${row.mls_number ? ` (MLS ${row.mls_number})` : ""}`
+        : "a saved home with no listing row"
+  return {
+    title: `Showing requested on an outside listing — ${where}`.slice(0, 200),
+    description: [
+      `Your buyer asked to tour ${where}. This home is NOT one of our listings and no listing row exists for it — arrange the showing with the listing side (ShowingTime, the listing agent, or their office).`,
+      `Source record: saved_properties ${row.id} — ${sourceRecord}. Showing request ${showingRequestId}.`,
+      "Confirm the home is still available before you book; the buyer sees only your confirmation.",
+    ].join(" ").slice(0, 2000),
+  }
+}
+
+export interface ExternalShowingOutcome {
+  ok: boolean
+  showingRequestId: string | null
+  taskId: string | null
+  /** One plain sentence for the buyer. */
+  note: string
+}
+
+/** The survivor door, injected (app/actions/showings.ts requestShowing — the sessionless-caller overload). */
+export type ShowingRequestDoor = (
+  data: ExternalShowingRequestFacts & { contactId: string },
+  caller: { client: Db; actorUserId: string | null },
+) => Promise<{ success: boolean; data?: { id?: string } | null; error?: string; errorCode?: string }>
+
+/**
+ * A buyer's tour request on a saved home that has NO listings row → the survivor showing door with the saved row's
+ * facts → one agent task with the source record. Tenant and buyer come from the CALLER's gate. Never a listings insert.
+ */
+export async function requestExternalShowing(
+  db: Db,
+  ctx: SaveCtx & { agentId: string | null },
+  ref: { source: string; externalId: string },
+  deps: { requestShowing: ShowingRequestDoor; now?: Date },
+): Promise<ExternalShowingOutcome> {
+  const { data, error } = await db.from("saved_properties")
+    .select("id, listing_id, source, source_url, external_property_id, property_address, city, state, mls_number, mls_name, list_price")
+    .eq("brokerage_id", ctx.brokerageId).eq("contact_id", ctx.contactId).eq("source", ref.source).eq("external_property_id", ref.externalId).limit(1)
+  if (error) return { ok: false, showingRequestId: null, taskId: null, note: "Your saved home couldn't be read just now — your agent has still been told you'd like to tour it." }
+  const row = (Array.isArray(data) ? data[0] : null) as Parameters<typeof externalShowingRequestFor>[0] | null
+  if (!row) return { ok: false, showingRequestId: null, taskId: null, note: "Save the home first, then ask to tour it — your agent has been told either way." }
+  // An IN-HOUSE home (a listings row) keeps its existing path — the showings page requests against the listing itself.
+  if (row.listing_id) return { ok: false, showingRequestId: null, taskId: null, note: "This home is one of your agent's own listings — request the showing from its page, and your agent will confirm a time." }
+  const facts = externalShowingRequestFor(row)
+  if (!facts) return { ok: false, showingRequestId: null, taskId: null, note: "We don't have this home's address yet (it was saved as a link), so your agent will look at the link and set up a showing with you." }
+  const r = await deps.requestShowing({ ...facts, contactId: ctx.contactId }, { client: db, actorUserId: ctx.ownerUserId })
+  if (!r.success) {
+    const why = r.errorCode === "bba_required"
+      ? "Before a showing can be set up, your buyer agreement needs signing — your agent will reach out."
+      : r.error ? `A showing couldn't be requested just now (${String(r.error).slice(0, 140)}) — your agent has been told.` : "A showing couldn't be requested just now — your agent has been told."
+    return { ok: false, showingRequestId: null, taskId: null, note: why }
+  }
+  const showingRequestId = String(r.data?.id ?? "")
+  if (!showingRequestId) return { ok: true, showingRequestId: null, taskId: null, note: "Your showing request is in — your agent will confirm a time." }
+  const task = await openExternalShowingTask(db, ctx, row, showingRequestId, deps.now)
+  return { ok: true, showingRequestId, taskId: task.taskId, note: task.taskId
+    ? "Your showing request is in. Because this home is listed elsewhere, your agent has a task to arrange it with the listing side and will confirm a time."
+    : "Your showing request is in — your agent will confirm a time." }
+}
+
+/** ONE agent task per outside-listing showing request (ledgered, idempotent on the request id). Returns the task id, or
+ *  null with the reason (no assigned agent; a refused write) — never a pretended task. Module-private: reached through
+ *  requestExternalShowing. */
+async function openExternalShowingTask(
+  db: Db,
+  ctx: SaveCtx & { agentId: string | null },
+  row: Parameters<typeof externalShowingTaskFor>[0],
+  showingRequestId: string,
+  now: Date = new Date(),
+): Promise<{ taskId: string | null; reason: string | null }> {
+  if (!ctx.agentId) return { taskId: null, reason: "no assigned agent — the showing request itself carries the ask" }
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const words = externalShowingTaskFor(row, showingRequestId)
+  return withActionLedger<{ taskId: string | null; reason: string | null }>(
+    {
+      brokerageId: ctx.brokerageId, action: "showing_request.external_task.open",
+      actor: { type: "user", userId: ctx.ownerUserId },
+      subject: { type: "showing_request", id: showingRequestId, ref: `saved_properties:${row.id}` },
+      reasonCode: "HUMAN_REQUESTED", reasonDetail: "buyer asked to tour a saved home that has no listing row — the agent arranges it with the listing side",
+      idempotencyKey: `showing_request.external_task.open:${showingRequestId}`, riskClass: "LOW_RISK_WRITE", channel: "portal",
+      systemSource: "buyer_portal_conversation", detail: { saved_property_id: row.id, origin: savedHomeOrigin(row) },
+    },
+    async () => {
+      const { data, error } = await db.from("tasks").insert({
+        brokerage_id: ctx.brokerageId, contact_id: ctx.contactId, assigned_to_agent_id: ctx.agentId, listing_id: null, transaction_id: null,
+        title: words.title, description: words.description,
+        due_date: new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10),
+        priority: "high", status: "pending", assignee_type: "agent", source: "external_showing_request", auto_generated: true,
+      }).select("id").single()
+      if (error || !data) return { taskId: null, reason: `task not written: ${error?.message ?? "no row"}` }
+      return { taskId: String((data as { id: string }).id), reason: null }
+    },
+    {
+      settle: (r) => r.taskId ? { status: "executed", outcome: "task_opened", providerRef: r.taskId } : { status: "failed", outcome: "task_not_written", error: r.reason },
+      replay: (claim) => ({ taskId: claim.kind === "replay" ? (claim.entry?.provider_ref ?? null) : null, reason: claim.kind === "replay" ? "already opened for this showing request" : `not opened: ${claim.kind}` }),
+    },
+    { client: db },
+  )
+}
+
 // ─── PHOTOS — THE ONE GATE ────────────────────────────────────────────────────────────────────────
 
 export type LicensedPhotoSource = "tenant_listing_media"

@@ -16,6 +16,10 @@ export type SavedHomeNudgeKind =
   | "new_match"         // a fresh listing fits their (now learned) criteria
   | "open_house"        // an open house this weekend at a saved/matched home
   | "coming_soon"       // an exclusive pre-MLS / coming-soon home matches them — first look
+  // WAVE 151 (lane 151J, directive 151J "status changes" on a saved home): the home they saved LEFT the market —
+  // sold / withdrawn / expired / the source no longer carries it. An honest fact told once, then a pivot to similar
+  // homes; never framed as "getting interest" (that is under_contract). Not video-worthy (an ending is not a highlight).
+  | "no_longer_available"
 
 export interface SavedHomeNudge {
   kind: SavedHomeNudgeKind
@@ -101,6 +105,14 @@ function classifySavedHomeNudgeUnruled(kind: string): SavedHomeNudge | null {
         urgency: "high",
         avatarWorthy: true,
       }
+    case "no_longer_available":
+      return {
+        kind: "no_longer_available",
+        headline: "A home you saved is no longer on the market",
+        angle: "a home the buyer saved is no longer listed (sold, withdrawn or expired — say only what the source reported, never guess which) — tell them plainly and kindly, reassure them you have similar homes ready, and invite them to their portal to look together. No pressure, no exact figures.",
+        urgency: "medium",
+        avatarWorthy: false,
+      }
     default:
       return null
   }
@@ -146,5 +158,5 @@ export async function decideSavedHomeNudge(
 /** The nudge kinds, enumerated.
  *  @proofSeam no runtime caller enumerates the kinds — classifySavedHomeNudge branches per kind and the reactor calls it per event; this roster exists so scripts/saved-home-nudge-simulator.ts can sweep every kind through the classifier and prove each one yields a nudge (a kind added to the union but not the switch goes red). */
 export const SAVED_HOME_NUDGE_KINDS: SavedHomeNudgeKind[] = [
-  "price_drop", "back_on_market", "under_contract", "new_match", "open_house", "coming_soon",
+  "price_drop", "back_on_market", "under_contract", "new_match", "open_house", "coming_soon", "no_longer_available",
 ]

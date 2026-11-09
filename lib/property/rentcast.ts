@@ -618,30 +618,83 @@ export async function searchRentcastSaleListings(
       return true
     })
 
-    const listings: RentcastListing[] = filtered.map((r) => ({
-      externalId: r?.id ?? r?.formattedAddress ?? "",
-      address: r?.formattedAddress ?? r?.addressLine1 ?? "",
-      city: r?.city ?? null,
-      state: r?.state ?? null,
-      zip: r?.zipCode ?? null,
-      price: r?.price ?? r?.listPrice ?? null,
-      bedrooms: r?.bedrooms ?? null,
-      bathrooms: r?.bathrooms ?? null,
-      squareFeet: r?.squareFootage ?? null,
-      yearBuilt: r?.yearBuilt ?? null,
-      propertyType: r?.propertyType ?? null,
-      daysOnMarket: r?.daysOnMarket ?? null,
-      status: r?.status ?? "Active",
-      photoUrl: r?.photos?.[0] ?? null,
-      mlsNumber: r?.mlsNumber != null && r.mlsNumber !== "" ? String(r.mlsNumber) : null,
-      mlsName: r?.mlsName != null && r.mlsName !== "" ? String(r.mlsName) : null,
-      source: "rentcast",
-      ...listingRowExtras(r as Record<string, any>),
-    }))
+    const listings: RentcastListing[] = filtered.map((r) => saleListingFromRow(r))
 
     return { success: true, listings }
   } catch (err: any) {
     return { success: false, listings: [], error: err?.message ?? "Rentcast fetch failed" }
+  }
+}
+
+/**
+ * PURE — ONE /listings/sale row → the product's RentcastListing (wave 151, lane 151J: factored out of the search above so
+ * the by-id reader below maps a listing through the SAME fields; two inline copies would drift, §6). Behavior unchanged.
+ */
+function saleListingFromRow(r: RentcastSaleListingRow & RentcastListingRowExtras): RentcastListing {
+  return {
+    externalId: r?.id ?? r?.formattedAddress ?? "",
+    address: r?.formattedAddress ?? r?.addressLine1 ?? "",
+    city: r?.city ?? null,
+    state: r?.state ?? null,
+    zip: r?.zipCode ?? null,
+    price: r?.price ?? r?.listPrice ?? null,
+    bedrooms: r?.bedrooms ?? null,
+    bathrooms: r?.bathrooms ?? null,
+    squareFeet: r?.squareFootage ?? null,
+    yearBuilt: r?.yearBuilt ?? null,
+    propertyType: r?.propertyType ?? null,
+    daysOnMarket: r?.daysOnMarket ?? null,
+    status: r?.status ?? "Active",
+    photoUrl: r?.photos?.[0] ?? null,
+    mlsNumber: r?.mlsNumber != null && r.mlsNumber !== "" ? String(r.mlsNumber) : null,
+    mlsName: r?.mlsName != null && r.mlsName !== "" ? String(r.mlsName) : null,
+    source: "rentcast",
+    ...listingRowExtras(r as Record<string, any>),
+  }
+}
+
+/** The by-id reader's answer. `offMarket` = the vendor no longer carries the listing (404) — off the market, not
+ *  proof of WHICH terminal state (getRentcastListingStatus's reading, kept). */
+export type RentcastSaleListingById =
+  | { ok: true; listing: RentcastListing; offMarket: false }
+  | { ok: true; listing: null; offMarket: true }
+  | { ok: false; error: string }
+
+/**
+ * WAVE 151 (lane 151J — saved-home alerts, OWNER-SQL §L L6.10): ONE saved RentCast listing re-read BY ITS LISTING ID —
+ * the FULL row (price, status, MLS number, removedDate …), where getRentcastListingStatus above kept only the status. A
+ * saved home's price change needs the price; a re-listing under a new MLS id needs the number. Same gate (property
+ * data — a single-listing check is not a buyer's for-sale search, so no IDX feed substitutes for it), same meter
+ * (RENTCAST_USD_PER_REQUEST per request under the caller's own systemSource — the ledger must say WHICH lane spent),
+ * same 404 reading. The CALLER decides whether this metered request may be made at all (lib/property-alerts/
+ * saved-home-watch.ts asks paidPullApproval + decideSpendBackpressure first); this function never polls on its own.
+ */
+export async function getRentcastSaleListingById(
+  params: RentcastCaller & { externalId: string },
+): Promise<RentcastSaleListingById> {
+  const id = String(params.externalId ?? "").trim()
+  if (!id) return { ok: false, error: "no RentCast listing id on the saved home" }
+  const { apiKey, eligibility } = await gateRentcast(params, "property_data")
+  if (!apiKey) return { ok: false, error: refusalMessage(eligibility) }
+  try {
+    const res = await callRentcastGetById("/listings/sale/{id}", id, apiKey)
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "api_call",
+      cost: RENTCAST_USD_PER_REQUEST,
+      endpoint: "/listings/sale/{id}",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
+      metadata: { ok: res.ok, status: res.status },
+    })
+    if (res.status === 404) return { ok: true, listing: null, offMarket: true }
+    if (!res.ok) return { ok: false, error: `Rentcast returned ${res.status ?? 0}` }
+    const payload: RentcastSaleListingResponse | null = res.data
+    const row: any = Array.isArray(payload) ? payload[0] : payload
+    if (!row || typeof row !== "object") return { ok: false, error: "Rentcast returned an empty listing body" }
+    return { ok: true, listing: saleListingFromRow(row), offMarket: false }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Rentcast fetch failed" }
   }
 }
 

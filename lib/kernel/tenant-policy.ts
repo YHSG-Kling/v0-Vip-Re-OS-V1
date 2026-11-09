@@ -45,6 +45,7 @@ export type TenantPolicyStore =
   | "assignment_rules"
   | "cadence_policy"
   | "brokerage_required_documents"
+  | "direct_mail_sender_addresses"
 
 export interface TenantPolicyDefinition {
   label: string

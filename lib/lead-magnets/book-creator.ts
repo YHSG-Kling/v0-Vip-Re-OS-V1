@@ -98,6 +98,9 @@ export interface BookProject {
   started_by: string
   started_at: string
   updated_at: string
+  /** WAVE 151 (lane 151I): the agent's rendered sender-voice brief at start — every manuscript, edit and outline prompt is
+   *  conditioned on it (the book is ghost-written in THEIR words from the first chapter). Absent on older projects. */
+  voice_brief?: string | null
   log: Array<{ stage: BookStage; at: string; note: string }>
   /** WHOSE book and where it publishes (lead magnet / tenant KDP / platform KDP) — absent on pre-144 projects (= lead_magnet). */
   publication?: BookPublication
@@ -170,9 +173,9 @@ function allowedCorpus(p: BookProject): string {
   return [p.concept, ...(p.research?.topics ?? []), ...(p.research?.bank_topics ?? []), ...(p.outline ?? []).flatMap((o) => [o.heading, o.summary, ...o.key_points])].join("\n")
 }
 
-function newProject(input: { concept: string; audience: BookAudience; area: string | null; brand: string | null; startedBy: string; now: string; publication: BookPublication }): BookProject {
+function newProject(input: { concept: string; audience: BookAudience; area: string | null; brand: string | null; startedBy: string; now: string; publication: BookPublication; voiceBrief?: string | null }): BookProject {
   return {
-    stage: "research", concept: input.concept, audience: input.audience, area: input.area, brand: input.brand,
+    stage: "research", concept: input.concept, audience: input.audience, area: input.area, brand: input.brand, voice_brief: input.voiceBrief ?? null,
     title: workingTitle(input.concept), subtitle: null, tagline: null, introduction: null, closing: null,
     research: null, outline: null, chapters: [], fact_check: null, pdf_url: null, document_id: null, page_count: null,
     cost: { tokens: 0, model_calls: 0 }, needs_human_review: [], started_by: input.startedBy, started_at: input.now, updated_at: input.now,
@@ -220,6 +223,8 @@ export interface BookDeps {
   tenantReader?: (svc: Svc, brokerageId: string) => Promise<{ isHouseTenant: boolean; readable: boolean }>
   manuscriptWriter?: BookWriter
   factCheckWriter?: BookWriter
+  /** WAVE 151 (151I): the agent's rendered sender-voice brief (default: THE brand-voice reader, lib/kernel/brand-voice.ts). */
+  voiceBrief?: (svc: Svc, scope: { brokerageId: string; agentId: string | null; agentUserId: string | null }) => Promise<string | null>
   entitlement?: (ask: { brokerageId: string; estTokens: number; actor?: { platformRole?: string | null; userType?: string | null } | null }) => Promise<{ allowed: boolean; reason: string; message?: string }>
   brandResolver?: (svc: Svc, brokerageId: string, agentUserId: string | null) => Promise<ClientPdfBrand>
   /** Render + host + record (default produceClientDocument). The proof's producer renders REAL bytes too. */
@@ -332,8 +337,17 @@ const defaultProducer: NonNullable<BookDeps["producer"]> = async (svc, args) => 
 
 // ── The writing rules (the prompt carries fair housing — CLAUDE.md §5) ────────────────────────────
 
+/** The default voice-brief seam: THE brand-voice reader, rendered; null (said by the caller) when it cannot be read. */
+const defaultVoiceBrief: NonNullable<BookDeps["voiceBrief"]> = async (svc, scope) => {
+  const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+  return renderSenderVoiceBrief(await loadSenderVoiceBrief(svc as never, scope))
+}
+
 function manuscriptSystem(p: BookProject): string {
   return (
+    // WAVE 151 (lane 151I): the agent's sender-voice brief leads the writer's system prompt — the book is in THEIR voice from
+    // the first draft; the rules below still bind (fair housing, no figures, no advice, original writing).
+    (p.voice_brief ? `${p.voice_brief}\n\n` : "") +
     `You are ghost-writing an ORIGINAL ${p.audience === "buyer" ? "home-buyer's" : "home-seller's"} book for a real-estate ${p.brand ? `brand, ${p.brand}` : "agent"}${p.area ? ` serving ${p.area}` : ""}. ` +
     "HARD RULES: (1) FAIR HOUSING — never reference or imply race, religion, national origin, family status, disability, sex, or use steering language ('safe neighborhood', 'perfect for families', 'great for retirees', 'exclusive community', 'good schools'); describe the home, the process and the service, never who should want it. " +
     OLDER_PERSONS_WRITING_DIRECTIVE + " " +
@@ -451,7 +465,10 @@ export async function startBookProject(input: StartBookInput, deps: BookDeps = {
 
   const now = (deps.now ?? new Date()).toISOString()
   const publication = publicationRecord({ context, agentId: input.agentId, isHouseTenant: tenant.isHouseTenant, by: input.createdBy, at: now, why: input.context ? "chosen at start" : "tenant default at start" })
-  const project = newProject({ concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, startedBy: input.createdBy, now, publication })
+  // WAVE 151 (lane 151I): the SENDER's voice brief is compiled at start and stored on the project, so every writing prompt
+  // of every advance is conditioned on the same version (a changed setting is a new book, not a mid-manuscript drift).
+  const voiceBrief = await (deps.voiceBrief ?? defaultVoiceBrief)(svc, { brokerageId: input.brokerageId, agentId: input.agentId, agentUserId: input.createdBy }).catch(() => null)
+  const project = newProject({ concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, startedBy: input.createdBy, now, publication, voiceBrief })
   const magnetType: CreateLeadMagnetInput["magnetType"] = input.audience === "buyer" ? "buyer_guide" : "seller_guide"
   const distribute = input.distributeAsLeadMagnet ?? context === "lead_magnet"
   const ownerScope = ownerScopeFor(publication, { agentId: input.agentId, teamId: input.teamId ?? null, teamOwned: input.teamOwned === true })

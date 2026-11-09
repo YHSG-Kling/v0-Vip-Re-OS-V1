@@ -22,6 +22,7 @@
  * preferred-phrase rules flow through to the AI prompt.
  */
 import "server-only"
+import type { VoiceSourceStamp } from "@/lib/kernel/brand-voice"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
@@ -142,12 +143,17 @@ export interface SenderVoiceBrief {
   signature: string | null
   /** Where the brief came from, for the audit trail. */
   source: "brand_voice_profile+brand_cascade" | "brand_cascade_only" | "lane_151I_reader"
+  /** The ONE reader's versioned stamp (lib/kernel/brand-voice.ts voiceSourceStamp) — the piece records it as voice_source. */
+  voiceSource?: VoiceSourceStamp | null
 }
 
 /**
- * Read the sender's voice brief for ONE copy context — THE plug point for lane 151I (see the HOOK note above). Today it
- * folds the agent-tier distilled voice profile (Wave 36.5) and the brand cascade into the one brief shape; a refused read
- * falls through to the cascade alone and is said in the source. Never throws.
+ * Read the sender's voice brief for ONE copy context — THE ONE reader (lane 151I; LAW 2): lib/kernel/brand-voice.ts
+ * loadSenderVoiceBrief compiles the VERSIONED brief from the sender's settings and authorized examples at agent → team →
+ * brokerage scope; this function folds it into the direct-mail shape (the legal brokerage of record comes from the brand
+ * cascade, which the layout prints). A refused compile falls through to the cascade alone and is said in the source.
+ * TOMBSTONE (wave 151, 151H ← 151I Outside-lane 1): the private brand_voice_profile(tone_examples) read that lived here is
+ * DELETED — SURVIVOR: lib/kernel/brand-voice.ts loadSenderVoiceBrief. Never throws.
  */
 export async function readSenderVoiceBrief(ctx: Pick<DirectMailCopyContext, "brokerageId" | "teamId" | "agentUserId">): Promise<SenderVoiceBrief> {
   const brand = await resolveBrandContext({ brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: ctx.agentUserId ?? null })
@@ -158,30 +164,28 @@ export async function readSenderVoiceBrief(ctx: Pick<DirectMailCopyContext, "bro
     tone: null, preferredWords: [], prohibitedWords: [], exampleSentences: [],
     signature: brand.agentName ? `— ${brand.agentName.split(" ")[0] ?? brand.agentName}` : null,
     source: "brand_cascade_only",
+    voiceSource: null,
   }
-  if (!ctx.agentUserId) return base
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
-    const svc = createServiceClient()
-    const { data, error } = await svc
-      .from("brand_voice_profile")
-      .select("tone_examples, tone, preferred_words, prohibited_words")
-      .eq("brokerage_id", ctx.brokerageId)
-      .eq("agent_id", ctx.agentUserId)
-      .eq("is_active", true)
-      .maybeSingle()
-    if (error) { console.error(`[draft-copy] brand_voice_profile read refused: ${error.message}`); return base }
-    const row = data as { tone_examples: string[] | null; tone: string | null; preferred_words: string[] | null; prohibited_words: string[] | null } | null
-    if (!row) return base
+    const { loadSenderVoiceBrief, voiceSourceStamp } = await import("@/lib/kernel/brand-voice")
+    const brief = await loadSenderVoiceBrief(createServiceClient() as never, { brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: ctx.agentUserId ?? null })
+    const tone = [brief.tone ? `tone: ${brief.tone}` : null, brief.formality ? `formality: ${brief.formality}` : null, brief.personality ? `personality: ${brief.personality}` : null, brief.style ? `style: ${brief.style}` : null].filter(Boolean).join(" · ") || null
+    const signatureLine = brief.signature.text?.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? null
     return {
       ...base,
-      tone: row.tone ?? null,
-      preferredWords: (row.preferred_words ?? []).slice(0, 8),
-      prohibitedWords: (row.prohibited_words ?? []).slice(0, 6),
-      exampleSentences: (row.tone_examples ?? []).slice(0, 4),
-      source: "brand_voice_profile+brand_cascade",
+      senderDisplayName: brief.sender.name ?? base.senderDisplayName,
+      tagline: brief.tagline ?? base.tagline,
+      tone,
+      preferredWords: brief.preferredWords.slice(0, 8),
+      prohibitedWords: brief.prohibitedWords.slice(0, 6),
+      exampleSentences: brief.writingSamples.map((s) => s.text).slice(0, 4),
+      signature: signatureLine ?? base.signature,
+      source: "lane_151I_reader",
+      voiceSource: voiceSourceStamp(brief),
     }
-  } catch {
+  } catch (e) {
+    console.error(`[draft-copy] sender-voice brief unavailable — the piece is drafted from the brand cascade alone: ${e instanceof Error ? e.message : String(e)}`)
     return base
   }
 }
@@ -414,8 +418,9 @@ export async function draftPostcardCopy(
   // only knew abstract tone tags ("warm", "direct") — the examples
   // make the AI's output actually SOUND like the agent's writing.
   const voiceBlock = await buildVoiceExamplesBlock(ctx)
+  // 151I: the sender's voice LEADS the prompt (the first draft is written in it), then the format rules and the style overlay.
   const promptHead =
-    `${POSTCARD_PROMPT}${styleOverlay}${voiceBlock}\n\n` +
+    `${voiceBlock ? `${voiceBlock.trim()}\n\n` : ""}${POSTCARD_PROMPT}${styleOverlay}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
@@ -508,8 +513,9 @@ export async function draftLetterCopy(
   const styleOverlay = LETTER_COPY_STYLE_OVERLAYS[ctx.copyStyle ?? (ctx.format === "personal_letter" ? "personal-note" : "default")]
     ?? LETTER_COPY_STYLE_OVERLAYS["default"]
   const voiceBlock = await buildVoiceExamplesBlock(ctx)
+  // 151I: the sender's voice LEADS the prompt (the first draft is written in it), then the format rules and the style overlay.
   const promptHead =
-    `${LETTER_PROMPT}${styleOverlay}${voiceBlock}\n\n` +
+    `${voiceBlock ? `${voiceBlock.trim()}\n\n` : ""}${LETTER_PROMPT}${styleOverlay}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +

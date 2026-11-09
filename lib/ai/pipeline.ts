@@ -26,6 +26,10 @@ import {
   type ComplianceContext,
   type AIModel,
 } from "./models"
+// WAVE 151 (lane 151I): THE ONE brand-voice reader compiles the versioned sender-voice brief; the person's own words come
+// from THE ONE memory read. Both modules are already on the app/crm/page.tsx import graph — no module is added.
+import { loadSenderVoiceBrief, renderSenderVoiceBrief, invalidateSenderVoiceBriefCache } from "@/lib/kernel/brand-voice"
+import { loadContactMemoryForPrompt, contactMemoryPromptSection } from "@/lib/kernel/conversation-memory"
 
 // ─── PERSONA CACHE (in-memory, short-lived) ───────────────────────────────────
 const personaCache = new Map<string, { context: string; expiresAt: number }>()
@@ -154,28 +158,20 @@ async function resolvePersonaContext(
 
 // ─── BRAND VOICE INJECTION ────────────────────────────────────────────────────
 
-const BV_SELECT = "brokerage_id, team_id, agent_id, tone, formality_level, key_brand_messages, prohibited_words, preferred_words, tagline, mission_statement"
-
-/** Format one brand_voice_profile row into labeled lines (empty when no profile). */
-function formatVoiceProfileLines(profile: any, label: string): string[] {
-  if (!profile) return []
-  const lines: string[] = [`${label}:`]
-  if (profile.tagline) lines.push(`Tagline: "${profile.tagline}"`)
-  if (profile.tone) lines.push(`Tone: ${profile.tone}`)
-  if (profile.formality_level) lines.push(`Formality: ${profile.formality_level}`)
-  if (profile.key_brand_messages?.length) lines.push(`Key Messages: ${profile.key_brand_messages.join(" | ")}`)
-  if (profile.preferred_words?.length) lines.push(`Preferred Words: ${profile.preferred_words.join(", ")}`)
-  if (profile.prohibited_words?.length) lines.push(`Never Use: ${profile.prohibited_words.join(", ")}`)
-  return lines.length > 1 ? lines : []
-}
-
 /**
  * resolveBrandVoice — CASCADE: the brokerage brand voice is ALWAYS the base (the
  * tenant of record whose voice content pulls from), then the TEAM's voice and the
  * AGENT's own voice layer on top (their tone/tagline/preferred+prohibited words
  * refine the base). Mirrors resolveBrandContext's brokerage → team → agent cascade
- * so brand SETTINGS and brand VOICE resolve the same way. brand_voice_profile is
- * scoped by brokerage_id / team_id / agent_id (scripts 524 + 1049).
+ * so brand SETTINGS and brand VOICE resolve the same way.
+ *
+ * WAVE 151 (lane 151I) — ONE READER (LAW 2). The private three-row brand_voice_profile read that stood here
+ * (BV_SELECT; "brokerage base" / "TEAM VOICE OVERLAY" / "AGENT VOICE OVERLAY" lines) is DELETED. TOMBSTONE — SURVIVOR:
+ * lib/kernel/brand-voice.ts loadSenderVoiceBrief, the same brokerage → team → agent cascade (resolveBrandVoiceCore,
+ * every read tenant-pinned and read for its error) widened to the sender's examples, signature, positioning and local
+ * areas, and VERSIONED (`v1:<sha12>`), rendered by renderSenderVoiceBrief. scope.agentId is the agents.id the pipeline
+ * carries (metadata.agentId); the loader crosses it to the users row inside the tenant. The cache key, the inline
+ * override and the service client are unchanged (scripts/brand-voice-cascade-simulator.ts).
  */
 async function resolveBrandVoice(
   scope: { brokerageId: string; teamId?: string | null; agentId?: string | null },
@@ -193,34 +189,8 @@ async function resolveBrandVoice(
     // user-scoped RLS client silently drops. Mirrors resolveBrandContext, the
     // brand SETTINGS resolver, which reads the same cross-scope rows via service.
     const supabase = createServiceClient()
-
-    const { data: brokerage } = await supabase.from("brokerages").select("id, name").eq("id", scope.brokerageId).single()
-    if (!brokerage) return ""
-
-    // Base: the brokerage-scoped voice (team_id + agent_id null).
-    const [baseRes, teamRes, agentRes] = await Promise.all([
-      supabase.from("brand_voice_profile").select(BV_SELECT)
-        .eq("brokerage_id", scope.brokerageId).is("team_id", null).is("agent_id", null)
-        .order("updated_at", { ascending: false }).limit(1).maybeSingle(),
-      scope.teamId
-        ? supabase.from("brand_voice_profile").select(BV_SELECT).eq("team_id", scope.teamId)
-            .order("updated_at", { ascending: false }).limit(1).maybeSingle()
-        : Promise.resolve({ data: null }),
-      scope.agentId
-        ? supabase.from("brand_voice_profile").select(BV_SELECT).eq("agent_id", scope.agentId)
-            .order("updated_at", { ascending: false }).limit(1).maybeSingle()
-        : Promise.resolve({ data: null }),
-    ])
-
-    const snippetLines: string[] = [
-      ...formatVoiceProfileLines(baseRes.data, `BRAND VOICE — ${brokerage.name} (brokerage base)`),
-      ...formatVoiceProfileLines((teamRes as any).data, "TEAM VOICE OVERLAY"),
-      ...formatVoiceProfileLines((agentRes as any).data, "AGENT VOICE OVERLAY"),
-    ]
-    // No profile at any scope → still name the brokerage so content is grounded.
-    if (snippetLines.length === 0) snippetLines.push(`Brokerage: ${brokerage.name}`)
-
-    const snippet = snippetLines.join("\n")
+    const brief = await loadSenderVoiceBrief(supabase as never, { brokerageId: scope.brokerageId, teamId: scope.teamId ?? null, agentId: scope.agentId ?? null })
+    const snippet = renderSenderVoiceBrief(brief)
     brandVoiceCache.set(cacheKey, { snippet, expiresAt: Date.now() + BRAND_VOICE_CACHE_TTL_MS })
     return snippet
   } catch (error) {
@@ -229,17 +199,36 @@ async function resolveBrandVoice(
   }
 }
 
+// ─── AUDIENCE INJECTION (wave 151, lane 151I — "gear it to them first") ───────
+//
+// When the call is about ONE contact, what that person SAID (THE ONE memory read, lib/kernel/conversation-memory.ts —
+// tenant-pinned, current facts only, a refused read injects nothing) goes into the system prompt BEFORE the caller's own
+// system — the writer is conditioned on the person before the first draft, never asked to personalise afterwards.
+async function resolveAudienceContext(brokerageId: string, contactId: string | null | undefined): Promise<string> {
+  if (!contactId) return ""
+  try {
+    const mem = await loadContactMemoryForPrompt({ contactId, brokerageId, client: createServiceClient() })
+    return contactMemoryPromptSection(mem)
+  } catch (error) {
+    console.error("[pipeline] Audience (contact memory) resolution failed — nothing injected:", error)
+    return ""
+  }
+}
+
 // ─── SYSTEM PROMPT BUILDER ────────────────────────────────────────────────────
 
+/** The owner's order: WHO is writing (the sender's voice brief), the agent's AI persona, WHO it is for, then the caller's own system. */
 function buildEnrichedSystem(
   original: string | undefined,
   personaContext: string,
-  brandVoice: string
+  brandVoice: string,
+  audience: string = "",
 ): string {
   const parts: string[] = []
 
-  if (personaContext) parts.push(personaContext)
   if (brandVoice) parts.push(brandVoice)
+  if (personaContext) parts.push(personaContext)
+  if (audience) parts.push(audience)
   if (original) parts.push(original)
 
   return parts.join("\n\n")
@@ -252,15 +241,16 @@ function buildEnrichedSystem(
  * Use this wherever metadata.agentId and metadata.brokerageId are available.
  */
 export async function runPipeline(request: PipelineRequest): Promise<PipelineResponse> {
-  const [personaContext, brandVoice] = await Promise.all([
+  const [personaContext, brandVoice, audience] = await Promise.all([
     resolvePersonaContext(request.metadata.agentId, request.persona),
     resolveBrandVoice(
       { brokerageId: request.metadata.brokerageId, teamId: request.metadata.teamId, agentId: request.metadata.agentId },
       request.brandVoice,
     ),
+    resolveAudienceContext(request.metadata.brokerageId, request.metadata.contactId),
   ])
 
-  const enrichedSystem = buildEnrichedSystem(request.system, personaContext, brandVoice)
+  const enrichedSystem = buildEnrichedSystem(request.system, personaContext, brandVoice, audience)
 
   const aiRequest: AIRequest = {
     model: request.model,
@@ -365,5 +355,8 @@ export function invalidatePersonaCache(agentId: string): void {
 }
 
 export function invalidateBrandVoiceCache(brokerageId: string): void {
-  brandVoiceCache.delete(brokerageId)
+  // The cache is keyed `${brokerageId}:${teamId}:${agentId}` — every scope of the tenant goes, and so does the ONE
+  // reader's compiled brief (wave 151I), so a saved setting reaches the next draft.
+  for (const k of [...brandVoiceCache.keys()]) if (k.startsWith(`${brokerageId}:`)) brandVoiceCache.delete(k)
+  invalidateSenderVoiceBriefCache(brokerageId)
 }

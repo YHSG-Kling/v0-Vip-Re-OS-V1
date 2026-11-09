@@ -514,6 +514,11 @@ export async function runAllActiveAlerts(
     }; ${skippedSnoozed} snoozed, ${deferred} deferred`,
   )
 
+  // WAVE 151 (lane 151J): the SAVED-HOME WATCH (lib/property-alerts/saved-home-watch.ts — the other subscription, a
+  // saved HOME rather than a saved search) rides the DAILY tick of this engine's cron door, app/api/property-alerts/run/
+  // route.ts, not this function: this engine sits on every page graph that reaches the alert actions, and the watch's
+  // approval / caps / rail subtree must not (app/crm/page.tsx is at its 1300-module budget). The route calls the watch
+  // after this sweep and reports its stats beside these.
   return { total: batch.length, succeeded, failed, skippedSnoozed, skippedInactiveTenant, deferred, bySource, unevaluated, unevaluatedReasons, errors }
 }
 

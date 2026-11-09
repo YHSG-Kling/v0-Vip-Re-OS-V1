@@ -391,7 +391,17 @@ export async function aiComposeEmail(params: AiComposeEmailParams) {
     const tone = params.tone ?? toneFromBrandVoice ?? "professional"
     const audience = params.audience ?? "all"
 
-    const systemPrompt = `You are a real estate email marketing expert. Write in a ${tone} tone.
+    // WAVE 151 (lane 151I): THE sender's versioned voice brief LEADS the system prompt — the first draft is written in the
+    // signed-in agent's words, tagline and tone (the brand-voice NOTES above still bind). Unreadable = written without it (logged).
+    let senderVoiceBlock = ""
+    try {
+      const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+      const brief = await loadSenderVoiceBrief((await createClient()) as never, { brokerageId: auth.brokerageId, agentUserId: auth.userId })
+      senderVoiceBlock = renderSenderVoiceBrief(brief)
+    } catch (e) {
+      console.error("[aiComposeEmail] sender-voice brief unavailable — the email is written without it:", e instanceof Error ? e.message : String(e))
+    }
+    const systemPrompt = `${senderVoiceBlock ? `${senderVoiceBlock}\n\n` : ""}You are a real estate email marketing expert writing AS the sender above. Write in a ${tone} tone.
 Target audience: ${audience}.`
 
     const userPrompt = `Write a professional real estate email campaign about: "${params.topic}".

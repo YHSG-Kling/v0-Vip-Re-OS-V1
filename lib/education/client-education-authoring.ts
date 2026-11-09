@@ -24,12 +24,14 @@ export const CLIENT_LESSON_COMPLIANCE_RULES =
   "Fair Housing (42 U.S.C. §3604): never describe a neighbourhood, school, community or buyer/seller by race, colour, religion, national origin, sex, familial status or disability, and never steer toward or away from an area on those grounds — say nothing like 'family-friendly', 'good schools' or 'safe neighbourhood'. Do not state or estimate any dollar figure about THIS client's deal (price, proceeds, commission, loan terms, net sheet); refer them to their agent, lender or attorney for their own numbers."
 
 /** Author a warm, plain-language client module with the model. Throws if the model is unavailable. */
-export async function authorClientModule(topic: ClientTopic): Promise<Curriculum> {
+export async function authorClientModule(topic: ClientTopic, opts: { voiceBrief?: string | null } = {}): Promise<Curriculum> {
   const { generateObjectRouted } = await import("@/lib/ai/models")
   const { object } = await generateObjectRouted({
     feature: "curriculum_authoring",
     schema: CurriculumSchema,
-    system: "You are writing a short, reassuring lesson FOR a real-estate client (a buyer or seller), not for an agent. Plain language, warm and calm, no jargon. Answer 'what happens now' and 'what should I do' concretely. Never give legal or financial advice as fact — frame as general guidance and defer specifics to their agent/attorney/lender. " + CLIENT_LESSON_COMPLIANCE_RULES,
+    // WAVE 151 (lane 151I): a client lesson goes out under the BROKERAGE's voice — its rendered sender-voice brief (THE
+    // brand-voice reader) leads the system prompt, so the lesson sounds like the brokerage from the first draft.
+    system: (opts.voiceBrief ? `${opts.voiceBrief}\n\n` : "") + "You are writing a short, reassuring lesson FOR a real-estate client (a buyer or seller), not for an agent. Plain language, warm and calm, no jargon. Answer 'what happens now' and 'what should I do' concretely. Never give legal or financial advice as fact — frame as general guidance and defer specifics to their agent/attorney/lender. " + CLIENT_LESSON_COMPLIANCE_RULES,
     prompt: `Write the client lesson "${topic.title}".\n\nWhat it must cover: ${topic.brief}\n\nKeep it short, specific, and human — a nervous client should feel calmer and know their next step after reading it.`,
   })
   return object

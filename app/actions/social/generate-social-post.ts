@@ -64,23 +64,6 @@ interface BrandVoiceRow {
   mission_statement: string | null
 }
 
-/**
- * Merge two brand voice rows — most-specific scope wins for scalar fields;
- * array fields accumulate (brokerage + agent prohibited/preferred).
- */
-function mergeBrandVoice(base: BrandVoiceRow, override: Partial<BrandVoiceRow>): BrandVoiceRow {
-  return {
-    tone:               override.tone               ?? base.tone,
-    formality_level:    override.formality_level    ?? base.formality_level,
-    key_brand_messages: override.key_brand_messages?.length ? override.key_brand_messages : base.key_brand_messages,
-    prohibited_words:   [...(base.prohibited_words ?? []), ...(override.prohibited_words ?? [])],
-    preferred_words:    [...(base.preferred_words  ?? []), ...(override.preferred_words  ?? [])],
-    tagline:            override.tagline            ?? base.tagline,
-    mission_statement:  override.mission_statement  ?? base.mission_statement,
-    custom_instructions: override.custom_instructions ?? base.custom_instructions,
-  }
-}
-
 const EMPTY_BRAND_VOICE: BrandVoiceRow = {
   tone: null, formality_level: null, preferred_words: null,
   prohibited_words: null, key_brand_messages: null,
@@ -90,63 +73,31 @@ const EMPTY_BRAND_VOICE: BrandVoiceRow = {
 /**
  * Resolve brand voice using the 3-level hierarchy:
  *   1. Brokerage (base) → 2. Team (override) → 3. Agent (most-specific override)
- * Mirrors lib/kernel/brand-voice.ts loadResolvedBrandVoice() exactly.
+ *
+ * WAVE 151 (lane 151I) — ONE READER (LAW 2). TOMBSTONE: the three private `brand_voice_profile` reads that stood here
+ * (brokerage / team / agent, with their own `mergeBrandVoice` and the tolerant `agents.or(id.eq,user_id.eq)` cross) are
+ * DELETED. SURVIVOR: lib/kernel/brand-voice.ts loadSenderVoiceBrief — the ONE cascade (resolveBrandVoiceCore, every
+ * read tenant-pinned and read for its error, the agents cross via agents.user_id) widened to the sender's examples,
+ * signature and positioning and VERSIONED. The row shape below is kept for the prompt lines that read it; the rendered
+ * brief itself leads the system prompt so the post is in the sender's voice from the first draft.
  */
 async function resolveBrandVoice(
   brokerageId: string,
   agentId?: string,
   teamId?: string
-): Promise<BrandVoiceRow> {
+): Promise<BrandVoiceRow & { brief: import("@/lib/kernel/brand-voice").SenderVoiceBrief | null }> {
   const supabase = await createClient()
-  const SELECT = "tone, formality_level, preferred_words, prohibited_words, key_brand_messages, custom_instructions, tagline, mission_statement"
-  let resolved: BrandVoiceRow = { ...EMPTY_BRAND_VOICE }
-
-  // 1. Brokerage-level profile (agent_id IS NULL, team_id IS NULL)
-  if (brokerageId) {
-    const { data: brokProfile } = await supabase
-      .from("brand_voice_profile")
-      .select(SELECT)
-      .eq("brokerage_id", brokerageId)
-      .is("agent_id", null)
-      .is("team_id", null)
-      .eq("is_active", true)
-      .maybeSingle()
-
-    if (brokProfile) resolved = mergeBrandVoice(resolved, brokProfile as BrandVoiceRow)
+  const { loadSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+  // `agentId` arrives as EITHER id (pass 13: SequenceBuilder's assist bar passes the auth users.id; the dashboard an agents.id).
+  // It is handed to both slots — each read only in its own predicate inside the ONE reader — and the agents row that answers
+  // classifies it (CLAUDE.md §3: disjoint id spaces, never one variable in two predicates).
+  const brief = await loadSenderVoiceBrief(supabase as never, { brokerageId, teamId: teamId ?? null, agentId: agentId ?? null, agentUserId: agentId ?? null }).catch(() => null)
+  if (!brief) return { ...EMPTY_BRAND_VOICE, brief: null }
+  return {
+    tone: brief.tone, formality_level: brief.formality, preferred_words: brief.preferredWords, prohibited_words: brief.prohibitedWords,
+    key_brand_messages: brief.keyMessages, custom_instructions: brief.customInstructions, tagline: brief.tagline, mission_statement: brief.missionStatement,
+    brief,
   }
-
-  // 2. Team-level profile
-  if (teamId) {
-    const { data: teamProfile } = await supabase
-      .from("brand_voice_profile")
-      .select(SELECT)
-      .eq("team_id", teamId)
-      .is("agent_id", null)
-      .eq("is_active", true)
-      .maybeSingle()
-
-    if (teamProfile) resolved = mergeBrandVoice(resolved, teamProfile as BrandVoiceRow)
-  }
-
-  // 3. Agent-level profile (most specific — overrides all).
-  // pass 13: brand_voice_profile.agent_id FKs agents(id) but callers pass the
-  // auth users.id (SequenceBuilder → assist bar) — resolve tolerantly.
-  if (agentId) {
-    const { data: bvpAgentRow } = await supabase
-      .from("agents").select("id")
-      .or(`id.eq.${agentId},user_id.eq.${agentId}`)
-      .maybeSingle()
-    const { data: agentProfile } = await supabase
-      .from("brand_voice_profile")
-      .select(SELECT)
-      .eq("agent_id", bvpAgentRow?.id ?? agentId)
-      .eq("is_active", true)
-      .maybeSingle()
-
-    if (agentProfile) resolved = mergeBrandVoice(resolved, agentProfile as BrandVoiceRow)
-  }
-
-  return resolved
 }
 
 // ─── PLATFORM CHARACTER LIMITS ────────────────────────────────────────────────
@@ -218,7 +169,10 @@ export async function generateSocialPostContent(params: {
     const charLimit = SOCIAL_POST_CHAR_LIMITS[params.platform] ?? SOCIAL_POST_CHAR_LIMIT_DEFAULT
 
     // ── 3. Build prompts from resolved brand voice ───────────────────────────
+    // WAVE 151 (lane 151I): the SENDER's versioned voice brief leads — the post is written in their words from the first draft.
+    const { renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
     const systemPrompt = [
+      brandVoice.brief ? renderSenderVoiceBrief(brandVoice.brief) : "",
       `You are an expert real estate social media strategist.`,
       `Write posts using the "Them First" framework: 40% empathy, 25% trust, 25% value, 10% solution.`,
       `NEVER use fair housing violations or protected-class language.`,

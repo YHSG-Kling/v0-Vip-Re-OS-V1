@@ -435,10 +435,15 @@ interface FunnelContext {
   webinar: { at: string; joinUrl: string } | null
   marketDataForTerritory: boolean
   notes: string[]
+  /** WAVE 151 (151I): the sender's rendered voice brief (THE brand-voice reader) — null when unreadable (said in notes). */
+  voiceBrief: string | null
 }
 
 function buildMagnetFunnelPlannerPrompt(brief: MagnetFunnelBrief, ctx: FunnelContext): string {
   return [
+    // WAVE 151 (lane 151I): the SENDER's versioned voice brief leads — the page, promise lines and thank-you are written in
+    // the agent's words and tagline from the first draft (the final phase then checks; it does not voice afterwards).
+    ...(ctx.voiceBrief ? [ctx.voiceBrief, ""] : []),
     `BRAND: ${ctx.brandName}`,
     `AGENT: ${ctx.agentFirstName ?? "the agent"}`,
     `AREA: ${brief.area ?? brief.territory?.city ?? "the brokerage's market"}`,
@@ -838,12 +843,12 @@ const defaultFinalize = (svc: Db): NonNullable<FunnelDeps["finalize"]> => async 
   return { ok: true, texts: out }
 }
 
-export interface AssetBrief { brokerageId: string; agentUserId: string | null; agentId: string | null; actorUserId: string | null; title: string; outline: string[]; audience: string; benefit: string; outcome: string; area: string | null; brandName: string; agentFirstName: string | null; discriminator: string; territory?: MagnetFunnelBrief["territory"] }
+export interface AssetBrief { brokerageId: string; agentUserId: string | null; agentId: string | null; actorUserId: string | null; title: string; outline: string[]; audience: string; benefit: string; outcome: string; area: string | null; brandName: string; agentFirstName: string | null; discriminator: string; territory?: MagnetFunnelBrief["territory"]; /** WAVE 151 (151I): the sender's rendered voice brief — the checklist / script writer's first block. */ voiceBrief?: string | null }
 
 /** The designed checklist: written (expert prompt) → validated → fair housing → the final phase → a tenant-branded PDF. */
 export async function produceChecklistDocument(svc: Db, a: AssetBrief, deps: FunnelDeps = {}): Promise<ProducedDeliverable> {
   try {
-    const prompt = [`BRAND: ${a.brandName}`, `AREA: ${a.area ?? "the local market"}`, `AUDIENCE: ${a.audience}`, `BENEFIT: ${a.benefit}`, `OUTCOME: ${a.outcome}`, `TITLE: ${a.title}`, `OUTLINE: ${a.outline.length ? a.outline.join(" · ") : "(yours to design)"}`, "", "Write the checklist now."].join("\n")
+    const prompt = [...(a.voiceBrief ? [a.voiceBrief, ""] : []), `BRAND: ${a.brandName}`, `AREA: ${a.area ?? "the local market"}`, `AUDIENCE: ${a.audience}`, `BENEFIT: ${a.benefit}`, `OUTCOME: ${a.outcome}`, `TITLE: ${a.title}`, `OUTLINE: ${a.outline.length ? a.outline.join(" · ") : "(yours to design)"}`, "", "Write the checklist now."].join("\n")
     const write = deps.writeChecklist ?? (async (x) => (await (await import("@/lib/ai/models")).generateObjectRouted({ feature: "lead_magnet_draft", brokerageId: x.brokerageId, userId: x.userId ?? undefined, manager: "campaign_orchestrator", system: x.system, prompt: x.prompt, schema: ChecklistSchema, maxTokens: 1600, temperature: 0.5, contextExtra: { purpose: "lead_magnet_funnel_checklist" } })).object)
     const draft = await write({ brokerageId: a.brokerageId, userId: a.agentUserId, system: FUNNEL_CHECKLIST_SYSTEM, prompt })
     if (draft.insufficient) return { status: "failed", reason: `the checklist writer escalated: ${draft.insufficient_reason ?? "insufficient brief"} — a person reviews it` }
@@ -900,7 +905,7 @@ async function videoReadiness(svc: Db, input: { brokerageId: string; videoProjec
 export async function commissionFunnelVideo(svc: Db, a: AssetBrief, deps: FunnelDeps = {}): Promise<ProducedDeliverable> {
   try {
     if (!a.agentUserId) return { status: "failed", reason: "an education video needs the agent who presents it (a user seat)" }
-    const prompt = [`BRAND: ${a.brandName}`, `AGENT: ${a.agentFirstName ?? "the agent"}`, `AREA: ${a.area ?? "the local market"}`, `AUDIENCE: ${a.audience}`, `BENEFIT: ${a.benefit}`, `OUTCOME: ${a.outcome}`, `TITLE: ${a.title}`, `OUTLINE: ${a.outline.length ? a.outline.join(" · ") : "(yours to design)"}`, "", "Write the script now."].join("\n")
+    const prompt = [...(a.voiceBrief ? [a.voiceBrief, ""] : []), `BRAND: ${a.brandName}`, `AGENT: ${a.agentFirstName ?? "the agent"}`, `AREA: ${a.area ?? "the local market"}`, `AUDIENCE: ${a.audience}`, `BENEFIT: ${a.benefit}`, `OUTCOME: ${a.outcome}`, `TITLE: ${a.title}`, `OUTLINE: ${a.outline.length ? a.outline.join(" · ") : "(yours to design)"}`, "", "Write the script now."].join("\n")
     const write = deps.writeVideoScript ?? (async (x) => (await (await import("@/lib/ai/models")).generateObjectRouted({ feature: "video_script_generation", brokerageId: x.brokerageId, userId: x.userId ?? undefined, manager: "asset_manager", system: x.system, prompt: x.prompt, schema: VideoScriptSchema, maxTokens: 900, temperature: 0.6, contextExtra: { purpose: "lead_magnet_funnel_video" } })).object)
     const draft = await write({ brokerageId: a.brokerageId, userId: a.agentUserId, system: FUNNEL_VIDEO_SCRIPT_SYSTEM, prompt })
     if (draft.insufficient) return { status: "failed", reason: `the script writer escalated: ${draft.insufficient_reason ?? "insufficient brief"} — a person reviews it` }
@@ -953,6 +958,15 @@ async function readFunnelContext(svc: Db, brief: MagnetFunnelBrief): Promise<Fun
     if (uErr) notes.push(`users read refused: ${uErr.message ?? "unknown"} — the agent is named generically`)
     agentFirstName = (u as { first_name?: string | null } | null)?.first_name ?? null
   }
+  // WAVE 151 (lane 151I): the SENDER's versioned voice brief (THE brand-voice reader) — compiled once per funnel, handed to the
+  // planner, the checklist writer and the script writer BEFORE their first draft. Unavailable = said in notes, never guessed.
+  let voiceBrief: string | null = null
+  try {
+    const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+    voiceBrief = renderSenderVoiceBrief(await loadSenderVoiceBrief(svc as never, { brokerageId: brief.brokerageId, agentId: brief.agentId, agentUserId }))
+  } catch (e) {
+    notes.push(`sender-voice brief unavailable: ${(e as Error)?.message ?? String(e)} — the planner writes without the sender's voice`)
+  }
   let calendarConnected = false
   if (agentUserId) {
     const { data: cal, error: calErr } = await svc.from("calendar_provider_accounts").select("id").eq("user_id", agentUserId).eq("brokerage_id", brief.brokerageId).eq("is_active", true).limit(1)
@@ -986,6 +1000,7 @@ async function readFunnelContext(svc: Db, brief: MagnetFunnelBrief): Promise<Fun
     brandName: brokerage?.name ?? "the brokerage", brokerageSlug: brokerage?.slug ?? null,
     agentUserId, agentFirstName,
     calendarConnected, sequences, webinar: at && join ? { at, joinUrl: join } : null, marketDataForTerritory, notes,
+    voiceBrief,
   }
 }
 
@@ -1077,7 +1092,7 @@ export async function createMagnetFunnel(brief: MagnetFunnelBrief, deps: FunnelD
     const composed = composeFunnelPlan(brief, ctx, draft, classifyConceptMagnetType)
     notes.push(...composed.dropped)
     const funnelId = globalThis.crypto.randomUUID() // Web Crypto (Node ≥ 19, edge) — no node:crypto import in a module the kernel graph reaches
-    const assetBrief = (it: PlannedItem): AssetBrief => ({ brokerageId, agentUserId: ctx.agentUserId, agentId: brief.agentId, actorUserId: brief.createdBy, title: it.title, outline: it.outline, audience: brief.audience, benefit: brief.benefit, outcome: brief.outcome, area: brief.area ?? null, brandName: ctx.brandName, agentFirstName: ctx.agentFirstName, discriminator: `funnel:${funnelId}:${it.key}`, territory: brief.territory ?? null })
+    const assetBrief = (it: PlannedItem): AssetBrief => ({ brokerageId, agentUserId: ctx.agentUserId, agentId: brief.agentId, actorUserId: brief.createdBy, title: it.title, outline: it.outline, audience: brief.audience, benefit: brief.benefit, outcome: brief.outcome, area: brief.area ?? null, brandName: ctx.brandName, agentFirstName: ctx.agentFirstName, discriminator: `funnel:${funnelId}:${it.key}`, territory: brief.territory ?? null, voiceBrief: ctx.voiceBrief })
 
     // THE ORDER (owner ruling 9, C30): 1 the MAGNET → 2 the LANDING PAGE + situation form → 3 the FUNNEL. Each stage is stamped
     // as it completes (package.order) and the stamps are recorded on the ledger row, so the order is evidence, not a comment.

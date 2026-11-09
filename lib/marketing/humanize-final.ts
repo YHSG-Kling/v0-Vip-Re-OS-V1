@@ -47,6 +47,12 @@ import { scanPublicCopy, type CopySurface, type OlderPersonsRecords } from "@/li
 // A SPOKEN piece (a video / podcast / TV script) is also graded by the spoken-realism survivor — advisory, exactly as the
 // podcast writer already uses it (lib/video/realism-profile.ts scanForAiTells); never a second written-tell list.
 import { scanForAiTells as scanSpokenRealism } from "@/lib/video/realism-profile"
+// WAVE 151 (lane 151I): the SAME versioned sender-voice brief the writer was conditioned on is handed to this phase, so it
+// checks the draft against the sender's OWN rules (formality, signature, opt-out placement, accessibility) and the staged
+// version records which voice version it was written in. Type-only imports — the phase stays importable anywhere; the two
+// value helpers it needs are lazy-imported only when a brief is given.
+import type { SenderVoiceBrief, VoiceSourceStamp } from "@/lib/kernel/brand-voice"
+import type { AudienceBrief } from "@/lib/kernel/ai-copy"
 
 // ── The asset kinds and what each can carry ───────────────────────────────────────────────────────
 
@@ -127,6 +133,14 @@ export interface FinalizeInput {
    * draft is appended once (exactly as given); a block that is not present byte-identical in the final is a BLOCKER.
    */
   verbatim?: readonly string[]
+  /**
+   * WAVE 151 (lane 151I): the versioned sender-voice brief the draft was written in (lib/kernel/brand-voice.ts
+   * loadSenderVoiceBrief). The phase checks the final against the sender's OWN formality, notes a drafted signature (the
+   * ONE assembler appends it) and records the brief's version + sources as the final's provenance (`voiceSource`).
+   */
+  voiceBrief?: SenderVoiceBrief | null
+  /** The person's brief (persona-render.ts loadAudienceBrief): its facts join the closed set a superlative may be grounded in. */
+  audienceBrief?: AudienceBrief | null
 }
 
 export interface FinalizedDistribution {
@@ -159,6 +173,12 @@ export interface FinalizedDistribution {
   brandVoice: { prohibited: string[]; preferredMissing: boolean }
   /** Hard public-copy fair-housing findings (severity high / blocker). */
   fairHousing: string[]
+  /** WAVE 151 (151I): which voice version the draft was written in — null when no brief was given (recorded on the staged final). */
+  voiceSource: VoiceSourceStamp | null
+  /** WAVE 151 (151I): accessibility notes (an all-caps run, bare link text, run-on sentences) — review notes, never holds. */
+  accessibility: string[]
+  /** WAVE 151 (151I): drift from the sender's OWN rules (their formality setting; a drafted signature or opt-out the assembler adds) — review notes. */
+  toneNotes: string[]
   /** What must be resolved before this is ready for approval (each names the phrase). */
   blockers: string[]
   /** What the human should know (a tagline left off, warnings that pass through). */
@@ -239,6 +259,27 @@ function unsupportedTestimonials(text: string, verified: readonly string[] = [])
 }
 
 /**
+ * PURE (wave 151, lane 151I). Accessibility notes for a reader who uses a screen reader, a small screen or plain
+ * attention: an all-caps run (read as shouting, spelled letter by letter by some readers), link text that says nothing out
+ * of context, and run-on sentences. Lexical and advisory — the human decides; nothing here holds a piece.
+ */
+function accessibilityNotes(plain: string, html: string | null): string[] {
+  const notes: string[] = []
+  const caps = plain.match(/\b(?:[A-Z]{2,}(?:[ ,'-]+|$)){5,}/g)
+  if (caps) notes.push(`accessibility: an all-caps run ("${caps[0].trim().slice(0, 40)}") reads as shouting and is spelled out letter by letter by some screen readers — use sentence case`)
+  if (html) {
+    for (const m of html.matchAll(/<a\b[^>]*>\s*(click here|here|read more|learn more|link|this)\s*<\/a>/gi)) {
+      notes.push(`accessibility: link text "${m[1]}" says nothing out of context — name where it goes`)
+      break
+    }
+  }
+  const sentences = plain.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean)
+  const long = sentences.filter((s) => s.split(/\s+/).length > 40)
+  if (long.length) notes.push(`accessibility: ${long.length} sentence${long.length === 1 ? "" : "s"} run${long.length === 1 ? "s" : ""} past 40 words — split ${long.length === 1 ? "it" : "them"}`)
+  return notes
+}
+
+/**
  * PURE. Is this tagline fit to go on a public piece? The claim guard (no rank / award / bestseller language) and the
  * public-copy fair-housing scan — the SAME vetting the book cover used (lib/lead-magnets/book-publishing-produce.ts
  * approvedBookBrandAssets now calls this). A tagline that fails is LEFT OFF with the reason; the piece is never held for it.
@@ -281,14 +322,25 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
   //     A block the draft lacks is appended as a mask too, so no scan reads it either. Private-use code points, no digits (the
   //     material-term reader never sees a mask as a number).
   const verbatimRequired = [...new Set((input.verbatim ?? []).map((v) => String(v ?? "")).filter((v) => v.trim().length > 0))]
+  //     WAVE 151 (lane 151I): the caller's REQUIRED disclosures are legal text too — masked from every judgement the same
+  //     way (the standard "deemed reliable but not guaranteed" line was reading as an unsupported superlative and blocking
+  //     the piece it is required on), while a disclosure-LOOKING line the draft wrote itself stays judged (step 4 `carried`).
+  const requiredDisclosures = [...new Set((input.disclosures ?? []).map((d) => String(d ?? "").trim()).filter(Boolean))]
   const masks: Array<{ token: string; text: string }> = []
   const tokenFor = (i: number) => `${String.fromCharCode(0xE100 + i)}`
+  const disclosureTokenFor = (i: number) => tokenFor(verbatimRequired.length + i)
   let maskedSource = source
   verbatimRequired.forEach((v, i) => {
     if (!maskedSource.includes(v)) return
     const token = tokenFor(i)
     maskedSource = maskedSource.split(v).join(token)
     masks.push({ token, text: v })
+  })
+  requiredDisclosures.forEach((d, i) => {
+    if (!maskedSource.includes(d)) return
+    const token = disclosureTokenFor(i)
+    maskedSource = maskedSource.split(d).join(token)
+    masks.push({ token, text: d })
   })
   const unmask = (s: string) => masks.reduce((acc, m) => acc.split(m.token).join(m.text), s)
   const withoutMasks = (s: string) => masks.reduce((acc, m) => acc.split(m.token).join(" "), s)
@@ -326,13 +378,16 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
 
   // 4 · disclosures — what the draft carried stays; what the caller requires and the draft lacked is appended (last).
   const carried = disclosureLinesOf(sourcePlain)
-  const required = [...new Set((input.disclosures ?? []).map((d) => String(d ?? "").trim()).filter(Boolean))]
+  const required = requiredDisclosures
   const appended: string[] = []
-  for (const d of required) {
-    if (squash(plainOf(unmask(body), isHtml)).includes(squash(d))) continue
-    body = isHtml ? `${body}\n<p class="disclosure">${escapeHtml(d)}</p>` : `${body.replace(/\s+$/, "")}\n\n${d}`
+  required.forEach((d, i) => {
+    if (squash(plainOf(unmask(body), isHtml)).includes(squash(d))) return
+    // Appended as a mask (legal text is never scanned), restored byte-for-byte below; HTML-escaped in markup.
+    const token = masks.some((m) => m.text === d || m.text === escapeHtml(d)) ? masks.find((m) => m.text === d || m.text === escapeHtml(d))!.token : disclosureTokenFor(i)
+    if (!masks.some((m) => m.token === token)) masks.push({ token, text: isHtml ? escapeHtml(d) : d })
+    body = isHtml ? `${body}\n<p class="disclosure">${token}</p>` : `${body.replace(/\s+$/, "")}\n\n${token}`
     appended.push(d)
-  }
+  })
   // 4b · a required legal / scripted block the draft lacked is appended exactly as given (masked, so no scan reads it).
   const verbatimAppended: string[] = []
   verbatimRequired.forEach((v, i) => {
@@ -364,7 +419,8 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
   const campaignPhrases = (authoredBy === "ai" ? openTells : scanAiTells(scanPlain))
     .filter((t) => t.rule.startsWith(CAMPAIGN_PHRASE_RULE_PREFIX)).map((t) => t.phrase)
   const modelTells = openTells.filter((t) => !t.rule.startsWith(CAMPAIGN_PHRASE_RULE_PREFIX))
-  const superlatives = [...new Set(detectUngroundedClaims({ hook: "", script: scanPlain, captionText: "" }, [...(input.facts ?? [])])
+  // The closed set a superlative may be grounded in: the caller's facts plus the person's brief's facts (wave 151I).
+  const superlatives = [...new Set(detectUngroundedClaims({ hook: "", script: scanPlain, captionText: "" }, [...(input.facts ?? []), ...(input.audienceBrief?.facts ?? [])])
     .filter((c) => c.kind === "superlative").map((c) => c.claim))]
   const testimonials = unsupportedTestimonials(scanPlain, input.verifiedTestimonials ?? [])
   const rankClaims = [...new Set(scanBookClaims({ copy: scanPlain }).map((c) => c.phrase))]
@@ -375,6 +431,26 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
   const preferredMissing = preferred.length > 0 && !preferred.some((w) => lower.includes(w))
   const fh = await scanPublicCopy(scanPlain, profile.surface, { brokerageName: brand.brandName ?? null, olderPersons: input.olderPersons })
   const fairHousing = fh.findings.filter((f) => f.severity === "high" || f.severity === "blocker").map((f) => `"${f.phrase}" — ${f.fix}`)
+
+  // 6b · THE SENDER'S OWN RULES AND THE READER'S ACCESS (wave 151, lane 151I). The brief the writer was conditioned on is the
+  //      rule the final is read against: their formality setting (named, never re-blocked — the gate already grades it), a
+  //      drafted signature or opt-out line the ONE assembler appends anyway (a duplicate, not a disclosure), and accessibility.
+  //      A required scripted opt-out rides `verbatim` and is never touched here. All review notes; the human decides.
+  const accessibility = accessibilityNotes(scanPlain, isHtml ? body : null)
+  const toneNotes: string[] = []
+  let voiceSource: VoiceSourceStamp | null = null
+  if (input.voiceBrief) {
+    const bv = await import("@/lib/kernel/brand-voice")
+    voiceSource = bv.voiceSourceStamp(input.voiceBrief)
+    if (input.voiceBrief.formality) toneNotes.push(...bv.checkFormalityViolations(scanPlain, input.voiceBrief.formality).map((v) => `tone: ${v} — the sender's own formality setting`))
+    const sigLine = input.voiceBrief.signature.text?.split("\n").map((l) => l.trim()).find((l) => l.length > 6) ?? null
+    if (sigLine && (input.assetKind === "email_campaign" || input.assetKind === "newsletter") && finalSquashed.includes(squash(sigLine))) {
+      toneNotes.push("the ONE email assembler appends the sender's signature — remove the drafted copy so it is not sent twice")
+    }
+  }
+  if ((input.assetKind === "email_campaign" || input.assetKind === "newsletter") && /\bunsubscribe\b|\breply\s+stop\b/i.test(scanPlain)) {
+    toneNotes.push("opt-out wording belongs to the ONE assembler at the dispatch gate — remove the drafted copy (a required scripted opt-out rides `verbatim`, word for word)")
+  }
 
   const blockers = [
     ...modelTells.map((t) => `machine-written phrasing still reads "${t.phrase}" (${t.rule}) — rewrite it in your own words`),
@@ -397,6 +473,8 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
     ...(logoOut.reason && profile.logo !== "none" ? [logoOut.reason] : []),
     ...(preferredMissing ? [`none of your preferred words appear (${preferred.slice(0, 5).join(", ")})`] : []),
     ...fh.warnings.slice(0, 5),
+    ...toneNotes,
+    ...accessibility,
   ]
   const summary = [
     removed.length ? `removed ${removed.length} machine-written phrase${removed.length === 1 ? "" : "s"}` : "no machine-written phrase to remove",
@@ -425,6 +503,9 @@ export async function finalizeForDistribution(input: FinalizeInput): Promise<Fin
     rankClaims,
     brandVoice: { prohibited, preferredMissing },
     fairHousing,
+    voiceSource,
+    accessibility,
+    toneNotes,
     blockers,
     reviewNotes,
     readyForApproval: blockers.length === 0,
@@ -536,6 +617,9 @@ export async function stageDistributionFinal(db: Db, input: StageFinalInput): Pr
         summary: f.summary, removed: f.removed, open_tells: f.openTells, tagline: f.tagline, logo: f.logo, disclosures: f.disclosures,
         material_terms: f.materialTerms, superlatives: f.superlatives, testimonials: f.testimonials, rank_claims: f.rankClaims,
         brand_voice: f.brandVoice, fair_housing: f.fairHousing, review_notes: f.reviewNotes,
+        // WAVE 151 (151I): PROVENANCE — which voice version (and which settings) the asset was written in, beside created_by
+        // (who asked), brokerage_id (the tenant) and status (approval). The survivor jsonb carries it; no new column.
+        voice_source: f.voiceSource ?? null, accessibility: f.accessibility ?? [], tone_notes: f.toneNotes ?? [],
       },
       blockers: f.blockers,
       tagline: f.tagline.applied === "none" ? null : f.tagline.text,

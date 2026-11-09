@@ -922,6 +922,8 @@ console.log("\n[code-side vocabularies mirrored by a CHECK]")
 {
   const MIRRORS: Array<{ file: string; constant: string; table: string; column: string; constraint: string }> = [
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_REASON_CODES", table: "agent_action_ledger", column: "reason_code", constraint: "agent_action_ledger_reason_code_check" },
+    // wave 151 (151J): the saved-home watch's source vocabulary (m983) — ONE constant, ONE CHECK.
+    { file: "lib/property-alerts/saved-home-watch.ts", constant: "SAVED_HOME_VERIFICATION_SOURCES", table: "saved_properties", column: "last_verified_source", constraint: "saved_properties_last_verified_source_check" },
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_ACTOR_TYPES", table: "agent_action_ledger", column: "actor_type", constraint: "agent_action_ledger_actor_type_check" },
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_STATUSES", table: "agent_action_ledger", column: "status", constraint: "agent_action_ledger_status_check" },
     // Wave 105 (105D): the relationship graph's three vocabularies are code CONSTANTS written through the

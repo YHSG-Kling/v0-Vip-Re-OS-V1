@@ -9,7 +9,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { mayUseFeature } from "@/lib/billing/billing-access"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { applyBrandVoice, loadSenderVoiceBrief, renderSenderVoiceBrief } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { KernelContact } from "@/lib/kernel/types"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -238,8 +238,16 @@ export async function generateAdCreative(
     content: "",   // Empty — we just want the voice notes, not a content evaluation
   })
 
+  // ── 3b. WAVE 151 (lane 151I): THE SENDER'S VOICE FIRST ─────────────────────────
+  // The versioned sender-voice brief (THE brand-voice reader: the agent's words, tagline, tone, authorized examples,
+  // positioning) leads the writer's prompt, so the three variations are written in the sender's voice from the first
+  // draft; the brand-voice NOTES below and the compliance gate still bind. Unreadable = written without it (logged).
+  const voiceBrief = await loadSenderVoiceBrief(supabase as never, { brokerageId, agentUserId: userId, teamId: (campaign as { team_id?: string | null }).team_id ?? null })
+    .then(renderSenderVoiceBrief)
+    .catch((e: unknown) => { console.error("[ad-creator] sender-voice brief unavailable:", (e as Error)?.message ?? String(e)); return null })
+
   // ── 4. Build AI prompt ──────────────────────────────────────────────────────
-  const prompt = `
+  const prompt = `${voiceBrief ? `${voiceBrief}\n` : ""}
 You are an expert real estate advertising copywriter. Generate 3 A/B test variations of ad creative for a ${campaign.platform} ad campaign.
 
 Campaign Details:
