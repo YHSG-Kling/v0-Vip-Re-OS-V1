@@ -53,11 +53,13 @@ import {
   buildOpenHouseAttendeeSignal,
   buildPredictiveSellerSignal,
 } from "@/lib/lead-intelligence/signal-extensions"
+// The MODULE, not the lib/lead-intent barrel: this action uses the inbound door only, and the barrel would carry the
+// opt-out door onto every page graph that reaches this action (test:proxy-graph-budget — app/crm/page.tsx ≤ 1300).
 import {
   evaluateInboundLeadSignal,
   type InboundLeadChannel,
   type InboundLeadIntentResult,
-} from "@/lib/lead-intent"
+} from "@/lib/lead-intent/inbound-lead-intent"
 
 type IngestResult = { applied: boolean; reason?: string }
 

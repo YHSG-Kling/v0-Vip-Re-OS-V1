@@ -70,7 +70,7 @@ export async function getDirectMailSettings(): Promise<{
       .eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false }),
     svc.from("direct_mail_sender_addresses")
-      .select("id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, approved_by_user_id, approved_at, is_default, status")
+      .select("id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, cass_source, approved_by_user_id, approved_at, is_default, status, created_by_user_id")
       .eq("brokerage_id", brokerageId)
       .eq("status", "active")
       .order("created_at", { ascending: false }),
@@ -205,7 +205,7 @@ export async function saveSenderAddress(input: SenderAddressInput): Promise<{ su
 }
 
 /** The columns every sender-address read selects (one list, so a read-back and a policy value never disagree). */
-const SENDER_ADDRESS_COLUMNS = "id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, approved_by_user_id, approved_at, is_default, status"
+const SENDER_ADDRESS_COLUMNS = "id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, cass_source, approved_by_user_id, approved_at, is_default, status, created_by_user_id"
 
 /** The registered tenant policy key (lib/kernel/tenant-policy.ts TENANT_POLICY_SETTINGS_KEYS). */
 const SENDER_ADDRESS_POLICY_KEY = "direct_mail_sender_address"
@@ -229,7 +229,7 @@ export async function approveSenderAddress(id: string): Promise<{ success: boole
   if (!caller.ok) return { success: false, error: caller.error }
   const svc = createServiceClient()
   const { data: row, error: readErr } = await svc.from("direct_mail_sender_addresses")
-    .select("id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, approved_by_user_id, approved_at, is_default, status")
+    .select("id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, cass_source, approved_by_user_id, approved_at, is_default, status, created_by_user_id")
     .eq("id", id).eq("brokerage_id", access.brokerageScopeId).maybeSingle()
   if (readErr) return { success: false, error: `Could not read the address: ${readErr.message}` }
   if (!row) return { success: false, error: "That address is not in your brokerage" }

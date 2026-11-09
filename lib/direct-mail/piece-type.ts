@@ -589,10 +589,14 @@ export interface SenderAddressRow {
   zip: string
   cass_deliverability: string | null
   cass_verified_at: string | null
+  /** Which verifier ruled (lob_cass) — shown beside the verdict so an admin knows what "verified" means. */
+  cass_source: string | null
   approved_by_user_id: string | null
   approved_at: string | null
   is_default: boolean
   status: "active" | "retired"
+  /** Who added the address (users.id) — the audit line the settings page prints. */
+  created_by_user_id: string | null
 }
 
 interface ResolvedSenderAddress {
@@ -645,7 +649,7 @@ export async function resolveTenantSenderAddress(args: { brokerageId: string; te
   const svc: SenderClient = args.client ?? (await import("@/lib/supabase/service")).createServiceClient()
   const { data: rows, error: rowsErr } = await svc
     .from("direct_mail_sender_addresses")
-    .select("id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, approved_by_user_id, approved_at, is_default, status")
+    .select("id, brokerage_id, scope_type, scope_id, label, name, line1, line2, city, state, zip, cass_deliverability, cass_verified_at, cass_source, approved_by_user_id, approved_at, is_default, status, created_by_user_id")
     .eq("brokerage_id", args.brokerageId)
     .eq("status", "active")
   if (rowsErr) readErrors.push(`direct_mail_sender_addresses: ${rowsErr.message}`)

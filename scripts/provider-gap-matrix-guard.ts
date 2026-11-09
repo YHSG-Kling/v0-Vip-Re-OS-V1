@@ -260,7 +260,7 @@ async function main() {
     check("LAW 3 holds for the sold-records door too: research.ts reaches it through getAreaSoldRecords (the capability), never getRentcastSoldRecords", /getAreaSoldRecords\(/.test(research2) && !/getRentcastSoldRecords\(/.test(blankStrings(research2)))
 
     // The CAPABILITY, EXECUTED with injected seams (no network): the IDX question gates the vendor leg.
-    const chain = await import("../lib/property/area-sold-records")
+    const chain = await import("../lib/avm/provider-chain")
     let vendorCalls = 0
     const vendor = async () => { vendorCalls++; return { success: true, cacheHit: false, records: [
       { address: "10 Oak St", city: "Austin", state: "TX", zip: "78704", lastSaleDate: "2026-10-20", lastSalePrice: 510000, bedrooms: 3, bathrooms: 2, squareFeet: 1900, propertyType: "Single Family" },

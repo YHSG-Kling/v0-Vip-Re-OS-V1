@@ -289,7 +289,7 @@ export const WAVE149J_DISPOSITIONS: Record<string, Disposition> = {
   "144G-SO-12": ca("inherent-limit", "inherent", CANARY),
   "144G-OL-01": cl(["lib/kernel/cron-dispatch.ts#/api/cron/local-intel"]),
   "144G-OL-02": ca("deferred", "integrator", DOCS),
-  "144G-OL-03": cl(["raw:lib/kernel/marketing.ts#content-creators.ts:1002 writeBlogPost", "lib/kernel/content-creators.ts#export async function writeBlogPost"], "the tombstone names the survivor's current line"),
+  "144G-OL-03": cl(["raw:lib/kernel/marketing.ts#content-creators.ts:1013 writeBlogPost", "lib/kernel/content-creators.ts#export async function writeBlogPost"], "the tombstone names the survivor's current line"),
   "144G-OL-04": cl(["scripts/intent-driven-followup-guard.ts#\"lib/content-intel/local-intel.ts\": { baseline: 3"]),
   "144G-OL-05": cl(["lib/content-intel/market-leadership.ts#const local = await loadLocalFacts(svc, brokerageId, { now, limit: 20 })"]),
   "144G-OL-06": cl(["app/api/cron/content-intel-rss/route.ts#if (s.source_config?.local_intel) continue"]),

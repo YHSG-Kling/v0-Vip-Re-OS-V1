@@ -69,7 +69,7 @@ export const RENTCAST_DATA_TYPES = Object.freeze({
     closedSaleEvidence: true,
     photoRights: false,
     requires: ["provider_rights"],
-    readers: ["lib/property/rentcast.ts getRentcastSoldRecords (the vendor leg: gated property_data, metered sold_records, cached a week)", "lib/property/area-sold-records.ts getAreaSoldRecords (the capability: an IDX tenant is answered from its feed, nothing spent)", "lib/market-reports/research.ts soldRecordsToData (the median + comparables when the tenant's MLS-synced closed sales are fewer than MIN_RECORDS_FOR_MEDIAN)"],
+    readers: ["lib/property/rentcast.ts getRentcastSoldRecords (the vendor leg: gated property_data, metered sold_records, cached a week)", "lib/avm/provider-chain.ts getAreaSoldRecords (the capability beside the property lookup: an IDX tenant is answered from its feed, nothing spent)", "lib/market-reports/research.ts soldRecordsToData (the median + comparables when the tenant's MLS-synced closed sales are fewer than MIN_RECORDS_FOR_MEDIAN)"],
     source: "rentcast-openapi.ts property-records query `saleDateRange` — 'the number of days since a property was last sold … used to search for properties that were sold within the specified date range'",
   },
   listing_statistics: {

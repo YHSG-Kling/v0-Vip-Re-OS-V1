@@ -353,6 +353,12 @@ function policyReaders(key: string): { consumers: string[]; display: string[] } 
 }
 /** Keys whose readers are DISPLAY-ONLY or absent, accepted with a reason that names the finding. */
 const POLICY_KEY_EXCEPTIONS: Record<string, string> = {
+  // direct_mail_sender_address (wave 151, lane 151H + integrator): the policy VALUE is the approved sender-address ROW and its
+  // store is the direct_mail_sender_addresses TABLE (TENANT_POLICY_SETTINGS_KEYS.store), not brokerage_settings.settings — so
+  // no `.direct_mail_sender_address` read can exist. The CONSUMER is the dispatcher's resolver, which reads the table itself
+  // (lib/direct-mail/piece-type.ts resolveTenantSenderAddress → lib/providers/mailing-cass-gate.ts decideSenderAddress, proven
+  // by test:direct-mail-rendering); the version chain is the LAW-5 evidence of who approved which address (loadPolicyHistory).
+  direct_mail_sender_address: "store is the direct_mail_sender_addresses table; consumer = piece-type.ts resolveTenantSenderAddress (table read); the chain is evidence",
   // vendor_tier_pricing: FINDING P1 (139G) CLOSED by wave 140J — the vendor checkout
   // (app/actions/vendor-billing.ts createVendorSubscriptionCheckout) now resolves the
   // administered override through resolveTierPrice and refuses an unset price

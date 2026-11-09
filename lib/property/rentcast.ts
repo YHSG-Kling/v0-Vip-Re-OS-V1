@@ -1219,7 +1219,7 @@ export interface RentcastSoldRecord extends RentcastPropertyFacts {
  *
  * Owner (wave 151): "RentCast has sold properties because market data is a capability of RentCast if the tenant doesn't
  * have a connected IDX provider." The market report asks for these only when the tenant's own MLS-synced closed sales
- * are too few for a median, and only through the CAPABILITY (lib/property/area-sold-records.ts getAreaSoldRecords — which asks
+ * are too few for a median, and only through the CAPABILITY (lib/avm/provider-chain.ts getAreaSoldRecords — which asks
  * the IDX question and answers an IDX tenant from its feed); this reader is the vendor leg behind it, never a caller's
  * entry. Gated property_data (the IDX substitute question belongs to the capability, not to a property-data read),
  * metered as `sold_records`, cached RENTCAST_CACHE_TTL_DAYS.markets (a week — public-record sales post slowly, and a

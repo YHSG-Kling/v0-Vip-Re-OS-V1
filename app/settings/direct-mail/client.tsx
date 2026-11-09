@@ -121,7 +121,7 @@ function SenderAddressSection({ initial }: { initial: SenderAddressSettings }) {
                 <div className="font-medium">{r.label ? `${r.label} — ` : ""}{r.name}</div>
                 <div className="text-gray-700">{r.line1}{r.line2 ? `, ${r.line2}` : ""}, {r.city}, {r.state} {r.zip}</div>
                 <div className="text-xs text-gray-500 mt-1">
-                  scope {r.scope_type} · {r.cass_verified_at ? `CASS ${r.cass_deliverability ?? "verified"}` : "not verified"} · {r.approved_at ? "approved" : "awaiting approval"}{r.is_default ? " · default" : ""}
+                  scope {r.scope_type} · {r.cass_verified_at ? `${r.cass_source === "lob_cass" ? "Lob CASS" : r.cass_source ?? "CASS"} ${r.cass_deliverability ?? "verified"}` : "not verified"} · {r.approved_at ? "approved" : "awaiting approval"}{r.is_default ? " · default" : ""}{r.created_by_user_id ? ` · added by user ${r.created_by_user_id.slice(0, 8)}` : ""}
                 </div>
               </div>
               <div className="ml-3 flex flex-col gap-1 text-xs">

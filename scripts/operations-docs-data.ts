@@ -503,6 +503,7 @@ add("crmdocs", "config", [
 add("vercel", "provided", [
   ["VERCEL", "Present on Vercel; selects the serverless chromium path.", "PROVIDED"],
   ["VERCEL_ENV", "production | preview | development; demo sign-in is off when 'production' (app/constants/auth.ts:284).", "PROVIDED"],
+  ["NEXT_RUNTIME", "Set by Next.js for every server bundle (nodejs | edge) — never configured by hand. The server-only default doors run only when it is set (lib/enrichment/inline-drain.ts inlineDrainEnabledByDefault; lib/market-reports/research.ts defaultSoldRecords); a simulator injects the seam instead.", "PROVIDED"],
   ["VERCEL_URL", "Deployment-specific host; last-resort cron fan-out base (lib/kernel/cron-dispatch.ts:419).", "PROVIDED"],
   ["VERCEL_PROJECT_PRODUCTION_URL", "Project's production host; the cron dispatcher's default fan-out base (lib/kernel/cron-dispatch.ts:418).", "PROVIDED"],
   ["VERCEL_DEPLOYMENT_ID", "Deployment id; part of the Remotion code revision (lib/remotion/code-revision.ts:207).", "PROVIDED"],

@@ -156,7 +156,7 @@ export interface ResearchDeps {
   streetComps?: (a: { brokerageId: string; agentUserId: string | null; address: string; city: string | null; state: string | null; zip: string | null }) => Promise<StreetComp[]>
   /** The comparable's own `/v1/properties` sale history (default: the property-lookup capability, lib/avm/provider-chain.ts getPropertyRecordWithFallback, RentCast's record only — gated, metered, cached inside the client). Null = no record / refused. */
   saleHistory?: (a: { brokerageId: string; address: string }) => Promise<{ lastSaleDate: string | null; lastSalePrice: number | null } | null>
-  /** Area sold records when the tenant's MLS-synced closed sales are too few for a median (default: the area-sold-records CAPABILITY, lib/property/area-sold-records.ts getAreaSoldRecords — a tenant with a connected IDX feed is answered from that feed and nothing is spent; RentCast's recorded sales otherwise, RENTCAST_DATA_TYPES.sold_records). */
+  /** Area sold records when the tenant's MLS-synced closed sales are too few for a median (default: the area-sold-records CAPABILITY, lib/avm/provider-chain.ts getAreaSoldRecords — a tenant with a connected IDX feed is answered from that feed and nothing is spent; RentCast's recorded sales otherwise, RENTCAST_DATA_TYPES.sold_records). */
   soldRecords?: (a: { brokerageId: string; agentUserId: string | null; zip: string | null; city: string | null; state: string | null; windowDays: number }) => Promise<{ outcome: string; records: AreaSoldRecordRow[]; note: string }>
 }
 
@@ -368,7 +368,7 @@ const defaultSaleHistory: NonNullable<ResearchDeps["saleHistory"]> = async (a) =
  */
 const defaultSoldRecords: NonNullable<ResearchDeps["soldRecords"]> = async (a) => {
   if (!process.env.NEXT_RUNTIME) return { outcome: "not_run", records: [], note: "the area sold-records capability runs only inside the application server (NEXT_RUNTIME is unset here); a simulator injects deps.soldRecords" }
-  const { getAreaSoldRecords } = await import("@/lib/property/area-sold-records")
+  const { getAreaSoldRecords } = await import("@/lib/avm/provider-chain")
   const r = await getAreaSoldRecords({ brokerageId: a.brokerageId, agentUserId: a.agentUserId, zip: a.zip, city: a.city, state: a.state, windowDays: a.windowDays, limit: 200, systemSource: "market_report" })
   return { outcome: r.outcome, records: r.records, note: r.note }
 }
