@@ -552,6 +552,79 @@ export interface ArbiterFacts {
     /** WAVE 150 (C38): the eligible plays (never a brief's words — those go to the writer, ArbiterDecision.writerBrief). */
     plays?: { options: Array<{ play: string; mode: string; status: string; why: string }>; floor: string; holdout: boolean }
   }
+  /** WAVE 151 (lane 151E): the NEXT-BEST-HELPFUL-ACTION frame — see HelpfulActionFrame. Evidence for the model and the ledger. */
+  helpfulActions?: HelpfulActionFrame
+}
+
+// ── WAVE 151 (lane 151E): NEXT-BEST-HELPFUL-ACTION ───────────────────────────────────────────────────────────────────────────────
+//
+// The owner: "the platform is providing new and improved ways ai is being used to target online behavior so the tenant will tell when
+// a current record is ready or getting ready to transact … if the person's preferences are not set, then the arbiter decides." The
+// arbiter already chooses among the planner's CLOSED menu; this frame names the six kinds of HELP the owner listed (research /
+// educational content / valuation-equity facts / an authorized channel / agent coordination / WAIT), says which is eligible NOW and
+// why, and states the six things it was weighed against (channel consent, relationship fatigue, time since the last response, the
+// person's stated preference, what a message may suitably say, who must approve). PREFERENCES UNSET → `cadence: arbiter_decides`
+// — there is NO default drip or schedule anywhere in this frame. A sensitive inferred life event is never named in unsolicited
+// outreach (`neverMention`, from the life-event guard). Deterministic (LAW 4): the model reads it, the policy computed it.
+
+export const HELPFUL_ACTIONS = Object.freeze(["research", "education", "valuation_equity_facts", "authorized_channel", "agent_coordination", "wait"] as const)
+export type HelpfulAction = (typeof HELPFUL_ACTIONS)[number]
+
+export interface HelpfulActionFrame {
+  options: Record<HelpfulAction, { eligible: boolean; why: string }>
+  weighed: { channelConsent: string; relationshipFatigue: string; timeSinceLastResponse: string; statedPreference: string; messageSuitability: string; humanApproval: string }
+  /** The person stated how they want to be reached (channel / time / language / format / frequency) — honoured first. */
+  preferencesStated: boolean
+  /** `person_stated` only when they told us how often; otherwise the ARBITER decides the timing from the evidence — no default cadence. */
+  cadence: "arbiter_decides" | "person_stated"
+  /** Words no unsolicited message may carry (a sensitive inferred life event is never the subject of outreach). */
+  neverMention: string[]
+}
+
+/** The memory keys that are COMMUNICATION preferences (how to reach them) — not what they want to buy or when. */
+const COMMUNICATION_PREFERENCE_KEYS: ReadonlySet<string> = new Set(["channel_preference", "preferred_contact_time", "language", "communication_format", "contact_frequency"])
+
+/** PURE. The frame for ONE decision over the facts and the closed menu. Module-private — reached through arbitrateExperiencePlan
+ *  (the proof drives arbitrateAndRecordExperience and reads the frame from the prompt / the ledger). */
+function helpfulActionFrame(facts: ArbiterFacts, menu: ArbiterMenu, policy: FollowupPolicy): HelpfulActionFrame {
+  const kinds = new Set(menu.menu.map((o) => o.kind))
+  const available = (facts.channels ?? []).filter((c) => c.available && c.channel !== "human_task")
+  const refusedWhy = (facts.channels ?? []).filter((c) => !c.available && c.channel !== "social" && c.channel !== "ads").map((c) => `${c.channel}: ${c.why}`).slice(0, 4)
+  const prefs = facts.preferences.filter((p) => COMMUNICATION_PREFERENCE_KEYS.has(p.key))
+  const frequency = facts.preferences.find((p) => p.key === "contact_frequency")?.value ?? null
+  const pauseAsked = frequency === "pause" || frequency === "fewer"
+  const fatigueHigh = facts.fatigueRisk === "high" || facts.fatigueRisk === "critical"
+  const hours = facts.history.hoursSinceAnyTouch
+  const tooSoon = typeof hours === "number" && hours < policy.guardrails.minHoursBetweenTouches
+  const modes = new Set((facts.opportunity?.modes ?? []).map((m) => m.mode))
+  const sensitive = facts.opportunity?.sensitive === true || !!facts.lifeEvent
+  const neverMention = facts.lifeEvent ? [...(menu.lifeEvent?.guard.neverMention ?? [])] : sensitive ? ["what was observed", "where it was seen", "the life event"] : []
+  const holdout = facts.opportunity?.plays?.holdout === true
+  const outboundBlocks = [...(available.length === 0 ? ["no permitted channel"] : []), ...(fatigueHigh ? [`relationship fatigue ${facts.fatigueRisk}`] : []), ...(pauseAsked ? [`they asked for ${frequency}`] : []), ...(tooSoon ? [`touched ${hours}h ago (inside the ${policy.guardrails.minHoursBetweenTouches}h floor)`] : []), ...(holdout ? ["movement-outreach holdout"] : [])]
+  const sellerish = facts.opportunity?.moment?.seller != null && facts.opportunity.moment.seller !== "not_indicated"
+  const equityHelper = (facts.neighbourlyHelpers ?? []).some((h) => h.key === "equity_review_on_request" || h.key === "market_update_after_interest")
+  const options: HelpfulActionFrame["options"] = {
+    research: { eligible: modes.has("research"), why: modes.has("research") ? "the movement reading left research open — internal, cheapest first, never a message" : "no research step is open on this evidence (or no movement reading)" },
+    education: { eligible: kinds.has("education") && !pauseAsked, why: kinds.has("education") ? (pauseAsked ? `they asked for ${frequency} — hold even a lesson` : "a lesson the planner offered; helpful, event-agnostic, never about an inferred event") : "no education option on the menu" },
+    valuation_equity_facts: { eligible: kinds.has("market_update") && (sellerish || equityHelper) && outboundBlocks.length === 0, why: !kinds.has("market_update") ? "no market / equity update on the menu" : !(sellerish || equityHelper) ? "nothing on the seller side asks for home-value facts" : outboundBlocks.length ? outboundBlocks.join("; ") : "home-value / equity FACTS as education (never an unrequested number, never a price without a CMA)" },
+    authorized_channel: { eligible: available.length > 0 && outboundBlocks.length === 0 && (kinds.has("communication") || kinds.has("properties") || kinds.has("video")), why: outboundBlocks.length ? outboundBlocks.join("; ") : `${available.length} permitted channel(s): ${available.map((c) => c.channel).join(", ")}` },
+    agent_coordination: { eligible: kinds.has("agent_intervention") || kinds.has("professional_referral") || facts.relationship.hasAssignedAgent, why: kinds.has("agent_intervention") || kinds.has("professional_referral") ? "a person is on the menu — judgment, a high-stakes moment, or a referral the client chooses" : facts.relationship.hasAssignedAgent ? "an assigned agent can be coordinated through their task" : "no agent to coordinate with" },
+    wait: { eligible: kinds.has("wait"), why: kinds.has("wait") ? "a bounded hold is always a legitimate answer while evidence is thin, mixed or unwelcome" : "waiting is exhausted for this moment (maxDeferDays) — act or hand to a person" },
+  }
+  return {
+    options,
+    weighed: {
+      channelConsent: facts.channels ? `${available.length} of ${facts.channels.length} channels permitted${refusedWhy.length ? ` (refused — ${refusedWhy.join("; ")})` : ""}` : "channel checks not read — the dispatcher's gates decide",
+      relationshipFatigue: facts.fatigueRisk ?? "fatigue not read",
+      timeSinceLastResponse: typeof hours === "number" ? `${hours}h since any touch${facts.history.hoursSinceAgentTouch != null ? `, ${facts.history.hoursSinceAgentTouch}h since the agent` : ""}` : "no touch on record",
+      statedPreference: prefs.length ? prefs.map((p) => `${p.key}=${p.value}`).join(", ") : "none stated — the arbiter decides the timing",
+      messageSuitability: facts.lifeEvent ? `a ${facts.lifeEvent.sensitivity} life event is decisive — ${facts.lifeEvent.tone}; never name it` : sensitive ? "sensitive evidence — never name what was observed" : "ordinary follow-up; them-first, no urgency",
+      humanApproval: facts.lifeEvent && !facts.lifeEvent.automatedHelpOffered ? `a person approves (${facts.lifeEvent.whyNotAutomated.join("; ") || "no autonomy grant"})` : (facts.opportunity?.modes ?? []).some((m) => m.requiresApproval) ? "an approver sees outreach before it leaves" : "the dispatch gate decides at the send",
+    },
+    preferencesStated: prefs.length > 0,
+    cadence: frequency ? "person_stated" : "arbiter_decides",
+    neverMention,
+  }
 }
 
 export interface ArbiterDecision {
@@ -804,6 +877,8 @@ export const ARBITER_SYSTEM = [
   "When moment.key is promised_deliverable we promised this person something (a guide, report, video or book) and it has not reached them: deliver it now on the permitted channel that fits them, or hand it to a person — never wait.",
   "When moment.key starts with inbound_ the person just wrote to us: answer usefully (reply), or hand it to a person when it needs judgment (a complaint, distress, a legal or fair-housing question, a negotiation). A public comment is read by everyone — the reply stays general and invites a private conversation.",
   "evidence.signals are recent life-change / intent signals — evidence, not certainty (a movement signal reaches you only when a verified or reported record carries it). A life event (divorce, a death or estate, financial hardship, a household or career change) is about the person and how they feel right now: it is never the subject of a message, and it is never simply handed to a person either — the life-event brief (evidence.lifeEvent) says what the evidence and the tenant's authority permit. evidence.neighbourlyHelpers, when present, are neighbourly ways to help that the evidence supports (each names the experience that carries it) — weigh them as options, never mention the signal or where it came from, and never assume more than the evidence says.",
+  // WAVE 151 (lane 151E): the next best HELPFUL action, weighed; no default cadence when preferences are unset; no sensitive event named.
+  "evidence.helpfulActions, when present, is the frame of the next best HELPFUL action: research (internal, never a message), education, valuation or equity FACTS (only when asked or as education — never an unrequested number, never a price without a CMA), an authorized channel (a useful touch on a permitted channel), agent coordination (a person), or WAIT — each marked eligible with why, weighed against channel consent, relationship fatigue, time since their last response, their stated preferences, what a message may suitably say and who must approve. When helpfulActions.preferencesStated is false there is NO default cadence or drip: decide the timing from the evidence alone. Never name a sensitive inferred life event (helpfulActions.neverMention) in any unsolicited outreach. The goal is a trusted relationship before anyone else is called — never volume.",
   "Reply with JSON only: {optionId, channel|null, format|null, waitHours|null, rationale (1-3 sentences, plain words), evidence (the fact keys you used), confidence 0..1}.",
 ].join(" ")
 
@@ -1024,7 +1099,7 @@ function speedToLeadMoment(): NonNullable<ArbiterFacts["moment"]> {
 
 // ── experience-plan integration ──────────────────────────────────────────────────────────────
 
-type ArbitratedPlan = { plan: NextBestExperiencePlan; decision: ArbiterDecision }
+type ArbitratedPlan = { plan: NextBestExperiencePlan; decision: ArbiterDecision; frame?: HelpfulActionFrame | null }
 
 /**
  * Apply the arbiter to a planner verdict: the returned plan's `chosen` is the model's pick (re-timed for a wait), every
@@ -1075,6 +1150,9 @@ async function arbitrateExperiencePlan(
       system = `${system ?? ARBITER_SYSTEM}\n${ARBITER_OPPORTUNITY_NOTE}\n${OPPORTUNITY_COMBINATION_BRIEF}`
     }
   }
+  // WAVE 151 (151E): the next-best-helpful-action frame — computed by policy over the facts and the closed menu, read by the model.
+  const frame = helpfulActionFrame(facts, menu, a.policy)
+  facts.helpfulActions = frame
   const decided = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null, system }, deps)
   const decision: ArbiterDecision = menu.lifeEvent ? { ...decided, lifeEvent: { ...menu.lifeEvent.guard, mode: lifeEventModeOf(decided.kind) } } : decided
   // WAVE 150 (C38 — lane 150JNAD Outside-lane 1): hand the WRITER the screened brief of the chosen opportunity mode and of the
@@ -1085,7 +1163,7 @@ async function arbitrateExperiencePlan(
     const play = mode ? a.opportunity.plays?.options.find((p) => p.mode === mode.mode && p.status !== "not_eligible" && !!p.brief) ?? null : null
     if (mode?.brief || play?.brief) decision.writerBrief = { mode: mode?.mode ?? null, modeBrief: mode?.brief ?? null, play: play?.play ?? null, playBrief: play?.brief ?? null }
   }
-  if (decision.kind === a.plan.chosen.kind && decision.waitHours === null) return { plan: a.plan, decision }
+  if (decision.kind === a.plan.chosen.kind && decision.waitHours === null) return { plan: a.plan, decision, frame }
   let found: RankedExperience | undefined = a.plan.ranked.find((r) => r.kind === decision.kind)
   if (!found && decision.kind === "agent_intervention") {
     // The menu offered a human because nothing automated was left (arbiterMenuFromPlan) — a candidate the planner never ranked. The
@@ -1096,13 +1174,15 @@ async function arbitrateExperiencePlan(
   }
   const pick = found ?? a.plan.chosen
   const dueAt = decision.waitHours !== null ? new Date(a.input.now.getTime() + decision.waitHours * 3_600_000) : pick.dueAt
-  return { plan: { ...a.plan, chosen: { ...pick, dueAt } }, decision }
+  return { plan: { ...a.plan, chosen: { ...pick, dueAt } }, decision, frame }
 }
 
 /** The ledger detail every arbitrated decision carries (LAW 5: who/what, why, which evidence, which policy). */
-export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; blindSpots?: readonly string[] } = {}): Record<string, unknown> {
+export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; blindSpots?: readonly string[]; helpfulActions?: HelpfulActionFrame | null } = {}): Record<string, unknown> {
   return {
     source: d.source, option: d.optionId, channel: d.channel, format: d.format ?? null, stance: d.stance ?? null, wait_hours: d.waitHours, rationale: d.rationale, evidence: d.evidence, confidence: d.confidence, fallback_reason: d.fallbackReason, menu: d.menu, policy_ref: policyRef,
+    // WAVE 151 (151E, LAW 5): which helpful actions were eligible, what they were weighed against, and that no default cadence applied.
+    ...(extra.helpfulActions ? { helpful_actions: { eligible: (Object.entries(extra.helpfulActions.options) as Array<[HelpfulAction, { eligible: boolean; why: string }]>).filter(([, v]) => v.eligible).map(([k]) => k), weighed: extra.helpfulActions.weighed, preferences_stated: extra.helpfulActions.preferencesStated, cadence: extra.helpfulActions.cadence, never_mention: extra.helpfulActions.neverMention.slice(0, 12) } } : {}),
     // Wave 144: every channel CONSIDERED, with the check that decided it (LAW 5 — which policy permitted, and which refused).
     ...(extra.checks ? { channels_considered: extra.checks.map((c) => ({ channel: c.channel, available: c.available, approval: c.approval, spend_tier: c.spendTier, reasons: c.reasons.slice(0, 3) })) } : {}),
     ...(extra.signals && extra.signals.length > 0 ? { signals: extra.signals.map((s) => ({ type: s.type, kind: s.kind, days_ago: s.daysAgo })) } : {}),
@@ -1276,6 +1356,10 @@ export interface PlannedTouchInput {
   budget?: ArbiterBudget
   /** The decision prompt (default ARBITER_SYSTEM). */
   system?: string | null
+  /** WAVE 151 (151E — convergence row 38): the channels the planner's touch WOULD ride (any stored spelling; a sequence step passes
+   *  its step channel). When every one of them is unlawful for this contact (opted out, no consent, no address), the arbiter HALTS
+   *  the planner instead of letting each send refuse late. Absent → derived from the options' channels; none known → no judgment. */
+  requiredChannels?: readonly string[]
 }
 
 export interface PlannedTouchArbitration {
@@ -1285,6 +1369,29 @@ export interface PlannedTouchArbitration {
   /** The decision row on the action ledger (LAW 5) — false = it could not be written (said, never pretended). */
   recorded: boolean
   ledgerError?: string
+  /** WAVE 151 (151E, row 38): set when NO LAWFUL CHANNEL is left for what the planner wanted to send — the planner stops stepping this
+   *  person (a sequence ends its enrollment `unenrolled`; the ISA's normal consented engagement continues on whatever is lawful). */
+  halt?: { reason: "no_lawful_channel"; required: ArbiterChannel[]; lawful: ArbiterChannel[]; refusals: Record<string, string[]>; suggestedEnrollmentStatus: "unenrolled" } | null
+}
+
+/** Every ISA channel checkbox granted — so a consent-only reading refuses on CONSENT (and a missing address / number), never on tenant policy. */
+const EVERY_SETTINGS_GRANT: readonly string[] = Object.freeze(["email", "sms", "phone", "direct_mail"])
+
+/**
+ * WAVE 151 (151E, row 38). Which of a CONTACT's channels are LAWFUL right now — consent, opt-outs, DNC, a number / address on file —
+ * through the SAME evaluateChannelReadiness every arbitration uses (one copy of the consent rules), with every tenant checkbox
+ * granted and no frequency / provider / budget input, so the only refusals left are the lawful ones. Fails closed to "unknown"
+ * ({ ok: false }) on an unreadable contact — a halt is never decided on a guess. Module-private (reached through arbitratePlannedTouch).
+ */
+async function lawfulChannelsForContact(svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string }): Promise<{ ok: true; lawful: Set<ArbiterChannel>; refusals: Record<string, string[]> } | { ok: false; reason: string }> {
+  const { data: contact, error } = await svc.from("contacts").select(READINESS_CONTACT_COLUMNS).eq("id", a.contactId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (error) return { ok: false, reason: `contact consent read refused: ${error.message}` }
+  if (!contact) return { ok: false, reason: "contact not in this brokerage" }
+  const checks = evaluateChannelReadiness({ consent: contact as ChannelConsent, tenantAllowed: EVERY_SETTINGS_GRANT, saturated: null, providers: null, unitCostUsd: {}, audienceMatch: false, deliveryFailures: null })
+  const lawful = new Set<ArbiterChannel>(checks.filter((c) => c.available).map((c) => c.channel))
+  const refusals: Record<string, string[]> = {}
+  for (const c of checks) if (!c.available) refusals[c.channel] = c.reasons.filter((r) => !r.startsWith("caveat:")).slice(0, 3)
+  return { ok: true, lawful, refusals }
 }
 
 /**
@@ -1303,6 +1410,40 @@ export async function arbitratePlannedTouch(
   if (!policy) {
     try { policy = (await (await import("./followup-policy")).loadFollowupPolicy(svc as never, a.brokerageId)).policy }
     catch { policy = (await import("./followup-policy")).platformFollowupPolicy() }
+  }
+  // WAVE 151 (151E, row 38): NO LAWFUL CHANNEL LEFT → HALT the planner here, once, instead of every send refusing late. Judged only
+  // for an OUTBOUND SEQUENCE (planner `sequence_step`, or any planner that explicitly names `requiredChannels`) — never for a REPLY
+  // the person asked for (the unattended answer, a promised deliverable: answering someone who wrote to us is not a marketing send);
+  // only for a CONTACT (a lead's channels are the lead roster's — lib/ai-isa/lead-channel-policy.ts); and only when the planner
+  // said, or its options say, which channels the touch would ride. An unreadable contact or unknown channels decide nothing (fail
+  // closed to "no judgment", and the dispatcher's gates still refuse the send).
+  const judgeLawfulness = a.planner === "sequence_step" || a.requiredChannels !== undefined
+  const required = judgeLawfulness ? [...new Set((a.requiredChannels ?? a.options.flatMap((o) => o.channels)).map(canonicalArbiterChannel).filter((c): c is ArbiterChannel => !!c && c !== "human_task"))] : []
+  if (a.subject.type === "contact" && required.length > 0) {
+    const lawfulness = await lawfulChannelsForContact(svc, { brokerageId: a.brokerageId, contactId: a.subject.id })
+    if (lawfulness.ok && required.every((c) => !lawfulness.lawful.has(c))) {
+      const refusals = Object.fromEntries(required.map((c) => [c, lawfulness.refusals[c] ?? ["not lawful"]]))
+      const why = required.map((c) => `${c.replace(/_/g, " ")}: ${(refusals[c] ?? []).join("; ")}`).join(" | ")
+      const decision: ArbiterDecision = {
+        optionId: "halt_no_lawful_channel", kind: "wait", channel: null, format: null, stance: "notify_human", waitHours: null,
+        rationale: `No lawful channel is left for this touch (${why}) — the planner stops stepping this person; the AI ISA's consented engagement continues on ${[...lawfulness.lawful].filter((c) => c !== "human_task").join(", ") || "no channel (a person decides)"}.`.slice(0, 600),
+        evidence: ["channels"], confidence: 1, source: "deterministic", fallbackReason: "no_lawful_channel", menu: a.options.map((o) => o.id),
+      }
+      let recorded = false
+      let ledgerError: string | undefined
+      if (deps.record !== false) {
+        try {
+          const { recordNonAction } = await import("@/lib/kernel/action-ledger")
+          const r = await recordNonAction({
+            brokerageId: a.brokerageId, domain: "followup", decision: "do_nothing", actor: { type: "manager", managerKey: "ai_isa" }, subject: a.subject,
+            reasonCode: "NO_ACTION_NEEDED", reasonDetail: decision.rationale.slice(0, 500), cycle: `arb:${a.planner}:halt:${a.subject.type}:${a.subject.id}:${a.now.toISOString().slice(0, 10)}`,
+            systemSource: a.planner, policyKey: "followup_policy", detail: { ...arbitrationLedgerDetail(decision, null), halt: { reason: "no_lawful_channel", required, refusals } },
+          }, { client: svc as never })
+          recorded = r.recorded; ledgerError = r.error
+        } catch (e) { ledgerError = e instanceof Error ? e.message : String(e) }
+      }
+      return { choice: decision.optionId, decision, recorded, ...(ledgerError ? { ledgerError } : {}), halt: { reason: "no_lawful_channel", required, lawful: [...lawfulness.lawful], refusals, suggestedEnrollmentStatus: "unenrolled" } }
+    }
   }
   const options = a.options.filter((o) => o.kind !== "wait")
   let withWait = a.offerWait !== false
@@ -1339,7 +1480,7 @@ export async function arbitratePlannedTouch(
     recorded = r.recorded
     ledgerError = r.error
   }
-  return { choice: decision.optionId, decision, recorded, ...(ledgerError ? { ledgerError } : {}) }
+  return { choice: decision.optionId, decision, recorded, ...(ledgerError ? { ledgerError } : {}), halt: null }
 }
 
 // ── speed-to-lead, the LEAD half (owner ruling 16, wave 145) ──────────────────────────────────
@@ -2015,6 +2156,7 @@ export async function arbitrateAndRecordExperience(
   const policy = a.policy ?? (await loadFollowupPolicy(svc, a.brokerageId)).policy
   let plan = a.plan
   let decision: ArbiterDecision | null = null
+  let frame: HelpfulActionFrame | null = null
   let checks: ChannelCheck[] | null = null
   let signals: LifeChangeSignal[] = []
   const channelBlindSpots: string[] = []
@@ -2046,6 +2188,7 @@ export async function arbitrateAndRecordExperience(
     const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, helpers: sig.helpers, priority: a.priority ?? null, lifeEventAuthority, opportunity: sig.opportunity }, { decide: deps.decide })
     plan = arbitrated.plan
     decision = arbitrated.decision
+    frame = arbitrated.frame ?? null
   }
   let policyRef: string | null = null
   if (decision) {
@@ -2053,7 +2196,7 @@ export async function arbitrateAndRecordExperience(
   }
   const recorded = await recordAndExecuteExperience(
     svc,
-    { brokerageId: a.brokerageId, contactId: a.contactId, plan, now: a.now, missionId: a.missionId ?? null, systemSource: a.systemSource, arbitration: decision ? arbitrationLedgerDetail(decision, policyRef, { checks, signals, blindSpots: channelBlindSpots }) : null },
+    { brokerageId: a.brokerageId, contactId: a.contactId, plan, now: a.now, missionId: a.missionId ?? null, systemSource: a.systemSource, arbitration: decision ? arbitrationLedgerDetail(decision, policyRef, { checks, signals, blindSpots: channelBlindSpots, helpfulActions: frame }) : null },
     (deps.record ?? {}) as never,
   )
   // The model's own WAIT is the one decision countArbiterWaits must be able to find tomorrow — it is what bounds the deferral.

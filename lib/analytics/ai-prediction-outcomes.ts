@@ -215,8 +215,14 @@ export async function freezeDecisionWindowForecast(
   svc: Svc,
   input: {
     brokerageId: string; entityType: "contact" | "lead"; entityId: string
-    moment: { decision_window: { window: string; basis: string; uncertainty: string; why: string }; buyer_readiness: { level: string }; seller_readiness: { level: string }; desire_to_move: { level: string }; expects_to_move: { level: string }; ability_to_act: { level: string } }
+    moment: {
+      decision_window: { window: string; basis: string; uncertainty: string; why: string }; buyer_readiness: { level: string }; seller_readiness: { level: string }; desire_to_move: { level: string }; expects_to_move: { level: string }; ability_to_act: { level: string }
+      /** WAVE 151 (151E): the five dimensions' evidence classes ride the frozen claim (structural — lib/intent/moving-moments.ts ReadinessDimensions). */
+      dimensions?: Record<string, { level: string; evidenceClass: string }> | null
+    }
     holdoutArm: string | null; evidenceIds: string[]; now?: Date
+    /** WAVE 151 (151E): the cohort this forecast is graded under (calibration by cohort / territory — decisionWindowCohortKey). */
+    cohort?: { side?: string | null; territory?: string | null } | null
   },
 ): Promise<{ captured: boolean; reason: string }> {
   const w = input.moment.decision_window
@@ -229,12 +235,14 @@ export async function freezeDecisionWindowForecast(
   const prev = (latest?.prediction_value ?? null) as { window?: string; basis?: string } | null
   if (prev && prev.window === w.window && prev.basis === w.basis) return { captured: false, reason: "unchanged forecast — the open one already carries this window" }
   const at = (input.now ?? new Date()).toISOString()
+  const { decisionWindowCohortKey } = await import("@/lib/intent/moving-moments")
+  const dims = input.moment.dimensions ?? null
   const { error } = await svc.from("ai_predictions").insert({
     prediction_type: DECISION_WINDOW_PREDICTION_TYPE, entity_type: input.entityType, entity_id: input.entityId, brokerage_id: input.brokerageId,
-    prediction_value: { window: w.window, basis: w.basis, uncertainty: w.uncertainty, buyer: input.moment.buyer_readiness.level, seller: input.moment.seller_readiness.level, holdout_arm: input.holdoutArm, forecast_at: at, evidence_ids: input.evidenceIds.slice(0, 50), confidence_stated: false },
+    prediction_value: { window: w.window, basis: w.basis, uncertainty: w.uncertainty, buyer: input.moment.buyer_readiness.level, seller: input.moment.seller_readiness.level, holdout_arm: input.holdoutArm, forecast_at: at, evidence_ids: input.evidenceIds.slice(0, 50), confidence_stated: false, cohort: decisionWindowCohortKey(input.cohort ?? null) },
     // No separately-stated confidence on a window (a reporting interval, not a probability) — null, never minted.
     confidence_score: null,
-    prediction_factors: { why: w.why.slice(0, 400), desire: input.moment.desire_to_move.level, expects: input.moment.expects_to_move.level, ability: input.moment.ability_to_act.level },
+    prediction_factors: { why: w.why.slice(0, 400), desire: input.moment.desire_to_move.level, expects: input.moment.expects_to_move.level, ability: input.moment.ability_to_act.level, ...(dims ? { evidence_classes: Object.fromEntries(Object.entries(dims).map(([k, d]) => [k, d.evidenceClass])) } : {}) },
     model_version: "moving-moments@wave150",
   })
   if (error) return { captured: false, reason: `forecast insert failed: ${error.message}` }
@@ -297,5 +305,7 @@ export async function loadDecisionWindowCalibration(svc: Svc, brokerageId: strin
   const { calibrateDecisionWindows } = await import("@/lib/intelligence/strategy-learning")
   return { ok: true, calibration: calibrateDecisionWindows(((data ?? []) as Array<{ prediction_value: Record<string, unknown> | null; actual_outcome: Record<string, unknown> | null }>).map((r) => ({
     forecast: String(r.prediction_value?.window ?? "unknown"), validated: r.actual_outcome?.validated === true, hit: r.actual_outcome?.hit === true, kind: String(r.actual_outcome?.kind ?? ""),
+    // 151E: the cohort stamped at the freeze (null on a wave-150 forecast — counted tenant-wide only).
+    cohort: typeof r.prediction_value?.cohort === "string" ? (r.prediction_value.cohort as string) : null,
   }))) }
 }

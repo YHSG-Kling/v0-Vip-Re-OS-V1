@@ -22,5 +22,6 @@ export default async function MovementSignalsPage() {
       </div>
     )
   }
-  return <MovementSignalsClient records={result.records} sources={result.sources} freshnessNote={result.freshnessNote} verifications={result.verifications} verificationNote={result.verificationNote} verificationPolicy={result.verificationPolicy} />
+  // WAVE 151 (151E, rows 28 / 29): the documented existing-contact doors and the "they told us a date" form ride the same read.
+  return <MovementSignalsClient records={result.records} sources={result.sources} freshnessNote={result.freshnessNote} verifications={result.verifications} verificationNote={result.verificationNote} verificationPolicy={result.verificationPolicy} changeDoors={result.changeDoors} deadlineKinds={result.deadlineKinds} />
 }

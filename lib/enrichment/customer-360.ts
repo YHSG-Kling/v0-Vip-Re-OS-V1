@@ -47,6 +47,8 @@ import { lifeEventVocabEntry } from "@/lib/enrichment/life-event-vocabulary"
 import { voiceReachable, resolveContactChannel } from "@/lib/ai-isa/contact-channel-policy"
 import { LEAD_ALLOWED_CHANNELS } from "@/lib/ai-isa/lead-channel-policy"
 import { isLifetimeRelationshipType } from "@/lib/contact-types"
+// WAVE 151 (151E): the readiness dimensions' vocabularies — the stored snapshot is validated against them, never trusted as text.
+import { EVIDENCE_CLASSES, READINESS_DIMENSIONS, type EvidenceClass, type ReadinessDimensionKey } from "@/lib/intent/moving-moments"
 import {
   CONSENT_CHANNELS, CONSENT_PURPOSES, answerConsentQuestion, consentScopeFor,
   type ConsentAnswerBasis, type ConsentChannel, type ConsentPurpose,
@@ -195,6 +197,21 @@ export interface C360IntentObservation {
   freshness: C360Freshness
 }
 
+/**
+ * WAVE 151 (lane 151E): the person's READINESS as the movement manager last stamped it — the five dimensions (desire, expectation,
+ * feasibility, timing, confidence), EACH with its own evidence class (verified_intent / expressed_interest / inferred_possibility /
+ * market_level_opportunity / stale_contradicted / none), basis and source timestamps, and the forecaster's verdict. Read from the
+ * EXISTING record (movement_signals.moment, m970 — lib/intent/moving-moments.ts buildMovingMoment via evaluateMovementSubject);
+ * never computed here, never a second store, never a "seller percentage". contact_type is not an input anywhere on this path (R2).
+ */
+export interface C360Readiness {
+  decidedAt: string | null
+  window: string
+  dimensions: Record<ReadinessDimensionKey, { level: string; evidenceClass: EvidenceClass | "none"; basis: string; why: string; sourceTimestamps: string[] }>
+  forecast: { state: string; verdict: string; opposing: number; calibrationPublished: boolean } | null
+  source: "movement_signals.moment"
+}
+
 export interface Customer360 {
   brokerageId: string
   /** What the caller asked for. */
@@ -231,7 +248,7 @@ export interface Customer360 {
   property: { household: Array<{ contactId: string; type: string; confidence: number }>; transactions: Array<{ id: string; role: "buyer" | "seller" | "party"; status: string | null; stage: string | null; closeDate: string | null; address: string | null }> } | null
   behaviour: { score: number; confidence: string; trend: string; evidence: Array<{ type: string; source: string; ageDays: number | null }> } | null
   providerFacts: Array<{ key: string; provider: string; field: string; sensitivity: string; intents: readonly string[]; freshness: C360Freshness }>
-  intent: { observations: C360IntentObservation[]; confirmed: IntentPlaybook[]; observedNotConfirmed: IntentPlaybook[]; playbooks: Array<{ playbook: IntentPlaybook; signalType: string; route: string }> } | null
+  intent: { observations: C360IntentObservation[]; confirmed: IntentPlaybook[]; observedNotConfirmed: IntentPlaybook[]; playbooks: Array<{ playbook: IntentPlaybook; signalType: string; route: string }>; readiness: C360Readiness | null } | null
   /** Protected-class columns PRESENT on the record — named with the classifier's reason, the value withheld (ruling 13). */
   protectedWithheld: Array<{ column: string; reason: string; stampSource: string | null; observedAt: string | null }>
   /** Outreach-relevant attributes that are missing (a gap the enrichment rail / a human could fill). */
@@ -640,7 +657,28 @@ export async function customer360For(
       const observedNotConfirmed = [...new Set(observations.filter((o) => !o.confirmed && o.playbook && !confirmed.includes(o.playbook)).map((o) => o.playbook as IntentPlaybook))]
       const route = PLAYBOOK_ROUTE_BY_CLASS[subjectClass]
       const playbooks = [...confirmed, ...observedNotConfirmed].map((p) => ({ playbook: p, signalType: INTENT_PLAYBOOKS[p].signalType, route }))
-      intent = { observations, confirmed, observedNotConfirmed, playbooks }
+      // (5) WAVE 151 (151E): the readiness dimensions the movement manager last STAMPED on this contact's movement rows (m970
+      //     `moment` jsonb) — five dimensions with their own evidence class, read as stored, validated against the vocabularies.
+      //     A refused read is a warning and null, never "not ready". Leads carry no stamped moment on this read (contact rows only).
+      let readiness: C360Readiness | null = null
+      if (partyRead.type === "contact") {
+        const { data: mrows, error: mErr } = await svc.from("movement_signals").select("decision_window, moment, decided_at").eq("brokerage_id", brokerageId).eq("contact_id", partyRead.id).not("moment", "is", null).order("decided_at", { ascending: false }).limit(1)
+        if (mErr) warnings.push(`readiness snapshot unread: ${mErr.message}`)
+        else {
+          const m = ((mrows ?? []) as Array<{ decision_window?: string | null; moment?: Record<string, any> | null; decided_at?: string | null }>)[0]
+          const dims = m?.moment?.dimensions && typeof m.moment.dimensions === "object" ? (m.moment.dimensions as Record<string, Record<string, unknown>>) : null
+          if (dims) {
+            const classOf = (v: unknown): EvidenceClass | "none" => ((EVIDENCE_CLASSES as readonly string[]).includes(String(v)) ? (v as EvidenceClass) : "none")
+            const dimensions = Object.fromEntries(READINESS_DIMENSIONS.map((k) => {
+              const d = dims[k] ?? {}
+              return [k, { level: String(d.level ?? "unknown"), evidenceClass: classOf(d.evidence_class), basis: String(d.basis ?? "none"), why: String(d.why ?? ""), sourceTimestamps: Array.isArray(d.source_timestamps) ? (d.source_timestamps as unknown[]).map(String) : [] }]
+            })) as C360Readiness["dimensions"]
+            const f = m?.moment?.forecast && typeof m.moment.forecast === "object" ? (m.moment.forecast as Record<string, any>) : null
+            readiness = { decidedAt: m?.decided_at ?? null, window: String(m?.decision_window ?? m?.moment?.window ?? "unknown"), dimensions, forecast: f ? { state: String(f.state ?? "no_window"), verdict: String(f.verdict ?? "nothing_to_forecast"), opposing: Array.isArray(f.opposing) ? f.opposing.length : 0, calibrationPublished: f.calibration?.published === true } : null, source: "movement_signals.moment" }
+          }
+        }
+      }
+      intent = { observations, confirmed, observedNotConfirmed, playbooks, readiness }
     }
 
     return {

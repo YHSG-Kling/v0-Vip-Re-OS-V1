@@ -36,9 +36,21 @@
 //      person-facing vocabulary stays the timeline buckets (CLAUDE.md §5); a bucket maps onto exactly one window.
 //   6. R2: `contact_type` is never an input here. The side (buyer / seller / renter / investor) comes from the evidence, the
 //      person's own words, or a recorded fact (home_owner_status), each labelled.
+//
+// WAVE 151 (lane 151E — differentiated readiness, the forecaster contract): the SAME moment now carries the five dimensions the owner
+// named — DESIRE, EXPECTATION, FEASIBILITY, TIMING, CONFIDENCE — each STORED SEPARATELY (`dimensions`) with its EVIDENCE CLASS
+// (VERIFIED INTENT / EXPRESSED INTEREST / INFERRED POSSIBILITY / MARKET-LEVEL OPPORTUNITY / STALE-CONTRADICTED), its basis, the
+// ids and the SOURCE TIMESTAMPS it rests on, plus the forecaster contract (`forecast`: an explicit no-window state, the opposing
+// signals, the evidence categories counted, the timestamps, the cohort calibration and a VERDICT that separates "an opportunity
+// worth research" from "a customer ready to transact"). Rules added (deterministic):
+//   7. THE PERSON'S OWN WORDS OUTRANK ENRICHMENT: a person-stated negative ("we're staying put") contradicts every provider /
+//      inferred positive whatever its age; only a NEWER statement by the person themselves outranks it. A vendor score never moves a
+//      dimension (it stays a labelled signal — rule 7 of the C37 header).
+//   8. A dimension with nothing behind it is class `none`, never "inferred" — an absence is not a possibility.
+// No second store: the dimensions ride m970's `moment` jsonb (movement_signals) and ai_predictions.prediction_factors.
 
 import type { OpportunityKind, OpportunityMenu, OpportunityObservation, OpportunityReading, OpportunityStage } from "@/lib/intent/opportunity-discovery"
-import { EPISTEMIC_RANK, type EpistemicClass, type MovementRelevance } from "@/lib/intent/movement-source-registry"
+import { EPISTEMIC_RANK, movementSource, type EpistemicClass, type MovementRelevance } from "@/lib/intent/movement-source-registry"
 import { screenLifeEventOutreach, type LifeEventEngagementMode } from "@/lib/enrichment/life-event-vocabulary"
 import { assignExperimentArm, type ExperimentAssignment, type ExperimentDefinition, type ExperimentPolicy } from "@/lib/kernel/experiments"
 
@@ -133,12 +145,70 @@ export type MomentBasis = "person_stated" | "staff_entered" | "verified_record" 
 
 export interface MomentDimension<L extends string> { level: L; basis: MomentBasis; why: string; evidenceIds: string[] }
 
-export interface MomentNegative { key: string; why: string; at: string; source: string }
+export interface MomentNegative {
+  key: string; why: string; at: string; source: string
+  /** WAVE 151 (151E, rule 7): HOW we know the negative. `person_stated` = the person's own words ("we're staying put") — it outranks
+   *  every provider / inferred positive whatever its age. Absent = a record / an observation (the C37 ordering rule applies). */
+  basis?: "person_stated" | "verified_record" | "observed"
+}
+
+// ── WAVE 151 (lane 151E): the five dimensions and the evidence classes (one spelling each — CLAUDE.md §6) ─────────────────────
+
+/** The owner's evidence classes. ORDERED strongest first; `stale_contradicted` last. */
+export const EVIDENCE_CLASSES = Object.freeze(["verified_intent", "expressed_interest", "inferred_possibility", "market_level_opportunity", "stale_contradicted"] as const)
+export type EvidenceClass = (typeof EVIDENCE_CLASSES)[number]
+/** The five dimensions, each evaluated and stored on its own — never folded into one "seller percentage". */
+export const READINESS_DIMENSIONS = Object.freeze(["desire", "expectation", "feasibility", "timing", "confidence"] as const)
+export type ReadinessDimensionKey = (typeof READINESS_DIMENSIONS)[number]
+
+export interface ReadinessDimension {
+  dimension: ReadinessDimensionKey
+  level: string
+  /** `none` = nothing bears on this dimension (an absence is never "inferred"). */
+  evidenceClass: EvidenceClass | "none"
+  basis: MomentBasis
+  why: string
+  /** ISO — when the evidence this dimension rests on was observed / stated (the forecaster contract's source timestamps). */
+  sourceTimestamps: string[]
+  evidenceIds: string[]
+}
+export type ReadinessDimensions = Record<ReadinessDimensionKey, ReadinessDimension>
+
+/** THE FORECASTER CONTRACT (151E): evidence categories, opposing signals, source timestamps, an explicit no-window state, the
+ *  range when adequate, and a verdict that keeps "worth research" apart from "ready to transact". */
+export interface DecisionWindowForecast {
+  /** `not_a_person` — nobody to forecast; `no_window` — the honest UNKNOWN; `window` — an evidence-supported range. */
+  state: "not_a_person" | "no_window" | "window"
+  window: DecisionWindow
+  basis: MovingMoment["decision_window"]["basis"]
+  uncertainty: MovingMoment["decision_window"]["uncertainty"]
+  /** `research_opportunity` = worth watching / researching, NOT a customer ready; `ready_to_transact` = a side is preparing or ready
+   *  with feasibility; `nothing_to_forecast` = no positive evidence, or contradicted. */
+  verdict: "nothing_to_forecast" | "research_opportunity" | "ready_to_transact"
+  /** How many positive observations sit in each class (the categories the window rests on, counted — never a score). */
+  evidenceClasses: Record<EvidenceClass, number>
+  /** Every opposing signal, newest first, with how we know it. */
+  opposing: Array<{ key: string; at: string; source: string; basis: NonNullable<MomentNegative["basis"]> | "record" }>
+  sourceTimestamps: { newestPositive: string | null; newestNegative: string | null; statedAt: string | null; deadlineAt: string | null }
+  /** Calibration as READ (never a model-quality claim before the floor): which cohort answered, how many validated outcomes. */
+  calibration: { published: boolean; validated: number; minValidated: number | null; cohort: string | null; why: string }
+  why: string
+}
 
 /** The calibration shape lib/intelligence/strategy-learning.ts calibrateDecisionWindows returns (structural here). */
 export interface DecisionWindowCalibrationView {
   byWindow: Partial<Record<DecisionWindow, { validated: number; hits: number; rate: number | null; interval: [number, number] | null; published: boolean; why: string }>>
   minValidated: number
+  /** WAVE 151 (151E): the same per-window tally per COHORT (`<side>|<territory>` — calibrateDecisionWindows cohortKey), each
+   *  published only past the SAME floor. The moment prefers its own cohort's published window, then the tenant-wide one. */
+  byCohort?: Partial<Record<string, DecisionWindowCalibrationView["byWindow"]>>
+}
+
+/** PURE. The cohort key one forecast is graded under (one spelling, shared by the freezer, the calibrator and the moment). */
+export function decisionWindowCohortKey(c: { side?: string | null; territory?: string | null } | null | undefined): string | null {
+  if (!c) return null
+  const side = c.side && c.side !== "unknown" ? c.side : "any"
+  return `${side}|${c.territory && c.territory.trim() ? c.territory.trim().slice(0, 5) : "-"}`
 }
 
 /** The facts the loader reads beside the C9 records (each null / absent = not read or not known — never "no"). */
@@ -167,6 +237,11 @@ export interface MovingMomentFacts {
   /** Consent as the existing resolvers answered it (null = not asked here). */
   consent?: { checked: boolean; allowed: boolean } | null
   calibration?: DecisionWindowCalibrationView | null
+  /** WAVE 151 (151E): the cohort this person's forecasts are calibrated under (side from the evidence, territory = zip prefix). */
+  cohort?: { side?: string | null; territory?: string | null } | null
+  /** WAVE 151 (151E): evidence older than this (days) is STALE for the forecaster (the tenant's own life-event window, never a number
+   *  invented here). Absent = no staleness judgment (published as a blind spot). */
+  staleAfterDays?: number | null
   /** The facts the loader could not read — published beside the moment. */
   unread?: readonly string[]
 }
@@ -191,11 +266,37 @@ export interface MovingMoment {
   decision_window: { window: DecisionWindow; basis: "stated_date" | "stated_bucket" | "evidence_prior" | "unknown"; uncertainty: "low" | "medium" | "high" | "unknown"; why: string }
   vendor_scores: LabelledVendorScore[]
   /** Only from this tenant's graded forecasts with enough validated outcomes — else null with the reason. */
-  probability: { window: DecisionWindow; rate: number; interval: [number, number] | null; validated: number } | null
+  probability: { window: DecisionWindow; rate: number; interval: [number, number] | null; validated: number; cohort: string | null } | null
   probabilityWhy: string
+  /** WAVE 151 (151E): the five dimensions, each with its own evidence class, basis, ids and source timestamps. */
+  dimensions: ReadinessDimensions
+  /** WAVE 151 (151E): the forecaster contract over the same evidence. */
+  forecast: DecisionWindowForecast
   explanation: string
   unread: string[]
 }
+
+/** PURE (151E). The evidence class of ONE positive observation — by its source kind, its epistemic class and its identity match.
+ *  A STATEMENT (the person's own words on our surfaces, or a public post in their own voice with a confirmed identity) is verified
+ *  intent; the person's own verified ACTION on our surfaces is expressed interest; an inference, a vendor-compiled record, a verified
+ *  public property change or a name-only match is an inferred possibility (the fact may be verified — the INTENT reading is not);
+ *  market / community context is a market-level opportunity. */
+function observationEvidenceClass(o: OpportunityObservation): EvidenceClass {
+  if (o.relevance === "market_event" || o.relevance === "community_change") return "market_level_opportunity"
+  if (o.confidence === "inferred" || o.confidence === "unknown") return "inferred_possibility"
+  const confirmed = o.identity === "record_key" || o.identity === "verified_match"
+  const src = movementSource(o.sourceKey)
+  if (!confirmed) return "inferred_possibility"
+  if (STATED_SOURCE_KEYS.has(o.sourceKey) && confRank(o.confidence) >= EPISTEMIC_RANK.reported) return "verified_intent"
+  if (src?.kind === "public_post" && o.confidence === "reported") return "verified_intent"
+  if (src?.kind === "first_party_behaviour" && o.confidence === "verified") return "expressed_interest"
+  return "inferred_possibility"
+}
+/** The sources whose record IS the person's statement (one spelling with lib/intent/opportunity-discovery.ts STATED_SOURCES). */
+const STATED_SOURCE_KEYS: ReadonlySet<string> = new Set(["fp_inbound_stated", "fp_next_move_tap"])
+const CLASS_RANK: Readonly<Record<EvidenceClass, number>> = Object.freeze({ verified_intent: 5, expressed_interest: 4, inferred_possibility: 3, market_level_opportunity: 2, stale_contradicted: 1 })
+const strongestClass = (classes: readonly EvidenceClass[]): EvidenceClass | "none" => classes.length === 0 ? "none" : classes.reduce((m, c) => (CLASS_RANK[c] > CLASS_RANK[m] ? c : m))
+const emptyClassCount = (): Record<EvidenceClass, number> => ({ verified_intent: 0, expressed_interest: 0, inferred_possibility: 0, market_level_opportunity: 0, stale_contradicted: 0 })
 
 /** PRIOR lead ranges per kind of evidence — labelled PRIOR, uncalibrated; replaced the moment calibration publishes. */
 const PRIOR_WINDOW: Readonly<Partial<Record<MovementRelevance, DecisionWindow>>> = Object.freeze({
@@ -229,13 +330,19 @@ export function buildMovingMoment(reading: OpportunityReading, observations: rea
   // Rule 1: no person, no person-level prediction (an anonymous topic / a territory / a property predicts nobody).
   if (!personLevel) {
     const why = "not a person we hold — an anonymous topic, a property or a territory never yields a person-level prediction"
+    const classes = emptyClassCount()
+    for (const o of positives) classes[observationEvidenceClass(o)]++
+    const none = (dimension: ReadinessDimensionKey, level: string): ReadinessDimension => ({ dimension, level, evidenceClass: classes.market_level_opportunity > 0 ? "market_level_opportunity" : "none", basis: "none", why, sourceTimestamps: [], evidenceIds: [] })
     return {
       personLevel: false, segments: [], buyer_readiness: unknownDim("not_indicated", why), seller_readiness: unknownDim("not_indicated", why),
       investor_strategy: { stage: "unknown", exit: "unknown", basis: "none", why }, desire_to_move: unknownDim("unknown", why), expects_to_move: unknownDim("unknown", why),
       ability_to_act: { ...unknownDim("unknown", why), factors: [] }, barrier: [], known_deadline: null, identity_confidence: "none", source_confidence: "unknown",
       rights: { collections: [], restricted: false }, last_observed: lastObserved, negative_evidence: [], outreach_permission: "none",
       decision_window: { window: "unknown", basis: "unknown", uncertainty: "unknown", why }, vendor_scores: (facts.vendorScores ?? []).map(labelVendorScore),
-      probability: null, probabilityWhy: why, explanation: why, unread,
+      probability: null, probabilityWhy: why,
+      dimensions: { desire: none("desire", "unknown"), expectation: none("expectation", "unknown"), feasibility: none("feasibility", "unknown"), timing: none("timing", "unknown"), confidence: none("confidence", "none") },
+      forecast: { state: "not_a_person", window: "unknown", basis: "unknown", uncertainty: "unknown", verdict: "nothing_to_forecast", evidenceClasses: classes, opposing: [], sourceTimestamps: { newestPositive: lastObserved, newestNegative: null, statedAt: null, deadlineAt: null }, calibration: { published: false, validated: 0, minValidated: null, cohort: null, why: "nothing to calibrate for a non-person" }, why },
+      explanation: why, unread,
     }
   }
 
@@ -298,11 +405,22 @@ export function buildMovingMoment(reading: OpportunityReading, observations: rea
   // A negative OLDER than the newest positive (a sign of a move, or the person's own timeline) is history, not a contradiction.
   const newestNegative = negatives[0]?.at ?? null
   const newestPositive = [lastObserved, facts.statedTimeline?.at ?? null].filter((x): x is string => !!x).sort().pop() ?? null
-  const mixed = !!newestNegative && (!newestPositive || newestNegative >= newestPositive)
+  // Rule 7 (151E): THE PERSON'S OWN WORDS OUTRANK ENRICHMENT. A person-stated negative contradicts every provider / inferred /
+  // observed positive whatever its age — only a NEWER statement by the person themselves (their timeline, their side, a date they
+  // gave us, a verified-intent record) outranks it.
+  const statedPositiveAt = [
+    statedTimelineHuman ? facts.statedTimeline?.at ?? null : null,
+    ...positives.filter((o) => observationEvidenceClass(o) === "verified_intent").map((o) => o.observedAt),
+    ...deadlinesAll.filter((d) => d.source === "person_stated" || d.source === "staff_entered" || d.source === "document").map((d) => (d as { ref?: string | null }).ref && positives.find((o) => o.id === (d as { ref?: string | null }).ref)?.observedAt || null),
+  ].filter((x): x is string => !!x).sort().pop() ?? null
+  const personNegative = negatives.find((n) => n.basis === "person_stated") ?? null
+  const personContradiction = !!personNegative && (!statedPositiveAt || personNegative.at >= statedPositiveAt)
+  const mixed = (!!newestNegative && (!newestPositive || newestNegative >= newestPositive)) || personContradiction
+  const contradictionWhy = personContradiction && personNegative ? `${personNegative.why} — the person's own words outrank enrichment` : negatives[0] ? `${negatives[0].why} — as new as the newest sign of a move` : ""
 
   // ── the window (rule 2 → 4) ──
   let window: MovingMoment["decision_window"]
-  if (mixed) window = { window: "unknown", basis: "unknown", uncertainty: "unknown", why: `mixed evidence: ${negatives[0].why} — as new as the newest sign of a move; UNKNOWN is the honest answer` }
+  if (mixed) window = { window: "unknown", basis: "unknown", uncertainty: "unknown", why: `mixed evidence: ${contradictionWhy}; UNKNOWN is the honest answer` }
   else if (deadline) window = { window: decisionWindowForDays(deadline.inDays), basis: "stated_date", uncertainty: "low", why: `a known ${deadline.kind.replace(/_/g, " ")} in ${deadline.inDays} day(s) (${deadline.source.replace(/_/g, " ")}) — a stated date beats any inferred range` }
   else if (facts.statedTimeline && tlWindow !== "unknown") window = { window: tlWindow, basis: "stated_bucket", uncertainty: "medium", why: `their own timeline (${facts.statedTimeline.value.replace(/_/g, " ")})` }
   else if (abilityLevel === "blocked") window = { window: "unknown", basis: "unknown", uncertainty: "unknown", why: "something blocks the move and no date says when it clears — the window is unknown" }
@@ -342,16 +460,68 @@ export function buildMovingMoment(reading: OpportunityReading, observations: rea
   const best = outreaches.includes("consent_gated") ? "consent_gated" : outreaches.includes("email_mail_only") ? "email_mail_only" : outreaches.includes("address_correction_only") ? "address_correction_only" : "none"
   const outreach_permission: MovingMoment["outreach_permission"] = best === "consent_gated" ? (!facts.consent?.checked ? "consent_required" : facts.consent.allowed ? "permitted" : "consent_refused") : best
 
-  // ── probability (only once calibrated) ──
-  const cal = window.window !== "unknown" ? facts.calibration?.byWindow?.[window.window] : undefined
-  const probability = cal && cal.published && typeof cal.rate === "number" ? { window: window.window, rate: cal.rate, interval: cal.interval, validated: cal.validated } : null
-  const probabilityWhy = window.window === "unknown" ? "no window — nothing to calibrate" : !facts.calibration ? "calibration not read — no probability published" : probability ? `${cal!.validated} validated outcomes for this window (≥ ${facts.calibration.minValidated})` : (cal?.why ?? `no graded forecasts for ${window.window} yet — fewer than ${facts.calibration.minValidated} validated outcomes, so no probability is published`)
+  // ── probability (only once calibrated; 151E: the person's own cohort first, then the tenant-wide window) ──
+  const cohortKey = decisionWindowCohortKey(facts.cohort ?? null)
+  const cohortCal = window.window !== "unknown" && cohortKey ? facts.calibration?.byCohort?.[cohortKey]?.[window.window] : undefined
+  const tenantCal = window.window !== "unknown" ? facts.calibration?.byWindow?.[window.window] : undefined
+  const cal = cohortCal?.published ? cohortCal : tenantCal
+  const calCohort = cohortCal?.published ? cohortKey : null
+  const probability = cal && cal.published && typeof cal.rate === "number" ? { window: window.window, rate: cal.rate, interval: cal.interval, validated: cal.validated, cohort: calCohort } : null
+  const probabilityWhy = window.window === "unknown" ? "no window — nothing to calibrate" : !facts.calibration ? "calibration not read — no probability published" : probability ? `${cal!.validated} validated outcomes for this window (≥ ${facts.calibration.minValidated})${calCohort ? ` in cohort ${calCohort}` : " tenant-wide"}` : (cal?.why ?? `no graded forecasts for ${window.window} yet — fewer than ${facts.calibration.minValidated} validated outcomes, so no probability is published`)
+
+  // ── 151E: the five dimensions, each with its own evidence class and source timestamps ──
+  // Classes are counted over EVERY observation (market context included — it is a category, never a person-level forecast);
+  // dimensions and the verdict rest on the positives the reading admitted.
+  const classes = emptyClassCount()
+  for (const ob of observations) classes[observationEvidenceClass(ob)]++
+  const positiveClasses = positives.map((o) => observationEvidenceClass(o))
+  const contextOnly = positives.length === 0 && classes.market_level_opportunity > 0
+  const staleDays = typeof facts.staleAfterDays === "number" && facts.staleAfterDays > 0 ? facts.staleAfterDays : null
+  const stale = !!lastObserved && staleDays !== null && (now.getTime() - Date.parse(lastObserved)) / DAY_MS > staleDays
+  if (stale) classes.stale_contradicted += positives.length
+  classes.stale_contradicted += negatives.length
+  const ts = (xs: Array<string | null | undefined>) => [...new Set(xs.filter((x): x is string => !!x))].sort()
+  const idsOf = (c: EvidenceClass) => positives.filter((o) => observationEvidenceClass(o) === c).map((o) => o.id)
+  const bestPositive: EvidenceClass | "none" = contextOnly ? "market_level_opportunity" : strongestClass(positiveClasses)
+  const buyerR = readinessFor("buyer"), sellerR = readinessFor("seller")
+  const contradicted = mixed || stale
+  const dim = (dimension: ReadinessDimensionKey, level: string, evidenceClass: EvidenceClass | "none", basis: MomentBasis, why: string, sourceTimestamps: string[], evidenceIds: string[]): ReadinessDimension => ({ dimension, level, evidenceClass, basis, why, sourceTimestamps, evidenceIds })
+  const desireClass: EvidenceClass | "none" = contradicted ? "stale_contradicted" : desire.basis === "person_stated" || desire.basis === "staff_entered" ? "verified_intent" : bestPositive
+  const expectClass: EvidenceClass | "none" = contradicted ? "stale_contradicted"
+    : expects.level === "unknown" ? "none"
+      : expects.basis === "person_stated" || expects.basis === "staff_entered" || expects.basis === "verified_record" ? "verified_intent"
+        : "expressed_interest" // an unstamped timeline on the record: stated by someone, recorder unknown
+  const feasibilityClass: EvidenceClass | "none" = contradicted && ability.level !== "unknown" ? "stale_contradicted" : ability.level === "unknown" ? "none" : ability.basis === "person_stated" ? "verified_intent" : "expressed_interest"
+  const timingClass: EvidenceClass | "none" = contradicted ? "stale_contradicted" : window.basis === "stated_date" || window.basis === "stated_bucket" ? (facts.statedTimeline?.basis === "unstamped" && window.basis === "stated_bucket" ? "expressed_interest" : "verified_intent") : window.basis === "evidence_prior" ? "inferred_possibility" : positives.length === 0 ? (contextOnly ? "market_level_opportunity" : "none") : bestPositive === "verified_intent" || bestPositive === "expressed_interest" ? "inferred_possibility" : bestPositive
+  const independent = new Set(positives.map((o) => movementSource(o.sourceKey)?.kind ?? o.sourceKey)).size
+  const confidenceLevel = contradicted ? "contradicted" : positives.length === 0 && !statedTimelineHuman ? (contextOnly ? "market_level" : "none")
+    : identity_confidence === "confirmed" && confRank(source_confidence) >= EPISTEMIC_RANK.reported && (independent >= 2 || statedTimelineHuman || desire.basis === "person_stated") ? "high"
+      : identity_confidence === "confirmed" || identity_confidence === "probable" ? "medium" : "low"
+  const dimensions: ReadinessDimensions = {
+    desire: dim("desire", desire.level, desireClass, desire.basis, desire.why, ts([facts.statedSide || statedTimelineHuman ? facts.statedTimeline?.at : null, ...positives.filter((o) => desire.evidenceIds.includes(o.id)).map((o) => o.observedAt)]), desire.evidenceIds),
+    expectation: dim("expectation", expects.level, expectClass, expects.basis, expects.why, ts([deadline?.at ?? null, expects.level !== "unknown" ? facts.statedTimeline?.at : null]), deadline ? idsOf("verified_intent") : []),
+    feasibility: dim("feasibility", ability.level, feasibilityClass, ability.basis, ability.why, ts(barriers.length || deadlinesAll.length ? (facts.barriers ?? []).map((b) => b.at ?? null) : []), []),
+    timing: dim("timing", window.window, timingClass, window.basis === "stated_date" ? (deadline?.source === "person_stated" ? "person_stated" : deadline?.source === "staff_entered" ? "staff_entered" : "verified_record") : window.basis === "stated_bucket" ? (facts.statedTimeline?.basis === "unstamped" ? "observed" : facts.statedTimeline?.basis ?? "observed") : window.basis === "evidence_prior" ? "prior" : "none", window.why, ts([deadline?.at ?? null, window.basis === "stated_bucket" ? facts.statedTimeline?.at : null, lastObserved]), primary?.evidenceIds ?? []),
+    confidence: dim("confidence", confidenceLevel, contradicted ? "stale_contradicted" : bestPositive === "none" && statedTimelineHuman ? "verified_intent" : bestPositive, positives.length ? (confRank(source_confidence) >= EPISTEMIC_RANK.verified ? "verified_record" : confRank(source_confidence) >= EPISTEMIC_RANK.reported ? "person_stated" : "inferred") : "none", `identity ${identity_confidence}, source ${source_confidence}, ${independent} independent source kind(s)${stale ? ` — STALE: newest evidence older than ${staleDays} days` : ""}${mixed ? " — contradicted" : ""}`, ts([lastObserved, newestNegative]), positives.map((o) => o.id)),
+  }
+  const near = buyerR.level === "ready" || buyerR.level === "preparing" || sellerR.level === "ready" || sellerR.level === "preparing"
+  const verdict: DecisionWindowForecast["verdict"] = contradicted || (positives.length === 0 && !statedTimelineHuman && !facts.statedSide) ? "nothing_to_forecast" : near && ability.level !== "blocked" ? "ready_to_transact" : "research_opportunity"
+  const forecast: DecisionWindowForecast = {
+    state: window.window === "unknown" ? "no_window" : "window", window: window.window, basis: window.basis, uncertainty: window.uncertainty, verdict, evidenceClasses: classes,
+    opposing: negatives.map((n) => ({ key: n.key, at: n.at, source: n.source, basis: n.basis ?? "record" })),
+    sourceTimestamps: { newestPositive: newestPositive, newestNegative, statedAt: statedPositiveAt, deadlineAt: deadline?.at ?? null },
+    calibration: { published: !!probability, validated: cal?.validated ?? 0, minValidated: facts.calibration?.minValidated ?? null, cohort: calCohort, why: probabilityWhy },
+    why: verdict === "ready_to_transact" ? `a side is ${near ? "preparing or ready" : "near"} with feasibility ${ability.level} — a customer who may be ready to transact (${window.why})`
+      : verdict === "research_opportunity" ? `evidence worth watching or researching, not a customer ready to transact (${window.why})`
+        : contradicted ? `contradicted or stale evidence — nothing to forecast (${window.why})` : contextOnly ? "market-level context only — a category for local research or education, never a person-level forecast" : "no positive evidence — nothing to forecast",
+  }
 
   const moment: MovingMoment = {
-    personLevel: true, segments, buyer_readiness: readinessFor("buyer"), seller_readiness: readinessFor("seller"), investor_strategy, desire_to_move: desire, expects_to_move: expects,
+    personLevel: true, segments, buyer_readiness: buyerR, seller_readiness: sellerR, investor_strategy, desire_to_move: desire, expects_to_move: expects,
     ability_to_act: ability, barrier: barriers, known_deadline: deadline, identity_confidence, source_confidence, rights: { collections, restricted: collections.some((c) => c === "manual_only" || c === "platform_scrape_contested" || c === "contract_required") },
     last_observed: lastObserved, negative_evidence: negatives, outreach_permission, decision_window: window, vendor_scores: (facts.vendorScores ?? []).map(labelVendorScore), probability, probabilityWhy,
-    explanation: "", unread: [...unread, ...(pastCount > 0 ? [`${pastCount} known date(s) already passed — not a window`] : [])],
+    dimensions, forecast,
+    explanation: "", unread: [...unread, ...(pastCount > 0 ? [`${pastCount} known date(s) already passed — not a window`] : []), ...(staleDays === null ? ["no staleness window given — evidence age not judged"] : [])],
   }
   moment.explanation = `window ${window.window} (${window.basis}; ${window.why}) | desire ${desire.level} (${desire.basis}) | expects ${expects.level} | ability ${abilityLevel} | buyer ${moment.buyer_readiness.level}, seller ${moment.seller_readiness.level} | identity ${identity_confidence}, source ${source_confidence}${negatives.length ? ` | ${negatives.length} negative` : ""}`
   return moment
@@ -383,6 +553,9 @@ export function readinessPlays(moment: MovingMoment, menu: OpportunityMenu | nul
   const stated = reading.primary?.stage === "stated"
   const holdout = opts.holdout === true && !stated
   const quiet = !moment.personLevel || moment.outreach_permission === "consent_refused" || moment.negative_evidence.some((n) => n.key === "opted_out" || n.key === "declined")
+  // WAVE 151 (151E): STALE / CONTRADICTED evidence suppresses every OUTWARD play — nothing to act on until something new arrives
+  // (rule 7: the person's own "staying put" contradicts enrichment whatever its age). Watching stays open; quiet is always allowed.
+  const contradicted = moment.dimensions.confidence.evidenceClass === "stale_contradicted"
   const options: ReadinessPlayOption[] = []
   const screen = (b: string): string => { const t = `${b} ${NEVER}`; return screenLifeEventOutreach(t, { events: reading.screenEvents.map((type) => ({ type })) }).ok ? t : `Something genuinely useful to anyone in their situation. ${NEVER}` }
   const near = (["buyer_readiness", "seller_readiness"] as const).some((k) => moment[k].level === "ready" || moment[k].level === "preparing")
@@ -390,7 +563,7 @@ export function readinessPlays(moment: MovingMoment, menu: OpportunityMenu | nul
   const outward = (play: ReadinessPlay, need: string[], brief: string): ReadinessPlayOption => {
     const mode = PLAY_MODE[play]
     const gate = modeStatus(mode)
-    const blocks = [...need, ...(quiet ? ["the person asked for space, opted out, or is not a person we hold"] : []), ...(holdout ? ["an independent holdout for outcome learning — watched, never contacted on this evidence"] : [])]
+    const blocks = [...need, ...(quiet ? ["the person asked for space, opted out, or is not a person we hold"] : []), ...(contradicted ? ["the evidence is stale or contradicted — nothing to act on until something new arrives"] : []), ...(holdout ? ["an independent holdout for outcome learning — watched, never contacted on this evidence"] : [])]
     if (!gate || gate.status === "not_eligible") blocks.push(`the ${mode.replace(/_/g, " ")} mode is not eligible (${gate?.why ?? "no menu"})`)
     if (blocks.length > 0) return { play, mode, status: "not_eligible", why: blocks.join("; "), brief: null }
     return { play, mode, status: gate!.status, why: gate!.why, brief: screen(brief) }

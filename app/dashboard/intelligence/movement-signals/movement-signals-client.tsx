@@ -3,9 +3,12 @@
 // The lead desk's view of early movement signals (wave 147, lane 147Z). Palette tokens only (test:ui-palette-contrast).
 
 import { useState, useTransition } from "react"
-import { markMovementSignalOutcomeAction } from "@/app/actions/movement-signals"
+import { markMovementSignalOutcomeAction, recordStatedDateAction } from "@/app/actions/movement-signals"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+
+/** WAVE 151 (151E): one documented door that re-opens a decision for an EXISTING contact (lib/intent/movement-signals.ts EXISTING_CONTACT_CHANGE_DOORS). */
+interface ChangeDoorView { kind: string; sourceKey: string; what: string }
 
 interface MovementRecordView {
   id: string
@@ -52,10 +55,13 @@ interface DatasetVerificationView {
 const label = (s: string) => s.replace(/_/g, " ")
 const day = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never")
 
-export function MovementSignalsClient({ records, sources, freshnessNote, verifications = [], verificationNote = null, verificationPolicy = null }: { records: MovementRecordView[]; sources: SourceFreshnessView[]; freshnessNote: string | null; verifications?: DatasetVerificationView[]; verificationNote?: string | null; verificationPolicy?: { ttlDays: number; defaultMaxLagDays: number } | null }) {
+export function MovementSignalsClient({ records, sources, freshnessNote, verifications = [], verificationNote = null, verificationPolicy = null, changeDoors = [], deadlineKinds = [] }: { records: MovementRecordView[]; sources: SourceFreshnessView[]; freshnessNote: string | null; verifications?: DatasetVerificationView[]; verificationNote?: string | null; verificationPolicy?: { ttlDays: number; defaultMaxLagDays: number } | null; changeDoors?: ChangeDoorView[]; deadlineKinds?: string[] }) {
   const [rows, setRows] = useState(records)
   const [note, setNote] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  // 151E (rows 28 / 29): "they told us a date" — the form is open for ONE contact record at a time; the quote is required.
+  const [dateFor, setDateFor] = useState<string | null>(null)
+  const [dateForm, setDateForm] = useState<{ kind: string; date: string; quote: string }>({ kind: deadlineKinds[0] ?? "lease_end", date: "", quote: "" })
 
   const close = (id: string, outcome: "false_positive" | "declined") => {
     startTransition(async () => {
@@ -63,6 +69,16 @@ export function MovementSignalsClient({ records, sources, freshnessNote, verific
       if (!r.success) { setNote(r.error); return }
       setRows((prev) => prev.map((x) => (x.id === id ? { ...x, outcome } : x)))
       setNote(outcome === "false_positive" ? "Marked as a false positive — the source's weight learns from it." : "Marked as declined — no one will reach out about it.")
+    })
+  }
+
+  const recordDate = (contactId: string) => {
+    startTransition(async () => {
+      const r = await recordStatedDateAction({ contactId, kind: dateForm.kind, date: dateForm.date, quote: dateForm.quote })
+      if (!r.success) { setNote(r.error); return }
+      setDateFor(null)
+      setDateForm((f) => ({ ...f, date: "", quote: "" }))
+      setNote(r.status === "replayed" ? "That date was already on record — nothing recorded twice." : `Recorded with their words — the decision window and next step were reassessed for this contact (${r.reason}).`)
     })
   }
 
@@ -117,6 +133,22 @@ export function MovementSignalsClient({ records, sources, freshnessNote, verific
         </CardContent>
       </Card>
 
+      {changeDoors.length > 0 && (
+        <Card>
+          <CardContent className="p-4 space-y-2">
+            <h2 className="text-base font-semibold text-foreground">What re-opens a decision for a current contact</h2>
+            <p className="text-sm text-muted-foreground">
+              A change by someone already in your book is reassessed on the same record — never a new lead, never a purchased record. What they tell us outranks anything a data provider says.
+            </p>
+            <ul className="space-y-1">
+              {changeDoors.map((d) => (
+                <li key={d.kind} className="text-sm text-foreground"><span className="font-medium">{label(d.kind)}</span><span className="text-muted-foreground"> — {d.what}</span></li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No movement records yet.</p>
       ) : (
@@ -135,10 +167,38 @@ export function MovementSignalsClient({ records, sources, freshnessNote, verific
                 {r.outcome ? (
                   <p className="text-xs text-muted-foreground">Closed: {label(r.outcome)}</p>
                 ) : (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" disabled={pending} onClick={() => close(r.id, "false_positive")}>Not accurate</Button>
                     <Button size="sm" variant="outline" disabled={pending} onClick={() => close(r.id, "declined")}>They declined help</Button>
+                    {r.subject.type === "contact" && r.subject.id && (
+                      <Button size="sm" variant="outline" disabled={pending} onClick={() => setDateFor(dateFor === r.id ? null : r.id)}>They told us a date</Button>
+                    )}
                   </div>
+                )}
+                {dateFor === r.id && r.subject.type === "contact" && r.subject.id && (
+                  <form className="space-y-2 rounded border border-border p-3" onSubmit={(e) => { e.preventDefault(); recordDate(r.subject.id as string) }}>
+                    <p className="text-xs text-muted-foreground">A date the person themselves gave us, with the words they used. A stated date beats any inferred range; a date without its source is not evidence.</p>
+                    <div className="flex flex-wrap gap-2">
+                      <label className="text-sm text-foreground">
+                        Kind of date{" "}
+                        <select className="rounded border border-border bg-background px-2 py-1 text-sm" value={dateForm.kind} onChange={(e) => setDateForm((f) => ({ ...f, kind: e.target.value }))}>
+                          {deadlineKinds.map((k) => <option key={k} value={k}>{label(k)}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-sm text-foreground">
+                        Date{" "}
+                        <input type="date" required className="rounded border border-border bg-background px-2 py-1 text-sm" value={dateForm.date} onChange={(e) => setDateForm((f) => ({ ...f, date: e.target.value }))} />
+                      </label>
+                    </div>
+                    <label className="block text-sm text-foreground">
+                      Their words (required)
+                      <textarea required minLength={5} maxLength={300} className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm" placeholder={"e.g. \"our lease is up at the end of June\""} value={dateForm.quote} onChange={(e) => setDateForm((f) => ({ ...f, quote: e.target.value }))} />
+                    </label>
+                    <div className="flex gap-2">
+                      <Button size="sm" type="submit" disabled={pending}>Record with their words</Button>
+                      <Button size="sm" type="button" variant="outline" disabled={pending} onClick={() => setDateFor(null)}>Cancel</Button>
+                    </div>
+                  </form>
                 )}
               </CardContent>
             </Card>

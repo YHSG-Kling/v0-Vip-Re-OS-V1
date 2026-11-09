@@ -449,11 +449,11 @@ export const MOVEMENT_CLASSIFIER_SYSTEM = [
   "ROLE: You are the behavioural-intent researcher on a real-estate brokerage's AI team. You read ONE piece of public text (a post, a comment, a news item) and say whether it bears on a residential move — nothing else.",
   "BUSINESS CONTEXT: Brokerages want to be the helpful neighbour who notices first — the 'can anyone recommend a realtor?' post, 'we're moving to Denver in the spring', 'starting my new job in Austin next month' — and to offer help without pressure. Most public text is not about a move; saying so is the most common correct answer.",
   "FACTS YOU MAY RELY ON: only the text supplied and the territory named. Do not invent a person, a timeline, a reason, a price or a place. Do not guess who the author is beyond what the text says.",
-  "THE DECISION YOU OWN: relevant yes/no; the event_relevance from the closed list; whether the text is ABOUT ITS AUTHOR ('author'), about someone else ('third_party') or unclear; the side (buyer / seller / both / unknown); a timeline BUCKET only if the text states one ('1-3', '3-6', '6-12' months, else 'unknown' — never 30/60/90 days); and ONE verbatim quote (copied exactly from the text, at most 200 characters) that supports your reading.",
+  "THE DECISION YOU OWN: relevant yes/no; the event_relevance from the closed list; whether the text is ABOUT ITS AUTHOR ('author'), about someone else ('third_party') or unclear; the side (buyer / seller / both / unknown); a timeline BUCKET only if the text states one ('1-3', '3-6', '6-12' months, else 'unknown' — never 30/60/90 days); a stated_date ONLY when the author names a specific date or month for their own move, lease end or listing ('our lease is up June 30', 'we list in March') — as an ISO date (YYYY-MM-DD, the first of the month when only a month is named), else null, never a guess from a season or 'soon'; and ONE verbatim quote (copied exactly from the text, at most 200 characters) that supports your reading (when stated_date is set the quote must contain the words that name it).",
   "YOU DO NOT DECIDE how certain the platform is: the platform assigns verified / reported / inferred itself from the source and your quote. You never decide what anyone does next.",
   "PRIVACY BOUNDARY: a divorce, a death, an illness, a pregnancy or a household change about a THIRD PARTY is never relevant — answer relevant=false. Never reason from race, colour, religion, sex, disability, familial status, national origin, marital status or age, and never mention them. A school mentioned in the text is about a place, never a guess that the author has children.",
   "ESCALATION: if the text describes distress, danger, a legal dispute or a complaint, set needs_person=true and keep the reading minimal.",
-  "OUTPUT CONTRACT — JSON only: {relevant: boolean, event_relevance: one of divorce|probate_estate|relocation|seeking_agent|life_stage|property_event|market_event|community_change|null, about: 'author'|'third_party'|'unclear', side: 'buyer'|'seller'|'both'|'unknown', timeline_bucket: '1-3'|'3-6'|'6-12'|'unknown', quote: string|null, needs_person: boolean, note: string (one sentence, plain words)}.",
+  "OUTPUT CONTRACT — JSON only: {relevant: boolean, event_relevance: one of divorce|probate_estate|relocation|seeking_agent|life_stage|property_event|market_event|community_change|null, about: 'author'|'third_party'|'unclear', side: 'buyer'|'seller'|'both'|'unknown', timeline_bucket: '1-3'|'3-6'|'6-12'|'unknown', stated_date: 'YYYY-MM-DD'|null, quote: string|null, needs_person: boolean, note: string (one sentence, plain words)}.",
 ].join("\n")
 
 export interface MovementTextClassification {
@@ -462,11 +462,28 @@ export interface MovementTextClassification {
   about: "author" | "third_party" | "unclear"
   side: MovementSide
   timelineBucket: "1-3" | "3-6" | "6-12" | "unknown"
+  /** WAVE 151 (151E — convergence row 28): a date the AUTHOR named for their own move / lease end / listing (ISO day), or null.
+   *  Only ever set beside an author-voiced verbatim quote; the platform re-checks it is a real, not-yet-passed date. */
+  statedDate: string | null
   quote: string | null
   needsPerson: boolean
   note: string
   source: "ai" | "refused"
   refusedWhy?: string
+}
+
+/** A stated date further out than this is not a plan the text can carry (a sanity bound on the reading, labelled, not a window). */
+const STATED_DATE_MAX_DAYS_AHEAD = 730
+
+/** PURE (151E, row 28). The classifier's date → an ISO day the forecaster may use, or null: it must parse, lie after the post and
+ *  inside the sanity bound, and the author must have spoken for themselves with a quote. Never a guess. Module-private: the proof
+ *  drives it through movementSignalFromPublicPost. */
+function statedDateFromReading(r: Pick<MovementTextClassification, "about" | "quote" | "statedDate">, postedAt: string): string | null {
+  if (r.about !== "author" || !r.quote || !r.statedDate) return null
+  const at = Date.parse(r.statedDate), posted = Date.parse(postedAt)
+  if (!Number.isFinite(at) || !Number.isFinite(posted)) return null
+  if (at < posted || at > posted + STATED_DATE_MAX_DAYS_AHEAD * DAY_MS) return null
+  return new Date(at).toISOString()
 }
 
 export type MovementClassify = (a: { brokerageId: string; system: string; prompt: string }) => Promise<Record<string, unknown>>
@@ -475,7 +492,7 @@ async function defaultClassify(a: { brokerageId: string; system: string; prompt:
   const [{ generateObjectRouted }, { z }] = await Promise.all([import("@/lib/ai/models"), import("zod")])
   const schema = z.object({
     relevant: z.boolean(), event_relevance: z.string().nullable(), about: z.string(), side: z.string(),
-    timeline_bucket: z.string(), quote: z.string().nullable(), needs_person: z.boolean(), note: z.string(),
+    timeline_bucket: z.string(), stated_date: z.string().nullable().optional(), quote: z.string().nullable(), needs_person: z.boolean(), note: z.string(),
   })
   const { object } = await generateObjectRouted({ feature: "behavioral_pattern_detect", brokerageId: a.brokerageId, manager: "data_steward", system: a.system, prompt: a.prompt, schema, temperature: 0, maxTokens: 300 })
   return object as Record<string, unknown>
@@ -489,7 +506,7 @@ export async function classifyPublicMovementText(
   a: { brokerageId: string; text: string; territory?: string | null; sourceKey: string },
   deps: { classify?: MovementClassify } = {},
 ): Promise<MovementTextClassification> {
-  const refused = (why: string): MovementTextClassification => ({ relevant: false, eventRelevance: null, about: "unclear", side: "unknown", timelineBucket: "unknown", quote: null, needsPerson: false, note: why, source: "refused", refusedWhy: why })
+  const refused = (why: string): MovementTextClassification => ({ relevant: false, eventRelevance: null, about: "unclear", side: "unknown", timelineBucket: "unknown", statedDate: null, quote: null, needsPerson: false, note: why, source: "refused", refusedWhy: why })
   const text = String(a.text ?? "").slice(0, 4000)
   if (text.trim().length < 8) return refused("no text to read")
   let raw: Record<string, unknown>
@@ -506,7 +523,9 @@ export async function classifyPublicMovementText(
   if (raw.relevant === true && rel && INTIMATE_RELEVANCE.has(rel as MovementRelevance) && about !== "author") return refused("an intimate life event about someone other than the author is never a signal")
   const side = raw.side === "buyer" || raw.side === "seller" || raw.side === "both" ? raw.side : "unknown"
   const tb = raw.timeline_bucket === "1-3" || raw.timeline_bucket === "3-6" || raw.timeline_bucket === "6-12" ? raw.timeline_bucket : "unknown"
-  return { relevant: raw.relevant === true && rel !== null, eventRelevance: rel as MovementRelevance | null, about, side, timelineBucket: tb, quote, needsPerson: raw.needs_person === true, note: String(raw.note ?? "").slice(0, 300), source: "ai" }
+  // 151E (row 28): a stated date is kept only as an ISO day the author named for themselves; the forecaster re-checks it against the post's date.
+  const statedDate = typeof raw.stated_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.stated_date) && about === "author" && !!quote ? raw.stated_date : null
+  return { relevant: raw.relevant === true && rel !== null, eventRelevance: rel as MovementRelevance | null, about, side, timelineBucket: tb, statedDate, quote, needsPerson: raw.needs_person === true, note: String(raw.note ?? "").slice(0, 300), source: "ai" }
 }
 
 /**
@@ -527,6 +546,9 @@ export function movementSignalFromPublicPost(a: {
     // C37 (150JNAD): the classifier's stated bucket was dropped on the floor — a writer with no reader. It rides the record only
     // when the author spoke for themselves (buildMovementSignal re-checks), and the forecaster reads it as THEIR timeline.
     statedTimeline: r.about === "author" && r.quote && r.timelineBucket !== "unknown" ? r.timelineBucket : null,
+    // 151E (row 28 — the honest half without a producer field): a date the author named in their own words, with the verbatim quote
+    // already on the reference, becomes a KNOWN DEADLINE (relocation → relocation_start; a seller → planned_list_date; else other_stated).
+    knownDeadline: ((at) => (at ? { kind: (r.eventRelevance === "relocation" ? "relocation_start" : r.side === "seller" ? "planned_list_date" : "other_stated") as KnownDeadlineKind, at } : null))(statedDateFromReading(r, a.postedAt)),
   })
 }
 
@@ -1085,14 +1107,23 @@ const STAMP_BASIS: Readonly<Record<string, "person_stated" | "staff_entered">> =
  * (buyer_financial_profiles — never an amount), and NEGATIVE evidence (this subject's movement rows closed declined / false positive
  * / opted out / no change). NEVER contacts.contact_type (owner ruling R2). A refused read is named in `unread`, never "no".
  */
+/** WAVE 151 (151E): a remembered BARRIER the person stated (lib/kernel/conversation-memory.ts BARRIER_RULES values) → the C37 barrier key. */
+const MEMORY_BARRIER_KEY: Readonly<Record<string, KnownBarrierKey>> = Object.freeze({ must_sell_first: "must_sell_first", financing: "financing_not_ready", lease: "lease_term", cost: "other_stated", timing: "timing_uncertain" })
+type KnownBarrierKey = NonNullable<MovingMomentFacts["barriers"]>[number]["key"]
+
 async function loadMomentFacts(svc: Svc, brokerageId: string, contactId: string, rows: readonly MovementRow[], sinceIso: string, now: Date): Promise<MovingMomentFacts> {
   const unread: string[] = []
-  const facts: MovingMomentFacts = { subjectIsPerson: true, knownDeadlines: [], negative: [], unread }
-  const { data: c, error: cErr } = await svc.from("contacts").select("id, timeline, equity_estimate, home_owner_status, enrichment_profile, updated_at").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+  // 151E: the evidence window is the forecaster's staleness window too (the tenant's own life-event window — nothing invented here);
+  // the cohort is the side the records themselves carry + the person's zip prefix.
+  const windowDays = Math.max(1, Math.round((now.getTime() - Date.parse(sinceIso)) / DAY_MS))
+  const sides = new Set(rows.filter((r) => r.subject_type !== "territory").map((r) => r.side).filter((s): s is MovementSide => s === "buyer" || s === "seller"))
+  const facts: MovingMomentFacts = { subjectIsPerson: true, knownDeadlines: [], negative: [], unread, staleAfterDays: windowDays, cohort: { side: sides.size === 1 ? [...sides][0] : "any", territory: null } }
+  const memoryNegatives: Array<NonNullable<MovingMomentFacts["negative"]>[number]> = []
+  const { data: c, error: cErr } = await svc.from("contacts").select("id, timeline, equity_estimate, home_owner_status, enrichment_profile, updated_at, zip_code, metadata").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
   if (cErr) unread.push(`contact facts unread (${cErr.message})`)
   else if (!c) return { subjectIsPerson: false, unread: ["contact not in this brokerage"] }
   else {
-    const row = c as { timeline?: string | null; equity_estimate?: number | string | null; home_owner_status?: string | null; enrichment_profile?: Record<string, unknown> | null; updated_at?: string | null }
+    const row = c as { timeline?: string | null; equity_estimate?: number | string | null; home_owner_status?: string | null; enrichment_profile?: Record<string, unknown> | null; updated_at?: string | null; zip_code?: string | null; metadata?: Record<string, unknown> | null }
     if (row.timeline && statedTimelineWindow(row.timeline) !== null) {
       const fp = row.enrichment_profile && typeof row.enrichment_profile === "object" ? (row.enrichment_profile as Record<string, unknown>).field_provenance : null
       const st = fp && typeof fp === "object" ? ((fp as Record<string, unknown>).timeline as Record<string, unknown> | undefined) : undefined
@@ -1102,6 +1133,26 @@ async function loadMomentFacts(svc: Svc, brokerageId: string, contactId: string,
     const eq = row.equity_estimate === null || row.equity_estimate === undefined ? NaN : Number(row.equity_estimate)
     facts.equity = Number.isFinite(eq) ? (eq > 0 ? "positive" : "none") : "unknown"
     facts.tenure = row.home_owner_status === "renter" ? "renter" : row.home_owner_status === "owner" ? "owner" : null
+    facts.cohort = { side: facts.cohort?.side ?? "any", territory: row.zip_code ? String(row.zip_code).slice(0, 5) : null }
+    // 151E (rule 7): what the person SAID, remembered on the ONE memory ledger (lib/kernel/conversation-memory.ts — first-person
+    // statements only; current, unexpired facts). A chosen path "stay put" is a PERSON-STATED negative that outranks enrichment; a
+    // stated barrier is a readiness CONDITION; a remembered timeline stands in when the record column holds none. Never contact_type.
+    try {
+      const spine = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>).context_spine : null
+      if (spine) {
+        const { currentMemoryFacts } = await import("@/lib/kernel/conversation-memory")
+        const memoryBarriers: Array<NonNullable<MovingMomentFacts["barriers"]>[number]> = []
+        for (const f of currentMemoryFacts(spine, now)) {
+          if (f.key === "scenario_choice" && f.value === "stay_put") memoryNegatives.push({ key: "stated_staying_put", why: "they told us they are staying put", at: f.observedAt, source: `conversation_memory:${f.source}`, basis: "person_stated" })
+          if (f.key === "scenario_choice" && f.value === "sell_first") facts.mustSellFirst = true
+          if (f.key === "barrier" && MEMORY_BARRIER_KEY[f.value]) { memoryBarriers.push({ key: MEMORY_BARRIER_KEY[f.value], basis: "person_stated", at: f.observedAt }); if (f.value === "must_sell_first") facts.mustSellFirst = true }
+          if (f.key === "timeline" && !facts.statedTimeline && statedTimelineWindow(f.value) !== null) facts.statedTimeline = { value: f.value, basis: "person_stated", at: f.observedAt }
+        }
+        if (memoryBarriers.length) facts.barriers = [...(facts.barriers ?? []), ...memoryBarriers]
+      }
+    } catch (e) {
+      unread.push(`remembered statements unread (${e instanceof Error ? e.message : String(e)})`)
+    }
   }
   // The person's own bucket from a public post in their voice (m970 stated_timeline) when the record holds none.
   if (!facts.statedTimeline) {
@@ -1137,13 +1188,15 @@ async function loadMomentFacts(svc: Svc, brokerageId: string, contactId: string,
   for (const r of (nErr ? [] : closed ?? []) as Array<{ id: string; outcome: string | null; outcome_at: string | null }>) {
     if (r.outcome && NEGATIVE_OUTCOMES.has(r.outcome) && r.outcome_at) negative.push({ key: r.outcome, why: `an earlier sign closed as ${r.outcome.replace(/_/g, " ")}`, at: r.outcome_at, source: `movement_signals:${r.id}` })
   }
-  return { ...facts, knownDeadlines: deadlines, negative, unread }
+  return { ...facts, knownDeadlines: deadlines, negative: [...negative, ...memoryNegatives], unread }
 }
 
 /** PURE. The holdout arm a prior decision stamped on these rows (decision.holdout) — the hook reads it, it never re-draws it. */
 const stampedHoldout = (rows: readonly MovementRow[]): boolean => rows.some((r) => (r.decision as { holdout?: { arm?: string } } | null | undefined)?.holdout?.arm === "holdout")
 
-/** PURE. The moment's ledger / snapshot summary (levels and reasons only — no source names, no vendor values). */
+/** PURE. The moment's ledger / snapshot summary (levels and reasons only — no source names, no vendor values).
+ *  WAVE 151 (151E): carries the five DIMENSIONS, each with its own evidence class, basis and source timestamps, and the forecaster
+ *  CONTRACT (state / verdict / opposing / timestamps / calibration) — stored on m970's `moment` jsonb, never a second table. */
 const momentSummary = (m: MovingMoment, plays: ReadinessPlays | null) => ({
   window: m.decision_window.window, window_basis: m.decision_window.basis, uncertainty: m.decision_window.uncertainty, why: m.decision_window.why.slice(0, 300),
   buyer: m.buyer_readiness.level, seller: m.seller_readiness.level, investor: m.investor_strategy.stage, investor_exit: m.investor_strategy.exit,
@@ -1153,6 +1206,11 @@ const momentSummary = (m: MovingMoment, plays: ReadinessPlays | null) => ({
   negative: m.negative_evidence.map((n) => n.key), outreach: m.outreach_permission, segments: m.segments,
   vendor_scores: m.vendor_scores.map((v) => ({ provider: v.provider, field: v.field, unit: v.unit })), probability: m.probability, unread: m.unread,
   plays: plays ? plays.options.filter((p) => p.status !== "not_eligible").map((p) => p.play) : [],
+  dimensions: Object.fromEntries(Object.values(m.dimensions).map((d) => [d.dimension, { level: d.level, evidence_class: d.evidenceClass, basis: d.basis, why: d.why.slice(0, 200), source_timestamps: d.sourceTimestamps.slice(0, 10), evidence_ids: d.evidenceIds.slice(0, 20) }])),
+  forecast: {
+    state: m.forecast.state, verdict: m.forecast.verdict, evidence_classes: m.forecast.evidenceClasses, opposing: m.forecast.opposing.slice(0, 10),
+    source_timestamps: m.forecast.sourceTimestamps, calibration: m.forecast.calibration, why: m.forecast.why.slice(0, 300),
+  },
 })
 
 /** The C37 moment + C38 plays + holdout arm for a decided subject (null for a property / territory / raw lead — nobody to predict). */
@@ -1224,7 +1282,7 @@ async function evaluateMovementSubject(svc: Svc, a: { brokerageId: string; subje
         // 150N: a PLACED window is a forecast — frozen once in THE prediction ledger (ai_predictions), graded by the outcome later.
         if (mm && mm.moment.decision_window.window !== "unknown" && (cls.contactId || cls.leadId)) {
           const { freezeDecisionWindowForecast } = await import("@/lib/analytics/ai-prediction-outcomes")
-          const f = await freezeDecisionWindowForecast(svc as never, { brokerageId: a.brokerageId, entityType: cls.contactId ? "contact" : "lead", entityId: (cls.contactId ?? cls.leadId) as string, moment: mm.moment, holdoutArm: mm.holdout?.arm ?? null, evidenceIds: ids, now })
+          const f = await freezeDecisionWindowForecast(svc as never, { brokerageId: a.brokerageId, entityType: cls.contactId ? "contact" : "lead", entityId: (cls.contactId ?? cls.leadId) as string, moment: mm.moment, holdoutArm: mm.holdout?.arm ?? null, evidenceIds: ids, now, cohort: { side: mm.moment.segments.includes("seller") && !mm.moment.segments.includes("buyer") ? "seller" : mm.moment.segments.includes("buyer") && !mm.moment.segments.includes("seller") ? "buyer" : "any", territory: cls.zip } })
           if (!f.captured && !/unchanged/.test(f.reason)) console.warn(`[movement-signals] decision-window forecast not frozen: ${f.reason}`)
         }
         return (out = { status: "decided", reason: `${decision.action} (${decision.source})${stamped !== ids.length ? ` — ${stamped}/${ids.length} rows stamped` : ""}`, combination, decision, routed })
@@ -1460,6 +1518,115 @@ export async function movementSignalsForArbiter(
   } catch (e) {
     return empty(`movement: ${(e as Error)?.message ?? String(e)}`)
   }
+}
+
+// ── WAVE 151 (lane 151E): EXISTING-CONTACT CHANGE DETECTION → THE ARBITER REASSESSES THE SAME CONTACT ────────────────────────
+//
+// THE ENTRY POINT lane 151D's plays (and any first-party door) use when an EXISTING Contact changes: a saved-home preference
+// shift, a valuation / equity request, a search-criteria change, repeated engagement with education, a seller-appointment request,
+// or a date / timeline the person told us. ONE existing path, no new record type: the change is ONE C9 record on the SAME contact
+// (recordMovementSignal) → the movement manager's decision (evaluateMovementSubject — the moment, the window, the plays) → on
+// offer_help the bus line online_intent_detected → the ONE life-change responder (lib/ai-isa/followup-arbiter.ts
+// respondToLifeChangeSignal) → the ISA's governed engagement (arbitrateAndRecordExperience reads the moment + plays through
+// movementSignalsForArbiter and chooses research / education / valuation facts / an authorized channel / a person / wait).
+//   · NEVER a new Lead or a raw lead: the subject is `{ type: "contact" }` and nothing here writes leads / raw_scraped_leads.
+//   · NEVER a provider bill: every door is a first-party fact (free_first_party); research is the manager's later, gated step.
+//   · DEDUP is the record's idempotency key (one change observed twice is one record → `replayed`).
+//   · A person's OWN WORDS (a stated date, a timeline) are `reported` by self with the verbatim quote — VERIFIED INTENT evidence.
+
+export const EXISTING_CONTACT_CHANGE_KINDS = Object.freeze(["saved_home_shift", "valuation_request", "criteria_change", "education_engagement", "seller_appointment_request", "stated_date", "stated_timeline"] as const)
+export type ExistingContactChangeKind = (typeof EXISTING_CONTACT_CHANGE_KINDS)[number]
+
+/** The documented doors — change kind → the C9 source that carries it and how it reaches the arbiter. Read by the proof; production
+ *  reads it through reassessExistingContact below. */
+export const EXISTING_CONTACT_CHANGE_DOORS: Readonly<Record<ExistingContactChangeKind, { sourceKey: string; relevance: MovementRelevance; side: MovementSide; what: string; via: string }>> = Object.freeze({
+  saved_home_shift: { sourceKey: "fp_saved_homes", relevance: "property_event", side: "buyer", what: "the person changed what they save (a new area, price band or home type) in their own portal / site search", via: "recordMovementSignal → evaluateMovementSubject → online_intent_detected → respondToLifeChangeSignal → arbitrateAndRecordExperience" },
+  valuation_request: { sourceKey: "fp_valuation_request", relevance: "property_event", side: "seller", what: "the homeowner asked what their home is worth / for an equity look on the tenant's own tool", via: "the same path; the listing concierge's home_value_seller_intent handler stays the CMA half" },
+  criteria_change: { sourceKey: "fp_criteria_revisions", relevance: "property_event", side: "buyer", what: "the buyer revised their stated search criteria again (repeated — one change is never a pattern)", via: "the same path" },
+  education_engagement: { sourceKey: "fp_content_engagement", relevance: "property_event", side: "unknown", what: "repeated engagement with the tenant's own education on a home-decision topic (an inference — the tracking call is unauthenticated)", via: "the same path; education stays helpful_education unless other evidence agrees" },
+  seller_appointment_request: { sourceKey: "fp_inbound_stated", relevance: "seeking_agent", side: "seller", what: "the person asked for a seller / listing appointment on our surfaces (their own request — reported by self)", via: "the same path; the appointment itself is the concierge's" },
+  stated_date: { sourceKey: "fp_inbound_stated", relevance: "relocation", side: "unknown", what: "the person told us a date (a lease end, a planned list date, a closing, a relocation start) — recorded WITH the verbatim quote", via: "the same path; the forecaster places the window on the stated date (stated dates beat inferred ranges)" },
+  stated_timeline: { sourceKey: "fp_inbound_stated", relevance: "relocation", side: "unknown", what: "the person told us a timeline bucket (1-3 / 3-6 / 6-12 months …) — recorded WITH the verbatim quote", via: "the same path; the forecaster reads it as THEIR timeline" },
+})
+
+export type ExistingContactChange =
+  | { kind: "saved_home_shift"; referenceId: string; summary: string; at: string }
+  | { kind: "valuation_request"; referenceId: string; summary: string; at: string }
+  | { kind: "criteria_change"; referenceIds: readonly string[]; fields: readonly string[]; at: string }
+  | { kind: "education_engagement"; referenceIds: readonly string[]; topic: string; at: string }
+  | { kind: "seller_appointment_request"; referenceId: string; summary: string; at: string; quote?: string | null }
+  | { kind: "stated_date"; deadline: { kind: KnownDeadlineKind; at: string }; quote: string; referenceId: string; at: string; side?: MovementSide }
+  | { kind: "stated_timeline"; bucket: string; quote: string; referenceId: string; at: string; side?: MovementSide }
+
+export interface ExistingContactReassessment {
+  status: "reassessed" | "recorded_no_decision" | "replayed" | "refused"
+  reason: string
+  recordId: string | null
+  /** The movement manager's decision over the contact's WHOLE evidence set (null when nothing was decided). */
+  evaluation: MovementEvaluation | null
+  /** Invariants the door keeps, said on every answer. */
+  sameContact: true
+  newLeadCreated: false
+  providerCalls: 0
+}
+
+/** PURE. A change → the ONE C9 input that carries it (every refusal of the record-time rules still applies in recordMovementSignal). */
+function movementInputForContactChange(brokerageId: string, contactId: string, change: ExistingContactChange, capturedBy: "staff" | "automation" | "person"): MovementSignalInput | { refused: string } {
+  const door = EXISTING_CONTACT_CHANGE_DOORS[change.kind]
+  const base = { brokerageId, subject: { type: "contact" as const, id: contactId }, sourceKey: door.sourceKey, identity: "record_key" as const, capturedBy, observedAt: change.at }
+  switch (change.kind) {
+    case "saved_home_shift":
+      return { ...base, eventRelevance: door.relevance, intents: ["home_purchase"], side: "buyer", evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `saved_properties:${change.referenceId}`, retrievedAt: change.at }, summary: change.summary } }
+    case "valuation_request":
+      return { ...base, eventRelevance: door.relevance, intents: ["home_sale", "refinance"], side: "seller", evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `valuation_requests:${change.referenceId}`, retrievedAt: change.at }, summary: change.summary } }
+    case "criteria_change": {
+      if (change.referenceIds.length < CRITERIA_REPEAT_MIN) return { refused: `${change.referenceIds.length} stated change(s) — one change is never a pattern (needs ${CRITERIA_REPEAT_MIN})` }
+      return { ...base, eventRelevance: door.relevance, intents: ["home_purchase"], side: "buyer", evidence: { confidence: "verified", reference: { kind: "first_party_row", id: `buyer_criteria_changes:${movementDigest([...change.referenceIds].sort().join(","))}`, retrievedAt: change.at }, summary: `revised their home search ${change.referenceIds.length} times (${[...change.fields].sort().join(", ") || "criteria"})` } }
+    }
+    case "education_engagement": {
+      if (change.referenceIds.length < 2) return { refused: "one read is interest, not repeated engagement (needs 2 or more)" }
+      const kinds = opportunityKindsForTopic(change.topic)
+      if (kinds.length === 0) return { refused: "the education is not about a home decision" }
+      return { ...base, eventRelevance: kinds.length === 1 && kinds[0] === "move" ? "relocation" : "property_event", intents: [...new Set(kinds.map((k) => OPPORTUNITY_INTENT[k]))], evidence: { confidence: "inferred", basis: change.referenceIds.map((id) => `blog_post_views:${id}`), method: "repeated reads of the tenant's own education on a home-decision topic (the topic is the content's, never the person's)", summary: `engaged ${change.referenceIds.length} times with education on ${kinds.join(" / ")}`, fields: kinds.map(opportunityTag) } }
+    }
+    case "seller_appointment_request":
+      return { ...base, eventRelevance: door.relevance, intents: ["home_sale"], side: "seller", evidence: { confidence: "reported", reportedBy: "self", reference: { kind: "person_message", id: change.referenceId, retrievedAt: change.at, quote: change.quote ?? null }, summary: change.summary } }
+    case "stated_date": {
+      if (!change.quote || change.quote.trim().length < 5) return { refused: "a stated date needs the person's own words (the quote) — never a date without its source" }
+      const rel: MovementRelevance = change.deadline.kind === "planned_list_date" || change.deadline.kind === "closing_date" ? "property_event" : "relocation"
+      const side: MovementSide = change.side ?? (change.deadline.kind === "planned_list_date" ? "seller" : change.deadline.kind === "closing_date" ? "buyer" : "unknown")
+      return { ...base, eventRelevance: rel, side, intents: side === "seller" ? ["home_sale"] : side === "buyer" ? ["home_purchase"] : ["moving"], knownDeadline: change.deadline, evidence: { confidence: "reported", reportedBy: "self", reference: { kind: "person_message", id: change.referenceId, retrievedAt: change.at, quote: change.quote.trim().slice(0, 200) }, summary: `told us a ${change.deadline.kind.replace(/_/g, " ")}: "${change.quote.trim().slice(0, 120)}"` } }
+    }
+    case "stated_timeline": {
+      if (!change.quote || change.quote.trim().length < 5) return { refused: "a stated timeline needs the person's own words (the quote)" }
+      if (statedTimelineWindow(change.bucket) === null) return { refused: `"${change.bucket}" is not a timeline bucket (contacts.timeline vocabulary / 1-3 / 3-6 / 6-12)` }
+      const side: MovementSide = change.side ?? "unknown"
+      return { ...base, eventRelevance: door.relevance, side, intents: side === "seller" ? ["home_sale"] : side === "buyer" ? ["home_purchase"] : ["moving"], statedTimeline: change.bucket, evidence: { confidence: "reported", reportedBy: "self", reference: { kind: "person_message", id: change.referenceId, retrievedAt: change.at, quote: change.quote.trim().slice(0, 200) }, summary: `told us their timeline (${change.bucket.replace(/_/g, " ")}): "${change.quote.trim().slice(0, 120)}"` } }
+    }
+  }
+}
+
+/**
+ * THE DOOR: an existing Contact changed → the arbiter reassesses need and timing on the SAME contact. Tenant-pinned through
+ * recordMovementSignal (a contact outside the tenant refuses at the decision), ledgered once per observation, never a Lead, never
+ * a provider call. Never throws.
+ */
+export async function reassessExistingContact(
+  svc: Svc,
+  a: { brokerageId: string; contactId: string; change: ExistingContactChange; capturedBy?: "staff" | "automation" | "person" },
+  deps: MovementDeps = {},
+): Promise<ExistingContactReassessment> {
+  const invariants = { sameContact: true as const, newLeadCreated: false as const, providerCalls: 0 as const }
+  if (!a.brokerageId || !a.contactId) return { status: "refused", reason: "no verified tenant or contact", recordId: null, evaluation: null, ...invariants }
+  if (!(EXISTING_CONTACT_CHANGE_KINDS as readonly string[]).includes(a.change?.kind)) return { status: "refused", reason: `"${String((a.change as { kind?: unknown })?.kind)}" is not an existing-contact change kind`, recordId: null, evaluation: null, ...invariants }
+  const input = movementInputForContactChange(a.brokerageId, a.contactId, a.change, a.capturedBy ?? "automation")
+  if ("refused" in input) return { status: "refused", reason: input.refused, recordId: null, evaluation: null, ...invariants }
+  const r = await recordMovementSignal(svc, input, deps)
+  if (r.status === "refused") return { status: "refused", reason: r.reason, recordId: null, evaluation: null, ...invariants }
+  if (r.status === "replayed") return { status: "replayed", reason: "this change was already observed — one observation, one record", recordId: r.id, evaluation: null, ...invariants }
+  const ev = r.evaluation
+  if (!ev) return { status: "recorded_no_decision", reason: "recorded; the subject was not re-decided on this path", recordId: r.id, evaluation: null, ...invariants }
+  return { status: ev.status === "decided" || ev.status === "replayed" ? "reassessed" : "recorded_no_decision", reason: ev.reason, recordId: r.id, evaluation: ev, ...invariants }
 }
 
 // ── who sees what (requirement 10) ───────────────────────────────────────────────────────────────────────────────────────────

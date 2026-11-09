@@ -289,31 +289,46 @@ export function strategyFinding(a: string, b: string, tenant: StrategySignifican
 /** Validated graded forecasts a window needs before any probability is published (a statistical floor, not a business rule). */
 const CALIBRATION_MIN_VALIDATED = 50
 
+type WindowTally = { validated: number; hits: number; rate: number | null; interval: [number, number] | null; published: boolean; why: string }
+
 export interface DecisionWindowCalibration {
-  byWindow: Partial<Record<string, { validated: number; hits: number; rate: number | null; interval: [number, number] | null; published: boolean; why: string }>>
+  byWindow: Partial<Record<string, WindowTally>>
   minValidated: number
   /** Negative closes inside a still-open window — recorded, never validated (the person may still move inside it). */
   earlyNegatives: number
+  /** WAVE 151 (151E): the same per-window tally per COHORT (`<side>|<territory>`, stamped at the freeze) — outcome-conditioned
+   *  calibration by cohort / territory, each cohort published only past the SAME floor (no model-quality claim before it). */
+  byCohort: Partial<Record<string, Partial<Record<string, WindowTally>>>>
 }
 
-/** PURE. Graded forecasts → per-window calibration. Only `validated` grades count; a window publishes only past the floor. */
-export function calibrateDecisionWindows(samples: ReadonlyArray<{ forecast: string; validated: boolean; hit: boolean; kind: string }>, minValidated = CALIBRATION_MIN_VALIDATED): DecisionWindowCalibration {
-  const byWindow: DecisionWindowCalibration["byWindow"] = {}
+/** PURE. Graded forecasts → per-window calibration (tenant-wide AND per cohort). Only `validated` grades count; a window publishes only past the floor. */
+export function calibrateDecisionWindows(samples: ReadonlyArray<{ forecast: string; validated: boolean; hit: boolean; kind: string; cohort?: string | null }>, minValidated = CALIBRATION_MIN_VALIDATED): DecisionWindowCalibration {
   let earlyNegatives = 0
   const tally = new Map<string, { n: number; k: number }>()
+  const cohortTally = new Map<string, Map<string, { n: number; k: number }>>()
   for (const s of samples) {
     if (s.kind === "no_move_early") { earlyNegatives++; continue }
     if (!s.validated || !s.forecast || s.forecast === "unknown") continue
     const t = tally.get(s.forecast) ?? { n: 0, k: 0 }
     t.n++; if (s.hit) t.k++
     tally.set(s.forecast, t)
+    if (s.cohort) {
+      const c = cohortTally.get(s.cohort) ?? new Map<string, { n: number; k: number }>()
+      const ct = c.get(s.forecast) ?? { n: 0, k: 0 }
+      ct.n++; if (s.hit) ct.k++
+      c.set(s.forecast, ct); cohortTally.set(s.cohort, c)
+    }
   }
-  for (const [w, t] of tally) {
+  const publish = (w: string, t: { n: number; k: number }, scope: string): WindowTally => {
     const published = t.n >= minValidated
-    byWindow[w] = { validated: t.n, hits: t.k, rate: published ? +(t.k / t.n).toFixed(4) : null, interval: published ? wilsonInterval(t.k, t.n) : null, published,
-      why: published ? `${t.k} of ${t.n} validated forecasts for ${w} moved inside it (Wilson 95 %)` : `${t.n} validated outcome(s) for ${w} — fewer than ${minValidated}, so no probability is published` }
+    return { validated: t.n, hits: t.k, rate: published ? +(t.k / t.n).toFixed(4) : null, interval: published ? wilsonInterval(t.k, t.n) : null, published,
+      why: published ? `${t.k} of ${t.n} validated forecasts for ${w}${scope} moved inside it (Wilson 95 %)` : `${t.n} validated outcome(s) for ${w}${scope} — fewer than ${minValidated}, so no probability is published` }
   }
-  return { byWindow, minValidated, earlyNegatives }
+  const byWindow: DecisionWindowCalibration["byWindow"] = {}
+  for (const [w, t] of tally) byWindow[w] = publish(w, t, "")
+  const byCohort: DecisionWindowCalibration["byCohort"] = {}
+  for (const [cohort, c] of cohortTally) { const m: Partial<Record<string, WindowTally>> = {}; for (const [w, t] of c) m[w] = publish(w, t, ` in cohort ${cohort}`); byCohort[cohort] = m }
+  return { byWindow, minValidated, earlyNegatives, byCohort }
 }
 
 const CONFIRMED_MOVE_OUTCOMES: ReadonlySet<string> = new Set(["listed", "purchased", "moved"])
