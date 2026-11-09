@@ -334,7 +334,11 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // concessions.sql — all WRITTEN NOT APPLIED, all MCP-applicable (no DROP INDEX / DROP COLUMN / storage policy).
 // 3 + 4 = 7. Deliberate bump, named per this guard's own instruction; drops by one as the integrator applies each
 // and flips its header. Sibling wave-145 lanes bump this line for their own files — the integrator sums them.
-const NOT_APPLIED_BASELINE = 7
+// 7 → 8 (wave 151, lane 151H — direct mail): the tree at WIP 7 (c0584cd3) holds 6 files claiming NOT APPLIED; this lane adds
+// two — m980-direct-mail-sender-addresses-the-tenant-return-address.sql and m981-direct-mail-delivery-truth-spend-preview-
+// and-returned-mail.sql — both WRITTEN NOT APPLIED, both MCP-applicable (no DROP INDEX / DROP COLUMN / storage policy).
+// 6 + 2 = 8, the exact count. Sibling wave-151 batch-2 lanes bump this line for their own files — the integrator sums them.
+const NOT_APPLIED_BASELINE = 6 // wave 151 integrator: m980 / m981 / m986 applied live 2026-11-09 — the ratchet tightens to the 6 files still pending
 // 1 → 2 (wave 141, lane 141B — immediate operations): m779-user-invitations-failed-dispatch-status.sql,
 // WRITTEN NOT APPLIED — user_invitations.status admits 'failed' (an invite whose email could not be dispatched
 // in the creating request is shown to the admin as FAILED with a Resend, owner ruling 2026-10-14). Deliberate

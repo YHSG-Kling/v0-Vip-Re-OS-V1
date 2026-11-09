@@ -51,6 +51,10 @@ export async function recordContractAddendum(params: {
   /** WAVE 145 (lane 145C, owner ruling 8): the day the change TAKES EFFECT when the instrument states one apart from its
    *  execution (yyyy-mm-dd). Kept as evidence on the version and carried to its consequences; precedence stays execution order. */
   effectiveOn?: string | null
+  /** WAVE 151 (lane 151K): where in the signed document each changed term is READ — page, field label, the quoted words. Carried
+   *  as `term_evidence_stated` on the version (the recorder's second evidence source after a verified extraction); a term with
+   *  none is recorded and flagged `person_reading_unlocated`, never silently trusted. Keys are the term keys of `terms`. */
+  termEvidence?: Record<string, { page?: number | null; field?: string | null; quote?: string | null }> | null
 }): Promise<{
   success: boolean
   error?: string
@@ -71,6 +75,21 @@ export async function recordContractAddendum(params: {
   const effectiveOn = params.effectiveOn ? String(params.effectiveOn) : null
   if (effectiveOn && (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveOn) || new Date(`${effectiveOn}T00:00:00.000Z`).toISOString().slice(0, 10) !== effectiveOn)) {
     return { success: false, error: "Give the date the change takes effect as yyyy-mm-dd (or leave it empty when it takes effect on signing)." }
+  }
+  // Per-term evidence: only for terms this addendum changes; page a positive integer, field / quote short strings.
+  const termEvidence: Record<string, { page: number | null; field: string | null; quote: string | null }> = {}
+  if (params.termEvidence) {
+    if (typeof params.termEvidence !== "object" || Array.isArray(params.termEvidence)) return { success: false, error: "Term evidence must map each changed term to its page / field / quote." }
+    for (const [key, ev] of Object.entries(params.termEvidence)) {
+      if (!(key in params.terms)) return { success: false, error: `Evidence names "${key}", which this addendum does not change.` }
+      if (!ev || typeof ev !== "object") continue
+      const page = ev.page == null ? null : Number(ev.page)
+      if (page !== null && (!Number.isInteger(page) || page < 1)) return { success: false, error: `The page for "${key}" must be a whole number from 1.` }
+      const field = typeof ev.field === "string" && ev.field.trim() ? ev.field.trim().slice(0, 120) : null
+      const quote = typeof ev.quote === "string" && ev.quote.trim() ? ev.quote.trim().slice(0, 500) : null
+      if (page === null && !field && !quote) continue
+      termEvidence[key] = { page, field, quote }
+    }
   }
 
   const svc = createServiceClient()
@@ -94,7 +113,7 @@ export async function recordContractAddendum(params: {
   const rec = await recordContractTermsVersion(svc as any, {
     brokerageId: caller.brokerageId, rootOfferId: current.rootOfferId, transactionId: current.transactionId,
     source: params.kind, status: "executed", terms: params.terms, documentId: params.documentId, executedAt, recordedBy: caller.userId,
-    evidence: { recorded_via: "record_contract_addendum", executed_on: params.executedOn, ...(effectiveOn ? { effective_on: effectiveOn } : {}) },
+    evidence: { recorded_via: "record_contract_addendum", executed_on: params.executedOn, ...(effectiveOn ? { effective_on: effectiveOn } : {}), ...(Object.keys(termEvidence).length > 0 ? { term_evidence_stated: termEvidence } : {}) },
   })
   if (!rec.ok) return { success: false, error: rec.reason }
 

@@ -120,8 +120,14 @@ export async function runDirectMailCampaignDrain(
       .select("lob_fallback_template_id").eq("id", input.brokerageId).maybeSingle()
     if (brkErr) console.error(`[campaign-drain] tenant legacy template read refused for ${input.brokerageId}: ${brkErr.message}`)
     const fallbackTpl = ((brk as any)?.lob_fallback_template_id as string | null) ?? ""
-    const { fallbackLobTemplates, mailPieceIdempotencyKey } = await import("@/lib/direct-mail/piece-type")
-    const fbCheck = fallbackLobTemplates(((row.piece_type as string | null) ?? "postcard"), fallbackTpl)
+    const { fallbackLobTemplates, mailPieceIdempotencyKey, formatForCampaignPieceType } = await import("@/lib/direct-mail/piece-type")
+    // WAVE 151 (151H): the campaign row's piece vocabulary folds onto the PRINT format once (piece-type.ts). A
+    // handwritten_letter / thank_you_note row is the handwriting-style PRINTED note: Lob piece type "letter" on the global
+    // personal-note layout. Before this the raw column value ("handwritten_letter") was handed to the orchestrator as a Lob
+    // piece type and every approved note failed "piece_type_not_orchestrated" with no global format template.
+    const mailFormat = formatForCampaignPieceType((row.piece_type as string | null) ?? "postcard")
+    const lobPieceType: "postcard" | "letter" = mailFormat === "postcard" ? "postcard" : "letter"
+    const fbCheck = fallbackLobTemplates(mailFormat === "postcard" ? "postcard" : mailFormat, fallbackTpl)
     if (!fbCheck.ok) {
       console.error(`[campaign-drain] campaign ${row.id} not mailed: ${fbCheck.reason}`)
       out.failed++
@@ -243,7 +249,8 @@ export async function runDirectMailCampaignDrain(
         city: addr.city,
         state: addr.state,
         zip: addr.zip,
-        pieceType: ((row.piece_type as string | null) ?? "postcard") as any,
+        pieceType: lobPieceType,
+        format: mailFormat,
         copyCtx: {
           brokerageId: input.brokerageId,
           agentUserId,

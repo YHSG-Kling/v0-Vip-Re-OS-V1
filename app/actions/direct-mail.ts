@@ -545,6 +545,8 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
     // NEVER household receipt (householdReceiptProven is false by type). An unmatched piece is said, not
     // read as success: the UPDATE is .select()ed and counted (CLAUDE.md §3).
     let pieceSettled = 0
+    let truth: import("@/lib/direct-mail/piece-type").MailPieceTruth | null = null
+    let returnedMail: import("@/lib/direct-mail/piece-type").ReturnedMailResult | null = null
     const pieceId = typeof payload?.lob_piece_id === "string" ? payload.lob_piece_id : params.batchId
     const lobEvent = String(payload?.lob_event ?? payload?.status ?? "")
     if (pieceId && lobEvent) {
@@ -565,9 +567,28 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
       if (settleErr) console.error(`[DirectMail] delivery outcome NOT settled on the recipient for piece ${pieceId}: ${settleErr.message}`)
       pieceSettled = Array.isArray(settled) ? settled.length : 0
       if (!settleErr && pieceSettled === 0) console.warn(`[DirectMail] Lob event ${lobEvent} for piece ${pieceId} matched no recipient of campaign ${params.campaignId} (a 1:1 drain piece has its own campaign row)`)
+
+      // ── WAVE 151 (lane 151H): DELIVERY TRUTH + RETURNED MAIL ──
+      // Six separate truths (piece-type.ts mailPieceTruth): this event is what it proves and nothing more — an accepted or
+      // rendered piece is not mailed, a mailed piece is not delivered, a carrier scan is not household receipt. A piece that
+      // came BACK corrects the address record it was mailed to and stops the sequence (applyReturnedMailHandling).
+      const { mailPieceTruth, applyReturnedMailHandling } = await import("@/lib/direct-mail/piece-type")
+      truth = mailPieceTruth(reading.outcome)
+      if (reading.outcome === "returned_to_sender" && pieceSettled > 0) {
+        const { data: rec, error: recErr } = await supabase
+          .from("direct_mail_recipients")
+          .select("id, campaign_id, lead_id, contact_id, address_line1, zip, delivery_status")
+          .eq("campaign_id", params.campaignId).eq("brokerage_id", campaign.brokerage_id).eq("provider_piece_id", pieceId)
+          .maybeSingle()
+        if (recErr) console.error(`[DirectMail] returned piece ${pieceId}: recipient read refused: ${recErr.message}`)
+        else if (rec) {
+          returnedMail = await applyReturnedMailHandling(supabase, { brokerageId: campaign.brokerage_id, recipient: rec as { id: string; campaign_id: string | null; lead_id?: string | null; contact_id?: string | null; address_line1: string | null; zip: string | null; delivery_status?: string | null } })
+          for (const e of returnedMail.errors) console.error(`[DirectMail] returned piece ${pieceId}: ${e}`)
+        }
+      }
     }
 
-    return { success: true, tracking: data, pieceSettled }
+    return { success: true, tracking: data, pieceSettled, truth, returnedMail }
   } catch (error) {
     return handleError(error, "trackDelivery")
   }
@@ -936,9 +957,36 @@ export async function sendCampaign(params: SendCampaignParams) {
     // for the campaign's format (distinct ids per format; a postcard's back is never its front; a format
     // with none, or two formats sharing one id, is refused BEFORE any spend). The campaign's own uploaded
     // design is DATA: it travels as the hosted `front_art_url` merge variable, never as a template.
-    const { routeMailFormat, formatForCampaignPieceType, readMailBrandFacts, buildMailMergeVariables, mailPieceIdempotencyKey, mailTemplateProvenance } =
+    const { routeMailFormat, formatForCampaignPieceType, readMailBrandFacts, buildMailMergeVariables, mailPieceIdempotencyKey, mailTemplateProvenance, campaignSendGate } =
       await import("@/lib/direct-mail/piece-type")
     const route = routeMailFormat(formatForCampaignPieceType(campaign.piece_type as string | null))
+
+    // ── WAVE 151 (lane 151H): TENANT APPROVAL BEFORE SEND + THE SPEND GUARD OVER THE WHOLE BATCH ──
+    // A campaign a human has not yet approved (approval_status pending / pending_review / rejected) is refused here — the Send
+    // click cannot step over the approval queue. The spend guard asks the SAME billing resolver the dispatcher asks per piece
+    // (lib/billing/billing-access.ts mayUseAndAfford — the tenant's mail budget + subscription), but for pieces × the ONE Lob
+    // price BEFORE the first piece, so a 500-piece campaign is refused at piece 0 and not at piece 300. The preview is kept
+    // as evidence on the campaign (spend_preview, m981). A degraded budget read proceeds with a warning (the dispatcher's
+    // documented fail-open for the budget half); an affirmative refusal stops the send.
+    let spendGate: ReturnType<typeof campaignSendGate>
+    {
+      const { DIRECT_MAIL_PIECE_COST_USD } = await import("@/lib/vendor-governance/cost-normalizer")
+      const unit = route.ok ? (DIRECT_MAIL_PIECE_COST_USD[route.templates.pieceType] ?? null) : null
+      let budget: Parameters<typeof campaignSendGate>[0]["budget"] = null
+      if (route.ok && typeof unit === "number") {
+        try {
+          const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+          const v = await mayUseAndAfford({ brokerageId: params.brokerageId, capability: "comms.send", estCostUsd: Math.round(recipients.length * unit * 100) / 100 })
+          budget = { allowed: v.allowed, reason: v.reason, remainingBudget: v.remainingBudget, budgetDegraded: v.budgetDegraded, softWarning: v.softWarning }
+        } catch (e) {
+          budget = { allowed: true, reason: `budget check threw: ${(e as Error)?.message ?? String(e)}`, remainingBudget: null, budgetDegraded: true }
+        }
+      }
+      spendGate = campaignSendGate({ approvalStatus: campaign.approval_status as string | null, status: campaign.status as string | null, pieces: recipients.length, unitCostUsd: unit, budget })
+      if (!spendGate.ok && spendGate.code !== "no_price") {
+        return { success: false, error: `Not mailed — ${spendGate.reason}`, gate: spendGate.code }
+      }
+    }
     const svcLedger = createServiceClient()
     const stampProvenance = async (campaignLedgerPatch: Record<string, unknown>) => {
       // m985 columns. A separate write on purpose: before m985 is applied PGRST204 refuses an unknown
@@ -968,7 +1016,7 @@ export async function sendCampaign(params: SendCampaignParams) {
       ...buildMailMergeVariables(brandRead.facts, {
         qrDestinationUrl,
         frontArtUrl: (campaign.design_url as string | null) ?? null,
-        bodies: { copy_text: (campaign.copy_text as string | null) ?? "" },
+        bodies: { copy_text: (campaign.copy_text as string | null) ?? "", note_body: (campaign.copy_text as string | null) ?? "" },
       }),
       provenance: brandRead.provenance,
     }
@@ -978,6 +1026,18 @@ export async function sendCampaign(params: SendCampaignParams) {
     const provenance = mailTemplateProvenance(route, brand)
     const isPersonal = route.format === "personal_letter"
 
+    // ── WAVE 151 (lane 151H): THE SENDER'S RETURN ADDRESS, JUDGED ONCE FOR THE WHOLE CAMPAIGN ──
+    // The tenant's configured / approved address (readMailBrandFacts → resolveTenantSenderAddress) through the ONE sender gate
+    // (lib/providers/mailing-cass-gate.ts decideSenderAddress). Missing / incomplete / unverified / the platform's → REFUSED by
+    // name here, before the proof and before the first piece. The dispatcher judges each piece again (defense in depth).
+    const { decideSenderAddress } = await import("@/lib/providers/mailing-cass-gate")
+    const sender = decideSenderAddress(brandRead.facts.returnAddress ?? null, { platformLobAddressId: process.env.LOB_RETURN_ADDRESS_ID })
+    if (!sender.ok) {
+      await stampProvenance({ mail_format: route.format, template_provenance: { ...provenance, sender_refusal: sender.reason } })
+      return { success: false, error: `Not mailed — sender address refused (${sender.code}): ${sender.reason}${brandRead.provenance.returnAddressRefusal ? ` — ${brandRead.provenance.returnAddressRefusal}` : ""}`, gate: "sender_address" }
+    }
+    const senderSnapshot = { ...sender.from, source: sender.source, ...sender.evidence }
+
     // ── PREVIEW: a Lob TEST-key proof, zero spend ─────────────────────────────
     if (params.previewOnly) {
       const first = recipients[0]
@@ -985,6 +1045,8 @@ export async function sendCampaign(params: SendCampaignParams) {
       const proof = await createLobProof(process.env.LOB_TEST_API_KEY ?? "", {
         pieceType: route.templates.pieceType,
         to: { name: `${first.first_name} ${first.last_name}`.trim(), address_line1: first.address_line1, ...(first.address_line2 ? { address_line2: first.address_line2 } : {}), address_city: first.city, address_state: first.state, address_zip: first.zip },
+        // The TENANT's return address on the proof too — the proof shows what the piece will carry.
+        from: sender.from as unknown as Record<string, string>,
         templateId: route.templates.templateId,
         backTemplateId: route.templates.backTemplateId,
         mergeVariables: { ...brand.mergeVars, recipient_name: `${first.first_name} ${first.last_name}`.trim() },
@@ -997,12 +1059,19 @@ export async function sendCampaign(params: SendCampaignParams) {
         proof_url: proof.data?.url ?? null,
         proof_rendered_at: proof.ok ? new Date().toISOString() : null,
       })
+      // m981 / m980 columns — separate write (PGRST204 before apply must not take the proof stamp down).
+      await stampProvenance({ sender_address_snapshot: senderSnapshot, sender_address_id: sender.evidence.addressId, spend_preview: spendGate.ok ? spendGate.spendPreview : null })
       return {
         success: proof.ok,
-        preview: { format: route.format, label: route.label, proofUrl: proof.data?.url ?? null, thumbnails: proof.data?.thumbnails ?? [], brandMissing: brand.missing, mergeVariables: brand.mergeVars },
+        preview: {
+          format: route.format, label: route.label, proofUrl: proof.data?.url ?? null, thumbnails: proof.data?.thumbnails ?? [], brandMissing: brand.missing, mergeVariables: brand.mergeVars,
+          senderAddress: senderSnapshot,
+          spend: spendGate.ok ? { estimatedCostUsd: spendGate.estimatedCostUsd, warning: spendGate.warning } : { refused: spendGate.reason },
+        },
         error: proof.ok ? undefined : proof.error ?? "Proof not rendered",
       }
     }
+    if (!spendGate.ok) return { success: false, error: `Not mailed — ${spendGate.reason}`, gate: spendGate.code }
 
     // ── Call Lob API via dispatchDirectMail() for each recipient ──
     let firstSuccessfulMessageId: string | undefined
@@ -1105,6 +1174,8 @@ export async function sendCampaign(params: SendCampaignParams) {
       if (pieceErr) console.error(`[DirectMail] provider piece id NOT recorded for recipient ${p.id}: ${pieceErr.message}`)
     }
     await stampProvenance({ mail_format: route.format, template_provenance: provenance, approved_by_user_id: params.actorUserId, approved_at: new Date().toISOString() })
+    // Wave 151 (151H): what the pieces carried as the sender (evidence), and the spend preview that cleared them (m980 / m981 — separate write).
+    await stampProvenance({ sender_address_snapshot: senderSnapshot, sender_address_id: sender.evidence.addressId, spend_preview: { ...spendGate.spendPreview, pieces_dispatched: successCount, pieces_failed: failedRecipientIds.length } })
 
     // Mark failed recipients so they aren't silently re-queried as pending
     if (failedRecipientIds.length > 0) {

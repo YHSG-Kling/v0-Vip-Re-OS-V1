@@ -61,6 +61,11 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // (frozen = exploit the current best arm, never explore); written by app/actions/flight-recorder.ts
   // setDirectMailExplorationFrozen through mergeBrokerageSettings → appendTenantPolicyVersion.
   direct_mail_exploration: { label: "Direct-mail exploration (bandit kill switch)", store: "brokerage_settings.settings", defaultNote: "exploring; Thompson sampling by lib/direct-mail/variant-bandit.ts" },
+  // Wave 151 (151H; owner: "the rendered pieces should not use the platform return address"): the tenant's SENDER /
+  // RETURN address for direct mail — saved and approved in Settings → Direct mail (app/actions/direct-mail-settings.ts
+  // saveSenderAddress / approveSenderAddress → appendTenantPolicyVersion). The value is the approved address row
+  // (scope, name, lines, city/state/zip, CASS verdict, approver) — the evidence a mailed piece carries it under (LAW 5).
+  direct_mail_sender_address: { label: "Direct-mail sender (return) address", store: "direct_mail_sender_addresses", defaultNote: "none approved — the dispatcher refuses the send by name (never the platform's address)" },
   ai_agent_capabilities:   { label: "AI agent capabilities (enabled / custom tools)", store: "brokerage_settings.settings", defaultNote: "every catalogue capability enabled, no custom tools" },
   lead_routing:            { label: "Lead routing switches (mailbox-owner preference)", store: "brokerage_settings.settings", defaultNote: "mailbox-owner preference ON" },
   contact_fatigue_weights: { label: "Contact fatigue weights", store: "brokerage_settings.settings", defaultNote: "platform default weights" },

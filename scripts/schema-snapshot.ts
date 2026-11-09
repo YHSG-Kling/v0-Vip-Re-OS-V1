@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 752 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 753 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-09
  * source: public.live_schema_json()
- * body-sha256: 6a47f40c0564542ced80ba729d046212eb9ebf80345614b19138f630ce9e5407
+ * body-sha256: c3a3b351269378b93c01bb81e13bffab7dd06d81a69225a5688e5369b4bdd0b9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -288,10 +288,11 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   deal_team_members: ["brokerage_id", "can_view_compliance", "can_view_documents", "can_view_financials", "company", "created_at", "email", "id", "member_id", "member_type", "name", "phone", "portal_access", "transaction_id"],
   deconflict_suppression_log: ["brokerage_id", "channel", "contact_id", "created_at", "id", "metadata", "outcome", "policy_max", "reason", "recipient_email", "recipient_phone", "system_source", "touches_in_window", "window_days"],
   deposits: ["agent_id", "amount", "brokerage_id", "check_number", "created_at", "created_by", "delivered_to_escrow_at", "deposit_type", "due_date", "escrow_company", "held_by", "id", "notes", "received_date", "status", "transaction_id", "wire_number"],
-  direct_mail_campaigns: ["agent_id", "approval_status", "approved_at", "approved_by_user_id", "brokerage_id", "bundle_dispatch_id", "campaign_name", "compliance_event_id", "contact_id", "copy_text", "created_at", "created_by", "design_url", "estimated_response_rate", "id", "is_ai_generated", "lead_id", "lob_order_id", "mail_format", "mailing_date", "marketing_campaign_id", "per_piece_cost", "piece_type", "pieces_mailed", "preset_id", "proof_rendered_at", "proof_status", "proof_url", "qr_code_id", "quantity", "status", "target_audience", "template_provenance", "tracking_id", "tts_audio_url", "tts_voice_id", "variant_id"],
+  direct_mail_campaigns: ["agent_id", "approval_status", "approved_at", "approved_by_user_id", "brokerage_id", "bundle_dispatch_id", "campaign_name", "compliance_event_id", "contact_id", "copy_text", "created_at", "created_by", "design_url", "estimated_response_rate", "id", "is_ai_generated", "lead_id", "lob_order_id", "mail_format", "mailing_date", "marketing_campaign_id", "per_piece_cost", "piece_type", "pieces_mailed", "preset_id", "proof_rendered_at", "proof_status", "proof_url", "qr_code_id", "quantity", "sender_address_id", "sender_address_snapshot", "spend_preview", "status", "target_audience", "template_provenance", "tracking_id", "tts_audio_url", "tts_voice_id", "variant_id"],
   direct_mail_presets: ["brokerage_id", "compliance_event_id", "composition_id", "created_at", "created_by", "fallback_template_id", "id", "is_active", "locked_body", "locked_cta", "locked_headline", "locked_letter_body", "locked_letter_greeting", "locked_letter_signoff", "name", "piece_type", "postcard_size", "property_photo_url", "pull_quote", "scope_id", "scope_type", "status_badge", "updated_at"],
-  direct_mail_recipients: ["address_line1", "address_line2", "brokerage_id", "campaign_id", "city", "contact_id", "created_at", "delivered_at", "delivery_outcome", "delivery_status", "expected_delivery_date", "first_name", "id", "idempotency_key", "last_name", "last_provider_event", "last_provider_event_at", "lead_id", "lob_address_id", "mailed_at", "provider_piece_id", "state", "unsubscribe_token", "unsubscribed_at", "zip"],
+  direct_mail_recipients: ["address_line1", "address_line2", "brokerage_id", "campaign_id", "city", "contact_id", "created_at", "delivered_at", "delivery_outcome", "delivery_status", "expected_delivery_date", "first_name", "id", "idempotency_key", "last_name", "last_provider_event", "last_provider_event_at", "lead_id", "lob_address_id", "mailed_at", "provider_piece_id", "return_handling", "state", "unsubscribe_token", "unsubscribed_at", "zip"],
   direct_mail_responses: ["brokerage_id", "campaign_id", "contact_id", "created_at", "id", "lead_id", "recipient_id", "response_metadata", "response_type"],
+  direct_mail_sender_addresses: ["approved_at", "approved_by_user_id", "brokerage_id", "cass_deliverability", "cass_source", "cass_verified_at", "city", "created_at", "created_by_user_id", "id", "is_default", "label", "line1", "line2", "name", "scope_id", "scope_type", "state", "status", "updated_at", "zip"],
   direct_mail_variant_outcomes: ["brokerage_id", "cost_spent_cents", "id", "last_scan_at", "last_send_at", "leads_count", "scans_count", "sends_count", "updated_at", "variant_id"],
   direct_mail_variants: ["brokerage_id", "composition_id", "copy_style", "created_at", "id", "is_active", "layout_variant", "persona", "postcard_size", "use_kind"],
   distribution_finals: ["acknowledged", "approval_basis", "approved_at", "approved_by", "asset_id", "asset_kind", "asset_table", "authored_by", "blockers", "brokerage_id", "content_sha256", "created_at", "created_by", "final_text", "findings", "id", "logo_url", "notified_at", "notified_user_id", "published_at", "published_ref", "published_sha256", "published_via", "source_sha256", "status", "tagline", "updated_at", "version"],

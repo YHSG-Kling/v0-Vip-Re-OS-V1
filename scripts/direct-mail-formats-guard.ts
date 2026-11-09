@@ -94,8 +94,11 @@ async function main() {
 
   console.log("\n[B · a typeface is never called handwriting]")
   {
-    check("the personal letter's label says PRINTED and never 'handwrit'", /printed/i.test(MAIL_FORMAT_LABELS.personal_letter) && !/handwrit/i.test(MAIL_FORMAT_LABELS.personal_letter))
-    check("only the handwritten_card label uses the word, and it names a pen", Object.entries(MAIL_FORMAT_LABELS).filter(([, l]) => /handwrit/i.test(l)).map(([k]) => k).join() === "handwritten_card" && /pen/i.test(MAIL_FORMAT_LABELS.handwritten_card))
+    // Re-asserted to the RULE (wave 151, lane 151H — owner: "handwritten font by computer can be a substitute", described as
+    // handwriting-STYLE PRINTED mail): the label says PRINTED and handwriting-STYLE, and never "handwritten". The wave-150
+    // check pinned the absence of "handwrit" entirely, which the owner's own wave-151 term contradicts.
+    check("the personal letter's label says PRINTED and handwriting-STYLE, never 'handwritten'", /printed/i.test(MAIL_FORMAT_LABELS.personal_letter) && /handwriting-style/i.test(MAIL_FORMAT_LABELS.personal_letter) && !/handwritten/i.test(MAIL_FORMAT_LABELS.personal_letter))
+    check("only the handwritten_card label uses the word 'handwritten', and it names a pen", Object.entries(MAIL_FORMAT_LABELS).filter(([, l]) => /handwritten/i.test(l)).map(([k]) => k).join() === "handwritten_card" && /pen/i.test(MAIL_FORMAT_LABELS.handwritten_card))
     const hwNone = routeMailFormat("handwritten_card", FOUR)
     check("handwritten_card is refused with no provider configured — and NOT downgraded to a typeset letter", !hwNone.ok && hwNone.downgrade === null)
     const hwLettr = routeMailFormat("handwritten_card", { ...FOUR, LOB_HANDWRITTEN_CARD_PROVIDER: "lettrlabs" })
@@ -105,7 +108,7 @@ async function main() {
     check("every optional provider is dormant (no adapter, no purchase)", Object.values(OPTIONAL_MAIL_PROVIDERS).every((p) => p.status === "dormant"))
     check("a campaign 'handwritten_letter' / 'thank_you_note' row is the PRINTED personal letter", formatForCampaignPieceType("handwritten_letter") === "personal_letter" && formatForCampaignPieceType("thank_you_note") === "personal_letter" && formatForCampaignPieceType("postcard_6x9") === "postcard")
     const keys = Object.keys(buildMailMergeVariables(brandA()).mergeVars)
-    check("no merge variable is named as handwriting", keys.every((k) => !/handwrit/i.test(k)))
+    check("no merge variable is named handwritten (the note's typeface variables are note_font_*)", keys.every((k) => !/handwritten/i.test(k)))
     const rep = code("app/actions/reputation-kernel.ts")
     const repStr = noComments("app/actions/reputation-kernel.ts")
     check("the mailed card's refusal text no longer calls the printed card handwritten", !/a handwritten card needs/.test(repStr) && /a mailed card needs/.test(repStr))
@@ -228,7 +231,9 @@ async function main() {
     check("sendCampaign stays session-gated, stamps its initiator, and dispatches under the per-piece ledger key", /const actor = await getAgentContext\(\)/.test(dm) && /approved_by_user_id: params\.actorUserId/.test(dm) && /mailPieceIdempotencyKey\("campaign_recipient", params\.campaignId, recipient\.id\)/.test(dm))
     check("preview is a Lob TEST-key proof and returns before any dispatch", /if \(params\.previewOnly\)[\s\S]*createLobProof\(process\.env\.LOB_TEST_API_KEY/.test(dm) && dm.indexOf("if (params.previewOnly)") < dm.indexOf("const lobResult = await dispatchDirectMail("))
     check("trackDelivery settles each Lob event onto the recipient's provider piece id and COUNTS the match", /\.eq\("provider_piece_id", pieceId\)\s*\.select\("id"\)/.test(dm) && /mailOutcomeFromLobEvent\(lobEvent\)/.test(dm))
-    check("orchestrate-send's fallback goes through fallbackLobTemplates with brand merge variables", /fallbackLobTemplates\(args\.pieceType, args\.fallbackTemplateId\)/.test(noComments("lib/direct-mail/orchestrate-send.ts")) && /mergeVars: fallbackMergeVars/.test(noComments("lib/direct-mail/orchestrate-send.ts")))
+    // Wave 151 (151H): the fallback names the piece's FORMAT (the personal note takes its own global layout) — the rule is
+    // "through fallbackLobTemplates, with the tenant's legacy id as the measured fallback", not the exact argument text.
+    check("orchestrate-send's fallback goes through fallbackLobTemplates with brand merge variables", /fallbackLobTemplates\((?:format === "personal_letter" \? "personal_letter" : )?args\.pieceType, args\.fallbackTemplateId\)/.test(noComments("lib/direct-mail/orchestrate-send.ts")) && /mergeVars: fallbackMergeVars/.test(noComments("lib/direct-mail/orchestrate-send.ts")))
     check("orchestrate-preset-send's fallback goes through fallbackLobTemplates", /fallbackLobTemplates\(preset\.piece_type, preset\.fallback_template_id\)/.test(noComments("lib/direct-mail/orchestrate-preset-send.ts")))
     check("the drain and the lifecycle reactor dispatch under a per-piece idempotency key", /mailPieceIdempotencyKey\("drain_campaign", row\.id\)/.test(noComments("lib/direct-mail/campaign-drain.ts")) && /mailPieceIdempotencyKey\("lifecycle", args\.listingId, args\.eventType, contactId\)/.test(noComments("lib/direct-mail/listing-lifecycle-mail-reactor.ts")))
     const live = await createLobProof("live_abc123", { pieceType: "letter", to: { name: "A", address_line1: "1 Elm", address_city: "X", address_state: "GA", address_zip: "30301" }, templateId: "tmpl_letter", mergeVariables: {} })
@@ -261,7 +266,9 @@ async function main() {
     check("§12 compares printed + postage + minimum + platform fee (column headers)", /Printed[^|]*\|\s*Postage\s*\|[^|]*\|\s*Minimum\s*\|[^|]*platform fee/i.test(s12))
     check("§12 cites official URLs with a read date", (s12.match(/<https:\/\/[^>]+>/g) ?? []).length >= 10 && /read 2026-11-06/.test(s12))
     check("§12 says 'unconfirmed' where a vendor publishes no price", (s12.match(/unconfirmed/gi) ?? []).length >= 5)
-    check("the doc no longer calls the personal letter's typeface handwriting", !/handwriting-style typeface/.test(doc))
+    // Re-asserted to the RULE (wave 151, lane 151H): the owner's own term is "handwriting-style printed"; what the doc must never
+    // do is call a printed note handwritten.
+    check("the doc never calls the printed personal note handwritten", !/handwritten (personal )?(letter|note)\b(?! only| cards? come)/i.test(doc.replace(/handwritten card provider|handwritten-card provider|handwritten cards? \(/gi, "")))
     const mig = read("supabase/migrations/m985-direct-mail-format-provenance-and-piece-outcomes.sql").split("\n")[0]
     check("m985 line 1 is the lane stamp or the APPLIED stamp", mig.startsWith("-- WRITTEN, NOT APPLIED (wave 150, lane 150R)") || mig.startsWith("-- ── APPLIED LIVE "))
   }
@@ -269,8 +276,9 @@ async function main() {
   // ── wave 150, lane 150Z convergence: the dispatcher and every Lob-id caller go through the ONE router ──
   {
     const disp = noComments("lib/providers/dispatch.ts")
-    check("the dispatcher refuses a back that IS the front (no LOB_POSTCARD_BACK_ID ?? front fallback) and accepts the tenant's inline `from`",
-      /back === params\.templateId/.test(disp) && !/backTemplateId \?\? process\.env\.LOB_POSTCARD_BACK_ID/.test(disp) && /const fa = params\.fromAddress/.test(disp))
+    // Wave 151 (151H): the inline `from` is now the ONE sender gate's answer (decideSenderAddress) — the platform fallback is gone.
+    check("the dispatcher refuses a back that IS the front (no LOB_POSTCARD_BACK_ID ?? front fallback) and takes the tenant's inline `from` from the sender gate",
+      /back === params\.templateId/.test(disp) && !/backTemplateId \?\? process\.env\.LOB_POSTCARD_BACK_ID/.test(disp) && /const from = senderGate\.from/.test(disp))
     const DIRECT_LOB_ID = /process\.env\.LOB_(?:DEFAULT_TEMPLATE_ID|DEFAULT_LETTER_TEMPLATE_ID|PRELISTING_[A-Z_]+|POSTCARD_BACK_ID)\b/
     check("POSITIVE CONTROL: the direct-Lob-id finder sees a planted read", DIRECT_LOB_ID.test(stripComments("const t = process.env.LOB_DEFAULT_TEMPLATE_ID ?? ''\n")))
     const callers = ["lib/ai-isa/direct-mail-trigger.ts", "app/actions/ai-isa.ts", "lib/agents/marketing-agent-actions.ts", "lib/workflow-orchestrator/chains/listing-appt-prep.ts"]
@@ -284,7 +292,7 @@ async function main() {
   console.log("  · readMailBrandFacts (the async reader over resolveBrandContext) is not driven here — it reads real server clients; buildMailMergeVariables, which it feeds, is. The sender's office is read through resolveUserOffice (stripped-source proof above); an office return address does not exist (`locations` has no ZIP)")
   console.log("  · memSupabase has no CHECKs: the live status CHECK is read from the generated cache scripts/check-vocabularies.ts; m985's CHECKs are read from the migration file, whose line-1 stamp says whether it is applied")
   console.log("  · whether a Google Fonts family exists, and whether Lob renders a merge-variable font URL, are unverified without a Lob test render (LOB_TEST_API_KEY)")
-  console.log("  · the dispatcher falls back to the platform LOB_RETURN_ADDRESS_ID as `from` only when the caller passes no complete tenant address (the brokerage of record's address lives in the brand cascade; an office address does not exist — `locations` has no ZIP)")
+  console.log("  · wave 151 (151H): the dispatcher no longer falls back to the platform LOB_RETURN_ADDRESS_ID — a missing tenant sender address is REFUSED by name (test:direct-mail-rendering §C/§D); an office address still does not exist (`locations` has no ZIP)")
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)
 }
@@ -295,7 +303,8 @@ function brandA(): MailBrandFacts {
     agentName: "Maya Chen", agentLicenseLine: "GA License # 123456", agentPhotoUrl: "https://cdn.a.example/maya.jpg",
     logoUrl: "https://cdn.a.example/logo.png", primaryColor: "#0F172A", secondaryColor: "#64748B", accentColor: "#F59E0B",
     fontFamily: "Libre Baskerville", tagline: "Rooted where you are.", website: "alderhomes.example", phone: "404-555-0100",
-    returnAddress: { name: "Alder Realty LLC", line1: "12 Peachtree St", city: "Atlanta", state: "GA", zip: "30303" },
+    // Wave 151 (151H): the return address is the TENANT's SenderAddress with its CASS evidence (mailing-cass-gate.ts).
+    returnAddress: { name: "Alder Realty LLC", line1: "12 Peachtree St", city: "Atlanta", state: "GA", zip: "30303", source: "tenant_return_address", verification: { method: "lob_cass", deliverability: "deliverable", verifiedAt: "2026-11-09T00:00:00Z" } },
     disclosureShort: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
     disclosureLong: "Alder Realty LLC is committed to the principles of the Fair Housing Act and the Equal Credit Opportunity Act.",
   }
@@ -306,7 +315,7 @@ function brandB(): MailBrandFacts {
     agentName: "Luis Ortega", agentLicenseLine: "FL License # SL998877", logoUrl: "https://cdn.b.example/hp.svg",
     primaryColor: "#1E3A8A", secondaryColor: "#94A3B8", accentColor: "#10B981", fontFamily: "Lora", tagline: "Coastal know-how, neighbourly care.",
     website: "harborpine.example", phone: "850-555-0199",
-    returnAddress: { name: "Harbor & Pine Realty Inc.", line1: "400 Bay Ave", city: "Pensacola", state: "FL", zip: "32502" },
+    returnAddress: { name: "Harbor & Pine Realty Inc.", line1: "400 Bay Ave", city: "Pensacola", state: "FL", zip: "32502", source: "tenant_return_address", verification: { method: "lob_cass", deliverability: "deliverable", verifiedAt: "2026-11-09T00:00:00Z" } },
     disclosureShort: "Equal Housing Opportunity.", disclosureLong: "Harbor & Pine Realty Inc. is committed to the Fair Housing Act.",
   }
 }

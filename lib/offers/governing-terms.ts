@@ -24,9 +24,9 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
-  GOVERNING_TERM_KEYS, OFFER_COLUMN_TO_KEY, TERM_VERSION_SOURCES, TERM_VERSION_STATUSES, acceptedOfferSequence, canonicalTerms, mergeVersions, resolveGoverningTerms,
-  signaturesPresent, versionsFromOfferChain,
-  type AcceptedOfferSequence, type AcceptedSequenceRefusal, type GoverningTerms, type OfferRowForTerms, type TermVersionSource, type TermVersionStatus, type TermsVersion,
+  GOVERNING_TERM_KEYS, OFFER_COLUMN_TO_KEY, TERM_VERSION_SOURCES, TERM_VERSION_STATUSES, acceptedOfferSequence, canonicalTerms, endOfDayInstant, mergeVersions, resolveGoverningTerms,
+  signaturesPresent, termEvidenceFor, versionsFromOfferChain,
+  type AcceptedOfferSequence, type AcceptedSequenceRefusal, type GoverningTerms, type OfferRowForTerms, type StatedTermEvidence, type TermVersionSource, type TermVersionStatus, type TermsVersion,
 } from "./governing-terms-rule"
 
 type Svc = SupabaseClient<any, any, any>
@@ -108,13 +108,15 @@ export async function governingContractTerms(
     if (rootList.length) filters.push(`root_offer_id.in.(${rootList.join(",")})`)
     if (transactionId) filters.push(`transaction_id.eq.${transactionId}`)
     if (filters.length) {
-      const { data, error } = await svc.from("contract_term_versions").select("version_no, source, status, offer_id, document_id, executed_at, terms, recorded_by, transaction_id").eq("brokerage_id", brokerageId).or(filters.join(","))
+      const { data, error } = await svc.from("contract_term_versions").select("version_no, source, status, offer_id, document_id, executed_at, terms, recorded_by, transaction_id, evidence").eq("brokerage_id", brokerageId).or(filters.join(","))
       if (error) return { ok: false, reason: `contract_term_versions read refused: ${error.message}` }
       recorded = ((data ?? []) as Array<Record<string, any>>).map((r) => ({
         versionNo: Number(r.version_no), source: r.source as TermVersionSource, status: r.status as TermVersionStatus,
         offerId: (r.offer_id as string | null) ?? null, documentId: (r.document_id as string | null) ?? null,
         executedAt: (r.executed_at as string | null) ?? null, terms: (r.terms ?? {}) as Record<string, unknown>, derived: false,
         recordedBy: (r.recorded_by as string | null) ?? null, transactionId: (r.transaction_id as string | null) ?? null,
+        // WAVE 151 (lane 151K): the instrument's signed effective language, when it stated one (evidence.effective_on, a day).
+        effectiveAt: endOfDayInstant((r.evidence as Record<string, unknown> | null)?.effective_on as string | undefined),
       }))
     }
   }
@@ -215,13 +217,30 @@ export async function recordContractTermsVersion(
   if (Object.keys(terms).length === 0) return { ok: false, reason: "a terms version must name at least one term" }
   if (!(TERM_VERSION_SOURCES as readonly string[]).includes(input.source) || !(TERM_VERSION_STATUSES as readonly string[]).includes(input.status)) return { ok: false, reason: "unknown source or status" }
 
+  let evidence: Record<string, unknown> = { ...(input.evidence ?? {}) }
+  let unlocated: string[] = []
   if (input.status === "executed") {
     if (!input.documentId) return { ok: false, reason: "an executed version needs the executed document it came from" }
-    const { data: doc, error: dErr } = await svc.from("documents").select("id, signature_completeness").eq("id", input.documentId).eq("brokerage_id", input.brokerageId).maybeSingle()
+    const { data: doc, error: dErr } = await svc.from("documents").select("id, signature_completeness, extracted_fields").eq("id", input.documentId).eq("brokerage_id", input.brokerageId).maybeSingle()
     if (dErr) return { ok: false, reason: `document read refused: ${dErr.message}` }
     if (!doc) return { ok: false, reason: "the document is not in this brokerage" }
     const sig = signaturesPresent((doc as { signature_completeness?: unknown }).signature_completeness, ["buyer", "seller"])
     if (sig.missing.length) return { ok: false, reason: `the document does not show ${sig.missing.join(" and ")} signed — a version is not executed until both parties' signatures are on it` }
+    // WAVE 151 (lane 151K — "extract changed terms with source-page/field evidence"): every changed term of an executed addendum /
+    // amendment carries WHERE it was read on the document — the document's own deterministic extraction rows first (a VERIFIED or
+    // HIGH extraction that disagrees with the typed term REFUSES the record: paper and typing disagree, nothing here picks one),
+    // the recording person's stated page / field / quote (evidence.term_evidence_stated) second, and an honest
+    // "person_reading_unlocated" otherwise — recorded, returned to the caller to flag, never invented.
+    if (input.source === "addendum" || input.source === "amendment") {
+      const { data: ex, error: exErr } = await svc.from("document_field_extractions").select("field_key, field_value_json, confidence, verified_at").eq("brokerage_id", input.brokerageId).eq("document_id", input.documentId)
+      if (exErr) return { ok: false, reason: `the document's extraction ledger could not be read: ${exErr.message}` }
+      const stated = evidence.term_evidence_stated && typeof evidence.term_evidence_stated === "object" ? (evidence.term_evidence_stated as Record<string, StatedTermEvidence>) : null
+      const ev = termEvidenceFor({ terms, extractions: (ex ?? []) as Array<{ field_key: string; field_value_json: unknown; confidence: string | null; verified_at: string | null }>, scanFields: (doc as { extracted_fields?: Record<string, unknown> | null }).extracted_fields ?? null, stated })
+      if (!ev.ok) return ev
+      const { term_evidence_stated: _stated, ...rest } = evidence
+      evidence = { ...rest, term_evidence: ev.termEvidence, ...(ev.unlocated.length ? { term_evidence_unlocated: ev.unlocated } : {}) }
+      unlocated = ev.unlocated
+    }
   }
   if (input.rootOfferId) {
     const { data, error } = await svc.from("offers").select("id").eq("id", input.rootOfferId).eq("brokerage_id", input.brokerageId).maybeSingle()
@@ -249,7 +268,7 @@ export async function recordContractTermsVersion(
     .insert({
       brokerage_id: input.brokerageId, root_offer_id: input.rootOfferId ?? null, transaction_id: input.transactionId ?? null, offer_id: input.offerId ?? null,
       document_id: input.documentId ?? null, version_no: next, source: input.source, status: input.status, terms,
-      executed_at: input.status === "executed" ? (input.executedAt ?? new Date().toISOString()) : null, recorded_by: input.recordedBy ?? null, evidence: input.evidence ?? {},
+      executed_at: input.status === "executed" ? (input.executedAt ?? new Date().toISOString()) : null, recorded_by: input.recordedBy ?? null, evidence,
     })
     .select("id")
   if (error) return { ok: false, reason: error.code === "23505" ? "that version number was just recorded by another request — retry" : `contract_term_versions insert refused: ${error.message}` }
@@ -259,12 +278,17 @@ export async function recordContractTermsVersion(
   // changes — the operational row, compliance re-review, the closing attestation, settlement reconciliation, the CDA, the deal
   // team — AFTER the version is recorded (the record stands whatever a consequence does; each outcome is returned).
   if (input.status === "executed" && (input.source === "addendum" || input.source === "amendment") && opts.consequences !== false) {
+    // WAVE 151 (lane 151K): re-read the contract THROUGH THE ONE READER with this version in it — a changed term two executed
+    // addenda now contradict each other on (nothing signed orders them) is UNRESOLVED and goes to a person, never a guess.
+    const after = await governingContractTerms(svc, input.brokerageId, input.transactionId ? { transactionId: input.transactionId } : { offerId: (input.offerId ?? input.rootOfferId) as string })
+    const unresolved = after.ok ? after.governing.unresolved.filter((u) => Object.prototype.hasOwnProperty.call(terms, u.key)) : []
     const { afterExecutedContractChange } = await import("./governing-terms-consequences")
     const consequences = await afterExecutedContractChange(svc, {
       brokerageId: input.brokerageId, transactionId: input.transactionId ?? null, rootOfferId: input.rootOfferId ?? null, versionNo: next,
       source: input.source, changedTerms: terms, documentId: input.documentId as string,
-      executedOn: String(input.executedAt ?? "").slice(0, 10), effectiveOn: typeof input.evidence?.effective_on === "string" ? (input.evidence.effective_on as string) : null,
+      executedOn: String(input.executedAt ?? "").slice(0, 10), effectiveOn: typeof evidence.effective_on === "string" ? (evidence.effective_on as string) : null,
       recordedBy: input.recordedBy ?? null,
+      unresolved, termEvidenceUnlocated: unlocated, governingReadFault: after.ok ? null : after.reason,
     }, opts.consequenceDeps)
     return { ok: true, versionNo: next, id, consequences }
   }

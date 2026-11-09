@@ -1773,8 +1773,8 @@ export const PROVIDER_ACTIVATION: Readonly<Record<ScorecardProvider, ProviderAct
   },
   datazapp: {
     state: "dormant_pending_rights",
-    rights: { status: "none_stated", summary: "the Terms grant no licence in writing (resale / platform / storage are neither granted nor prohibited); API is prepaid ($1,000 minimum)", source: "datazapp.com/termsandcondition (no date); datazapp.com/apis" },
-    credential: { envVars: ["DATAZAPP_API_KEY"], whereObtained: "DataZapp sales enable the API on an emailed request (key sent as `ApiKey` in the body)", howVerified: "not requested — a written licence comes first; the $125 test deposit is a purchase" },
+    rights: { status: "none_stated", summary: "the Terms grant no license in writing (resale / platform / storage are neither granted nor prohibited); API is prepaid ($1,000 minimum)", source: "datazapp.com/termsandcondition (no date); datazapp.com/apis" },
+    credential: { envVars: ["DATAZAPP_API_KEY"], whereObtained: "DataZapp sales enable the API on an emailed request (key sent as `ApiKey` in the body)", howVerified: "not requested — a written license comes first; the $125 test deposit is a purchase" },
     activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: null },
   },
   propertyradar: {
@@ -1785,7 +1785,7 @@ export const PROVIDER_ACTIVATION: Readonly<Record<ScorecardProvider, ProviderAct
   },
   data_axle: {
     state: "dormant_pending_rights",
-    rights: { status: "not_read", summary: "product, fields, reseller / embedded licence and quota unverified; only for a PROVEN market-level employer-event or licensed-acquisition gap (R9)", source: "data-axle.com/data-solutions/apis (directive source list)" },
+    rights: { status: "not_read", summary: "product, fields, reseller / embedded license and quota unverified; only for a PROVEN market-level employer-event or licensed-acquisition gap (R9)", source: "data-axle.com/data-solutions/apis (directive source list)" },
     credential: { envVars: [], whereObtained: "no product chosen — no credential name exists yet", howVerified: "not applicable until a product is chosen" },
     activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: null },
   },

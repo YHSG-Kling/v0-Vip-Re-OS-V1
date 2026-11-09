@@ -53,7 +53,7 @@ import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconfl
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
-import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
+import { needsCassCheck, interpretLobForGate, decideSenderAddress, type MailingGateLead, type SenderAddress } from "@/lib/providers/mailing-cass-gate"
 import { resolveManagerAutonomy, resolveAgentAuthorityLevel, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
 import { managerPolicyKey } from "@/lib/kernel/tenant-policy"
 import { contentSafetyBackstop } from "@/lib/providers/content-safety"
@@ -1046,8 +1046,11 @@ export interface DispatchDirectMailParams extends DispatchActorContext {
    *  (lib/direct-mail/piece-type.ts routeMailFormat), and a back equal to the front is REFUSED. */
   backTemplateId?: string
   /** WAVE 150 (lane 150R Outside-lane 1): the TENANT's return address (MailBrandFacts.returnAddress, the brand cascade), so a
-   *  letter's window never shows the platform's address. Absent → the platform's LOB_RETURN_ADDRESS_ID (unchanged). */
-  fromAddress?: { name: string; line1: string; line2?: string | null; city: string; state: string; zip: string } | null
+   *  letter's window never shows the platform's address. WAVE 151 (lane 151H — owner: "the rendered pieces should not use the
+   *  platform return address"): absent → the tenant's sender address is RESOLVED here (lib/direct-mail/piece-type.ts
+   *  resolveTenantSenderAddress) and every candidate passes the ONE sender gate (lib/providers/mailing-cass-gate.ts
+   *  decideSenderAddress); the platform's LOB_RETURN_ADDRESS_ID is recognized and REFUSED, never substituted. */
+  fromAddress?: SenderAddress | null
   /** Mail piece type — Lob supports more than letters. Defaults to "letter". */
   pieceType?: DirectMailPieceType
   /** Postcard size: "4x6" | "6x9" | "6x11" (default "4x6"). Letters ignore this. */
@@ -1305,10 +1308,22 @@ export async function dispatchDirectMail(
     address_zip: params.zip,
     address_country: "US",
   }
-  const fa = params.fromAddress
-  const from = fa && fa.name && fa.line1 && fa.city && fa.state && fa.zip
-    ? { name: fa.name, address_line1: fa.line1, ...(fa.line2 ? { address_line2: fa.line2 } : {}), address_city: fa.city, address_state: fa.state, address_zip: fa.zip, address_country: "US" }
-    : process.env.LOB_RETURN_ADDRESS_ID
+  // ── THE SENDER GATE (wave 151, lane 151H). TOMBSTONE: this fell back to the platform's saved Lob address
+  // (`: process.env.LOB_RETURN_ADDRESS_ID`) whenever a caller passed no complete tenant address — which was every rendered
+  // piece (orchestrate-send set `fromAddress` only on its static-template branch) and five callers that never passed one. The
+  // owner's rule is absolute: a tenant mailing never carries the platform's return address. So: a caller's candidate, else the
+  // tenant's resolved sender address, judged by the ONE gate; a missing / incomplete / unverified / platform address REFUSES
+  // the piece BY NAME before any spend. LOB_RETURN_ADDRESS_ID is read only so the gate can recognize and refuse it.
+  let senderCandidate: SenderAddress | null = params.fromAddress ?? null
+  if (!senderCandidate) {
+    const { resolveTenantSenderAddress } = await import("@/lib/direct-mail/piece-type")
+    const resolved = await resolveTenantSenderAddress({ brokerageId: params.brokerageId, teamId: params.teamId ?? null, agentUserId: params.userId ?? null })
+    senderCandidate = resolved.address
+    if (!senderCandidate && resolved.refusal) return { success: false, providerKey, error: `Not mailed — ${resolved.refusal}` }
+  }
+  const senderGate = decideSenderAddress(senderCandidate, { platformLobAddressId: process.env.LOB_RETURN_ADDRESS_ID })
+  if (!senderGate.ok) return { success: false, providerKey, error: `Not mailed — sender address refused (${senderGate.code}): ${senderGate.reason}` }
+  const from = senderGate.from
   const mergeVars = params.mergeVars ?? {}
   // WAVE 150 (lane 150R Outside-lane 1): the dispatcher's at-most-once rests on the action ledger; Lob's own Idempotency-Key is
   // passed as the SDK create(params, headers) second argument when the caller's ledger carries a key.

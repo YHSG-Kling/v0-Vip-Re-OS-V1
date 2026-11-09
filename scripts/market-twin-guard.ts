@@ -64,6 +64,8 @@ async function main() {
     check("the sold median comes from RECORDED closed sales only, labelled so (3 of this tenant's sales → $420,000)", z?.sold.medianSoldPrice?.basis === "recorded_sale" && z.sold.medianSoldPrice.value === 420000 && /sold/i.test(z.sold.medianSoldPrice.label) && z.sold.closedSales === 3, JSON.stringify(z?.sold))
     check("tenant-pinned: the other tenant's sale never enters the median", z?.sold.closedSales === 3)
     check("the provenance names RentCast /markets, the platform cache and the rights", z?.source.provider === "rentcast" && z.source.endpoint === "/markets" && /platform-wide provider cache rentcast:\/markets\|32503/.test(z.source.cache) && /licensed_vendor/.test(z.source.rights))
+    // Wave 151 (lane 151G): the ONE RentCast data-type table — a /markets reading is LISTING statistics, never a closed-sale index.
+    check("the source carries the data type (RENTCAST_DATA_TYPES.listing_statistics) — listing statistics, not sales", z?.source.dataType === "listing_statistics")
     const thin = await loadMarketTwin(memSupabase({ listings: [sold(1), sold(2)], market_data: [] }) as never, { brokerageId: B1, zips: ["32503"], allowProviderRead: true }, twinDeps({ n: 0 }))
     check("POSITIVE CONTROL: two sales are not a median (null, count kept)", thin.zips[0].sold.medianSoldPrice === null && thin.zips[0].sold.closedSales === 2)
   }
@@ -172,10 +174,10 @@ async function main() {
     const r2 = await produceMarketReport(world() as never, input(U2), deps() as never)
     const b1 = renders[0]?.spec?.brand, b2 = renders[1]?.spec?.brand
     check("both reports produced", r1.ok && r2.ok, JSON.stringify([!r1.ok && (r1 as any).reason, !r2.ok && (r2 as any).reason]))
-    check("office A: its DBA, its office licence, its colour and its tagline", b1?.brokerageName === "Gulf Breeze Downtown" && /Office Lic #BK111 \(FL\)/.test(b1?.licenseLine ?? "") && b1?.primaryColor === "#0a5c36" && b1?.tagline === "Downtown, door to door", JSON.stringify(b1))
-    check("office B: its legal name and licence; the tenant colour where it sets none — the SAME territory report differs per office", b2?.brokerageName === "Gulf Breeze Homes Beaches LLC" && /BK222/.test(b2?.licenseLine ?? "") && b2?.primaryColor === "#1144aa" && b2?.brokerageName !== b1?.brokerageName, JSON.stringify(b2))
+    check("office A: its DBA, its office license, its colour and its tagline", b1?.brokerageName === "Gulf Breeze Downtown" && /Office Lic #BK111 \(FL\)/.test(b1?.licenseLine ?? "") && b1?.primaryColor === "#0a5c36" && b1?.tagline === "Downtown, door to door", JSON.stringify(b1))
+    check("office B: its legal name and license; the tenant colour where it sets none — the SAME territory report differs per office", b2?.brokerageName === "Gulf Breeze Homes Beaches LLC" && /BK222/.test(b2?.licenseLine ?? "") && b2?.primaryColor === "#1144aa" && b2?.brokerageName !== b1?.brokerageName, JSON.stringify(b2))
     const r3 = await produceMarketReport(world({ refuse: { locations: "permission denied" } }) as never, input(U1), deps() as never)
-    check("a refused office read fails CLOSED (no report under the wrong office's licence line)", !r3.ok && /office brand could not be resolved/.test((r3 as any).reason))
+    check("a refused office read fails CLOSED (no report under the wrong office's license line)", !r3.ok && /office brand could not be resolved/.test((r3 as any).reason))
     const r4 = await produceMarketReport(world() as never, { ...input(U1), agentUserId: null }, deps() as never)
     check("POSITIVE CONTROL: no presenting agent → the tenant brand unchanged", r4.ok && renders[renders.length - 1]?.spec?.brand?.brokerageName === "Gulf Breeze Homes")
   }

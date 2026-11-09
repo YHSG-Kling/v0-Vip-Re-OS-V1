@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1938 of 2017 pairs) — storing them would be
+ * overwhelming majority (1940 of 2020 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,9 +75,9 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2121 edges across 755 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2017 unordered
- * table pairs carry at least one FK; 79
+ * MEASURED AT GENERATION: 2125 edges across 756 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2020 unordered
+ * table pairs carry at least one FK; 80
  * carry more than one and are listed below. 21 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-09
  * source: public.live_foreign_keys_json()
- * body-sha256: 226340b69eb4ac6a8f87b7fddc974f076ad7a3fcc282a6f63276080b6482f621
+ * body-sha256: 91d2edcac32996b4fd180f4d392ef11eb665bb8e37a6f36259ef0aa04abcb169
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -366,10 +366,11 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "deal_team_members": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "deconflict_suppression_log": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "deposits": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by": "users", "transaction_id": "transactions" },
-  "direct_mail_campaigns": { "agent_id": "agents", "approved_by_user_id": "users", "brokerage_id": "brokerages", "bundle_dispatch_id": "campaign_bundle_dispatches", "compliance_event_id": "compliance_events", "contact_id": "contacts", "created_by": "users", "lead_id": "leads", "marketing_campaign_id": "marketing_campaigns", "preset_id": "direct_mail_presets", "qr_code_id": "qr_codes", "variant_id": "direct_mail_variants" },
+  "direct_mail_campaigns": { "agent_id": "agents", "approved_by_user_id": "users", "brokerage_id": "brokerages", "bundle_dispatch_id": "campaign_bundle_dispatches", "compliance_event_id": "compliance_events", "contact_id": "contacts", "created_by": "users", "lead_id": "leads", "marketing_campaign_id": "marketing_campaigns", "preset_id": "direct_mail_presets", "qr_code_id": "qr_codes", "sender_address_id": "direct_mail_sender_addresses", "variant_id": "direct_mail_variants" },
   "direct_mail_presets": { "brokerage_id": "brokerages", "compliance_event_id": "compliance_events", "created_by": "users" },
   "direct_mail_recipients": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads" },
   "direct_mail_responses": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads", "recipient_id": "direct_mail_recipients" },
+  "direct_mail_sender_addresses": { "approved_by_user_id": "users", "brokerage_id": "brokerages", "created_by_user_id": "users" },
   "direct_mail_variant_outcomes": { "brokerage_id": "brokerages", "variant_id": "direct_mail_variants" },
   "direct_mail_variants": { "brokerage_id": "brokerages" },
   "distribution_finals": { "approved_by": "users", "brokerage_id": "brokerages", "created_by": "users", "notified_user_id": "users" },
@@ -918,6 +919,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "contract_term_versions|offers": 2,
   "data_subject_requests|users": 3,
   "direct_mail_campaigns|users": 2,
+  "direct_mail_sender_addresses|users": 2,
   "distribution_finals|users": 3,
   "fatigue_alerts|users": 2,
   "feature_access_overrides|users": 2,

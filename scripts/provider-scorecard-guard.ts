@@ -3,7 +3,7 @@
  * lane 150HIAB; contract C39, owner ruling R9, directive canary 9). npm run test:provider-scorecard (key listed for 150I2).
  *
  *   A  activation / licensing state matches R9 (RentCast + Versium active; BatchData + PeopleData dormant survivors; Tracerfy,
- *      DataZapp, PropertyRadar, Data Axle pending rights); every credential is a NAME (never a value); licence unknown blocks
+ *      DataZapp, PropertyRadar, Data Axle pending rights); every credential is a NAME (never a value); license unknown blocks
  *      ACTIVATION and never offline testing;
  *   B  one price spelling: every scorecard row whose provider routes that capability equals the route table's unit
  *      (× its declared credit weight) — derived, not pinned; a free row is unit "free"; an unknown price is null, never 0;
@@ -55,8 +55,8 @@ async function main() {
   check("every credential is a NAME (UPPER_SNAKE), none looks like a value", names.length >= 7 && names.every((n) => /^[A-Z][A-Z0-9_]+$/.test(n) && n.length < 40))
   check("each provider records where its credential is obtained and how it is verified without spend", Object.values(A).every((a) => a.credential.whereObtained.length > 10 && a.credential.howVerified.length > 10 && a.rights.source.length > 5))
   const tv = sc.activationVerdict("tracerfy")
-  check("Tracerfy: licence unconfirmed → mayActivate false with named blockers, offline testing allowed", !tv.mayActivate && tv.offlineTestAllowed && tv.blockers.some((b) => /contract/.test(b)) && tv.blockers.some((b) => /incremental coverage/.test(b)))
-  check("DataZapp: no licence stated → blocked on rights", sc.activationVerdict("datazapp").blockers.some((b) => /none_stated/.test(b)))
+  check("Tracerfy: license unconfirmed → mayActivate false with named blockers, offline testing allowed", !tv.mayActivate && tv.offlineTestAllowed && tv.blockers.some((b) => /contract/.test(b)) && tv.blockers.some((b) => /incremental coverage/.test(b)))
+  check("DataZapp: no license stated → blocked on rights", sc.activationVerdict("datazapp").blockers.some((b) => /none_stated/.test(b)))
   check("positive control: an ACTIVE provider (RentCast) may be called live", sc.activationVerdict("rentcast").mayActivate === true)
   check("every provider allows offline testing (canary 9)", (Object.keys(A) as any[]).every((p) => sc.activationVerdict(p).offlineTestAllowed === true))
 
@@ -162,7 +162,7 @@ async function main() {
   check("Tracerfy's undocumented scale → no top bucket, no lift until calibrated", tf.sellerSignal.lift === null && /undocumented/.test(tf.sellerSignal.why))
   check("never ranked across vendors (crossProviderRanking is null)", res.crossProviderRanking === null)
   check("ZERO writes, paidCalls 0, liveCalls 0 — the simulation spent nothing", mem.writes.length === 0 && res.paidCalls === 0 && res.liveCalls === 0)
-  check("licence unknown blocks ACTIVATION, not the simulation: both arms mayActivate false, the run completed", res.activation.every((x) => !x.mayActivate && x.blockers.length > 0) && res.valid)
+  check("license unknown blocks ACTIVATION, not the simulation: both arms mayActivate false, the run completed", res.activation.every((x) => !x.mayActivate && x.blockers.length > 0) && res.valid)
   check("the 50k/month projection is labelled SIMULATION", res.projection.basis === "SIMULATION" && res.projection.monthlyRecords === 50000 && res.projection.costUsdByArm.tracerfy !== null)
   const broken = await simulateProviderPilot(memSupabase(seed("control×solo")) as any, { simulate: simulate as any, now: new Date("2026-11-06T00:00:00Z") })
   check("negative: a missing stratum × tenant cell is refused as a design (not silently scored)", !broken.valid && broken.designProblems.some((p) => /control×solo: 0/.test(p)))

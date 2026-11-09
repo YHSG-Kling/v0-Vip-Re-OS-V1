@@ -24,7 +24,8 @@ import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
 import { HEALING_PROPOSAL_STATUSES, type HealingProposalStatus } from "@/lib/kernel/provider-config-healing"
 // Wave 150 (lane 150HIAB, owner ruling R9 / C39): the provider stack's activation state and field gaps sit beside the healing
 // queue, because activating a provider is the one provider-config change the healer may NEVER make (classifyProviderConfigChange).
-import { PROVIDER_ACTIVATION, PROVIDER_FIELD_SCORECARD, activationVerdict, providerFieldMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
+import { PROVIDER_ACTIVATION, PROVIDER_FIELD_SCORECARD, PROVIDER_RECOMMENDATION, PROVIDER_SELECTION_STATUS, activationVerdict, providerFieldMatrix, providerGapMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
+import { MATCHED_COHORT_DESIGN, projectMonthlyWaterfall } from "@/lib/providers/provider-pilot"
 import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
 // Wave 151 (lane 151F): the owner's platform acquisition caps (null = stop before spend), the internal acquisition economics and
 // each provider's TENANT-connectability (route B) sit beside the provider stack — one console for what the platform may spend,
@@ -110,8 +111,14 @@ export default async function ConnectorHealingPage() {
   // C25 — every CONFIG-level alternate a connector declares in code (the registry is the declaration survivor).
   // R9 — pure data from the ONE scorecard (no vendor call): who may be called live, what blocks the rest, which fields no
   // active provider documents.
-  const providerStack = (Object.keys(PROVIDER_ACTIVATION) as ScorecardProvider[]).map((p) => ({ provider: p, state: PROVIDER_ACTIVATION[p].state, ...activationVerdict(p) }))
+  const providerStack = (Object.keys(PROVIDER_ACTIVATION) as ScorecardProvider[]).map((p) => ({ provider: p, state: PROVIDER_ACTIVATION[p].state, recommendation: PROVIDER_RECOMMENDATION[p], ...activationVerdict(p) }))
   const fieldGaps = providerFieldMatrix().filter((m) => m.gap)
+  // Wave 151 (151G): the commercial selection as the code states it — nothing selected, nothing activated, nothing bought — the
+  // field-by-field gap matrix and the matched-cohort DESIGN with its labelled-variable waterfall (a projection, never a quote).
+  const selection = PROVIDER_SELECTION_STATUS
+  const gapMatrix = providerGapMatrix()
+  const cohortDesign = MATCHED_COHORT_DESIGN
+  const waterfall = projectMonthlyWaterfall({ field: "owner_email" })
   // C39 — the matched pilot is a DESIGN. After the platform gate above, the design check runs over whatever cohort rows
   // carry evidence.pilot (none until the owner loads one) with EMPTY provider answers — no provider is activated, so
   // nothing is called and nothing is spent. It reports the design's validity and each arm's activation blockers; it can
@@ -290,11 +297,14 @@ export default async function ConnectorHealingPage() {
       {/* ── PROVIDER STACK (R9) — activation is a reviewed change, never a heal ─────────────── */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Provider stack (owner ruling R9)</h2>
+        <p className="text-sm text-muted-foreground">
+          Commercial selection: {selection.status} — selected: {selection.selected ?? "none"}; activated: {selection.activatedForProduction ? "yes" : "no"}; purchases: 0; credentials requested: 0; paid pilot approved: {cohortDesign.spend.approved ? "yes" : "no"}.
+        </p>
         <Card>
-          <CardContent className="p-0">
+          <CardContent className="p-0 overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-muted-foreground">
-                <tr><th className="p-3">Provider</th><th className="p-3">State</th><th className="p-3">Live calls</th><th className="p-3">What blocks activation</th><th className="p-3">Tenant-owned connection (route B)</th></tr>
+                <tr><th className="p-3">Provider</th><th className="p-3">State</th><th className="p-3">Recommendation</th><th className="p-3">Live calls</th><th className="p-3">What blocks activation</th><th className="p-3">Tenant-owned connection (route B)</th></tr>
               </thead>
               <tbody>
                 {providerStack.map((r) => {
@@ -305,6 +315,7 @@ export default async function ConnectorHealingPage() {
                     <tr key={r.provider} className="border-t">
                       <td className="p-3">{r.provider}</td>
                       <td className="p-3"><Badge variant={r.state === "active" ? "default" : "outline"}>{r.state.replace(/_/g, " ")}</Badge></td>
+                      <td className="p-3 text-xs"><span className="font-medium">{r.recommendation.tier.replace(/_/g, " ")}</span> <span className="text-muted-foreground">({r.recommendation.decision.replace(/_/g, " ")})</span></td>
                       <td className="p-3">{r.mayActivate ? "allowed" : "blocked (offline simulation only)"}</td>
                       <td className="p-3 text-xs text-muted-foreground">{r.blockers.length === 0 ? "nothing" : r.blockers.join("; ")}</td>
                       <td className="p-3 text-xs text-muted-foreground">{tenant.state === "unconfigured" ? "connectable (tenant's own account, tenant-paid)" : tenant.state.replace(/_/g, " ")}</td>
@@ -320,6 +331,50 @@ export default async function ConnectorHealingPage() {
             ? "No field gaps — every field has an active, documented provider."
             : `Fields no active provider documents: ${fieldGaps.map((g) => g.field).join(", ")}. Only an activation after the matched pilot closes a gap.`}
         </p>
+        {/* Wave 151 (151G): the field-by-field GAP MATRIX — the same constants docs/operations/PROVIDER-SELECTION-WAVE151.md is rendered from. */}
+        <Card>
+          <CardContent className="p-0 overflow-x-auto">
+            <h3 className="p-3 font-medium">Gap matrix — source / field, recency, permitted use, grain, key, cost, payer, stability, attribution, retention, consumer rights, consuming survivor</h3>
+            <table className="w-full text-xs">
+              <thead className="text-left text-muted-foreground">
+                <tr><th className="p-2">Source · field</th><th className="p-2">Tier</th><th className="p-2">Recency</th><th className="p-2">Permitted use</th><th className="p-2">Grain</th><th className="p-2">Matching key</th><th className="p-2">Cost per call</th><th className="p-2">Cost per usable person</th><th className="p-2">Who pays</th><th className="p-2">API stability</th><th className="p-2">Attribution</th><th className="p-2">Retention</th><th className="p-2">Consumer display rights</th><th className="p-2">Consuming survivor</th></tr>
+              </thead>
+              <tbody>
+                {gapMatrix.map((g) => (
+                  <tr key={`${g.provider}:${g.field}`} className="border-t align-top">
+                    <td className="p-2">{g.source} · {g.field}</td>
+                    <td className="p-2">{g.recommendation.replace(/_/g, " ")}</td>
+                    <td className="p-2">{g.recency}</td>
+                    <td className="p-2">{g.permittedUse}</td>
+                    <td className="p-2">{g.grain}</td>
+                    <td className="p-2">{g.matchingKey}</td>
+                    <td className="p-2">{g.costPerCall}</td>
+                    <td className="p-2">{g.costPerUsablePerson}</td>
+                    <td className="p-2">{g.whoPays}</td>
+                    <td className="p-2">{g.apiStability}</td>
+                    <td className="p-2">{g.attribution}</td>
+                    <td className="p-2">{g.retention}</td>
+                    <td className="p-2">{g.consumerDisplayRights}</td>
+                    <td className="p-2 text-muted-foreground">{g.consumer}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="space-y-2 p-4 text-sm">
+            <h3 className="font-medium">Matched-cohort evaluation (design) — {cohortDesign.status}</h3>
+            <p className="text-xs text-muted-foreground">Cohorts (non-overlapping): {cohortDesign.cohorts.map((c) => `${c.cohort} ${c.size}`).join(" · ")}. Paid calls: {cohortDesign.spend.paidCalls}; paid pilot approved: {cohortDesign.spend.approved ? "yes" : "no"} — {cohortDesign.spend.note}</p>
+            <p className="text-xs">Monthly waterfall projection for <span className="font-medium">{waterfall.variables.field}</span> at the ASSUMED defaults (h = {waterfall.variables.hitRate}, u = {waterfall.variables.usableShare}, {waterfall.variables.monthlyRecords.toLocaleString("en-US")} records):</p>
+            <ul className="text-xs">
+              {waterfall.stages.map((s) => (
+                <li key={`${s.stage}:${s.provider}`}>stage {s.stage} · {s.provider} ({s.recommendation}) · attempted {s.attempted.toLocaleString("en-US")} · expected hits {s.expectedHits.toLocaleString("en-US")} · {s.costUsd === null ? `cost UNKNOWN (${s.unit})` : `$${Math.round(s.costUsd).toLocaleString("en-US")}`}{s.note ? ` — ${s.note}` : ""}</li>
+              ))}
+            </ul>
+            <p className="text-xs text-muted-foreground">Total: {waterfall.totalUsd === null ? `UNKNOWN — ${waterfall.unknownStages.join("; ")}` : `$${Math.round(waterfall.totalUsd).toLocaleString("en-US")}`}. {waterfall.disclaimer}</p>
+          </CardContent>
+        </Card>
         <Card>
           <CardContent className="space-y-2 p-4 text-sm">
             <h3 className="font-medium">Matched pilot — design check (simulation, nothing called, nothing spent)</h3>

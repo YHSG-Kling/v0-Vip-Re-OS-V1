@@ -273,9 +273,19 @@ export async function orchestratePresetSend(
   // WAVE 150 (lane 150R, R5): the fallback is the GLOBAL format template (+ brand merge variables); the
   // preset's own template id is a measured legacy fallback, and a postcard front with no distinct back
   // is refused, never mailed as front-on-both-sides (piece-type.ts fallbackLobTemplates).
+  // WAVE 151 (lane 151H): the brand facts — and with them THE TENANT's sender address — are read for EVERY preset piece, not
+  // only the fallback. TOMBSTONE: this dispatch passed no `fromAddress` at all, so every preset piece mailed under the platform's
+  // saved Lob address. The ONE gate (mailing-cass-gate.ts decideSenderAddress) refuses a missing / unverified / platform sender by
+  // name before any spend.
+  const { readMailBrandFacts, buildMailMergeVariables, fallbackLobTemplates } = await import("@/lib/direct-mail/piece-type")
+  const { decideSenderAddress } = await import("@/lib/providers/mailing-cass-gate")
+  const brandRead = await readMailBrandFacts({ brokerageId: args.brokerageId, teamId: args.teamId ?? null, agentUserId: args.userId ?? null })
+  const senderGate = decideSenderAddress(brandRead.facts.returnAddress ?? null, { platformLobAddressId: process.env.LOB_RETURN_ADDRESS_ID })
+  if (!senderGate.ok) {
+    return { success: false, rendered: false, fellBackReason: fellBackReason ?? "sender_address_refused", presetName: preset.name, error: `Not mailed — sender address refused (${senderGate.code}): ${senderGate.reason}` }
+  }
   let fallbackMergeVars: Record<string, string> | undefined
   if (!templateForLob) {
-    const { fallbackLobTemplates, readMailBrandFacts, buildMailMergeVariables } = await import("@/lib/direct-mail/piece-type")
     const fb = fallbackLobTemplates(preset.piece_type, preset.fallback_template_id)
     if (!fb.ok) {
       return {
@@ -288,7 +298,7 @@ export async function orchestratePresetSend(
     }
     templateForLob = fb.templateId
     backTemplateForLob = fb.backTemplateId
-    const fbBrand = buildMailMergeVariables((await readMailBrandFacts({ brokerageId: args.brokerageId, teamId: args.teamId ?? null, agentUserId: args.userId ?? null })).facts, { recipientName: args.recipientName })
+    const fbBrand = buildMailMergeVariables(brandRead.facts, { recipientName: args.recipientName })
     fallbackMergeVars = fbBrand.oversize ? undefined : fbBrand.mergeVars
   }
 
@@ -310,6 +320,8 @@ export async function orchestratePresetSend(
     pieceType:      preset.piece_type,
     size:           preset.piece_type === "postcard" ? (preset.postcard_size ?? "4x6") : undefined,
     ...(fallbackMergeVars ? { mergeVars: fallbackMergeVars } : {}),
+    // THE TENANT's sender address (wave 151, 151H) — never the platform's.
+    fromAddress:    brandRead.facts.returnAddress ?? null,
     systemSource:   args.systemSource ?? "preset",
     metadata: {
       preset_id:   preset.id,

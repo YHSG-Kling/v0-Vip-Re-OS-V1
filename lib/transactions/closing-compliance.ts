@@ -41,6 +41,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 // Lane 144D's concession vocabulary (lib/commission/agent-concession.ts, m850) — TYPES only, so a renamed status or treatment
 // breaks the build here instead of silently matching nothing (CLAUDE.md §6).
 import type { AgentConcessionApprovalStatus, ConcessionSettlementTreatment } from "@/lib/commission/agent-concession"
+// WAVE 151 (lane 151K): the ONE reader's "two executed addenda contradict each other" shape — TYPE only (the rule is pure).
+import type { UnresolvedTermConflict } from "@/lib/offers/governing-terms-rule"
 import { isValidUUID } from "@/lib/validations"
 import { auditTransactionDocuments } from "@/lib/compliance/required-documents"
 import { documentClassificationLabel } from "@/lib/compliance/required-documents"
@@ -59,11 +61,13 @@ import {
   parseParty,
   parseUsd,
   superimposeGoverningTerms,
+  CLOSING_TERM_KEYS,
   type ClosingComparison,
   type Confidence,
   type GoverningTerms,
   type LogRowSpec,
   type SettlementSnapshot,
+  type TermConflict,
   type TermFact,
   type TermMap,
   type TermsInstrument,
@@ -101,8 +105,9 @@ export interface TransactionRow {
   contact_id: string | null
 }
 
-/** The seam for lane A's `governingContractTerms`; the default reads the records. */
-export type GoverningTermsReader = (svc: Svc, tx: TransactionRow) => Promise<{ ok: true; governing: GoverningTerms } | { ok: false; error: string }>
+/** The seam for lane A's `governingContractTerms`; the default reads the records. `unresolvedTerms` (wave 151, lane 151K): the closing
+ *  terms two executed addenda / amendments contradict each other on with nothing signed to order them — filed as conflicts. */
+export type GoverningTermsReader = (svc: Svc, tx: TransactionRow) => Promise<{ ok: true; governing: GoverningTerms; unresolvedTerms?: ClosingTermKey[] } | { ok: false; error: string }>
 
 export interface RunClosingComplianceInput {
   transactionId: string
@@ -112,6 +117,18 @@ export interface RunClosingComplianceInput {
    *  lib/offers/governing-terms-consequences.ts). */
   trigger: "settlement_scanned" | "contract_document_scanned" | "final_check" | "manual" | "contract_addendum"
   actorUserId?: string | null
+  /**
+   * WAVE 151 (lane 151K — "re-run compliance … ONLY for changed terms"): on a `contract_addendum` trigger, the governing term keys
+   * the executed instrument changed. The run then compares ONLY the closing terms those keys reach, writes only their rows, and
+   * leaves the document / participant checks and every other term's row as they were. Absent → the full run (every other trigger).
+   */
+  changedTerms?: string[]
+  /**
+   * WAVE 151 (lane 151K): contradictions the ONE reader reported for this instrument (two executed addenda / amendments disagree
+   * on a term with nothing signed to order them). Each is filed as a BLOCKING `conflict` row for a person — with or without a
+   * settlement statement on file. The reader's own `unresolved` is read here too, so a lingering contradiction is filed on every run.
+   */
+  unresolved?: UnresolvedTermConflict[]
 }
 
 export interface RowWriteCounts { inserted: number; updated: number; unchanged: number; reopened: number }
@@ -404,13 +421,45 @@ const RECORD_KEY_MAP: ReadonlyArray<readonly [string, ClosingTermKey, "usd" | "p
   ["title_policy_payer", "owner_title_policy_payer", "party"],
   ["buyer_agent_commission_flat", "commission_buyer_side", "usd"], ["buyer_agent_commission_pct", "commission_buyer_side", "pct"],
 ]
+/**
+ * WAVE 151 (lane 151K): the ONE reader's unresolved contradictions (two executed addenda / amendments disagree on a governing term
+ * and nothing signed orders them) as the comparison's own `conflict` facts — two record-confidence facts, NEITHER governing. The
+ * comparison then files a blocking `conflict` row for a person; nothing here picks one.
+ */
+function unresolvedToClosingConflicts(unresolved: ReadonlyArray<UnresolvedTermConflict>): Partial<Record<ClosingTermKey, TermConflict>> {
+  const out: Partial<Record<ClosingTermKey, TermConflict>> = {}
+  for (const u of unresolved) {
+    const map = RECORD_KEY_MAP.find(([from]) => from === u.key)
+    if (!map) continue
+    const [, to, unit] = map
+    const facts = u.versions
+      .map((v) => coerceFact(unit, v.value, "record", `${v.source} ${v.versionNo} (executed ${(v.executedAt ?? "").slice(0, 10) || "—"}${v.effectiveAt ? `, effective ${v.effectiveAt.slice(0, 10)}` : ""})`, `record:${v.source}:v${v.versionNo}`, v.executedAt))
+      .filter((f): f is TermFact => !!f)
+    if (facts.length < 2 || out[to]) continue
+    out[to] = { winner: facts[facts.length - 1], loser: facts[0] }
+  }
+  return out
+}
+
+/** The closing terms a set of governing term keys reaches (through RECORD_KEY_MAP; a key already in the closing vocabulary maps to itself). */
+function closingTermsFor(governingKeys: readonly string[]): Set<ClosingTermKey> {
+  const out = new Set<ClosingTermKey>()
+  for (const k of governingKeys) {
+    for (const [from, to] of RECORD_KEY_MAP) if (from === k) out.add(to)
+    if ((CLOSING_TERM_KEYS as readonly string[]).includes(k)) out.add(k as ClosingTermKey)
+  }
+  return out
+}
+
 /** The authoritative versioned record (lib/offers/governing-terms.ts) as ONE executed instrument; null when nothing governs
- *  or the record is unreadable (said on the console — the instruments alone then decide, never a silent "no terms"). */
-async function recordedTermsInstrument(svc: Svc, tx: TransactionRow): Promise<TermsInstrument | null> {
+ *  or the record is unreadable (said on the console — the instruments alone then decide, never a silent "no terms").
+ *  WAVE 151 (lane 151K): also the record's UNRESOLVED contradictions as closing conflicts (empty when none). */
+async function recordedTermsInstrument(svc: Svc, tx: TransactionRow): Promise<{ instrument: TermsInstrument | null; conflicts: Partial<Record<ClosingTermKey, TermConflict>> }> {
   try {
     const { governingContractTerms } = await import("@/lib/offers/governing-terms")
     const r = await governingContractTerms(svc as any, String(tx.brokerage_id ?? ""), { transactionId: tx.id })
-    if (!r.ok || !r.governing.governingVersion) return null
+    if (!r.ok || !r.governing.governingVersion) return { instrument: null, conflicts: {} }
+    const conflicts = unresolvedToClosingConflicts(r.governing.unresolved ?? [])
     const terms: TermMap = {}
     let executedAt: string | null = null
     const recordTerms = r.governing.terms as Record<string, { value: unknown; versionNo: number; source: string; executedAt: string | null } | undefined>
@@ -432,13 +481,13 @@ async function recordedTermsInstrument(svc: Svc, tx: TransactionRow): Promise<Te
         terms[to] = { unit: "party", value: p, confidence: "record", source, executedAt: g.executedAt }
       }
     }
-    if (Object.keys(terms).length === 0) return null
+    if (Object.keys(terms).length === 0) return { instrument: null, conflicts }
     const gv = r.governing.governingVersion
     const kind: InstrumentKind = gv.source === "offer" ? "original_offer" : gv.source === "counter" ? "counter" : "addendum"
-    return { id: `record:${gv.source}:v${gv.versionNo}`, kind, label: `authoritative terms record (${gv.source} v${gv.versionNo})`, executed: true, executedAt, terms }
+    return { instrument: { id: `record:${gv.source}:v${gv.versionNo}`, kind, label: `authoritative terms record (${gv.source} v${gv.versionNo})`, executed: true, executedAt, terms }, conflicts }
   } catch (e) {
     console.warn("[closing-compliance] authoritative terms record unreadable — the instruments alone decide:", e instanceof Error ? e.message : String(e))
-    return null
+    return { instrument: null, conflicts: {} }
   }
 }
 
@@ -464,7 +513,7 @@ const readGoverningTermsFromRecords: GoverningTermsReader = async (svc, tx) => {
   // an executed counter / addendum recorded there supersedes what the instruments above say. It rides in as ONE
   // executed instrument so the superimposition rule below stays the only precedence rule.
   const recorded = await recordedTermsInstrument(svc, tx)
-  if (recorded) instruments.push(recorded)
+  if (recorded.instrument) instruments.push(recorded.instrument)
   // No offer on the transaction (a hand-built one): the transaction's own recorded terms, labelled as such.
   if (offers.instruments.length === 0) {
     const t = tx
@@ -476,7 +525,16 @@ const readGoverningTermsFromRecords: GoverningTermsReader = async (svc, tx) => {
     const cr = parseUsd(t.closing_cost_contribution); if (cr !== null && cr > 0) terms.seller_credit = { unit: "usd", value: cr, confidence: "record", source: src }
     if (Object.keys(terms).length > 0) instruments.push({ id: `tx:${t.id}`, kind: "original_offer", label: "transaction record", executed: true, executedAt: t.contract_date, round: null, terms })
   }
-  return { ok: true, governing: superimposeGoverningTerms(instruments) }
+  const governing = superimposeGoverningTerms(instruments)
+  // WAVE 151 (lane 151K): a term two executed addenda contradict each other on has NO governing value — whatever an earlier
+  // instrument said, the comparison sees the contradiction (a blocking `conflict` row), never a confident match.
+  const unresolvedTerms: ClosingTermKey[] = []
+  for (const [k, c] of Object.entries(recorded.conflicts) as Array<[ClosingTermKey, TermConflict]>) {
+    governing.conflicts[k] = c
+    delete governing.terms[k]
+    unresolvedTerms.push(k)
+  }
+  return { ok: true, governing, unresolvedTerms }
 }
 
 // ── Settlement snapshot ─────────────────────────────────────────────────────────
@@ -535,7 +593,7 @@ const FAULT_ROW_TYPES = [
   `${CLOSING_DOC_CHECK_PREFIX}checklist`,
 ] as const
 
-async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[]): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; error: string | null; raced?: boolean }> {
+async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], opts: { partial?: boolean } = {}): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; error: string | null; raced?: boolean }> {
   const counts: RowWriteCounts = { inserted: 0, updated: 0, unchanged: 0, reopened: 0 }
   const changed: LogRowSpec[] = []
 
@@ -593,8 +651,9 @@ async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[
     if (spec.status !== "pass") changed.push(spec)
   }
 
-  // A fault row whose fault is gone clears itself (an unreadable input that is readable again).
-  for (const type of FAULT_ROW_TYPES) {
+  // A fault row whose fault is gone clears itself (an unreadable input that is readable again). A PARTIAL run (wave 151, lane 151K:
+  // an addendum's changed terms only) did not re-evaluate the faults, so it clears none of them.
+  for (const type of opts.partial ? [] : FAULT_ROW_TYPES) {
     if (specs.some((s) => s.check_type === type)) continue
     const stale = byType.get(type)
     if (!stale || stale.status === "pass" || stale.status === "waived") continue
@@ -623,10 +682,10 @@ async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[
  * unique index admits ONE closing row per (transaction, check_type); the loser of that race re-reads the log —
  * which now holds the winner's rows — and reconciles instead of failing the check.
  */
-async function applyLogRows(svc: Svc, tx: TransactionRow, specs: LogRowSpec[]): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; error: string | null }> {
-  const first = await applyLogRowsOnce(svc, tx, specs)
+async function applyLogRows(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], opts: { partial?: boolean } = {}): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; error: string | null }> {
+  const first = await applyLogRowsOnce(svc, tx, specs, opts)
   if (!first.raced) return first
-  return applyLogRowsOnce(svc, tx, specs)
+  return applyLogRowsOnce(svc, tx, specs, opts)
 }
 
 // ── The checks that are not term comparisons ─────────────────────────────────────
@@ -839,9 +898,30 @@ export async function runClosingCompliance(
   const reader = deps.governingTerms ?? readGoverningTermsFromRecords
   const [gov, settlement] = await Promise.all([reader(svc, tx), loadSettlement(svc, tx)])
 
+  // WAVE 151 (lane 151K). SCOPE: on an executed addendum, ONLY the closing terms the changed governing keys reach are compared and
+  // written; the document / participant checks and every other term's row stay as they were (a changed contingency period does
+  // not re-judge the price lines). UNRESOLVED: a term two executed addenda contradict each other on is filed as a blocking
+  // `conflict` row on every run — the reader's own contradictions plus the ones the caller hands in — settlement or no settlement.
+  const scope = input.trigger === "contract_addendum" && (input.changedTerms?.length ?? 0) > 0 ? closingTermsFor(input.changedTerms!) : null
+  const handedIn = unresolvedToClosingConflicts(input.unresolved ?? [])
+  const unresolvedTerms = new Set<ClosingTermKey>(gov.ok ? (gov.unresolvedTerms ?? []) : [])
+  if (gov.ok) {
+    for (const [k, c] of Object.entries(handedIn) as Array<[ClosingTermKey, TermConflict]>) {
+      if (!gov.governing.conflicts[k]) gov.governing.conflicts[k] = c
+      delete gov.governing.terms[k]
+      unresolvedTerms.add(k)
+    }
+  }
+  const inScope = (term: ClosingTermKey) => !scope || scope.has(term) || unresolvedTerms.has(term)
+  /** The comparison narrowed to the unresolved terms alone (no settlement on file yet): only the contradiction rows are filed. */
+  const onlyUnresolved = <T,>(m: Partial<Record<ClosingTermKey, T>>): Partial<Record<ClosingTermKey, T>> =>
+    Object.fromEntries(Object.entries(m).filter(([k]) => unresolvedTerms.has(k as ClosingTermKey))) as Partial<Record<ClosingTermKey, T>>
+
   const specs: LogRowSpec[] = []
   let comparison: ClosingComparison | null = null
   let readFault: string | null = null
+  // A run that writes a SUBSET of the rows must not clear the fault rows it did not re-evaluate.
+  let partial = !!scope
 
   if (!gov.ok) readFault = gov.error
   else if (!settlement.ok) readFault = settlement.error
@@ -857,10 +937,19 @@ export async function runClosingCompliance(
       if (input.trigger === "final_check") {
         specs.push({ check_type: `${CLOSING_TERM_CHECK_PREFIX}settlement_statement`, check_label: "Closing: a settlement statement is on file to check the terms against", status: "fail", is_blocking: true,
           failure_reason: "No settlement statement (Closing Disclosure / preliminary closing statement) is on file for this transaction, so the contract terms cannot be checked against it.", signature: "no-settlement" })
-      } else {
+        // the contradictions are filed beside it (a settlement will not settle them; a person does)
+        if (unresolvedTerms.size > 0) {
+          comparison = compareClosingTerms(onlyUnresolved(gov.governing.terms), {}, onlyUnresolved(gov.governing.conflicts))
+          for (const f of comparison.findings) if (f.verdict === "conflict") specs.push(findingToLogRow(f))
+        }
+      } else if (unresolvedTerms.size === 0) {
         return { ...empty("no settlement statement on file yet — nothing to compare"), governingOnFile: Object.keys(gov.governing.terms).length > 0 }
+      } else {
+        partial = true
+        comparison = compareClosingTerms(onlyUnresolved(gov.governing.terms), {}, onlyUnresolved(gov.governing.conflicts))
+        for (const f of comparison.findings) if (f.verdict === "conflict") specs.push(findingToLogRow(f))
       }
-    } else if (Object.keys(gov.governing.terms).length === 0) {
+    } else if (Object.keys(gov.governing.terms).length === 0 && unresolvedTerms.size === 0) {
       specs.push({ check_type: `${CLOSING_TERM_CHECK_PREFIX}governing_terms`, check_label: "Closing: executed contract terms are on file", status: "fail", is_blocking: true,
         failure_reason: "No executed contract, counter or addendum states any term, so nothing can be checked against the settlement statement. Upload the fully executed contract.", signature: "no-governing" })
     } else {
@@ -868,17 +957,19 @@ export async function runClosingCompliance(
       // Listing-side commission belongs to the brokerage that took the listing; skip it on a buyer-only deal.
       for (const f of comparison.findings) {
         if (tx.deal_type === "buyer" && f.term === "commission_listing_side") continue
+        if (!inScope(f.term)) continue
         specs.push(findingToLogRow(f))
       }
     }
   }
 
-  const docs = await documentSpecs(svc, tx)
+  // The document / participant checks are not term comparisons: an addendum re-check leaves them as they were.
+  const docs = scope ? { specs: [] as LogRowSpec[], unavailable: null, policyVersion: null } : await documentSpecs(svc, tx)
   specs.push(...docs.specs)
-  const people = await participantSpecs(svc, tx, deps.closingEntity ?? defaultClosingEntity)
+  const people = scope ? { specs: [] as LogRowSpec[], question: null, staleNote: null } : await participantSpecs(svc, tx, deps.closingEntity ?? defaultClosingEntity)
   specs.push(...people.specs)
 
-  const written = await applyLogRows(svc, tx, specs)
+  const written = await applyLogRows(svc, tx, specs, { partial })
   if (written.error) {
     return { ...empty(written.error), governingOnFile: gov.ok && Object.keys(gov.governing.terms).length > 0, settlementOnFile: settlement.ok && settlement.snapshot.documents.length > 0, comparison }
   }
@@ -895,6 +986,7 @@ export async function runClosingCompliance(
       checklist_policy_version: docs.policyVersion,
       governing_applied: gov.ok ? gov.governing.applied.map((a) => ({ id: a.id, kind: a.kind, executedAt: a.executedAt })) : [],
       governing_ignored: gov.ok ? gov.governing.ignored : [],
+      scope: scope ? [...scope] : null, unresolved_terms: [...unresolvedTerms],
     },
   })
 

@@ -444,3 +444,110 @@ export function deliveryIdempotency(input: {
   if (input.resend === true && (input.resendReason ?? "").trim().length >= 5) return { ok: true, resend: true }
   return { ok: false, error: "already_delivered", resend: false }
 }
+
+// ─── 5. CLOSING WITHOUT A CDA — THE SMALLEST HONEST CLOSING PROOF (wave 151, lane 151K) ──────────────────────────────────────
+//
+// Owner (wave 151, binding): "L6 finish — if the brokerage doesn't use CDAs (their settings), then it can close without a CDA."
+// Directive: "the smallest honest closing proof: final settlement/closing record plus authorized brokerage receipt/attestation and
+// transaction compliance status, with the actual source actor and payment evidence. Do not force artificial CDA, pre-fill an agent
+// form via AI, bypass approved disbursement or assert funds received solely because a Closing date exists. Keep CLOSED / PAYOUT
+// PENDING and existing once-only payment holds intact."
+//
+// This is a READING of evidence that already exists on the survivors — it writes nothing and gates nothing:
+//   · the final settlement / closing record: the title company's final statement on the document kernel
+//     (closing_disclosure_agreement.final_cd_document_id / documents classified closing_disclosure — the same documents
+//     lib/transactions/closing-compliance.ts loadSettlement compares) with who uploaded it;
+//   · the authorized brokerage receipt: agent_commissions.deposit_received_at / deposit_received_by (lib/commission/
+//     reconcile-tracking.ts recordCommissionDepositReceived — a finance admin's act) and the payment states the ledger derives
+//     (lib/commission/ledger-sync.ts deriveCommissionPaymentState); NEVER status 'closed' or a closing date;
+//   · the transaction compliance status: compliance_passed_at + the open blocking compliance rows;
+//   · the payout holds as they stand: the funds-received gate (payoutFundsGate) and the lifetime hold (CLOSED / PAYOUT PENDING).
+// `fundsReceived` is derived from the receipt evidence ALONE: a closed deal with a closing date and no recorded receipt reads
+// "not received". A CDA row the no-CDA path created for the payout PREFERENCE (uses_cda false) is not a CDA and is never required.
+
+export const NO_CDA_CLOSING_PROOF_RULE = {
+  /** A CDA is never an unconditional closing requirement (resolveCdaMode.blocksClosing is `false` in both modes). */
+  cdaNeverRequiredToClose: true,
+  /** Funds are received when, and only when, a person recorded the brokerage's receipt — never because a closing date exists. */
+  fundsReceivedOnlyFromReceiptEvidence: true,
+  /** Nothing here fills a CDA, creates one, or releases a payout; the holds (payoutFundsGate, CLOSED / PAYOUT PENDING) stand. */
+  writesNothing: true,
+} as const
+
+export interface NoCdaClosingProofInput {
+  cdaMode: CdaModeVerdict
+  transaction: { status: string | null | undefined; close_date?: string | null; actual_close_date?: string | null; compliance_passed_at?: string | null }
+  /** The title company's final settlement / closing record on file, with the actor who put it there (null = none yet). */
+  finalSettlement: { documentId: string; uploadedAt: string | null; uploadedBy: string | null; uploadedByType: string | null } | null
+  /** The brokerage's receipt of the commission, as the ledger recorded it (one row per agent commission on the deal). */
+  commissions: Array<{ id: string; status: string | null; deposit_received_at?: string | null; deposit_received_by?: string | null; paid_at?: string | null; payment_received_at?: string | null; reconciled_at?: string | null; payment_initiated_at?: string | null }>
+  /** Open BLOCKING compliance rows (fail / pending / needs_review) on the deal. */
+  openBlockingCompliance: number
+  /** The lifetime hold activity ("CLOSED / PAYOUT PENDING") is open on the deal. */
+  lifetimeHoldOpen: boolean
+}
+
+export interface NoCdaClosingProof {
+  mode: "cda" | "no_cda"
+  /** Never true: the proof is informational; it never blocks a close (the owner's ruling). */
+  blocksClosing: false
+  closed: boolean
+  settlement: { status: "on_file" | "missing"; documentId: string | null; actor: string | null; at: string | null }
+  receipt: { status: "recorded" | "not_recorded" | "no_commission_row"; by: string | null; at: string | null; basis: string }
+  /** Derived from the receipt evidence ALONE (NO_CDA_CLOSING_PROOF_RULE). */
+  fundsReceived: boolean
+  compliance: { status: "passed" | "open_blocking" | "not_passed"; passedAt: string | null; openBlocking: number }
+  payout: { state: "no_commission_row" | "held_funds_not_received" | "releasable_after_receipt" | "initiated" | "recorded" | "received" | "reconciled"; lifetimeHold: "open" | "none"; detail: string }
+  /** What the proof still lacks, in words a TC or finance admin acts on. Empty = the smallest honest proof is complete. */
+  missing: string[]
+}
+
+/** PURE — the no-CDA closing proof over the evidence that exists. In CDA mode it says so and reads the same facts (nothing is forced). */
+export function noCdaClosingProof(input: NoCdaClosingProofInput): NoCdaClosingProof {
+  const status = String(input.transaction.status ?? "").toLowerCase()
+  const closed = status === "closed" || status === "funded"
+  const missing: string[] = []
+  const settlement: NoCdaClosingProof["settlement"] = input.finalSettlement
+    ? { status: "on_file", documentId: input.finalSettlement.documentId, actor: input.finalSettlement.uploadedBy ? `${input.finalSettlement.uploadedByType ?? "user"}:${input.finalSettlement.uploadedBy}` : null, at: input.finalSettlement.uploadedAt }
+    : { status: "missing", documentId: null, actor: null, at: null }
+  if (settlement.status === "missing") missing.push("the title company's final settlement / closing record is not on file")
+
+  const rows = input.commissions
+  let receipt: NoCdaClosingProof["receipt"]
+  if (rows.length === 0) receipt = { status: "no_commission_row", by: null, at: null, basis: "no agent commission is on the ledger for this deal yet" }
+  else {
+    const received = rows.filter((r) => !!r.deposit_received_at)
+    if (received.length === rows.length) {
+      const latest = [...received].sort((a, b) => String(a.deposit_received_at).localeCompare(String(b.deposit_received_at))).pop()!
+      receipt = { status: "recorded", by: latest.deposit_received_by ?? null, at: latest.deposit_received_at ?? null, basis: "agent_commissions.deposit_received_at — recorded by a person (recordCommissionDepositReceived)" }
+    } else receipt = { status: "not_recorded", by: null, at: null, basis: received.length ? `${received.length} of ${rows.length} commission rows carry a recorded receipt` : "no commission row carries deposit_received_at" }
+  }
+  const fundsReceived = receipt.status === "recorded"
+  if (!fundsReceived) missing.push(receipt.status === "no_commission_row" ? "no commission row to receive against" : "the brokerage's receipt of the commission is not recorded (a finance admin records the deposit — a closing date is not a receipt)")
+
+  const compliance: NoCdaClosingProof["compliance"] = input.openBlockingCompliance > 0
+    ? { status: "open_blocking", passedAt: input.transaction.compliance_passed_at ?? null, openBlocking: input.openBlockingCompliance }
+    : input.transaction.compliance_passed_at ? { status: "passed", passedAt: input.transaction.compliance_passed_at, openBlocking: 0 } : { status: "not_passed", passedAt: null, openBlocking: 0 }
+  if (compliance.status !== "passed") missing.push(compliance.status === "open_blocking" ? `${input.openBlockingCompliance} blocking compliance item(s) are open` : "transaction compliance has not passed")
+
+  let payoutState: NoCdaClosingProof["payout"]["state"] = "no_commission_row"
+  if (rows.length > 0) {
+    const any = (k: keyof NoCdaClosingProofInput["commissions"][number]) => rows.some((r) => !!r[k])
+    if (any("reconciled_at")) payoutState = "reconciled"
+    else if (any("payment_received_at")) payoutState = "received"
+    else if (rows.some((r) => r.status === "paid" || !!r.paid_at)) payoutState = "recorded"
+    else if (any("payment_initiated_at")) payoutState = "initiated"
+    else payoutState = fundsReceived ? "releasable_after_receipt" : "held_funds_not_received"
+  }
+  const payout: NoCdaClosingProof["payout"] = {
+    state: payoutState,
+    lifetimeHold: input.lifetimeHoldOpen ? "open" : "none",
+    detail: payoutState === "held_funds_not_received"
+      ? "the funds-received gate holds the payout until the brokerage's receipt is recorded (an advance needs a finance admin's stated reason)"
+      : payoutState === "releasable_after_receipt" ? "receipt recorded — the payout may be initiated under the brokerage's approved disbursement" : payoutState === "no_commission_row" ? "nothing to pay out yet" : `payout ${payoutState}`,
+  }
+  return {
+    mode: input.cdaMode.mode, blocksClosing: false, closed, settlement, receipt, fundsReceived, compliance, payout,
+    missing: input.cdaMode.mode === "cda" ? ["this brokerage uses a CDA — the CDA workflow is the closing proof; this reading is informational"] : missing,
+  }
+}

@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 483 tables, 949 columns.
+ * MEASURED AT GENERATION: 484 tables, 951 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-09
  * source: public.live_check_constraints_json()
- * body-sha256: 0a8be5d28f9468b2e06addfe2e02d9e3a16ed7c63f178eb81bc0c5244400b5a2
+ * body-sha256: 90bf459b522318fba49fa637ab1458869123f41b1eb0c51b764a8e0b3a9c3567
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -737,6 +737,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   direct_mail_responses: {
     response_type: ["appointment", "call", "form_submit", "landing_visit", "qr_scan", "reply"],
+  },
+  direct_mail_sender_addresses: {
+    scope_type: ["brokerage", "team", "user"],
+    status: ["active", "retired"],
   },
   direct_mail_variants: {
     postcard_size: ["4x6", "6x9"],

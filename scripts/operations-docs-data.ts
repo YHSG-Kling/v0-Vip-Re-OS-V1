@@ -323,7 +323,7 @@ add("mail", "secret", [
   ["VOICEDROP_API_KEY", "Ringless-voicemail provider key (lib/voicedrop/orchestrate-voicedrop-send.ts).", "OPTIONAL"],
 ])
 add("mail", "config", [
-  ["LOB_RETURN_ADDRESS_ID", "Lob saved return-address id (lib/providers/dispatch.ts:1214).", "OPTIONAL"],
+  ["LOB_RETURN_ADDRESS_ID", "The PLATFORM account's saved Lob return-address id. Since wave 151 (lane 151H) it is read ONLY so the sender gate can recognize and REFUSE it (lib/providers/dispatch.ts → lib/providers/mailing-cass-gate.ts decideSenderAddress): a tenant mailing always prints the tenant's own return address, never the platform's.", "OPTIONAL"],
   ["LOB_DEFAULT_TEMPLATE_ID", "Legacy name of the postcard FRONT template, read after LOB_POSTCARD_FRONT_TEMPLATE_ID (lib/direct-mail/piece-type.ts LOB_TEMPLATE_ENV; no caller reads it directly since wave 150).", "OPTIONAL"],
   ["LOB_DEFAULT_LETTER_TEMPLATE_ID", "Legacy name of the LETTER template, read after LOB_LETTER_TEMPLATE_ID (lib/direct-mail/piece-type.ts LOB_TEMPLATE_ENV).", "OPTIONAL"],
   ["LOB_NOTECARD_ID", "Notecard template id — the thank-you card's postcard fallback (app/actions/reputation-kernel.ts).", "OPTIONAL"],

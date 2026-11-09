@@ -344,7 +344,10 @@ function AddendumForm({ thread, onChanged, onError, onNotice }: {
   const [documentId, setDocumentId] = useState("")
   const [fileName, setFileName] = useState("")
   const [executedOn, setExecutedOn] = useState("")
+  const [effectiveOn, setEffectiveOn] = useState("")
   const [termsText, setTermsText] = useState('{\n  "closing_date": "2026-12-20"\n}')
+  // Wave 151 (151K): where each changed term is READ in the signed document — page / field / quoted words, keyed by term.
+  const [evidenceText, setEvidenceText] = useState('{\n  "closing_date": { "page": 1, "field": "Closing Date", "quote": "" }\n}')
   const [uploading, setUploading] = useState(false)
 
   async function upload(file: File) {
@@ -375,10 +378,21 @@ function AddendumForm({ thread, onChanged, onError, onNotice }: {
       onError("The terms must be valid JSON — only the terms the addendum changes.")
       return
     }
+    let termEvidence: Record<string, { page?: number | null; field?: string | null; quote?: string | null }> | null = null
+    if (evidenceText.trim()) {
+      try {
+        const parsed = JSON.parse(evidenceText)
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object")
+        termEvidence = parsed as typeof termEvidence
+      } catch {
+        onError("The evidence must be valid JSON — each changed term with its page / field / quote (or clear the box).")
+        return
+      }
+    }
     startTransition(async () => {
-      const res = await recordContractAddendum({ offerId: thread.offerId, kind, documentId, terms, executedOn })
+      const res = await recordContractAddendum({ offerId: thread.offerId, kind, documentId, terms, executedOn, effectiveOn: effectiveOn || null, termEvidence })
       if (!res.success) { onError(res.error ?? "The addendum could not be recorded."); return }
-      setOpen(false); setDocumentId(""); setFileName("")
+      setOpen(false); setDocumentId(""); setFileName(""); setEffectiveOn("")
       onNotice(`Recorded as ${kind} ${res.versionNo}. It now governs the terms it changes; the earlier values stay on file.`)
       await onChanged()
     })
@@ -399,6 +413,9 @@ function AddendumForm({ thread, onChanged, onError, onNotice }: {
             <label className="block text-[11px] font-medium">Date fully signed
               <input className={cn(input, "mt-1")} type="date" value={executedOn} onChange={(e) => setExecutedOn(e.target.value)} />
             </label>
+            <label className="block text-[11px] font-medium">Takes effect on (only if the addendum states a date)
+              <input className={cn(input, "mt-1")} type="date" value={effectiveOn} onChange={(e) => setEffectiveOn(e.target.value)} />
+            </label>
           </div>
           <label className={cn(btn, "cursor-pointer", uploading && "opacity-50")}>
             {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />} {fileName ? `Signed document: ${fileName}` : "Upload the signed document"}
@@ -407,6 +424,9 @@ function AddendumForm({ thread, onChanged, onError, onNotice }: {
           </label>
           <label className="block text-[11px] font-medium">Terms it changes (JSON; null strikes a term)
             <textarea className={cn(input, "mt-1 font-mono")} rows={4} value={termsText} onChange={(e) => setTermsText(e.target.value)} />
+          </label>
+          <label className="block text-[11px] font-medium">Where each term is read in the signed document (JSON: page, field, quote — a term with none is recorded and flagged for review)
+            <textarea className={cn(input, "mt-1 font-mono")} rows={3} value={evidenceText} onChange={(e) => setEvidenceText(e.target.value)} />
           </label>
           <p className="text-[10px] text-muted-foreground">Recorded only if the uploaded document has been read and shows both the buyer's and the seller's signatures. Nothing is signed or accepted for anyone.</p>
           <button className={btnPrimary} onClick={submit} disabled={isPending || !documentId || !executedOn}>

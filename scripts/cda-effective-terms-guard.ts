@@ -142,13 +142,20 @@ async function main() {
       !DEMOTE.test(kernel) && /export async function promoteDealContactsToLifetime/.test(kernel) && DEMOTE.test(`.update({ lifecycle_state: "lead" }).eq("lifecycle_state", "lifetime")`))
   }
 
-  section("H · closing attestation WITHOUT a CDA — an owner decision, not invented")
+  section("H · closing attestation WITHOUT a CDA — asked informationally at the no-CDA close (option b), never a closing gate")
   {
+    // WAVE 151 (lane 151K; OWNER-SQL §L L6.2 option (b)): the question is asked on exactly TWO paths — the CDA submit door (blocking,
+    // the CDA is held on it) and the no-CDA gated close (informational: is_blocking false, the close is never held). Option (c), a
+    // blocking ask for no-CDA brokerages, stays an owner decision — so a THIRD caller, or a blocking ask at the close, is the defect.
     const SITE = /ensureClosingAttestationAsked\(/
     const roots = ["app", "lib"]
     const walk = (d: string): string[] => readdirSync(join(ROOT, d), { withFileTypes: true }).flatMap((e) => e.isDirectory() ? (e.name === "node_modules" ? [] : walk(`${d}/${e.name}`)) : /\.(ts|tsx)$/.test(e.name) ? [`${d}/${e.name}`] : [])
-    const callers = roots.flatMap(walk).filter((p) => p !== "lib/commission/closing-verification.ts" && SITE.test(code(p)))
-    check("the attestation is ASKED only on the CDA path (app/actions/cda-portal.ts) — no non-CDA closing gate was invented", callers.length === 1 && callers[0] === "app/actions/cda-portal.ts", callers.join(", "))
+    const callers = roots.flatMap(walk).filter((p) => p !== "lib/commission/closing-verification.ts" && SITE.test(code(p))).sort()
+    check("the attestation is ASKED on exactly two paths: the CDA submit door and the no-CDA gated close — no third caller", callers.join(",") === "app/actions/cda-portal.ts,lib/transactions/stage-progression.ts", callers.join(", "))
+    const sp = code("lib/transactions/stage-progression.ts"), portal = code("app/actions/cda-portal.ts")
+    const spCall = sp.slice(sp.indexOf("ensureClosingAttestationAsked(supabase"), sp.indexOf("ensureClosingAttestationAsked(supabase") + 220)
+    check("the no-CDA close asks it INFORMATIONALLY (informational: true, under the closed-without-CDA branch); the CDA door asks it BLOCKING (no informational flag)", /informational:\s*true/.test(spCall) && /closedWithoutCda\)/.test(sp) && !/informational/.test(portal))
+    check("the writer makes an informational ask a NON-blocking row and a default ask a blocking one", /is_blocking:\s*!informational/.test(code("lib/commission/closing-verification.ts")))
     check("POSITIVE CONTROL: the census finder recognises a call", SITE.test(`await ensureClosingAttestationAsked(svc, { brokerageId, transactionId })`))
   }
 

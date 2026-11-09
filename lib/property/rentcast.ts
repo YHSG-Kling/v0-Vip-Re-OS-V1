@@ -1147,6 +1147,77 @@ export async function getRentcastMarketStats(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Area SOLD RECORDS (wave 151 — RENTCAST_DATA_TYPES.sold_records, lib/market-reports/contract.ts)
+// ---------------------------------------------------------------------------
+
+/** One recorded sale from a RentCast property record: the public whitelist plus its two sale fields. Never the owner block. */
+export interface RentcastSoldRecord extends RentcastPropertyFacts {
+  /** YYYY-MM-DD the property last sold, as RentCast carries it from public records. */
+  lastSaleDate: string | null
+  lastSalePrice: number | null
+}
+
+/**
+ * The properties in an area that RentCast records as LAST SOLD within `saleDateRangeDays` — `GET /properties` with
+ * `saleDateRange` ("the number of days since a property was last sold … used to search for properties that were sold
+ * within the specified date range"). These are RECORDED sales (deed-side events as RentCast carries them from public
+ * records) — the data type `/markets` is NOT: that endpoint is LISTING statistics (asking prices, listing counts).
+ *
+ * Owner (wave 151): "RentCast has sold properties because market data is a capability of RentCast if the tenant doesn't
+ * have a connected IDX provider." The market report asks for these only when the tenant's own MLS-synced closed sales
+ * are too few for a median, and only through the CAPABILITY (lib/property/area-sold-records.ts getAreaSoldRecords — which asks
+ * the IDX question and answers an IDX tenant from its feed); this reader is the vendor leg behind it, never a caller's
+ * entry. Gated property_data (the IDX substitute question belongs to the capability, not to a property-data read),
+ * metered as `sold_records`, cached RENTCAST_CACHE_TTL_DAYS.markets (a week — public-record sales post slowly, and a
+ * same-week re-read is the same rows). The projection is the public whitelist plus lastSaleDate / lastSalePrice; the
+ * owner block is never read. Never throws.
+ */
+export async function getRentcastSoldRecords(
+  params: RentcastCaller & { zipCode?: string | null; city?: string | null; state?: string | null; saleDateRangeDays: number; limit?: number },
+): Promise<{ success: boolean; records: RentcastSoldRecord[]; cacheHit: boolean; error?: string }> {
+  const { apiKey, eligibility } = await gateRentcast(params, "property_data")
+  if (!apiKey) return { success: false, records: [], cacheHit: false, error: refusalMessage(eligibility) }
+  const zip = params.zipCode?.trim() || null
+  const city = params.city?.trim() || null
+  const state = params.state?.trim() || null
+  if (!zip && !(city && state)) return { success: false, records: [], cacheHit: false, error: "an area sold-records read needs a zip code, or a city and state" }
+  const days = Math.max(1, Math.floor(params.saleDateRangeDays))
+  const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 100)))
+  const area = zip ?? `${city},${state}`
+  try {
+    const read = await cachedRentcastRead<RentcastPropertyRecord[]>(
+      `/properties(sold)|${area.toLowerCase()}|${days}|${limit}`, RENTCAST_CACHE_TTL_DAYS.markets, async () => {
+        const q = zip
+          ? { zipCode: zip, saleDateRange: String(days), limit }
+          : { city: city as string, state: state as string, saleDateRange: String(days), limit }
+        const res = await callRentcastGet("/properties", q, apiKey)
+        meterCall({
+          brokerageId: params.brokerageId,
+          usageType: "sold_records",
+          cost: RENTCAST_USD_PER_REQUEST,
+          endpoint: "/properties(sold)",
+          systemSource: params.systemSource,
+          contactId: params.contactId,
+          metadata: { ok: res.ok, status: res.status, area, sale_date_range_days: days },
+          pooledBrokerageIds: params.pooledBrokerageIds ?? null,
+        })
+        return { ok: res.ok, data: res.ok && Array.isArray(res.data) ? (res.data as RentcastPropertyRecord[]) : null }
+      })
+    if (!read.ok || !read.data) return { success: false, records: [], cacheHit: read.cacheHit, error: "Rentcast returned no sold records (the request failed)" }
+    return { success: true, cacheHit: read.cacheHit, records: read.data.map((r) => normalizeRentcastSoldRecord(r)) }
+  } catch (err: any) {
+    return { success: false, records: [], cacheHit: false, error: err?.message ?? "Rentcast fetch failed" }
+  }
+}
+
+/** PURE — one raw /properties row → the public whitelist + its two sale fields (the owner block is never read). */
+function normalizeRentcastSoldRecord(r: RentcastPropertyRecord | Record<string, unknown>): RentcastSoldRecord {
+  const row = r as Record<string, any>
+  const date = typeof row.lastSaleDate === "string" && row.lastSaleDate.trim() ? row.lastSaleDate.trim().slice(0, 10) : null
+  return { ...normalizeRentcastPropertyRecord(r), lastSaleDate: date, lastSalePrice: posNum(row.lastSalePrice) }
+}
+
 /**
  * WHY A RENTCAST AVM BASELINE IS ABSENT. Never collapsed to a boolean, and never
  * collapsed to a zero: "we deliberately did not call", "the call failed" and

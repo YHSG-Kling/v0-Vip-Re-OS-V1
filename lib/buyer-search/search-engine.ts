@@ -339,6 +339,11 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
             __mls_name: (e as { mlsName?: string | null }).mlsName ?? null,
             __mls_number: (e as { mlsNumber?: string | null }).mlsNumber ?? null,
             __status_reported: e.source === 'idx' ? 'active' : (e.sourceStatus ?? null),
+            // Wave 151 (151G): the row's DATA TYPE, verified-status and source label (idx_feed / feed_active / the feed's
+            // name; listing_records / provider_reported / RentCast's label) — the portal card prints them beside the MLS name.
+            __data_type: e.dataType,
+            __verified_status: e.verifiedStatus,
+            __source_label: e.sourceLabel,
           })
         }
       }

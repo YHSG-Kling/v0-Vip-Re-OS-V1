@@ -29,6 +29,10 @@
 // shape lib/lead-pipeline/source-discovery-planner.ts planSourceDiscovery takes (read by app/actions/acquisition-plan.ts
 // proposeAcquisitionPlan with allowProviderRead:false — wired wave 150, lane 150Z). Tenant-pinned on every tenant read; every { error } is read. Never throws.
 
+// Wave 151 (lane 151G): the ONE RentCast data-type table — `/markets` is RENTCAST_DATA_TYPES.listing_statistics, never a
+// closed-sale index; the twin's `source.dataType` carries that kind so a downstream reader cannot mistake it.
+import { RENTCAST_DATA_TYPES, type RentcastDataKind } from "./contract"
+
 type Db = { from: (table: string) => any }
 
 const DAY_MS = 86_400_000
@@ -59,7 +63,8 @@ interface TwinZip {
   rental: { medianRent: TwinFact | null }
   sold: { medianSoldPrice: TwinFact | null; closedSales: number; window: string; caveat: string }
   via: "provider_read" | "tenant_reading" | "none"
-  source: { provider: "rentcast" | "tenant_market_data" | null; endpoint: string | null; cache: string; rights: string; retrievedAt: string | null }
+  /** `dataType` is RENTCAST_DATA_TYPES.listing_statistics.kind whenever a RentCast figure is present — listing statistics, not sales. */
+  source: { provider: "rentcast" | "tenant_market_data" | null; endpoint: string | null; dataType: RentcastDataKind | null; cache: string; rights: string; retrievedAt: string | null }
   reason: string | null
 }
 
@@ -142,7 +147,8 @@ const EMPTY_LISTING: TwinZip["listing"] = { medianAskingPrice: null, activeListi
 async function twinZip(svc: Db, a: { brokerageId: string; zip: string; now: Date; allowProviderRead: boolean }, deps: MarketTwinDeps, notes: string[]): Promise<TwinZip> {
   const period = isoDay(a.now).slice(0, 7)
   const cache = `platform-wide provider cache rentcast:/markets|${a.zip} (${PROVIDER_CACHE_WINDOW_DAYS}-day window — one metered read per zip per window, shared by every tenant)`
-  const base: TwinZip = { zip: a.zip, asOf: null, period, listing: { ...EMPTY_LISTING }, rental: { medianRent: null }, sold: { medianSoldPrice: null, closedSales: 0, window: `last ${SOLD_WINDOW_DAYS} days`, caveat: "this brokerage's MLS-synced closed sales — a sample of the territory, not every sale" }, via: "none", source: { provider: null, endpoint: null, cache, rights: RENTCAST_RIGHTS, retrievedAt: null }, reason: null }
+  const base: TwinZip = { zip: a.zip, asOf: null, period, listing: { ...EMPTY_LISTING }, rental: { medianRent: null }, sold: { medianSoldPrice: null, closedSales: 0, window: `last ${SOLD_WINDOW_DAYS} days`, caveat: "this brokerage's MLS-synced closed sales — a sample of the territory, not every sale" }, via: "none", source: { provider: null, endpoint: null, dataType: null, cache, rights: RENTCAST_RIGHTS, retrievedAt: null }, reason: null }
+  const listingStats = RENTCAST_DATA_TYPES.listing_statistics.kind
 
   if (a.allowProviderRead) {
     const read = deps.providerRead ?? (async (x: { brokerageId: string; zipCode: string }) => {
@@ -152,7 +158,7 @@ async function twinZip(svc: Db, a: { brokerageId: string; zip: string; now: Date
     const stats = await read({ brokerageId: a.brokerageId, zipCode: a.zip }).catch((e: unknown) => { notes.push(`RentCast /markets ${a.zip} unavailable: ${e instanceof Error ? e.message : String(e)}`); return null })
     if (stats) {
       const asOf = typeof stats.total_listings_at === "string" && stats.total_listings_at ? stats.total_listings_at.slice(0, 10) : isoDay(a.now)
-      Object.assign(base, providerFacts(stats), { via: "provider_read", asOf, source: { provider: "rentcast", endpoint: "/markets", cache, rights: RENTCAST_RIGHTS, retrievedAt: isoDay(a.now) } })
+      Object.assign(base, providerFacts(stats), { via: "provider_read", asOf, source: { provider: "rentcast", endpoint: "/markets", dataType: listingStats, cache, rights: RENTCAST_RIGHTS, retrievedAt: isoDay(a.now) } })
     }
   }
   if (base.via === "none") {
@@ -163,7 +169,7 @@ async function twinZip(svc: Db, a: { brokerageId: string; zip: string; now: Date
     const age = row ? (a.now.getTime() - Date.parse(`${String(row.data_date)}T00:00:00Z`)) / DAY_MS : Infinity
     if (row && age <= MAX_READING_AGE_DAYS) {
       Object.assign(base, providerFacts({ median_sale_price: Number(row.median_sale_price), active_listings: Number(row.active_listings), new_listings_30d: Number(row.new_listings_30d), avg_days_on_market: Number(row.avg_days_on_market), price_trend_yoy_pct: Number(row.price_trend_pct_1yr) }),
-        { via: "tenant_reading", asOf: String(row.data_date), source: { provider: "tenant_market_data", endpoint: "/markets (stored RentCast reading)", cache, rights: RENTCAST_RIGHTS, retrievedAt: String(row.data_date) } })
+        { via: "tenant_reading", asOf: String(row.data_date), source: { provider: "tenant_market_data", endpoint: "/markets (stored RentCast reading)", dataType: listingStats, cache, rights: RENTCAST_RIGHTS, retrievedAt: String(row.data_date) } })
       base.rental = { medianRent: null }
     } else base.reason = row ? `the latest stored RentCast reading is dated ${String(row.data_date)} — older than ${MAX_READING_AGE_DAYS} days` : a.allowProviderRead ? "RentCast returned no market statistics for this zip" : "no stored RentCast reading and no authorized provider read"
   }

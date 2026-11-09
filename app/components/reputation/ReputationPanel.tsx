@@ -118,7 +118,7 @@ const CHANNELS = [
   { value: "sms",         label: "SMS / Text",  icon: Phone    },
   // R5 / lane 150R Outside-lane 4: the stored value is unchanged (the card routing reads it), but a printed piece is never
   // called handwriting — a font is not a pen. Genuine handwriting is an optional pen-provider route (LOB_HANDWRITTEN_CARD_PROVIDER).
-  { value: "handwritten", label: "Personal note (printed)", icon: PenLine  },
+  { value: "handwritten", label: "Handwriting-style note (printed)", icon: PenLine  },
 ]
 
 const GIFT_TYPES = [

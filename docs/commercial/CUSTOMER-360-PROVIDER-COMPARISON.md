@@ -24,8 +24,8 @@ secondary source it used.
 3. **The material gap is licensing, not capability.** The owner requires a provider that "doesn't prohibit writing and reading
    all data to the profiles". None of the evaluated vendors grants that on its **standard** terms (§4). This includes the two we
    use today: Versium forbids caching or building a database from its data, and PDL limits how long data may be cached. The
-   remedy is a negotiated Ordering Document or Enterprise data licence. It is **WAITING_EXTERNAL** and belongs to the owner (§7).
-   Changing vendors does not fix it. The 360 already labels every vendor-sourced field `vendor_licensed`, so whatever licence is
+   remedy is a negotiated Ordering Document or Enterprise data license. It is **WAITING_EXTERNAL** and belongs to the owner (§7).
+   Changing vendors does not fix it. The 360 already labels every vendor-sourced field `vendor_licensed`, so whatever license is
    signed can be audited and enforced field by field.
 4. **There is one optional addition, which needs counsel first:** USPS NCOA (change of address) through a licensed processor.
    It is the authoritative "moved" signal for people we already have a business relationship with, at **$20 per file**
@@ -34,7 +34,7 @@ secondary source it used.
 5. **Wave 149 (lane 149I, read 2026-11-03): one cheaper person-contact provider was found, and it is WAITING_EXTERNAL** (§10).
    Tracerfy with RentCast is the target pair: bulk skip trace at $0.02 a hit with misses free, and DNC on the same balance. Its
    standard terms allow "lawful delivery to Customer's contracted end users". Platform rights still need written confirmation,
-   and the hit rate needs a measured test, before any adapter. DataZapp is not added: no licence grant is stated, and its extra
+   and the hit rate needs a measured test, before any adapter. DataZapp is not added: no license grant is stated, and its extra
    fields are mostly protected. Verdict 1 stands until §10.8 has run.
 
 ## 2. Requirements, and which source meets each
@@ -47,7 +47,7 @@ across RentCast, BatchData, Versium, PeopleData and DealMachine is §9 below.
 
 | Requirement (ruling 11 / 12) | Met by | Verified how | DealMachine (wave 147D, read 2026-10-31) |
 |---|---|---|---|
-| Identity resolution | First-party: `lib/kernel/person-identity.ts` (m697 evidence). Vendor: PDL person match, Versium contact append | code; §3.2 / §3.3 | Enrich by name, email or phone, at 1 people credit per matched person. Tenant data sent for enrichment falls under ToS §5(b), a perpetual, sublicensable licence to DealMachine |
+| Identity resolution | First-party: `lib/kernel/person-identity.ts` (m697 evidence). Vendor: PDL person match, Versium contact append | code; §3.2 / §3.3 | Enrich by name, email or phone, at 1 people credit per matched person. Tenant data sent for enrichment falls under ToS §5(b), a perpetual, sublicensable license to DealMachine |
 | Property / homeowner records | RentCast AVM + property facts; BatchData property search / quickLists | `docs/commercial/PROVIDER-COST-REPORT.md` §3.3 | Yes: 150M+ properties with owner, mailing address, four mortgage slots, tax, liens and MLS status. **Already covered** by RentCast and BatchData |
 | First-party behaviour (portal, search / view, site, forms, tours, communications) | **our own tables, written in real time** + the first-party watcher | code; `scripts/customer-360-guard.ts` | None |
 | Third-party intent / life-event signals | Versium Online Presence Indicator – Real Estate, refinance / mortgage dates; PDL job / location history; OSINT life events; BatchData distress quickLists | `lib/enrichment/intent-signal-sources.ts` (wave 144E census) | **Modeled** flags only: likely to move, new mover and month, lease-ending window, potential first-time buyer, likely mortgage applicant. Source and accuracy not published. `marital_status = Divorced` is a modeled demographic, not a filing |
@@ -75,7 +75,7 @@ across RentCast, BatchData, Versium, PeopleData and DealMachine is §9 below.
 **Assessment.** Celebrus sells first-party capture and a single customer view. We already capture the same signals in our own
 tables, in real time: `client_portal_activity`, `portal_access_logs`, `saved_properties`, `property_views`, `website_visitors`,
 `form_submissions`, `showings`, `showing_requests` and `activities`. We also already have the identity graph (`person_identities`).
-What we lacked was the **watcher** and the **unified read**, and both are now built. Celebrus would also mean an enterprise licence
+What we lacked was the **watcher** and the **unified read**, and both are now built. Celebrus would also mean an enterprise license
 with no published price, plus a second capture tag on tenant sites. **Not recommended.**
 
 ### 3.2 FullContact
@@ -114,11 +114,11 @@ bundle is the one with the most protected attributes, and those are the attribut
 | Plans: **Basic $99 / seat / mo** (10,000 data credits), **Pro $149 / seat / mo** (20,000), **Scale $599 / package / mo** (100,000 records, 10 seats). Annual billing saves 17 %. Overage is billed "at your plan's per-credit rate". | <https://www.dealmachine.com/pricing>, <https://dealmachine.com/guides/current-vs-classic-pricing>, <https://dealmachine.com/guides/data-credits> |
 | One credit per unique property and one per unique person, de-duplicated within the billing month. API, CLI and webhooks are on every plan. Default limits: 60 calls / min and 5,000 / day. | <https://www.dealmachine.com/guides/api-quickstart> |
 | Data: owner, mailing address, vacancy, beds / baths, estimated value and equity, mortgage, tax, sale history. Phones, emails, phone type and DNC status for the people on a property. | <https://www.dealmachine.com/guides/api-quickstart> |
-| **Terms (effective 2026-07-14):** the licence is "non-transferrable, non-sublicensable … limited to the Customer's internal, lawful use only". The customer may not "rent, lease, lend, sell, license, sublicense … or otherwise make available the Services to any other party", and may not use the Services to build a competing service. | <https://www.dealmachine.com/terms-of-service> |
+| **Terms (effective 2026-07-14):** the license is "non-transferrable, non-sublicensable … limited to the Customer's internal, lawful use only". The customer may not "rent, lease, lend, sell, license, sublicense … or otherwise make available the Services to any other party", and may not use the Services to build a competing service. | <https://www.dealmachine.com/terms-of-service> |
 | "Use and retain data according to the current terms of service and your agreement. Contact the team before using data beyond those terms." | <https://www.dealmachine.com/guides/api-quickstart> |
 
 **Assessment.** DealMachine is an investor tool with per-seat pricing. Its data overlaps BatchData's (owner / property / distress /
-skip trace). It offers no behavioural intent and no life events. On its standard terms it is an internal-use licence, which does not
+skip trace). It offers no behavioural intent and no life events. On its standard terms it is an internal-use license, which does not
 fit a platform serving many tenant brokerages. **Not recommended** unless the owner negotiates a platform agreement and it beats
 BatchData's per-record rate (and that rate is itself UNKNOWN, per `PROVIDER-COST-REPORT.md` §8).
 
@@ -136,11 +136,11 @@ change or add to the rows above:
 4. Two more clauses bear on a platform. ToS §2(a) allows one account per customer without written authorization. §5(b) grants
    DealMachine a "perpetual, irrevocable, transferrable, sublicensable license" over any Customer Data we submit.
 5. "No behavioural intent" is narrowed. DealMachine sells **modeled** mover and renter flags (lease-ending window, new mover,
-   likely to move, first-time buyer). Those are a real gap against the current stack, but the licence blocks them and their
+   likely to move, first-time buyer). Those are a real gap against the current stack, but the license blocks them and their
    source and accuracy are unpublished.
 
 At full plan use, DealMachine's per-credit price ($0.0060 – $0.0099) undercuts the booked BatchData skip trace ($0.07, UNVERIFIED).
-That benefit is measurable but blocked by the licence.
+That benefit is measurable but blocked by the license.
 
 **Re-evaluated in wave 148 as a platform-paid provider** (lane 148J, owner ruling 19, read 2026-11-01). The detail is in
 `docs/commercial/DEALMACHINE-EVALUATION.md` §11. **The verdict holds: no adapter.** What wave 148 adds:
@@ -148,13 +148,13 @@ That benefit is measurable but blocked by the licence.
 1. **Platform payment changes no blocking clause.** ToS §2(b) ("internal, lawful use only"), §2(d) (one login per counted
    Permitted User), §2(e)(ii), §2(e)(vii) and §5(b) do not depend on who pays. The "Permitted Users" definition does admit "third
    parties with whom the Customer transacts business". But each must be a counted, credentialed seat on the Order Form, which is
-   the per-tenant licence the owner wants to avoid (<https://www.dealmachine.com/terms-of-service>).
+   the per-tenant license the owner wants to avoid (<https://www.dealmachine.com/terms-of-service>).
 2. **The help centre adds a no-cache rule.** "if you are serving DealMachine API data inside your own customer-facing app, we ask
    that you do not cache it". It also says that above 1,000,000 records a month the account "moves to a data license", under
    which records cannot be used after cancelling
    (<https://help.dealmachine.com/en/articles/16819565-dealmachine-api-and-data-enrichment-what-it-does-access-and-pricing>,
    modified 2026-10-29).
-3. **The agreement that would permit platform use is named.** It is a DealMachine enterprise data licence ("Data licensing and API
+3. **The agreement that would permit platform use is named.** It is a DealMachine enterprise data license ("Data licensing and API
    access", <https://dm-next.dealmachine.com/contact-sales>), signed as an Order Form that expressly overrides those clauses
    (ToS §11(j)).
 4. **The price schedule has moved.** The help centre reads "$99 per 10,000 data credits per month … up to 60,000", then 100,000
@@ -198,9 +198,9 @@ person, but must never seed a new-movers list. **Owner / counsel decision before
 | Vendor | Standard-terms clause | Read |
 |---|---|---|
 | Versium ("Versar") | §3.3: may not "(b) redistribute, sublicense, transfer, sell … or disclose any of the Licensed Materials to any third party; (c) incorporate any of the Licensed Materials into your own products or services; … (g) … operate any timesharing, service bureau, or similar business; … (j) cache any data from Licensed Materials and/or build a database from the Licensed Materials". §7.3: on termination, "destroy any and all copies of Licensed Materials and any information you have obtained from the Licensed Materials". An Ordering Document may override these only where it is "expressly intended to modify these terms". Last updated **June 2026**. | <https://versium.com/terms-conditions/> |
-| People Data Labs | "Data returned in API endpoints may not be saved in Customer databases ('Cached Data') for longer than necessary to perform actions permitted via Service License … Cached Data may not be provided or displayed to more than one End User … Upon termination … Customer must delete all Data". The licence covers "internal business purposes" and lets the customer display data to its "own clients … on Customer's platform". **Secondary source:** the primary SSA (<https://privacy.peopledatalabs.com/policies?name=services-subscription-agreement>) is client-rendered and could not be read by machine. This needs a human read before signing. | <https://datacircle.dev/cached-people-search-apis/people-data-labs/free> |
+| People Data Labs | "Data returned in API endpoints may not be saved in Customer databases ('Cached Data') for longer than necessary to perform actions permitted via Service License … Cached Data may not be provided or displayed to more than one End User … Upon termination … Customer must delete all Data". The license covers "internal business purposes" and lets the customer display data to its "own clients … on Customer's platform". **Secondary source:** the primary SSA (<https://privacy.peopledatalabs.com/policies?name=services-subscription-agreement>) is client-rendered and could not be read by machine. This needs a human read before signing. | <https://datacircle.dev/cached-people-search-apis/people-data-labs/free> |
 | FullContact | Delete on termination, except derived Data Output (2019 agreement; current terms by quote) | §3.2 |
-| DealMachine | Internal use only, non-sublicensable, no making the Services available to any other party (2026-07-14). Also (read 2026-10-31): one account per customer unless authorized in writing (§2(a)); a perpetual, sublicensable licence to DealMachine over Customer Data we submit (§5(b)); no destroy-on-termination clause found; an Order Form overrides the ToS only where it says so expressly (§11(j)) | §3.4; `DEALMACHINE-EVALUATION.md` §4 |
+| DealMachine | Internal use only, non-sublicensable, no making the Services available to any other party (2026-07-14). Also (read 2026-10-31): one account per customer unless authorized in writing (§2(a)); a perpetual, sublicensable license to DealMachine over Customer Data we submit (§5(b)); no destroy-on-termination clause found; an Order Form overrides the ToS only where it says so expressly (§11(j)) | §3.4; `DEALMACHINE-EVALUATION.md` §4 |
 | Celebrus | First-party data: "you own and control the data" (vendor statement) | §3.1 annual report |
 
 **What this means in code today.** The enrichment rail persists Versium and PDL answers on `contacts.enrichment_profile` with a
@@ -246,7 +246,7 @@ rate. This report does not invent the denominator.
 | BatchData Property Subscription | push. Subscription price is on the BatchData page; the per-record API rate is UNKNOWN | webhook once provisioned | UNKNOWN (contract) |
 | NCOA (optional) | $20 per file (TrueNCOA) | quarterly per tenant list | $20 ÷ movers found (UNKNOWN) |
 | FullContact / Celebrus / Revaluate / Likely / Offrs / SmartZip | not published | — | not computable |
-| DealMachine | $99 – $149 / seat / mo or $599 / 100k records. $0.0060 – $0.0099 per credit at full use; credits reset monthly; no automatic overage (read 2026-10-31) | — (no adapter: licence) | credit price ÷ contact fill rate (UNKNOWN). Below break-even (Basic 1,415 / Scale 8,558 records a month against BatchData's booked $0.07) the seat fee costs more than today's stack (`DEALMACHINE-EVALUATION.md` §5). Wave 148 (read 2026-11-01): the help centre's schedule is $99 per 10,000 credits up to 60,000, then $599 per 100,000 with a 12-month commitment; there are no free trials, so measuring the fill rate is a paid month (`DEALMACHINE-EVALUATION.md` §11.6) |
+| DealMachine | $99 – $149 / seat / mo or $599 / 100k records. $0.0060 – $0.0099 per credit at full use; credits reset monthly; no automatic overage (read 2026-10-31) | — (no adapter: license) | credit price ÷ contact fill rate (UNKNOWN). Below break-even (Basic 1,415 / Scale 8,558 records a month against BatchData's booked $0.07) the seat fee costs more than today's stack (`DEALMACHINE-EVALUATION.md` §5). Wave 148 (read 2026-11-01): the help centre's schedule is $99 per 10,000 credits up to 60,000, then $599 per 100,000 with a 12-month commitment; there are no free trials, so measuring the fill rate is a paid month (`DEALMACHINE-EVALUATION.md` §11.6) |
 
 The cheapest lever available without a new vendor is the PDL Person Changelog: free flat files that name which persistent IDs
 changed, and which fields. A monthly diff against `contacts.peopledata_id` would let the rail re-buy only profiles whose job or
@@ -258,7 +258,7 @@ for a worker, not a Vercel cron. **Proposal only — not built.** It needs an ow
 1. **Keep:** PDL + Versium (person / real-estate intent, gap-only, per-match), BatchData + RentCast (property). The verified cost
    is unchanged.
 2. **Built (wave 146D):** the Customer 360 read (C6) and the first-party intent watcher, at $0 vendor cost.
-3. **Negotiate (WAITING_EXTERNAL, owner):** a Versium Ordering Document and a PDL Enterprise / product-embedded licence that
+3. **Negotiate (WAITING_EXTERNAL, owner):** a Versium Ordering Document and a PDL Enterprise / product-embedded license that
    **expressly** grant (a) persistent storage on tenant contact and lead profiles; (b) display to each tenant's authorised users;
    (c) multi-tenant (service-bureau) use; and (d) retention after termination, or a defined purge. This is the only route to
    "writing and reading all data to the profiles". No evaluated alternative offers it on standard terms.
@@ -267,10 +267,10 @@ for a worker, not a Vercel cron. **Proposal only — not built.** It needs an ow
 5. **Do not add:** Celebrus, FullContact, DealMachine, Revaluate, Likely.ai, Offrs / SmartZip, Homebot or ATTOM. Each either
    duplicates a capability we hold, publishes no price, conflicts with a ruling (duplicate sender, protected-class segments), or
    licenses its data for internal use only. DealMachine was re-evaluated in wave 147 (`DEALMACHINE-EVALUATION.md`, read
-   2026-10-31) and is still not added. The blocker is the licence, not capability or price. It reopens only on a signed Order Form
+   2026-10-31) and is still not added. The blocker is the license, not capability or price. It reopens only on a signed Order Form
    that expressly grants multi-tenant use (WAITING_EXTERNAL, owner and counsel). Wave 148 re-checked it as a **platform-paid**
    provider (`DEALMACHINE-EVALUATION.md` §11). Paying for it at the platform level does not grant the right to serve tenants. The
-   instrument that would is a DealMachine enterprise data licence, signed as an Order Form. Even then it replaces BatchData's legs,
+   instrument that would is a DealMachine enterprise data license, signed as an Order Form. Even then it replaces BatchData's legs,
    not the stack (§9).
 6. **One verified source per fact** (§9, wave 148). Every fact has one survivor provider, an ordered fallback, and a stop at the
    first answer. Gap-only buying and freshness windows already keep a contact from being paid for twice. A new provider earns a
@@ -296,7 +296,7 @@ for a worker, not a Vercel cron. **Proposal only — not built.** It needs an ow
   own tables.
 - **The change rate is unmeasured,** so cost per useful update is a formula, not a number.
 - **§9 has no rights column on purpose.** Storage rights are in §4: Versium and PDL (2026-10-29), DealMachine (§4 and
-  `DEALMACHINE-EVALUATION.md` §11, 2026-11-01). **RentCast's and BatchData's licence terms were not re-read in waves 146–148,** so
+  `DEALMACHINE-EVALUATION.md` §11, 2026-11-01). **RentCast's and BatchData's license terms were not re-read in waves 146–148,** so
   no rights claim is made for them.
 - **§9 cites the code that orders and gates each fact.** Whether the stop-on-first-answer and gap-only rules hold at run time is
   proved by `test:provider-cost-routing`, `test:enrichment-one-rail` and the enrichment guards, not by this document.
@@ -341,7 +341,7 @@ as a fifth provider without removing a survivor, would we pay twice for this fac
 
 | # | Fact | Survivor (one verified source) | Fallback / gap-fill | Freshness | Booked unit | DealMachine | Dup? |
 |---|---|---|---|---|---|---|---|
-| F14 | Phone / email for an owner or person | `owner_contact` (`property-lookup-rail.ts:335`): Versium → BatchData → PeopleData, first match wins; gap-only (`contactPointsToBuy`) | the next provider on a miss | Versium unpublished; PDL monthly | $0.05 / $0.07 / $0.25 per match | Yes: `phones[]`, `emails[]`, monthly refresh, $0.0060–$0.0099 per person credit | **Yes**. This is the only fact where DealMachine is measurably cheaper, and the licence blocks it |
+| F14 | Phone / email for an owner or person | `owner_contact` (`property-lookup-rail.ts:335`): Versium → BatchData → PeopleData, first match wins; gap-only (`contactPointsToBuy`) | the next provider on a miss | Versium unpublished; PDL monthly | $0.05 / $0.07 / $0.25 per match | Yes: `phones[]`, `emails[]`, monthly refresh, $0.0060–$0.0099 per person credit | **Yes**. This is the only fact where DealMachine is measurably cheaper, and the license blocks it |
 | F15 | Reverse lookup (phone / email → who) | `reverse_contact` (`:346`): Versium → BatchData → PeopleData | as F14 | as F14 | as F14 | Enrich by phone / email | **Yes** |
 | F16 | Phone line type / carrier | BatchData skip-trace inline flags; Twilio Lookups `lookupPhone` (`lib/providers/messaging/index.ts:265`) | — | per lookup | — | type, carrier | **Yes** |
 | F17 | DNC / TCPA-litigator status | `dnc_tcpa` (`:354`), enforced by `enforceTCPACompliance` (`lib/communication/tcpa-gate.ts:132`) with a freshness check | — | per check | BatchData MCP call | A monthly-snapshot flag ("not a live registry check") and `POST /v1/phones/dnc`; litigators excluded | **Yes**, and weaker. The gate stays the authority |
@@ -352,12 +352,12 @@ as a fifth provider without removing a survivor, would we pay twice for this fac
 | F22 | Business identity crosswalk (B2B2C) | Versium `business_identity` (`:402`) | — | per match | 1 credit | No crosswalk | No (Versium only) |
 | F23 | Audience size estimate (free count) | Versium `audience_estimate` (`:413`), $0 | — | per call | $0 | Free count endpoints | Free overlap (no spend either way) |
 | F24 | Online audience match (hashed ad identifiers) | Versium `online_audience_match` (`:420`) | — | 180 d | 1 credit | None | No (Versium only) |
-| F25 | Modeled mover / renter flags (lease ending, new mover, likely to move, first-time buyer) | **None.** This is the gap (`lib/lead-pipeline/rental-graduation-sourcer.ts:16-31` documents the lease gap) | — | — | — | Yes. Licence-blocked; source and accuracy unpublished; *inferred* at best | Adds (licence-blocked). This is DealMachine's real addition |
+| F25 | Modeled mover / renter flags (lease ending, new mover, likely to move, first-time buyer) | **None.** This is the gap (`lib/lead-pipeline/rental-graduation-sourcer.ts:16-31` documents the lease gap) | — | — | — | Yes. License-blocked; source and accuracy unpublished; *inferred* at best | Adds (license-blocked). This is DealMachine's real addition |
 | F26 | Moved (change of address) | None built. USPS NCOA through a licensed processor, counsel first (§3.6) | — | weekly at USPS | $20 / file (TrueNCOA) | New-mover flag (modeled) | No; NCOA is the authoritative source |
 | F27 | Life events (probate, divorce filing, death) | BatchData declared fields (inherited / probate, recent divorce) + OSINT + the first-party watcher, mapped onto the life-event vocabulary (lane 148F) | — | polled | BatchData | `is_pre_probate`, intrafamily transfer, `marital_status` (modeled; never a filing) | **Yes**, and DealMachine's are modeled |
 | F28 | First-party behaviour | Our own tables + `lib/enrichment/first-party-intent-watcher.ts` | — | real time | $0 | None | No |
-| F29 | Agent production (recruiting) | The tenant's MLS, under that MLS's rules (not built) | — | — | — | Agent production filters (licence-blocked) | Adds (licence-blocked; the MLS stays canonical) |
-| F30 | Field / driving observations | First-party capture (not built; lane B's observation catalogue) | — | — | — | Driving for Dollars app (a second app) | Adds (licence-blocked; a second app) |
+| F29 | Agent production (recruiting) | The tenant's MLS, under that MLS's rules (not built) | — | — | — | Agent production filters (license-blocked) | Adds (license-blocked; the MLS stays canonical) |
+| F30 | Field / driving observations | First-party capture (not built; lane B's observation catalogue) | — | — | — | Driving for Dollars app (a second app) | Adds (license-blocked; a second app) |
 
 ### 9.3 Physical mail facts (with `docs/commercial/DIRECT-MAIL-PROVIDER-COMPARISON.md`)
 
@@ -373,7 +373,7 @@ overlap / Adds / No. The counting rule is stated here so anyone can recount the 
 - **Yes, DealMachine would duplicate a survivor: 16.** F1–F4, F6–F9, F12, F14–F17, F20, F27, F31.
 - **Partly: 2.** F19, F21.
 - **Free overlap (no spend either way): 1.** F23.
-- **Adds a fact no survivor holds: 3,** all licence-blocked. F25, F29, F30.
+- **Adds a fact no survivor holds: 3,** all license-blocked. F25, F29, F30.
 - **No (DealMachine cannot serve or replace it): 10.** F5, F10, F11, F13, F18, F22, F24, F26, F28, F32.
 - **Facts with no built survivor: 5.** F25, F26, F29, F30, F32.
 
@@ -408,15 +408,15 @@ fact. Survivors in this repo are cited at `file:line` on base `08712fef`.
    five times as much. Two things must happen first: written confirmation of the platform and storage rights, and a measured
    hit-rate test. The test is a purchase, so it is the owner's decision.
 3. **DataZapp is not added.** Its published prices are the lowest for household demographics ($0.0075 per attribute) and
-   competitive for email and phone append ($0.02 – $0.03 per match). But its Terms grant no licence in writing. The words
-   "licence", "resale", "platform" and "storage" all appear in neither a grant nor a prohibition. Its API needs a $1,000 prepaid
+   competitive for email and phone append ($0.02 – $0.03 per match). But its Terms grant no license in writing. The words
+   "license", "resale", "platform" and "storage" all appear in neither a grant nor a prohibition. Its API needs a $1,000 prepaid
    balance with $1,000 minimum refills. Its demographic set is mostly protected-class or FCRA-adjacent fields (ethnicity,
    religious, party leaning, `CREDIT_RANGE`). The facts it would add without those fields are already covered by RentCast plus
    Tracerfy. DataZapp stays the **named fallback for email append only**, used if the measured test shows weak Tracerfy email fill.
 4. **Versium, PeopleData and BatchData's skip-trace leg become fallbacks, to be retired after measurement.** They are not removed
    now (extend before replacing, LAW 1). Versium keeps the **real-time single-contact** rung, where it is cheaper than Tracerfy's
    instant lookup. It also keeps the free audience estimate (F23) and the online audience match (F24). PeopleData keeps the
-   employment profile (F19), which no other vendor sells. DealMachine stays out: it is licence-blocked (§3.4).
+   employment profile (F19), which no other vendor sells. DealMachine stays out: it is license-blocked (§3.4).
 5. **"tracerfly.com" did not resolve** from this session (DNS `ENOTFOUND`, and Exa's crawl failed too). The vendor evaluated is
    **Tracerfy** (<https://www.tracerfy.com>), whose name is one letter away. It sells skip tracing with an MCP server, which
    matches the brief's "MCP/API". **The owner should confirm this is the vendor meant.**
@@ -460,7 +460,7 @@ fact. Survivors in this repo are cited at `file:line` on base `08712fef`.
 | Match rate | **Unconfirmed.** No numeric match rate is published. "Accuracy" is a vendor claim (70 – 85 % overall; email 75 – 87 %). The email page's customer match-rate table did not render | faq, email-append |
 | Freshness | "regularly updated", "refreshed, multi-sourced". **No cadence published (unconfirmed)** | email-append, phone-append |
 | Demographic fields (41) | Age, Education, Marital_Status, Gender, **Ethnicity**, Income, Occupation, Presence_of_Child, NumberOfChildren, Home_Owner, LOR, Dwelling_Type, Home_Value, pets, interests, charitable causes, **Religious**, **Party-Leaning_D / _R**, Political_Donor, Unregistered_Voter, Signal_Accredited_Investor, Signal_High_Networth, Signal_Seller_Score (0x – 4x), Signal_Solar_Intenders, Loan_Amount_Range, HomePurchase_Range, NLTV, **CREDIT_RANGE**, EST_LoanBalance_Range | demography-append-api |
-| Licence | **No licence grant is stated.** The Terms say only that "Licensee agrees to use the leads in a manner that strictly complies with all applicable … laws" (CAN-SPAM, DNC, TSR, TCPA). They say nothing on resale, use on behalf of clients, platform or white-label use, storage or retention, or termination of rights. The knowledge base says APIs "allow you to automate or white-label the process of getting data from Datazapp". That is a marketing sentence, not a grant | termsandcondition; <https://knowledgebase.datazapp.com/apis/> |
+| License | **No license grant is stated.** The Terms say only that "Licensee agrees to use the leads in a manner that strictly complies with all applicable … laws" (CAN-SPAM, DNC, TSR, TCPA). They say nothing on resale, use on behalf of clients, platform or white-label use, storage or retention, or termination of rights. The knowledge base says APIs "allow you to automate or white-label the process of getting data from Datazapp". That is a marketing sentence, not a grant | termsandcondition; <https://knowledgebase.datazapp.com/apis/> |
 | Change of terms | "We may modify any of the terms … at any time … We do not and will not assume any obligation to notify you". No effective date | termsandcondition |
 
 **Assessment.** DataZapp is cheap and published, and its batch API fits a nightly job. Three things keep it out of the 360. First,
@@ -527,7 +527,7 @@ u is also **unconfirmed** (it needs the measured test, §10.8).
 | Contact | Versium Contact Append, 1 credit a matched output (email 1, phone 1), $0.02 – $0.05 | $800 – $2,000 | $1,200 – $3,000 | $1,600 – $4,000 | today's first rung (`property-lookup-rail.ts:344`) |
 | Contact | BatchData skip trace plan, $2,000 / mo flat (100,000; annual) | $2,000 | $2,000 | $2,000 | today's second rung (`:345`); flat whatever h is |
 | Contact | PeopleData at $0.28 (Pro entry) | $5,600 | $8,400 | $11,200 | person profile; tiers unconfirmed today |
-| Contact | DealMachine Scale $599 / 100k credits (property + person) | $599 | $599 | $599 | **licence-blocked** (§3.4); shown for completeness |
+| Contact | DealMachine Scale $599 / 100k credits (property + person) | $599 | $599 | $599 | **license-blocked** (§3.4); shown for completeness |
 | DNC on one phone a hit | Tracerfy DNC scrub $0.02 a phone checked | $400 | $600 | $800 | charged per phone, not per hit |
 | DNC | DataZapp | $0 extra | $0 extra | $0 extra | "no extra charge … DNC–scrubbed phone numbers"; the authority stays our TCPA gate |
 | Owner-occupancy, LOR, home value | **RentCast** property record + AVM (owner, sale history → LOR; AVM → value); Tracerfy's `property_owner` flag | $0 extra | $0 extra | $0 extra | already bought by leg 4 |
@@ -542,7 +542,7 @@ u is also **unconfirmed** (it needs the measured test, §10.8).
 | Today (Versium contact + Versium Full Demographic + RentCast; DNC via BatchData MCP, cost unconfirmed) | **$3,824 – $8,324**, plus any BatchData plan held for fallbacks | 3 (Versium, BatchData, PeopleData) |
 | **Tracerfy (bulk contact + DNC) + RentCast** | **$600 + $600 + $824 = $2,024** on pay as you go. Trace and DNC draw on one balance: 60,000 credits, so a Growth plan ($700 for 50,000) plus 10,000 credits pay as you go would make it $900 + $824 = $1,724 | **1** |
 | Tracerfy + DataZapp (demographic) + RentCast | $2,024 + $675 = $2,699 | 2 (DataZapp adds only fields RentCast already gives, or protected ones) |
-| DataZapp (contact + demographic) + RentCast | $1,500 – $1,800 + $675 + $824 = $2,999 – $3,299 | 1 (no stated licence) |
+| DataZapp (contact + demographic) + RentCast | $1,500 – $1,800 + $675 + $824 = $2,999 – $3,299 | 1 (no stated license) |
 
 **What the model shows, and what it does not.** The ordering holds for any h from 40 % to 80 %: Tracerfy bulk is the cheapest
 licensable contact leg, and RentCast already pays for the property-derived "demographics". The saving disappears on the real-time
@@ -552,7 +552,7 @@ head-to-head on the same consented records can rank them. Cost per verified usab
 
 ### 10.6 Licensing, storage and tenant isolation
 
-| Vendor | Licence on standard terms | Storage / caching | Platform / end users | Read |
+| Vendor | License on standard terms | Storage / caching | Platform / end users | Read |
 |---|---|---|---|---|
 | **Tracerfy** | ToS §13: "limited, non-exclusive, non-transferable license"; "Data obtained through Tracerfy is licensed for Customer's internal business use and lawful delivery to Customer's contracted end users only" | No retention or deletion clause found. ToS §4 lists "Cache results to avoid redundant requests" as a **best practice**. The pricing page lists "Lead Storage – Access your skip traced data anytime" | ToS §3: "If Customer makes Tracerfy data available to its … clients, systems, or end users, Customer must impose equivalent restrictions that prohibit resale, unlawful outreach, FCRA-regulated use, harassment". Prohibited: "Reselling, redistributing, or sharing data with third parties"; "Offering Tracerfy data as a standalone data feed, database, directory, sublicensed product". FAQ: white-label "Contact sales … custom pricing with a contract" | <https://www.tracerfy.com/terms-of-service> (effective 2026-01-03); <https://www.tracerfy.com/faqs> |
 | **DataZapp** | **None stated** ("Licensee agrees to use the leads in a manner that strictly complies with … laws") | Not addressed ("YOU ARE RESPONSIBLE FOR BACKING-UP YOUR OWN MATERIALS") | Not addressed. Assignment needs "prior written consent of DataZapp.com" | <https://www.datazapp.com/termsandcondition/> (no date) |
@@ -620,7 +620,7 @@ The ranking question is u, not price. The cheapest valid test:
 | Tenant Terms flow-down | Owner / counsel | VIPAgents tenant Terms of Service | The equivalent restrictions of Tracerfy ToS §3 (no resale, no FCRA use, no harassment, no unlawful outreach) appear in the subscriber agreement |
 | Measured test | Owner | §10.8 | The owner approves a bounded top-up and the sample |
 | Credential (requested **only** after the four above) | Tracerfy | Profile → Settings → API Key (<https://www.tracerfy.com/faqs>) | `TRACERFY_API_KEY`. Verified with a free `check_balance` and one sandbox-identical call. No value is in code or env docs, deliberately. **No adapter is built** |
-| DataZapp written licence (only if the email-fallback role is ever wanted) | DataZapp (info@datazapp.com, (888) 374-3282) | A written licence | It must grant storage, platform use and the exclusion of protected / credit-like fields at the API. Credential `DATAZAPP_API_KEY` (sent in the request body as `ApiKey`), **not requested** |
+| DataZapp written license (only if the email-fallback role is ever wanted) | DataZapp (info@datazapp.com, (888) 374-3282) | A written license | It must grant storage, platform use and the exclusion of protected / credit-like fields at the API. Credential `DATAZAPP_API_KEY` (sent in the request body as `ApiKey`), **not requested** |
 
 ### 10.10 Blind spots
 
@@ -635,7 +635,7 @@ The ranking question is u, not price. The cheapest valid test:
   unverified either way.
 - **RentCast's and BatchData's Terms of Use were not read** (carried from §8). The RentCast line is the API page's own sentence.
 - **The DealMachine Basic / Pro and PeopleData per-credit prices did not render** on 2026-11-03. The rows cite the last dated read.
-- **This is not legal advice.** All licence readings are procurement readings, and counsel reads before any signature. DataZapp
+- **This is not legal advice.** All license readings are procurement readings, and counsel reads before any signature. DataZapp
   can change its Terms without notice. Tracerfy notifies "via email or prominent notice".
 
 ## 11. The provider stack under owner ruling R9 (wave 150, lane 150HIAB)
@@ -663,9 +663,9 @@ route row, the adapter facts and the transport together. Self-healing can never 
 | BatchData | dormant_survivor — live doors wait on owner confirmation | Terms not read | `BATCHDATA_API_KEY` | a property lookup on an address already held |
 | PeopleData | dormant_survivor — live doors wait on owner confirmation | standard terms read (secondary) | `PEOPLEDATA_API_KEY` | a free no-match lookup |
 | Tracerfy | dormant_pending_rights | standard terms read; platform use likely, unconfirmed | `TRACERFY_API_KEY` | free `check_balance` + the free mock sandbox, after written platform-use confirmation |
-| DataZapp | dormant_pending_rights | no licence stated in the Terms | `DATAZAPP_API_KEY` | not requested (the $125 test is a purchase) |
+| DataZapp | dormant_pending_rights | no license stated in the Terms | `DATAZAPP_API_KEY` | not requested (the $125 test is a purchase) |
 | PropertyRadar | dormant_pending_rights | partner / embedded rights not read | `PROPERTYRADAR_API_TOKEN` | a `Purchase=0` preview (consumes no record quota) |
-| Data Axle | dormant_pending_rights | product, fields and licence not read | none — no product chosen | not applicable |
+| Data Axle | dormant_pending_rights | product, fields and license not read | none — no product chosen | not applicable |
 
 ### 11.2 Field-level overlap and gap matrix (provider × field, with rights and cost)
 
@@ -730,7 +730,7 @@ controls), 150 per stratum × tenant shape (solo / team / office / multi-office)
 stratum is the holdout. It scores per-field new coverage, right-party verified contact, suppression, freshness, simulated 30/90-day
 appointments, true marginal cost (misses free on per-match products) and cost per newly usable legally eligible person and per
 qualified appointment; seller-score lift is measured in each vendor's own top labels against the public-property baseline and is
-never ranked across vendors. It reports `paidCalls: 0`, `liveCalls: 0`, and `mayActivate: false` for both arms — licence unknown
+never ranked across vendors. It reports `paidCalls: 0`, `liveCalls: 0`, and `mayActivate: false` for both arms — license unknown
 blocks activation, not offline testing. The 50,000-a-month figure is a projection, never a request. A paid pilot (the proposed
 $1,000 cap) is **not approved**.
 
@@ -739,7 +739,7 @@ $1,000 cap) is **not approved**.
 | Item | Provider | Where | How verified |
 |---|---|---|---|
 | Written platform-use confirmation | Tracerfy | sales, per tracerfy.com/pricing | §10.9's four points, in writing |
-| Written licence (storage, platform use, field exclusions) | DataZapp | info@datazapp.com | a signed licence; only then `DATAZAPP_API_KEY` |
+| Written license (storage, platform use, field exclusions) | DataZapp | info@datazapp.com | a signed license; only then `DATAZAPP_API_KEY` |
 | The Tracerfy response schema (phone / email / score keys) | Tracerfy | the free mock sandbox `mock.tracerfy.com` | read the sandbox response; the mapper maps `hit` / `credits_deducted` only until then |
 | Partner / embedded rights | PropertyRadar | PropertyRadar account team | written rights before any tenant exposure |
 | Owner confirmation that R9 closes BatchData's / PeopleData's existing live doors | Owner | this section | `survivorDoors` moves to `closed` in `PROVIDER_ACTIVATION` |

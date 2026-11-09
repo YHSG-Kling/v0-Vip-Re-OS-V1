@@ -66,6 +66,113 @@ export interface TermsVersion {
   transactionId?: string | null
   /** True for a version computed from an `offers` row rather than read from the immutable record. */
   derived: boolean
+  /**
+   * WAVE 151 (lane 151K — owner: "addenda can happen during the transaction"): the instant the instrument's SIGNED EFFECTIVE
+   * LANGUAGE says it takes effect, when it states one apart from its execution (contract_term_versions.evidence.effective_on,
+   * read as the end of that day — the same convention the addendum door uses for the execution instant). Null = effective on
+   * execution. Precedence is by this instant; see foldTermsByPrecedence.
+   */
+  effectiveAt?: string | null
+}
+
+// ─── WAVE 151 (lane 151K): PER-TERM SOURCE EVIDENCE ON AN EXECUTED ADDENDUM / AMENDMENT ─────────────────────────────────────
+//
+// Directive: "extract changed terms with source-page/field evidence". The versioned record (m797) carries a free `evidence`
+// jsonb; this is the ONE shape of its `term_evidence` key — one entry per changed term, saying WHERE on the executed document
+// the term was read: a deterministic extraction row of that document (lib/transactions/closing-compliance.ts reads the same
+// ledger, document_field_extractions), the recording person's stated page / field / quote, or — honestly — neither yet
+// ("person_reading_unlocated": recorded, flagged for a human, never invented). Nothing here is a model.
+
+const TERM_EVIDENCE_SOURCES = ["document_extraction", "person_reading", "person_reading_unlocated"] as const
+export type TermEvidenceSource = (typeof TERM_EVIDENCE_SOURCES)[number]
+
+export interface TermEvidence {
+  source: TermEvidenceSource
+  /** The extraction field key or the field the person named (e.g. "price", "closing_date", "Paragraph 7"). */
+  field: string | null
+  /** The page of the executed document, 1-based, when known. */
+  page: number | null
+  /** A short verbatim quote from the document, when the person supplied one. */
+  quote: string | null
+  /** The document's own value for the term as extracted (null when no extraction names it). */
+  extracted: unknown
+  /** Whether the extraction's value agrees with the recorded term (null = no extraction to compare). */
+  agrees: boolean | null
+  /** The extraction's confidence ("verified" when a person verified the row), null without one. */
+  confidence: string | null
+}
+
+/** governing term key → the extraction field keys that state it on a contract / addendum (the same keys closing compliance reads). */
+const TERM_EVIDENCE_FIELDS: Readonly<Partial<Record<GoverningTermKey, readonly string[]>>> = {
+  offer_price: ["price", "counter_price", "offer_price", "purchase_price", "sales_price"],
+  earnest_money: ["earnest_money_amount", "earnest_money", "earnest_money_deposit"],
+  closing_date: ["closing_date"],
+  closing_cost_contribution: ["seller_concession_amount", "closing_cost_contribution", "seller_credit_to_buyer"],
+  title_policy_payer: ["owner_title_policy_payer", "title_policy_payer"],
+}
+
+export interface StatedTermEvidence { page?: number | null; field?: string | null; quote?: string | null }
+
+/** A date, money or party value as a comparable string (null = not comparable in that form). */
+function comparableTerm(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === "number") return Number.isFinite(v) ? String(Math.round(v * 100) / 100) : null
+  if (typeof v !== "string") return null
+  const s = v.trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+  const money = s.replace(/[$,\s]/g, "")
+  if (/^-?\d+(\.\d+)?$/.test(money)) return String(Math.round(Number(money) * 100) / 100)
+  return s.toLowerCase()
+}
+
+/**
+ * PURE — the evidence for every CHANGED term of an executed addendum / amendment, from the document's own extraction rows first
+ * (ledger rows over the scan blob), the recording person's stated page / field / quote second, and an honest
+ * "person_reading_unlocated" otherwise. REFUSED, by name, when a VERIFIED or HIGH-confidence extraction of the same document
+ * reads a different value than the term being recorded — the paper and the typed term disagree, and nothing here picks one.
+ * A low / medium extraction that disagrees is recorded with `agrees: false` (a question for a person, not an accusation).
+ */
+export function termEvidenceFor(input: {
+  terms: Record<string, unknown>
+  extractions: ReadonlyArray<{ field_key: string; field_value_json: unknown; confidence: string | null; verified_at: string | null }>
+  scanFields?: Record<string, unknown> | null
+  stated?: Record<string, StatedTermEvidence> | null
+}): { ok: true; termEvidence: Record<string, TermEvidence>; unlocated: string[] } | { ok: false; reason: string } {
+  const out: Record<string, TermEvidence> = {}
+  const unlocated: string[] = []
+  const blob = input.scanFields && typeof input.scanFields === "object" && !Array.isArray(input.scanFields) ? input.scanFields : {}
+  for (const [key, value] of Object.entries(input.terms)) {
+    const fields = TERM_EVIDENCE_FIELDS[key as GoverningTermKey] ?? [key]
+    let found: TermEvidence | null = null
+    for (const f of fields) {
+      const row = input.extractions.find((r) => r.field_key === f)
+      const raw = row ? row.field_value_json : blob[f]
+      if (raw === undefined || raw === null || raw === "") continue
+      const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null
+      const extracted = obj && "value" in obj ? obj.value : raw
+      const page = obj && typeof (obj.page ?? obj.page_number) === "number" ? Number(obj.page ?? obj.page_number) : null
+      const confidence = row ? (row.verified_at ? "verified" : (row.confidence ?? "low")) : "scan"
+      const a = comparableTerm(extracted), b = comparableTerm(value)
+      const agrees = a === null || b === null ? null : a === b
+      found = { source: "document_extraction", field: f, page, quote: null, extracted, agrees, confidence }
+      break
+    }
+    if (found) {
+      if (found.agrees === false && (found.confidence === "verified" || found.confidence === "high")) {
+        return { ok: false, reason: `the executed document's ${found.confidence} extraction of ${found.field} reads ${JSON.stringify(found.extracted)} but the term being recorded says ${JSON.stringify(value)} — the paper and the typed term disagree; verify the document before recording` }
+      }
+      out[key] = found
+      continue
+    }
+    const s = input.stated?.[key]
+    const page = typeof s?.page === "number" && Number.isFinite(s.page) && s.page >= 1 ? Math.floor(s.page) : null
+    const field = typeof s?.field === "string" && s.field.trim() ? s.field.trim().slice(0, 120) : null
+    const quote = typeof s?.quote === "string" && s.quote.trim() ? s.quote.trim().slice(0, 400) : null
+    if (page !== null || field || quote) { out[key] = { source: "person_reading", field, page, quote, extracted: null, agrees: null, confidence: null }; continue }
+    out[key] = { source: "person_reading_unlocated", field: null, page: null, quote: null, extracted: null, agrees: null, confidence: null }
+    unlocated.push(key)
+  }
+  return { ok: true, termEvidence: out, unlocated }
 }
 
 export interface GoverningTerm {
@@ -83,13 +190,27 @@ export interface TermConflict {
   governing: { versionNo: number; source: TermVersionSource; value: unknown }
 }
 
+/**
+ * WAVE 151 (lane 151K): two executed instruments of the SAME source (two addenda, two amendments) name one term with
+ * different values and NOTHING signed orders them — their effective instants tie (two addenda signed the same day, neither
+ * stating an effective date), or the effective language and the signing order contradict each other (the earlier-signed one
+ * takes effect later). The term has NO governing value until a person reviews it; the versions are listed, nothing is picked.
+ */
+export interface UnresolvedTermConflict {
+  key: GoverningTermKey
+  reason: "same_effective_instant" | "effective_order_contradicts_execution_order"
+  versions: Array<{ versionNo: number; source: TermVersionSource; value: unknown; executedAt: string | null; effectiveAt: string | null; documentId: string | null }>
+}
+
 export interface GoverningTerms {
-  /** key → the governing term, for every term at least one executed version names. */
+  /** key → the governing term, for every term at least one executed version names (an UNRESOLVED term is absent here). */
   terms: Partial<Record<GoverningTermKey, GoverningTerm>>
-  /** key → value, for convenience (a term nobody names is absent, never defaulted). */
+  /** key → value, for convenience (a term nobody names is absent, never defaulted; an unresolved one is absent too). */
   values: Partial<Record<GoverningTermKey, unknown>>
   /** Earlier executed values a later executed version replaced. */
   conflicts: TermConflict[]
+  /** Terms two same-source executed instruments contradict each other on, with nothing signed to order them — review needed. */
+  unresolved: UnresolvedTermConflict[]
   /** The newest EXECUTED version in precedence order (the contract as it stands), or null when nothing is executed. */
   governingVersion: { source: TermVersionSource; versionNo: number; offerId: string | null } | null
   /** Every version considered, in order — originals included. Nothing is dropped. */
@@ -119,30 +240,83 @@ export function canonicalTerms(raw: Record<string, unknown> | null | undefined):
  * precedes what amends it), then versionNo; a version NAMES a term by carrying its key (an explicit null is a strike and
  * governs as null); a later different value supersedes and the earlier one is returned as a conflict, never deleted.
  */
+export interface FoldOptions<V> {
+  /**
+   * WAVE 151 (lane 151K): the instant a version's SIGNED EFFECTIVE LANGUAGE says it takes effect; defaults to its executedAt.
+   * Precedence is by this instant ("governing-term precedence by signed effective language"), then the caller's source rank,
+   * then versionNo.
+   */
+  effectiveAt?: (v: V) => string | null | undefined
+  /**
+   * WAVE 151 (lane 151K): the sources whose version numbers carry NO precedence (an addendum's number is its RECORDING order,
+   * not its signing order). Two executed versions of one such source that name one key with different values are UNRESOLVED —
+   * neither governs the key — when their effective instants tie, or when their effective order contradicts their execution
+   * order. A later instrument whose effective instant is strictly later settles the key again. Sources not listed keep the
+   * existing reading (two counters at one instant are ordered by their round, which IS the negotiation order).
+   */
+  unresolvedTieSources?: readonly string[]
+}
+
+export interface FoldUnresolved<K extends string, V> { key: K; reason: "same_effective_instant" | "effective_order_contradicts_execution_order"; versions: Array<{ value: unknown; version: V }> }
+
 export function foldTermsByPrecedence<K extends string, V extends { versionNo: number; executedAt: string | null; source: string; terms: Record<string, unknown> }>(
   executedVersions: readonly V[],
   keys: readonly K[],
   rank: (source: V["source"]) => number,
-): { ordered: V[]; won: Partial<Record<K, { value: unknown; version: V }>>; conflicts: Array<{ key: K; superseded: { value: unknown; version: V }; governing: { value: unknown; version: V } }> } {
+  opts: FoldOptions<V> = {},
+): { ordered: V[]; won: Partial<Record<K, { value: unknown; version: V }>>; conflicts: Array<{ key: K; superseded: { value: unknown; version: V }; governing: { value: unknown; version: V } }>; unresolved: FoldUnresolved<K, V>[] } {
+  const eff = (v: V): string => String(opts.effectiveAt?.(v) ?? v.executedAt ?? "")
   const ordered = [...executedVersions].sort((a, b) =>
-    String(a.executedAt ?? "").localeCompare(String(b.executedAt ?? "")) || rank(a.source) - rank(b.source) || a.versionNo - b.versionNo)
+    eff(a).localeCompare(eff(b)) || String(a.executedAt ?? "").localeCompare(String(b.executedAt ?? "")) || rank(a.source) - rank(b.source) || a.versionNo - b.versionNo)
   const won: Partial<Record<K, { value: unknown; version: V }>> = {}
   const conflicts: Array<{ key: K; superseded: { value: unknown; version: V }; governing: { value: unknown; version: V } }> = []
+  const open: Partial<Record<K, FoldUnresolved<K, V>>> = {}
+  const tieSources = new Set(opts.unresolvedTieSources ?? [])
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   for (const v of ordered) {
     for (const key of keys) {
       if (!Object.prototype.hasOwnProperty.call(v.terms, key)) continue
       const value = v.terms[key]
+      const dispute = open[key]
+      if (dispute) {
+        // An open dispute on this key: a STRICTLY later effective instant that does not contradict the signing order settles it;
+        // anything else joins the dispute (a three-way tie is still a tie).
+        const laterThanAll = dispute.versions.every((d) => eff(d.version) < eff(v) && String(d.version.executedAt ?? "") <= String(v.executedAt ?? ""))
+        if (!laterThanAll) { dispute.versions.push({ value, version: v }); continue }
+        delete open[key]
+        for (const d of dispute.versions) if (!same(d.value, value)) conflicts.push({ key, superseded: d, governing: { value, version: v } })
+        won[key] = { value, version: v }
+        continue
+      }
       const prior = won[key]
-      if (prior && JSON.stringify(prior.value) !== JSON.stringify(value)) conflicts.push({ key, superseded: prior, governing: { value, version: v } })
+      if (prior && !same(prior.value, value)) {
+        if (tieSources.has(v.source) && prior.version.source === v.source) {
+          const effTie = eff(prior.version) === eff(v)
+          const execReversed = !!prior.version.executedAt && !!v.executedAt && String(v.executedAt) < String(prior.version.executedAt)
+          if (effTie || execReversed) {
+            open[key] = { key, reason: effTie ? "same_effective_instant" : "effective_order_contradicts_execution_order", versions: [prior, { value, version: v }] }
+            delete won[key]
+            continue
+          }
+        }
+        conflicts.push({ key, superseded: prior, governing: { value, version: v } })
+      }
       won[key] = { value, version: v }
     }
   }
-  return { ordered, won, conflicts }
+  return { ordered, won, conflicts, unresolved: Object.values(open) as FoldUnresolved<K, V>[] }
 }
+
+/** The end of the stated day — the instant a day-precision effective date takes effect (the addendum door's execution convention). */
+export const endOfDayInstant = (day: string | null | undefined): string | null => (typeof day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day) ? `${day}T23:59:59.999Z` : null)
 
 /**
  * PURE — THE PRECEDENCE RULE. See the header. `versions` may arrive in any order and may mix derived and recorded rows;
  * a `void` version is ignored, a `proposed` one never governs (it is reported under `pending`).
+ *
+ * WAVE 151 (lane 151K): precedence is by SIGNED EFFECTIVE LANGUAGE (`effectiveAt`, else the execution instant). Two executed
+ * ADDENDA (or two AMENDMENTS) that contradict each other on one term with nothing signed to order them are reported under
+ * `unresolved` — the term has no governing value until a person reviews it; nothing is invented from their version numbers.
  */
 export function resolveGoverningTerms(versions: TermsVersion[]): GoverningTerms {
   const ordered = [...versions].sort((a, b) => a.versionNo - b.versionNo)
@@ -150,7 +324,10 @@ export function resolveGoverningTerms(versions: TermsVersion[]): GoverningTerms 
   // original, then its counters, then an addendum, then an amendment — an addendum amends a contract that already exists, so on a
   // tie it follows. Version numbers are per-source sequences and cannot be compared across sources.
   const rank = (s: TermVersionSource) => (TERM_VERSION_SOURCES as readonly string[]).indexOf(s)
-  const fold = foldTermsByPrecedence(ordered.filter((v) => v.status === "executed"), GOVERNING_TERM_KEYS, rank)
+  const fold = foldTermsByPrecedence(ordered.filter((v) => v.status === "executed"), GOVERNING_TERM_KEYS, rank, {
+    effectiveAt: (v) => v.effectiveAt ?? v.executedAt,
+    unresolvedTieSources: ["addendum", "amendment"],
+  })
   const executed = fold.ordered
   const terms: GoverningTerms["terms"] = {}
   for (const key of Object.keys(fold.won) as GoverningTermKey[]) {
@@ -162,10 +339,14 @@ export function resolveGoverningTerms(versions: TermsVersion[]): GoverningTerms 
     superseded: { versionNo: c.superseded.version.versionNo, source: c.superseded.version.source, value: c.superseded.value },
     governing: { versionNo: c.governing.version.versionNo, source: c.governing.version.source, value: c.governing.value },
   }))
+  const unresolved: UnresolvedTermConflict[] = fold.unresolved.map((u) => ({
+    key: u.key, reason: u.reason,
+    versions: u.versions.map((d) => ({ versionNo: d.version.versionNo, source: d.version.source, value: d.value, executedAt: d.version.executedAt, effectiveAt: d.version.effectiveAt ?? null, documentId: d.version.documentId })),
+  }))
   const values: GoverningTerms["values"] = {}
   for (const k of Object.keys(terms) as GoverningTermKey[]) values[k] = terms[k]!.value
   return {
-    terms, values, conflicts,
+    terms, values, conflicts, unresolved,
     governingVersion: executed.length ? { source: executed[executed.length - 1].source, versionNo: executed[executed.length - 1].versionNo, offerId: executed[executed.length - 1].offerId } : null,
     versions: ordered,
     pending: ordered.filter((v) => v.status === "proposed"),

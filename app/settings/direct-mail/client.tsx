@@ -5,31 +5,135 @@ import {
   saveFarmMailConfig,
   addCompetitorToWatchlist,
   removeCompetitorFromWatchlist,
+  saveSenderAddress,
+  approveSenderAddress,
+  setDefaultSenderAddress,
+  retireSenderAddress,
   type FarmMailConfig,
   type CompetitorWatchlistEntry,
+  type SenderAddressSettings,
 } from "@/app/actions/direct-mail-settings"
+import type { SenderAddressRow } from "@/lib/direct-mail/piece-type"
 
 export function DirectMailSettingsClient({
   initialConfig,
   initialWatchlist,
+  initialSender,
 }: {
   initialConfig:    FarmMailConfig
   initialWatchlist: CompetitorWatchlistEntry[]
+  initialSender:    SenderAddressSettings
 }) {
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-8">
       <header>
         <h1 className="text-2xl font-bold text-gray-900">Direct Mail Settings</h1>
         <p className="text-gray-600 mt-2">
-          Brokerage-level configuration for the farm-mail weekly cron and the
+          Brokerage-level configuration for the return address every piece carries, the farm-mail weekly cron and the
           competitive intel ingest. Per-persona size preferences and lifecycle
           event toggles live on their respective sub-pages.
         </p>
       </header>
 
+      <SenderAddressSection initial={initialSender} />
       <FarmMailSection initialConfig={initialConfig} />
       <CompetitorWatchlistSection initialWatchlist={initialWatchlist} />
     </div>
+  )
+}
+
+/** Wave 151 (lane 151H): THE RETURN ADDRESS ON EVERY PIECE. The platform's address is never printed on a tenant mailing; a
+ *  send with no approved, CASS-verified sender address is refused by name — this section is where the admin fixes that. */
+function SenderAddressSection({ initial }: { initial: SenderAddressSettings }) {
+  const [rows, setRows] = useState<SenderAddressRow[]>(initial.rows)
+  const [effective, setEffective] = useState(initial.effective)
+  const [refusal, setRefusal] = useState(initial.refusal)
+  const [pending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [form, setForm] = useState({ label: "", name: "", line1: "", line2: "", city: "", state: "", zip: "" })
+
+  function refreshEffective(next: SenderAddressRow[]) {
+    const def = next.find((r) => r.scope_type === "brokerage" && r.is_default && r.approved_at && r.cass_verified_at) ?? next.find((r) => r.scope_type === "brokerage" && r.approved_at && r.cass_verified_at)
+    if (def) { setEffective({ source: "tenant_return_address", line: `${def.name} · ${def.line1}, ${def.city}, ${def.state} ${def.zip}`, verified: true }); setRefusal(null) }
+    else { setEffective(null); setRefusal("no approved, verified return address — a send resolves to the brokerage's business address only if it can be verified at send time, else it is refused") }
+  }
+
+  function handleSave() {
+    setError(null); setNotice(null)
+    startTransition(async () => {
+      const r = await saveSenderAddress({ scope_type: "brokerage", label: form.label || null, name: form.name, line1: form.line1, line2: form.line2 || null, city: form.city, state: form.state, zip: form.zip })
+      if (!r.success) { setError(r.error); return }
+      const next = [r.row, ...rows.filter((x) => x.id !== r.row.id)]
+      setRows(next); refreshEffective(next)
+      setNotice(r.verified ? `Saved and CASS-verified (${r.deliverability ?? "deliverable"}). Approve it to use it as the sender.` : "Saved. It could not be verified now (no Lob key, or Lob unavailable) — an unverified address is refused as a sender until it is.")
+      setForm({ label: "", name: "", line1: "", line2: "", city: "", state: "", zip: "" })
+    })
+  }
+  function act(fn: (id: string) => Promise<{ success: boolean; error?: string }>, id: string, patch: (r: SenderAddressRow) => SenderAddressRow | null) {
+    setError(null); setNotice(null)
+    startTransition(async () => {
+      const r = await fn(id)
+      if (!r.success) { setError(r.error ?? "Failed"); return }
+      const next = rows.map((x) => (x.id === id ? patch(x) : x)).filter((x): x is SenderAddressRow => x !== null)
+      setRows(next); refreshEffective(next)
+    })
+  }
+
+  return (
+    <section className="border border-gray-200 rounded-lg p-5 bg-white">
+      <h2 className="text-lg font-semibold text-gray-900 mb-1">Return address (the sender on every piece)</h2>
+      <p className="text-sm text-gray-600 mb-3">
+        Every letter, note and postcard prints <strong>your</strong> return address — the platform&apos;s address is never used. An
+        address is CASS-verified once when saved, then approved here before any piece carries it. A send with no approved,
+        verified address is refused and says so; nothing is substituted.
+      </p>
+      <div className={`text-sm rounded p-3 mb-4 ${effective ? "bg-green-50 text-green-800" : "bg-amber-50 text-amber-800"}`}>
+        {effective
+          ? <>Sends from this brokerage use: <span className="font-medium">{effective.line}</span> <span className="text-xs">({effective.source}{effective.verified ? ", CASS-verified" : ""})</span></>
+          : <>No usable sender address yet{refusal ? ` — ${refusal}` : ""}.</>}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3 p-3 bg-gray-50 rounded">
+        <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Label (e.g. Main office)" className="border border-gray-300 rounded px-3 py-2 text-sm" />
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Return name — your legal / business name (required)" className="border border-gray-300 rounded px-3 py-2 text-sm" />
+        <input value={form.line1} onChange={(e) => setForm({ ...form, line1: e.target.value })} placeholder="Street address (required)" className="border border-gray-300 rounded px-3 py-2 text-sm" />
+        <input value={form.line2} onChange={(e) => setForm({ ...form, line2: e.target.value })} placeholder="Suite / unit (optional)" className="border border-gray-300 rounded px-3 py-2 text-sm" />
+        <input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} placeholder="City (required)" className="border border-gray-300 rounded px-3 py-2 text-sm" />
+        <div className="grid grid-cols-2 gap-3">
+          <input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} placeholder="ST" maxLength={2} className="border border-gray-300 rounded px-3 py-2 text-sm" />
+          <input value={form.zip} onChange={(e) => setForm({ ...form, zip: e.target.value })} placeholder="ZIP" className="border border-gray-300 rounded px-3 py-2 text-sm" />
+        </div>
+        <button onClick={handleSave} disabled={pending} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded hover:bg-blue-700 disabled:opacity-50">
+          {pending ? "Saving…" : initial.canVerify ? "Save and verify (CASS)" : "Save (verification unavailable — no Lob key)"}
+        </button>
+      </div>
+      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
+      {notice && <p className="mb-3 text-sm text-green-700">{notice}</p>}
+
+      {rows.length === 0 ? (
+        <p className="text-sm text-gray-500 italic">No return addresses saved yet.</p>
+      ) : (
+        <ul className="space-y-2">
+          {rows.map((r) => (
+            <li key={r.id} className="flex items-start justify-between border border-gray-100 rounded p-3">
+              <div className="flex-1 min-w-0 text-sm">
+                <div className="font-medium">{r.label ? `${r.label} — ` : ""}{r.name}</div>
+                <div className="text-gray-700">{r.line1}{r.line2 ? `, ${r.line2}` : ""}, {r.city}, {r.state} {r.zip}</div>
+                <div className="text-xs text-gray-500 mt-1">
+                  scope {r.scope_type} · {r.cass_verified_at ? `CASS ${r.cass_deliverability ?? "verified"}` : "not verified"} · {r.approved_at ? "approved" : "awaiting approval"}{r.is_default ? " · default" : ""}
+                </div>
+              </div>
+              <div className="ml-3 flex flex-col gap-1 text-xs">
+                {!r.approved_at && <button disabled={pending} onClick={() => act(approveSenderAddress, r.id, (x) => ({ ...x, approved_at: new Date().toISOString() }))} className="text-blue-600 hover:underline disabled:opacity-50">Approve</button>}
+                {r.approved_at && !r.is_default && <button disabled={pending} onClick={() => act(setDefaultSenderAddress, r.id, (x) => ({ ...x, is_default: true }))} className="text-blue-600 hover:underline disabled:opacity-50">Make default</button>}
+                <button disabled={pending} onClick={() => act(retireSenderAddress, r.id, () => null)} className="text-red-600 hover:underline disabled:opacity-50">Retire</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 

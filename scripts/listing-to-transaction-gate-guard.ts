@@ -107,7 +107,14 @@ async function main() {
     check("a database without m993's columns refuses the photo by name — never a silent half-record", !r6.ok)
 
     const sources: readonly ListingPhotoSource[] = LISTING_PHOTO_SOURCES
-    check("the lawful photo sources are exactly IDX/MLS and owner upload (RentCast / Tracerfy / DataZapp are never one)", sources.join(",") === "idx_mls,owner_upload")
+    // THE RULE, not the waypoint (wave 151, lane 151K): the code constant IS the live CHECK vocabulary (m993 owner_upload / idx_mls;
+    // m966 added the photographer's vendor_delivery on the owner's L6.3 ruling), and no lawful source is ever a data provider.
+    const { CHECK_VOCABULARIES } = await import("./check-vocabularies")
+    const liveSources = [...(CHECK_VOCABULARIES.listing_media?.photo_source ?? [])].sort()
+    const PROVIDER = /rentcast|tracerfy|datazapp|batchdata|versium|peopledata|exa/i
+    check("the lawful photo sources are the live CHECK vocabulary (the code constant and the database agree) and none of them is a data provider",
+      liveSources.length >= 2 && [...sources].sort().join(",") === liveSources.join(",") && sources.includes("idx_mls") && sources.includes("owner_upload") && !sources.some((s) => PROVIDER.test(s)), `${sources.join(",")} vs live ${liveSources.join(",")}`)
+    check("POSITIVE CONTROL: a provider-named source would be caught", PROVIDER.test("rentcast_photo") && ["idx_mls", "rentcast_photo"].some((s) => PROVIDER.test(s)))
     const m993 = code("supabase/migrations/m993-owner-uploaded-listing-photo-provenance.sql")
     const m993Line1 = raw("supabase/migrations/m993-owner-uploaded-listing-photo-provenance.sql").split("\n")[0]
     // The RULE, not the waypoint: line 1 is the lane stamp while the file waits, the APPLIED LIVE stamp once the integrator applied it.

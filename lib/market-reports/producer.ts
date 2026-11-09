@@ -17,7 +17,7 @@
 //     surface "lead_magnet") → the C4 final phase (humanize-final: machine phrasing out, the tenant's brand voice; a word the
 //     brand prohibits holds it) → the VALIDATOR (validator.ts — no generic text passes) → the approver (C5 approverFor,
 //     assetKind "asset" — who may approve this report before anyone outside the tenant receives it) → a TENANT-BRANDED PDF
-//     (lib/documents/client-document-producer.ts — brokerage colour/name, agent attribution, licence line, EHO mark) recorded in
+//     (lib/documents/client-document-producer.ts — brokerage colour/name, agent attribution, license line, EHO mark) recorded in
 //     the document library, under THE ACTION LEDGER (marketing.market_report.produce) → optional NARRATED video: a market_update
 //     commissioned through THE video director (lib/video/video-director.ts commissionVideo, pending_review), which the
 //     render-landed reaction stages through lib/video/video-staging.ts — this module never publishes a video.
@@ -85,13 +85,13 @@ export interface ProducerDeps extends ResearchDeps {
   ledgerClient?: Db
 }
 
-/** A brokerage location's own identity (locations, m957 — C34): legal name / DBA, office licence, brand overrides. */
+/** A brokerage location's own identity (locations, m957 — C34): legal name / DBA, office license, brand overrides. */
 interface OfficeBrandRow { id: string; name: string | null; legal_name: string | null; dba: string | null; license_number: string | null; license_state: string | null; brand_overrides: Record<string, unknown> | null }
 
 /**
  * PURE — the C34 brand cascade for a report: the presenting agent's OFFICE identity over the tenant's (canary 17: the same
- * territory report differs per agent and per office). The office's DBA / legal name carries the brokerage line, its licence
- * joins the line (an agent's own licence stays first), and its brand overrides set the colour and the tagline. No office →
+ * territory report differs per agent and per office). The office's DBA / legal name carries the brokerage line, its license
+ * joins the line (an agent's own license stays first), and its brand overrides set the colour and the tagline. No office →
  * the tenant brand unchanged.
  */
 function applyOfficeBrand(brand: PdfBrandLike, office: OfficeBrandRow | null): PdfBrandLike {
@@ -406,7 +406,7 @@ export async function produceMarketReport(svc: Db, input: ProduceMarketReportInp
     // 9 · THE BRANDED ASSET, under the action ledger (LAW 5).
     const tenantBrand = await (deps.brand ?? defaultBrand(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null })
     if (fin.tagline) tenantBrand.tagline = fin.tagline
-    // C34 cascade — a refused office read fails CLOSED (a report under the wrong office's licence line is a compliance defect).
+    // C34 cascade — a refused office read fails CLOSED (a report under the wrong office's license line is a compliance defect).
     let office: OfficeBrandRow | null = null
     try { office = await (deps.officeBrand ?? defaultOfficeBrand(svc))({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null }) }
     catch (e) { return { ok: false, stage: "render", reason: `office brand could not be resolved: ${e instanceof Error ? e.message : String(e)}`, validation, report, notes } }

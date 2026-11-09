@@ -7,6 +7,9 @@ import { AgentConcessionsCard } from "./agent-concessions-card"
 import { ClosingVerificationCard } from "./closing-verification-card"
 import { ClientAgreementFeesCard } from "./client-agreement-fees-card"
 import { ReferralAgreementCard } from "./referral-agreement-card"
+// WAVE 151 (lane 151K): the no-CDA closing proof, and the AI split coach (explains the arithmetic, never a number, never fills).
+import { ClosingProofCard } from "./closing-proof-card"
+import { CdaCoachCard } from "./cda-coach-card"
 import { resolveCdaMode } from "@/lib/transactions/cda-closing-policy"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -232,6 +235,9 @@ export default async function CDAPage({ params }: PageProps) {
     .order("created_at", { ascending: false })
     .limit(15)
 
+  // ONE answer (wave 142, lane 142C): resolveCdaMode — read once here for the workflow client, the coach and the closing proof.
+  const cdaMode = resolveCdaMode({ offersCda: (brokerage as { offers_cda?: boolean | null } | null)?.offers_cda })
+
   return (
     <>
     <CDAWorkflowClient
@@ -243,7 +249,7 @@ export default async function CDAPage({ params }: PageProps) {
       cda={cda}
       // ONE answer (wave 142, lane 142C): resolveCdaMode — an undeclared setting never manufactures a
       // mandatory CDA (this page used to default it to TRUE while finalizeCommissionAtClose said FALSE).
-      offersCda={resolveCdaMode({ offersCda: (brokerage as { offers_cda?: boolean | null } | null)?.offers_cda }).cdaRequired}
+      offersCda={cdaMode.cdaRequired}
       agent={agent}
       agentCap={agentCap}
       capUnavailable={!!capError}
@@ -253,6 +259,9 @@ export default async function CDAPage({ params }: PageProps) {
     />
     {/* WAVE 144 (lane 144D, owner ruling 4): the agent concession request / broker decision for this deal. */}
     <div className="mx-auto max-w-5xl space-y-6 px-4 pb-8">
+      {/* WAVE 151 (lane 151K): CDA enabled → the coach beside the form the agent fills; CDA disabled → the honest closing proof. */}
+      {cdaMode.mode === "cda" && cda?.id ? <CdaCoachCard cdaId={String(cda.id)} /> : null}
+      {cdaMode.mode === "no_cda" ? <ClosingProofCard transactionId={id} /> : null}
       <AgentConcessionsCard transactionId={id} />
       {/* WAVE 145 (lane 145C, owner rulings 5/6/7/9): client-agreement fees, the referral agreement a payout needs, and the
           five-layer closing verification with the agent's attestation (+ the compliance CDA-correction door). */}

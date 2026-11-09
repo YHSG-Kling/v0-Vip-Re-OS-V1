@@ -28,6 +28,8 @@ import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 import { pickVariantArm, recordVariantSend, type BanditPickReason } from "@/lib/direct-mail/variant-bandit"
 import { experimentLedgerDetail } from "@/lib/kernel/experiments"
 import type { Persona } from "@/lib/kernel/types"
+import type { MailFormat } from "@/lib/direct-mail/piece-type"
+import { readSenderVoiceBrief, type SenderVoiceBrief } from "@/lib/direct-mail/draft-copy"
 
 export type PostcardSize = "4x6" | "6x9"
 
@@ -83,6 +85,9 @@ export interface OrchestrateSendArgs {
   /** Wave 150 (150R): the at-most-once key for THIS piece (piece-type.ts mailPieceIdempotencyKey). The
    *  action ledger refuses a second claim, so a re-fired caller cannot charge for the same piece twice. */
   idempotencyKey?:  string
+  /** Wave 151 (151H): the campaign row's PRINT format. `personal_letter` renders the letter in the handwriting-style
+   *  printed typeface on the global personal-note layout (pieceType stays "letter"). Default: derived from pieceType. */
+  format?: MailFormat
 }
 
 export interface OrchestrateSendResult {
@@ -123,6 +128,29 @@ export async function orchestrateRenderAndSend(
   let fellBackReason: string | null = null
   let variantPick: OrchestrateSendResult["variantPick"] = null
   let complianceEventId: string | null = null
+
+  // ── WAVE 151 (lane 151H): THE SENDER'S RETURN ADDRESS, BEFORE ANY RENDER ──
+  // TOMBSTONE: the tenant's `from` was set only on the static-template branch below, so every RENDERED piece — the normal
+  // path for the drain, the lifecycle reactor and farm mail — reached the dispatcher with no sender and mailed under the
+  // platform's saved address. The ONE resolver (piece-type.ts resolveTenantSenderAddress) runs first; the ONE gate
+  // (mailing-cass-gate.ts decideSenderAddress) refuses by name BEFORE a Remotion render or a model call is paid for.
+  const { resolveTenantSenderAddress } = await import("@/lib/direct-mail/piece-type")
+  const { decideSenderAddress } = await import("@/lib/providers/mailing-cass-gate")
+  const senderRead = await resolveTenantSenderAddress({ brokerageId: args.brokerageId, teamId: args.copyCtx.teamId ?? null, agentUserId: args.copyCtx.agentUserId ?? args.userId ?? null })
+  const senderGate = decideSenderAddress(senderRead.address, { platformLobAddressId: process.env.LOB_RETURN_ADDRESS_ID })
+  if (!senderGate.ok) {
+    return { success: false, rendered: false, fellBackReason: null, variantPick, complianceEventId, error: `Not mailed — sender address refused (${senderGate.code}): ${senderGate.reason}${senderRead.refusal ? ` — ${senderRead.refusal}` : ""}` }
+  }
+  const senderAddress = senderRead.address
+  const format: MailFormat = args.format ?? (args.pieceType === "postcard" ? "postcard" : "letter")
+
+  // ── WAVE 151 (lane 151H — 151I's plug point): the SENDER'S VOICE conditions the FIRST draft. The brief is read once here
+  // (draft-copy.ts readSenderVoiceBrief — today from brand_voice_profile + the brand cascade; lane 151I's reader replaces its
+  // body) and rides copyCtx so both renderers' drafts are written in the sender's voice from the start, never "generate
+  // generic then let the human rewrite".
+  const senderVoice: SenderVoiceBrief = args.copyCtx.senderVoice ?? (await readSenderVoiceBrief(args.copyCtx))
+  args.copyCtx.senderVoice = senderVoice
+  args.copyCtx.format = format
 
   // Wave 36 bandit pick (postcard sends only — letters use a fixed
   // letterhead). systemSource maps to bandit use_kind; "lifecycle:*"
@@ -229,6 +257,9 @@ export async function orchestrateRenderAndSend(
       recipientZip:       args.zip,
       agentName:          args.agentName ?? null,
       agentTitle:         args.agentTitle ?? null,
+      // Wave 151 (151H): the handwriting-style PRINTED note on the personal-note layout; the tenant's return address on the letterhead.
+      noteStyle:          format === "personal_letter" ? "handwriting_style" : null,
+      returnAddress:      senderAddress,
     })
     if (r.ok && r.html) {
       // Lob letters accept HTML directly via the `file` parameter.
@@ -253,11 +284,11 @@ export async function orchestrateRenderAndSend(
   // reads the tenant id only as a measured legacy fallback, and REFUSES a postcard with no distinct back.
   // The tenant/user/office brand is resolved now and passed as merge_variables.
   let fallbackMergeVars: Record<string, string> | undefined
-  let fallbackFrom: { name: string; line1: string; line2?: string | null; city: string; state: string; zip: string } | null = null
   let templateSource: string = rendered ? "rendered_piece" : "none"
   if (!templateForLob) {
     const { fallbackLobTemplates, readMailBrandFacts, buildMailMergeVariables } = await import("@/lib/direct-mail/piece-type")
-    const fb = fallbackLobTemplates(args.pieceType, args.fallbackTemplateId)
+    // The personal note falls back to the GLOBAL personal-note layout (151H), never the ordinary letter's.
+    const fb = fallbackLobTemplates(format === "personal_letter" ? "personal_letter" : args.pieceType, args.fallbackTemplateId)
     if (!fb.ok) {
       return { success: false, rendered: false, fellBackReason: fellBackReason ?? fb.reason, variantPick, complianceEventId, error: `Not mailed — ${fb.reason}` }
     }
@@ -274,8 +305,8 @@ export async function orchestrateRenderAndSend(
       return { success: false, rendered: false, fellBackReason, variantPick, complianceEventId, error: "Not mailed — merge variables exceed Lob's 25,000-character limit" }
     }
     fallbackMergeVars = brand.mergeVars
-    // The tenant's return address on the Lob `from` (wave 150, lane 150Z — lane 150QTV Outside-lane 3).
-    fallbackFrom = brandRead.facts.returnAddress ?? null
+    // TOMBSTONE (151H): `fallbackFrom = brandRead.facts.returnAddress` lived here, so only this branch carried the tenant's
+    // address. SURVIVOR: `senderAddress`, resolved above for EVERY path (lib/direct-mail/piece-type.ts resolveTenantSenderAddress).
   }
 
   const dispatch = await dispatchDirectMail({
@@ -296,8 +327,11 @@ export async function orchestrateRenderAndSend(
     // postcards.create; passing this through lets the 6x9 path
     // actually order the larger card from Lob.
     size:           args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
+    // The handwriting-style printed note prints in color (the typeface reads as ink); the ordinary letter keeps its default.
+    ...(format === "personal_letter" ? { color: true } : {}),
     ...(fallbackMergeVars ? { mergeVars: fallbackMergeVars } : {}),
-    ...(fallbackFrom ? { fromAddress: fallbackFrom } : {}),
+    // THE TENANT's sender address on EVERY path (rendered or fallback) — wave 151, 151H.
+    fromAddress:    senderAddress,
     systemSource:   args.systemSource ?? "orchestrated",
     // Wave 101 (101B): the bandit's arm rides the send's ledger row as detail.experiment, so 100A
     // attribution rolls outcomes up by arm beside the A/B arms (lib/kernel/experiments.ts). The
@@ -312,6 +346,8 @@ export async function orchestrateRenderAndSend(
       : args.idempotencyKey ? { ledger: { idempotencyKey: args.idempotencyKey } } : {}),
     metadata: {
       template_source: templateSource,
+      mail_format:      format,
+      sender_address_source: senderAddress?.source ?? null,
       rendered,
       fell_back_reason: fellBackReason,
       postcard_size:    args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,

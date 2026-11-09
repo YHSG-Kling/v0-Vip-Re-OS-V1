@@ -433,8 +433,10 @@ export function compareClosingTerms(governing: TermMap, settlement: TermMap, con
     }
     const gov = governing[term]
     const set = settlement[term]
-    // A term neither side states is not a finding at all (nothing to compare, nothing was promised).
-    if (!gov && !set) continue
+    // A term neither side states is not a finding at all (nothing to compare, nothing was promised) — unless the executed paper
+    // CONTRADICTS ITSELF on it (wave 151, lane 151K: two executed addenda, nothing signed to order them): that is a finding for a
+    // person whether or not a settlement statement states the term yet.
+    if (!gov && !set && !conflicts[term]) continue
     findings.push(compareTerm(term, gov, set, price, conflicts[term]))
   }
   const counts = {

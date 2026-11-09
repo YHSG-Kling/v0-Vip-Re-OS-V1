@@ -687,7 +687,12 @@ read-only check that says it is done. None of them blocks the code that already 
 
 ### L1. O-150C-1 — the legacy one-membership-per-tenant UNIQUE (lane 150C; SQL editor, a constraint drop)
 
-Until this runs, a person holds ONE `organization_members` row per tenant: an office member who is also on a team keeps only the first
+**APPLIED 2026-11-09** by the integrator on the owner's wave-151 ruling ("L1 drop"), via Supabase MCP as
+`supabase/migrations/m955-owner-sql-l1-drop-legacy-one-membership-per-tenant-unique.sql`. Pre-check: the scoped unique
+`organization_members_active_scope_key` (m958) was present and the table held 0 rows. Read-back: the constraint query below
+returned 0 rows; the surviving uniques are `organization_members_active_scope_key` and the primary key. The text below is history.
+
+Until this ran, a person holds ONE `organization_members` row per tenant: an office member who is also on a team keeps only the first
 grant, and the second is refused 23505 and reported by name ("O-150C-1 pending"). 0 live rows at the time of writing, so the drop is safe.
 ```sql
 ALTER TABLE public.organization_members DROP CONSTRAINT organization_members_brokerage_id_user_id_key;
@@ -696,6 +701,13 @@ SELECT conname FROM pg_constraint WHERE conname = 'organization_members_brokerag
 ```
 
 ### L2. The global cross-tenant UNIQUE on raw observations (lane 150EFG; SQL editor, an index drop — m961 is applied)
+
+**APPLIED 2026-11-09** by the integrator on the owner's wave-151 ruling ("L2 drop"), via Supabase MCP as
+`supabase/migrations/m956-owner-sql-l2-drop-global-cross-tenant-raw-observation-unique.sql`. The object was a CONSTRAINT, not a
+bare index: the `DROP INDEX` below was refused 2BP01 ("cannot drop index … because constraint … requires it"), so the applied
+statement is `ALTER TABLE public.raw_scraped_leads DROP CONSTRAINT IF EXISTS raw_scraped_leads_source_record_id_key`. Pre-check:
+the scoped unique `raw_scraped_leads_idempotency_key_uniq` (m961) was present and the table held 0 rows. Read-back: constraint 0,
+index 0; the surviving uniques are `raw_scraped_leads_idempotency_key_uniq` and the primary key. The text below is history.
 
 The C35 producer keys every observation by a tenant-scoped `idempotency_key`; the old GLOBAL `(source_record_id)` UNIQUE lets one
 tenant's observation refuse another's. 0 live rows depended on it.
@@ -796,12 +808,19 @@ The owner ruled on §L items L1–L6 in the wave-151 directive (§151B). What ea
 
 | §L item | Owner decision | Where it went |
 |---|---|---|
-| L1 (`organization_members_brokerage_id_user_id_key` drop) | DROP from the pending scope — the integrator applies it live | Not this lane's; nothing written. |
-| L2 (`raw_scraped_leads_source_record_id_key` drop) | DROP from the pending scope — the integrator applies it live | Not this lane's; nothing written. |
+| L1 (`organization_members_brokerage_id_user_id_key` drop) | DROP — the integrator applies it live | **APPLIED 2026-11-09** (m955; read-back in §L L1). |
+| L2 (`raw_scraped_leads_source_record_id_key` drop) | DROP — the integrator applies it live | **APPLIED 2026-11-09** (m956 — a constraint drop, the `DROP INDEX` was refused 2BP01; read-back in §L L2). |
 | L3 (`listing-media` storage policies) | KEEP **only if they match the code's ownership / access contracts** | Verified below: **AMEND** — corrected SQL in M.1. Still owner SQL (storage.objects). |
 | L4 (S3, team lead contacts) | Team leaders see the Contacts of the teams they lead, never brokerage-wide | A MIGRATION now, not owner SQL: `supabase/migrations/m963-team-lead-reads-contacts-of-the-teams-they-lead.sql` (the integrator applies via MCP). The §L L4 draft is superseded: it used `current_user_led_team_id()`, which is `LIMIT 1` — one team, not "the teams they lead". |
 | L5 (S4, `users_same_brokerage_select`) | Contacts see only their own; vendors only their assigned work | A MIGRATION: `supabase/migrations/m964-users-rows-stay-with-staff-seats-own-row-and-the-assigned-agent.sql` — the §L L5 draft plus the lawful narrow read the portal needs (the assigned agent's row for a contact; the booking / assigning agent's row for a vendor), measured from every `.from("users")` under app/portal, app/vendor, lib/portal, lib/vendors. The vendor-side tenant-wide reads S4 also names are `m965-vendor-seats-read-only-their-assigned-work.sql`. |
 | L6.3 (photographer deliveries) | An assigned photographer uploads for exactly its booked listing; review, never auto-publish | A MIGRATION: `supabase/migrations/m966-photographer-delivery-is-a-third-photo-source.sql` + code (`lib/listings/owner-photo-upload.ts recordPhotographerDelivery`, `app/actions/photo-management.ts submitPhotographerDelivery`, the vendor jobs page). |
+
+#### L6.2 / L6.4 — closing without a CDA (lane 151K, 2026-11-09; owner: "if the brokerage doesn't use CDAs (their settings), then it can close without a CDA")
+
+- **L6.2 — BUILT as option (b):** at the gated close of a brokerage whose settings say it does NOT use a CDA, the closing question is asked of the deal's agent / TC as an INFORMATIONAL compliance row (`is_blocking false`; the close is never held; a "yes" tells the admins exactly as today) — `lib/commission/closing-verification.ts ensureClosingAttestationAsked({ informational })`, hooked at `lib/transactions/stage-progression.ts`'s close step. The deal closes on the smallest honest proof (`lib/transactions/cda-closing-policy.ts noCdaClosingProof`: final settlement record + recorded receipt who/when + compliance status + the payout holds; funds are never asserted from a date; `CLOSED / PAYOUT PENDING`, `payoutFundsGate` and the once-only payment stay intact).
+- **L6.2 option (c) — YOUR decision, not chosen:** *"Should a brokerage that does not use a CDA be able to OPT IN (a brokerage setting) to a BLOCKING closing question — the gated close refused until the agent attests that no executed change is unrecorded?"* It changes who may hold a closing (legal/financial approval authority). Code ready to take it: `ensureClosingAttestationAsked({ informational: false })` at the same hook, behind a `brokerage_settings` key.
+- **L6.4 — the AI split coach and the agent's own split:** the coach (`lib/commission/cda-coach-rule.ts`, `app/actions/transactions/cda-coach.ts`) explains the waterfall and never states a figure beyond the agent's own entered CDA figures and the contract's stated terms (both already on the agent's CDA page); engine amounts never reach the model and it never writes the CDA. *"Do you accept that the coach may repeat the agent's own entered CDA figures and the contract's price / commission percentage (and nothing computed by the engine)?"* If not, the allowed set collapses to the contract terms alone (`allowedFigureSet`).
+- **Addendum evidence — refuse or flag (your call later):** the recorder refuses only a verified / high-confidence extraction that contradicts the typed term; a term with no extraction and no stated page / field is recorded and flagged `person_reading_unlocated`, because the addendum door collects page / field only as of wave 151 (the integrator added the fields). *"Now that the door collects page / field, should the recorder refuse an executed addendum term with no located evidence?"*
 
 ### M.1. L3 verdict — AMEND the `listing-media` `storage.objects` policies (owner SQL; Dashboard → Storage → Policies, or SQL editor as `supabase_storage_admin` — `postgres` is refused 42501, as in §F)
 

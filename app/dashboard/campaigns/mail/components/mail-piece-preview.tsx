@@ -3,8 +3,19 @@
 import Image from "next/image"
 import { Card, CardContent } from "@/app/components/ui/card"
 import { Mail } from "lucide-react"
+// The blank layout library (wave 151, lane 151H) — the preview says which GLOBAL layout the piece prints on; piece-type.ts is
+// client-safe (type-only import).
+import { MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE } from "@/lib/direct-mail/piece-type"
 
 export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
+
+/** Which blank layout(s) a campaign piece type prints on. */
+const LAYOUTS_FOR: Record<DirectMailPieceType, Array<keyof typeof MAIL_LAYOUT_LIBRARY>> = {
+  postcard: ["postcard_front", "postcard_back"],
+  letter: ["letter"],
+  handwritten_letter: ["personal_letter"],
+  thank_you_note: ["personal_letter"],
+}
 
 /** Palette from the AI design suggestion (aiSuggestDesign colorScheme). Applied
  *  best-effort as inline styles so the preview reflects the suggested design. */
@@ -31,9 +42,10 @@ interface Props {
 const PIECE_LABELS: Record<DirectMailPieceType, string> = {
   postcard: "Postcard (4×6)",
   letter: "Letter (#10 envelope)",
-  // R5 (owner 2026-11-06): a font is never called handwriting — the stored key stays, the words say what it is.
-  handwritten_letter: "Personal note (printed)",
-  thank_you_note: "Thank-You Note",
+  // Owner (wave 151): "handwritten font by computer can be a substitute" — described as handwriting-STYLE PRINTED mail, never
+  // handwritten. The stored key stays; the words say what it is.
+  handwritten_letter: "Handwriting-style printed note",
+  thank_you_note: "Thank-you note (handwriting-style, printed)",
 }
 
 export function MailPiecePreview({
@@ -54,10 +66,14 @@ export function MailPiecePreview({
         <Mail className="h-3.5 w-3.5" />
         <span>Preview · {PIECE_LABELS[pieceType]}</span>
       </div>
+      <p className="text-[11px] text-muted-foreground">
+        Prints on the global blank layout{LAYOUTS_FOR[pieceType].length > 1 ? "s" : ""} {LAYOUTS_FOR[pieceType].map((k) => MAIL_LAYOUT_LIBRARY[k].label).join(" + ")} — your logo, colors, name, license line, QR and
+        return address are filled in from your settings at proof time; the layout itself carries no brand and no address.
+      </p>
 
       {pieceType === "postcard" && <PostcardPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, colors }} />}
       {pieceType === "letter" && <LetterPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, recipientName, colors }} />}
-      {pieceType === "handwritten_letter" && <HandwrittenLetterPreview {...{ body, agentName, recipientName }} />}
+      {pieceType === "handwritten_letter" && <HandwritingStyleNotePreview {...{ body, agentName, recipientName }} />}
       {pieceType === "thank_you_note" && <ThankYouNotePreview {...{ body, agentName, recipientName }} />}
     </div>
   )
@@ -133,17 +149,17 @@ function LetterPreview({ headline, body, cta, agentName, agentPhone, agentLogoUr
   )
 }
 
-function HandwrittenLetterPreview({ body, agentName, recipientName }: Pick<Props, "body" | "agentName" | "recipientName">) {
+function HandwritingStyleNotePreview({ body, agentName, recipientName }: Pick<Props, "body" | "agentName" | "recipientName">) {
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
-        <div className="aspect-[8.5/11] w-full bg-amber-50 p-10 flex flex-col gap-5 border" style={{ fontFamily: '"Caveat", "Brush Script MT", cursive' }}>
+        <div className="aspect-[8.5/11] w-full bg-amber-50 p-10 flex flex-col gap-5 border" style={{ fontFamily: `"${HANDWRITING_STYLE_TYPEFACE.family}", "Brush Script MT", cursive` }}>
           <p className="text-base text-blue-900">Dear {recipientName || "[Recipient]"},</p>
           <p className="text-base text-blue-900 leading-relaxed flex-1 whitespace-pre-wrap">{body}</p>
           <p className="text-base text-blue-900 self-end">Warmly, {agentName}</p>
         </div>
         <div className="px-3 py-2 text-[10px] text-muted-foreground bg-gray-50 border-t">
-          Printed in a personal-note design (a script typeface, not pen handwriting). Genuine handwritten cards come only from a handwriting provider.
+          {HANDWRITING_STYLE_TYPEFACE.description}. A pen-written card comes only from a handwriting provider (none is active).
         </div>
       </CardContent>
     </Card>

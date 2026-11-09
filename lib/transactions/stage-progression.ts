@@ -441,15 +441,35 @@ export async function advanceStage(params: {
     // at DISBURSEMENT, not here). For a NON-CDA brokerage there is no CDA broker-sign, so closing the
     // deal auto-APPROVES the earnings record (pending → approved) to keep the later disbursement path
     // uniform; a CDA brokerage was already approved by the broker's CDA signature. Best-effort.
+    let closedWithoutCda = false
     try {
       const { finalizeCommissionAtClose } = await import("@/lib/commission/reconcile-tracking")
-      await finalizeCommissionAtClose(supabase, {
+      const finalized = await finalizeCommissionAtClose(supabase, {
         transactionId: params.transactionId,
         brokerageId:   params.brokerageId,
         actorUserId:   params.userId,
       })
+      closedWithoutCda = !finalized.offersCda
     } catch (e) {
       console.error("[stage-progression] commission finalize-on-close failed:", e)
+    }
+
+    // ── CLOSING WITHOUT A CDA (wave 151, lane 151K; owner: "if the brokerage doesn't use CDAs … it can close without a CDA";
+    //    OWNER-SQL §L L6.2 option (b)). The deal just closed with NO CDA (the ONE switch, resolveCdaMode, read by
+    //    finalizeCommissionAtClose above). The closing question a CDA brokerage's agent answers at CDA submit — "is any executed
+    //    change (agreement amendment, addendum, fee change) unrecorded?" — is asked of this deal's agent / TC too, as an
+    //    INFORMATIONAL compliance row: the close already happened and is never held on it; the answer records who said what, and a
+    //    "yes" tells the admins and holds nothing else (lib/commission/closing-verification.ts). Nothing here creates a CDA, fills
+    //    one, asserts funds received or releases a payout — the funds-received gate and the CLOSED / PAYOUT PENDING hold stand.
+    //    Option (c) — a BLOCKING ask for no-CDA brokerages that opt in — is an owner decision and is not built.
+    if (closedWithoutCda) {
+      try {
+        const { ensureClosingAttestationAsked } = await import("@/lib/commission/closing-verification")
+        const asked = await ensureClosingAttestationAsked(supabase as never, { brokerageId: params.brokerageId, transactionId: params.transactionId, informational: true })
+        if (!asked.ok) console.error(`[stage-progression] no-CDA closing question not asked for ${params.transactionId}: ${asked.error}`)
+      } catch (e) {
+        console.error("[stage-progression] no-CDA closing question failed (non-blocking):", e instanceof Error ? e.message : String(e))
+      }
     }
 
     // ── CLOSING-COST ACCURACY FLYWHEEL (owner round 34, rec 5) ────────────────

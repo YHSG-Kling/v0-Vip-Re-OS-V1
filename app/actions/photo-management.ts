@@ -650,7 +650,7 @@ export async function submitPhotographerDelivery(params: {
   const result = await withActionLedger(
     {
       brokerageId: actor.brokerageId,
-      action: "listing_media.photographer_delivery",
+      action: "listing_media.photographer_delivery.record",
       actor: { type: "user", userId: actor.userId },
       subject: { type: "vendor_booking", id: params.bookingId },
       reasonCode: "HUMAN_REQUESTED",

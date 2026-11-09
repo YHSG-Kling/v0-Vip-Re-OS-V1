@@ -52,9 +52,38 @@ import {
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 import { resolveListingSource } from "./listing-source"
 import { resolveRentcastEligibility, type TenantIdxConnection } from "./rentcast-eligibility"
+// Wave 151 (lane 151G): the ONE RentCast data-type table — a `/listings/sale` row is a LISTING RECORD (facts, status as the
+// source reports it, no photo right); every RentCast row this router returns is labelled with that kind. The contract is
+// pure and already on every page graph (test:proxy-graph-budget), so this import adds no module.
+import { RENTCAST_DATA_TYPES, type RentcastDataKind } from "@/lib/market-reports/contract"
 
 /** What a seeker is actually looking for. `price` means a different thing per value. */
 export type ExternalListingType = "sale" | "rental"
+
+/**
+ * THE BUYER SEARCH SOURCE ORDER (wave 151, lane 151G — directive 151G "Buyer property search"; owner 2026-11-09: "buyer
+ * criteria is for our buyers and we show them property listings (besides the tenant's listings) which they can save and
+ * share to their family"). Spelled in the saved-home ORIGIN vocabulary (lib/buyer-search/search-engine.ts SAVED_HOME_ORIGINS —
+ * one vocabulary, never a second):
+ *   1. tenant_listing    — the tenant's own in-house listings (lib/buyer-search/search-engine.ts reads them FIRST, bounded to
+ *                          the contact's tenant);
+ *   2. idx_mls           — the tenant's authorized IDX/MLS provider when CONNECTED (Tier 1 below — exclusive, never a
+ *                          fall-through on an empty answer);
+ *   3. rentcast_listing  — RentCast listing / property records, as permitted, when IDX is unavailable or facts are needed
+ *                          (Tier 2 below — platform-gated, metered, labelled by source and verified-status, never a photo).
+ * Every result carries its origin, so a buyer may SAVE it (saved_properties.source) and SHARE it with invited family
+ * (lib/portal/saved-homes.ts; the family collaboration shares the selected homes only).
+ * @proofSeam the order as a VALUE for scripts/provider-gap-matrix-guard.ts C (which executes resolveListingSource and reads the
+ * engine's in-house-first wiring from stripped source) and for the generated docs/operations/PROVIDER-SELECTION-WAVE151.md table
+ */
+export const BUYER_LISTING_SOURCE_ORDER = ["tenant_listing", "idx_mls", "rentcast_listing"] as const
+
+/**
+ * How far a row's STATUS is verified. `feed_active` — the tenant's own IDX/MLS feed reports it in its active set;
+ * `provider_reported` — a property-data service's view (RentCast), never an MLS verification: the portal says "your agent
+ * confirms it's available" (lib/portal/saved-homes.ts savedHomeSourceLine).
+ */
+export type ExternalListingVerifiedStatus = "feed_active" | "provider_reported"
 
 /**
  * The vendor-ledger lanes this router spends under.
@@ -71,6 +100,16 @@ const RENTAL_SYSTEM_SOURCE = "renter_search"
 export interface ExternalListing {
   externalId: string
   source: "idx" | "rentcast"
+  /**
+   * Wave 151 (lane 151G): WHAT this row IS. A RentCast row is RENTCAST_DATA_TYPES.listing_records (a listing record needing
+   * provider rights + freshness, never a photo); an IDX row is the tenant's own feed (`idx_feed`). Carried per row because the
+   * engine concatenates these with in-house listings.
+   */
+  dataType: RentcastDataKind | "idx_feed"
+  /** How far the status is verified — see ExternalListingVerifiedStatus. */
+  verifiedStatus: ExternalListingVerifiedStatus
+  /** The one-line source label a surface may print beside the row (derived from the data-type table, never typed twice). */
+  sourceLabel: string
   /**
    * WHAT `price` MEANS ON THIS ROW. `"sale"` → an asking SALE price. `"rental"`
    * → a MONTHLY RENT. Carried per row rather than only on the result because
@@ -310,10 +349,16 @@ export async function searchExternalListings(
   return { listings: [], source: "none", listingType }
 }
 
+/** The IDX row's label — the tenant's own feed; photos render live from the feed (never copied — lib/buyer-search/external-match.ts). */
+const IDX_FEED_LABEL = "Tenant IDX/MLS feed listing (the brokerage's own authorized feed; status = the feed's active set; photos live from the feed)"
+
 function idxToExternal(l: NormalizedIdxListing): ExternalListing {
   return {
     externalId: l.externalId,
     source: "idx",
+    dataType: "idx_feed",
+    verifiedStatus: "feed_active",
+    sourceLabel: IDX_FEED_LABEL,
     // IDXBrokerClient.searchActiveListings reads the brokerage's featured
     // FOR-SALE set. There is no rental branch to mislabel.
     listingType: "sale",
@@ -344,6 +389,11 @@ function rentcastToExternal(l: RentcastListing, listingType: ExternalListingType
   return {
     externalId: l.externalId,
     source: "rentcast",
+    // ONE data-type table (wave 151, 151G): a /listings row is a LISTING RECORD — rights + freshness owed, status as RentCast
+    // reports it, the MLS name shown as the source, and (below) never a photo.
+    dataType: RENTCAST_DATA_TYPES.listing_records.kind,
+    verifiedStatus: "provider_reported",
+    sourceLabel: RENTCAST_DATA_TYPES.listing_records.label,
     listingType,
     address: l.address,
     city: l.city,

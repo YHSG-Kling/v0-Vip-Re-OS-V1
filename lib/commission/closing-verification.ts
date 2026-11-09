@@ -184,15 +184,25 @@ async function readAttestationRow(db: Db, brokerageId: string, transactionId: st
   return { ok: true, row: ((data ?? [])[0] ?? null) as LogRow | null }
 }
 
-/** ASK: the attestation row exists, pending and BLOCKING, until the agent answers. Idempotent (an existing row is left alone). */
-export async function ensureClosingAttestationAsked(db: Db, input: { brokerageId: string; transactionId: string }): Promise<{ ok: true; status: string; asked: boolean } | { ok: false; error: string }> {
+/**
+ * ASK: the attestation row exists, pending, until the agent answers. Idempotent (an existing row is left alone).
+ *   · the CDA path (default): BLOCKING — the CDA submit door asks it (app/actions/cda-portal.ts) and holds the CDA on it.
+ *   · `informational: true` — WAVE 151 (lane 151K; OWNER-SQL §L L6.2 option (b)): a brokerage that does NOT use a CDA is asked the
+ *     same question at its gated close, as a NON-blocking row — the close is never held on it (owner: "if the brokerage doesn't
+ *     use CDAs … it can close without a CDA"; CDA completion is never an unconditional closing requirement). Option (c), a
+ *     blocking ask for no-CDA brokerages that opt in by setting, is an OWNER DECISION and is not built.
+ */
+export async function ensureClosingAttestationAsked(db: Db, input: { brokerageId: string; transactionId: string; informational?: boolean }): Promise<{ ok: true; status: string; asked: boolean } | { ok: false; error: string }> {
   const cur = await readAttestationRow(db, input.brokerageId, input.transactionId)
   if (!cur.ok) return cur
   if (cur.row) return { ok: true, status: cur.row.status, asked: false }
+  const informational = input.informational === true
   const { data, error } = await db.from("transaction_compliance_log").insert({
     brokerage_id: input.brokerageId, transaction_id: input.transactionId, check_type: CLOSING_ATTESTATION_CHECK_TYPE, check_label: ATTESTATION_LABEL,
-    status: "pending", is_blocking: true,
-    failure_reason: "Before the CDA is submitted, the agent confirms whether any executed change (an agreement amendment, a contract addendum, a fee change) has not been recorded yet.",
+    status: "pending", is_blocking: !informational,
+    failure_reason: informational
+      ? "This brokerage closes without a CDA. At closing the agent confirms whether any executed change (an agreement amendment, a contract addendum, a fee change) has not been recorded yet — informational; the close is not held on it."
+      : "Before the CDA is submitted, the agent confirms whether any executed change (an agreement amendment, a contract addendum, a fee change) has not been recorded yet.",
   }).select("id")
   if (error) return { ok: false, error: `attestation_ask_refused: ${error.message}` }
   if (((data ?? []) as unknown[]).length !== 1) return { ok: false, error: "attestation_not_asked" }

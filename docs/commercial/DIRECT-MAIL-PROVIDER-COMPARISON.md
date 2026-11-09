@@ -413,3 +413,41 @@ not set (the commercial ruling sets no SaaS prices), so it is listed as **not se
 | No double charge | `mailPieceIdempotencyKey` on the action ledger (`withActionLedger` replays a second claim) |
 | Delivery outcomes per piece; a scan is never receipt | `mailOutcomeFromLobEvent`; `trackDelivery` settles onto `direct_mail_recipients.provider_piece_id` (m985) |
 | Genuine handwriting only from a pen provider | `routeMailFormat("handwritten_card")` refuses while every provider is dormant; never downgraded silently |
+
+## 13. Wave 151 — blank layouts, the tenant's return address, handwriting-style printed mail, delivery truth (lane 151H, 2026-11-09)
+
+Owner corrections (verbatim): "direct mail, the rendered pieces should not use the platform return address"; "the direct mail templates
+should be blank templates with just layout"; "handwritten font by computer can be a substitute".
+
+### 13.1 What the code now holds
+
+| Requirement | Survivor |
+|---|---|
+| Global templates are **blank layouts** — structure and merge-variable names only; no brand, no address, no platform identity | `lib/direct-mail/piece-type.ts` `MAIL_LAYOUT_LIBRARY` (letter · personal note · postcard front · postcard back · notecard), `layoutContentViolations` (run by `render-letter.ts` on its own output); the proof scans the in-repo layouts and the library |
+| Distinct template ids by NAME; one `letterTemplateId` never reused for an incompatible format | unchanged `LOB_TEMPLATE_ENV` / `routeMailFormat` (wave 150); the personal-note row of a campaign now falls back to the GLOBAL personal-note layout, never the letter's and never a tenant template (`fallbackLobTemplates`) |
+| Per-piece rendering from the AUTHORIZED tenant/user: logo, tagline, colors, approved font, photos, personal message, QR, destination URL, the Contact's identity, creator attribution, the sender's legal identity | `buildMailMergeVariables` — now also `sender_legal_identity`, `creator_attribution`, `recipient_first_name`, `note_font_family` / `note_font_css_url` |
+| **The tenant's return address, never the platform's** | `direct_mail_sender_addresses` (m980): one default per scope (tenant / team / sending user), CASS-verified once, approved by a tenant admin. `resolveTenantSenderAddress` (user > team > tenant default > the brokerage of record's own business address, verified at resolve time when a key exists). `lib/providers/mailing-cass-gate.ts` `decideSenderAddress` REFUSES a missing / incomplete / unverified / undeliverable address and the platform's (a saved Lob address id, or the platform's name) BY NAME. The dispatcher's `: process.env.LOB_RETURN_ADDRESS_ID` fallback is gone; `LOB_RETURN_ADDRESS_ID` is read only to recognize and refuse it. Settings → Direct mail → Return address is where a tenant configures, verifies and approves addresses |
+| **Handwriting-style printed mail** | `HANDWRITING_STYLE_TYPEFACE` (a Google-hosted script family — a LAYOUT constant, not a brand value); `MAIL_FORMAT_LABELS.personal_letter` = "Handwriting-style printed note …"; `render-letter.ts noteStyle: "handwriting_style"` sets the body and prints "Printed in a handwriting-style typeface" in the footer; every owned surface says handwriting-style / printed, and "handwritten" is reserved for a pen provider (still dormant) |
+| Delivery truth: API accepted ≠ charge settled ≠ printed ≠ mailed ≠ delivered ≠ returned | `mailPieceTruth` (six separate truths; "printed" is `implied_by_mailed` because Lob reports no print event; "delivered" is `carrier_scan` only); the Tracking tab shows them; `trackDelivery` hands a `returned_to_sender` piece to `applyReturnedMailHandling` — the lead / contact address record is un-verified with source `lob_returned_to_sender`, pending siblings to the same mailbox are stopped, an address-only mailbox is suppressed for mail (m981 `return_handling`) |
+| Proof preview retained; tenant approval before send; spend guard | `sendCampaign({ previewOnly })` (TEST key) now carries the tenant's `from`; `campaignSendGate` refuses a campaign whose `approval_status` is pending / pending_review / rejected and asks the ONE billing resolver (`mayUseAndAfford`) for pieces × the ONE Lob price BEFORE the first piece; the verdict is kept as `spend_preview` (m981) |
+| Sender-voice copy from the first draft | `draft-copy.ts SenderVoiceBrief` + `readSenderVoiceBrief` (the 151I HOOK — lane 151I's reader replaces its body); the orchestrator stamps the brief on `copyCtx` before any render |
+
+### 13.2 Cost strategy — EVALUATED—NOT IMPLEMENTED
+
+A small **global library** of five format-specific blank layouts with dynamic branding serves every tenant; no Lob template is
+made per tenant (the only per-tenant objects are DATA rows: sender addresses, brand facts, copy). Nothing was bought and **no quote
+was requested** — outreach is the owner's.
+
+| Candidate | Verdict | Why (from the §12 readings, no new figures) |
+|---|---|---|
+| **Folded notecard** on Lob | EVALUATED—NOT IMPLEMENTED | Lob prints postcards, letters, self-mailers, snap packs, booklets and checks — no folded notecard product. The handwriting-style printed note (`personal_letter`) is the substitute (`MAIL_LAYOUT_LIBRARY.notecard`) |
+| **AMcards** (printed greeting card) | EVALUATED—NOT IMPLEMENTED | It prints a handwriting-style font — the same thing the Lob personal note already does at $0.936 (Startup) versus ≈ $2.39–$4.64 all-in (§12.2). No cost advantage; the only format advantage (a folded card) does not justify a second provider, a second credential scope and a second checkout path. Stays `dormant` |
+| **PostcardMania** (bulk postcards) | EVALUATED—NOT IMPLEMENTED | No readable published all-in price (§12.1: HTTP 403; custom quote). A real cost advantage cannot be shown without a written quote, which is outreach — the owner's call. Stays `dormant` |
+| **Pen-written providers** (LettrLabs, Handwrytten) | unchanged, dormant | Only justified for a GENUINE pen-written piece; the owner's substitute is the computer-generated handwriting-style font. Rights, price proof and the pilot decision remain the owner's (§12) |
+
+### 13.3 WAITING_EXTERNAL (by NAME only)
+
+`LOB_LETTER_TEMPLATE_ID`, `LOB_PERSONAL_LETTER_TEMPLATE_ID`, `LOB_POSTCARD_FRONT_TEMPLATE_ID`, `LOB_POSTCARD_BACK_TEMPLATE_ID` — four
+BLANK Lob HTML layouts on the platform's Lob account whose merge variables are the `MAIL_LAYOUT_LIBRARY[slot].mergeVariables` names;
+`LOB_TEST_API_KEY` — one TEST-key proof per format then shows each layout printing a tenant's data and the tenant's return address.
+`LOB_RETURN_ADDRESS_ID` is no longer needed for tenant mail at all.

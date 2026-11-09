@@ -16,13 +16,23 @@
 //     price_trend_* default 0, and the RentCast tier writes 0 for what /markets does not expose) — so a 0 there is UNKNOWN,
 //     never a fact. Every 0 becomes an UnavailableDatum.
 //   · RentCast's median is an ASKING price of listings → `median_asking_price`, never "sold".
+//   · WAVE 151 (lane 151G): a RentCast `/avm/value` COMPARABLE is a LISTING record (RENTCAST_DATA_TYPES.listing_comparables —
+//     its price is the last listing price, `removedDate` means it left the market, not a recorded deed). It used to arrive
+//     from the CMA survivor as `closed_sale` and was printed here as `recorded_sale` in "What sold near you". It is now
+//     `last_list_price` by construction (rentcastPriceBasis), and becomes a RECORDED sale ONLY when the comparable's own
+//     `/v1/properties` record (RENTCAST_DATA_TYPES.property_record — lastSaleDate / lastSalePrice, the sale-history side) shows
+//     a sale on or after the day the listing left the market: `recordedSaleFromRentcastRecord`, read through the property-
+//     lookup CAPABILITY (lib/avm/provider-chain.ts getPropertyRecordWithFallback — LAW 3: this module never calls a vendor
+//     client; the BatchData backup is refused by injected access so a report never buys a backup record) for at most the
+//     comparables shown; the RentCast leg is gated, metered and cached inside its own client. BatchData backup comparables
+//     from the CMA survivor are property-record sales and stay `recorded_sale`.
 //   · `cma_aggregate` rows (an average of agents' CMA recommendations) are OPINION, not market data — excluded and said.
 //   · A median from fewer than MIN_RECORDS_FOR_MEDIAN closed sales is not reported (said, with the count).
 //   · Data older than FRESH_DAYS is refreshed; older than MAX_MARKET_ROW_AGE_DAYS is unavailable (with its date).
 //
 // Tenant-pinned everywhere (the brokerageId is the CALLER-VERIFIED tenant). Every { error } is read. Never throws.
 
-import { isoDay, unavailable, type ComparableSale, type MarketDatum, type MarketReportTerritory, type MarketSource, type TrendPoint, type UnavailableDatum } from "./contract"
+import { isoDay, unavailable, rentcastPriceBasis, RENTCAST_DATA_TYPES, type ComparableSale, type MarketDatum, type MarketReportTerritory, type MarketSource, type TrendPoint, type UnavailableDatum } from "./contract"
 
 type Db = { from: (table: string) => any }
 
@@ -135,12 +145,37 @@ interface MarketDataRow {
 
 interface StreetComp { address: string; salePrice: number; saleDate: string; priceBasis: "closed_sale" | "list_price" | null; provider: string | null; bedrooms?: number | null; sqftLiving?: number | null; distanceMiles?: number | null }
 
+/** The sale-history side of ONE RentCast `/v1/properties` record (lastSaleDate / lastSalePrice). */
+interface RentcastSaleHistory { lastSaleDate: string | null; lastSalePrice: number | null }
+
 export interface ResearchDeps {
   now?: Date
   /** THE market-data refresher (default: lib/intelligence/market-insight-generator.ts refreshMarketData). */
   refreshMarketData?: (a: { brokerageId: string; marketArea: string; zipCode?: string; city?: string; state?: string }) => Promise<{ source: string; success: boolean; error?: string }>
   /** Street-grain comparables (default: lib/cma/comp-provider.ts sourceCompsForCma, provider-only). */
   streetComps?: (a: { brokerageId: string; agentUserId: string | null; address: string; city: string | null; state: string | null; zip: string | null }) => Promise<StreetComp[]>
+  /** The comparable's own `/v1/properties` sale history (default: the property-lookup capability, lib/avm/provider-chain.ts getPropertyRecordWithFallback, RentCast's record only — gated, metered, cached inside the client). Null = no record / refused. */
+  saleHistory?: (a: { brokerageId: string; address: string }) => Promise<{ lastSaleDate: string | null; lastSalePrice: number | null } | null>
+  /** Area sold records when the tenant's MLS-synced closed sales are too few for a median (default: the area-sold-records CAPABILITY, lib/property/area-sold-records.ts getAreaSoldRecords — a tenant with a connected IDX feed is answered from that feed and nothing is spent; RentCast's recorded sales otherwise, RENTCAST_DATA_TYPES.sold_records). */
+  soldRecords?: (a: { brokerageId: string; agentUserId: string | null; zip: string | null; city: string | null; state: string | null; windowDays: number }) => Promise<{ outcome: string; records: AreaSoldRecordRow[]; note: string }>
+}
+
+/** One recorded sale from the area-sold-records capability (RentCast's `/properties?saleDateRange=` row, whitelisted). */
+interface AreaSoldRecordRow { address: string | null; lastSaleDate: string; lastSalePrice: number; bedrooms: number | null; bathrooms: number | null; squareFeet: number | null }
+
+/**
+ * PURE — does a RentCast property record's sale history show that a comparable LISTING actually sold? True only when the
+ * record carries a last sale dated on or after the day the listing left the market (`removedDate` — the comparable's
+ * `saleDate` from the CMA survivor) and a positive price. A sale dated before the listing is an EARLIER transaction, not
+ * this listing's close — refused. Nothing is inferred from a missing date. Proven through researchMarket
+ * (scripts/provider-gap-matrix-guard.ts B).
+ */
+function recordedSaleFromRentcastRecord(record: RentcastSaleHistory | null, listingLeftMarket: string): { price: number; date: string } | null {
+  if (!record || !record.lastSaleDate || !(typeof record.lastSalePrice === "number" && record.lastSalePrice > 0)) return null
+  const sold = String(record.lastSaleDate).slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sold) || !/^\d{4}-\d{2}-\d{2}$/.test(listingLeftMarket)) return null
+  if (sold < listingLeftMarket) return null
+  return { price: record.lastSalePrice, date: sold }
 }
 
 export interface ResearchResult {
@@ -205,9 +240,11 @@ function marketRowToData(row: MarketDataRow | null, t: MarketReportTerritory, as
     if (row && !provider) notes.push(reason)
     return { data, unavailable: missing, notes }
   }
-  const source: MarketSource = { provider, dataset: "market_data", ref: row.id ?? row.zip_code ?? null }
+  // A RentCast reading is RENTCAST_DATA_TYPES.listing_statistics — the dataset names the data type so no reader downstream
+  // can take `market_data.median_sale_price` (the writer's historical column name) for a closed-sale figure.
+  const source: MarketSource = { provider, dataset: provider === "rentcast" ? `market_data (${RENTCAST_DATA_TYPES.listing_statistics.kind})` : "market_data", ref: row.id ?? row.zip_code ?? null }
   const listingCaveat = provider === "rentcast"
-    ? "RentCast market statistics describe LISTINGS (asking prices, listing counts); dated by the day this brokerage retrieved them"
+    ? `${RENTCAST_DATA_TYPES.listing_statistics.label}; dated by the day this brokerage retrieved them`
     : provider === "osint_scrape" ? "scraped public listing statistics; dated by the day they were retrieved" : null
   const push = (key: MarketDatum["key"], label: string, value: number | null, unit: MarketDatum["unit"]) => {
     if (value == null) { missing.push(unavailable(key, label, t, asOf, `not observed in the ${row.data_date} ${provider} reading (recorded as 0 = unknown)`)); return }
@@ -308,6 +345,67 @@ const defaultStreetComps: NonNullable<ResearchDeps["streetComps"]> = async (a) =
   return r.closedComps.map((c) => ({ address: c.address, salePrice: c.salePrice, saleDate: String(c.saleDate).slice(0, 10), priceBasis: c.priceBasis ?? null, provider: c.sourceProvider ?? null, bedrooms: c.bedrooms ?? null, sqftLiving: c.sqftLiving ?? null, distanceMiles: c.distanceMiles ?? null }))
 }
 
+/**
+ * THE sale-history read — through the property-lookup CAPABILITY (LAW 3), never a vendor client from this module. RentCast's
+ * record answers (gate → meter → 30-day cache inside lib/property/rentcast.ts); the BatchData backup is REFUSED by injected
+ * access, so a market report never buys a backup record for a comparable; no gap fill is asked. Only the two sale-history
+ * fields leave this function — the owner block stays inside the capability.
+ */
+const defaultSaleHistory: NonNullable<ResearchDeps["saleHistory"]> = async (a) => {
+  const { getPropertyRecordWithFallback } = await import("@/lib/avm/provider-chain")
+  const r = await getPropertyRecordWithFallback(
+    { brokerageId: a.brokerageId, address: a.address, systemSource: "market_report" },
+    { fallback: { access: async () => ({ allowed: false, reason: "market report comparables read RentCast's own property record only — no backup purchase for a report" }) } },
+  )
+  return r.record && r.record.provider === "rentcast" ? { lastSaleDate: r.record.lastSaleDate, lastSalePrice: r.record.lastSalePrice } : null
+}
+
+/**
+ * THE area sold-records read — through the CAPABILITY (LAW 3), never a vendor client from this module. Runs only inside the
+ * application server (NEXT_RUNTIME is set — the same sentinel lib/enrichment/inline-drain.ts uses): the capability's IDX
+ * question and vendor leg load `server-only` modules, and under a simulator (tsx) a failed `server-only` load is a detached
+ * rejection that kills the process a tick later even when the caller caught it. A simulator injects deps.soldRecords.
+ */
+const defaultSoldRecords: NonNullable<ResearchDeps["soldRecords"]> = async (a) => {
+  if (!process.env.NEXT_RUNTIME) return { outcome: "not_run", records: [], note: "the area sold-records capability runs only inside the application server (NEXT_RUNTIME is unset here); a simulator injects deps.soldRecords" }
+  const { getAreaSoldRecords } = await import("@/lib/property/area-sold-records")
+  const r = await getAreaSoldRecords({ brokerageId: a.brokerageId, agentUserId: a.agentUserId, zip: a.zip, city: a.city, state: a.state, windowDays: a.windowDays, limit: 200, systemSource: "market_report" })
+  return { outcome: r.outcome, records: r.records, note: r.note }
+}
+
+/**
+ * PURE — RentCast sold records → the sold data + comparables a tenant without enough MLS-synced closed sales gets. Labeled by
+ * the data type (sold_records: recorded sales, RENTCAST_DATA_TYPES), computed from records, floor MIN_RECORDS_FOR_MEDIAN. A
+ * sold record carries no listing date and no list price, so days-to-sell and sale-to-list are said to be unavailable — never
+ * computed from a figure the record does not hold. Proven through researchMarket (scripts/provider-gap-matrix-guard.ts B).
+ */
+function soldRecordsToData(records: AreaSoldRecordRow[], t: MarketReportTerritory, asOf: string): { data: MarketDatum[]; unavailable: UnavailableDatum[]; comparables: ComparableSale[] } {
+  const T = RENTCAST_DATA_TYPES.sold_records
+  const source: MarketSource = { provider: "rentcast", dataset: `${T.endpoint} (${T.kind} — recorded sales)` }
+  const window = `the last ${SOLD_WINDOW_DAYS} days`
+  const caveat = `${T.label}: public-record sales as RentCast carries them, not this brokerage's MLS`
+  const rows = records.filter((r) => r.lastSalePrice > 0 && /^\d{4}-\d{2}-\d{2}$/.test(r.lastSaleDate))
+  const newest = rows.reduce<string | null>((m, r) => (m == null || r.lastSaleDate > m ? r.lastSaleDate : m), null)
+  const comparables: ComparableSale[] = rows.slice(0, 8).map((r) => ({ address: r.address ?? "address withheld", price: r.lastSalePrice, priceBasis: rentcastPriceBasis(T.kind), date: r.lastSaleDate, source, beds: r.bedrooms, baths: r.bathrooms, sqft: r.squareFeet }))
+  const noListingFacts = (what: string) => `${T.label} carry no ${what} — not computable from a recorded sale`
+  const unavailableAlways: UnavailableDatum[] = [
+    unavailable("median_days_to_sell", "Median days to sell", t, asOf, noListingFacts("listing date")),
+    unavailable("sale_to_list_ratio_pct", "Sale-to-list price", t, asOf, noListingFacts("list price")),
+  ]
+  if (rows.length < MIN_RECORDS_FOR_MEDIAN || !newest) {
+    const reason = `only ${rows.length} RentCast sold record(s) in ${window} — fewer than ${MIN_RECORDS_FOR_MEDIAN} is not a median`
+    return { data: [], unavailable: [unavailable("median_sold_price", "Median sold price", t, asOf, reason), unavailable("closed_sales_count", "Closed sales", t, asOf, reason), ...unavailableAlways], comparables }
+  }
+  const data: MarketDatum[] = [
+    { key: "median_sold_price", label: "Median sold price", value: Math.round(median(rows.map((r) => r.lastSalePrice))), unit: "usd", asOf: newest, source, basis: "computed_from_records", sampleSize: rows.length, caveat },
+    { key: "closed_sales_count", label: `Closed sales (${window})`, value: rows.length, unit: "count", asOf: newest, source, basis: "computed_from_records", sampleSize: rows.length, caveat },
+  ]
+  return { data, unavailable: unavailableAlways, comparables }
+}
+
+/** How many RentCast comparables may be checked against their own property record per report (one metered read each, cached). */
+const MAX_SALE_HISTORY_LOOKUPS = 8
+
 /** Gather the territory's dated, sourced facts. Never throws; a refused read lands in `errors` (the producer fails closed). */
 export async function researchMarket(svc: Db, input: { brokerageId: string; agentUserId?: string | null; territory: MarketReportTerritory }, deps: ResearchDeps = {}): Promise<ResearchResult> {
   const now = deps.now ?? new Date()
@@ -337,18 +435,47 @@ export async function researchMarket(svc: Db, input: { brokerageId: string; agen
     // 2 · closed sales (MLS-synced) + comparables.
     const sales = await readClosedSales(svc, input.brokerageId, t, now)
     if (sales.error) errors.push(sales.error)
-    const fromSales = closedSalesToData(sales.rows, t, asOf)
+    let fromSales = closedSalesToData(sales.rows, t, asOf)
+
+    // 2b · too few MLS-synced closed sales for a median → the area sold-records CAPABILITY (owner, wave 151: RentCast's
+    // recorded sales are the market-data capability for a tenant WITHOUT a connected IDX feed; an IDX tenant is answered from
+    // its feed and nothing is spent). The MLS rows the tenant does hold stay as comparables beside the provider's.
+    if (!sales.error && sales.rows.length < MIN_RECORDS_FOR_MEDIAN && (t.zip || (t.city && t.state))) {
+      const sold = await (deps.soldRecords ?? defaultSoldRecords)({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null, zip: t.zip ?? null, city: t.city ?? null, state: t.state ?? null, windowDays: SOLD_WINDOW_DAYS })
+        .catch((e: unknown) => ({ outcome: "error", records: [] as AreaSoldRecordRow[], note: `area sold records failed: ${e instanceof Error ? e.message : String(e)}` }))
+      if (sold.outcome === "answered" && sold.records.length > 0) {
+        const fromSold = soldRecordsToData(sold.records, t, asOf)
+        fromSales = { data: fromSold.data, unavailable: fromSold.unavailable, comparables: [...fromSales.comparables, ...fromSold.comparables].slice(0, 8) }
+        notes.push(`${sales.rows.length} MLS-synced closed sale(s) — fewer than ${MIN_RECORDS_FOR_MEDIAN}; the sold figures are ${RENTCAST_DATA_TYPES.sold_records.label} (${sold.note})`)
+      } else {
+        notes.push(`${sales.rows.length} MLS-synced closed sale(s) — fewer than ${MIN_RECORDS_FOR_MEDIAN}; area sold records ${sold.outcome}: ${sold.note}`)
+      }
+    }
 
     // 3 · street grain: provider comparables near the address (provider-only).
     let comparables: ComparableSale[] = fromSales.comparables
     if (t.grain === "street" && t.address) {
       const comps = await (deps.streetComps ?? defaultStreetComps)({ brokerageId: input.brokerageId, agentUserId: input.agentUserId ?? null, address: t.address, city: t.city ?? null, state: t.state ?? null, zip: t.zip ?? null })
         .catch((e: unknown) => { errors.push(`street comparables failed: ${e instanceof Error ? e.message : String(e)}`); return [] as StreetComp[] })
-      const street: ComparableSale[] = comps.filter((c) => c.salePrice > 0 && /^\d{4}-\d{2}-\d{2}$/.test(c.saleDate)).slice(0, 8).map((c) => ({
-        address: c.address, price: c.salePrice, priceBasis: c.priceBasis === "closed_sale" ? "recorded_sale" : "last_list_price", date: c.saleDate,
-        source: { provider: c.provider === "rentcast" ? "rentcast" : c.provider === "batchdata" ? "batchdata" : c.provider === "idx" ? "idx_broker" : "tenant_mls", dataset: "comparable sales (CMA comp sources)" },
-        beds: c.bedrooms ?? null, sqft: c.sqftLiving ?? null, distanceMiles: c.distanceMiles ?? null,
-      }))
+      const shown = comps.filter((c) => c.salePrice > 0 && /^\d{4}-\d{2}-\d{2}$/.test(c.saleDate)).slice(0, MAX_SALE_HISTORY_LOOKUPS)
+      const street: ComparableSale[] = []
+      let upgraded = 0
+      for (const c of shown) {
+        const provider: MarketSource["provider"] = c.provider === "rentcast" ? "rentcast" : c.provider === "batchdata" ? "batchdata" : c.provider === "idx" ? "idx_broker" : "tenant_mls"
+        let price = c.salePrice, date = c.saleDate
+        // A RentCast comparable is a LISTING record (listing_comparables) — its basis is derived from the data type, never
+        // from the CMA slot name; the one way it becomes a recorded sale is its own property record's sale history.
+        let priceBasis: ComparableSale["priceBasis"] = provider === "rentcast" ? rentcastPriceBasis("listing_comparables") : c.priceBasis === "closed_sale" ? "recorded_sale" : "last_list_price"
+        let dataset = provider === "rentcast" ? `comparable listings (${RENTCAST_DATA_TYPES.listing_comparables.endpoint})` : "comparable sales (CMA comp sources)"
+        if (provider === "rentcast") {
+          const record = await (deps.saleHistory ?? defaultSaleHistory)({ brokerageId: input.brokerageId, address: c.address }).catch(() => null)
+          const sale = recordedSaleFromRentcastRecord(record, c.saleDate)
+          if (sale) { price = sale.price; date = sale.date; priceBasis = rentcastPriceBasis("property_record"); dataset = `recorded sale (${RENTCAST_DATA_TYPES.property_record.endpoint} sale history)`; upgraded++ }
+        }
+        street.push({ address: c.address, price, priceBasis, date, source: { provider, dataset }, beds: c.bedrooms ?? null, sqft: c.sqftLiving ?? null, distanceMiles: c.distanceMiles ?? null })
+      }
+      const rentcastListings = street.filter((c) => c.source.provider === "rentcast" && c.priceBasis === "last_list_price").length
+      if (rentcastListings > 0) notes.push(`${rentcastListings} RentCast comparable(s) are listing records shown at their last asking price — no recorded sale confirmed them (${upgraded} confirmed by the property record's sale history)`)
       comparables = [...street, ...comparables].slice(0, 10)
     }
 

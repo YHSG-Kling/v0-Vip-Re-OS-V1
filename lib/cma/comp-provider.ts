@@ -1107,7 +1107,10 @@ function toScoredCompFromRentcast(
     citation: "RentCast comparable (/avm/value)",
     distanceMiles: row.distance_miles > 0 ? row.distance_miles : null,
     sourceProvider: "rentcast",
-    priceBasis: status === "closed" ? "closed_sale" : "list_price",
+    // A RentCast comparable's price is its LISTING record's price (RENTCAST_DATA_TYPES.listing_comparables,
+    // lib/market-reports/contract.ts): `removedDate` means it left the market, not that a deed recorded — so the closed
+    // SLOT keeps RentCast's own status, and the price BASIS stops claiming a sale (wave 151, after lane 151G).
+    priceBasis: "list_price",
   }
 }
 
