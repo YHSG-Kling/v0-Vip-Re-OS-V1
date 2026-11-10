@@ -22,6 +22,7 @@
  */
 import { readFileSync, existsSync } from "node:fs"
 import { stripComments } from "./strip-comments"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import {
   RAW_PROCESSING_STATUSES, REJECTION_STATUSES, IN_FLIGHT_STATUSES,
   isRawProcessingStatus, isRejectionStatus,
@@ -72,7 +73,12 @@ console.log("\n═══ 1. One list, imported — not three hand-copied ones �
 
 console.log("\n═══ 2. The vocabulary is coherent ═══")
 {
-  ok("13 statuses", RAW_PROCESSING_STATUSES.length === 13, String(RAW_PROCESSING_STATUSES.length))
+  // The RULE, not a count (CLAUDE.md §2): the code vocabulary equals the live CHECK's vocabulary (scripts/check-vocabularies.ts,
+  // regenerated from the catalog) — a status added by a migration (m967 held_stale) moves both sides together or fails here.
+  const liveStatuses = CHECK_VOCABULARIES.raw_scraped_leads?.processing_status ?? []
+  ok(`the code vocabulary equals the live CHECK vocabulary (${RAW_PROCESSING_STATUSES.length} statuses)`,
+    liveStatuses.length > 0 && new Set(liveStatuses).size === new Set(RAW_PROCESSING_STATUSES).size && liveStatuses.every((v) => (RAW_PROCESSING_STATUSES as readonly string[]).includes(v)),
+    `code ${[...RAW_PROCESSING_STATUSES].sort().join(",")} vs live ${[...liveStatuses].sort().join(",")}`)
   ok("no duplicates", new Set(RAW_PROCESSING_STATUSES).size === RAW_PROCESSING_STATUSES.length)
   ok("every rejection reason is a real status — `satisfies` makes a typo a\n    compile error rather than a silently-uncounted reason",
     REJECTION_STATUSES.every((r) => (RAW_PROCESSING_STATUSES as readonly string[]).includes(r)))
@@ -84,7 +90,7 @@ console.log("\n═══ 2. The vocabulary is coherent ═══")
     !(IN_FLIGHT_STATUSES as readonly string[]).includes("promoted") &&
     !(REJECTION_STATUSES as readonly string[]).includes("promoted") &&
     !(REJECTION_STATUSES as readonly string[]).includes("error"))
-  ok("in-flight + rejections + promoted + error accounts for ALL 13, so no\n    status is unclassified",
+  ok("in-flight + rejections + promoted + error accounts for EVERY status, so no\n    status is unclassified",
     IN_FLIGHT_STATUSES.length + REJECTION_STATUSES.length + 2 === RAW_PROCESSING_STATUSES.length)
 
   ok("the type guards agree with the lists",
@@ -98,13 +104,17 @@ console.log("\n═══ 3. The DATABASE admits exactly that list ═══")
   ok("the migration exists", mig.length > 0, MIGRATION)
   ok("it constrains processing_status", /raw_scraped_leads_processing_status_check/.test(mig))
 
+  // THE LIVE CHECK, not one migration's text (CLAUDE.md §3 — the live database is the source of truth): m330 wrote the first
+  // vocabulary and m967 (wave 151) extended it with held_stale; the cache scripts/check-vocabularies.ts is regenerated from the
+  // catalog after every applied CHECK, so it is what the database admits TODAY. m330 stays the historical record below.
+  const liveCheck = CHECK_VOCABULARIES.raw_scraped_leads?.processing_status ?? []
+  ok("the live CHECK vocabulary is on record (scripts/check-vocabularies.ts raw_scraped_leads.processing_status)", liveCheck.length > 0)
   for (const s of RAW_PROCESSING_STATUSES) {
-    ok(`  the CHECK admits '${s}'`, new RegExp(`'${s}'`).test(mig))
+    ok(`  the CHECK admits '${s}'`, liveCheck.includes(s))
   }
 
   // The reverse direction: nothing in the CHECK that the code does not know.
-  const inCheck = [...mig.matchAll(/^\s*'([a-z_]+)',?$/gm)].map((m) => m[1])
-  const unknown = inCheck.filter((v) => !(RAW_PROCESSING_STATUSES as readonly string[]).includes(v))
+  const unknown = liveCheck.filter((v) => !(RAW_PROCESSING_STATUSES as readonly string[]).includes(v))
   ok("...and admits NOTHING the code does not know — a value only the database\n    accepts is a status no reader will ever handle",
     unknown.length === 0, unknown.join(", "))
 

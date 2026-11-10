@@ -42,7 +42,7 @@ export async function explainCdaArithmeticAction(input: { cdaId: string; questio
   if (cErr) return { success: false, error: `cda_read_refused: ${cErr.message}` }
   if (!cda || cda.brokerage_id !== auth.brokerageId) return { success: false, error: "not_found" }
   const isAgent = !!auth.agentId && auth.agentId === cda.agent_id
-  const isRoster = (CDA_APPROVE_ROLES as readonly string[]).includes(String(auth.userType ?? "").toLowerCase())
+  const isRoster = CDA_APPROVE_ROLES.has(String(auth.userType ?? "").toLowerCase())
   if (!isAgent && !isRoster) return { success: false, error: "forbidden: the CDA's agent or the approval roster may ask the coach" }
 
   const { createServiceClient } = await import("@/lib/supabase/service")

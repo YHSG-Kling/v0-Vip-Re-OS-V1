@@ -240,7 +240,7 @@ async function main() {
       { address: "16 Oak St", lastSaleDate: "2026-08-30", lastSalePrice: 495000, bedrooms: 3, bathrooms: 2, squareFeet: 1850 },
     ]
     const mlsSold = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `l${i}`, brokerage_id: B1, status: "sold", deleted_at: null, zip: "78704", city: "Austin", state: "TX", address: `${i + 1} Elm St`, sold_price: 400000 + i * 1000, sold_date: "2026-10-01", list_price: 410000, listing_date: "2026-08-01", bedrooms: 3, bathrooms: 2, sqft: 1700 }))
-    const runZip = (listings: unknown[], soldRecords: NonNullable<Parameters<typeof researchMarket>[2]>["soldRecords"]) =>
+    const runZip = (listings: Record<string, unknown>[], soldRecords: NonNullable<Parameters<typeof researchMarket>[2]>["soldRecords"]) =>
       researchMarket(memSupabase({ market_data: [], market_trends: [], listings }) as never, { brokerageId: B1, territory: zipT }, { now: new Date("2026-11-06T12:00:00Z"), refreshMarketData: async () => ({ source: "rentcast", success: true }), soldRecords })
     let soldCalls = 0
     const few = await runZip(mlsSold(1), async () => { soldCalls++; return { outcome: "answered", records: soldRows, note: "4 RentCast sold record(s) in the last 180 days" } })

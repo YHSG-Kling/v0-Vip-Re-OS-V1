@@ -590,13 +590,13 @@ export interface SenderAddressRow {
   cass_deliverability: string | null
   cass_verified_at: string | null
   /** Which verifier ruled (lob_cass) — shown beside the verdict so an admin knows what "verified" means. */
-  cass_source: string | null
+  cass_source?: string | null
   approved_by_user_id: string | null
   approved_at: string | null
   is_default: boolean
   status: "active" | "retired"
   /** Who added the address (users.id) — the audit line the settings page prints. */
-  created_by_user_id: string | null
+  created_by_user_id?: string | null
 }
 
 interface ResolvedSenderAddress {
