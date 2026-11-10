@@ -25,7 +25,7 @@ import { getCampaignQrScans } from "@/app/actions/direct-mail"
 // Delivery truth (wave 151, lane 151H): the row's provider status is Lob's raw event type ("postcard.in_transit"); the ONE
 // mapping reads what it proves, and the six truths are shown separately — an accepted piece is not mailed, a mailed piece is
 // not delivered, a carrier scan is not household receipt. piece-type.ts is client-safe.
-import { mailOutcomeFromLobEvent, mailPieceTruth } from "@/lib/direct-mail/piece-type"
+import { mailOutcomeFromLobEvent, mailPieceTruth } from "@/lib/direct-mail/mail-piece-rules"
 
 interface TrackingTabProps {
   tracking: TrackingRecord[]

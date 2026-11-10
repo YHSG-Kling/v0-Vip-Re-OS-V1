@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/app/components/ui/card"
 import { Mail } from "lucide-react"
 // The blank layout library (wave 151, lane 151H) — the preview says which GLOBAL layout the piece prints on; piece-type.ts is
 // client-safe (type-only import).
-import { MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE } from "@/lib/direct-mail/piece-type"
+import { MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE } from "@/lib/direct-mail/mail-piece-rules"
 
 export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
 
