@@ -86,6 +86,12 @@ const check = (name: string, ok: boolean, detail?: string) => {
 // ═════════════════════════════════════════════════════════════════════════════
 // RULING 1 · THE CONVERSION GATE
 // ═════════════════════════════════════════════════════════════════════════════
+/** RULE (wave 150 re-asserted; wave 151): the RawData subject vocabulary module may carry TYPE-ONLY import lines (erased at
+ *  runtime — no I/O can ride one) and never a VALUE import, so nothing can enter the gate behind it. */
+function rawRecordTypesCarriesNoValueImport(moduleSource: string): boolean {
+  return !moduleSource.split("\n").some((x) => /^import /.test(x) && !/^import type /.test(x))
+}
+
 function gatePure() {
   console.log("\n[PURE · ruling 1 (wave 84 form) — the gate approves]")
   const email = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com" })
@@ -339,9 +345,11 @@ function conversionInvariants() {
     // Wave 150 (lane 150EFG) — RE-ASSERTED TO THE RULE (I/O-free), not the waypoint (one import): the gate also reads the
     // C35 RawData subject vocabulary from lib/lead-pipeline/raw-record-types.ts, admitted ONLY while that module itself
     // has no import line at all (so it can never carry I/O in behind the gate).
-    gateImports.length > 0 && gateImports.every((l) => (/from "@\/lib\/external\/email-verifier"/.test(l) && !/import \{[^}]*\b(checkEmailMx|verifyEmailDeep)\b/.test(l)) || (/from "@\/lib\/lead-pipeline\/raw-record-types"/.test(l) && !src("lib/lead-pipeline/raw-record-types.ts").split("\n").some((x) => /^import /.test(x)))) && !/require\(/.test(gate) && !/server-only|use server|createClient|createServiceClient/.test(stripComments(gate)))
+    gateImports.length > 0 && gateImports.every((l) => (/from "@\/lib\/external\/email-verifier"/.test(l) && !/import \{[^}]*\b(checkEmailMx|verifyEmailDeep)\b/.test(l)) || (/from "@\/lib\/lead-pipeline\/raw-record-types"/.test(l) && rawRecordTypesCarriesNoValueImport(src("lib/lead-pipeline/raw-record-types.ts")))) && !/require\(/.test(gate) && !/server-only|use server|createClient|createServiceClient/.test(stripComments(gate)))
   check("POSITIVE CONTROL: the same import finder flags an I/O import",
     !['import { createServiceClient } from "@/lib/supabase/service"'].every((l) => /from "@\/lib\/external\/email-verifier"/.test(l)))
+  check("POSITIVE CONTROL: a VALUE import line in raw-record-types.ts is refused (a type-only line is erased at runtime and carries no I/O — wave 151, lane 151L's KnownDeadlineKind)",
+    !rawRecordTypesCarriesNoValueImport('import type { A } from "@/lib/x"\nimport { createServiceClient } from "@/lib/supabase/service"\n') && rawRecordTypesCarriesNoValueImport('import type { KnownDeadlineKind } from "@/lib/intent/moving-moments"\nexport const X = 1\n'))
 }
 
 async function main() {
