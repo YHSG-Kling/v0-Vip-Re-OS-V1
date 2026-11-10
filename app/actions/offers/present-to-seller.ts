@@ -426,7 +426,7 @@ export async function unpresentOfferFromSeller(params: {
 //
 // The reader of the outside_agents record the inbound lane creates
 // (lib/offers/outside-agent-record.ts). The listing agent sees WHO sent each
-// emailed offer — name, brokerage, address, phone, licence, where the record
+// emailed offer — name, brokerage, address, phone, license, where the record
 // came from and its notes — on the same offers screen they release from, behind
 // the same auth + tenant gate. Read-only: the record is completed by the email
 // and the AI read, never typed over here.

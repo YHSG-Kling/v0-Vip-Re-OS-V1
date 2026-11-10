@@ -24,7 +24,7 @@
 // column: the video's own approval_status stays THE approval state, the staging record is its evidence):
 //   generated               the row exists (a producer made it)
 //   playable                finished + a hosted file (playable output is the completion rule — lib/video/playable-output.ts)
-//   rights_branding_checked rights: a testimonial needs a VERIFIED consent on record; a licensed music bed its licence; a D-ID
+//   rights_branding_checked rights: a testimonial needs a VERIFIED consent on record; a licensed music bed its license; a D-ID
 //                           likeness is enforced at render submit (lib/did/avatar-consent-gate.ts). branding: the survivor
 //                           lib/kernel/brand-compliance.ts checkBrandCompliance('video') — the verbal disclosure + the visual
 //                           brand overlay advertising law requires on public marketing
@@ -240,7 +240,7 @@ export async function stageVideoForPublication(svc: Db, input: { brokerageId: st
       if (m.error) checks.push({ key: "music_licence", ok: false, detail: `music asset unreadable: ${m.error.message ?? "unknown"}` })
       else {
         const lic = m.data as { license_url?: string | null; license_attribution?: string | null } | null
-        checks.push({ key: "music_licence", ok: !!(lic?.license_url || lic?.license_attribution), detail: lic?.license_url || lic?.license_attribution ? "licence recorded on the music asset" : "the music bed carries no licence record" })
+        checks.push({ key: "music_licence", ok: !!(lic?.license_url || lic?.license_attribution), detail: lic?.license_url || lic?.license_attribution ? "license recorded on the music asset" : "the music bed carries no license record" })
       }
     }
     const rightsOk = checks.every((c) => c.ok)

@@ -1,7 +1,7 @@
 /**
  * scripts/rawdata-ingress-guard.ts — C35 THE ONE RAWDATA PRODUCER CONTRACT (wave 150, lane 150EFG; directive 150F).
  *
- *   A  the envelope: subject kind, scope-qualified idempotency key, rights + licence, timestamps, TTL, external ids,
+ *   A  the envelope: subject kind, scope-qualified idempotency key, rights + license, timestamps, TTL, external ids,
  *      proof URLs, actor/version, cost, evidence — built for every record; refusals for unknown rights and for a
  *      consented first-party submission (that is a Contact, C8 captureContact — never a raw row);
  *   B  canary 3 on the REAL producer (lib/kernel/scraping.ts ingestRawSourceBatch on the in-memory database with the m961
@@ -19,7 +19,7 @@
  *
  * BLIND SPOTS (published): the live UNIQUE (source, source_record_id) is global until the owner drops it (m961 footer) —
  * modelled here; pre-m961 rows carry no subject_kind and are judged on identity alone; the provider-side preview / quote
- * adapters are not exercised; rights are derived from the vendor contract, not from a reviewed licence (WAITING_EXTERNAL).
+ * adapters are not exercised; rights are derived from the vendor contract, not from a reviewed license (WAITING_EXTERNAL).
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "fs"
 import { join } from "path"
@@ -80,7 +80,7 @@ async function main() {
   check("subject kind derived (person)", env.subject_kind === "person", env.subject_kind)
   check("idempotency key is tenant-scoped", env.idempotency_key.startsWith(`t:${T1}|reddit_relocation|`), env.idempotency_key)
   check("a clock/random source id is NOT trusted — the key falls back to a content digest", env.idempotency_basis === "content_digest", env.idempotency_basis)
-  check("rights + licence derived from the vendor contract", env.source_rights === "public_web" && !!env.source_licence, `${env.source_rights}/${env.source_licence}`)
+  check("rights + license derived from the vendor contract", env.source_rights === "public_web" && !!env.source_licence, `${env.source_rights}/${env.source_licence}`)
   check("signal_at read from the payload's own date; observed_at stamped; ttl after both", !!env.signal_at && !!env.observed_at && Date.parse(env.ttl_expires_at) > Date.parse(env.observed_at))
   check("proof URL carried", env.proof_urls.includes("https://www.reddit.com/r/Pensacola/comments/abc"))
   check("actor / version / cost / evidence carried", env.producer_actor_type === "cron" && env.producer_version === "rawdata-c35@1" && env.cost_usd === 0.004 && Array.isArray((env.evidence as any).intent_signals))

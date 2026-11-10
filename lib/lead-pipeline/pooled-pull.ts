@@ -327,9 +327,10 @@ export interface PooledBatchDataDeps {
    */
   unitUsd?: number
   spentSinceApproval?: (brokerageId: string, lane: string, sinceIso: string | null) => number | null
-  /** Wave 151 (lane 151F, wired by the integrator): the owner's PLATFORM acquisition cap remaining this cycle for a platform-paid
-   *  want (lib/vendor-governance/platform-acquisition-caps.ts platformCapRemainingFor, read ONCE per cycle). undefined = not supplied
-   *  (a tenant-owned connection's call, the legacy fixtures) → not consulted; null = caps not configured → stop before spend. */
+  /** Wave 151 (lane 151F, wired by the integrator; per-tenant reading by lane 151L): the owner's PLATFORM acquisition cap remaining
+   *  this cycle for THIS tenant's platform-paid want (lib/vendor-governance/platform-acquisition-caps.ts platformCapRemainingFromLedger
+   *  over caps + ledger rows read ONCE per cycle — the monthly cap and the per-tenant cap both bind). undefined = not supplied
+   *  (a tenant-owned connection's call, the legacy fixtures) → not consulted; null = caps not configured / ledger unreadable → stop before spend. */
   platformCapRemainingUsd?: (brokerageId: string | null) => number | null | undefined
   providerFailing?: boolean
   /** The same-cycle escalation to a manager (production: publishManagerSignal → finance_manager). Never throws. */
@@ -366,13 +367,19 @@ export async function productionPooledBatchDataDeps(): Promise<PooledBatchDataDe
   // Wave 151 (lane 151C): the platform's own BatchData connection facts, established ONCE per cycle by NAME — the door's
   // ELSE-IF when no plan line names the lane (R9: a dormant survivor's live doors stay open until the owner closes them).
   const platformDoor = await platformProviderDoorFacts("batchdata")
-  // Wave 151 (lane 151F): the owner's platform acquisition caps, read ONCE per cycle (platform-level; the per-tenant cap is
-  // judged by the same module when a tenant id is known). null = not configured → the backpressure stops before spend.
-  const { platformCapRemainingFor } = await import("@/lib/vendor-governance/platform-acquisition-caps")
-  const platformCap = await platformCapRemainingFor(createServiceClient() as never, null, new Date()).catch((e: unknown) => { console.error("[pooled-pull] platform acquisition caps unreadable — platform-paid wants stop before spend:", e instanceof Error ? e.message : String(e)); return { remainingUsd: null } })
+  // Wave 151 (lane 151F; the per-tenant reading built by lane 151L): the owner's platform acquisition caps and the month's
+  // acquisition ledger rows are read ONCE per cycle, and every want is judged PER TENANT by the ONE pure composition
+  // (platformCapRemainingFromLedger: the platform month total AND this tenant's month share against monthly / per-tenant /
+  // per-pull caps). null caps or an unreadable ledger → the backpressure stops before spend; nothing is assumed zero.
+  const { loadPlatformAcquisitionCaps, loadPlatformAcquisitionLedgerRows, platformCapRemainingFromLedger } = await import("@/lib/vendor-governance/platform-acquisition-caps")
+  const capsRead = await loadPlatformAcquisitionCaps(createServiceClient() as never).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }))
+  if (!capsRead.ok) console.error("[pooled-pull] platform acquisition caps unreadable — platform-paid wants stop before spend:", capsRead.error)
+  const ledgerRead = await loadPlatformAcquisitionLedgerRows(createServiceClient() as never, new Date()).catch((e: unknown) => ({ rows: null, error: e instanceof Error ? e.message : String(e) }))
+  if (ledgerRead.rows === null) console.error("[pooled-pull] platform acquisition ledger unreadable — platform-paid wants stop before spend:", ledgerRead.error)
+  const platformCaps = capsRead.ok ? capsRead.caps : null
   return {
     approval: (brokerageId, lane, territory) => paidPullApproval(plans, { brokerageId, source: lane }, new Date(), { platform: withTerritoryBudget(platformDoor, territory ?? null) }),
-    platformCapRemainingUsd: () => platformCap.remainingUsd,
+    platformCapRemainingUsd: (brokerageId) => platformCapRemainingFromLedger(platformCaps, ledgerRead.rows, brokerageId).remainingUsd,
     unitUsd: bd.BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD,
     spentSinceApproval: (brokerageId, lane, sinceIso) => spendRows === null ? null
       : Math.round(spendRows.filter((r) => r.brokerage_id === brokerageId && r.usage_type === lane && (!sinceIso || r.created_at >= sinceIso))

@@ -64,7 +64,7 @@ interface AdminOnboardingOsClientProps {
   recentOnboardings: RecentOnboarding[]
   /**
    * Which tab to open on. Resolved SERVER-SIDE from ?tab= (page.tsx) against
-   * TAB_KEYS, so a deep link lands where it says it does — the broker's licence
+   * TAB_KEYS, so a deep link lands where it says it does — the broker's license
    * links (app/dashboard/admin/components/os/license-expiry-panel.tsx and
    * lib/intelligence/user-type-briefs/broker.ts) point at ?tab=license.
    */

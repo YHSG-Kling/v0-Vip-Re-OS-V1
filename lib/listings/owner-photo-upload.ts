@@ -38,7 +38,7 @@ export const LISTING_MEDIA_BUCKET = "listing-media"
 /** The statement the uploader accepts. A wording change is a NEW version, so an old row still names what was shown. */
 export const OWNER_PHOTO_ATTESTATION_VERSION = "2026-11-06.v1"
 export const OWNER_PHOTO_ATTESTATION_TEXT =
-  "I took these photos, or I own them, or I hold a licence from the photographer that lets my brokerage use them to market this listing — and they show this property as it is."
+  "I took these photos, or I own them, or I hold a license from the photographer that lets my brokerage use them to market this listing — and they show this property as it is."
 
 /** One entry of listings.photos (the gallery). `url` stays first-class so every existing reader (`p.url`) keeps working. */
 export interface ListingPhotoEntry {
@@ -87,7 +87,7 @@ const PROVENANCE_KEYS = ["photo_source", "ownership_attested_by", "ownership_att
  */
 export async function recordOwnerUploadedListingPhoto(db: Db, input: OwnerPhotoInput): Promise<OwnerPhotoResult> {
   if (!input.brokerageId || !input.userId) return { ok: false, error: "No signed-in tenant user: the photo was not recorded." }
-  if (input.attestation?.accepted !== true) return { ok: false, error: "Confirm that you took or own these photos (or hold the photographer's licence) before they are added to the listing." }
+  if (input.attestation?.accepted !== true) return { ok: false, error: "Confirm that you took or own these photos (or hold the photographer's license) before they are added to the listing." }
   if (input.attestation.version !== OWNER_PHOTO_ATTESTATION_VERSION) return { ok: false, error: "The ownership statement has changed — reopen the upload and confirm the current wording." }
   if (!isListingMediaPathFor(input.fileUrl, input.brokerageId, input.listingId)) return { ok: false, error: "A listing photo must be uploaded into this listing's folder of your listing-media library — a link to somewhere else cannot be attested." }
   const clash = Object.keys(input.row ?? {}).filter((k) => PROVENANCE_KEYS.includes(k))

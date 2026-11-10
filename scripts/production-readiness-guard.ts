@@ -64,6 +64,11 @@ import { join } from "node:path"
 import { stripComments, blankStrings, blankComments, stringLiterals } from "./strip-comments"
 import { runtimeFiles, walkTs } from "./runtime-roots"
 import { LIVE_TABLES } from "./live-tables"
+// wave 151 (lane 151L): the wave-151 gates read THE RULE from the generated caches (columns, CHECK vocabularies) and the
+// migrations' stripped SQL — never a pinned count.
+import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripSqlComments } from "./strip-sql-comments"
 import { CANARY_KEYS, WAVE141_HOOKS, hookCensus } from "./canaries/_registry"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import { CRON_MANAGER, MAINTENANCE_DOMAINS, MANAGERS } from "../lib/kernel/manager-registry"
@@ -1813,6 +1818,214 @@ check("G42 when the matrix carries a wave-150 release-gate section, it has a row
   !gateDoc150 || WAVE150_GATES.every((g) => gateRows150.includes(g.gate.toLowerCase())), WAVE150_GATES.filter((g) => !gateRows150.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
 
 // ═════════════════════════════════════════════════════════════════════════════
+// WAVE 151 (lane 151L) — G⁷ · THE WAVE-151 GATES. One gate per OWNER RULING THAT CHANGED CODE on 2026-11-09, each
+// certified by THREE readings taken on every run: (1) the lane contract keys + the chained survivors (the certify145 rule,
+// as waves 145–150); (2) the migration(s) the ruling landed as carry the APPLIED stamp through the ONE classifier
+// (scripts/migration-status.ts claimOf — the integrator stamps on apply and regenerates the caches from the live catalog);
+// (3) THE RULE itself, read from STRIPPED source, the migrations' stripped SQL and the generated caches — never a waypoint
+// (CLAUDE.md §2: no count a later migration moves, no stamp text that flips, no string that only holds while a step is
+// unfinished; a migration's ADD COLUMN list is parsed from its own SQL and checked against the snapshot). Rulings that
+// needed no migration (151E dimensions, 151G selection, 151I voice) certify on (1) + (3). A gate whose migration lacks its
+// stamp, or whose rule no longer holds in the tree, reads NOT CERTIFIED — never green by omission. The opt-in lead
+// acquisition plans and the qualified-release meter were dropped by the owner (2026-11-09) and are NOT a gate.
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[G⁷ · wave 151 gates — the owner's 2026-11-09 rulings that changed code → applied migration + the rule in the tree + the lane contracts]")
+const WAVE151_LANE_IDS = ["151A", "151A2", "151B", "151C", "151D", "151E", "151F", "151G", "151H", "151I", "151J", "151K", "151L"] as const
+/** NEW proof keys per wave-151 lane (every lane had published its notes when lane 151L closed; null would mean unpublished). */
+const WAVE151_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE151_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
+  "151A": ["test:subscription-acceptance"], "151A2": ["test:legal-packets"], "151B": ["test:access-matrix"], "151C": ["test:acquisition-door"],
+  "151D": ["test:early-opportunity-plays"], "151E": ["test:readiness-dimensions"], "151F": ["test:tenant-provider-connections"],
+  "151G": ["test:provider-gap-matrix"], "151H": ["test:direct-mail-rendering"], "151I": ["test:sender-voice"], "151J": ["test:saved-home-alerts"],
+  "151K": ["test:transaction-addenda"], "151L": ["test:wave151-canaries"],
+})
+const contract151 = (lane: (typeof WAVE151_LANE_IDS)[number]) => WAVE151_CONTRACT_PROOFS[lane] ?? []
+const sql151 = (n: number): string => { const f = migrationNamed(n); return f ? stripSqlComments(read(`${MIG}/${f}`)) : "" }
+const src151 = (p: string): string => (existsSync(join(ROOT, p)) ? stripComments(read(p)) : "")
+const rawText151 = (p: string): string => (existsSync(join(ROOT, p)) ? read(p) : "")
+/** A `const NAME = [ "a", "b" ]` (or Object.freeze([...])) list in STRIPPED source — the vocabulary mirrors' reader (scripts/check-vocabulary-guard.ts). */
+const constList151 = (p: string, name: string): string[] => { const m = new RegExp(`const ${name}\\s*=\\s*(?:Object\\.freeze\\()?\\[([^\\]]*)\\]`, "s").exec(src151(p)); return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [] }
+const sameSet151 = (a: readonly string[], b: readonly string[]) => a.length > 0 && a.length === b.length && [...a].sort().join() === [...b].sort().join()
+const liveVocab151 = (t: string, c: string): string[] => CHECK_VOCABULARIES[t]?.[c] ?? []
+const liveCols151 = (t: string): string[] => SCHEMA_SNAPSHOT[t] ?? []
+/** The (table, column) pairs a migration ADDs, parsed from its own SQL — derived, so the number is never pinned. */
+const addedColumns151 = (sql: string): Array<{ table: string; column: string }> => {
+  const out: Array<{ table: string; column: string }> = []
+  for (const m of sql.matchAll(/ALTER TABLE\s+(?:public\.)?(\w+)([\s\S]*?);/gi)) for (const c of m[2].matchAll(/ADD COLUMN(?: IF NOT EXISTS)?\s+(\w+)/gi)) out.push({ table: m[1].toLowerCase(), column: c[1].toLowerCase() })
+  return out
+}
+const columnsLive151 = (n: number): { ok: boolean; missing: string[]; n: number } => { const cols = addedColumns151(sql151(n)); const missing = cols.filter((c) => !liveCols151(c.table).includes(c.column)).map((c) => `${c.table}.${c.column}`); return { ok: cols.length > 0 && missing.length === 0, missing, n: cols.length } }
+const fnSlice151 = (src: string, head: string): string => { const i = src.indexOf(head); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return src.slice(i, j < 0 ? undefined : j) }
+const before151 = (s: string, a: string, b: string): boolean => { const i = s.indexOf(a), j = s.indexOf(b); return i >= 0 && j >= 0 && i < j }
+interface Rule151 { ok: boolean; why: string }
+const rule151 = (parts: Array<[string, boolean]>): Rule151 => ({ ok: parts.every(([, ok]) => ok), why: parts.map(([w, ok]) => `${w} ${ok ? "✓" : "✗"}`).join(" · ") })
+interface Wave151Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE151_LANE_IDS)[number]>; /** the migration numbers the ruling landed as — each must read `applied` through claimOf ([] = the ruling needed none) */ migrations: number[]; /** THE RULE, read from the tree on every run */ rule: () => Rule151 }
+const WAVE151_GATES: Wave151Gate[] = [
+  { gate: "contracts approval + immutable acceptance (m959)", rulings: "151A/151A2 — a draft never activates; approval is a recorded owner/counsel act; the signatory is the books seat; the accepted copy is immutable", lanes: ["151A", "151A2"], hookLanes: ["151A"], canaries: [], migrations: [959],
+    proofs: ["test:contract-lanes", ...contract151("151A"), ...contract151("151A2")],
+    rule: () => { const sql = sql151(959), legal = src151("lib/legal/subscription-agreement.ts"); return rule151([
+      ["active⇒approved CHECK in m959", /platform_contract_templates_active_is_approved/.test(sql)], ["append-only acceptance trigger", /tenant_contract_signatures_append_only/.test(sql)],
+      ["approval vocabulary == live CHECK", sameSet151(constList151("lib/legal/subscription-agreement.ts", "AGREEMENT_APPROVAL_STATUSES"), liveVocab151("platform_contract_templates", "approval_status"))],
+      ["m959 columns live", columnsLive151(959).ok], ["activation refuses a draft", /export function templateActivationRefusal/.test(legal) && /isDraftMarked\(/.test(legal)],
+      ["signatory = the books seat", /export async function assessSignatoryAuthority/.test(legal) && /resolveBrokerageFinanceAdmin\(/.test(legal)]]) } },
+  { gate: "team-lead team-scoped contacts (m963)", rulings: "151B L4 — team leaders see the Contacts of the teams they lead, never brokerage-wide", lanes: ["151B"], hookLanes: ["151B"], canaries: [], migrations: [963],
+    proofs: ["test:scoped-search", "test:cross-office-rls", ...contract151("151B")],
+    rule: () => { const sql = sql151(963), lv = src151("lib/auth/lead-visibility.ts"); return rule151([
+      ["policy anchored on teams.team_lead_id = auth.uid()", /ALTER POLICY team_lead_read_team_contacts/.test(sql) && /team_lead_id = auth\.uid\(\)/.test(sql) && /is_tenant_principal_team_lead\(\)/.test(sql)],
+      ["code twin resolveTeamLeadContactScope + ONE filter applicator", /export async function resolveTeamLeadContactScope/.test(lv) && /export function teamContactOrFilter/.test(lv)],
+      ["the search reads the team scope", /resolveTeamLeadContactScope\(/.test(src151("lib/search/scoped-record-search.ts"))]]) } },
+  { gate: "users rows narrowed to staff, own row, assigned agent (m964)", rulings: "151B L5 — contact and vendor seats never read the tenant roster", lanes: ["151B"], hookLanes: ["151B"], canaries: [], migrations: [964],
+    proofs: ["test:cross-tenant-read", ...contract151("151B")],
+    rule: () => { const sql = sql151(964); return rule151([
+      ["ALTER POLICY users_same_brokerage_select", /ALTER POLICY users_same_brokerage_select/.test(sql)],
+      ["staff arm + assigned-agent arm + vendor booking/assignment arms", /is_tenant_staff_seat\(\)/.test(sql) && /is_own_agent_user_id\(id\)/.test(sql) && /vendor_bookings/.test(sql) && /vendor_assignments/.test(sql)],
+      ["no bare tenant arm (a tenant predicate standing alone as an OR arm)", !/current_user_brokerage_id\(\)\)\s*\)?\s*OR\b/.test(sql)]]) } },
+  { gate: "vendor seats read assigned work only (m965)", rulings: "151B S4 — vendors see assigned records only; a lender is a vendor category resolved through the lender rail", lanes: ["151B"], hookLanes: ["151B"], canaries: [], migrations: [965],
+    proofs: ["test:persona-compliance", ...contract151("151B")],
+    rule: () => { const sql = sql151(965); return rule151([
+      ["vendor_has_transaction_access() learns the lender rail's vendor_assignments", /vendor_has_transaction_access\(/.test(sql) && /vendor_assignments/.test(sql)],
+      ["assignment / booking / grant / document policies narrowed (≥1 ALTER POLICY) + the vendor's own update policy", (sql.match(/ALTER POLICY/g) ?? []).length >= 1 && /CREATE POLICY vendor_bookings_vendor_update_own/.test(sql)],
+      ["the lender gate anchors on vendor_assignments + the vendor category (never users.user_type = 'lender')", /vendor_assignments/.test(src151("lib/kernel/portal-auth.ts")) && /export function isLenderVendorCategory/.test(src151("lib/kernel/lender-linkage.ts")) && !/user_type\s*===?\s*["']lender["']/.test(src151("lib/kernel/portal-auth.ts") + src151("lib/kernel/lender-linkage.ts"))]]) } },
+  { gate: "photographer delivery is a third photo source (m966)", rulings: "151B L6.3 — the assigned photographer uploads for exactly its booked listing; review, never auto-publish", lanes: ["151B"], hookLanes: ["151B"], canaries: [], migrations: [966],
+    proofs: ["test:listing-to-transaction-gate", ...contract151("151B")],
+    rule: () => { const pm = src151("app/actions/photo-management.ts"), door = fnSlice151(pm, "export async function submitPhotographerDelivery"); return rule151([
+      ["LISTING_PHOTO_SOURCES == live CHECK and carries vendor_delivery", sameSet151(constList151("lib/listings/owner-photo-upload.ts", "LISTING_PHOTO_SOURCES"), liveVocab151("listing_media", "photo_source")) && liveVocab151("listing_media", "photo_source").includes("vendor_delivery")],
+      ["m966 columns live (vendor_booking_id)", columnsLive151(966).ok], ["the ONE provenance writer", /export async function recordPhotographerDelivery/.test(src151("lib/listings/owner-photo-upload.ts"))],
+      ["the door gates the vendor seat before the service client", door.length > 0 && before151(door, "requireVendorActor(", "createServiceClient(")]]) } },
+  { gate: "raw freshness per signal type + held_stale (m967)", rulings: "151C — stale observations held by age/type before any spend; history kept as evidence", lanes: ["151C"], hookLanes: ["151C"], canaries: [], migrations: [967],
+    proofs: ["test:rawdata-ingress", "test:source-discovery-planner", ...contract151("151C")],
+    rule: () => { const sc = src151("lib/kernel/scraping.ts"), pp = fnSlice151(src151("lib/lead-pipeline/pipeline-processor.ts"), "export async function processRawRecord"); return rule151([
+      ["FRESHNESS_VERDICTS == live CHECK", sameSet151(constList151("lib/lead-pipeline/freshness.ts", "FRESHNESS_VERDICTS"), liveVocab151("raw_scraped_leads", "freshness_verdict"))],
+      ["held_stale in the live status CHECK and in RAW_PROCESSING_STATUSES", liveVocab151("raw_scraped_leads", "processing_status").includes("held_stale") && constList151("lib/lead-pipeline/processing-status.ts", "RAW_PROCESSING_STATUSES").includes("held_stale")],
+      ["m967 columns live", columnsLive151(967).ok], ["the producer judges freshness before it writes the raw row", (() => { const ing = fnSlice151(sc, "export async function ingestRawSourceBatch"); return ing.length > 0 && before151(ing, "evaluateFreshness(", ".from('raw_scraped_leads')") })()],
+      ["the pipeline holds before enrichment spend", pp.length > 0 && /held_stale/.test(pp) && before151(pp, "held_stale", "enrichWithPeopleData(")]]) } },
+  { gate: "provider monitors + signed replay-safe Exa webhook (m969)", rulings: "151D — Exa hunts people only under the play gates; monitors push deltas to a signed, idempotent door; rows enter THE ONE producer", lanes: ["151D"], hookLanes: ["151D"], canaries: [], migrations: [969],
+    proofs: ["test:webhook-contract", "test:public-market-research", ...contract151("151D")],
+    rule: () => { const route = src151("app/api/webhooks/exa/route.ts"); return rule151([
+      ["provider_monitors is a live table", LIVE_TABLES.includes("provider_monitors")],
+      ["its three vocabularies == code constants", sameSet151(constList151("lib/providers/exa/monitors.ts", "EXA_MONITOR_PROVIDERS"), liveVocab151("provider_monitors", "provider")) && sameSet151(constList151("lib/acquisition-plays/contract.ts", "PLAY_KEYS"), liveVocab151("provider_monitors", "play_key")) && sameSet151(constList151("lib/providers/exa/monitors.ts", "PROVIDER_MONITOR_STATUSES"), liveVocab151("provider_monitors", "status"))],
+      ["the door verifies an HMAC with a length-guarded compare", /createHmac\(\s*["']sha256["']/.test(route + src151("lib/providers/exa/monitors.ts")) && /timingSafeEqual\(/.test(route + src151("lib/providers/exa/monitors.ts"))],
+      ["the door is in the webhook contract", WEBHOOK_CONTRACT.some((w) => /\/api\/webhooks\/exa/.test(w.path))],
+      ["every play ends in the ONE producer or an arbiter door (PLAY_CARDS endsIn)", /ingestRawSourceBatch/.test(src151("lib/acquisition-plays/contract.ts"))]]) } },
+  { gate: "platform credential vocabulary admits a tenant BatchData key (m975)", rulings: "151F — a tenant connects its own supported provider through Settings; unsupported providers say so; the platform key is never a fallback", lanes: ["151F"], hookLanes: ["151F"], canaries: [], migrations: [975],
+    proofs: ["test:provider-waterfall", "test:provider-scorecard", ...contract151("151F")],
+    rule: () => { const tpc = src151("lib/providers/tenant-provider-connections.ts"), act = src151("app/actions/tenant-connections.ts"); return rule151([
+      ["live platform CHECK admits batchdata", liveVocab151("platform_credentials", "platform").includes("batchdata")],
+      ["the catalogue: batchdata connectable, the rest honestly unsupported, eight states", /batchdata:/.test(tpc) && /unsupported/.test(tpc) && /export function deriveTenantProviderConnectionState/.test(tpc)],
+      ["the connect door seals the secret and never reads the platform key", /encryptSecret\(/.test(act) && !/BATCHDATA_API_KEY/.test(act)],
+      ["the client takes a tenant key as an option (no fallback inside the tenant path)", /apiKey\??:/.test(src151("lib/external/batchdata-client.ts"))]]) } },
+  { gate: "platform acquisition caps — null means stop (m976)", rulings: "151F — the platform's own acquisition spend is capped by the owner (monthly / per tenant / per pull); no default; no per-lead fee", lanes: ["151F"], hookLanes: ["151F"], canaries: [], migrations: [976],
+    proofs: ["test:spend-backpressure", ...contract151("151F")],
+    rule: () => { const caps = src151("lib/vendor-governance/platform-acquisition-caps.ts"); return rule151([
+      ["platform_settings.acquisition_budget_caps live", liveCols151("platform_settings").includes("acquisition_budget_caps")],
+      ["backpressure refuses on a null cap", /platformCapRemainingUsd === null/.test(src151("lib/vendor-governance/budget-eval.ts"))],
+      ["no made-up dollar default in the caps module", !/(monthly_usd|per_tenant_monthly_usd|per_pull_usd)\s*[:=]\s*\d/.test(caps)],
+      ["the pooled lane judges every want per tenant from one read", /platformCapRemainingFromLedger\(platformCaps,\s*ledgerRead\.rows,\s*brokerageId\)/.test(src151("lib/lead-pipeline/pooled-pull.ts"))],
+      ["no per-lead or qualified-release object anywhere in the caps / connections modules (owner: dropped)", !/qualified_lead_release|platform_sourced_leads_opt_in|per_lead_fee|perLeadFee/i.test(caps + src151("lib/providers/tenant-provider-connections.ts"))]]) } },
+  { gate: "tenant return address + delivery truth (m980/m981)", rulings: "151H — blank layouts; the tenant's own verified, approved sender address; the platform's return address never printed; six separate delivery truths", lanes: ["151H"], hookLanes: ["151H"], canaries: [], migrations: [980, 981],
+    proofs: ["test:direct-mail-formats", "test:mailing-cass", ...contract151("151H")],
+    rule: () => { const d = src151("lib/providers/dispatch.ts"); return rule151([
+      ["direct_mail_sender_addresses is a live table", LIVE_TABLES.includes("direct_mail_sender_addresses")], ["m980 + m981 columns live", columnsLive151(980).ok && columnsLive151(981).ok],
+      ["the dispatcher resolves the tenant's sender through the ONE gate; the platform's id is read ONLY so the gate can refuse it (never a `??` / `||` fallback)", /decideSenderAddress\(/.test(d) && (d.match(/process\.env\.LOB_RETURN_ADDRESS_ID/g) ?? []).length >= 1 && (d.match(/process\.env\.LOB_RETURN_ADDRESS_ID/g) ?? []).length === (d.match(/platformLobAddressId:\s*process\.env\.LOB_RETURN_ADDRESS_ID/g) ?? []).length && !/(\?\?|\|\|)\s*process\.env\.LOB_RETURN_ADDRESS_ID/.test(d)],
+      ["the gate refuses the platform's address by NAME", /export function decideSenderAddress/.test(src151("lib/providers/mailing-cass-gate.ts")) && /platform/.test(fnSlice151(src151("lib/providers/mailing-cass-gate.ts"), "export function decideSenderAddress"))],
+      ["six separate truths — a 2xx is apiAccepted only", /export function mailPieceTruth/.test(src151("lib/direct-mail/piece-type.ts")) && /apiAccepted/.test(src151("lib/direct-mail/piece-type.ts"))]]) } },
+  { gate: "saved-home verified state → the arbiter decides (m983)", rulings: "151J — alerts from actual change data; no duplicate across re-list / reversal; preferences unset → the arbiter decides; a metered re-read only under an approved line + the caps", lanes: ["151J"], hookLanes: ["151J"], canaries: [], migrations: [983],
+    proofs: ["test:client-portal", "test:saved-home-nudge", ...contract151("151J")],
+    rule: () => { const w = src151("lib/property-alerts/saved-home-watch.ts"); return rule151([
+      ["m983 columns live", columnsLive151(983).ok], ["SAVED_HOME_VERIFICATION_SOURCES == live CHECK", sameSet151(constList151("lib/property-alerts/saved-home-watch.ts", "SAVED_HOME_VERIFICATION_SOURCES"), liveVocab151("saved_properties", "last_verified_source"))],
+      ["the watch asks THE arbiter door and delegates delivery to THE router half", /decideSavedHomeNudge\(/.test(w) && /deliverSavedHomeNudgeDecision/.test(w)],
+      ["the metered re-read sits behind the plan-line approval and the platform caps", /paidPullApproval\(/.test(w) && /decideSpendBackpressure\(/.test(w)],
+      ["the daily tick is the alert cron route (no page graph)", /watchSavedHomes/.test(src151("app/api/property-alerts/run/route.ts"))]]) } },
+  { gate: "addenda govern by signed effective language; immutable history; CDA-disabled closes (m986)", rulings: "151K — executed addenda update the governing terms; unordered contradictions are unresolved, never numbered; a brokerage without a CDA closes without one; funds never asserted from a date", lanes: ["151K"], hookLanes: ["151K"], canaries: [], migrations: [986],
+    proofs: ["test:cda-closing-flow", "test:cda-effective-terms", ...contract151("151K")],
+    rule: () => { const sql = sql151(986), gtr = src151("lib/offers/governing-terms-rule.ts"), cda = src151("lib/transactions/cda-closing-policy.ts"); return rule151([
+      ["history immutable at the database (trigger BEFORE UPDATE OR DELETE + the executed-addendum CHECK)", /contract_term_versions_immutable\(\)/.test(sql) && /contract_term_versions_immutable_trg/.test(sql) && /BEFORE UPDATE OR DELETE/i.test(sql) && /contract_term_versions_executed_addendum_has_document_check/.test(sql)],
+      ["precedence by effective language; same-source contradictions unresolved", /unresolvedTieSources/.test(gtr) && /unresolvedTieSources:\s*\["addendum",\s*"amendment"\]/.test(gtr)],
+      ["the listing rail applies the same rule to amendments", /unresolvedTieSources:\s*\["amendment"\]/.test(src151("lib/listings/listing-agreement-terms.ts"))],
+      ["a CDA never blocks a close; funds only from receipt evidence", /fundsReceivedOnlyFromReceiptEvidence:\s*true/.test(cda) && !/blocksClosing:\s*true/.test(cda) && /export function noCdaClosingProof/.test(cda)]]) } },
+  { gate: "readiness dimensions + helpful-action arbiter (no migration)", rulings: "151E — desire / expectation / feasibility / timing / confidence stored separately with an evidence class; the person's words outrank enrichment; preferences unset → the arbiter decides; no sensitive inference is ever named", lanes: ["151E"], hookLanes: ["151E"], canaries: [], migrations: [],
+    proofs: ["test:moving-moments", "test:decision-window", "test:movement-signals", ...contract151("151E")],
+    rule: () => { const mm = src151("lib/intent/moving-moments.ts"), fa = src151("lib/ai-isa/followup-arbiter.ts"), ms = src151("lib/intent/movement-signals.ts"); return rule151([
+      ["the five dimensions named separately", ["desire", "expectation", "feasibility", "timing", "confidence"].every((d) => new RegExp(`\\b${d}\\s*:`).test(mm))],
+      ["the five evidence classes", ["verified_intent", "expressed_interest", "inferred_possibility", "market_level_opportunity", "stale_contradicted"].every((c) => mm.includes(c))],
+      ["the helpful-action frame — no default cadence, never-mention carried", /function helpfulActionFrame/.test(fa) && /arbiter_decides/.test(fa) && /neverMention/.test(fa)],
+      ["an existing contact re-enters on the SAME contact (never a Lead, no provider call)", /export async function reassessExistingContact/.test(ms) && /newLeadCreated:\s*false/.test(ms) && /providerCalls:\s*0/.test(ms)]]) } },
+  { gate: "provider selection by function, cost and license (no migration)", rulings: "151G — nothing is selected or activated; RentCast data types distinct and labelled; buyer results labelled by source; LICENSE, never license", lanes: ["151G"], hookLanes: ["151G"], canaries: [], migrations: [],
+    proofs: ["test:market-twin", "test:provider-scorecard", ...contract151("151G")],
+    rule: () => { const sc = src151("lib/providers/provider-scorecard.ts"); return rule151([
+      ["selection status: selected null, nothing activated", /PROVIDER_SELECTION_STATUS/.test(sc) && /selected:\s*null/.test(sc) && /PROVIDER_RECOMMENDATION/.test(sc)],
+      ["RentCast data types + ONE price-basis rule", /export function rentcastPriceBasis/.test(src151("lib/market-reports/contract.ts")) && /RENTCAST_DATA_TYPES/.test(src151("lib/market-reports/contract.ts"))],
+      ["buyer results labelled by source order and verified status", /BUYER_LISTING_SOURCE_ORDER/.test(src151("lib/property/external-listings-search.ts")) && /verifiedStatus/.test(src151("lib/property/external-listings-search.ts"))],
+      ["American spelling in the activation labels", !/licence/i.test(rawText151("lib/ai-isa/property-lookup-rail.ts"))]]) } },
+  { gate: "sender voice before the first draft (no migration)", rulings: "151I — AI copy is written in the sender's words, tagline, tone and signature from the first draft, geared to the audience first; one brand-voice reader", lanes: ["151I"], hookLanes: ["151I"], canaries: [], migrations: [],
+    proofs: ["test:asset-producer", "test:video-script-compliance", ...contract151("151I")],
+    rule: () => rule151([
+      ["THE brand-voice reader compiles a versioned brief", /export async function loadSenderVoiceBrief/.test(src151("lib/kernel/brand-voice.ts")) && /export function renderSenderVoiceBrief/.test(src151("lib/kernel/brand-voice.ts"))],
+      ["the copy engine and the ISA cascade lead with it", /renderSenderVoiceBrief\(/.test(src151("lib/kernel/ai-copy.ts")) && /loadSenderVoiceBrief\(/.test(src151("lib/ai-isa/brand-voice-prompt.ts"))],
+      ["the final phase checks the brief", /voiceBrief/.test(src151("lib/marketing/humanize-final.ts"))]]) },
+  { gate: "chains/registry (wave 151)", rulings: "brief 151L — every wave-151 proof key registered, chained and owned; this block", lanes: ["151L"], hookLanes: ["151L"], canaries: [], migrations: [],
+    proofs: ["test:proof-ownership", "test:manager-ownership", "test:manager-cross-cooperation", "test:production-readiness"],
+    rule: () => rule151([["every wave-151 contract key has an accountable manager", WAVE151_LANE_IDS.flatMap((l) => contract151(l)).every((k) => !!proofOwner.get(k))]]) },
+  { gate: "canaries (wave 151)", rulings: "the directive's REQUIRED CANARIES — ten groups, each on memSupabase through the real survivors, with a blind spot and a positive control; wave-150 canaries reused by import", lanes: ["151L"], hookLanes: ["151L"], canaries: [], migrations: [],
+    proofs: [...contract151("151L")],
+    rule: () => { const c = src151("scripts/wave151-canaries.ts"); const n = (c.match(/\bcanary\(\{/g) ?? []).length; return rule151([
+      ["the runner exists and reuses the wave-150 canaries by import", c.length > 0 && /from "\.\/wave150-canaries"/.test(c)],
+      ["every canary carries a blind spot and a positive control (counted — at least one per registered canary, never pinned)", n >= 10 && (c.match(/blindSpot:/g) ?? []).length >= n && (c.match(/positiveControl:/g) ?? []).length >= n]]) } },
+  { gate: "convergence (wave 151)", rulings: "the 96 wave-150 rows re-verified against the tree; O1–O4 re-measured read-only; the §L L1/L2 obligation closes on the applied stamps", lanes: ["151L"], hookLanes: ["151L"], canaries: [], migrations: [955, 956],
+    proofs: ["test:open-loop-ledger", "test:release-blockers", "test:operations-docs"],
+    rule: () => rule151([["release-blockers carries the §L L1/L2 obligation derived from the stamps", /"L1-L2"/.test(src151("scripts/release-blockers-guard.ts"))]]) },
+]
+/** PURE — a wave-151 gate's verdict: certify145's, then NOT CERTIFIED while a named migration lacks the applied stamp or the rule does not hold. */
+function certify151(g: Wave151Gate, env: GateEnv, contracts: Readonly<Record<string, readonly string[] | null>>, stamp: (n: number) => string, ruleOf: (g: Wave151Gate) => Rule151): GateVerdict & { stamps: string[]; rule: Rule151 } {
+  const v = certify145(g, env, contracts)
+  const stamps = g.migrations.map((n) => `m${n} ${stamp(n)}`)
+  const reasons = [...v.reasons]
+  for (const n of g.migrations) { const s = stamp(n); if (s !== "applied") reasons.push(`m${n} stamped ${s} — the ruling's migration is not APPLIED LIVE`) }
+  const r = ruleOf(g)
+  if (!r.ok) reasons.push(`the rule does not hold in the tree: ${r.why}`)
+  return { ...v, state: reasons.length ? "NOT CERTIFIED" : v.state, reasons, stamps, rule: r }
+}
+const stamp151 = (n: number): string => stampOf(migrationNamed(n))
+const verdicts151 = WAVE151_GATES.map((g) => certify151(g, gateEnv, WAVE151_CONTRACT_PROOFS, stamp151, (x) => x.rule()))
+const certified151 = verdicts151.filter((v) => v.state === "CERTIFIED"), external151 = verdicts151.filter((v) => v.state === "EXTERNAL"), notCertified151 = verdicts151.filter((v) => v.state === "NOT CERTIFIED")
+for (const v of verdicts151) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(78)} owner ${v.owner.padEnd(22)} lanes ${(WAVE151_GATES.find((g) => g.gate === v.gate)!.lanes ?? []).join("+").padEnd(10)} proofs ${v.proofs.length} ${v.stamps.length ? `migrations ${v.stamps.join(", ")}` : "no migration"}\n                  rule: ${v.rule.why}${v.reasons.length ? `\n                  · ${v.reasons.join("\n                  · ")}` : ""}`)
+const contractKeys151 = WAVE151_LANE_IDS.flatMap((l) => contract151(l))
+const unpublished151 = WAVE151_LANE_IDS.filter((l) => WAVE151_CONTRACT_PROOFS[l] === null)
+const earlierContractKeys151 = [...earlierContractKeys150, ...contractKeys150]
+const migrations151 = [...new Set(WAVE151_GATES.flatMap((g) => g.migrations))].sort((a, b) => a - b)
+console.log(`    census: ${WAVE151_GATES.length} wave-151 gates; ${contractKeys151.length} lane contract keys (${contractKeys151.filter((k) => proofState(k) === "ok").length} landed+chained, ${contractKeys151.filter((k) => proofState(k) === "unchained").length} unchained, ${contractKeys151.filter((k) => proofState(k) === "no-file").length} script-missing, ${contractKeys151.filter((k) => proofState(k) === "absent").length} absent); ${unpublished151.length} lane(s) unpublished; migrations named ${migrations151.map((n) => `m${n} (${stamp151(n)})`).join(", ")}; ${certified151.length} CERTIFIED · ${external151.length} EXTERNAL · ${notCertified151.length} NOT CERTIFIED`)
+check("G43 every wave-151 gate names ≥1 proof, waits only on wave-151 lanes, names only migrations that exist in the tree, and every published wave-151 contract key is named by ≥1 wave-151 gate",
+  WAVE151_GATES.every((g) => g.proofs.length > 0 && g.lanes.length > 0 && g.lanes.every((l) => (WAVE151_LANE_IDS as readonly string[]).includes(l)) && g.migrations.every((n) => !!migrationNamed(n)))
+  && contractKeys151.every((k) => WAVE151_GATES.some((g) => g.proofs.includes(k))),
+  [...contractKeys151.filter((k) => !WAVE151_GATES.some((g) => g.proofs.includes(k))), ...WAVE151_GATES.flatMap((g) => g.migrations.filter((n) => !migrationNamed(n)).map((n) => `m${n} not in the tree`))].join(", "))
+check("G44 no wave-151 contract key is claimed twice, none re-claims a key an earlier wave published (a re-asserted guard is a SURVIVOR), and every survivor a wave-151 gate names is registered + chained TODAY",
+  new Set(contractKeys151).size === contractKeys151.length && reclaimedKeys(contractKeys151, earlierContractKeys151).length === 0
+  && WAVE151_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys151.includes(k)).every((k) => proofState(k) === "ok"),
+  [...reclaimedKeys(contractKeys151, earlierContractKeys151).map((k) => `${k} re-claimed`), ...WAVE151_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys151.includes(k) && proofState(k) !== "ok").map((k) => `${k} ${proofState(k)}`)].join(", "))
+check("G45 every published wave-151 contract key is registered in package.json AND in a guard chain, and has an accountable manager (a MAINTENANCE_DOMAINS proof owner)",
+  unwiredContractKeys(contractKeys151, proofState).length === 0 && unownedContractKeys(contractKeys151, (k) => proofOwner.get(k) ?? null).length === 0,
+  [...unwiredContractKeys(contractKeys151, proofState).map((k) => `${k} ${proofState(k)}`), ...unownedContractKeys(contractKeys151, (k) => proofOwner.get(k) ?? null).map((k) => `${k} has no owner`)].join(", "))
+check("G46 POSITIVE CONTROL — a gate whose migration lacks the applied stamp is NOT CERTIFIED naming it; a gate whose rule fails is NOT CERTIFIED naming the rule; a landed, chained, owned gate with applied stamps and a holding rule certifies; the SQL column parser and the frozen-list reader still see what they were written for",
+  (() => {
+    const env151: GateEnv = { ...gateEnv, scripts: { "test:spec": "tsx scripts/spec.ts" }, chain: "npm run test:spec", fileExists: () => true, roster: [], pending: new Map(), ownerOf: () => "data_steward" }
+    const base: Wave151Gate = { gate: "x", rulings: "", lanes: ["151B"], proofs: ["test:spec"], canaries: [], migrations: [963], rule: () => rule151([["holds", true]]) }
+    const unstamped = certify151(base, env151, { "151B": ["test:spec"] }, () => "not_applied", (g) => g.rule())
+    const badRule = certify151(base, env151, { "151B": ["test:spec"] }, () => "applied", () => rule151([["the rule", false]]))
+    const ok = certify151(base, env151, { "151B": ["test:spec"] }, () => "applied", (g) => g.rule())
+    const cols = addedColumns151("ALTER TABLE public.saved_properties\n  ADD COLUMN IF NOT EXISTS last_verified_at timestamptz,\n  ADD COLUMN IF NOT EXISTS verification_hold text;\nALTER TABLE public.other ADD COLUMN x int;")
+    return unstamped.state === "NOT CERTIFIED" && unstamped.reasons.some((r) => /m963 stamped not_applied/.test(r)) && badRule.state === "NOT CERTIFIED" && badRule.reasons.some((r) => /the rule does not hold/.test(r)) && ok.state === "CERTIFIED"
+      && cols.length === 3 && cols[0].table === "saved_properties" && cols[1].column === "verification_hold" && cols[2].table === "other"
+      && constList151("lib/intent/moving-moments.ts", "KNOWN_DEADLINE_KINDS").includes("lease_end") && constList151("lib/lead-pipeline/freshness.ts", "FRESHNESS_VERDICTS").length === 6
+      && !/current_user_brokerage_id\(\)\)\s*\)?\s*OR\b/.test("USING ((brokerage_id = public.current_user_brokerage_id()) AND public.is_tenant_staff_seat()) OR (id = auth.uid()))")
+      && /current_user_brokerage_id\(\)\)\s*\)?\s*OR\b/.test("USING ((brokerage_id = public.current_user_brokerage_id()) OR (id = auth.uid()))")
+  })())
+const gateDoc151 = matrix.split(/^## /m).find((s) => /^Wave 151 release gate/i.test(s)) ?? ""
+const gateRows151 = parseGateRows(gateDoc151)
+console.log(`    reading: READINESS-MATRIX.md "Wave 151 release gate" section ${gateDoc151 ? `present — ${gateRows151.length} gate row(s)` : "absent"}`)
+check("G47 when the matrix carries a wave-151 release-gate section, it has a row per wave-151 gate and no row for a gate this block does not know (the rule applies the moment the section lands)",
+  !gateDoc151 || (WAVE151_GATES.every((g) => gateRows151.includes(g.gate.toLowerCase())) && gateRows151.every((r) => WAVE151_GATES.some((g) => g.gate.toLowerCase() === r))),
+  [...WAVE151_GATES.filter((g) => !gateRows151.includes(g.gate.toLowerCase())).map((g) => `missing: ${g.gate}`), ...gateRows151.filter((r) => !WAVE151_GATES.some((g) => g.gate.toLowerCase() === r)).map((r) => `unknown row: ${r}`)].join(", "))
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WAVE 147 (lane 147H) — O · THE OWNER OBLIGATIONS STAY RELEASE-BLOCKING IN THE OUTPUT. Two obligations no code can
 // discharge (wave 146 report §18–19): (O1) the storage.objects policies — m855 (OWNER-SQL §F) and m875 (§G) — read
 // from the migration stamps through the ONE classifier (the go-live board reads the LIVE state); (O2) the four unlinked
@@ -1882,14 +2095,15 @@ console.log(`WAVE 147 GATE: ${certified147.length}/${WAVE147_GATES.length} certi
 console.log(`WAVE 148 GATE: ${certified148.length}/${WAVE148_GATES.length} certified, ${external148.length} external-verdict, ${notCertified148.length} not certified${notCertified148.length ? ` — ${notCertified148.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 149 GATE: ${certified149.length}/${WAVE149_GATES.length} certified, ${external149.length} external-verdict, ${notCertified149.length} not certified${notCertified149.length ? ` — ${notCertified149.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 150 GATE: ${certified150.length}/${WAVE150_GATES.length} certified, ${external150.length} external-verdict, ${notCertified150.length} not certified${notCertified150.length ? ` — ${notCertified150.map((v) => v.gate).join(", ")}` : ""}`)
+console.log(`WAVE 151 GATE: ${certified151.length}/${WAVE151_GATES.length} certified, ${external151.length} external-verdict, ${notCertified151.length} not certified${notCertified151.length ? ` — ${notCertified151.map((v) => v.gate).join(", ")}` : ""}`)
 // Wave 149 (lane 149K finding, fixed by 149I2): the RELEASE verdict had summed waves 141/142/145/146/147 only and silently
-// ignored the wave-148 gates; it now sums every wave's gates, 148, 149 and 150 included.
-const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length + notCertified148.length + notCertified149.length + notCertified150.length
-const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150]
+// ignored the wave-148 gates; it now sums every wave's gates, 148, 149, 150 and 151 included.
+const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length + notCertified148.length + notCertified149.length + notCertified150.length + notCertified151.length
+const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150, ...external151]
 console.log(`OWNER OBLIGATIONS: ${ownerBlocking.length}/${OWNER_OBLIGATIONS.length} RELEASE-BLOCKING${ownerBlocking.length ? ` — ${ownerBlocking.map((o) => o.id).join(", ")}` : ""}`)
 // The owner obligations (lane 147H) join the verdict: a release with an undischarged obligation is NOT READY even when
 // every gate certifies in-repo.
-console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + 142 + 145 + 146 + 147 + 148 + 149 + 150) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length}, wave 147 ${notCertified147.length}, wave 148 ${notCertified148.length}, wave 149 ${notCertified149.length}, wave 150 ${notCertified150.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
+console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + 142 + 145 + 146 + 147 + 148 + 149 + 150 + 151) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length}, wave 147 ${notCertified147.length}, wave 148 ${notCertified148.length}, wave 149 ${notCertified149.length}, wave 150 ${notCertified150.length}, wave 151 ${notCertified151.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

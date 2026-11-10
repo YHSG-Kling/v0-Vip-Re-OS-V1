@@ -16,7 +16,7 @@
  *
  * PHOTOS (owner R9): exactly two lawful sources — the tenant's own IDX/MLS feed and the photos the tenant user uploads
  * and owns (the `listings.photos` / listing-media survivor, lane 150XY's upload path). RentCast's /listings/sale schema
- * carries NO photo field, a pasted link is someone else's page, and a manual row has no licence — none of them is EVER
+ * carries NO photo field, a pasted link is someone else's page, and a manual row has no license — none of them is EVER
  * a photo source. `licensedPhotoFor` is the one gate every portal surface reads a saved-home photo through.
  *
  * SAVING FROM A LINK never fetches the page (that would be scraping someone else's site): the address is read from the

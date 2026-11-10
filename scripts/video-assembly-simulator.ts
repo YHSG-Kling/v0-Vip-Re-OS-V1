@@ -668,7 +668,7 @@ function rendersEhoMark(source: string): boolean {
   // below proves that, so this arm is inheritance, not absence).
   // Lane 90E2b: the 16:9 slides compose their footer line ONCE through
   // lib/video/cinema-finish.ts slideDisclosureText (brokerage · Equal Housing
-  // Opportunity · licence), so the slide imports and RENDERS the helper's text —
+  // Opportunity · license), so the slide imports and RENDERS the helper's text —
   // the mark lives in the helper, and §slideDisclosure below proves the helper
   // carries it, so this arm is inheritance, not absence.
   return (

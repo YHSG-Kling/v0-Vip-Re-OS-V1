@@ -591,7 +591,7 @@ export const ContextCueRow: React.FC<{
   // WAVE 91 (lane 91E — the real renders of OpenHouseAnnounceReel and TestimonialReel): the
   // BOTTOM row sat ON the safe bottom inset — exactly where the burned-in caption band (body)
   // and the disclosure line (the CTA tile) sit, so the chips printed over the caption tick and
-  // over the brokerage / licence line. A bottom row now stands in the BADGE SLOT, above the band
+  // over the brokerage / license line. A bottom row now stands in the BADGE SLOT, above the band
   // captions and the disclosure share (cinemaBadgeSlot), and keeps out of both corner badges'
   // columns (the QR bottom-right, the EHO pill bottom-left — cinemaEndCardSideInset).
   const { width, height } = useVideoConfig()

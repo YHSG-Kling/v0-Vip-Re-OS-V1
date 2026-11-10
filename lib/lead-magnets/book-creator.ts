@@ -304,7 +304,7 @@ const defaultEntitlement: NonNullable<BookDeps["entitlement"]> = async (ask) => 
 
 const defaultBrandResolver: NonNullable<BookDeps["brandResolver"]> = async (svc, brokerageId, agentUserId) => {
   const { resolvePdfBrand } = await import("@/lib/documents/client-document-producer")
-  // The compliance block (names, licence line, EHO) stays resolvePdfBrand's — every client PDF carries it.
+  // The compliance block (names, license line, EHO) stays resolvePdfBrand's — every client PDF carries it.
   const base = await resolvePdfBrand(svc, { brokerageId, agentUserId })
   // + THE BRAND CASCADE (wave 144 — lane 144H Outside-lane 4, owner ruling 15): the lead-magnet PDF carries the logo, the
   // brand colours and the APPROVED tagline too, vetted by the SAME helper the KDP cover uses (approvedBookBrandAssets). Any

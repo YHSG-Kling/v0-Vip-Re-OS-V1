@@ -905,7 +905,7 @@ export async function scanContentComplianceService(content: {
     }
   }
 
-  // ── TENANT IDENTITY DISCLOSURES — brokerage name + licence number ──────────
+  // ── TENANT IDENTITY DISCLOSURES — brokerage name + license number ──────────
   //
   // These two are required disclosures, but they are NOT catalogue rows and
   // never could be. `required_disclosures` is checked with a LITERAL substring
@@ -923,7 +923,7 @@ export async function scanContentComplianceService(content: {
   //
   // IDENTITY COMES FROM THE SESSION. Not from an argument: a caller-supplied
   // brokerage or agent id would let content be graded against someone else's
-  // licence number.
+  // license number.
   const { data: { user: scanUser }, error: scanUserError } = await supabase.auth.getUser()
   const identity = await resolveBrokerageComplianceIdentity(supabase, scanUser?.id ?? null)
   if (!scanUser) {
@@ -948,7 +948,7 @@ export async function scanContentComplianceService(content: {
     return needle.length >= 2 && haystackText.includes(needle)
   }
 
-  // Licence numbers are written a dozen ways in real copy — "FL-SL3456789",
+  // License numbers are written a dozen ways in real copy — "FL-SL3456789",
   // "Lic #FL SL3456789", "License No. FLSL3456789". Compare on alphanumerics
   // only so formatting never decides compliance.
   const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "")
@@ -961,7 +961,7 @@ export async function scanContentComplianceService(content: {
 
   // A READ THAT FAILED IS NOT AN EMPTY RECORD. supabase-js resolves a denial as
   // `data: null`; the resolver reports those separately so this never grades a
-  // permission error as "the brokerage has no licence".
+  // permission error as "the brokerage has no license".
   if (identity.unreadable.length > 0) {
     warnings.push({
       type: "missing_disclosure",
@@ -1005,9 +1005,9 @@ export async function scanContentComplianceService(content: {
       })
     }
 
-    // ── Licence number ──────────────────────────────────────────────────────
-    // EITHER licence satisfies it. That is the distinction the rendered
-    // attribution band already draws: it prints the brokerage licence, and adds
+    // ── License number ──────────────────────────────────────────────────────
+    // EITHER license satisfies it. That is the distinction the rendered
+    // attribution band already draws: it prints the brokerage license, and adds
     // the agent's own only when it differs. Many states accept either on an
     // advertisement, so requiring both here would fail compliant copy.
     const licenses = [identity.agentLicense, identity.brokerageLicense].filter(Boolean) as string[]

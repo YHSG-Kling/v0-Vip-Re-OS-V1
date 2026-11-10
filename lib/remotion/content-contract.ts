@@ -37,7 +37,7 @@
 // mislead anybody. The sample data stays where it belongs — a Studio fixture
 // that this contract makes UNREACHABLE on a real render. What did get deleted
 // is the sample data with no preview value and real potential to be believed:
-// the fabricated agent phone numbers and licence lines on the print pieces.
+// the fabricated agent phone numbers and license lines on the print pieces.
 //
 // ── WHERE IT IS ENFORCED ────────────────────────────────────────────────────
 //   · commissionVideo (staging)  — refuse early, so a manager sees WHY and no

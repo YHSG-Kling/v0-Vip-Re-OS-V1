@@ -220,7 +220,7 @@ export async function signupBrokerageAction(
   // link-back + ISA actor + starter assistant + SUBSCRIPTION_CREATED +
   // onboarding library. Fails closed on the tier lookup, the duplicate-owner
   // guard and owner provisioning (with the counted rollback).
-  // C34 (wave 150): the head office's identity is validated BEFORE any write — a bad licence state is a form error
+  // C34 (wave 150): the head office's identity is validated BEFORE any write — a bad license state is a form error
   // the signer can fix, never a half-provisioned office. The same rule the core applies (planTenantOffices).
   const headOffice = plan.tier === "brokerage"
     ? [{ officeCode: "main", name: input.headOffice?.name?.trim() || input.brokerageName.trim(), legalName: input.headOffice?.legalName ?? null, licenseNumber: input.headOffice?.licenseNumber ?? null, licenseState: input.headOffice?.licenseState?.trim().toUpperCase() || null, city: input.headOffice?.city ?? input.brokerageCity ?? null, state: input.headOffice?.state ?? input.brokerageState ?? null }]

@@ -1,4 +1,8 @@
--- WRITTEN, NOT APPLIED (wave 151, lane 151C) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL
+-- ── APPLIED LIVE 2026-11-09 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 151, lane 151C ──
+-- (stamp reconciled by lane 151L on 2026-11-09: the integrator applied this file with m969 — checklist "151D + 151C applied;
+--  m969 + m967 APPLIED LIVE" — and the regenerated caches carry it: scripts/schema-snapshot.ts raw_scraped_leads
+--  last_verified_at + freshness_verdict, scripts/check-vocabularies.ts freshness_verdict (6 values) and processing_status
+--  with held_stale. The lane stamp that stood here read as pending and held NOT_APPLIED_BASELINE one too high.)
 --
 -- FRESHNESS PER SIGNAL TYPE + THE HOLD (wave 151, lane 151C).
 --

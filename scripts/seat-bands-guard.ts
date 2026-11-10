@@ -165,7 +165,7 @@ check("roleConsumesSeat: producer types always; licensed unless EXEMPTED (produc
   && roleConsumesSeat("broker") && roleConsumesSeat("broker", { produces: true }) && !roleConsumesSeat("broker", { produces: false }) && roleConsumesSeat("broker_owner") && !roleConsumesSeat("broker_owner", { produces: false })
   && !roleConsumesSeat("admin") && roleConsumesSeat("admin", { produces: true })
   && ["tc", "isa", "compliance_officer", "broker_admin", "vendor", "contact", "system", "superadmin", "support", "lender"].every((r) => !roleConsumesSeat(r, { produces: true })))
-check("roleProducesOnTier: the solo/team OWNER (admin) produces; a brokerage-tier admin does not; a broker produces on EVERY tier (licensed by type); the ISA's operational agents row is never a licence",
+check("roleProducesOnTier: the solo/team OWNER (admin) produces; a brokerage-tier admin does not; a broker produces on EVERY tier (licensed by type); the ISA's operational agents row is never a license",
   roleProducesOnTier("admin", "solo_agent") && roleProducesOnTier("admin", "team") && !roleProducesOnTier("admin", "brokerage") && roleProducesOnTier("broker", "brokerage") && roleProducesOnTier("broker_owner", "team") && !roleProducesOnTier("isa", "solo_agent") && roleProducesOnTier("agent", "brokerage"))
 
 // The count, against an injected client. Only the shapes resolveSeatUsage and

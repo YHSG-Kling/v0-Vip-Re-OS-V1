@@ -129,7 +129,7 @@ export async function persistProtectedResearch(
 //     it must equal the request's (`tenant_unverified` / `not_in_tenant` otherwise); platform staff sit above tenants and must say
 //     why they are reading (`justification_required`).
 //   · DATA RIGHTS: the service purposes (customer_service, persona_derivation) read only values held under a classified right
-//     (a provider licence, a first-party statement, a public-web source); an unclassified / unknown source is WITHHELD (named,
+//     (a provider license, a first-party statement, a public-web source); an unclassified / unknown source is WITHHELD (named,
 //     never its value).
 //   · FIELD MINIMISATION: customer_service returns only what a person TOLD us they need to be served (a self-identified language
 //     or accessibility attribute); every other field is named in `withheld`, never valued.
@@ -252,7 +252,7 @@ export interface AttributeAccessEnvelope {
   provenance: Pick<FieldProvenanceLine, "source" | "capability" | "retrievedAt" | "purpose" | "actor"> | null
   confidence: string | null
   freshness: { retrievedAt: string | null; freshForDays: number | null; fresh: boolean | null }
-  /** Under whose rights the value is held — a provider's licence (the tenant's account), a first-party statement, or unknown. */
+  /** Under whose rights the value is held — a provider's license (the tenant's account), a first-party statement, or unknown. */
   dataRights: string
   /** The uses this value may be READ for. */
   purposes: readonly string[]

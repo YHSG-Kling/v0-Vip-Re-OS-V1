@@ -135,13 +135,13 @@ export const VENDOR_CONTRACTS: Readonly<Record<"lofty" | "skyslope" | "brokermin
   // key for customer-api.open-meteo.com — "the API syntax is identical to the free tier — only the
   // domain and key parameter (&apikey=) differ". Plans are a fixed monthly price per call budget
   // (Standard 1M calls / month); the amount is not declared here (unknown stays unknown).
-  open_meteo: { baseUrl: "https://api.open-meteo.com/v1", verifiedOn: "2026-10-11", contractSource: ["https://open-meteo.com/en/pricing", "https://open-meteo.com/en/docs"], note: "free host — non-commercial licence only" },
+  open_meteo: { baseUrl: "https://api.open-meteo.com/v1", verifiedOn: "2026-10-11", contractSource: ["https://open-meteo.com/en/pricing", "https://open-meteo.com/en/docs"], note: "free host — non-commercial license only" },
   open_meteo_commercial: { baseUrl: "https://customer-api.open-meteo.com/v1", verifiedOn: "2026-10-11", contractSource: ["https://open-meteo.com/en/pricing", "https://open-meteo.com/en/docs"], note: "commercial host; key as the `apikey` query parameter (OPEN_METEO_API_KEY)" },
   // Mapbox (owner: REQUIRED). Static Images API GET https://api.mapbox.com/styles/v1/{username}/
   // {style_id}/static/{overlay}/{lon},{lat},{zoom},{bearing},{pitch}/{width}x{height}{@2x} (token scope
   // styles:tiles; NOT compatible with the Mapbox Standard styles — a classic style id is required);
   // Mapbox GL JS from the Mapbox CDN (install guide, v3.29.0 on 2026-10-11); a map load = one `Map`
-  // initialisation. LICENCE (pricing page, "Commercial Application License"): production use of
+  // initialisation. LICENSE (pricing page, "Commercial Application License"): production use of
   // Mapbox services "related to … real estate" requires a Commercial Application License — an owner
   // item recorded in the lane notes, not something code can satisfy.
   mapbox: { baseUrl: "https://api.mapbox.com", verifiedOn: "2026-10-11", contractSource: ["https://docs.mapbox.com/api/maps/static-images/", "https://docs.mapbox.com/mapbox-gl-js/guides/install/", "https://docs.mapbox.com/mapbox-gl-js/guides/pricing/", "https://www.mapbox.com/pricing"], note: "Static Images + GL JS (public pk. token in the browser by design)" },

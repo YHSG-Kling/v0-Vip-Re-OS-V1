@@ -9,10 +9,10 @@
 // GATE FIRST (CLAUDE.md §4): every export is a public endpoint, so each one opens with requireSuperadmin() — the
 // highest platform authority, because approving a packet offers licensed content to EVERY tenant — and only
 // then touches the service client. The actor recorded is the SESSION's, never a body value. Each act is written to
-// superadmin_audit_log (who, what, which packet, the licence basis), read-error checked.
+// superadmin_audit_log (who, what, which packet, the license basis), read-error checked.
 //
 // NOTHING HERE PUBLISHES ON UPLOAD: uploadPlatformPacketAction registers a DRAFT; a person approves it (with the
-// licence basis the platform holds it under) in a separate act. Uploads are capped below the platform's request
+// license basis the platform holds it under) in a separate act. Uploads are capped below the platform's request
 // body limit; a larger licensed PDF is a conversation, not a bigger limit.
 
 import { headers } from "next/headers"
@@ -66,7 +66,7 @@ export async function uploadPlatformPacketAction(formData: FormData): Promise<Re
   return { ok: true, message: `Registered "${result.packet.name}" as a draft with ${result.packet.field_count} fillable fields.${auditError ? ` (Audit row not written: ${auditError})` : ""}` }
 }
 
-/** Approve a draft for every subscriber. The licence basis is required. */
+/** Approve a draft for every subscriber. The license basis is required. */
 export async function approvePlatformPacketAction(input: { packetId: string; licenseNote: string; licenseExpiresAt?: string | null }): Promise<Result> {
   const gate = await requireSuperadmin()
   if (!gate.ok) return { ok: false, error: gate.error }

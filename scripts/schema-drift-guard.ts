@@ -459,7 +459,7 @@ export function matchParen(s: string, open: number): number {
  *     the error was discarded, and every run reported "no active territories".
  *   • `brokerage:brokerage_id(name, address, …)` in lib/kernel/listings.ts against a
  *     `brokerages` that had no `address` — every listing-form prefill returned
- *     `{ success: false }` and the licence block went out empty.
+ *     `{ success: false }` and the license block went out empty.
  *
  * The second one is the reason this is not a regex over table-shaped names. That embed
  * names its target by FK COLUMN behind an alias; the old check saw `brokerage` (an alias,

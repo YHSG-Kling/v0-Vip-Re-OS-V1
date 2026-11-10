@@ -108,11 +108,11 @@
 export type SocrataDatasetKind = "permits" | "code_violations" | "probate" | "property_transfers" | "street_use_permits"
 
 /**
- * WAVE 148, LANE 148F (owner ruling 6, contract C19 — "create a dataset verification in the market registry"). The LICENCE half of
- * a dataset's verification, read from the publisher on the day stated. A dataset whose licence nobody read is never `verified`
+ * WAVE 148, LANE 148F (owner ruling 6, contract C19 — "create a dataset verification in the market registry"). The LICENSE half of
+ * a dataset's verification, read from the publisher on the day stated. A dataset whose license nobody read is never `verified`
  * (lib/intent/dataset-verification.ts) — technical verification proves the columns, not the right to use the rows.
  *   public_domain     the catalog states a public-domain / PDDL dedication;
- *   portal_terms      the portal's own terms of use govern reuse (the catalog licence field is empty or says "See Terms of Use");
+ *   portal_terms      the portal's own terms of use govern reuse (the catalog license field is empty or says "See Terms of Use");
  *                     the platform keeps only a DERIVED fact (an address match -> a signal), never republishes rows;
  *   as_is_disclaimer  the publisher provides the data "as is" with a fitness disclaimer, no reuse restriction stated;
  *   unknown           not read — the dataset cannot be verified until it is.
@@ -121,7 +121,7 @@ export interface DatasetLicence {
   class: "public_domain" | "portal_terms" | "as_is_disclaimer" | "unknown"
   /** The publisher's words (catalog `license` field / item licenseInfo), verbatim or summarised with where they were read. */
   text: string
-  /** ISO date the licence was read. */
+  /** ISO date the license was read. */
   readOn: string
 }
 
@@ -188,7 +188,7 @@ export interface PermitDatasetSpec {
   unavailable?: string
   /** Free-form notes — column hints, known quirks, refresh cadence. */
   notes?:      string
-  /** C19 (wave 148, 148F): the licence as read from the publisher. Absent = never read (the dataset is unverified). */
+  /** C19 (wave 148, 148F): the license as read from the publisher. Absent = never read (the dataset is unverified). */
   licence?:    DatasetLicence
   /** C19: the newest DATA the publisher had on the verification day (catalog data_updated_at / max event date / item modified). */
   lastDataAt?: string
@@ -364,7 +364,7 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       { host: "data.sf.gov", datasetId: "i98e-djp9", kind: "permits",
         label: "San Francisco building permits", dateColumn: "filed_date", verifiedOn: "2026-11-01",
         notes: "filed_date is the FILING date (issued_date also exists and is also a timestamp). Host moved data.sfgov.org -> data.sf.gov (2026-11-01).",
-        licence: { class: "portal_terms", text: "DataSF portal terms govern reuse (the catalog lists no licence for the moved id on 2026-11-01)", readOn: "2026-11-01" }, lastDataAt: "2026-10-30T16:08:00.000Z" },
+        licence: { class: "portal_terms", text: "DataSF portal terms govern reuse (the catalog lists no license for the moved id on 2026-11-01)", readOn: "2026-11-01" }, lastDataAt: "2026-10-30T16:08:00.000Z" },
     ],
   },
   [k("NY", "New York")]: {
@@ -379,7 +379,7 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       //   · street_name "WEST 29 STREET" · work_type "Plumbing" · estimated_job_costs "8000"
       //   · permit_status "Permit Issued" · borough "Manhattan"
       // NOTE ON WHAT IS NOT READ: this dataset also publishes `owner_name`, `owner_street_address`,
-      // `owner_city`/`owner_zip_code` and the applicant's name and licence number. None of those
+      // `owner_city`/`owner_zip_code` and the applicant's name and license number. None of those
       // are in any reader list in permit-signals.ts and none reach `signal_details`, which is
       // assembled from named fields rather than from the raw row. A permit is an address here on
       // purpose; adding an owner-name reader would turn this lane into people-sourcing.

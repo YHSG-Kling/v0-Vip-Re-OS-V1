@@ -16,7 +16,7 @@
  *
  *   declareVendorServiceAreaAction   the WRITER — a company (or platform staff)
  *                                    declares a state, optionally one ZIP, with
- *                                    the licence backing it
+ *                                    the license backing it
  *   withdrawVendorServiceAreaAction  the opposite half — coverage ends
  *   listSurfaceableBenchAction       the tenant-side READER — the bench, filtered
  *                                    to vendors whose coverage MEETS this
@@ -105,7 +105,7 @@ export interface DeclareVendorServiceAreaInput {
   zipCode?: string | null
   /** `vendors.category` vocabulary — the ONE 38-value taxonomy. */
   tradeCategory: string
-  /** The licence backing this coverage, in the shape
+  /** The license backing this coverage, in the shape
    *  vendors.compliance_credentials -> 'license' already uses. */
   license?: {
     policy_number?: string
@@ -143,7 +143,7 @@ export async function declareVendorServiceAreaAction(
   }
 
   // THE COMPLIANCE GATE, AT THE POINT OF DECLARATION. A state-licensed trade
-  // declaring coverage with no licence would create a row that
+  // declaring coverage with no license would create a row that
   // vendor_bookable_in_state refuses forever — a coverage area that looks
   // declared and can never be booked. Refusing here says why, once, at the only
   // moment a human is present to fix it.
@@ -153,15 +153,15 @@ export async function declareVendorServiceAreaAction(
       return {
         ok: false,
         error:
-          `${input.tradeCategory} is a state-licensed trade — coverage in ${state} needs the licence ` +
+          `${input.tradeCategory} is a state-licensed trade — coverage in ${state} needs the license ` +
           `number that authorises it. Without one this vendor cannot be booked there.`,
       }
     }
     if (lic.expiry) {
       const t = Date.parse(lic.expiry)
-      if (Number.isNaN(t)) return { ok: false, error: "Licence expiry is not a valid date" }
+      if (Number.isNaN(t)) return { ok: false, error: "License expiry is not a valid date" }
       if (t <= Date.now()) {
-        return { ok: false, error: "That licence has already expired — coverage on it would be dark from the moment it is saved" }
+        return { ok: false, error: "That license has already expired — coverage on it would be dark from the moment it is saved" }
       }
     }
   }

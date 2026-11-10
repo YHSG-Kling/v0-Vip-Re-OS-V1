@@ -127,7 +127,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   const brollWins  = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(bodyVisualPlan, "JustListedReelSquare", durationInFrames), { within: timeline.body }) : []
   const photoSpans = photoSpansAround(PHOTOS, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), images.length)
   const showEho    = brand.showEhoMark ?? true
-  // Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence, composed ONCE
+  // Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · license, composed ONCE
   // (slideDisclosureText). The MLS cut stays unbranded — the mark alone (lib/video/render-cut.ts).
   const disclosure = slideDisclosureText({ brokerageName: mlsClean ? null : brand.brokerageName, showEhoMark: showEho, licenseLine: mlsClean ? null : brand.licenseLine })
   const finalCta   = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")

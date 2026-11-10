@@ -1120,7 +1120,7 @@ export const RemotionRoot: React.FC = () => {
             // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
             // lib/remotion/content-contract, so unlike the content props these
             // defaults REMAIN reachable on a real render — and these three were a
-            // phone number, a website and a state licence number that would have
+            // phone number, a website and a state license number that would have
             // been printed onto a mailed postcard. Null renders the block empty,
             // which is honest; the tenant's real values arrive via resolveReelBrand.
             websiteWordmark: null,
@@ -1171,7 +1171,7 @@ export const RemotionRoot: React.FC = () => {
             // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
             // lib/remotion/content-contract, so unlike the content props these
             // defaults REMAIN reachable on a real render — and these three were a
-            // phone number, a website and a state licence number that would have
+            // phone number, a website and a state license number that would have
             // been printed onto a mailed postcard. Null renders the block empty,
             // which is honest; the tenant's real values arrive via resolveReelBrand.
             websiteWordmark: null,
@@ -1208,7 +1208,7 @@ export const RemotionRoot: React.FC = () => {
             // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
             // lib/remotion/content-contract, so unlike the content props these
             // defaults REMAIN reachable on a real render — and these three were a
-            // phone number, a website and a state licence number that would have
+            // phone number, a website and a state license number that would have
             // been printed onto a mailed postcard. Null renders the block empty,
             // which is honest; the tenant's real values arrive via resolveReelBrand.
             websiteWordmark: null,
@@ -1241,7 +1241,7 @@ export const RemotionRoot: React.FC = () => {
             // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
             // lib/remotion/content-contract, so unlike the content props these
             // defaults REMAIN reachable on a real render — and these three were a
-            // phone number, a website and a state licence number that would have
+            // phone number, a website and a state license number that would have
             // been printed onto a mailed postcard. Null renders the block empty,
             // which is honest; the tenant's real values arrive via resolveReelBrand.
             websiteWordmark: null,

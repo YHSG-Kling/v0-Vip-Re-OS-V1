@@ -2125,7 +2125,7 @@ export async function getAgentWorkloadStats() {
 
   // A count with no name is not something a broker can act on.
   //
-  // THE NAME IS NOT ON `agents`. That table carries licence, fee and profile
+  // THE NAME IS NOT ON `agents`. That table carries license, fee and profile
   // columns but no first_name / last_name / email — those live on `users`, one
   // hop away through agents.user_id. Selecting them off `agents` is a phantom
   // column, and PostgREST answers a phantom column by failing the whole select.

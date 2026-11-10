@@ -408,7 +408,7 @@ const realBillingDeps = (c: MemClient, s: Spies, actors: Array<string | null>, s
   {
     const pkt = (id: string) => svc.tables.brokerage_form_library.find((r) => r.id === id)!
     check("TEAM FORM PACKETS FOLLOW THE TEAM (wave 144I, m853): the team's packet moved with it — same id, same teams/{teamId}/ path", pkt("pk-team").brokerage_id === f.T && pkt("pk-team").storage_path === "teams/team-s2/packets/pk-team/listing.pdf")
-    check("…the workspace's BROKERAGE-level packet STAYS with the source (its licence; never shared with the whole adopting brokerage), and the decoy's is untouched", pkt("pk-brk").brokerage_id === f.S2 && pkt("pk-decoy").brokerage_id === f.D)
+    check("…the workspace's BROKERAGE-level packet STAYS with the source (its license; never shared with the whole adopting brokerage), and the decoy's is untouched", pkt("pk-brk").brokerage_id === f.S2 && pkt("pk-decoy").brokerage_id === f.D)
     check("…counted in the migration record", (svc.tables.brokerage_transfer_requests.find((r) => r.id === id)!.migration as any)?.counts?.team_form_packets === 1)
   }
   check("the team moved as a unit (same id) with both members; the member stays an agent, the owner is the team lead", svc.tables.teams[0].brokerage_id === f.T && svc.tables.users.filter((u) => u.brokerage_id === f.S2 && !u.platform_role).length === 0 && svc.tables.users.find((u) => u.id === f.O2)!.user_type === "team_lead" && svc.tables.users.find((u) => u.email === "member@team.test")!.user_type === "agent" && mid.migration?.counts.members === 2 && mid.migration?.counts.teams === 1)

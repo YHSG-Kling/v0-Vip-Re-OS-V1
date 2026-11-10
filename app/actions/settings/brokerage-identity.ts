@@ -24,7 +24,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // BROKERAGE IDENTITY — the ONE place a brokerage's real identity is set.
 //
-// Legal name, DBA, real-estate licence (number + state) and the COMPLETE mailing
+// Legal name, DBA, real-estate license (number + state) and the COMPLETE mailing
 // address (street, suite, city, state, ZIP) all live on the `brokerages` row and
 // are all edited from the "Brokerage Info" card at /settings/general.
 //
@@ -82,7 +82,7 @@ const BROKERAGE_IDENTITY_FIELDS = [
  *
  * OWNER RULING: "brokerage and teams may also have commission caps", and settings
  * is where a brokerage configures itself — the same ruling that put the brokerage
- * LICENCE NUMBER beside the brokerage NAME. A cap is a configured fact about the
+ * LICENSE NUMBER beside the brokerage NAME. A cap is a configured fact about the
  * brokerage, so it lives on the `brokerages` row and is written through the one
  * allow-listed writer that row already has. A second action pointed at the same
  * table is how an allow-list stops being one.
@@ -430,7 +430,7 @@ export async function updateBrokerageIdentity(
 
   const licenceState = normalizeStateCode(picked.license_state)
   if (licenceState.invalid) {
-    return { data: null, error: 'Licence state must be a two-letter US state code.' }
+    return { data: null, error: 'License state must be a two-letter US state code.' }
   }
   const brokerageState = normalizeStateCode(picked.state)
   if (brokerageState.invalid) {
@@ -527,7 +527,7 @@ export async function updateBrokerageIdentity(
   // result with `error: null` — supabase-js does not raise on it — so
   // `.select("id")` is mandatory and the row count is what proves the save
   // happened. Reporting success on a resolved promise (what this card used to
-  // do with `{ data: true }`) would tell a broker their licence number was
+  // do with `{ data: true }`) would tell a broker their license number was
   // saved when the database had silently refused it.
   const { data: saved, error: updateError } = await supabase
     .from('brokerages')

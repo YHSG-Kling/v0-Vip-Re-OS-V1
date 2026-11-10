@@ -6,7 +6,7 @@
  * token. We validate the token, store the bytes in the PRIVATE
  * `client-documents` Supabase bucket, and return a TIME-LIMITED signed URL.
  *
- * WAS: `put(…, { access: "public" })` to Vercel Blob. A driver's licence photo,
+ * WAS: `put(…, { access: "public" })` to Vercel Blob. A driver's license photo,
  * a pre-approval letter and a proof-of-funds letter are the buyer's financial
  * and identity paperwork — that shipped each one to a permanent,
  * unauthenticated URL with no TTL, no session and no RLS, handed straight back

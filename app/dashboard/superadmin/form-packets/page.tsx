@@ -4,7 +4,7 @@
  * Wave 143, lane 143B built this as platform Media handed straight to every subscriber's FormWizard. Wave 144 (lane 144C, owner
  * ruling 3: "Form packets are NOT platform-owned … The brokerage or team uploads approved form packets … into THEIR OWN tenant/team
  * bucket and shares them with their agents") makes it a CATALOGUE: load a PDF (it registers as a DRAFT with its fillable-field
- * count), record the licence it is held under, approve it — and a BROKERAGE may then add it to its OWN library (a copy in its own
+ * count), record the license it is held under, approve it — and a BROKERAGE may then add it to its OWN library (a copy in its own
  * folder, app/dashboard/admin/transaction-forms), where its agents see it through their memberships. No agent sees a catalogue
  * packet directly. Core: lib/forms/platform-form-packets.ts. Gated on superadmin before the service client (§4 gate first).
  * No tenant predicate BY DESIGN — catalogue content has no tenant.

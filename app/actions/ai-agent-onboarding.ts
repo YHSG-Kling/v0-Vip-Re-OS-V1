@@ -171,16 +171,16 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 // took that simulated answer and, through the AGENT'S OWN SESSION, wrote
 // agent_licenses.verification_status = 'verified' + verified_at, stamped
 // agents.license_expiry from a date the model invented, and logged the step as
-// "AI verified with N% confidence". A real-estate licence marked verified by a
+// "AI verified with N% confidence". A real-estate license marked verified by a
 // language model that never saw a registry.
 //
 // The canonical path was already live and already richer:
 //   app/actions/onboarding/license.ts:submitLicenseDetails
 //     -> lib/onboarding/license-verifier.ts:runLicenseVerification
 // which queries the STATE REGULATOR'S REGISTRY (the source of truth for a real-
-// estate licence), routes an adverse finding to a human review queue with the
+// estate license), routes an adverse finding to a human review queue with the
 // evidence and a one-click portal link, never rejects on its own, and runs on
-// the SERVICE client so the licence holder is not the one grading themselves.
+// the SERVICE client so the license holder is not the one grading themselves.
 //
 // NOTHING WAS LOST IN THE MERGE. The one input this copy had that the survivor
 // might have lacked is the uploaded document: submitLicenseDetails already

@@ -29,7 +29,7 @@
  *      and uploads the TV master — never the social reel; it re-spells none of the judge's numbers and no second TV provider exists.
  *   H. THE CREATIVE CENSUS: every publication door of the approved creative workflows (avatar, listing/social, YouTube, landing-page
  *      video, education, podcast, books, TV master, TV ad, paid ads) holds a human-approval gate, and the usage-rights evidence the
- *      platform keeps (likeness consent, licensed music, stock licence, KDP rights attestation, broadcast-rights line) is still wired —
+ *      platform keeps (likeness consent, licensed music, stock license, KDP rights attestation, broadcast-rights line) is still wired —
  *      each with a positive control (the gate removed from the source is caught) and the doors not found published as blind spots.
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs"
@@ -244,7 +244,7 @@ async function main() {
     const r = await stage(db)
     const cfg = (db.tables.ad_campaigns[0]?.targeting_config ?? {}) as Record<string, unknown>
     check("STAGE with a READY master: the staged creative IS the TV master (creative_source tv_master, spec version recorded); the social reel is not the creative", r.success && cfg.creative_video_url === masterUrl && masterUrl !== "https://cdn.example/12-oak.mp4" && cfg.creative_source === "tv_master" && cfg.tv_spot_spec_version === TV_SPOT_SPEC.version && r.package?.creativeUrl === masterUrl, JSON.stringify(r).slice(0, 300))
-    check("…the launch package names the TV master and carries the USAGE-RIGHTS line (broadcast licences) — the spec words are derived from the judge", !!r.package?.checklist.some((l) => /TV MASTER/.test(l) && l.includes(`${TV_SPOT_SPEC.width}×${TV_SPOT_SPEC.height}`) && l.includes(`${TV_SPOT_SPEC.loudness.targetLkfs} LKFS`)) && !!r.package?.checklist.some((l) => /Usage rights/.test(l) && /broadcast/.test(l)))
+    check("…the launch package names the TV master and carries the USAGE-RIGHTS line (broadcast licenses) — the spec words are derived from the judge", !!r.package?.checklist.some((l) => /TV MASTER/.test(l) && l.includes(`${TV_SPOT_SPEC.width}×${TV_SPOT_SPEC.height}`) && l.includes(`${TV_SPOT_SPEC.loudness.targetLkfs} LKFS`)) && !!r.package?.checklist.some((l) => /Usage rights/.test(l) && /broadcast/.test(l)))
   }
   const stageRefused = async (label: string, over: Record<string, unknown>, re: RegExp) => {
     const db = adWorld(over, { campaign: null })
@@ -333,7 +333,7 @@ async function main() {
     { workflow: "licensed music bed", file: "lib/remotion/render-coordinator.ts", re: /used_music_asset_id:\s*musicAssetId/, what: "the render records WHICH licensed track it used (video_assets.license_url / license_attribution)" },
     { workflow: "stock imagery", file: "lib/marketing/image-library.ts", re: /stock license covers each user's own use/, what: "stock is never shared platform-wide" },
     { workflow: "book rights", file: "lib/lead-magnets/book-publishing.ts", re: /id: "i_hold_rights"/, what: "the KDP rights-holder attestation" },
-    { workflow: "TV broadcast rights", file: "lib/ads/ctv-campaign.ts", re: /CTV_RIGHTS_CHECK,/, what: "the launch package's broadcast-licence line (wave 144)" },
+    { workflow: "TV broadcast rights", file: "lib/ads/ctv-campaign.ts", re: /CTV_RIGHTS_CHECK,/, what: "the launch package's broadcast-license line (wave 144)" },
   ]
   for (const d of [...doors, ...rights]) {
     if (!existsSync(join(ROOT, d.file))) { check(`${d.workflow}: ${d.file} exists`, false); continue }
@@ -343,7 +343,7 @@ async function main() {
   }
   check("music licence columns exist on the live schema cache (video_assets.license_url + license_attribution)", /video_assets: \[[^\]]*"license_attribution"[^\]]*"license_url"/.test(readFileSync(join(ROOT, "scripts/schema-snapshot.ts"), "utf8")))
   blind.push(`the creative census is a SOURCE census of ${doors.length} approval doors + ${rights.length} rights records (stripped source, each with a removal control) — it proves the gate is still written at the door, not every runtime path; community/event (topic) videos have NO separate publication door — they reach the public only through the YouTube, landing-page and TV doors above (unresolved: a direct social post of a topic video rides the social approval queue)`)
-  blind.push("BROADCAST licence scope is not machine-checkable: the platform keeps each music asset's licence link and attribution, not whether that licence covers streaming TV — the launch package says so and a human confirms (WAITING_EXTERNAL per buy)")
+  blind.push("BROADCAST licence scope is not machine-checkable: the platform keeps each music asset's license link and attribution, not whether that license covers streaming TV — the launch package says so and a human confirms (WAITING_EXTERNAL per buy)")
   finish()
 
   function finish() {

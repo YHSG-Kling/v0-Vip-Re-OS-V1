@@ -2,7 +2,7 @@
 /**
  * scripts/license-eo-record-simulator.ts   (npm run test:license-eo-record)
  * ─────────────────────────────────────────────────────────────────────────────
- * Proves the AGENT LICENCE RECORD is actually a record.
+ * Proves the AGENT LICENSE RECORD is actually a record.
  *
  * Three defects sat on one table, and each one made a compliance fact disappear
  * while the app reported success:
@@ -15,7 +15,7 @@
  *
  *  2. THE CERTIFICATE HAD NOWHERE TO GO. The intake form uploads the E&O
  *     certificate to storage and hands over its URL; the action dropped it.
- *     agent_licenses.document_url already holds the LICENCE, so m459 added
+ *     agent_licenses.document_url already holds the LICENSE, so m459 added
  *     eo_certificate_url rather than let one document clobber the other.
  *
  *  3. VERIFICATION WAS SELF-SERVICE. ai-agent-onboarding.ts:verifyAgentLicense
@@ -23,10 +23,10 @@
  *     wrote verification_status='verified' through the AGENT'S OWN session,
  *     beside an RLS policy (FOR ALL, USING tenant-only, WITH CHECK absent) that
  *     let any member of the brokerage — including a user_type='contact' — rewrite
- *     or delete ANY agent's licence row.
+ *     or delete ANY agent's license row.
  *
  * SOURCE: the write path resolves the agents row, fails closed on an unreadable
- *         or missing licence, counts affected rows (a zero-row RLS refusal on an
+ *         or missing license, counts affected rows (a zero-row RLS refusal on an
  *         UPDATE arrives as error:null), persists the certificate, and ticks the
  *         step only after the write is proven.
  * LIVE (creds-gated): m459 is in the DATABASE, not just on disk — the column, the
@@ -74,7 +74,7 @@ function eoBody(source: string): string {
 function eoUpdateStatement(source: string): string {
   const b = eoBody(source)
   // `eo_insurance_carrier:` WITH THE COLON — the bare name also appears in the
-  // comment above the licence LOOKUP, so anchoring on it started the window one
+  // comment above the license LOOKUP, so anchoring on it started the window one
   // query too early and swallowed that lookup's own `.select("id")`. The negative
   // control is what exposed it: the probe stayed green against a copy with the
   // update's select deleted.
@@ -84,7 +84,7 @@ function eoUpdateStatement(source: string): string {
   return b.slice(start, end < 0 ? b.length : end)
 }
 
-/** Rewrite ONLY inside submitEOInsurance — the same strings appear in the licence reader above. */
+/** Rewrite ONLY inside submitEOInsurance — the same strings appear in the license reader above. */
 function mutateEoBody(source: string, from: string | RegExp, to: string): string {
   const b = eoBody(source)
   if (!b) return source
@@ -106,7 +106,7 @@ const PROBES: Probe[] = [
     },
   },
   {
-    name: "E2 the lookup destructures its error — a refused read is not an absent licence",
+    name: "E2 the lookup destructures its error — a refused read is not an absent license",
     run: (l) => {
       const b = eoBody(l)
       return /const\s*\{\s*data:\s*licenseRecord\s*,\s*error:\s*\w+\s*\}\s*=\s*await\s+supabase/.test(b)
@@ -114,7 +114,7 @@ const PROBES: Probe[] = [
     },
   },
   {
-    name: "E3 no licence on file REFUSES instead of silently succeeding (the shape that hid this bug)",
+    name: "E3 no license on file REFUSES instead of silently succeeding (the shape that hid this bug)",
     run: (l) => {
       const b = eoBody(l)
       return /if\s*\(\s*!licenseRecord\s*\)\s*\{[\s\S]{0,200}?success:\s*false/.test(b)
@@ -163,14 +163,14 @@ const PROBES: Probe[] = [
     run: (_l, _o, barrel) => !/^\s*verifyAgentLicense,\s*$/m.test(barrel) && !/export \{[^}]*verifyAgentLicense/.test(barrel),
   },
   {
-    name: "V4 the surviving verifier is the STATE-REGISTRY one, still wired from licence submission",
+    name: "V4 the surviving verifier is the STATE-REGISTRY one, still wired from license submission",
     run: (l) => /runLicenseVerification\(\s*\{/.test(l)
       && /from ["']@\/lib\/onboarding\/license-verifier["']/.test(l),
   },
 ]
 
 function sourceLayer() {
-  console.log("\n[ASSERTIONS · the licence record keeps what it is given]")
+  console.log("\n[ASSERTIONS · the license record keeps what it is given]")
   const l = src(LICENSE), o = src(ONBOARDING), b = srcIfExists(BARREL)
   for (const p of PROBES) check(p.name, p.run(l, o, b))
 }
@@ -186,12 +186,12 @@ const MUTATIONS: Array<{ name: string; probe: string; mutate: (l: string, o: str
     mutate: (l, o, b) => [mutateEoBody(l, '.eq("agent_id", agentRecordId)', '.eq("agent_id", user.id)'), o, b],
   },
   {
-    name: "the licence lookup stops destructuring its error",
+    name: "the license lookup stops destructuring its error",
     probe: "E2",
     mutate: (l, o, b) => [l.replace("const { data: licenseRecord, error: licenseLookupError } =", "const { data: licenseRecord } ="), o, b],
   },
   {
-    name: "a missing licence silently succeeds again instead of refusing",
+    name: "a missing license silently succeeds again instead of refusing",
     probe: "E3",
     mutate: (l, o, b) => [l.replace(/if \(!licenseRecord\) \{[\s\S]*?\n    \}/, "if (!licenseRecord) { /* carry on */ }"), o, b],
   },
@@ -267,6 +267,6 @@ async function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ LICENSE_EO_RECORD_FAIL"); process.exit(1) }
-  console.log(" ✅ LICENSE_EO_RECORD_PASS — E&O is persisted against the right id, the certificate has a home, a refused write is reported, and nobody verifies their own licence")
+  console.log(" ✅ LICENSE_EO_RECORD_PASS — E&O is persisted against the right id, the certificate has a home, a refused write is reported, and nobody verifies their own license")
 }
 main()

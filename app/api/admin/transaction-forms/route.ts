@@ -11,14 +11,14 @@
  * GET    list the library rows the caller's memberships reach, the teams they may share with, and the platform catalogue
  * POST   upload a packet (multipart with the PDF) — shared with the whole brokerage, or with ONE team;
  *        or (JSON { action: "add_from_catalogue", platform_packet_id, team_id?, state? }) add a platform-catalogue packet
- * PATCH  update fields (name, description, state, packet_type, form_code, field_schema, licence, is_active)
+ * PATCH  update fields (name, description, state, packet_type, form_code, field_schema, license, is_active)
  * DELETE soft-delete (is_active=false)
  *
  * WAVE 144 (lane 144C — owner ruling 3: "Form packets are NOT platform-owned. The brokerage or team uploads approved form packets …
  * into THEIR OWN tenant/team bucket and shares them with their agents as templates"). This route was already the ONE upload path
  * (app/actions/compliance/manage-required-docs.ts "keep-one"); it now writes through the ONE packet writer,
  * lib/forms/tenant-form-packets.ts — which stores the master in the OWNER's folder (`brokerage/{id}/packets/…` or
- * `teams/{id}/packets/…`), records the licence, counts the fillable fields, and refuses a sharer without the authority for the
+ * `teams/{id}/packets/…`), records the license, counts the fillable fields, and refuses a sharer without the authority for the
  * scope (brokerage-wide: the oversight class; one team: that team's lead or oversight). The platform catalogue is a SOURCE a
  * brokerage adds from (lib/forms/platform-form-packets.ts addPlatformPacketToLibrary), never an owner.
  *
@@ -177,7 +177,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // NO LINK IS PERSISTED (wave 145, lane 145A). This used to write a 10-YEAR signed URL (issueBucketObjectUrl's default TTL) into
   // brokerage_form_library.pdf_url — a bearer link to a licensed master that every reader of the row could keep using after the
-  // packet was retired, its licence expired or their membership ended. `storage_path` is the durable reference; the link the
+  // packet was retired, its license expired or their membership ended. `storage_path` is the durable reference; the link the
   // uploader sees now is minted per view by the ONE door (lib/forms/tenant-form-packets.ts issueTenantPacketUrl) and lives minutes.
   const minted = registered.packet.storage_path ? await issueTenantPacketUrl(auth.svc as never, auth.actor, registered.packet, "manage") : null
   return NextResponse.json({ form: { ...registered.packet, pdf_url: minted?.ok ? minted.url : null }, note: minted && !minted.ok ? `the preview link could not be minted (${minted.reason})` : null })

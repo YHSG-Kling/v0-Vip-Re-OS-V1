@@ -56,7 +56,7 @@ export type PollFetch = (ctx: { svc: Svc; brokerageId: string; now: Date; lastSu
 export interface MovementPollSource {
   /** The watcher-state key (m893 / m894 source_key). */
   key: string
-  /** The movement registry rows this poll serves (freshness + licence come from them). */
+  /** The movement registry rows this poll serves (freshness + license come from them). */
   registryKeys: readonly string[]
   cadenceMinutes: number
   fetch: PollFetch
@@ -197,7 +197,7 @@ async function watchMovementSources(
         }
         const built = await it.toSignal()
         if (!built.ok) {
-          // A record the rules refuse (privacy / licence / not a movement item) is SEEN — remembered, so it is not re-judged every tick.
+          // A record the rules refuse (privacy / license / not a movement item) is SEEN — remembered, so it is not re-judged every tick.
           res.refused++; res.errors.push(`${itemKey}: ${built.code} — ${built.reason}`.slice(0, 300))
           await store.saveItem(brokerageId, ps.key, { item_key: itemKey, digest, last_seen_at: at, last_changed_at: at, ...(before === null ? { first_seen_at: at } : {}) })
           continue
@@ -423,10 +423,15 @@ function acquisitionPostsSource(opts: { maxClassifications?: number; classify?: 
             const reading = await classifyPublicMovementText({ brokerageId, text, territory: [r.city, r.state].filter(Boolean).join(", ") || null, sourceKey }, { classify: opts.classify })
             const subject: MovementSubject = r.lead_id ? { type: "lead", id: String(r.lead_id) } : { type: "raw_lead", id: String(r.id) }
             const preview = (r.normalized_preview ?? {}) as Record<string, unknown>
+            // 151L (lane 150Z row 28, lane 151E's mapping): the C35 envelope's stated-date hint rides normalized_preview.rawdata.evidence.stated_date
+            // (lib/lead-pipeline/raw-record-types.ts buildRawDataEnvelope); the builder reads it only when the classifier says the post is about its author.
+            const rawdata = (preview.rawdata ?? null) as { evidence?: Record<string, unknown> } | null
+            const statedDate = (rawdata?.evidence?.stated_date ?? null) as { kind: string; at: string; quote: string } | null
             return movementSignalFromPublicPost({
               brokerageId, subject, sourceKey, postId: `raw_scraped_leads:${r.id}`, url: typeof preview.sourceUrl === "string" ? preview.sourceUrl : null,
               postedAt: String(r.created_at), retrievedAt: String(r.created_at), reading,
               keywordBasis: Array.isArray(preview.intentSignals) ? (preview.intentSignals as unknown[]).map(String).slice(0, 5) : [],
+              statedDate,
             })
           },
         })),

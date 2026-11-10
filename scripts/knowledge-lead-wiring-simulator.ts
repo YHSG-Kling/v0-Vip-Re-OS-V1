@@ -225,7 +225,7 @@ function leadLayer() {
   // cannot satisfy an assertion about this one.
   const workloadFn = intel.slice(intel.indexOf("export async function getAgentWorkloadStats"))
 
-  // `agents` carries licence/fee/profile columns and no name at all. The test
+  // `agents` carries license/fee/profile columns and no name at all. The test
   // is whether a name is asked for as a COLUMN OF agents — strip every embed
   // (…) out of the select list and nothing name-shaped may remain.
   const agentSelects = [...intel.matchAll(/from\("agents"\)\s*\.select\(\s*"([^"]*)"/g)].map((m) => m[1])

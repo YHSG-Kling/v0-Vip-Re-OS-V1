@@ -166,7 +166,7 @@ for (const [k, r] of Object.entries(all)) {
 check("T1 not every subscription is a trial: staff solo + multi are 'active' (no trial_end), the self-enrolled solo is 'trialing' with trial_end, the paid brokerage minted a hosted checkout",
   sub(soloStaff.brokerageId)[0]?.status === "active" && !sub(soloStaff.brokerageId)[0]?.trial_end && sub(multi.brokerageId)[0]?.status === "active"
     && sub(soloSelf.brokerageId)[0]?.status === "trialing" && !!sub(soloSelf.brokerageId)[0]?.trial_end && brk.checkoutUrl === "https://checkout.example.test/s/1")
-check("T1 solo + team carry NO offices; the brokerage has exactly its head office with its own legal identity, licence, territories and brand overrides",
+check("T1 solo + team carry NO offices; the brokerage has exactly its head office with its own legal identity, license, territories and brand overrides",
   svc.tables.locations.filter((l) => [soloStaff.brokerageId, soloSelf.brokerageId, team.brokerageId].includes(l.brokerage_id)).length === 0
     && svc.tables.locations.filter((l) => l.brokerage_id === brk.brokerageId).length === 1
     && svc.tables.locations.some((l) => l.brokerage_id === brk.brokerageId && l.office_code === "main" && l.legal_name === "Gulf Shore Brokerage LLC" && l.license_state === "FL" && l.territories?.[0] === "32501" && l.brand_overrides?.tagline === "Gulf by heart"))
@@ -259,7 +259,7 @@ const plans = {
   sameNames: planTenantOffices("multi_location", "X", [{ name: "Same" }, { name: "Same" }]),
   badState: planTenantOffices("multi_location", "X", [{ name: "A", licenseState: "Florida" }]),
 }
-check("T3 the plan: a solo has no offices; a Brokerage runs ONE (several → Multi-Location); duplicate CODES are refused; duplicate NAMES are allowed; a bad licence state is refused",
+check("T3 the plan: a solo has no offices; a Brokerage runs ONE (several → Multi-Location); duplicate CODES are refused; duplicate NAMES are allowed; a bad license state is refused",
   !plans.soloOffices.ok && !plans.brokerageTwo.ok && !plans.dupCodes.ok && plans.sameNames.ok && plans.sameNames.offices.length === 2 && plans.sameNames.offices[0].code !== plans.sameNames.offices[1].code && !plans.badState.ok)
 
 // ═════════════════════════════════════════════════════════════════════════════

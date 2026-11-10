@@ -32,7 +32,7 @@
  *               interpolate range past the cover would fade a title in after the
  *               card had already cut away). Positive control: the pre-89F 90-frame
  *               explainer cover is recognised as a violation.
- *   §disclosure the Equal Housing / licence footer of every moving composition,
+ *   §disclosure the Equal Housing / license footer of every moving composition,
  *               and the shared EndCard, derive their place and size from the ONE
  *               cinemaDisclosureStyle (safe bottom inset, caption type step) —
  *               no typed `bottom: 24` edge footer remains (finder + control).

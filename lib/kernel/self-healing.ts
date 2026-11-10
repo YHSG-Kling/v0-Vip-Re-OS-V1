@@ -204,7 +204,7 @@ export function governedChangeForDiagnosis(d: { rootCause: string; touches?: Dia
   // never silently alters, each named onto the ruling-14 class that already holds it for a human (no new class).
   if (t.authority) return governedChangeVerdict("tenant_authority", "the diagnosis touches an authority rule (rung, autonomy, role grant, approval rule)")
   if (t.entitlement) return governedChangeVerdict("financial_calculation", "the diagnosis touches an entitlement (the plan's priced terms)")
-  if (t.legalTerms) return governedChangeVerdict("legal_compliance", "the diagnosis touches legal terms (disclosures, consent text, contract / licence terms)")
+  if (t.legalTerms) return governedChangeVerdict("legal_compliance", "the diagnosis touches legal terms (disclosures, consent text, contract / license terms)")
   if (t.migration) return governedChangeVerdict("production_source_edit", "the diagnosis needs a schema migration — a reviewed file, WRITTEN NOT APPLIED until the integrator applies it")
   if (d.rootCause === "code_defect") return governedChangeVerdict("production_source_edit", "the root cause is a code defect — the fix is a production source edit")
   return governedChangeVerdict("self_healing_repair", `root cause ${d.rootCause} — a declared playbook may repair it`)

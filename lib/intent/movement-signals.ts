@@ -9,7 +9,7 @@
 // independent traces — a seller net-proceeds calculation in their portal, a street-use permit for a dumpster, a public "can anyone
 // recommend an agent?" post, a new job in another metro on their licensed profile. Each trace is recorded here as ONE typed C9
 // record that says how we know it (the epistemic class is enforced in the TYPE: an inferred record cannot carry a verification
-// reference, and its label can never read as a fact), the source's licence / consent / outreach posture is stamped AT THE RECORD,
+// reference, and its label can never read as a fact), the source's license / consent / outreach posture is stamped AT THE RECORD,
 // and then the traces are COMBINED (scoreMovementCombination — corroboration across independent source kinds, recency decay, a
 // single source capped, the score explaining itself line by line). The manager / arbiter chooses what to do
 // (decideMovementNextAction — an expert, structured prompt over a CLOSED menu the policy computed; AI explains, deterministic
@@ -199,7 +199,7 @@ const evidenceIdentity = (e: MovementEvidence): string =>
     : e.confidence === "inferred" ? `basis:${[...e.basis].sort().join(",")}` : `unknown:${e.reason}`
 
 /**
- * PURE. Input → a C9 record, or the reason it may not exist. Source licence, consent and outreach rules are enforced HERE (at the
+ * PURE. Input → a C9 record, or the reason it may not exist. Source license, consent and outreach rules are enforced HERE (at the
  * record — a reader never has to remember them). Never throws.
  */
 function buildMovementSignal(input: MovementSignalInput): MovementBuild {
@@ -208,7 +208,7 @@ function buildMovementSignal(input: MovementSignalInput): MovementBuild {
   const src = movementSource(input.sourceKey)
   if (!src) return no("unknown_source", `"${input.sourceKey}" is not in the movement source registry`)
   if (src.licence.collection === "not_permitted") return no("source_not_permitted", `${src.key}: ${src.licence.terms}`)
-  if (src.status === "waiting_external" || src.licence.collection === "contract_required") return no("source_waiting_external", `${src.key} needs a licence / processing agreement first (WAITING_EXTERNAL)`)
+  if (src.status === "waiting_external" || src.licence.collection === "contract_required") return no("source_waiting_external", `${src.key} needs a license / processing agreement first (WAITING_EXTERNAL)`)
   if (src.licence.collection === "manual_only" && input.capturedBy === "automation") return no("manual_capture_only", `${src.key}: automated capture is not permitted — a person records what they lawfully saw (${src.licence.terms})`)
   if (!(MOVEMENT_RELEVANCE as readonly string[]).includes(input.eventRelevance) || !src.relevance.includes(input.eventRelevance)) return no("relevance_not_offered_by_source", `${src.key} does not bear on ${String(input.eventRelevance)}`)
   const e = input.evidence
@@ -532,8 +532,26 @@ export async function classifyPublicMovementText(
  * PURE. A public post the acquisition lanes stored + its reading → C9. The class is the PLATFORM's: `reported` (self) only when the
  * model's verbatim quote shows the author speaking for themselves; otherwise an `inferred` keyword-level reading.
  */
+/**
+ * 151L (lane 150Z row 28, the PRODUCER half — lane 151E built the classifier half): the ingress's own stated-date hint
+ * (raw_scraped_leads.evidence.stated_date, written verbatim by lib/lead-pipeline/raw-record-types.ts buildRawDataEnvelope)
+ * becomes the deadline only when the classifier confirms the text is ABOUT ITS AUTHOR, the kind is a KNOWN_DEADLINE_KINDS
+ * word, the quote is present, and the date sits after the post and within the same two-year bound the classifier's own
+ * date is held to. The classifier's date wins when both exist (it read the text the row carries).
+ */
+function statedDateFromHint(r: Pick<MovementTextClassification, "about">, h: { kind: string; at: string; quote: string } | null | undefined, postedAt: string): { kind: KnownDeadlineKind; at: string } | null {
+  if (r.about !== "author" || !h || typeof h !== "object" || typeof h.at !== "string" || typeof h.quote !== "string" || !h.quote.trim()) return null
+  if (!(KNOWN_DEADLINE_KINDS as readonly string[]).includes(h.kind)) return null
+  const at = Date.parse(h.at), posted = Date.parse(postedAt)
+  if (!Number.isFinite(at) || !Number.isFinite(posted)) return null
+  if (at < posted || at > posted + STATED_DATE_MAX_DAYS_AHEAD * DAY_MS) return null
+  return { kind: h.kind as KnownDeadlineKind, at: new Date(at).toISOString() }
+}
+
 export function movementSignalFromPublicPost(a: {
   brokerageId: string; subject: MovementSubject; sourceKey: string; postId: string; url?: string | null; postedAt: string; retrievedAt: string; reading: MovementTextClassification; keywordBasis?: readonly string[]
+  /** The C35 envelope's stated-date hint (raw_scraped_leads.evidence.stated_date) — read by statedDateFromHint under the author rule. */
+  statedDate?: { kind: string; at: string; quote: string } | null
 }): MovementBuild {
   const r = a.reading
   if (!r.relevant || !r.eventRelevance) return { ok: false, code: "bad_evidence", reason: `not a movement post (${r.refusedWhy ?? r.note})` }
@@ -548,7 +566,8 @@ export function movementSignalFromPublicPost(a: {
     statedTimeline: r.about === "author" && r.quote && r.timelineBucket !== "unknown" ? r.timelineBucket : null,
     // 151E (row 28 — the honest half without a producer field): a date the author named in their own words, with the verbatim quote
     // already on the reference, becomes a KNOWN DEADLINE (relocation → relocation_start; a seller → planned_list_date; else other_stated).
-    knownDeadline: ((at) => (at ? { kind: (r.eventRelevance === "relocation" ? "relocation_start" : r.side === "seller" ? "planned_list_date" : "other_stated") as KnownDeadlineKind, at } : null))(statedDateFromReading(r, a.postedAt)),
+    knownDeadline: ((at) => (at ? { kind: (r.eventRelevance === "relocation" ? "relocation_start" : r.side === "seller" ? "planned_list_date" : "other_stated") as KnownDeadlineKind, at } : null))(statedDateFromReading(r, a.postedAt))
+      ?? statedDateFromHint(r, a.statedDate, a.postedAt),
   })
 }
 

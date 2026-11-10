@@ -7,12 +7,12 @@
  * templates … Do not move ownership to the platform because packets render inside VIPAgents." Wave 143 built this file as a
  * platform OWNER that handed packets straight to every tenant's agents (a `platform/{id}/…` path the wizard filled directly).
  * That door is closed:
- *   · the registry (m807 `platform_form_packets`) and its licence / approval record are KEPT, unchanged, as a clearly labelled
+ *   · the registry (m807 `platform_form_packets`) and its license / approval record are KEPT, unchanged, as a clearly labelled
  *     CATALOGUE of genuinely platform-provided packets — no m807 row is dropped or rewritten;
  *   · an agent never sees or fills a `platform/…` path any more (lib/forms/form-path-scope.ts refuses it for a tenant actor);
  *   · a BROKERAGE (or a team lead, for their team) ADDS a catalogue packet to its OWN library — addPlatformPacketToLibrary below
  *     copies the master into the tenant's own folder and writes a `brokerage_form_library` row carrying
- *     `source_platform_packet_id` and the licence it came under — and its agents see it there, through their memberships, like
+ *     `source_platform_packet_id` and the license it came under — and its agents see it there, through their memberships, like
  *     any packet the brokerage uploaded itself (lib/forms/tenant-form-packets.ts).
  * READERS RE-POINTED, NOT REMOVED: `listPlatformPacketsForTenant` is now read by the TENANT's library page
  * (app/api/admin/transaction-forms/route.ts — what a brokerage admin may add), not by the agent's wizard; `usablePlatformPaths` now
@@ -21,13 +21,13 @@
  *
  * THE CATALOGUE RULES (each is a CHECK in m807 AND a test in scripts/closing-compliance-guard.ts section F)
  *   · A packet is offered to a brokerage ONLY when status = 'approved' by a named platform human, with a recorded LICENSE basis,
- *     a licence not past its expiry, and at least one fillable form field. A scanned (field-less) PDF cannot be approved.
+ *     a license not past its expiry, and at least one fillable form field. A scanned (field-less) PDF cannot be approved.
  *   · The blank master is previewed only through a short-lived signed URL, never a public URL.
  *   · Human approval: nothing reaches a brokerage on upload. Draft → approved is an explicit act by superadmin
  *     (app/actions/superadmin/platform-form-packets.ts), recorded with approver and time.
  *
- * NOT DECIDED HERE (owner questions, in the lane notes): which packets the platform may hold under which association licence;
- * whether a licence revoked upstream must retire the brokerages' copies (today a copy carries the licence expiry it was added
+ * NOT DECIDED HERE (owner questions, in the lane notes): which packets the platform may hold under which association license;
+ * whether a license revoked upstream must retire the brokerages' copies (today a copy carries the license expiry it was added
  * under, and stops being offered when it passes).
  */
 
@@ -104,14 +104,14 @@ export interface PacketQuestion {
 
 /**
  * PURE. May this catalogue packet be offered to a brokerage for THIS question (or added to its library), right now?
- * Unapproved, retired, out of licence, or not fillable → never. A packet pinned to a state is offered only
+ * Unapproved, retired, out of license, or not fillable → never. A packet pinned to a state is offered only
  * for that state; an unknown deal state sees only the state-neutral packets (never "all states").
  */
 function packetUsable(row: Pick<PlatformPacketRow, "status" | "state" | "packet_type" | "field_count" | "license_note" | "license_expires_at" | "approved_by">, q: PacketQuestion): { usable: boolean; reason: string | null } {
   if (row.status !== "approved") return { usable: false, reason: `the packet is ${row.status}, not approved` }
   if (!row.approved_by) return { usable: false, reason: "no platform approver is recorded" }
-  if (!row.license_note || row.license_note.trim().length < 20) return { usable: false, reason: "no licence basis is recorded" }
-  if (row.license_expires_at && row.license_expires_at < q.today) return { usable: false, reason: `the licence expired on ${row.license_expires_at}` }
+  if (!row.license_note || row.license_note.trim().length < 20) return { usable: false, reason: "no license basis is recorded" }
+  if (row.license_expires_at && row.license_expires_at < q.today) return { usable: false, reason: `the license expired on ${row.license_expires_at}` }
   if (!(row.field_count > 0)) return { usable: false, reason: "the PDF has no fillable fields" }
   if (row.state && (!q.stateCode || row.state.toUpperCase() !== q.stateCode.toUpperCase())) return { usable: false, reason: `the packet is for ${row.state}` }
   if (q.purpose && row.packet_type !== q.purpose && row.packet_type !== "transaction" && row.packet_type !== "disclosure" && row.packet_type !== "custom") {
@@ -139,7 +139,7 @@ export interface PlatformPacketView {
 }
 
 /**
- * The approved, in-licence catalogue packets offered to a TENANT for this question — read by the tenant's library page (what a
+ * The approved, in-license catalogue packets offered to a TENANT for this question — read by the tenant's library page (what a
  * brokerage admin may add to its own library), never by an agent's wizard. A refused read is an error, never "no packets".
  */
 export async function listPlatformPacketsForTenant(
@@ -158,7 +158,7 @@ export async function listPlatformPacketsForTenant(
 }
 
 /**
- * The registry's admission for these `platform/…` paths: which are usable NOW (exactly the registered object, approved, in licence,
+ * The registry's admission for these `platform/…` paths: which are usable NOW (exactly the registered object, approved, in license,
  * fillable)? A refused read REFUSES every path (fail closed). Wave 144: it guards the COPY into a brokerage's library
  * (addPlatformPacketToLibrary) — a tenant no longer fills a `platform/…` path (lib/forms/form-path-scope.ts refuses it).
  */
@@ -178,9 +178,9 @@ export async function usablePlatformPaths(svc: Svc, paths: string[], now: Date =
 
 /**
  * ADD a catalogue packet to a brokerage's (or one team's) OWN library: the master is COPIED into the owner's folder and registered
- * in brokerage_form_library with `source_platform_packet_id` and the licence it was approved under. From then on it is the
+ * in brokerage_form_library with `source_platform_packet_id` and the license it was approved under. From then on it is the
  * brokerage's packet — offered to its agents through their memberships, retired by the brokerage, not by the platform.
- * Refused, by name: a packet that is not usable right now (draft, retired, out of licence, not fillable), an actor without the
+ * Refused, by name: a packet that is not usable right now (draft, retired, out of license, not fillable), an actor without the
  * authority for that scope, a state-neutral packet with no state chosen. Idempotent per (brokerage, scope, packet).
  */
 export async function addPlatformPacketToLibrary(
@@ -193,7 +193,7 @@ export async function addPlatformPacketToLibrary(
   if (error) return { ok: false, error: `The catalogue packet could not be read: ${error.message}` }
   if (!row) return { ok: false, error: "No such catalogue packet." }
   const packet = row as PlatformPacketRow
-  // ONLY A MASTER USABLE RIGHT NOW IS COPIED — the registry's own admission (exactly the registered object; approved, in licence,
+  // ONLY A MASTER USABLE RIGHT NOW IS COPIED — the registry's own admission (exactly the registered object; approved, in license,
   // fillable), the same rule that once admitted a tenant fill and now admits the copy.
   const gate = await usablePlatformPaths(svc, [packet.storage_path], input.now)
   if (!gate.ok) return { ok: false, error: gate.error }
@@ -267,14 +267,14 @@ export async function registerPlatformPacket(svc: Svc, input: RegisterPacketInpu
 export interface ApprovePacketInput { actorUserId: string; packetId: string; licenseNote: string; licenseExpiresAt?: string | null }
 
 /**
- * A named platform human approves a DRAFT for every subscriber. The licence basis is REQUIRED (the platform
+ * A named platform human approves a DRAFT for every subscriber. The license basis is REQUIRED (the platform
  * must be able to say under what agreement it holds and redistributes this form). Approving a newer packet
  * for the same state + type + form code RETIRES the older approved one (one current version per form).
  */
 export async function approvePlatformPacket(svc: Svc, input: ApprovePacketInput): Promise<{ ok: true; retiredOlder: number } | { ok: false; error: string }> {
   const note = input.licenseNote.trim()
-  if (note.length < 20) return { ok: false, error: "Record the licence basis (at least 20 characters): who licensed this form to the platform, under what agreement, and what it permits." }
-  if (input.licenseExpiresAt && !/^\d{4}-\d{2}-\d{2}$/.test(input.licenseExpiresAt)) return { ok: false, error: "The licence expiry must be a date (YYYY-MM-DD)." }
+  if (note.length < 20) return { ok: false, error: "Record the license basis (at least 20 characters): who licensed this form to the platform, under what agreement, and what it permits." }
+  if (input.licenseExpiresAt && !/^\d{4}-\d{2}-\d{2}$/.test(input.licenseExpiresAt)) return { ok: false, error: "The license expiry must be a date (YYYY-MM-DD)." }
   const { data: row, error: readErr } = await svc.from("platform_form_packets").select(PACKET_COLUMNS).eq("id", input.packetId).maybeSingle()
   if (readErr) return { ok: false, error: `The packet could not be read: ${readErr.message}` }
   if (!row) return { ok: false, error: "No such packet." }

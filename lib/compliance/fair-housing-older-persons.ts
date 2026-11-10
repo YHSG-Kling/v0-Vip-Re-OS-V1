@@ -26,7 +26,7 @@
 //     dwellings under a common set of rules — a portion of one building does not qualify), 100.305
 //     (80 percent, counted over OCCUPIED units), 100.306 (policies; and "adult living" / "adult
 //     community" in advertising are INCONSISTENT with 55+ intent), 100.307 (verification: reliable
-//     surveys/affidavits, UPDATED AT LEAST ONCE EVERY TWO YEARS, age proof by licence / birth
+//     surveys/affidavits, UPDATED AT LEAST ONCE EVERY TWO YEARS, age proof by license / birth
 //     certificate / passport / etc.), 100.308 (good-faith defence from damages for a person who relied
 //     on a facility's WRITTEN, SWORN certification that it complies).
 //   · STATE LAW may add conditions (several states regulate senior housing separately). Nothing here

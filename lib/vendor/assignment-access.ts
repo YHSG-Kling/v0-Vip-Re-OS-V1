@@ -187,7 +187,7 @@ export function vendorContactAccessVerdict(
   if (facts.vendorAccessExpiresAt) {
     const t = Date.parse(facts.vendorAccessExpiresAt)
     // An unparseable expiry fails CLOSED — a date nobody can read is not a
-    // licence to keep reading a client's PII.
+    // license to keep reading a client's PII.
     if (Number.isNaN(t) || t < now) return denyAccess("vendor_access_expired")
   }
 

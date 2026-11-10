@@ -72,9 +72,23 @@ export interface ListingTermConflict {
   governing: { source: ListingTermSource; versionNo: number; value: unknown }
 }
 
+/**
+ * WAVE 151 (lane 151K's rule, applied to this rail by lane 151L): two executed AMENDMENTS that name one term with different
+ * values and nothing signed to order them (the same effective instant, or an effective order that contradicts the signing
+ * order) are UNRESOLVED — neither governs the key (the reader withholds it), the dispute is surfaced for a human. An
+ * amendment's version number is its RECORDING order, never invented precedence.
+ */
+export interface ListingTermUnresolved {
+  key: ListingAgreementTermKey
+  reason: "same_effective_instant" | "effective_order_contradicts_execution_order"
+  versions: Array<{ source: ListingTermSource; versionNo: number; value: unknown; executedAt: string | null }>
+}
+
 export interface ResolvedListingTerms {
   terms: Partial<Record<ListingAgreementTermKey, GoverningListingTerm>>
   conflicts: ListingTermConflict[]
+  /** Keys no executed instrument governs because two same-source instruments contradict each other unordered (see ListingTermUnresolved). */
+  unresolved: ListingTermUnresolved[]
   versions: ListingTermVersion[]
 }
 
@@ -99,7 +113,9 @@ function resolveListingAgreementTerms(versions: ListingTermVersion[]): ResolvedL
   // lib/offers/governing-terms-rule.ts foldTermsByPrecedence, over this vocabulary and this rail's source rank (the
   // original agreement precedes an amendment on a same-instant tie). The inline copy of the loop that stood here is gone.
   const rank = (s: ListingTermSource) => (s === "listing_agreement" ? 0 : 1)
-  const fold = foldTermsByPrecedence(versions as Array<ListingTermVersion & { terms: Record<string, unknown> }>, LISTING_AGREEMENT_TERM_KEYS, rank)
+  // WAVE 151 (lane 151K's outside-lane 3, built by lane 151L): an amendment's version number carries NO precedence — two executed
+  // amendments on one key with nothing signed to order them are UNRESOLVED (fold.unresolved), never ordered by their recording number.
+  const fold = foldTermsByPrecedence(versions as Array<ListingTermVersion & { terms: Record<string, unknown> }>, LISTING_AGREEMENT_TERM_KEYS, rank, { unresolvedTieSources: ["amendment"] })
   const terms: ResolvedListingTerms["terms"] = {}
   for (const key of Object.keys(fold.won) as ListingAgreementTermKey[]) {
     const w = fold.won[key]!
@@ -110,7 +126,11 @@ function resolveListingAgreementTerms(versions: ListingTermVersion[]): ResolvedL
     superseded: { source: c.superseded.version.source, versionNo: c.superseded.version.versionNo, value: c.superseded.value },
     governing: { source: c.governing.version.source, versionNo: c.governing.version.versionNo, value: c.governing.value },
   }))
-  return { terms, conflicts, versions: fold.ordered }
+  const unresolved: ListingTermUnresolved[] = fold.unresolved.map((u) => ({
+    key: u.key, reason: u.reason,
+    versions: u.versions.map((d) => ({ source: d.version.source, versionNo: d.version.versionNo, value: d.value, executedAt: d.version.executedAt })),
+  }))
+  return { terms, conflicts, unresolved, versions: fold.ordered }
 }
 
 /** A refused read that means "m856 is not applied yet" (the column / anchor does not exist) — not a tenant refusal. */
@@ -153,7 +173,7 @@ export type GoverningListingTermsResult =
 export async function governingListingAgreementTerms(svc: Svc, input: { brokerageId: string; listingId: string }): Promise<GoverningListingTermsResult> {
   if (!input.brokerageId || !input.listingId) return { ok: false, reason: "no tenant or listing" }
   const empty = (agreementId: string | null, recordable: boolean, agreementExecutedAt: string | null = null): GoverningListingTermsResult => ({
-    ok: true, agreementId, agreementExecutedAt, termsRecordable: recordable, resolved: { terms: {}, conflicts: [], versions: [] }, sellerRequestedMlsLiveDate: null, comingSoonStreetAddressAuthorized: null,
+    ok: true, agreementId, agreementExecutedAt, termsRecordable: recordable, resolved: { terms: {}, conflicts: [], unresolved: [], versions: [] }, sellerRequestedMlsLiveDate: null, comingSoonStreetAddressAuthorized: null,
   })
   const base = "id, esign_status, seller_signed_at, agent_signed_at, fully_executed_at, created_at"
   let recordable = true

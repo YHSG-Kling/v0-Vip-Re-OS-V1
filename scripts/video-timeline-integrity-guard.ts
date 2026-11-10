@@ -395,7 +395,7 @@ console.log("\n── §disclosure · no typed sub-safe corner remains; the slid
   check("CONTROL: the pre-90E slide footer (bottom: 0, 40 px bar, 12 px type) sat inside the unsafe band on the 16:9 frame", 0 < safeInsets(1920, 1080).bottom && 40 < safeInsets(1920, 1080).bottom)
   // THE PRESENTER COLUMN (the lane's AFTER renders of the same two slides): the ring stands on the safe
   // inset and rises above all three text rows, so each row keeps its column clear — a long brokerage +
-  // licence line was centred across the whole safe width and ran UNDER the agent's face.
+  // license line was centred across the whole safe width and ran UNDER the agent's face.
   {
     const w = 1920, h = 1080
     const st = cinemaSlideFooterStack(w, h), safe = safeInsets(w, h)
@@ -552,7 +552,7 @@ console.log("\n── §render91 · what the wave-91 real renders of the remaini
   // (b) THE BROKERAGE NAME ON EVERY TENANT FILM. Producers stage brand.brokerageName on every
   //     listing reel (render-just-listed brandFor, director-content brandBlock); four listing
   //     compositions never read it, so the ad carried "Equal Housing Opportunity" and no
-  //     brokerage anywhere (state licence law: the brokerage's name on the ad —
+  //     brokerage anywhere (state license law: the brokerage's name on the ad —
   //     lib/kernel/marketing/real-estate-compliance-gate.ts). Derived over the whole fleet.
   const BROKERAGE_EXCLUSIONS: Record<string, string> = {
     ProductPromoReel: "PLATFORM self-marketing (tier_access {platform}) — its brand is the product's own, no tenant brokerage exists on it",
@@ -568,12 +568,12 @@ console.log("\n── §render91 · what the wave-91 real renders of the remaini
     disclosurePlainText(slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: true, licenseLine: "Lic. #DEMO-0000" })) === "Demo Realty · Equal Housing Opportunity · Lic. #DEMO-0000"
     && slideDisclosureText({ brokerageName: null, showEhoMark: true }) === "Equal Housing Opportunity"
     && slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: false }) === "Demo Realty")
-  // Wave 92 (lane 92E) — the licence never wraps THROUGH itself (91E's 16:9 slide renders broke
-  // "Lic. #BK-" / "DEMO-0000123"): inside the licence there is no breakable hyphen or space.
+  // Wave 92 (lane 92E) — the license never wraps THROUGH itself (91E's 16:9 slide renders broke
+  // "Lic. #BK-" / "DEMO-0000123"): inside the license there is no breakable hyphen or space.
   {
     const line = slideDisclosureText({ brokerageName: "Demo Realty of Greater Miami and the Keys", showEhoMark: true, licenseLine: "Lic. #BK-DEMO-0000123" })
     const licence = line.split(" · ").pop() ?? ""
-    check(`the licence is one unbreakable token on every composed disclosure ("${disclosurePlainText(licence)}" carries ${(licence.match(/\u2011/g) ?? []).length} non-breaking hyphens, no plain hyphen or space)`,
+    check(`the license is one unbreakable token on every composed disclosure ("${disclosurePlainText(licence)}" carries ${(licence.match(/\u2011/g) ?? []).length} non-breaking hyphens, no plain hyphen or space)`,
       !/[- ]/.test(licence) && disclosurePlainText(licence) === "Lic. #BK-DEMO-0000123")
     check("CONTROL: the pre-92 composition (plain hyphen + space) is caught by the same finder", /[- ]/.test("Lic. #BK-DEMO-0000123"))
   }
@@ -710,7 +710,7 @@ console.log("\n── §render91 · what the wave-91 real renders of the remaini
     /coverBottom = cinemaBadgeSlot\(width, height\)\.bottom \+ type\.caption \* 2/.test(stripComments(read("remotion/PhotoWalkthroughReel.tsx"))))
 
   // (j) THE CONTEXT-CUE ROW (OpenHouse / Testimonial real renders: the bottom row printed over the
-  //     caption tick in the body and over the brokerage / licence line on the CTA tile).
+  //     caption tick in the body and over the brokerage / license line on the CTA tile).
   const cue = stripComments(read("remotion/_BrollLayer.tsx"))
   check("ContextCueRow's bottom row stands in the badge slot (above captions + disclosure) and out of both corner badges' columns",
     /bottom: pos === "bottom" \? cinemaBadgeSlot\(width, height\)\.bottom/.test(cue) && /pos === "bottom" \? cinemaEndCardSideInset\(width, height\)/.test(cue))

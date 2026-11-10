@@ -500,7 +500,8 @@ async function main() {
     // The planner's roster and the simulator's rule.
     const sim = code("scripts/saved-home-nudge-simulator.ts")
     check("the nudge simulator asserts the roster RULE (duplicate-free, carries no_longer_available), not a pinned count", /new Set\(SAVED_HOME_NUDGE_KINDS\)\.size === SAVED_HOME_NUDGE_KINDS\.length/.test(sim) && !/SAVED_HOME_NUDGE_KINDS\.length === 6/.test(sim))
-    check("package.json registers test:saved-home-alerts and the guard chain ends with it", /"test:saved-home-alerts": "tsx --conditions=react-server scripts\/saved-home-alerts-guard\.ts"/.test(raw("package.json")) && /npm run test:saved-home-alerts",\s*\n/.test(raw("package.json")))
+    // "runs it", not "ends with it": every lane appends its own proof after this one (CLAUDE.md §2 — never pin a waypoint).
+    check("package.json registers test:saved-home-alerts and the guard chain runs it", /"test:saved-home-alerts": "tsx --conditions=react-server scripts\/saved-home-alerts-guard\.ts"/.test(raw("package.json")) && /npm run test:saved-home-alerts(?= &&|")/.test(raw("package.json")))
     check("the registry owns the proof (MAINTENANCE_DOMAINS.saved_home_alerts → shopping_agent, co-owned by ai_isa + data_steward)", /saved_home_alerts: \{ manager: "shopping_agent", proof: "test:saved-home-alerts", coOwners: \["ai_isa", "data_steward"\]/.test(raw("lib/kernel/manager-registry.ts")))
     check("the m983 file exists beside the lane's other migration number being UNUSED (m984 — no second alert table)", existsSync(join(root, "supabase/migrations/m983-saved-home-last-verified-state.sql")) && !readdirSync(migDir).some((f) => /^m984-/.test(f)))
   }

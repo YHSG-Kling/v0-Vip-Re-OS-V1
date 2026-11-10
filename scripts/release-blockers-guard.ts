@@ -298,6 +298,23 @@ check(`C3 O2 is RELEASE-BLOCKING until §I's status line reads RESOLVED with a d
 check("C3 POSITIVE CONTROL — OPEN blocks, RESOLVED with date + 0 lifts, RESOLVED without a date does not", !seedResolved("- Status: OPEN — 4 unlinked (2026-11-01)") && seedResolved("- Status: RESOLVED 2026-11-02 — census 0") && !seedResolved("- Status: RESOLVED — census 0"))
 
 // ═════════════════════════════════════════════════════════════════════════════
+// C′ · §L L1 / L2 — THE TWO OWNER DROPS (wave 151, lane 151L)
+// ═════════════════════════════════════════════════════════════════════════════
+// OWNER-SQL §L carried two owner-only drops (the legacy one-membership-per-tenant UNIQUE, the global cross-tenant UNIQUE on
+// raw observations). The owner ruled "L1 drop / L2 drop" (2026-11-09) and the integrator executed them as m955 / m956. The
+// obligation is DERIVED from those two stamps through the ONE classifier — it closes exactly when both read `applied`, and
+// re-opens if either file loses its stamp. Never from the §L prose, which is history once the stamps say so.
+console.log("\n[C′ · §L L1 / L2 — the two owner drops, discharged on the applied stamps of m955 / m956 (never on prose)]")
+const L_DROP_FILES = [955, 956].map(migNamed)
+const lDropStamps = L_DROP_FILES.map((f) => (f ? claimOf(read(`${MIG}/${f}`)) : "absent"))
+const lDropOpen = lDropStamps.some((s) => s !== "applied")
+obligations.push({ id: "L1-L2", kind: "owner-sql", open: lDropOpen, what: "OWNER-SQL §L L1 (organization_members_brokerage_id_user_id_key) and L2 (raw_scraped_leads_source_record_id_key) — the owner's two wave-151 drops", where: `supabase/migrations m955 / m956 — stamps: ${L_DROP_FILES.map((f, i) => `${f ?? "absent"} (${lDropStamps[i]})`).join(", ")}` })
+check(`C4 the §L L1/L2 obligation is derived from the m955 / m956 stamps (now: ${lDropOpen ? "OPEN" : "discharged"}) — both files exist and their read-backs are recorded in OWNER-SQL §L`,
+  L_DROP_FILES.every(Boolean) && lDropOpen === lDropStamps.some((s) => s !== "applied") && /^### L1\.[\s\S]*?APPLIED 2026-11-09[\s\S]*?m955/m.test(ownerSql) && /^### L2\.[\s\S]*?APPLIED 2026-11-09[\s\S]*?m956/m.test(ownerSql))
+check("C4 POSITIVE CONTROL — the classifier reads an applied stamp as applied and the lane stamp as not applied (a lane file that lost its stamp would re-open the obligation)",
+  claimOf("-- ── APPLIED LIVE 2026-11-09 via Supabase MCP (project x) — wave 151, integrator ──\n") === "applied" && claimOf("-- WRITTEN, NOT APPLIED (wave 151, lane 151X) — the integrator applies\n") === "not_applied")
+
+// ═════════════════════════════════════════════════════════════════════════════
 // D · CONFIGURATION BY VARIABLE NAME ONLY
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[D · configuration by variable NAME only — origin, Vercel Workflow, cron, webhook doors]")

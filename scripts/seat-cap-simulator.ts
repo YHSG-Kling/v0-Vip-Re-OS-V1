@@ -189,7 +189,7 @@ async function main() {
       PRODUCER_SEAT_ROLES.every((r) => seatsFor([{ role: r }]) === 1 && seatsFor([{ role: r, produces: false }]) === 1)
       && LICENSED_SEAT_ROLES.every((r) => seatsFor([{ role: r }]) === 1 && seatsFor([{ role: r, produces: true }]) === 1 && seatsFor([{ role: r, produces: false }]) === 0)
       && SEAT_BY_PRODUCTION_ROLES.every((r) => seatsFor([{ role: r, produces: true }]) === 1 && seatsFor([{ role: r }]) === 0))
-    check("…and FREE STAFF cost none, even 'producing' (the ISA's desk agents row is not a licence)",
+    check("…and FREE STAFF cost none, even 'producing' (the ISA's desk agents row is not a license)",
       FREE_STAFF_ROLES.every((r) => seatsFor([{ role: r, produces: true }]) === 0))
     check("…and NON-staff cost none: contact, lender, vendor, system (the AI-ISA actor)",
       seatsFor([{ role: "contact" }, { role: "lender" }, { role: "vendor" }, { role: "system" }]) === 0)

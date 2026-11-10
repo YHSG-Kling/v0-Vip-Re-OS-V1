@@ -19,7 +19,7 @@
 // `vendor_coverage_unknown` — correctly, and forever, until this panel exists.
 //
 // STATE-LICENSED TRADES. For title, lender, refinance_lender, attorney and
-// insurance the server REFUSES a declaration with no licence number, because a
+// insurance the server REFUSES a declaration with no license number, because a
 // coverage row without one would look declared and never be bookable. The form
 // says so before the round trip rather than after it.
 
@@ -137,7 +137,7 @@ export function VendorCoveragePanel({
           {licensed && (
             <>
               {" "}
-              <strong>This is a state-licensed trade</strong> — a licence number is required per
+              <strong>This is a state-licensed trade</strong> — a license number is required per
               state, and you cannot be booked in a state you have not declared and licensed.
             </>
           )}
@@ -155,12 +155,12 @@ export function VendorCoveragePanel({
             <Input id="vsa-zip" value={zip} onChange={(e) => setZip(e.target.value)} placeholder="85001" />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="vsa-lic">Licence number{licensed ? "" : " (optional)"}</Label>
+            <Label htmlFor="vsa-lic">License number{licensed ? "" : " (optional)"}</Label>
             <Input id="vsa-lic" value={licenceNo} onChange={(e) => setLicenceNo(e.target.value)}
               placeholder={licensed ? "Required for this trade" : "—"} />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="vsa-exp">Licence expiry</Label>
+            <Label htmlFor="vsa-exp">License expiry</Label>
             <Input id="vsa-exp" type="date" value={licenceExpiry}
               onChange={(e) => setLicenceExpiry(e.target.value)} />
           </div>
@@ -183,7 +183,7 @@ export function VendorCoveragePanel({
                   <span className="font-medium">{r.state}{r.zip_code ? ` · ${r.zip_code}` : " · statewide"}</span>
                   <span className="text-muted-foreground">{r.trade_category}</span>
                   {r.license?.policy_number && (
-                    <span className="text-xs text-muted-foreground">licence {r.license.policy_number}
+                    <span className="text-xs text-muted-foreground">license {r.license.policy_number}
                       {r.license.expiry ? ` · exp ${r.license.expiry}` : ""}</span>
                   )}
                 </div>
@@ -193,7 +193,7 @@ export function VendorCoveragePanel({
                     was stored and shown to no one. That is worse than having no
                     field, because they believe it was recorded where the next
                     person looks. It is display-only: vendorGeoVerdict decides
-                    bookability from state, ZIP, status and licence, and never from
+                    bookability from state, ZIP, status and license, and never from
                     prose. */}
                 {r.notes && (
                   <p className="text-xs text-muted-foreground">{r.notes}</p>

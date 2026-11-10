@@ -13,7 +13,7 @@
  *       cost booked on ai_tool_usage; one ledgered production, replayed on a second ask;
  *   P   performance learning → the media-kind improvement proposal with the owner's statement; thin data
  *       proposes nothing;
- *   R   rights required — an external asset without licence + provenance is refused, with them recorded;
+ *   R   rights required — an external asset without license + provenance is refused, with them recorded;
  *   T   tenant isolation — foreign reads absent, foreign sources refused, foreign learning not found;
  *   A   agents see no cost;
  *   B   brand policy at produce time — a fair-housing subject / no brokerage attribution refuse;
@@ -186,10 +186,10 @@ async function main() {
   {
     const mem = seed()
     const ext = await recordMediaAsset(mem, { brokerageId: B, assetType: "image", assetUrl: "https://ext.example/x.jpg", assetName: "ext", subject: "s", purpose: "social", rights: { source: "external" }, bookCost: false })
-    check("R1 an externally sourced asset WITHOUT licence + provenance is refused, no row", !ext.ok && /rights required/.test(ext.error) && mem.tables.marketing_assets.length === 0, JSON.stringify(ext))
+    check("R1 an externally sourced asset WITHOUT license + provenance is refused, no row", !ext.ok && /rights required/.test(ext.error) && mem.tables.marketing_assets.length === 0, JSON.stringify(ext))
     const ok = await recordMediaAsset(mem, { brokerageId: B, assetType: "image", assetUrl: "https://ext.example/x.jpg", assetName: "ext", subject: "s", purpose: "social", rights: { source: "external", licence: "CC BY 4.0", provenance_url: "https://ext.example/x", attribution: "Jane Photographer" }, bookCost: false })
-    check("R2 with licence + provenance it is recorded, rights on the row", ok.ok && mem.tables.marketing_assets[0]?.rights?.licence === "CC BY 4.0")
-    check("R3 PURE: stock needs a licence; generated needs its model; unknown source refused", !rightsVerdict({ source: "stock" }).ok && rightsVerdict({ source: "stock", licence: "Pexels" }).ok && !rightsVerdict({ source: "generated" }, null).ok && rightsVerdict({ source: "generated" }, "gpt-image-1").ok && !rightsVerdict({ source: "somewhere" as any }).ok)
+    check("R2 with license + provenance it is recorded, rights on the row", ok.ok && mem.tables.marketing_assets[0]?.rights?.licence === "CC BY 4.0")
+    check("R3 PURE: stock needs a license; generated needs its model; unknown source refused", !rightsVerdict({ source: "stock" }).ok && rightsVerdict({ source: "stock", licence: "Pexels" }).ok && !rightsVerdict({ source: "generated" }, null).ok && rightsVerdict({ source: "generated" }, "gpt-image-1").ok && !rightsVerdict({ source: "somewhere" as any }).ok)
     check("R4 CONTROL: m719 enforces the same rule as a CHECK (external ⇒ licence + provenance_url)", /marketing_assets_external_rights_check[\s\S]*'external'[\s\S]*'licence'[\s\S]*'provenance_url'/.test(readFileSync(join(ROOT, "supabase/migrations/m719-media-asset-record-extends-marketing-assets.sql"), "utf8")))
   }
 

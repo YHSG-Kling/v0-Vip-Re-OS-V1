@@ -530,7 +530,7 @@ export function TeamBrandingPanel() {
               </div>
               <p className="text-[11px] text-muted-foreground">
                 The brokerage of record stays {cascade.brokerageName} on every piece — a team logo changes the
-                branding, never who signs the Fair Housing and licence line.
+                branding, never who signs the Fair Housing and license line.
               </p>
             </div>
           )}

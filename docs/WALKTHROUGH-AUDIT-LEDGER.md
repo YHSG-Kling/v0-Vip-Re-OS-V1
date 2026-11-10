@@ -3933,7 +3933,7 @@ not dispatch. The row lands, the timeline looks complete, the handler never runs
 errors. That is the exact shape of every defect in this sweep.
 
 `npm run test:event-dispatch` pins it — **with no baseline, on purpose.** Measured: zero
-violations today. A baseline here would be a licence to add the first one.
+violations today. A baseline here would be a license to add the first one.
 
 **The guard caught its own bug before it could lie.** `EVENT_TYPES` is re-exported twice —
 `lib/orchestrator/index.ts` → `lib/orchestrator/event-types.ts` → `lib/events/types.ts`, where

@@ -62,7 +62,7 @@ export interface ExaIntentQuery {
   subject: ExaResearchSubject
 }
 
-/** The excerpt kept from a page — enough to cite and route, never the page (no reuse licence is assumed). */
+/** The excerpt kept from a page — enough to cite and route, never the page (no reuse license is assumed). */
 const EXA_EXCERPT_CHARS = 280
 
 /**

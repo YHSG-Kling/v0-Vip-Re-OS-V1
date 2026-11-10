@@ -399,11 +399,11 @@ string compliant copy actually contains. Two of the authored five are not:
 | row | authored text | why it cannot ship |
 |---|---|---|
 | `brokerage_name` | "Brokerage Name Required" | a **label**, not a disclosure. No real asset contains that string, so it would warn on 100% of email/print/social content forever. |
-| `license_number` | "Licensed Real Estate Agent" | the requirement is the agent's licence **number**, a per-agent fact. An agent writing "License #12345" satisfies the law and would still be warned. |
+| `license_number` | "Licensed Real Estate Agent" | the requirement is the agent's license **number**, a per-agent fact. An agent writing "License #12345" satisfies the law and would still be warned. |
 
 Both are per-tenant/per-agent facts wearing placeholder text, and the table has no
 tenant column to hold them. They need a resolver substituting `brokerages.name` and
-the agent's licence number per asset, which does not exist. **Reported for a ruling,
+the agent's license number per asset, which does not exist. **Reported for a ruling,
 not guessed at** — because a check that always fires is worth exactly as much as one
 that never does, and m453 claim 3 asserts that constraint as a construct so no future
 edit can reintroduce a placeholder.

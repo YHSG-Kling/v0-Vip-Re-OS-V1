@@ -588,7 +588,7 @@ const SOURCE_PROBES: SourceProbe[] = [
       && /const smuggled = BROKERAGE_IDENTITY_FORBIDDEN_FIELDS\.filter/.test(s.brokerage),
   },
   {
-    name: "S2 the cap is written through the SAME role gate as the licence — canEdit, from the session, never from the wire",
+    name: "S2 the cap is written through the SAME role gate as the license — canEdit, from the session, never from the wire",
     run: (s) => {
       const b = body(s.brokerage, "export async function updateBrokerageIdentity")
       return /const \{ supabase, brokerageId, canEdit, error: sessionError \} = await resolveSessionBrokerage\(\)/.test(b)

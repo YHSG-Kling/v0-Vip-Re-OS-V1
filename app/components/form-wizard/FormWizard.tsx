@@ -537,7 +537,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
     )
     // THE BROKERAGE'S AND THE TEAM'S PACKETS — their own library (lib/forms/tenant-form-packets.ts), for THIS deal's state and
     // purpose, each with the path the same fill action takes (lib/forms/form-path-scope.ts admits a registered packet only while
-    // its library row is active, in licence and shared with this agent). A catalogue packet the brokerage added carries
+    // its library row is active, in license and shared with this agent). A catalogue packet the brokerage added carries
     // origin "platform_catalogue". A refusal is shown as the absence of the shared group, never as an error that blocks the
     // agent's own forms.
     try {

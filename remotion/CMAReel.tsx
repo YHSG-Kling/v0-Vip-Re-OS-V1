@@ -28,7 +28,7 @@ interface Brand {
   brokerageName?: string
   agentName?:    string
   showEhoMark?:  boolean
-  /** Wave 91: the licence line joins the ONE composed disclosure (slideDisclosureText). */
+  /** Wave 91: the license line joins the ONE composed disclosure (slideDisclosureText). */
   licenseLine?:  string
 }
 

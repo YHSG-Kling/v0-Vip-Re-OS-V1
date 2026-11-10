@@ -23,7 +23,7 @@
  *   · TEAM paths are judged by the person's ACTUAL membership (lib/kernel/resolve-user-team.ts, the twin of RLS's
  *     resolve_team_id), not only by the `teamId` a caller happened to read off users.team_id — a team lead whose users row carries
  *     no team_id was refused their own team's library, and a stale users.team_id was the only key.
- *   · a REGISTERED packet path is admitted only while its library row is active, in licence, EXACTLY that path, and visible to
+ *   · a REGISTERED packet path is admitted only while its library row is active, in license, EXACTLY that path, and visible to
  *     the actor (lib/forms/tenant-form-packets.ts usableTenantPacketPaths) — retiring a packet stops it being fillable at once.
  *   · TOMBSTONE: `platform/…` was admitted for every tenant while its m807 row was approved (wave 143). It is REFUSED now: a
  *     catalogue packet reaches agents only after their brokerage adds it to its own library (lib/forms/platform-form-packets.ts

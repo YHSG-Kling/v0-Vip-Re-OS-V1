@@ -24,7 +24,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
  *
  * FORMATTING LIVES ELSEWHERE. lib/ai/image-generation.ts:compositeAttributionBand
  * is the canonical formatter for the rendered line
- * ("Brokerage · Lic #X (ST) · Agent #Y", agent licence appended only when it
+ * ("Brokerage · Lic #X (ST) · Agent #Y", agent license appended only when it
  * differs from the brokerage's). This module resolves FACTS only and never
  * renders a second, disagreeing attribution string.
  *
@@ -69,7 +69,7 @@ export type BrokerageComplianceIdentity = {
    *
    * This resolver deliberately still selects only city/state: it answers the
    * Fair Housing disclosure question ("does this copy name the brokerage and a
-   * licence"), which no street line participates in. The address has its own
+   * license"), which no street line participates in. The address has its own
    * consumer in the listing-form prefill.
    */
   brokerageCity: string | null
@@ -117,7 +117,7 @@ const trimOrNull = (v: unknown): string | null => {
 }
 
 /**
- * Resolve the brokerage's advertising identity and the acting agent's licence.
+ * Resolve the brokerage's advertising identity and the acting agent's license.
  *
  * @param client  Injected Supabase client. Pass the request-scoped user client
  *                from a server action (RLS applies), or a service client from a

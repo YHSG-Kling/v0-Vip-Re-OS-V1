@@ -122,8 +122,8 @@ export async function getAgentLicenseStatus(
     // Someone already hit this on the contract_signatures query below and left a
     // comment about it ("caught by the pilot simulation"), then fixed only that
     // one query. The other three kept the bug: the onboarding INSERT was a
-    // foreign-key violation, so a licence page could neither find nor create an
-    // onboarding record, and the licence + step reads returned empty as though
+    // foreign-key violation, so a license page could neither find nor create an
+    // onboarding record, and the license + step reads returned empty as though
     // the agent had simply not started.
     const agentRecordId = await resolveUserIdToAgentRecord(agentId, agent.brokerage_id)
     if (!agentRecordId) {
@@ -302,7 +302,7 @@ export async function submitLicenseDetails(
     //
     // REPORTED, NOT CHANGED HERE: resolveAgentId is the UNSCOPED resolver — it
     // returns the user's oldest agents row across every brokerage, so a user who
-    // belongs to two tenants could file a licence against the wrong one. The
+    // belongs to two tenants could file a license against the wrong one. The
     // scoped resolveUserIdToAgentRecord(userId, brokerageId) is what the reader
     // above and the E&O writer below use. Changing it here needs the caller's
     // tenant established first (this action derives the tenant FROM the agents
@@ -490,7 +490,7 @@ export async function submitEOInsurance(
     // E&O columns on agent_licenses (eo_insurance_carrier/policy/coverage/
     // expiration) plus eo_certificate_url, added by m459 — the certificate the
     // intake form uploads to storage had nowhere to land and was being dropped.
-    // It is NOT document_url: that column holds the licence itself.
+    // It is NOT document_url: that column holds the license itself.
     //
     // The error is destructured now. supabase-js RESOLVES a failed query, so the
     // old bare `{ data }` reported a PGRST116 (no rows) and a permission denial
@@ -505,14 +505,14 @@ export async function submitEOInsurance(
       .maybeSingle()
 
     if (licenseLookupError) {
-      console.error("[L11-License] E&O licence lookup failed:", licenseLookupError)
-      return { success: false, error: "Could not read your licence record" }
+      console.error("[L11-License] E&O license lookup failed:", licenseLookupError)
+      return { success: false, error: "Could not read your license record" }
     }
 
-    // E&O attaches TO a licence. With no licence on file there is nothing to
+    // E&O attaches TO a license. With no license on file there is nothing to
     // attach it to, and silently succeeding is what hid this bug: say so.
     if (!licenseRecord) {
-      return { success: false, error: "Add your licence details before submitting E&O insurance" }
+      return { success: false, error: "Add your license details before submitting E&O insurance" }
     }
 
     // `.select("id")` on the UPDATE is not decoration. A zero-row RLS refusal on
@@ -538,7 +538,7 @@ export async function submitEOInsurance(
       return { success: false, error: "Failed to save E&O insurance" }
     }
     if (!eoUpdated || eoUpdated.length === 0) {
-      return { success: false, error: "E&O insurance was not saved — you may not have permission to edit this licence record" }
+      return { success: false, error: "E&O insurance was not saved — you may not have permission to edit this license record" }
     }
 
     // Get or create step completion record

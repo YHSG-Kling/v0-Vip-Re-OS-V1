@@ -924,6 +924,15 @@ console.log("\n[code-side vocabularies mirrored by a CHECK]")
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_REASON_CODES", table: "agent_action_ledger", column: "reason_code", constraint: "agent_action_ledger_reason_code_check" },
     // wave 151 (151J): the saved-home watch's source vocabulary (m983) — ONE constant, ONE CHECK.
     { file: "lib/property-alerts/saved-home-watch.ts", constant: "SAVED_HOME_VERIFICATION_SOURCES", table: "saved_properties", column: "last_verified_source", constraint: "saved_properties_last_verified_source_check" },
+    // wave 151 (151L, closing — the mirrors lanes 151A / 151B / 151C / 151D requested once their migrations were live; every CHECK below
+    // is APPLIED LIVE 2026-11-09 and in the regenerated cache): one code constant per vocabulary.
+    { file: "lib/lead-pipeline/freshness.ts", constant: "FRESHNESS_VERDICTS", table: "raw_scraped_leads", column: "freshness_verdict", constraint: "raw_scraped_leads_freshness_verdict_check" },
+    { file: "lib/lead-pipeline/processing-status.ts", constant: "RAW_PROCESSING_STATUSES", table: "raw_scraped_leads", column: "processing_status", constraint: "raw_scraped_leads_processing_status_check" },
+    { file: "lib/providers/exa/monitors.ts", constant: "EXA_MONITOR_PROVIDERS", table: "provider_monitors", column: "provider", constraint: "provider_monitors_provider_check" },
+    { file: "lib/acquisition-plays/contract.ts", constant: "PLAY_KEYS", table: "provider_monitors", column: "play_key", constraint: "provider_monitors_play_key_check" },
+    { file: "lib/providers/exa/monitors.ts", constant: "PROVIDER_MONITOR_STATUSES", table: "provider_monitors", column: "status", constraint: "provider_monitors_status_check" },
+    { file: "lib/listings/owner-photo-upload.ts", constant: "LISTING_PHOTO_SOURCES", table: "listing_media", column: "photo_source", constraint: "listing_media_photo_source_check" },
+    { file: "lib/legal/subscription-agreement.ts", constant: "AGREEMENT_APPROVAL_STATUSES", table: "platform_contract_templates", column: "approval_status", constraint: "platform_contract_templates_approval_status_check" },
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_ACTOR_TYPES", table: "agent_action_ledger", column: "actor_type", constraint: "agent_action_ledger_actor_type_check" },
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_STATUSES", table: "agent_action_ledger", column: "status", constraint: "agent_action_ledger_status_check" },
     // Wave 105 (105D): the relationship graph's three vocabularies are code CONSTANTS written through the

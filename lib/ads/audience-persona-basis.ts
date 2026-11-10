@@ -102,7 +102,7 @@
 // stays fully valid for campaign sequences, copy and every data lane.
 //
 // ── WHAT THIS MODULE STILL IS NOT ────────────────────────────────────────────
-// It is NOT a licence for raw demographic targeting. The owner permitted a
+// It is NOT a license for raw demographic targeting. The owner permitted a
 // PERSONA — a situation label on a contact WE ALREADY KNOW, stored in
 // `contacts.contact_persona` — not a demographic criterion sent to an ad
 // platform. `min_owner_age`, `demographics.recentlyDivorced` and

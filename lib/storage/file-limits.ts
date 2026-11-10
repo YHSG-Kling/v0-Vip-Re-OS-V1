@@ -330,7 +330,7 @@ function whyCeiling(params: { bucket: string | null | undefined; transport: Uplo
  * WHICH BUCKETS AN UPLOAD OF EACH CLASS ACTUALLY LANDS IN, from the upload paths
  * that exist. Written out rather than inferred from allowed_mime_types, because
  * most buckets declare none and "accepts everything" says nothing about what a
- * bucket is FOR — inferring would have put a licence scan's 10 MB bucket in the
+ * bucket is FOR — inferring would have put a license scan's 10 MB bucket in the
  * way of listing video.
  *
  * The DOCUMENT roster is the key set of DOCUMENT_CLASS_BUCKETS in

@@ -116,7 +116,7 @@ export function MovementSignalsClient({ records, sources, freshnessNote, verific
         <CardContent className="p-4 space-y-2">
           <h2 className="text-base font-semibold text-foreground">Dataset verification (market registry)</h2>
           <p className="text-sm text-muted-foreground">
-            Only a verified dataset can raise a public-record signal above &ldquo;unknown&rdquo;: a live row read, its licence read, its data fresh, nothing drifted since.
+            Only a verified dataset can raise a public-record signal above &ldquo;unknown&rdquo;: a live row read, its license read, its data fresh, nothing drifted since.
             {verificationPolicy && ` A live-row read counts for ${verificationPolicy.ttlDays} days; data older than a dataset's freshness window (${verificationPolicy.defaultMaxLagDays} days unless the dataset names its own) reads stale.`}
           </p>
           {verificationNote && <p role="alert" className="text-sm text-destructive">{verificationNote}</p>}
@@ -125,7 +125,7 @@ export function MovementSignalsClient({ records, sources, freshnessNote, verific
               <li key={v.datasetKey} className="text-sm text-foreground">
                 <span className="font-medium">{v.label}</span>
                 <span className="rounded border border-border px-2 py-0.5 ml-2 text-xs text-muted-foreground">{v.status}</span>
-                <span className="text-muted-foreground"> — {label(v.kind)} · {v.markets.join(", ")} · licence {label(v.licence)} · verified {day(v.lastVerifiedAt)} · data to {day(v.lastDataAt)}{v.ingested ? " · swept daily" : " · not swept yet"}</span>
+                <span className="text-muted-foreground"> — {label(v.kind)} · {v.markets.join(", ")} · license {label(v.licence)} · verified {day(v.lastVerifiedAt)} · data to {day(v.lastDataAt)}{v.ingested ? " · swept daily" : " · not swept yet"}</span>
                 {v.status !== "verified" && v.reasons.length > 0 && <span className="text-destructive"> · {v.reasons.join("; ")}</span>}
               </li>
             ))}

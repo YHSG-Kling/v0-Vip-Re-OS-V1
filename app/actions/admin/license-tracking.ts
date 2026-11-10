@@ -179,8 +179,8 @@ export async function getBrokerageAgentLicenseStatuses(
     // `agent_licenses.expiry_date` DOES NOT EXIST — the live column is
     // `expiration_date` (it is what app/actions/onboarding/license.ts writes on
     // intake). Naming the wrong column made PostgREST reject this ENTIRE users
-    // query, so the admin licence-tracking view rendered zero agents — not zero
-    // licences, zero AGENTS — with `error` set but the screen showing a blank
+    // query, so the admin license-tracking view rendered zero agents — not zero
+    // licenses, zero AGENTS — with `error` set but the screen showing a blank
     // roster. Renamed rather than aliased: this is the only reader of the raw
     // column, and it lives here, while every consumer outside this file reads
     // the camelCase `expiryDate` below, which is unchanged.

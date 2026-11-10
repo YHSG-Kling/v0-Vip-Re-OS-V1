@@ -6,7 +6,7 @@
  * an in-memory database (no network, no model, no vendor; the model seams are injected), each refusal beside its positive control:
  *
  *   A. REGISTRY COMPLETENESS — derived from the survivors, never a hardcoded count: every INTENT_SIGNAL_SOURCES key and every
- *      acquisition SourceKey is a movement row or an exclusion with its reason; every row carries kind / licence / consent /
+ *      acquisition SourceKey is a movement row or an exclusion with its reason; every row carries kind / license / consent /
  *      delivery / freshness / cost class / how-obtained; the brief's C9 families are each represented; WAITING_EXTERNAL rows cannot record.
  *   B. C9 SHAPE + THE EPISTEMIC RULE — the persisted row matches m892's columns; an inference cannot carry a reference (type AND
  *      runtime AND m892 CHECK); a source's ceiling is never exceeded; an inferred label never reads as verified.
@@ -128,7 +128,7 @@ async function main() {
     const kinds = new Set(mv.MOVEMENT_SIGNAL_SOURCES.map((r) => r.kind))
     ok(mv.MOVEMENT_SOURCE_KINDS.every((k) => kinds.has(k)), `all five source kinds are represented (${[...kinds].join(", ")})`)
     const incomplete = mv.MOVEMENT_SIGNAL_SOURCES.filter((r) => !r.licence.collection || !r.licence.terms || r.consent.length < 10 || r.freshness.length < 10 || r.howObtained.length < 30 || !(mv.COST_CLASSES as readonly string[]).includes(r.costClass) || !(mv.EPISTEMIC_CLASSES as readonly string[]).includes(r.maxConfidence) || (r.delivery === "poll" && !r.cadenceMinutes) || r.relevance.length === 0)
-    ok(incomplete.length === 0, `every row (${mv.MOVEMENT_SIGNAL_SOURCES.length}) carries kind, licence, consent, push/poll, freshness, cost class, ceiling and how it is obtained`, incomplete.map((r) => r.key).join(", "))
+    ok(incomplete.length === 0, `every row (${mv.MOVEMENT_SIGNAL_SOURCES.length}) carries kind, license, consent, push/poll, freshness, cost class, ceiling and how it is obtained`, incomplete.map((r) => r.key).join(", "))
     ok(new Set(mv.MOVEMENT_SIGNAL_SOURCES.map((r) => r.key)).size === mv.MOVEMENT_SIGNAL_SOURCES.length, "one row per source (no duplicate keys)")
     const has = (pred: (r: (typeof mv.MOVEMENT_SIGNAL_SOURCES)[number]) => boolean) => mv.MOVEMENT_SIGNAL_SOURCES.some(pred)
     const families: Array<[string, boolean]> = [
@@ -680,7 +680,7 @@ async function main() {
     ok(st("data.cityofnewyork.us/bnx9-e6tj") === "verified" && st("data.cambridgema.gov/8xmj-thsm") === "verified" && st("data.sccgov.org/rh64-rgza") === "unavailable" && st("cos-data.seattle.gov/eyde-ia6x") === "unavailable" && st("usps.ncoalink/processing-acknowledgement") === "unverified",
       "C19 (probed by id 2026-11-01): ACRIS deeds and Cambridge dumpster permits VERIFIED; the Santa Clara archival probate index and Seattle event notices MARKED unavailable; NCOA unverified (contract required)")
     ok(st("data.sf.gov/i98e-djp9") === "verified" && !all.some((v) => v.host === "data.sfgov.org") && reg.getMarketDatasets({ state: "CA", city: "San Francisco" })[0]?.host === "data.sf.gov", "C19 DRIFT FIXED: San Francisco's dataset is registered at its new host (data.sfgov.org answered an HTML redirect page)")
-    ok(all.filter((v) => v.ingested).every((v) => v.status === "verified" && !!v.licence && v.licence.class !== "unknown"), `every dataset the sweep reads today is verified WITH its licence read (${all.filter((v) => v.ingested).length} ingested)`)
+    ok(all.filter((v) => v.ingested).every((v) => v.status === "verified" && !!v.licence && v.licence.class !== "unknown"), `every dataset the sweep reads today is verified WITH its license read (${all.filter((v) => v.ingested).length} ingested)`)
     const ceil = (key: string | null, at: Date) => dv.datasetCeilingWithObservations(db() as never, key, at)
     const later = await ceil("datahub.austintexas.gov/3syk-w9eu", NOW)
     const austin = all.find((v) => v.datasetId === "3syk-w9eu")

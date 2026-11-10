@@ -76,7 +76,7 @@
  * as one that flags nothing. A failed control reports NOTHING and exits non-zero.
  *
  * ── THIS IS A WIRE LIST, NOT A DELETE LIST ──────────────────────────────────
- * Nothing here is a licence to delete a row. An orphaned row may be the only
+ * Nothing here is a license to delete a row. An orphaned row may be the only
  * surviving evidence of something. The response to a finding is the missing FK,
  * the missing carry, or the missing reason — never a DELETE to move a number.
  */

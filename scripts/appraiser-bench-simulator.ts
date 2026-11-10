@@ -21,9 +21,9 @@
  *   A  ONE TAXONOMY. `appraiser` is in the module, in the generated vocabulary
  *      cache, labelled, and in exactly one picker group — and the widening did
  *      not drop the CHECK, which is a different thing from widening it.
- *   B  THE LICENCE GATE COVERS IT. `appraiser` is on the state-licensed list on
+ *   B  THE LICENSE GATE COVERS IT. `appraiser` is on the state-licensed list on
  *      BOTH sides — TypeScript and the migration that most recently defines the
- *      SQL function — and an appraiser with coverage but no current licence is
+ *      SQL function — and an appraiser with coverage but no current license is
  *      NOT bookable, while the same facts on an unlicensed trade ARE.
  *   C  §5 HOLDS ON THE NEW ROUTES. Benching appraisers opened new ways to reach
  *      one. The gate refuses before the model call, the route inventory's files
@@ -40,10 +40,10 @@
  *   AFTER   vendors.category    appraiser=ADMITTED        invented=REFUSED(23514)
  *           vsa.trade_category  appraiser=ADMITTED        invented=REFUSED(23514)
  *           gate: appraiser=true  inspector=false  title=true
- *   GATE    covered+no licence   → licence_missing, booking REFUSED(23514)
- *           covered+licence      → covered,         booking ACCEPTED
+ *   GATE    covered+no license   → licence_missing, booking REFUSED(23514)
+ *           covered+license      → covered,         booking ACCEPTED
  *           licensed AZ, job CA  → no_overlap,      booking REFUSED(23514)
- *   MUTATION (appraiser taken back off the SQL list, licence still absent)
+ *   MUTATION (appraiser taken back off the SQL list, license still absent)
  *           → covered, booking ACCEPTED  ← RED, which is the point
  *
  * ── MUTATION TEST ───────────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ function layerTaxonomy() {
     live.includes("appraiser"), `live has ${live.length} values`)
   check("A2b …and on the COVERAGE column, which is the other spelling of the same taxonomy",
     cover.includes("appraiser"), `coverage has ${cover.length} values`)
-  check("A2c THE TWO SPELLINGS ARE THE SAME LIST — widening one alone would give a vendor a trade the bench can hold and no licence can be filed against (or the reverse)",
+  check("A2c THE TWO SPELLINGS ARE THE SAME LIST — widening one alone would give a vendor a trade the bench can hold and no license can be filed against (or the reverse)",
     live.length > 0 && JSON.stringify([...live].sort()) === JSON.stringify([...cover].sort()))
   check("A2d …and the module is that same list, so there is no third spelling (§6)",
     live.length === VENDOR_CATEGORIES.length &&
@@ -184,10 +184,10 @@ function layerTaxonomy() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// LAYER B — THE LICENCE GATE COVERS IT, AND STILL DOES NOT COVER EVERYTHING
+// LAYER B — THE LICENSE GATE COVERS IT, AND STILL DOES NOT COVER EVERYTHING
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** An appraiser covering AZ statewide with a CURRENT licence. One field moves per
+/** An appraiser covering AZ statewide with a CURRENT license. One field moves per
  *  case below, so a verdict change is attributable to exactly one fact. */
 const AZ_APPRAISER: VendorCoverageRow = {
   state: "AZ", zipCode: null, tradeCategory: "appraiser", status: "active",
@@ -236,7 +236,7 @@ function layerLicence() {
     !noLicence.ok && noLicence.reason === "licence_missing")
   const expired = vendorGeoVerdict(
     { ...CLEAN, coverage: [{ ...AZ_APPRAISER, license: { expiry: "2020-01-01" } }] }, NOW)
-  check("B5 …and an EXPIRED licence is refused distinctly from a missing one",
+  check("B5 …and an EXPIRED license is refused distinctly from a missing one",
     !expired.ok && expired.reason === "licence_expired")
 
   // THE MUTATION, EXPRESSED AS A CONTRAST: identical facts, one trade on the list
@@ -260,17 +260,17 @@ function layerLicence() {
   check("B8 an appraiser who declared NOTHING is refused by name, not silently allowed",
     (() => { const v = vendorGeoVerdict({ ...CLEAN, coverage: [] }, NOW); return !v.ok && v.reason === "vendor_coverage_unknown" })())
 
-  // A LOCAL bench row: the tenant typed the appraiser in themselves. The licence
+  // A LOCAL bench row: the tenant typed the appraiser in themselves. The license
   // question still applies and the honest answer is "state unknown".
   const local: VendorGeoFacts = {
     ...CLEAN, localBenchRow: true, coverage: [], tenantAreas: [],
     benchLicense: { expiry: "2099-01-01" },
   }
   const localOk = vendorGeoVerdict(local, NOW)
-  check("B9 a LOCAL appraiser row with a licence on file is bookable, and says its licence state is unknown",
+  check("B9 a LOCAL appraiser row with a license on file is bookable, and says its license state is unknown",
     localOk.ok && localOk.licence === "on_file_state_unknown")
   const localBad = vendorGeoVerdict({ ...local, benchLicense: null }, NOW)
-  check("B10 …and a LOCAL appraiser row with NO licence at all is still refused",
+  check("B10 …and a LOCAL appraiser row with NO license at all is still refused",
     !localBad.ok && localBad.reason === "licence_missing")
 }
 
@@ -522,7 +522,7 @@ async function layerLive() {
     p_trade: "appraiser",
   })
   if (gateErr) {
-    check("m554 is APPLIED (the licence gate answers for 'appraiser')", false, gateErr.message)
+    check("m554 is APPLIED (the license gate answers for 'appraiser')", false, gateErr.message)
     blind("The live layer stopped at the shape probe: m554 is not applied to the project these " +
       "credentials point at. That is the PRE-MIGRATION shape reported honestly, not a passing run.")
     return
@@ -555,7 +555,7 @@ async function main() {
     process.exit(1)
   }
   console.log(" ✅ APPRAISER_BENCH_PASS — an appraiser is a vendor type, is unbookable in a state" +
-    " where they hold no current licence, and nothing model-authored reaches one")
+    " where they hold no current license, and nothing model-authored reaches one")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

@@ -11,7 +11,7 @@
 // m554 obeyed it: `appraiser` is now a value of `vendors.category` and of
 // `vendor_service_areas.trade_category`, and `vendor_trade_requires_state_license`
 // gates it, so an appraiser cannot be booked in a state where they hold no
-// current licence.
+// current license.
 //
 // THAT WIDENING HAS A COST AND THIS MODULE IS WHERE IT IS PAID. Until m554 an
 // appraiser could only be reached through lib/kernel/appraiser-packet.ts, one

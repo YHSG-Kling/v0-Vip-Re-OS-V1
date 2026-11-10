@@ -169,7 +169,7 @@ export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 //                              selling owner is the first one) is that the
 //                              broker-owner who sells counts, and the ONE
 //                              exemption vendors sell is an explicit non-
-//                              producing / admin-only licence. So the default
+//                              producing / admin-only license. So the default
 //                              is a seat, and the exemption is a STATEMENT the
 //                              tenant makes — `produces: false` — recorded on
 //                              brokerages.billing_metadata.non_producing_user_ids
@@ -194,7 +194,7 @@ export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 //
 //   FREE_STAFF_ROLES           never a seat, even when the desk gave them an
 //                              agents record for operational reasons; that is
-//                              a desk, not a licence.
+//                              a desk, not a license.
 //
 //   SYSTEM_AI_USER_TYPES       NOT A PERSON (lane 88B2, owner wave 88 verbatim:
 //                              "Isa is a system ai ai isa."). `isa` names the
@@ -522,7 +522,7 @@ export function canBeManagingBroker(role: UserDomainRole | string | null | undef
  * seat-by-production admin (the solo/team owner is an admin wearing an agents
  * row; a brokerage-tier admin is not). FREE_STAFF_ROLES are excluded before
  * the spec is consulted so the ISA's operational agents row never reads as a
- * licence.
+ * license.
  */
 export function roleProducesOnTier(role: UserDomainRole | string, tier: string | null | undefined): boolean {
   if ((FREE_STAFF_ROLES as readonly string[]).includes(role)) return false

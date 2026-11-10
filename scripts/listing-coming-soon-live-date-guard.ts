@@ -189,6 +189,17 @@ async function main() {
   check("same instant: the amendment follows the original (it amends an agreement that exists); an explicit null STRIKES the term (not recorded = withheld); rows arriving out of order resolve by execution time",
     tie.ok && tie.sellerRequestedMlsLiveDate === "2026-12-01" && strike.ok && strike.comingSoonStreetAddressAuthorized === null && strike.resolved.terms.coming_soon_street_address_authorized?.value === null
     && order.ok && order.sellerRequestedMlsLiveDate === "2026-11-25")
+  // WAVE 151 (lane 151K's rule on this rail, lane 151L): two executed AMENDMENTS at ONE instant that contradict each other are
+  // UNRESOLVED — the key is withheld (nothing governs it), the dispute is surfaced; an amendment's version number never orders them.
+  const unresolvedTie = await govOf({ seller_requested_mls_live_date: "2026-11-04" }, [
+    { version_no: 1, executed_at: "2026-10-22T00:00:00Z", terms: { seller_requested_mls_live_date: "2026-11-20" } },
+    { version_no: 2, executed_at: "2026-10-22T00:00:00Z", terms: { seller_requested_mls_live_date: "2026-11-25" } },
+  ])
+  check("UNRESOLVED: two same-instant executed amendments naming one term differently → neither governs (the date is withheld, not read from the original row), the dispute names both instruments and its reason; POSITIVE CONTROL: the same two instruments a day apart resolve (`order` above) with nothing unresolved",
+    unresolvedTie.ok && unresolvedTie.sellerRequestedMlsLiveDate === null && unresolvedTie.resolved.unresolved.length === 1
+    && unresolvedTie.resolved.unresolved[0].key === "seller_requested_mls_live_date" && unresolvedTie.resolved.unresolved[0].reason === "same_effective_instant"
+    && unresolvedTie.resolved.unresolved[0].versions.map((v) => v.versionNo).sort().join() === "1,2"
+    && order.ok && order.resolved.unresolved.length === 0, JSON.stringify(unresolvedTie.ok ? unresolvedTie.resolved.unresolved : unresolvedTie))
 
   const docs = [
     { id: DOC, brokerage_id: B, listing_id: L, signature_completeness: signed(["seller", "agent"]) },

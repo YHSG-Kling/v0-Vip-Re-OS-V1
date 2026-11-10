@@ -408,7 +408,7 @@ export async function bookMapLoadSpend(input: {
 // the repo had Mapbox for PICTURES only (map_render: Static Images + GL JS, this file) and a haversine "drive"
 // estimate in lib/kernel/tour-optimizer.ts that is a straight line at an assumed speed — no request anywhere
 // asked a router how long a real drive or walk takes. BUILT HERE, on the ONE map survivor and the SAME platform
-// account / token / licence: the travel_time capability (lib/ai-isa/property-lookup-rail.ts CONTACT_PROVIDER_ROUTES)
+// account / token / license: the travel_time capability (lib/ai-isa/property-lookup-rail.ts CONTACT_PROVIDER_ROUTES)
 // walked like map_render (health-aware, an unconfigured provider is skipped WITH its reason), CACHE FIRST through
 // the one provider-payload store (lib/cma/comp-supplement-cache.ts — a repeat question costs no request), GATED
 // before any paid call (mayUseAndAfford "app.access": no spend on a lapsed tenant) and BOOKED per element / request

@@ -85,7 +85,7 @@ export type TransferStep = (typeof TRANSFER_MIGRATION_STEPS)[number]
  *  ai_tool_usage, vendor_usage_tracking, agent_action_ledger, lifecycle_events, notifications,
  *  brokerage_settings / policies / entitlements / feature flags / managed_agents, commission_*,
  *  agent_book_transfers, user_invitations, and the BROKERAGE-level rows of brokerage_form_library (wave 144I, m853:
- *  a brokerage packet's licence is the source workspace's and it is shared with every agent of its brokerage — moving
+ *  a brokerage packet's license is the source workspace's and it is shared with every agent of its brokerage — moving
  *  it would hand a licensed form to the whole adopting brokerage; the m853 CHECK pins its path under the source).
  *  A TEAM's packets (brokerage_form_library.team_id) are NOT a family either: they follow their TEAM in the membership
  *  step, the way the team itself does (same team id, same `teams/{teamId}/packets/…` path).
@@ -141,7 +141,7 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   //    contact_id → contacts — the book it belongs to moves, so its history does (a proposal left behind would re-offer a
   //    change the buyer already rejected);
   //  · movement_signals (m892, contract C9) — the tenant's evidence about its own contacts / leads (with its outcome history):
-  //    contact_id → contacts, lead_id → leads. Tenant-owned like the contacts it describes; its licence / consent provenance
+  //    contact_id → contacts, lead_id → leads. Tenant-owned like the contacts it describes; its license / consent provenance
   //    rides each row (and a raw-lead subject keeps its raw_lead_id — raw_scraped_leads is derived_readonly and re-scraped in
   //    the target, never copied).
   // Holding the FK-closure ceiling (scripts/brokerage-identity-guard.ts FROZEN_UNMOVED_FK_CHILDREN, never raised).
@@ -969,7 +969,7 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
       // m853 path-under-owner CHECK still holds and the m853 trigger (the team must belong to the row's brokerage) is
       // satisfied because the team moved first. Left behind, the team's own packets would sit in the archived tenant,
       // where its members' RLS (brokerage_id = current_user_brokerage_id()) can no longer reach them.
-      // A BROKERAGE-level packet STAYS with the archived source (declared beside TRANSFER_DATA_FAMILIES): its licence is
+      // A BROKERAGE-level packet STAYS with the archived source (declared beside TRANSFER_DATA_FAMILIES): its license is
       // the source workspace's, it is shared with EVERY agent of its brokerage (moving it would hand a licensed form to
       // the whole adopting brokerage — the leakage ruling 3 forbids), and the CHECK pins its path under the source.
       // Pre-m853 (no team_id column — 42703 / PGRST204) no team packet can exist: nothing to move, said in the detail.

@@ -10,6 +10,10 @@
  *                   the real promotion gate lives in
  *                   lib/lead-pipeline/canonical-lead-eligibility.ts.
  */
+// A TYPE import (erased at build): the stated-date kind vocabulary is KNOWN_DEADLINE_KINDS, held and judged in lib/intent
+// (buildMovementSignal refuses an unknown kind) — no runtime edge from the producer contract into the intent modules.
+import type { KnownDeadlineKind } from "@/lib/intent/moving-moments"
+
 export interface NormalizedScrapedRecord {
   /** Stable dedup key unique within the source (not a DB uuid). */
   sourceRecordId: string
@@ -97,7 +101,7 @@ export interface NormalizedScrapedRecord {
 // writer in app/ lib/ workflows/ (the deal-room demo seed aside). What it lacked was the contract: no
 // subject kind (a market article and a person rode the same row shape), no idempotency key (the only
 // UNIQUE was the GLOBAL (source, source_record_id) — and ten sourcers minted that id from
-// Date.now()+Math.random() when the item had no id, so a replay was a new row), no rights/licence,
+// Date.now()+Math.random() when the item had no id, so a replay was a new row), no rights/license,
 // no TTL, no proof URLs, no actor/version. This block is the contract; the producer writes it as
 // first-class columns (m961) and verbatim at normalized_preview.rawdata.
 
@@ -137,6 +141,16 @@ interface RawDataEnvelopeHints {
   ttlDays?: number
   /** Why the ingress believes this observation (decision / event evidence), stored verbatim. */
   evidence?: Record<string, unknown>
+  /**
+   * WAVE 151 (lane 151E's hint — lane 150Z row 28 — built by lane 151L): a date the AUTHOR named in their own words
+   * for their own move, lease end, listing or closing. Stored VERBATIM at evidence.stated_date by buildRawDataEnvelope;
+   * read by the movement watcher (lib/intent/movement-source-watcher.ts acquisitionPostsSource →
+   * lib/intent/movement-signals.ts movementSignalFromPublicPost) as a KNOWN DEADLINE only when the classifier confirms
+   * the text is about its author. The kind vocabulary is KNOWN_DEADLINE_KINDS (lib/intent/moving-moments.ts) — held
+   * where it is defined (buildMovementSignal refuses an unknown kind), never re-spelled here. Never a guess from a
+   * season or "soon": the quote must be the author's own words that name the date.
+   */
+  statedDate?: { kind: KnownDeadlineKind; at: string; quote: string } | null
 }
 
 export interface RawDataEnvelope {
@@ -273,6 +287,7 @@ export function buildRawDataEnvelope(
   const externalIds: Record<string, string> = { ...(r.envelope?.externalIds ?? {}) }
   if (!isVolatileSourceRecordId(r.sourceRecordId)) externalIds.source_record_id ??= r.sourceRecordId
   if (r.envelope?.externalEventId) externalIds.event_id ??= r.envelope.externalEventId
+  const stated = statedDateEvidence(r.envelope?.statedDate)
   return {
     subject_kind: subject,
     idempotency_key: key,
@@ -288,8 +303,22 @@ export function buildRawDataEnvelope(
     producer_actor_id: ctx.actorId ?? null,
     producer_version: RAWDATA_PRODUCER_VERSION,
     cost_usd: ctx.costUsd,
-    evidence: { ...(r.envelope?.evidence ?? {}), behavior_type: r.behaviorType, intent_signals: r.intentSignals ?? [] },
+    evidence: { ...(r.envelope?.evidence ?? {}), ...(stated ? { stated_date: stated } : {}), behavior_type: r.behaviorType, intent_signals: r.intentSignals ?? [] },
   }
+}
+
+/**
+ * PURE — the ingress's stated-date hint as the row carries it (verbatim), or null when it is not a dated, quoted
+ * statement (no kind, no quote, or a date that is not a date). The KIND vocabulary is judged by the reader
+ * (lib/intent/movement-signals.ts buildMovementSignal → KNOWN_DEADLINE_KINDS), not re-spelled here.
+ */
+function statedDateEvidence(h: RawDataEnvelopeHints["statedDate"]): { kind: string; at: string; quote: string } | null {
+  if (!h || typeof h !== "object") return null
+  const kind = typeof h.kind === "string" ? h.kind.trim() : ""
+  const at = typeof h.at === "string" ? h.at.trim() : ""
+  const quote = typeof h.quote === "string" ? h.quote.trim() : ""
+  if (!kind || !quote || !/^\d{4}-\d{2}-\d{2}/.test(at) || Number.isNaN(Date.parse(at))) return null
+  return { kind, at, quote: quote.slice(0, 300) }
 }
 
 /** PURE — why the producer must NOT write this envelope (null = write it). Unknown rights is refused:

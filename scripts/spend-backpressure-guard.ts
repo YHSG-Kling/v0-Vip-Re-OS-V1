@@ -168,6 +168,19 @@ async function main() {
   check("…and null when the caps are unset (the backpressure then refuses)", remNone.remainingUsd === null && remNone.verdict.action === "refuse")
   check("backpressure: platformCapRemainingUsd null → REFUSE with the stop-before-spend reason, escalate", (() => { const v = decideSpendBackpressure({ ...base, platformCapRemainingUsd: null }); return v.action === "refuse" && /not configured/.test(v.reason) && v.escalate })())
   check("backpressure: the platform cap binds when it is the smallest → throttle, named as the owner's cap", (() => { const v = decideSpendBackpressure({ ...base, platformCapRemainingUsd: 1 }); return v.action === "throttle" && v.records === 20 && /platform acquisition cap/.test(v.reason) })())
+  // Wave 151 (lane 151L, lane 151F's carried item): the PER-TENANT reading — one read of caps + the month's ledger, one pure composition per want.
+  {
+    const rowsOf = (spend: Array<[string | null, number]>) => spend.map(([b, c]) => ({ brokerage_id: b, total_cost: c, request_metadata: { system_source: "lead_scraping" }, created_at: "2026-11-02T00:00:00Z" }))
+    const twoTenants = rowsOf([["b1", 3], ["b2", 1], [null, 2]])
+    const capsRow = { monthly_usd: 100, per_tenant_monthly_usd: 4, per_pull_usd: 10, set_by: "u", set_at: "2026-11-01T00:00:00Z" }
+    const b1 = caps.platformCapRemainingFromLedger(capsRow, twoTenants, "b1"), b2 = caps.platformCapRemainingFromLedger(capsRow, twoTenants, "b2"), pool = caps.platformCapRemainingFromLedger(capsRow, twoTenants, null)
+    check("PER TENANT from ONE ledger read: b1 ($3 spent) has $1 left under the $4 per-tenant cap, b2 ($1 spent) has $3; a platform-pool want (no tenant, 0 tenant spend) is still bound by the per-tenant ceiling ($4) under the $94 monthly remainder — no tenant ever reads another's remainder", b1.remainingUsd === 1 && b2.remainingUsd === 3 && pool.remainingUsd === 4, JSON.stringify({ b1: b1.remainingUsd, b2: b2.remainingUsd, pool: pool.remainingUsd }))
+    check("an unreadable ledger (rows null) → null for EVERY tenant (stop before spend), never zero spend assumed; null caps → null", caps.platformCapRemainingFromLedger(capsRow, null, "b1").remainingUsd === null && caps.platformCapRemainingFromLedger(null, twoTenants, "b1").remainingUsd === null)
+    const pooled = stripComments(readFileSync(join(process.cwd(), "lib/lead-pipeline/pooled-pull.ts"), "utf8"))
+    check("the pooled lane reads caps + ledger ONCE per cycle and judges each want for ITS tenant (the dep forwards brokerageId into platformCapRemainingFromLedger; no cycle-wide platform-level figure is handed to every tenant)",
+      /loadPlatformAcquisitionLedgerRows\(/.test(pooled) && /platformCapRemainingUsd:\s*\(brokerageId\)\s*=>\s*platformCapRemainingFromLedger\(platformCaps,\s*ledgerRead\.rows,\s*brokerageId\)/.test(pooled) && !/platformCapRemainingUsd:\s*\(\)\s*=>/.test(pooled))
+    check("POSITIVE CONTROL: the finder sees the old cycle-wide shape", /platformCapRemainingUsd:\s*\(\)\s*=>/.test("platformCapRemainingUsd: () => platformCap.remainingUsd,"))
+  }
   check("backpressure: undefined (a tenant-owned call / legacy fixture) leaves the decision exactly as before", JSON.stringify(decideSpendBackpressure(base)) === JSON.stringify(decideSpendBackpressure({ ...base, platformCapRemainingUsd: undefined })) && decideSpendBackpressure(base).action === "proceed")
 
   console.log("\nF — the pre-pull value verdict (lane 151C's interface) inside paidPullApproval")

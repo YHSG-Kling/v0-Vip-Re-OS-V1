@@ -1189,7 +1189,7 @@ export async function fetchWeatherForEvent(eventId: string) {
     // Through the ONE egress (wave 139, lane 139B: was a raw fetch — a provider no census saw because
     // it needs no key). Keyless + free; the gateway's outcome row is the usage + health record, and
     // the tenant is the RLS-read event row's brokerage (never the caller's input).
-    // Wave 140 (140I) — COMMERCIAL LICENCE (open-meteo.com/en/pricing, 2026-10-11): the keyless host is
+    // Wave 140 (140I) — COMMERCIAL LICENSE (open-meteo.com/en/pricing, 2026-10-11): the keyless host is
     // for NON-commercial use only; a subscription issues OPEN_METEO_API_KEY for customer-api.open-meteo.com
     // ("only the domain and key parameter differ"). Production without the key REFUSES, naming the remedy
     // (fail closed — a release blocker stays a release blocker); development may use the free host.

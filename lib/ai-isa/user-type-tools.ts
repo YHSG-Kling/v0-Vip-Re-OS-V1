@@ -127,7 +127,7 @@ function buildGetMyJobsAndBookingsTool(ctx: UserTypeSeatContext & { vendorId: st
  *  resolved vendor identity (buildUserTypeSeatTools' fail-closed rule). */
 function buildGetMyDocumentsTool() {
   return tool({
-    description: "List YOUR OWN documents on file with this brokerage — invoices, job deliverables, W-9 / insurance / licence items — with each one's status. Returns names and statuses only, never a download link (those open in the portal).",
+    description: "List YOUR OWN documents on file with this brokerage — invoices, job deliverables, W-9 / insurance / license items — with each one's status. Returns names and statuses only, never a download link (those open in the portal).",
     inputSchema: z.object({}),
     execute: async () => {
       // Survivor: app/actions/vendor-documents.ts::getVendorDocuments — resolves

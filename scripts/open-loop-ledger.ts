@@ -356,7 +356,7 @@ export const LAUNCH_CRITICAL_RE =
 export const REASON_LEGEND: Record<string, string> = {
   NONE: "The lane recorded nothing open in this section.",
   WE_CRED: "External credential named by VARIABLE only; the owner provides it (wave-148 ruling: no keys, no purchases, no env changes). The proof column shows where the runtime reads the name.",
-  WE_LIC: "A licence / order form / provider terms decision — owner + counsel; nothing is built or bought until it is signed.",
+  WE_LIC: "A license / order form / provider terms decision — owner + counsel; nothing is built or bought until it is signed.",
   WE_DEPLOY: "Observable only on a Vercel deployment (Workflow timer, live soak) — owner deploys; the cron net covers locally.",
   WE_OTHER: "External dependency recorded by the lane; owner-provided configuration, never a code defect.",
   OWNER_SQL: "Owner SQL-editor work (storage.objects policies / seed rows / DROP) — release-blocking where stated; the code side is finished.",

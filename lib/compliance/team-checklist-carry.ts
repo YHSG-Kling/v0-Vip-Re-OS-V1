@@ -23,7 +23,7 @@
 //     (lib/compliance/required-documents.ts resolveRequiredDocuments, the wave-145 floor).
 //   · NEVER ACROSS TENANTS BY ACCIDENT: rows are READ only from the named source, for the named team(s), and WRITTEN
 //     only into the named target. A template form that did not move with the team (a brokerage-level packet of the
-//     source — its licence stays there, wave 144I) is NOT pointed at across tenants: the copy carries no template and
+//     source — its license stays there, wave 144I) is NOT pointed at across tenants: the copy carries no template and
 //     the result names it. A cited STATE requirement is carried as the team's policy with its source kept for
 //     reference, NOT as an attested state requirement — the attestation was another tenant's compliance approver's,
 //     so the adopting brokerage's compliance approver re-attests it (the result lists them).

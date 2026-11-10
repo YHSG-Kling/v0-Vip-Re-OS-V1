@@ -586,7 +586,7 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
     transformBare.length === 0,
     transformBare.slice(0, 8).map((h) => `${h.file}:${h.line}`).join(", "))
   // A STALE EXEMPTION IS ALSO A DEFECT: a marker left behind after its site was
-  // converted reads as a standing licence nobody re-earned. Every marker in the
+  // converted reads as a standing license nobody re-earned. Every marker in the
   // tree must sit above a real hit.
   {
     let markers = 0
@@ -602,7 +602,7 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
         if (!live) orphanMarkers.push(`${f}:${i + 1}`)
       })
     }
-    ok(`every transform-string exemption is LIVE (${markers} marker line(s)) — a marker left\n    behind after its site was converted is a licence nobody re-earned`,
+    ok(`every transform-string exemption is LIVE (${markers} marker line(s)) — a marker left\n    behind after its site was converted is a license nobody re-earned`,
       orphanMarkers.length === 0, orphanMarkers.slice(0, 5).join(", "))
   }
 

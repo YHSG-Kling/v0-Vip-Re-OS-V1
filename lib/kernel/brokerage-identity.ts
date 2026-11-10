@@ -35,7 +35,7 @@
 //     file); a spoken name is now refused with the id-or-act-as instruction.
 //
 // THE EXCEPTION, DECLARED NOT INFERRED: `brokerages.declared_affiliation` (m765)
-// is the affiliation a solo/team subscriber DECLARES — name, optional licence /
+// is the affiliation a solo/team subscriber DECLARES — name, optional license /
 // location / external reference — stored on their OWN tenant for business
 // context (disclosures, the external-brokerage routing the disposition rule
 // already keys on the on-platform flags). It has NO tenancy effect: no reader may
@@ -108,7 +108,7 @@ export function normalizeDeclaredAffiliation(
   if (!name || name.length < 2) return { ok: false, error: "The affiliated brokerage's name is required (2+ characters)." }
   // Validated BEFORE any truncation: "Florida" must be refused, never silently read as "FL".
   const licenseState = trimOrNull(input.licenseState, 64)?.toUpperCase() ?? null
-  if (licenseState && !STATE_RE.test(licenseState)) return { ok: false, error: "Licence state must be a two-letter US state code." }
+  if (licenseState && !STATE_RE.test(licenseState)) return { ok: false, error: "License state must be a two-letter US state code." }
   const state = trimOrNull(input.state, 64)?.toUpperCase() ?? null
   if (state && !STATE_RE.test(state)) return { ok: false, error: "State must be a two-letter US state code." }
   const dba = trimOrNull(input.dba, 160)

@@ -1146,15 +1146,15 @@ export function vendorForSource(source: string): ScrapeVendor | null {
   return key in SOURCE_VENDOR ? SOURCE_VENDOR[key] : null
 }
 
-// ── SOURCE RIGHTS + LICENCE PER SOURCE (wave 150, lane 150EFG — contract C35) ────────────────
+// ── SOURCE RIGHTS + LICENSE PER SOURCE (wave 150, lane 150EFG — contract C35) ────────────────
 //
 // The ONE RawData producer (lib/kernel/scraping.ts ingestRawSourceBatch) stamps every raw row with
-// the RIGHTS under which the observation was obtained and the LICENCE that governs its use. It is
+// the RIGHTS under which the observation was obtained and the LICENSE that governs its use. It is
 // DERIVED from the vendor contract (SOURCE_VENDOR) — never a second per-source table that could
 // drift from it — so a spelling with no SourceKey (no vendor) reads `unknown`, and the producer
 // REFUSES an `unknown`-rights record rather than guessing a basis for it (CLAUDE.md §4, fail closed).
-// The licence ids NAME the governing terms; they are not claims that the terms were reviewed — every
-// paid vendor's marketing-use licence is WAITING_EXTERNAL until the owner files it (lane notes).
+// The license ids NAME the governing terms; they are not claims that the terms were reviewed — every
+// paid vendor's marketing-use license is WAITING_EXTERNAL until the owner files it (lane notes).
 
 /** One vocabulary (CLAUDE.md §6) — raw_scraped_leads.source_rights CHECK (m961) holds the same words. */
 /** @proofSeam kept exported for scripts/rawdata-ingress-guard.ts, which holds this vocabulary equal to the m961 CHECK */
@@ -1179,7 +1179,7 @@ const VENDOR_RIGHTS: Record<ScrapeVendor, { rights: RawDataSourceRights; licence
   osint:     { rights: "public_web",           licence: "page_terms" },
 }
 
-/** PURE — the rights + licence an observation from `source` carries (derived from SOURCE_VENDOR). */
+/** PURE — the rights + license an observation from `source` carries (derived from SOURCE_VENDOR). */
 export function sourceRightsFor(source: string): { rights: RawDataSourceRights; licence: string | null; vendor: ScrapeVendor | null } {
   // A spelling that IS a vendor's name ("apify", "zenrows" — written by a few raw callers) names its terms directly.
   const vendor = vendorForSource(source) ?? (source in VENDOR_RIGHTS ? (source as ScrapeVendor) : null)

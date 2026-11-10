@@ -5,7 +5,7 @@
 // WHY THIS FILE EXISTS
 //
 // Real-estate advertising law requires a rendered marketing video to name the
-// brokerage (and, where the state requires it, the licence). The avatar speaks
+// brokerage (and, where the state requires it, the license). The avatar speaks
 // it, because the ffmpeg visual overlay is deferred (see lib/did/index.ts), so
 // the disclosure has to be baked into the SCRIPT THAT IS SENT TO THE PROVIDER —
 // not into the stored script, which is the agent's own text.

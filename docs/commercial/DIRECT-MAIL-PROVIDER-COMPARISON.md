@@ -12,8 +12,8 @@ on base `ebed6c44`. A price that comes from a secondary source is labelled **rep
 ## 1. Verdict
 
 1. **Lob stays the one active direct-mail provider, and the only one wired.** It is platform-paid under terms that fit a
-   multi-tenant platform. Its licence is "for its business purposes" and expressly anticipates "Customer Applications" built on
-   its API, and its licence over our data is limited "solely to the extent necessary to provide the Lob Service" (§5). It is also
+   multi-tenant platform. Its license is "for its business purposes" and expressly anticipates "Customer Applications" built on
+   its API, and its license over our data is limited "solely to the extent necessary to provide the Lob Service" (§5). It is also
    2.6× to 3.7× cheaper per piece than an AMcards card (§6).
 2. **AMcards fills one real product gap, and only one.** It sells a folded greeting card in an envelope, with a handwriting-style
    font, a signature, photo panels and an optional gift. Lob sells no folded greeting card: its price list is postcards,
@@ -34,11 +34,11 @@ on base `ebed6c44`. A price that comes from a secondary source is labelled **rep
    manager, reminders, text and voicemail drops and gifts are refused by design, because each one is a second scheduler, a second
    sender or a breach of an owner rule (§7).
 5. **WAITING_EXTERNAL (owner):** (a) AMcards' written authorization for platform use on behalf of tenant brokerages, plus a
-   signed DPA that narrows the content licence to providing the service (§9); and (b) the owner's decision on a measured pilot.
+   signed DPA that narrows the content license to providing the service (§9); and (b) the owner's decision on a measured pilot.
    No credential is requested. If the work reopens, the adapter would read `AMCARDS_ACCESS_TOKEN` (§9).
 
 6. **Wave 149 (lane 149I, owner ruling 19, read 2026-11-03): a handwritten-card provider is not justified now** (§11).
-   AMcards' prices are unchanged. A member card still costs about 2.6× a Lob color letter, the licence questions in §5 are still
+   AMcards' prices are unchanged. A member card still costs about 2.6× a Lob color letter, the license questions in §5 are still
    open, and the outcome value is still unmeasured. Ruling 19 says that if no handwritten-card provider is justified, the platform
    adjusts to another branded format through existing providers. That format is the **personal letter**: a Lob color letter in an
    envelope, with the tenant's brand, a personal-note typeface and the agent's signature. It is sent through the existing
@@ -65,7 +65,7 @@ on base `ebed6c44`. A price that comes from a secondary source is labelled **rep
 | AMcards pricing | <https://amcards.com/pricing/> (also on <https://amcards.com/>) | Pay as you go $3.82 / card + postage; $29 / mo membership → $1.57 + postage |
 | AMcards gifts | <https://amcards.com/gifts/> | Gift catalogue (seasonal) |
 | AMcards Python package (linked from AMcards' home page) | <https://python-amcards.readthedocs.io/en/latest/> | There is no Node SDK |
-| Lob Terms of Service (Last Updated **2026-08-14**) | <https://www.lob.com/terms> | Licence, restrictions, Customer Applications, Customer Data |
+| Lob Terms of Service (Last Updated **2026-08-14**) | <https://www.lob.com/terms> | License, restrictions, Customer Applications, Customer Data |
 | Lob Service-Specific Terms (Last Updated **2026-07-06**) | <https://www.lob.com/service-specific-terms> | Address-verification and API terms |
 | Lob pricing and unit prices | <https://www.lob.com/pricing>, <https://help.lob.com/print-and-mail/ready-to-get-started/pricing-details> | Unit prices "take effect on 11/01/2026", inclusive of print and postage |
 | Lob API reference | <https://docs.lob.com/> | `send_date` up to 180 days ahead; "Scheduling and cancellation is a premium feature" |
@@ -126,9 +126,9 @@ does.
 | SDK | Official Node SDK, already in the repo (`lob@^6.6.3`) | Python package only. Plain HTTPS form / JSON POSTs |
 | Auth | API key | Access token (generated in the account, "Connected Applications"). Example 1 takes the account username and password, which we would never use |
 | Second sender inside the vendor | None | **Yes.** Drip campaigns can send text messages and voicemail drops to `phone_number`; text and email reminders exist; Twilio and SendGrid are listed subprocessors |
-| Licence | "limited, non-exclusive, non-transferable license to use and access the Lob Services for its business purposes". The API exists so customers can build "Customer Applications" | No licence grant over the service is stated. Content (which "includes all aspects of AMcards.com") is for "your information and personal use solely as intended through the provided functionality". You may not "copy, reproduce, distribute, transmit, broadcast, display, sell, license, or otherwise exploit any Content for any other purposes without the prior written consent of AMcards" |
+| License | "limited, non-exclusive, non-transferable license to use and access the Lob Services for its business purposes". The API exists so customers can build "Customer Applications" | No license grant over the service is stated. Content (which "includes all aspects of AMcards.com") is for "your information and personal use solely as intended through the provided functionality". You may not "copy, reproduce, distribute, transmit, broadcast, display, sell, license, or otherwise exploit any Content for any other purposes without the prior written consent of AMcards" |
 | Third parties | May not "resell, sublicense … or otherwise provide access to the Lob Service to a third party (except Authorized Users …)". Our tenants never hold Lob access; the platform calls Lob | "You may never use another's account without express written permission". No resale clause for the service itself; the Content clause above is the open question |
-| Licence over data we submit | "solely to the extent necessary to provide the Lob Service" | "worldwide, non-exclusive, royalty-free, sub-licensable and transferable license to use, reproduce, distribute, and display the Content" we submit |
+| License over data we submit | "solely to the extent necessary to provide the Lob Service" | "worldwide, non-exclusive, royalty-free, sub-licensable and transferable license to use, reproduce, distribute, and display the Content" we submit |
 | Privacy / DPA | A DPA (with the EU Standard Contractual Clauses) is incorporated for personal data under EU law | "AMcards does not use or access any contact data stored in the user's Contact Manager unless specifically requested". A "Data Processing Agreement" is referenced but **not published**. Subprocessors listed: DigitalOcean, Braintree / PayPal, Twilio, SendGrid, Sentry, GoHighLevel, Google Workspace, Zendesk, Google Analytics, Cloudflare |
 | Change of terms | Effective as dated at the top | "AMcards may, in its sole discretion, modify or revise these Terms of Use … at any time". **No effective date shown** |
 | Prepaid value | Plan fee monthly | Credits "good for twelve (12) months … after which they expire"; "All sales are FINAL" |
@@ -220,7 +220,7 @@ These rules apply only if the §9 conditions clear. No new rail, no second dispa
 | Item | Provider | Where | How verified |
 |---|---|---|---|
 | Written authorization for platform use | AMcards (185 Middle Street Suite #1301, Lake Mary, FL 32746; (407) 676-3272; the support address on <https://amcards.com/legal/>) | AMcards, in writing | A signed letter or order form. It must confirm that one platform account (or per-tenant sub-users via `initiator`) may send cards on behalf of tenant brokerages, with costs covered by the platform. That is AMcards' "prior written consent" under the Content clause |
-| Data Processing Agreement | AMcards | The DPA its Subprocessors section references | A signed DPA. It must narrow the "sub-licensable and transferable" Content licence to providing the service, cover recipient PII and deletion, and confirm that AMcards does not use or contact recipients |
+| Data Processing Agreement | AMcards | The DPA its Subprocessors section references | A signed DPA. It must narrow the "sub-licensable and transferable" Content license to providing the service, cover recipient PII and deletion, and confirm that AMcards does not use or contact recipients |
 | Pilot decision | Owner | — | The owner approves a bounded pilot (§8) |
 | Credential (requested **only** after the three above) | AMcards | The account's access-token page, <https://amcards.com/user/generate-access-token/> | `AMCARDS_ACCESS_TOKEN`. Verified with a free `GET /.api/v1/user/` and one `is_test: "yes"` card (status "Testing", not mailed). No value is in code or env docs today, deliberately |
 
@@ -250,7 +250,7 @@ no purchase. Survivors are cited at `file:line` on base `08712fef`.
 | <https://amcards.com/pricing/> | Pay as you go "$0 Monthly Membership", "$3.82/card (plus postage)". Membership "$29 Monthly Membership", "Savings of over 50% Off Cards Retail ( $1.57 + Postage )", "NO CONTRACTS" | none |
 | <https://amcards.com/signup/199-license/> | "$199 one-time, then $39/month"; "BONUS: $40 In Credits Per Month"; "All Credits Roll Over For 12 Months" | **new to this report**: a licensed tier. Its per-card price is not stated on the page (**unconfirmed**) |
 | <https://amcards.com/signup/pro/> | "$495 one-time, then $39/month". The page lists a "System License: $199", "Back of Card Branding: $125", "The ability to have your handwriting as a font $175". "United States only" | **new to this report**: the agent's own handwriting as a font is a paid, per-account option |
-| <https://amcards.com/> | Zapier, Salesforce AppExchange, a Follow Up Boss embedded app, "API Access to Use Contacts from Other CRMs" | integrations are per-agent account connections, not a platform licence |
+| <https://amcards.com/> | Zapier, Salesforce AppExchange, a Follow Up Boss embedded app, "API Access to Use Contacts from Other CRMs" | integrations are per-agent account connections, not a platform license |
 | <https://help.followupboss.com/hc/en-us/articles/4402371465111-AMcards> (third-party help page, not AMcards') | "Cards will be delivered in 2-5 business days"; message "maximum of 700 characters"; OWN vs SHARED account | a delivery window, **reported** (secondary) |
 | <https://help.lob.com/print-and-mail/ready-to-get-started/pricing-details> | Prices "take effect on 11/01/2026": letter, color, First Class $1.226 / $0.936 / $0.896 (Developer / Startup / Growth); 4×6 postcard $0.909 / $0.649 / $0.619; custom return envelope $0.05 | none (§6) |
 | <https://help.lob.com/print-and-mail/designing-mail/mail-piece-design-specs/letter-add-ons> | Card affix: "The minimum send quantity is 5,000 cards per letter campaign"; "Static, non-personalized artwork"; "We do not support … Dynamic, personalized artwork designs that are unique to the recipient"; $250 / day setup if fewer than 5,000 card-affix letters in a print day. Custom envelopes: "limited customization" of the #10 outer envelope; card-affix letters "cannot be sent with custom envelopes" | **new to this report**: Lob's "cards" are promotional inserts, **not** a greeting card. They cannot serve 1:1 notes |
@@ -262,7 +262,7 @@ Ruling 19's test is "justified". Each condition §1 set is re-checked here:
 | Condition | 2026-11-01 | 2026-11-03 | Holds? |
 |---|---|---|---|
 | A real product gap (a folded card in an envelope) | confirmed | unchanged. Lob's only "card" is a 5,000-minimum static insert (§11.1) | gap stands |
-| Terms permit platform use | not confirmed (the Content clause needs "prior written consent"; a sub-licensable licence over what we submit; DPA unpublished) | unchanged. The new license tiers are per-account system licences, not platform terms | **no** |
+| Terms permit platform use | not confirmed (the Content clause needs "prior written consent"; a sub-licensable license over what we submit; DPA unpublished) | unchanged. The new license tiers are per-account system licenses, not platform terms | **no** |
 | Cost | member ≈ $2.39 a card (reported $0.82 postage) | unchanged | 2.55× a Lob Startup color letter ($0.936), 3.7× a 4×6 postcard |
 | Value measured | no | no (a pilot is a purchase) | **no** |
 
@@ -322,7 +322,7 @@ when it is printed: the copy says "a note from <agent>", not "handwritten by".
 ### 11.4 WAITING_EXTERNAL (unchanged from §9)
 
 AMcards stays WAITING_EXTERNAL by name. Three things are needed first: written authorization for platform use, a signed DPA that
-narrows the content licence, and the owner's pilot decision. Only after them would the credential be requested:
+narrows the content license, and the owner's pilot decision. Only after them would the credential be requested:
 `AMCARDS_ACCESS_TOKEN`. There is no adapter, no credential read and no AMcards host in code. The personal letter needs no new
 vendor. Its only external item is the platform's Lob template, held by name in `LOB_PERSONAL_LETTER_TEMPLATE_ID`: configuration,
 no value.
@@ -341,7 +341,7 @@ no value.
 
 Owner ruling R5 (2026-11-06). Lob stays the default. The letter, the personal letter, the postcard front and the postcard back
 are **distinct** Lob template ids. There are a few **global** format templates, and every tenant, sending-user and office detail
-is merge data. Genuine handwritten cards and bulk providers stay optional behind the router, with price and licence proof. Nothing
+is merge data. Genuine handwritten cards and bulk providers stay optional behind the router, with price and license proof. Nothing
 is bought.
 
 **Method.** Every price below comes from the vendor's own page, read on 2026-11-06 unless another date is given. No account was
@@ -380,7 +380,7 @@ not set (the commercial ruling sets no SaaS prices), so it is listed as **not se
 | **LettrLabs** · card & envelope | incl. | incl. | $2.86 · $2.05 · $1.27 | unconfirmed | same | yes |
 | **LettrLabs** · handwritten envelope + printed letter | incl. | incl. | $1.56 · $1.22 · $0.81 | unconfirmed | same | envelope only. The letter is printed and must be labelled so |
 | **Handwrytten** · card | $3.75 retail; $1.99 Pro · $1.49 Enterprise · $1.29 Elite · $1.19 Agency | **extra** (USPS rate) | card + current USPS stamp (the stamp rate itself was not re-read; §6 cites a **reported** $0.82) | none stated | $0 retail; $374–$2,499 / mo | **yes** (robots with real pens) |
-| **AMcards** · greeting card | $3.82 PAYG · $1.57 member (§11.1) | extra | ≈ $4.64 · ≈ $2.39 with the reported stamp (§6) | none stated | $0 · $29 / mo; licence tiers $199 + $39 / mo, $495 + $39 / mo | **no** (printed font) |
+| **AMcards** · greeting card | $3.82 PAYG · $1.57 member (§11.1) | extra | ≈ $4.64 · ≈ $2.39 with the reported stamp (§6) | none stated | $0 · $29 / mo; license tiers $199 + $39 / mo, $495 + $39 / mo | **no** (printed font) |
 | **PostcardMania** · postcard | **unconfirmed** (page 403) | **unconfirmed** | **unconfirmed** (custom quote) | **unconfirmed** | **unconfirmed** | no |
 | **PCM Integrations** · postcard / letter / handwritten | **unconfirmed** ("contact us") | **unconfirmed** | **unconfirmed** | none mentioned | "No sign-up / integration / technology fees" | unconfirmed |
 | VIPAgents platform fee to the tenant | — | — | **not set** (commercial ruling: no SaaS prices) | — | — | — |
@@ -392,7 +392,7 @@ not set (the commercial ruling sets no SaaS prices), so it is listed as **not se
    already wired through every gate.
 2. **For a genuine handwritten piece, LettrLabs is the cheapest published option with postage included.** Its Premium
    handwritten postcard costs $1.26 all-in, plus $399 / mo. That pays back against Handwrytten Pro ($1.99 + stamp + $374–$449 /
-   mo) at any volume. It remains **dormant**: there is no adapter, no written platform licence and no owner pilot decision.
+   mo) at any volume. It remains **dormant**: there is no adapter, no written platform license and no owner pilot decision.
 3. **LettrLabs checkout is a charge trap for a naive adapter.** `POST /v1/order` makes a new order every time, and a second
    checkout after a `200` "charges again". Any future adapter must (a) key one order per piece through the action ledger
    (`mailPieceIdempotencyKey`), (b) never retry a checkout that returned 200, and (c) settle asynchronously by polling
@@ -408,7 +408,7 @@ not set (the commercial ruling sets no SaaS prices), so it is listed as **not se
 | Requirement | Survivor |
 |---|---|
 | Four distinct template ids, by name; aliasing refused; a format with none refused | `lib/direct-mail/piece-type.ts` `LOB_TEMPLATE_ENV`, `lobTemplatesForFormat` (legacy names `LOB_POSTCARD_FRONT_ID`, `LOB_POSTCARD_BACK_ID`, `LOB_NOTECARD_ID`, `LOB_DEFAULT_TEMPLATE_ID`, `LOB_DEFAULT_LETTER_TEMPLATE_ID` are read after the canonical names and flagged `legacy`) |
-| Brand as data (logo, colours, hosted font CSS, office, sending agent, licence, return address, tagline, QR, art, disclosures verbatim) | `buildMailMergeVariables` / `resolveMailBrandMergeVariables` over `resolveBrandContext` and `resolveUserOffice` |
+| Brand as data (logo, colours, hosted font CSS, office, sending agent, license, return address, tagline, QR, art, disclosures verbatim) | `buildMailMergeVariables` / `resolveMailBrandMergeVariables` over `resolveBrandContext` and `resolveUserOffice` |
 | Preview with zero spend | `lib/providers/lob/client.ts` `createLobProof` (a non-`test_` key is refused); `sendCampaign({ previewOnly: true })` |
 | No double charge | `mailPieceIdempotencyKey` on the action ledger (`withActionLedger` replays a second claim) |
 | Delivery outcomes per piece; a scan is never receipt | `mailOutcomeFromLobEvent`; `trackDelivery` settles onto `direct_mail_recipients.provider_piece_id` (m985) |

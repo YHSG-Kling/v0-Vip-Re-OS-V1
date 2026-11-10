@@ -263,9 +263,9 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           )}
           {/* Wave 89 — the disclosure on the safe bottom inset at the caption
               step (cinemaDisclosureStyle); it was 24 px from the edge in 16 px type. */}
-          {/* Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence through the ONE
-              composer (slideDisclosureText) — it printed the mark and the licence with no brokerage
-              name, and a dangling " · " when no licence was staged. The MLS cut stays unbranded. */}
+          {/* Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · license through the ONE
+              composer (slideDisclosureText) — it printed the mark and the license with no brokerage
+              name, and a dangling " · " when no license was staged. The MLS cut stays unbranded. */}
           <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {disclosure}
           </div>

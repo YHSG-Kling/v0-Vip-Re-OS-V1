@@ -160,12 +160,12 @@ export interface MediaNeed {
 // § PURE — rights, brand policy, sufficiency, performance, redaction
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Rights / provenance REQUIRED for anything externally sourced; stock names its licence; generated names its model. PURE. */
+/** Rights / provenance REQUIRED for anything externally sourced; stock names its license; generated names its model. PURE. */
 export function rightsVerdict(rights: Partial<MediaRights> | null | undefined, generationModel?: string | null): { ok: boolean; reason: string | null } {
   const source = rights?.source
   if (!source || !(RIGHTS_SOURCES as readonly string[]).includes(source)) return { ok: false, reason: `rights.source must be one of ${RIGHTS_SOURCES.join("|")}` }
-  if (source === "external" && (!rights?.licence || !rights?.provenance_url)) return { ok: false, reason: "an externally sourced asset needs rights.licence and rights.provenance_url" }
-  if (source === "stock" && !rights?.licence) return { ok: false, reason: "a stock asset needs rights.licence" }
+  if (source === "external" && (!rights?.licence || !rights?.provenance_url)) return { ok: false, reason: "an externally sourced asset needs rights.license and rights.provenance_url" }
+  if (source === "stock" && !rights?.licence) return { ok: false, reason: "a stock asset needs rights.license" }
   if (source === "generated" && !generationModel) return { ok: false, reason: "a generated asset names its generation_model" }
   return { ok: true, reason: null }
 }
@@ -412,7 +412,7 @@ export type RecordMediaAssetResult =
   | { ok: false; error: string }
 
 /**
- * THE ONE asset writer: rights verified (external needs licence + provenance), lineage pinned to the
+ * THE ONE asset writer: rights verified (external needs license + provenance), lineage pinned to the
  * tenant (a source of another tenant is refused), the cost booked on ai_tool_usage (the §5 ledger —
  * the same number as cost_usd), the owner shape on the row (metadata.media until m719 is applied).
  */

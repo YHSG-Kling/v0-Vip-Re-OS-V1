@@ -15,7 +15,7 @@ import { listSnapshotsAction, type SnapshotRow } from "@/app/actions/superadmin/
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 const CANONICAL_TIERS: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
 
-/** C34 (wave 150, lane 150Z): one office per line — "Office name | office code | licence state". The server validates
+/** C34 (wave 150, lane 150Z): one office per line — "Office name | office code | license state". The server validates
  *  (planTenantOffices: codes unique, two-letter state, one office for a Brokerage) and provisions; nothing is decided here. */
 function parseOffices(text: string) {
   return text.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p[0])
@@ -259,7 +259,7 @@ export function ManualSubscriberForm() {
         <CardContent className="space-y-3">
           {carriesOffices ? (
             <div>
-              <Label htmlFor="offices">Offices — one per line: name | office code | licence state</Label>
+              <Label htmlFor="offices">Offices — one per line: name | office code | license state</Label>
               <textarea id="offices" rows={3} value={officesText} onChange={e => setOfficesText(e.target.value)}
                 placeholder={tier === "brokerage" ? "Leave empty for one head office named after the brokerage" : "Beaches Office | beaches | FL"}
                 className="w-full text-sm border rounded p-2" />

@@ -113,7 +113,7 @@ export interface DetectionThresholds {
    * FOR AGENT-FACING SURFACES ONLY — never for a sender. The returned rows carry
    * `isa_reengage_allowed` / `ai_outreach_paused` so the caller can badge them,
    * and the caller is responsible for not dispatching to them. This is the
-   * dormancy LISTING, not a licence to send.
+   * dormancy LISTING, not a license to send.
    *
    * Absorbed from app/dashboard/stale/actions.ts, whose query never filtered
    * those two flags: its UI shows an "ISA off" badge, and turning the switch

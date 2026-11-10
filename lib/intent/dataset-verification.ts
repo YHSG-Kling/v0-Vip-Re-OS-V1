@@ -5,7 +5,7 @@
 //
 // THE CONTRACT. Every dataset the OS may read a movement signal from carries ONE verification contract:
 //
-//   source · licence · geography · coverage · freshness · last_verified_at · confidence · data_rights · drift · verified_by
+//   source · license · geography · coverage · freshness · last_verified_at · confidence · data_rights · drift · verified_by
 //
 // and the rule the owner asked for: A SOURCE THE REGISTRY MARKS UNVERIFIED CANNOT RAISE A SIGNAL ABOVE `unknown`. The rule is
 // enforced at the ONE persistence chokepoint (lib/intent/movement-signals.ts recordMovementSignal — every C9 write, the watcher's
@@ -15,22 +15,22 @@
 //
 // THE SURVIVORS (LAW 1 — no fourth registry):
 //   the dataset entries   lib/external/socrata-market-registry.ts MARKETS (the permit sweep's coverage — each entry's verifiedOn /
-//                         unavailable / licence / lastDataAt) + MARKET_DATASET_CANDIDATES (probate / deed / street-use candidates,
+//                         unavailable / license / lastDataAt) + MARKET_DATASET_CANDIDATES (probate / deed / street-use candidates,
 //                         verified by id or marked). This module DERIVES one contract per dataset from them; it restates nothing.
 //   the feed observation  lib/external/permit-signals.ts ingestPermitSignals → DatasetProbe per queried dataset (the "permitted
 //                         feed" that already runs daily) → recordDatasetObservations here → market_dataset_verifications (m918):
 //                         a refusal after a verified state is DRIFT; a served window with rows is FRESHNESS.
 //   the store             market_dataset_verifications (m918) — an append-only verification log, platform-scoped (a dataset is
 //                         public data, not a tenant's record), service-role writes, authenticated read. The latest row per dataset
-//                         is overlaid on the code contract; the code contract (licence, the live-row read) is never overwritten by
+//                         is overlaid on the code contract; the code contract (license, the live-row read) is never overwritten by
 //                         an observation — a sweep can prove a feed is MOVING, never that the platform may USE it.
 //
 // STATUS (pure, `now` injectable — no proof pins wall-clock):
 //   unavailable  the registry marks it unavailable (dead id, archival, non-residential, wrong provider);
-//   unverified   no live row was ever read (`verifiedOn` absent), or the licence was never read;
+//   unverified   no live row was ever read (`verifiedOn` absent), or the license was never read;
 //   drifted      the latest observation contradicts the verified state (the feed refused / changed shape);
 //   stale        the live-row read is older than VERIFICATION_TTL_DAYS, or the newest data is older than the dataset's maxLagDays;
-//   verified     a live row was read, the licence was read, the data is fresh and nothing drifted since.
+//   verified     a live row was read, the license was read, the data is fresh and nothing drifted since.
 // Only `verified` lends the `verified` ceiling; every other status lends `unknown`.
 //
 // NOT server-only: driven by scripts/movement-signals-guard.ts and scripts/life-event-engagement-guard.ts on an in-memory client.
@@ -106,7 +106,7 @@ function statusOf(c: Pick<DatasetVerification, "licence" | "lastVerifiedAt" | "f
   const reasons: string[] = []
   if (c.unavailable) return { status: "unavailable", reasons: [c.unavailable] }
   if (!c.lastVerifiedAt) reasons.push("no live row was ever read from it")
-  if (!c.licence || c.licence.class === "unknown") reasons.push("its licence / data rights were never read")
+  if (!c.licence || c.licence.class === "unknown") reasons.push("its license / data rights were never read")
   if (reasons.length > 0) return { status: "unverified", reasons }
   if (c.drift) return { status: "drifted", reasons: [c.drift] }
   const verifiedAge = (now.getTime() - Date.parse(c.lastVerifiedAt!)) / DAY_MS
@@ -116,7 +116,7 @@ function statusOf(c: Pick<DatasetVerification, "licence" | "lastVerifiedAt" | "f
     if (dataAge > c.freshness.maxLagDays) reasons.push(`its newest data is ${Math.floor(dataAge)} days old (more than its ${c.freshness.maxLagDays}-day window)`)
   } else reasons.push("its data freshness was never measured")
   if (reasons.length > 0) return { status: "stale", reasons }
-  return { status: "verified", reasons: ["live row read, licence read, data fresh, no drift since"] }
+  return { status: "verified", reasons: ["live row read, license read, data fresh, no drift since"] }
 }
 
 function contractFor(spec: PermitDatasetSpec, markets: string[], ingested: boolean, now: Date): DatasetVerification {
@@ -176,13 +176,13 @@ function marketDatasetVerifications(now: Date = new Date()): DatasetVerification
 interface DatasetObservationOverlay { status: DatasetVerificationStatus; drift: string | null; lastDataAt: string | null; lastVerifiedAt: string | null; method: DatasetVerificationMethod; verifiedBy: string }
 
 /** PURE. A code contract + its latest observation → the contract now. An observation can prove MOVEMENT (freshness) or DRIFT; it never
- *  supplies a licence or a live-row read the registry lacks (a sweep that ran is not a licence). */
+ *  supplies a license or a live-row read the registry lacks (a sweep that ran is not a license). */
 function applyObservation(c: DatasetVerification, o: DatasetObservationOverlay | null | undefined, now: Date): DatasetVerification {
   if (!o) return c
   const lastDataAt = [c.freshness.lastDataAt, o.lastDataAt].filter((x): x is string => !!x).sort().pop() ?? null
   const drift = o.status === "drifted" ? (o.drift ?? "the latest observation refused") : null
   const merged = { ...c, freshness: { ...c.freshness, lastDataAt }, drift }
-  // A verified sweep read refreshes the live-row proof only when the registry already read one (columns + licence).
+  // A verified sweep read refreshes the live-row proof only when the registry already read one (columns + license).
   if (o.method === "sweep_observation" && o.status === "verified" && c.lastVerifiedAt && o.lastVerifiedAt && o.lastVerifiedAt > c.lastVerifiedAt) merged.lastVerifiedAt = o.lastVerifiedAt
   if (o.method !== "sweep_observation" && o.lastVerifiedAt && (!c.lastVerifiedAt || o.lastVerifiedAt > c.lastVerifiedAt)) merged.lastVerifiedAt = o.lastVerifiedAt
   const unavailable = c.status === "unavailable" ? c.reasons[0] ?? "unavailable" : null

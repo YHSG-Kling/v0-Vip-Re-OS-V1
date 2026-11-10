@@ -23,7 +23,7 @@
  * m461 gave it a real source — `brokerages.default_cap_amount` — and this panel
  * now both SHOWS and SETS it, because a brokerage-level surface is exactly where
  * a brokerage-level default belongs (the owner's ruling that put the brokerage
- * licence number beside the brokerage name).
+ * license number beside the brokerage name).
  *
  * ── WHAT A CAP IS, SAID ON THE SCREEN ───────────────────────────────────────
  *

@@ -326,7 +326,7 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
     asks: [
       "where a placement, assignment or job stands, and what's scheduled next (get_my_vendor_status / get_my_jobs_and_bookings)",
       "whether an invoice was received / paid and when a payout lands (get_my_vendor_status)",
-      "which documents, W-9 / insurance / licence items are on file or missing (get_my_documents)",
+      "which documents, W-9 / insurance / license items are on file or missing (get_my_documents)",
       "how they're rated and what reviewers said, so they can respond (get_my_ratings)",
       "accepting or declining a new booking, with a date (respond_to_booking)",
       "adding a state / ZIP they now cover, or their typical turnaround (update_my_service_area / update_my_availability)",
@@ -336,7 +336,7 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
       "accept or decline the booking they are looking at, with a date (respond_to_booking)",
       "send the agent a note on the job — a delay, a question, a completed visit (send_vendor_message_to_agent)",
       "update their service area or turnaround so they get matched to more jobs (update_my_service_area / update_my_availability)",
-      "point them at the missing W-9 / insurance / licence item so payouts are not held (get_my_documents)",
+      "point them at the missing W-9 / insurance / license item so payouts are not held (get_my_documents)",
     ],
     rules: [
       "Their OWN vendor account only — never another vendor's jobs, invoices or payouts, and never a contact's or the brokerage's financials (CLAUDE.md §5).",

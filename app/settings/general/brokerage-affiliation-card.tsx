@@ -74,7 +74,7 @@ export function BrokerageAffiliationCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base"><Building2 className="h-4 w-4" /> Brokerage affiliation</CardTitle>
         <CardDescription>
-          The brokerage you hang your licence with. Shown on your disclosures and documents. Declaring a name never
+          The brokerage you hang your license with. Shown on your disclosures and documents. Declaring a name never
           links your workspace to another account — a brokerage on the platform can adopt your workspace only with your
           explicit consent below.
         </CardDescription>
@@ -87,8 +87,8 @@ export function BrokerageAffiliationCard() {
               <Label htmlFor="aff-name">Brokerage name</Label>
               <Input id="aff-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={160} placeholder="Harbor Realty — Northside office" />
             </div>
-            <div className="space-y-1"><Label htmlFor="aff-lic">Brokerage licence number</Label><Input id="aff-lic" value={licenseNumber} onChange={(e) => setLicenseNumber(e.target.value)} maxLength={64} /></div>
-            <div className="space-y-1"><Label htmlFor="aff-lic-state">Licence state</Label><Input id="aff-lic-state" value={licenseState} onChange={(e) => setLicenseState(e.target.value.toUpperCase())} maxLength={2} placeholder="FL" /></div>
+            <div className="space-y-1"><Label htmlFor="aff-lic">Brokerage license number</Label><Input id="aff-lic" value={licenseNumber} onChange={(e) => setLicenseNumber(e.target.value)} maxLength={64} /></div>
+            <div className="space-y-1"><Label htmlFor="aff-lic-state">License state</Label><Input id="aff-lic-state" value={licenseState} onChange={(e) => setLicenseState(e.target.value.toUpperCase())} maxLength={2} placeholder="FL" /></div>
             <div className="space-y-1"><Label htmlFor="aff-city">City</Label><Input id="aff-city" value={city} onChange={(e) => setCity(e.target.value)} maxLength={120} /></div>
             <div className="space-y-1"><Label htmlFor="aff-state">State</Label><Input id="aff-state" value={state} onChange={(e) => setState(e.target.value.toUpperCase())} maxLength={2} placeholder="FL" /></div>
           </div>

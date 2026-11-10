@@ -196,7 +196,7 @@ export async function generateBrokerBrief(params: {
       title: `${agentName}'s license expires in ${days} days`,
       body: `${expiringLicenses.length} agent${expiringLicenses.length === 1 ? "" : "s"} with licenses expiring within 60 days`,
       severity: days <= 14 ? "critical" : days <= 30 ? "high" : "medium",
-      // /dashboard/brokerage/licenses never had a page.tsx. The brokerage licence
+      // /dashboard/brokerage/licenses never had a page.tsx. The brokerage license
       // board lives on the admin onboarding console's "License & CE" tab —
       // app/dashboard/admin/onboarding/admin-onboarding-os-client.tsx:219 (roster,
       // expiry filters, manual review). Same gate as this brief's reader (broker/admin).

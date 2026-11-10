@@ -4,14 +4,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // THE DECLARED AFFILIATION DOOR (wave 141, lane 141A). A solo/team subscriber
 // declares the brokerage they are affiliated with — a NAME and optional
-// licence / location / reference — on their OWN tenant, for business context.
+// license / location / reference — on their OWN tenant, for business context.
 // It is NOT a tenancy claim: nothing matches it against another tenant (lib/
 // kernel/brokerage-identity.ts holds the rule and the writer). An org-tier
 // tenant IS a brokerage and has nothing to declare (the card is hidden).
 //
 // Separate from app/actions/settings/brokerage-identity.ts on purpose: that
 // allow-listed writer owns the tenant's OWN identity columns (name, dba,
-// licence, address) under the finance-admin policy; this writes one jsonb
+// license, address) under the finance-admin policy; this writes one jsonb
 // column through the kernel's one writer, gated by the solo-owner-or-admin
 // rule (tier parity — a solo seat may carry user_type 'agent').
 //

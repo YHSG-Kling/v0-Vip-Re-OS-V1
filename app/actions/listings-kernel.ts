@@ -881,8 +881,8 @@ export async function getListingDescriptionDraftAction(listingId: string) {
  * Note the DIVISION with forms-kernel's prefillFormAction, which is the writer-side
  * prefill and stays that way: prefillFormWithContext(context_type="listing") fills
  * the form FIELD MAP that saveFormDraft persists, and it resolves listing + seller
- * only. This one additionally resolves the agent's licence number/state and the
- * brokerage's name/address/phone/licence — the block a listing agreement needs and
+ * only. This one additionally resolves the agent's license number/state and the
+ * brokerage's name/address/phone/license — the block a listing agreement needs and
  * which prefillFormWithContext does not carry. It is used READ-ONLY, to warn before
  * a defective form is sent. Two readers, one writer.
  */

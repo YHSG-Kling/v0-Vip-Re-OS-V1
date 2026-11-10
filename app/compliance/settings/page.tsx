@@ -23,7 +23,7 @@ import { OlderPersonsExemptionPanel } from '@/app/components/compliance/OlderPer
 
 /** trigger_event values the kernel actually emits for compliance-shaped events
  *  (lib/kernel/events.ts: COMPLIANCE_VIOLATION, AUTHORITY_BLOCKED,
- *  BRAND_COMPLIANCE_FAILED/PASSED) plus certification/licence wording used by
+ *  BRAND_COMPLIANCE_FAILED/PASSED) plus certification/license wording used by
  *  brokerage rules. Matching is substring-based because rule authors type the
  *  trigger by hand in NotificationRulesForm. */
 const COMPLIANCE_TRIGGER_HINTS = [

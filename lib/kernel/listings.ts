@@ -903,9 +903,9 @@ export async function prefillListingFormFromRecord(input: {
       .maybeSingle()
 
     // This payload carries a seller's name, email and phone plus the brokerage's
-    // licence block. A refused read must say so — reporting it as "Listing not
+    // license block. A refused read must say so — reporting it as "Listing not
     // found" sends the agent looking for a listing that is plainly there while
-    // the form they are about to send goes out with an empty licence block.
+    // the form they are about to send goes out with an empty license block.
     if (prefillError) return { success: false, error: `Could not read the listing: ${prefillError.message}` }
     if (!listing) return { success: false, error: "Listing not found" }
 
@@ -939,7 +939,7 @@ export async function prefillListingFormFromRecord(input: {
       // actually has. History, because it decides what this line may and may not
       // do: this embed once asked for `brokerages.address` when no such column
       // existed — PostgREST rejects an unknown column in a nested select, and the
-      // whole prefill (agent name, agent licence, brokerage name, phone, licence)
+      // whole prefill (agent name, agent license, brokerage name, phone, license)
       // failed for EVERY listing, silently, because the error was swallowed into a
       // generic result shape. m456 added the real columns (`address`,
       // `address_line2`, `zip`, verified in information_schema), so the street line

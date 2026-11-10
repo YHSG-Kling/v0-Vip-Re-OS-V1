@@ -367,7 +367,7 @@ add("propdata", "secret", [
   // R9 (wave 150, lane 150HIAB) — the DORMANT owner-contact / seller-score candidates: named by the ONE scorecard only
   // (lib/ai-isa/property-lookup-rail.ts PROVIDER_ACTIVATION); no transport reads them until an owner activation with proven rights.
   ["TRACERFY_API_KEY", "Tracerfy skip-trace / Lead Builder — DORMANT until written platform-use rights; obtained from Profile → Settings → API Key; verified by the free check_balance call and the mock sandbox (no spend).", "OPTIONAL"],
-  ["DATAZAPP_API_KEY", "DataZapp demographic / Signal Seller Score / email append — DORMANT until a signed licence covering storage and platform use; obtained by request to DataZapp; the only verification is a paid test (never run unasked).", "OPTIONAL"],
+  ["DATAZAPP_API_KEY", "DataZapp demographic / Signal Seller Score / email append — DORMANT until a signed license covering storage and platform use; obtained by request to DataZapp; the only verification is a paid test (never run unasked).", "OPTIONAL"],
   ["PROPERTYRADAR_API_TOKEN", "PropertyRadar preview / property — DORMANT until written partner rights; obtained from Account → API; verified by a Purchase=0 preview (totalResultCount, no quota).", "OPTIONAL"],
   ["BATCHDATA_BATCHRANK_TOKEN", "Optional BatchRank token (lib/external/batchdata-tokens.ts:56).", "OPTIONAL"],
   ["BATCHDATA_SMART_SEARCH_WEBHOOK_SECRET", "Shared secret for the Smart Search event-push door (/api/webhooks/batchdata-smart-search).", "OPTIONAL"],

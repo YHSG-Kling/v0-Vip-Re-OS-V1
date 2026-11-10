@@ -156,7 +156,7 @@ export async function runVendorDocCompliance(svc: Svc, params: { brokerageId: st
       const flags: string[] = Array.isArray(v.verification_flags) ? v.verification_flags : []
       const flagText = `license_grace:${week}`
       if (!flags.includes(flagText)) {
-        // The grace flag is the compliance record that this vendor's licence is
+        // The grace flag is the compliance record that this vendor's license is
         // lapsing. `out.flagged` was incremented regardless of the outcome.
         const { error: flagError } = await svc.from("vendors").update({ verification_flags: [...flags, flagText], updated_at: new Date().toISOString() }).eq("id", v.id)
         if (flagError) {

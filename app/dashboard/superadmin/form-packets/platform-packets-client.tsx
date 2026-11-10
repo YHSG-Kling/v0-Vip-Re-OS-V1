@@ -27,7 +27,7 @@ export interface PacketListRow {
   created_at: string
   /** storage_path of the master — the page asks the registry's own admission whether it is offered to brokerages right now. */
   storage_path?: string
-  /** True when brokerages can add it to their library NOW (approved, in licence, fillable) — wave 144. */
+  /** True when brokerages can add it to their library NOW (approved, in license, fillable) — wave 144. */
   offered_now?: boolean
 }
 
@@ -105,22 +105,22 @@ export function PlatformPacketsClient({ packets, packetTypes }: { packets: Packe
                       <Badge variant="secondary" className="text-xs">{p.state ?? "all states"}</Badge>
                       {p.form_code && <Badge variant="outline" className="text-xs">{p.form_code}</Badge>}
                       <Badge className={p.status === "approved" ? "bg-green-100 text-green-900 text-xs" : p.status === "draft" ? "bg-amber-100 text-amber-900 text-xs" : "bg-slate-200 text-slate-800 text-xs"}>{p.status}</Badge>
-                      {p.status === "approved" && <Badge variant="outline" className="text-xs">{p.offered_now ? "offered to brokerages now" : "not offered (licence or fields)"}</Badge>}
+                      {p.status === "approved" && <Badge variant="outline" className="text-xs">{p.offered_now ? "offered to brokerages now" : "not offered (license or fields)"}</Badge>}
                       <span className="text-xs text-muted-foreground">{p.field_count} fillable fields · v{p.version} · {p.file_name}</span>
                     </div>
                     {p.description && <p className="text-xs text-muted-foreground">{p.description}</p>}
                     {p.status === "approved" && (
-                      <p className="text-xs text-muted-foreground">Licence: {p.license_note}{p.license_expires_at ? ` — expires ${p.license_expires_at}` : ""}</p>
+                      <p className="text-xs text-muted-foreground">License: {p.license_note}{p.license_expires_at ? ` — expires ${p.license_expires_at}` : ""}</p>
                     )}
                     {p.status === "retired" && <p className="text-xs text-muted-foreground">Retired: {p.retired_reason}</p>}
                     {p.status === "draft" && (
                       <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
                         <input
-                          className="rounded border px-2 py-1.5 text-sm md:col-span-2" placeholder="Licence basis — who licensed this form to the platform, under what agreement, what it permits"
+                          className="rounded border px-2 py-1.5 text-sm md:col-span-2" placeholder="License basis — who licensed this form to the platform, under what agreement, what it permits"
                           value={draft.note} onChange={(e) => setLicenseDraft({ ...licenseDraft, [p.id]: { ...draft, note: e.target.value } })}
                         />
                         <input
-                          type="date" className="rounded border px-2 py-1.5 text-sm" aria-label="Licence expiry (optional)"
+                          type="date" className="rounded border px-2 py-1.5 text-sm" aria-label="License expiry (optional)"
                           value={draft.expires} onChange={(e) => setLicenseDraft({ ...licenseDraft, [p.id]: { ...draft, expires: e.target.value } })}
                         />
                         <Button size="sm" disabled={pending || draft.note.trim().length < 20}

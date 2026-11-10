@@ -480,10 +480,10 @@ console.log("\n═══ 10. The sample contact details are gone from the print 
 {
   // Brand blocks are classified COSMETIC, so unlike the content props these
   // defaults REMAIN reachable on a real render — a fabricated phone number and
-  // state licence number would have been printed onto a mailed postcard.
+  // state license number would have been printed onto a mailed postcard.
   const root = code("remotion/Root.tsx")
   ok("no sample phone number survives in the composition defaults", !/\(555\)\s*\d{3}-\d{4}/.test(root))
-  ok("no sample licence number survives", !/CA License #/.test(root))
+  ok("no sample license number survives", !/CA License #/.test(root))
   ok("no sample website wordmark survives", !/yourbrokerage\.com/.test(root))
 }
 

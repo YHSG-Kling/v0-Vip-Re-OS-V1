@@ -51,7 +51,7 @@ export function tvSpotBriefFromTopic(topic: { title: string; valueAngle?: string
     directions: [
       "A 15- or 30-second spot; the TV master is judged by lib/video/tv-spot.ts (aspect, duration, loudness, captions) before any launch.",
       claims.length ? `State only these facts, with their source and date on screen: ${claims.join("; ")}.` : "State no figure: this topic carries no verified fact, so the spot speaks to the question, not a statistic.",
-      "End card: the brand's logo and APPROVED tagline (the final personalization phase vets it), the brokerage name and the licence line.",
+      "End card: the brand's logo and APPROVED tagline (the final personalization phase vets it), the brokerage name and the license line.",
       "Housing advertising: describe the place and the service, never who should live there; audiences follow the Ads Manager's special-ad-category rules.",
       "Original words and footage — never a competitor's headline, copy, images or offer. No sales, ranking or viewership result is promised.",
     ],

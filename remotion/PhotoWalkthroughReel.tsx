@@ -254,7 +254,7 @@ const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel, addres
     detail={mlsClean ? (brand.showEhoMark !== false ? "Equal Housing Opportunity" : null) : (brand.agentPhone ?? null)}
     // Wave 91 (lane 91E): the brokerage attribution on the listing ad's end card (it staged
     // brand.brokerageName and nothing read it). The persistent EqualHousingMark badge carries
-    // the mark, so the footer carries the name (+ licence) only; the MLS cut stays unbranded.
+    // the mark, so the footer carries the name (+ license) only; the MLS cut stays unbranded.
     footer={mlsClean ? null : (slideDisclosureText({ brokerageName: brand.brokerageName, showEhoMark: false, licenseLine: brand.licenseLine }) || null)}
     align="start"
     logoHeight={56}

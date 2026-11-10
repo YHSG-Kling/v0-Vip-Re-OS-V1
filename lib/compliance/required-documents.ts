@@ -12,7 +12,7 @@
  *   · A lower scope may ADD a requirement or TIGHTEN one (warning → blocking); it can never LOOSEN a requirement
  *     a higher scope (the brokerage over a team, the team over an agent) or a cited STATE requirement makes
  *     blocking. Before this, a team row with block_on_missing=false silently downgraded the brokerage's blocking
- *     rule for the same document. The brokerage is the supervising licensee; a team is under its licence.
+ *     rule for the same document. The brokerage is the supervising licensee; a team is under its license.
  *   · The deal's TEAM is resolved through THE team resolver (lib/kernel/resolve-user-team.ts) when the caller does
  *     not state it — so a team lead (whose team lives on teams.team_lead_id, not users.team_id) has their team's
  *     checklist applied, and the closing audit (which passed no agent at all) applies the deal agent's team.

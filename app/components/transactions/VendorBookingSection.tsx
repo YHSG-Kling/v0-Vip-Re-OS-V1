@@ -60,7 +60,7 @@ import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-s
 // surveyor under a catch-all and called the vocabulary complete. It was recorded
 // as UNRESOLVED and put to the owner instead, who ruled "surveyor is a vendor
 // category". m562 widened both twins to 40 and put the trade behind the state
-// licence gate, so this picker offers it again — this time as a value the
+// license gate, so this picker offers it again — this time as a value the
 // database actually admits.
 //
 // THAT IS THE POINT OF REFUSING IN WORDS. Had the retired picker's `surveyor`

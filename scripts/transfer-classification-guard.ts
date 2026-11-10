@@ -33,7 +33,7 @@
  *
  *   C. THE FOUR PRIVATE DOCUMENT BUCKETS + THE OFFER ROW (wave 146, lane 146A — owner ruling 20 priority 1).
  *      C1 m874 (public functions) — the per-party path rules: tenant staff on the deal / contact (the ONE active-seat predicate),
- *         a contact party, a vendor / lender / title party on the deal (their own sub-folder only), an agent's own licence; current
+ *         a contact party, a vendor / lender / title party on the deal (their own sub-folder only), an agent's own license; current
  *         membership read at query time; a transferred deal file HELD; '..' segments refused; delete only for the deal team or an
  *         external party's own fresh upload;
  *      C2 m875 (owner-held storage.objects policies) — drops the 15 bucket-wide rules, creates exactly seven owner-scoped ones (none
@@ -389,10 +389,10 @@ const fnBody = (sql: string, name: string) => { const i = sql.indexOf(`FUNCTION 
     && /IN \('brokerage', 'teams'\) AND split_part\(p_name, '\/', 3\) = 'packets'\s+AND public\.brokerage_forms_registered_packet_readable\(p_name\)/.test(readable)
     && /t\.id = public\.resolve_team_id\(auth\.uid\(\), NULL::uuid\) AND t\.deleted_at IS NULL/.test(readable) && /o\.brokerage_id = public\.current_user_brokerage_id\(\)/.test(readable) && !/'platform'/.test(readable) && /position\('\.\.' in p_name\) = 0/.test(readable))
   const packet = fnBody(c854, "brokerage_forms_registered_packet_readable")
-  check("B1 a REGISTERED packet reads only through its own row: exact storage_path, row id in the path, own brokerage; manage = oversight / the team's lead; use = active + in licence + brokerage-wide or own live team",
+  check("B1 a REGISTERED packet reads only through its own row: exact storage_path, row id in the path, own brokerage; manage = oversight / the team's lead; use = active + in license + brokerage-wide or own live team",
     /l\.storage_path = p_name/.test(packet) && /split_part\(p_name, '\/', 4\) = l\.id::text/.test(packet) && /l\.brokerage_id = public\.current_user_brokerage_id\(\)/.test(packet)
     && /l\.team_id = public\.current_user_led_team_id\(\)/.test(packet) && /l\.is_active/.test(packet) && /l\.license_expires_at IS NULL OR l\.license_expires_at >= current_date/.test(packet) && /t\.deleted_at IS NULL/.test(packet))
-  check("B1 …the code twin agrees: oversight = tenant admin roster minus team_lead; a licence expiring TODAY still admits (code: expired when < today)", !PACKET_OVERSIGHT_USER_TYPES.has("team_lead") && /coalesce\(public\.current_user_type\(\), ''\) <> 'team_lead'/.test(packet))
+  check("B1 …the code twin agrees: oversight = tenant admin roster minus team_lead; a license expiring TODAY still admits (code: expired when < today)", !PACKET_OVERSIGHT_USER_TYPES.has("team_lead") && /coalesce\(public\.current_user_type\(\), ''\) <> 'team_lead'/.test(packet))
   const writable = fnBody(c854, "brokerage_forms_path_writable")
   const writesOtherRoots = (body: string) => /'(brokerage|teams|filled|platform)'/.test(body) || /is_platform_admin/.test(body)
   check("B1 WRITE: a browser session writes ONLY its own agents/{uid}/ folder, as an active seat — no brokerage / teams / filled / platform arm", seatGated(writable) && /split_part\(p_name, '\/', 1\) = 'agents'/.test(writable) && /split_part\(p_name, '\/', 2\) = auth\.uid\(\)::text/.test(writable) && !writesOtherRoots(writable))
@@ -720,7 +720,7 @@ const DOC_DOORS: Array<{ file: string; bucket: DocBucket; ops: Partial<Record<Do
   { file: "lib/kernel/document-custody.ts", bucket: "client-documents", ops: { service: 1 }, roots: [], why: "the governed read (time-limited signed URL + document_access_log) — server only" },
   { file: "app/api/offers/upload/route.ts", bucket: "offer-documents", ops: { service: 2 }, roots: [], why: "the offer PDF upload — server only after the tenant check" },
   { file: "lib/inbound-mail/offer-intake.ts", bucket: "offer-documents", ops: { service: 4 }, roots: [], why: "inbound-email offer attachments — server only" },
-  { file: "app/dashboard/onboarding/license/license-intake-client.tsx", bucket: "agent-documents", ops: { session: 4 }, roots: [{ re: /`\$\{userId\}\/license\//, arm: "license" }, { re: /`\$\{userId\}\/eo-insurance\//, arm: "eo-insurance" }], why: "the agent's licence and E&O certificate (browser) — own {uid}/ folder" },
+  { file: "app/dashboard/onboarding/license/license-intake-client.tsx", bucket: "agent-documents", ops: { session: 4 }, roots: [{ re: /`\$\{userId\}\/license\//, arm: "license" }, { re: /`\$\{userId\}\/eo-insurance\//, arm: "eo-insurance" }], why: "the agent's license and E&O certificate (browser) — own {uid}/ folder" },
 ]
 {
   const files = [...walk("app"), ...walk("lib")].filter((f) => !f.startsWith("lib/storage/") && /(?:client|offer|transaction|agent)-documents|DOCUMENT_BUCKET|OFFER_DOCUMENTS_BUCKET|W9_BUCKET/.test(raw(f)))
@@ -757,7 +757,7 @@ const DOC_DOORS: Array<{ file: string; bucket: DocBucket; ops: Partial<Record<Do
   // the agent-documents folders the code writes ⊆ the rule's folder list
   const lic = blankComments(raw("app/dashboard/onboarding/license/license-intake-client.tsx"))
   const codeFolders = [...lic.matchAll(/`\$\{userId\}\/([a-z-]+)\//g)].map((m) => m[1])
-  check("C3 agent-documents: the folders the licence page writes ARE the rule's folder list (derived — a new folder must be added to both)", codeFolders.length >= 2 && [...new Set(codeFolders)].sort().join(",") === sqlArmsOf("agent-documents").sort().join(","), codeFolders.join(","))
+  check("C3 agent-documents: the folders the license page writes ARE the rule's folder list (derived — a new folder must be added to both)", codeFolders.length >= 2 && [...new Set(codeFolders)].sort().join(",") === sqlArmsOf("agent-documents").sort().join(","), codeFolders.join(","))
   // the bucket rosters agree: the four (and brokerage-forms, documents) are document-class and private live
   const readinessList = [...fnBody(c874, "storage_bucket_policy_readiness").matchAll(/\('([a-z-]+)'::text,/g)].map((m) => m[1])
   const livePrivateDocBuckets = Object.keys(DOCUMENT_CLASS_BUCKETS).filter((b) => LIVE_BUCKET_CONFIG[b] && LIVE_BUCKET_CONFIG[b].isPublic === false)

@@ -13,7 +13,7 @@ export default function GeneralSettingsPage() {
   const [settings, setSettings] = useState<any>(null);
   // The brokerage's own row. Loaded separately from global_settings because it
   // IS a separate row on a separate table with its own RLS policy — identity
-  // (name, DBA, licence, address) lives on `brokerages`; workspace formatting
+  // (name, DBA, license, address) lives on `brokerages`; workspace formatting
   // lives on `global_settings`. A failure to read one must not blank the other,
   // so the error is carried alongside rather than replacing the page.
   const [identity, setIdentity] = useState<BrokerageIdentity | null>(null);
@@ -56,7 +56,7 @@ export default function GeneralSettingsPage() {
       <div>
         <h1 className="text-3xl font-bold text-gray-900">General</h1>
         <p className="text-gray-600 mt-2">
-          Your brokerage&rsquo;s legal name, DBA, licence and full office address, plus the time
+          Your brokerage&rsquo;s legal name, DBA, license and full office address, plus the time
           zone and date format used across your workspace and every client-facing surface (portal,
           emails, documents, disclosures).
         </p>

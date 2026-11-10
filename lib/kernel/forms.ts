@@ -402,15 +402,15 @@ export async function prefillFormWithContext(input: {
 
         // ── THE HALF THAT WAS MISSING ────────────────────────────────────────
         // A listing agreement and a seller disclosure are contracts issued under
-        // a LICENCE, and state advertising law requires the brokerage's name and
-        // licence to appear on them. The block above resolves the property and
+        // a LICENSE, and state advertising law requires the brokerage's name and
+        // license to appear on them. The block above resolves the property and
         // the seller and stops — so every listing form prefilled for the e-sign
-        // flow went out with the agent's licence number and the entire brokerage
+        // flow went out with the agent's license number and the entire brokerage
         // block blank.
         //
         // The listing-forms panel already READS this block to warn a human
         // before sending (see listing-forms-panel.tsx), but a warning on screen
-        // does not fill the field: the document itself still left the licence
+        // does not fill the field: the document itself still left the license
         // empty, and the agent found out after the seller had signed it.
         //
         // prefillListingFormFromRecord already resolves exactly that block —
@@ -426,7 +426,7 @@ export async function prefillFormWithContext(input: {
         // ADDITIVE BY DESIGN: it uses the RLS client rather than this function's
         // service client, so a caller with no session (a background job) simply
         // gets nothing back. That is logged and the property/seller fields above
-        // are left exactly as they are — a missing licence block must never cost
+        // are left exactly as they are — a missing license block must never cost
         // the agent the rest of the prefill.
         try {
           const { prefillListingFormFromRecord } = await import("./listings")

@@ -8,7 +8,7 @@
  *   B  CONSENT: the person mode REFUSES without a stated consent basis for the destination / timeline the person volunteered;
  *      no input field exists for orders or service history.
  *   C  WINDOW: a stated move date → the C37 reporting window (stated beats inferred); none / a past date → unknown.
- *   D  HANDOFFS: remote tours always; the lender (VA) handoff only when the person stated VA interest; a licence REFERRAL only
+ *   D  HANDOFFS: remote tours always; the lender (VA) handoff only when the person stated VA interest; a license REFERRAL only
  *      when the destination is outside the agent's licensed states; spouse licensing goes to the board / installation office.
  *   E  SELL vs RENT: an illustration over stated inputs with every assumption labelled; a missing input is null WITH the reason;
  *      tax / lending belong to a CPA and a lender.
@@ -64,11 +64,11 @@ async function main() {
   check("200 days out → 181_365", w("2027-05-25").startsWith("181_365"), w("2027-05-25"))
   check("no date → unknown; a past date → unknown (never a guess)", w(null) === "unknown/unknown" && w("2026-01-01").startsWith("unknown"))
 
-  section("D. handoffs — remote tours, finance, licence")
+  section("D. handoffs — remote tours, finance, license")
   const steps = (o: Record<string, unknown>) => { const p = person(o); return p.ok && p.mode === "person" ? p.steps.map((s) => s.key) : [] }
   check("remote tours and the official checklist are always planned", ["official_checklist", "remote_tours", "housing_budget"].every((k) => steps({}).includes(k)))
   check("the VA lender handoff appears ONLY when the person stated VA interest", steps({ vaInterestStated: true }).includes("finance_handoff") && !steps({}).includes("finance_handoff"))
-  check("a destination outside the agent's licensed states → a licence REFERRAL; inside → none", steps({ agentLicensedStates: ["FL", "AL"] }).includes("licence_handoff") && !steps({ agentLicensedStates: ["fl", "va"] }).includes("licence_handoff"))
+  check("a destination outside the agent's licensed states → a license REFERRAL; inside → none", steps({ agentLicensedStates: ["FL", "AL"] }).includes("licence_handoff") && !steps({ agentLicensedStates: ["fl", "va"] }).includes("licence_handoff"))
   check("spouse licensing goes to the destination board / installation office", steps({ spouseLicensedOccupation: "registered nurse" }).includes("spouse_licence"))
   const bah = person({ bahMonthly: { amount: 2385, source: "self_stated" } })
   check("a BAH figure is the person's own (\"as you told us\"), else the plan asks for their LES / DTMO lookup", bah.ok && bah.mode === "person" && /\$2,385\/month, as you told us/.test(bah.steps.find((s) => s.key === "housing_budget")?.what ?? "") && /LES or the DTMO lookup/.test((person() as any).steps.find((s: any) => s.key === "housing_budget")?.what ?? ""))

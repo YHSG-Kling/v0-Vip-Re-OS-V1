@@ -51,7 +51,7 @@ export async function BenchCoveragePanel() {
           Which of your vendors can be booked where you work. A vendor that has not declared a
           service area is <strong>not bookable</strong> — it is never assumed to cover everywhere.
           State-licensed trades (title, lender, attorney, insurance) additionally need a current
-          licence for the state.
+          license for the state.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

@@ -113,7 +113,7 @@ export async function createLocationAction(input: {
   address?: string
   city?: string
   state?: string
-  /** C34 office identity (m957): the office's own legal identity, licence and seat ownership. */
+  /** C34 office identity (m957): the office's own legal identity, license and seat ownership. */
   legalName?: string
   dba?: string
   licenseNumber?: string
@@ -125,7 +125,7 @@ export async function createLocationAction(input: {
   const name = input.name?.trim()
   if (!name) return { ok: false, error: "Office name is required" }
   const licenseState = trimOr(input.licenseState, 2)?.toUpperCase() ?? null
-  if (licenseState && !/^[A-Z]{2}$/.test(licenseState)) return { ok: false, error: "Licence state must be a two-letter US state code" }
+  if (licenseState && !/^[A-Z]{2}$/.test(licenseState)) return { ok: false, error: "License state must be a two-letter US state code" }
   if (input.seatCap !== undefined && input.seatCap !== null && (!Number.isInteger(input.seatCap) || input.seatCap < 0)) return { ok: false, error: "Seat ownership must be a whole number of seats (0 or more)" }
 
   const svc = createServiceClient()
@@ -180,7 +180,7 @@ export async function updateLocationAction(
   if (patch.licenseNumber !== undefined) update.license_number = trimOr(patch.licenseNumber, 64)
   if (patch.licenseState !== undefined) {
     const ls = trimOr(patch.licenseState, 2)?.toUpperCase() ?? null
-    if (ls && !/^[A-Z]{2}$/.test(ls)) return { ok: false, error: "Licence state must be a two-letter US state code" }
+    if (ls && !/^[A-Z]{2}$/.test(ls)) return { ok: false, error: "License state must be a two-letter US state code" }
     update.license_state = ls
   }
   if (patch.territories !== undefined) {

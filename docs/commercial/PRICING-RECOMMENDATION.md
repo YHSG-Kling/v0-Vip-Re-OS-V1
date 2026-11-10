@@ -348,7 +348,7 @@ realised usage vs §4.2, ceiling hits per tenant, support hours per tenant, 90-d
 5. Multi-location floor and quote formula (§6.5).
 6. Buy the D-ID Scale plan only when presenter video is sold; re-read its price page first (the 2026-09-12 reading is the owner's; the page renders client-side).
 7. AI model routing: approve a quality evaluation of Sonnet 5.5 / Haiku 5.5 (−26% blended cost).
-8. Licences to confirm before launch: Remotion (free vs $100/mo + $0.01/render), Mapbox Commercial Application License, BatchData per-record quote, Versium credit weights.
+8. Licenses to confirm before launch: Remotion (free vs $100/mo + $0.01/render), Mapbox Commercial Application License, BatchData per-record quote, Versium credit weights.
 9. Whether SMS/voice carrier surcharges are passed through at cost (an alternative to the pack prices). **E-signature envelopes are deliberately in no allowance**: a platform DocuSign account is wired
    (`DOCUSIGN_PLATFORM_ACCOUNT_ID`) and its integrator envelope rate is unpublished; decide tenant-pays vs platform-pays once quoted.
 10. Founding-customer discounts (not modelled).

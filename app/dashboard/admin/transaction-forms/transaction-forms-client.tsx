@@ -191,7 +191,7 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
                 </div>
                 {f.description && <p className="text-xs text-muted-foreground">{f.description}</p>}
                 {f.license_note && (
-                  <p className="text-[10px] text-muted-foreground">Licence: {f.license_note}{f.license_expires_at ? ` · expires ${f.license_expires_at}` : ""}</p>
+                  <p className="text-[10px] text-muted-foreground">License: {f.license_note}{f.license_expires_at ? ` · expires ${f.license_expires_at}` : ""}</p>
                 )}
                 {f.field_schema && f.field_schema.length > 0 && (
                   <p className="text-[10px] text-muted-foreground">
@@ -248,7 +248,7 @@ function CataloguePanel({ rows, error, shareTeams, mayShareBrokerageWide, onAdd 
         <CardTitle className="text-sm">VIPAgents form catalogue</CardTitle>
         <p className="text-xs text-muted-foreground">
           Licensed fillable packets the platform provides. Agents do not see these until you add one to your own library. The copy
-          becomes your brokerage&apos;s packet, shared with the scope you choose, carrying the licence it was provided under.
+          becomes your brokerage&apos;s packet, shared with the scope you choose, carrying the license it was provided under.
         </p>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -433,11 +433,11 @@ function CreateFormDialog({
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2">
-              <Label htmlFor="form-licence">Licence basis</Label>
-              <Input id="form-licence" value={licenseNote} onChange={e => setLicenseNote(e.target.value)} placeholder="e.g., association member licence, forms-provider agreement, our own form" />
+              <Label htmlFor="form-licence">License basis</Label>
+              <Input id="form-licence" value={licenseNote} onChange={e => setLicenseNote(e.target.value)} placeholder="e.g., association member license, forms-provider agreement, our own form" />
             </div>
             <div>
-              <Label htmlFor="form-licence-exp">Licence expires</Label>
+              <Label htmlFor="form-licence-exp">License expires</Label>
               <Input id="form-licence-exp" type="date" value={licenseExpiresAt} onChange={e => setLicenseExpiresAt(e.target.value)} />
             </div>
           </div>

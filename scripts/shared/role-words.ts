@@ -18,7 +18,7 @@
  * gets the same treatment it demands of the tree: ONE definition, imported.
  *
  * (finance-authority exempts its own file from the walk, which is why only the
- * newer copy tripped. The exemption is not a licence for a second copy — it
+ * newer copy tripped. The exemption is not a license for a second copy — it
  * exists so the canonical roster inside the module under scan is not reported
  * against itself.)
  *

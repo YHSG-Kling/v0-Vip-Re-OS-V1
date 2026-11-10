@@ -623,7 +623,7 @@ export function cinemaLowerThirdPlacement(width: number, height: number, fps = 3
 /**
  * THE DISCLOSURE FOOTER (wave 89, lane 89F — the fleet-wide twin of 87D's one
  * talking-head fix). Eleven outro tiles and the shared EndCard typed the
- * Equal Housing / licence line as `bottom: 24, fontSize: 14, opacity: 0.55`
+ * Equal Housing / license line as `bottom: 24, fontSize: 14, opacity: 0.55`
  * — 24 px from the edge (inside every platform's UI band: safeInsets is 97 px
  * on a 1:1 frame, 22 % on 9:16) in 14 px type at half opacity: a DISCLOSURE
  * nobody on a phone could read. One derivation now: the line sits ON the
@@ -688,7 +688,7 @@ export function cinemaEndCardSideInset(width: number, height: number): number {
 /**
  * THE SLIDE FOOTER STACK (wave 90, lane 90E — found by the lane's real renders
  * of ListingSectionReel / BuyerConsultationSlide, the two 16:9 slides 89F
- * published as un-rendered). Both slides typed their Equal Housing / licence
+ * published as un-rendered). Both slides typed their Equal Housing / license
  * footer as a 40 px bar at `bottom: 0` in 12 px type — inside every player's
  * control bar (the safe bottom inset is 97 px on a 16:9 frame), the agent's
  * nameplate at `bottom: 32`, and their burned-in caption band (which runs the
@@ -708,7 +708,7 @@ export function cinemaEndCardSideInset(width: number, height: number): number {
  * safe bottom inset and rises `size + ringWidth` above it — the disclosure
  * line, the nameplate row and the caption band ALL lie inside that vertical
  * band, and the disclosure was centred across the WHOLE safe width: a
- * brokerage name + licence line longer than the fixture's ("Demo Realty ·
+ * brokerage name + license line longer than the fixture's ("Demo Realty ·
  * Equal Housing Opportunity · Lic. #DEMO-0000" ends 64 px short of the ring on
  * 1920×1080) ran UNDER the presenter — the disclosure occluded by the agent's
  * own face, the same defect class as a disclosure under a platform button.
@@ -717,7 +717,7 @@ export function cinemaEndCardSideInset(width: number, height: number): number {
  * bottom) so a caller can prove which rows share its band.
  *
  * THE DISCLOSURE'S OWN HEIGHT (the lane's second AFTER render, a real-length
- * brokerage + licence line): in the width left of the presenter a 90-character
+ * brokerage + license line): in the width left of the presenter a 90-character
  * disclosure WRAPS, and a stack that assumed one line put its second line
  * straight through the nameplate ("Dana Demo" overprinted by "Demo Realty of
  * Greater Miami…", `after2-ListingSectionReel-mid.png`). The stack takes the
@@ -750,23 +750,23 @@ export const SLIDE_PRESENTER_PIP = { size: 280, ringWidth: 5 } as const
 export const DISCLOSURE_GLYPH_EM = 0.56
 
 /**
- * The disclosure line — brokerage · Equal Housing Opportunity · licence — composed ONCE, so the
+ * The disclosure line — brokerage · Equal Housing Opportunity · license — composed ONCE, so the
  * stack lays out the same text the slide renders.
  *
  * WAVE 91 (lane 91E — the real renders of the listing-promo fleet): JustListedReel,
  * JustListedReelSquare, JustSoldReelSquare and PhotoWalkthroughReel printed "Equal Housing
  * Opportunity" and NO brokerage name anywhere in the film, although every producer stages
  * `brand.brokerageName` (render-just-listed brandFor, director-content brandBlock) — a write with
- * no reader, on listing ADVERTISING, where the brokerage's name is the attribution state licence
+ * no reader, on listing ADVERTISING, where the brokerage's name is the attribution state license
  * law asks for (lib/kernel/marketing/real-estate-compliance-gate.ts). Those end cards now read
  * this same composer; `brokerageName` became optional so a brand without one degrades to the
  * mark alone (never an empty "· Equal Housing" fragment). Output for a named brokerage is
  * byte-identical to before. PURE.
  *
  * WAVE 92 (lane 92E — 91E's 16:9 slide renders): a wrapped disclosure broke INSIDE a hyphenated
- * licence ("Lic. #BK-" / "DEMO-0000123"), so the number a reader must copy split across two
- * lines. The licence is now one unbreakable token — its hyphens are U+2011 NON-BREAKING HYPHEN
- * and its spaces U+00A0 — so the line wraps at the " · " separators or before the licence,
+ * license ("Lic. #BK-" / "DEMO-0000123"), so the number a reader must copy split across two
+ * lines. The license is now one unbreakable token — its hyphens are U+2011 NON-BREAKING HYPHEN
+ * and its spaces U+00A0 — so the line wraps at the " · " separators or before the license,
  * never through it. The glyphs look identical (a reader comparing characters maps U+2011 back
  * to "-" and U+00A0 back to " ").
  */
@@ -778,7 +778,7 @@ export function slideDisclosureText(brand: { brokerageName?: string | null; show
   ].filter(Boolean).join(" · ")
 }
 
-/** The licence as ONE line-break-free token (U+2011 hyphens, U+00A0 spaces). PURE. */
+/** The license as ONE line-break-free token (U+2011 hyphens, U+00A0 spaces). PURE. */
 function unbreakableLicence(licenseLine: string | null | undefined): string | null {
   const t = licenseLine?.trim()
   return t ? t.replace(/-/g, "\u2011").replace(/ /g, "\u00A0") : null

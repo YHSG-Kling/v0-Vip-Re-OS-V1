@@ -59,8 +59,8 @@ export function ListingFormsPanel({
   // The e-sign flow prefills form FIELDS via forms-kernel's prefillFormAction,
   // which resolves listing + seller only. prefillListingFormFromRecord resolves
   // the same listing and seller PLUS the block a listing agreement legally needs
-  // and nothing else in this product surfaces: the agent's licence number and
-  // state, and the brokerage's name, address, phone and licence number.
+  // and nothing else in this product surfaces: the agent's license number and
+  // state, and the brokerage's name, address, phone and license number.
   //
   // Those are exactly the fields that produce a defective executed agreement when
   // blank — and the agent found out only after the seller had signed it. Reading
@@ -107,9 +107,9 @@ export function ListingFormsPanel({
     { key: "address",            label: "Property address" },
     { key: "listPrice",          label: "List price" },
     { key: "agentLastName",      label: "Listing agent name" },
-    { key: "agentLicenseNumber", label: "Agent licence number" },
+    { key: "agentLicenseNumber", label: "Agent license number" },
     { key: "brokerageName",      label: "Brokerage name" },
-    { key: "brokerageLicense",   label: "Brokerage licence number" },
+    { key: "brokerageLicense",   label: "Brokerage license number" },
   ]
   const missingOnForm = prefill
     ? REQUIRED_ON_FORM.filter(({ key }) => {
@@ -185,7 +185,7 @@ export function ListingFormsPanel({
                   ))}
                 </ul>
                 <p className="mt-1.5 text-amber-800">
-                  A listing agreement executed without the agent and brokerage licence details is
+                  A listing agreement executed without the agent and brokerage license details is
                   defective. Fill these in before sending it for signature.
                 </p>
               </div>
@@ -193,7 +193,7 @@ export function ListingFormsPanel({
             {!loading && !prefillError && prefill && missingOnForm.length === 0 && (
               <p className="text-xs text-emerald-700 flex items-center gap-1.5">
                 <CircleCheck className="h-3.5 w-3.5 shrink-0" />
-                Seller, property, agent licence and brokerage licence details are all on file.
+                Seller, property, agent license and brokerage license details are all on file.
               </p>
             )}
 

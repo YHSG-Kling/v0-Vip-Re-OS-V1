@@ -37,7 +37,7 @@
 // does not change because a second brokerage added them to its bench. Hanging
 // coverage off `vendors` would mint one coverage answer per tenant for one real
 // company — the exact many-truths shape m549 was written to end — and a vendor
-// crossing territories would have to re-declare, and re-prove, the same licence
+// crossing territories would have to re-declare, and re-prove, the same license
 // once per brokerage that hired them.
 //
 // ── THE GRAIN: state + zip_code. MEASURED, NOT PICKED ────────────────────────
@@ -81,10 +81,10 @@
 // not spell. Both can be spelled now, and both are on
 // STATE_LICENSED_VENDOR_CATEGORIES below.
 //
-// The licence RECORD SHAPE is not a new one. `vendors.compliance_credentials`
+// The license RECORD SHAPE is not a new one. `vendors.compliance_credentials`
 // already carries a bag validated by the live `vendor_credential_bag_ok` /
 // `vendor_credential_record_ok` functions with keys license / insurance /
-// certification / bond. m551's per-state licence reuses `vendor_credential_record_ok`
+// certification / bond. m551's per-state license reuses `vendor_credential_record_ok`
 // verbatim, so there is ONE credential shape in this repo and not two.
 //
 // ── FAIL CLOSED, AND SAY WHICH DOOR WAS SHUT ─────────────────────────────────
@@ -107,7 +107,7 @@ export type VendorServiceAreaStatus = (typeof VENDOR_SERVICE_AREA_STATUSES)[numb
 
 /**
  * The trades whose practitioners are STATE-LICENSED, so coverage in a state is
- * only real if a licence backs it.
+ * only real if a license backs it.
  *
  * Every value is a `VendorCategory` — the one taxonomy in
  * lib/kernel/vendor-categories.ts that `vendors.category` and
@@ -116,7 +116,7 @@ export type VendorServiceAreaStatus = (typeof VENDOR_SERVICE_AREA_STATUSES)[numb
  *
  * WHY THESE SEVEN, and why the omissions are deliberate:
  *
- *   lender / refinance_lender  a mortgage originator holds a state licence per
+ *   lender / refinance_lender  a mortgage originator holds a state license per
  *                              state they lend in (NMLS state authority). This
  *                              is the single most common cross-state vendor and
  *                              the owner named it.
@@ -193,7 +193,7 @@ export const STATE_LICENSED_VENDOR_CATEGORIES: ReadonlySet<VendorCategory> = new
   "surveyor",
 ])
 
-/** PURE — does a job in this trade require a state licence to be bookable? */
+/** PURE — does a job in this trade require a state license to be bookable? */
 export function isStateLicensedTrade(category: string | null | undefined): boolean {
   return isVendorCategory(category) && STATE_LICENSED_VENDOR_CATEGORIES.has(category)
 }
@@ -233,12 +233,12 @@ export interface VendorCoverageRow {
   zipCode: string | null
   tradeCategory: string
   status: VendorServiceAreaStatus | string
-  /** The per-state licence, same record shape as
+  /** The per-state license, same record shape as
    *  vendors.compliance_credentials -> 'license'. null = none on file. */
   license: { expiry?: string | null; verified_at?: string | null; policy_number?: string | null } | null
   /**
    * The declaring operator's own note on this coverage row — "north of the river
-   * only", "licence renewal filed 3 Aug". Free text, no vocabulary.
+   * only", "license renewal filed 3 Aug". Free text, no vocabulary.
    *
    * WIRED BECAUSE IT WAS WRITTEN AND READ BY NOBODY (§1.2). m551 created the
    * column and `declareVendorServiceArea` writes it, but the coverage read
@@ -248,7 +248,7 @@ export interface VendorCoverageRow {
    * where the next person will see it.
    *
    * It carries NO weight in `vendorGeoVerdict`, deliberately: bookability is
-   * decided by state, ZIP, status and licence, and letting prose into that
+   * decided by state, ZIP, status and license, and letting prose into that
    * decision would make a compliance gate depend on something unparseable.
    */
   notes: string | null
@@ -277,7 +277,7 @@ export interface VendorGeoFacts {
    * TRUE when this bench row has NO platform identity
    * (vendors.platform_vendor_id IS NULL) — a row the tenant added by hand for
    * their own market, not a marketplace company crossing territories. The
-   * cross-territory question does not arise for it; the LICENCE question still
+   * cross-territory question does not arise for it; the LICENSE question still
    * does, and is answered from the bench row's own credential bag.
    */
   localBenchRow: boolean
@@ -286,7 +286,7 @@ export interface VendorGeoFacts {
   /** Where the tenant works. Empty = the tenant declared nothing. */
   tenantAreas: TenantServiceArea[]
   /** For a LOCAL bench row only: vendors.compliance_credentials -> 'license'.
-   *  It carries no state, so it can prove a licence exists, never which state
+   *  It carries no state, so it can prove a license exists, never which state
    *  it is for — the verdict says exactly that rather than pretending. */
   benchLicense?: { expiry?: string | null; verified_at?: string | null } | null
 }
@@ -305,7 +305,7 @@ export type VendorGeoVerdict =
   | {
       ok: true
       reason: "covered" | "local_bench_row"
-      /** How well the licence question was answered where it was asked. */
+      /** How well the license question was answered where it was asked. */
       licence: "not_required" | "verified_in_state" | "on_file_state_unknown"
       /** The coverage row that admitted the job, when there was one. */
       matched?: VendorCoverageRow
@@ -326,7 +326,7 @@ const REFUSAL_TEXT: Record<VendorGeoRefusal, string> = {
   // (lane 80E: VENDOR_COVERAGE_FAIL_CLOSED_RULE was exported for the proof and
   // spoken by no refusal).
   job_state_unknown:
-    `This job has no state on it, so no coverage or licence check can be made. Add the property state. ${VENDOR_COVERAGE_FAIL_CLOSED_RULE}`,
+    `This job has no state on it, so no coverage or license check can be made. Add the property state. ${VENDOR_COVERAGE_FAIL_CLOSED_RULE}`,
   vendor_coverage_unknown:
     `This vendor has not declared where it works, so it cannot be booked. Ask the vendor to add a service area. ${VENDOR_COVERAGE_FAIL_CLOSED_RULE}`,
   tenant_service_area_unknown:
@@ -336,9 +336,9 @@ const REFUSAL_TEXT: Record<VendorGeoRefusal, string> = {
   coverage_not_active:
     "This vendor's coverage for this area is suspended or withdrawn.",
   licence_missing:
-    "This trade is state-licensed and this vendor has no licence on file for this state, so it cannot be booked here.",
+    "This trade is state-licensed and this vendor has no license on file for this state, so it cannot be booked here.",
   licence_expired:
-    "This vendor's licence for this state has expired, so it cannot be booked here.",
+    "This vendor's license for this state has expired, so it cannot be booked here.",
 }
 
 function refuse(reason: VendorGeoRefusal): VendorGeoVerdict {
@@ -392,10 +392,10 @@ export function intersectTenantAreas(
   )
 }
 
-/** PURE — is a licence record present and unexpired at `now`?
+/** PURE — is a license record present and unexpired at `now`?
  *  A record with no expiry is treated as present-and-current: the live
  *  credential shape makes `expiry` optional, and inventing an expiry the vendor
- *  never gave would refuse a valid licence. */
+ *  never gave would refuse a valid license. */
 export function licenceIsCurrent(
   license: { expiry?: string | null } | null | undefined,
   now: number,
@@ -427,7 +427,7 @@ export function vendorGeoVerdict(facts: VendorGeoFacts, now: number = Date.now()
 
   // ── A LOCAL bench row: the tenant added this company themselves, for their
   // own market. No cross-territory claim is being made, so there is no coverage
-  // to intersect. The LICENCE question still applies — answered from the bench
+  // to intersect. The LICENSE question still applies — answered from the bench
   // row's own credential bag, which carries no state, so the best it can ever
   // say is "on file, state unknown". Saying so is the point.
   if (facts.localBenchRow) {
@@ -463,8 +463,8 @@ export function vendorGeoVerdict(facts: VendorGeoFacts, now: number = Date.now()
   }
 
   // Licensed trade: at least one ACTIVE admitting row must carry a current
-  // licence. A vendor with three covered ZIPs and one valid licence is licensed;
-  // a vendor with three covered ZIPs and three expired licences is not.
+  // license. A vendor with three covered ZIPs and one valid license is licensed;
+  // a vendor with three covered ZIPs and three expired licenses is not.
   const licensed = active.find((row) => licenceIsCurrent(row.license, now) === "current")
   if (licensed) return { ok: true, reason: "covered", licence: "verified_in_state", matched: licensed }
 
@@ -503,12 +503,12 @@ export function vendorGeoVerdict(facts: VendorGeoFacts, now: number = Date.now()
  *
  *  3. STATEWIDE MUST COST MORE THAN A ZIP, OR THE GRAIN IS DECORATIVE. If both
  *     price the same every vendor declares statewide, coverage stops meaning
- *     anything, and the licence gate loses the per-state precision it depends
+ *     anything, and the license gate loses the per-state precision it depends
  *     on.
  *
- *  4. LICENCE VERIFICATION IS A COST AND ARGUABLY A LINE ITEM. Checking a title
- *     or lender licence per state is real work; if it is free, it will not be
- *     done, and an unverified licence gate is theatre.
+ *  4. LICENSE VERIFICATION IS A COST AND ARGUABLY A LINE ITEM. Checking a title
+ *     or lender license per state is real work; if it is free, it will not be
+ *     done, and an unverified license gate is theatre.
  *
  * NONE OF THIS IS PRICED HERE. It needs the owner's sign-off on price shape.
  */

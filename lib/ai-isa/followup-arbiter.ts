@@ -1828,7 +1828,7 @@ async function loadLifeChangeSignals(
  * reach the arbiter as LifeChangeSignals here and nowhere else, through lib/intent/movement-signals.ts movementSignalsForArbiter
  * (the ONE hook — lane G's notes named it `arbiterMovementSignals`, lane B shipped `movementSignalsForArbiter`; one name, B's, so
  * no twin was written). The hook returns ONLY a dominant relevance that at least one verified or reported record carries (an
- * `inferred`-only combination is never read as a life change — C9's own rule, enforced in the hook), already licence / consent /
+ * `inferred`-only combination is never read as a life change — C9's own rule, enforced in the hook), already license / consent /
  * outreach-checked at the record, plus the neighbourly helpers that evidence supports (described to the model as OPTIONS with
  * the evidence they need, never a timetable). Lazily imported so the page graph stays light (test:proxy-graph-budget). A thrown
  * or refused read is a blind spot — an unread source is never "no signal".

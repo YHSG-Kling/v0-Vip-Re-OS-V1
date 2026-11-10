@@ -196,7 +196,7 @@ Go to **Storage → Policies**, find the bucket `brokerage-forms`, and follow th
   - Your brokerage's loose files in `brokerage/{yours}/…`.
   - A **registered packet** at `…/packets/{row}/…`, but only through its library row, and only when you either:
     - manage it (the oversight class, or that team's lead); or
-    - may use it (it is active, its licence has not expired, and it is brokerage-wide or your own live team's).
+    - may use it (it is active, its license has not expired, and it is brokerage-wide or your own live team's).
   - A team's loose files, if you are a member of that live team or in the brokerage's oversight class.
   - `filled/{you or an offer of your brokerage}/…`.
 - **Write, update and delete.** Only your own `agents/{you}/…` folder. Every other root is written by the server after its own gate. The only browser writer in the code is the FormWizard upload into `agents/{id}/uploads/`; `scripts/transfer-classification-guard.ts` holds that census.
@@ -230,7 +230,7 @@ Then, in the repository (or ask the integrator):
 
 ## G. m874 + m875 — the four private document buckets and the offer row (RELEASE-BLOCKING; wave 146, lane 146A — owner ruling 20, priority 1)
 
-**Status (measured 2026-10-29, project `hrvaqgvukzxfskkcrwbt`, read-only): OPEN.** `storage.objects` carries **15 bucket-wide policies** on the four sibling buckets — `auth read / upload / update / delete` on `client-documents`, `offer-documents` and `transaction-documents`, and `auth read / upload / update` on `agent-documents` — each `bucket_id = '<bucket>'` and nothing else, `TO authenticated`. Every signed-in user of any tenant (a portal **contact** and a **vendor** seat included) can list, read, overwrite and delete every client's bank statement, W-9 and pre-approval, every offer PDF, every deal file (wire instructions included) and every agent's licence. All four buckets are private (`public = false`) and the storage schema holds **0 objects**, the only reason nothing has leaked. m874's readiness read, run inline, reports all four as `open`.
+**Status (measured 2026-10-29, project `hrvaqgvukzxfskkcrwbt`, read-only): OPEN.** `storage.objects` carries **15 bucket-wide policies** on the four sibling buckets — `auth read / upload / update / delete` on `client-documents`, `offer-documents` and `transaction-documents`, and `auth read / upload / update` on `agent-documents` — each `bucket_id = '<bucket>'` and nothing else, `TO authenticated`. Every signed-in user of any tenant (a portal **contact** and a **vendor** seat included) can list, read, overwrite and delete every client's bank statement, W-9 and pre-approval, every offer PDF, every deal file (wire instructions included) and every agent's license. All four buckets are private (`public = false`) and the storage schema holds **0 objects**, the only reason nothing has leaked. m874's readiness read, run inline, reports all four as `open`.
 
 The **offer row** has the same shape in the public schema: `offers_tenant_select / _update / _delete` are `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`, so a portal contact or a vendor seat reads (and may change) every offer of their brokerage, and every user of every tenant reads an offer whose `brokerage_id` is NULL. Measured with a contact's JWT claims: their `current_user_brokerage_id()` is set, so the live rule admits them. Live offers: 0.
 
@@ -359,7 +359,7 @@ COMMIT;
 | client-documents · `avatars/{contact}-…` | staff on that contact; the contact themselves | same | — |
 | client-documents · `vendors/{vendor}/…` | the vendor's own seat; the vendor's brokerage books readers | the vendor's own seat | — |
 | client-documents · `{brokerage}/…`, `buyer-intake/…` | server only | server only | server only |
-| agent-documents · `{user}/license|eo-insurance/…` | the agent themselves; the oversight class of their **current** brokerage | the agent themselves | — (licence evidence is kept) |
+| agent-documents · `{user}/license|eo-insurance/…` | the agent themselves; the oversight class of their **current** brokerage | the agent themselves | — (license evidence is kept) |
 | offer-documents · everything | server only | server only | server only |
 
 A transferred deal's file is **held**: while any `transaction_documents` row of the deal sits in a brokerage other than the transaction's (the adoption rail keeps those rows — `explicit_transfer` — in the archived source), no session reads, writes or deletes that deal's objects. Every rule reads current membership, so suspension, removal, agent deactivation, leaving a team or a cancelled vendor assignment revokes at once. A **signed URL already minted stays valid until it expires** — RLS cannot revoke a bearer token.
@@ -401,7 +401,7 @@ SELECT count(*) AS offers_visible_to_contact FROM public.offers;
 ROLLBACK;
 ```
 
-(Measured before m874/m875 with these predicates inlined, 2026-10-29, deal `f0000000-…0001`: the deal's agent, the broker and the TC are admitted to the deal file; another agent of the same brokerage, a contact, a vendor seat and another tenant's admin are refused; the broker reads an agent's licence folder, the TC and another agent do not; a `..` segment is refused while a file named `Smith..v2.pdf` is admitted.)
+(Measured before m874/m875 with these predicates inlined, 2026-10-29, deal `f0000000-…0001`: the deal's agent, the broker and the TC are admitted to the deal file; another agent of the same brokerage, a contact, a vendor seat and another tenant's admin are refused; the broker reads an agent's license folder, the TC and another agent do not; a `..` segment is refused while a file named `Smith..v2.pdf` is admitted.)
 
 ### Rollback (re-opens the exposure — only to undo a broken apply, and say so)
 

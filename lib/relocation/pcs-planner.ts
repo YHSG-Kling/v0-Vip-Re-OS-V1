@@ -129,7 +129,7 @@ export function planRelocation(input: RelocationInput): RelocationPlan {
   const destState = (input.destination.state ?? "").trim().toUpperCase()
   const licensed = (input.agentLicensedStates ?? []).map((s) => s.trim().toUpperCase())
   if (destState && licensed.length > 0 && !licensed.includes(destState)) steps.push({ key: "licence_handoff", owner: "referral", what: `${destState} is outside the states your agent is licensed in — a referral to a licensed agent there, with your consent`, sources: [] })
-  if (input.spouseLicensedOccupation) steps.push({ key: "spouse_licence", owner: "the person", what: `licence transfer questions for a ${input.spouseLicensedOccupation} go to the destination state's licensing board and the installation's relocation office`, sources: ["military_installations"] })
+  if (input.spouseLicensedOccupation) steps.push({ key: "spouse_licence", owner: "the person", what: `license transfer questions for a ${input.spouseLicensedOccupation} go to the destination state's licensing board and the installation's relocation office`, sources: ["military_installations"] })
   const sv = input.currentHome ? sellVsRent(input.currentHome) : null
   if (sv) steps.push({ key: "sell_vs_rent", owner: "listing_concierge · finance handoff", what: "compare selling with renting out the current home (illustration below; tax and lending questions go to a CPA and a lender)", sources: [] })
   return { ok: true, mode: "person", window, windowBasis: Number.isFinite(stated) ? "stated_date" : "unknown", steps, sellVsRent: sv, sources: PCS_OFFICIAL_SOURCES, boundary: BOUNDARY }

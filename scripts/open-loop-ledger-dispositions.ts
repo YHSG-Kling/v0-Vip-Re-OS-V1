@@ -62,9 +62,9 @@ export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
   "147D-SO-01": { s: "carried", k: "inherent-limit", o: "inherent", r: "[BS_SCOPE]" },
   "147D-SO-02": { s: "carried", k: "licensing", o: "lane148J", r: "DealMachine platform-paid evaluation — ruling 19 + 22, lane 148J; an adapter only on terms confirmed in writing (WAITING_EXTERNAL DEALMACHINE_API_KEY, named only)." },
   "147D-SO-03": handed("lane148J", "DealMachine fill/match rates and BatchData per-match rate unmeasured — lane 148J's field-by-field coverage and cost matrix (ruling 19)."),
-  "147D-SO-04": handed("lane148J", "Ratchet: no lib/providers/dealmachine/ while the licence verdict stands — lane 148J's provider-consolidation guard."),
-  "147D-OL-01": { s: "closed", e: ["lib/intent/movement-source-registry.ts#we_dealmachine"], by: "lane 147B (row present, licence not_permitted)" },
-  "147D-OL-02": { s: "closed", e: ["lib/intent/movement-source-registry.ts#we_dealmachine"], by: "lane 147B (row present, licence not_permitted)" },
+  "147D-SO-04": handed("lane148J", "Ratchet: no lib/providers/dealmachine/ while the license verdict stands — lane 148J's provider-consolidation guard."),
+  "147D-OL-01": { s: "closed", e: ["lib/intent/movement-source-registry.ts#we_dealmachine"], by: "lane 147B (row present, license not_permitted)" },
+  "147D-OL-02": { s: "closed", e: ["lib/intent/movement-source-registry.ts#we_dealmachine"], by: "lane 147B (row present, license not_permitted)" },
   "147D-OL-03": handed("lane148J", "The record-time refusal assertion for a we_dealmachine record is not added (147Z Still open 5) — lane 148J (provider consolidation) with lane 148F's movement guard."),
   "147D-OL-04": { s: "closed", e: ["lib/intent/movement-source-registry.ts#we_dealmachine", "absent:lib/enrichment/intent-signal-sources.ts#\"dealmachine\""], by: "held — dealmachine is not a producing provider" },
   // ── lane E (magnets / market reports) ─────────────────────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
   "147Z-OD-02": { s: "carried", k: "owner-decision", o: "owner", r: `Unknown-texter consent — ${R22}: texting in counts as consent, no unattended reply until identified (kept; the code holds it).` },
   "147Z-OD-03": { s: "carried", k: "licensing", o: "lane148J", r: `DealMachine — ${R22}: platform-paid evaluation (lane 148J); adapter only on written terms.` },
   "147Z-OD-04": { s: "closed", e: ["lib/intent/movement-source-registry.ts#platform_scrape_contested"], by: `${R22} — contested sources stay manual-only (kept, recorded)` },
-  "147Z-OD-05": { s: "carried", k: "handed-to-lane", o: "lane148E", r: `Lifestyle data — ${R22}: Mapbox first (lane 148E); Walk Score only if its licence adds value.` },
+  "147Z-OD-05": { s: "carried", k: "handed-to-lane", o: "lane148E", r: `Lifestyle data — ${R22}: Mapbox first (lane 148E); Walk Score only if its license adds value.` },
   // ── wave 146–143 (launch-critical rows verified by the 148K audit) ────────────────────────────────────────────────
   "146H-SO-01": { s: "closed", e: ["app/constants/auth.ts#PUBLIC_LISTING_DETAIL_PATH"], by: "wave 146 convergence (lane 146Z)" },
   "146H-OL-01": { s: "closed", e: ["app/constants/auth.ts#PUBLIC_LISTING_DETAIL_PATH"], by: "wave 146 convergence (lane 146Z)" },

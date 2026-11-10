@@ -119,7 +119,10 @@ async function main() {
     const words = (m?.[1] ?? "").match(/'([a-z_]+)'/g)?.map((w) => w.slice(1, -1)) ?? []
     return words.length === ps.RAW_PROCESSING_STATUSES.length && ps.RAW_PROCESSING_STATUSES.every((w) => words.includes(w)) && (ps.REJECTION_STATUSES as readonly string[]).includes("held_stale")
   })())
-  check("m967 line 1 carries the lane stamp", read("supabase/migrations/m967-rawdata-freshness-verdict-and-held-stale.sql").split("\n")[0] === "-- WRITTEN, NOT APPLIED (wave 151, lane 151C) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL")
+  // wave 151 (lane 151L): re-asserted from a WAYPOINT (the lane stamp, which flips on apply — CLAUDE.md §2) to the RULE: the lane
+  // stamp OR the APPLIED stamp, and never an mNNN token on line 1 (the migration-claim guard reads that line).
+  const m967line1 = read("supabase/migrations/m967-rawdata-freshness-verdict-and-held-stale.sql").split("\n")[0]
+  check("m967 line 1 carries the lane stamp or the APPLIED stamp, and never an mNNN token", (/^-- WRITTEN, NOT APPLIED \(wave 151, lane 151C\)/.test(m967line1) || /^-- ── APPLIED LIVE/.test(m967line1)) && !/\bm\d{3}\b/.test(m967line1), m967line1.slice(0, 80))
 
   console.log("\n[B] the IF / THEN door")
   const noPlans: never[] = []

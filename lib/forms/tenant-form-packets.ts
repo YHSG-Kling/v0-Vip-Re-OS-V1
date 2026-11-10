@@ -14,13 +14,13 @@
  *               `agents/{userId}/…`, `filled/…` (lib/forms/form-path-scope.ts reads this layout).
  *   BUILT       membership: lib/kernel/resolve-user-team.ts resolveUserTeam — the TS twin of public.resolve_team_id() (lead →
  *               users.team_id → current team_members row → agents.team_id), and resolveLedTeamId for "who leads a team".
- *   PARTIAL     the registry was BROKERAGE-only (no team column, no licence record, the stored PDF reached only by an expiring
+ *   PARTIAL     the registry was BROKERAGE-only (no team column, no license record, the stored PDF reached only by an expiring
  *               signed `pdf_url`), so a team could not share a packet with its own agents without sharing it with the whole
- *               brokerage, and the licence a form is held under was nowhere.
+ *               brokerage, and the license a form is held under was nowhere.
  *   DUPLICATED  wave 143's `platform_form_packets` (m807) made the PLATFORM a packet owner handing packets straight to every
  *               tenant's agents. Converged here: the platform registry stays as a clearly labelled CATALOGUE (genuinely
- *               platform-provided, licence-recorded) that a brokerage ADDS to its own library — a copy into the tenant's own
- *               bucket prefix, a `brokerage_form_library` row carrying `source_platform_packet_id` and the licence — and agents
+ *               platform-provided, license-recorded) that a brokerage ADDS to its own library — a copy into the tenant's own
+ *               bucket prefix, a `brokerage_form_library` row carrying `source_platform_packet_id` and the license — and agents
  *               only ever see the brokerage's / team's library (lib/forms/platform-form-packets.ts addPlatformPacketToLibrary).
  *   FOUND       the `brokerage-forms` bucket's storage policies admitted ANY signed-in user to read, overwrite and delete ANY
  *               object in it — every tenant's library and every filled offer (a buyer's name, price and terms). m853 scoped them
@@ -31,18 +31,18 @@
  *               read another buyer's filled offer; and a suspended user or a deactivated agent kept access. The reader is now an
  *               ACTIVE tenant STAFF SEAT (FORM_LIBRARY_SEAT_USER_TYPES, below), in code (resolvePacketActor) and in SQL (m854
  *               public.brokerage_forms_seat_active()). The upload route also stopped PERSISTING a 10-year signed URL in
- *               brokerage_form_library.pdf_url — a bearer link no retirement, licence expiry or membership end could revoke; every
+ *               brokerage_form_library.pdf_url — a bearer link no retirement, license expiry or membership end could revoke; every
  *               packet link is minted per view by issueTenantPacketUrl.
  *
  * THE RULES (each one is code below, and a check in scripts/closing-compliance-guard.ts section F)
  *   · A packet lives at `brokerage/{brokerageId}/packets/{rowId}/{file}.pdf` (shared with the whole brokerage) or
  *     `teams/{teamId}/packets/{rowId}/{file}.pdf` (shared with that team only). The row's path must sit under its owner (m853 CHECK).
- *   · An agent SEES a packet only when it is their brokerage's, active, in licence, and either brokerage-wide or their OWN team's
+ *   · An agent SEES a packet only when it is their brokerage's, active, in license, and either brokerage-wide or their OWN team's
  *     (canonical membership). The brokerage's oversight class (the tenant admin roster minus team_lead — "teams see only their
  *     own board", CLAUDE.md §4) sees every team's packets in their brokerage. Another tenant's packet is never visible.
  *   · Sharing with the whole brokerage is the oversight class's act; sharing with a team is that team's lead's (or oversight's).
  *   · Branding is allowed: nothing here inspects, strips or rewrites a packet's artwork. Licensing is RECORDED (`license_note`,
- *     `license_expires_at`), and an expired licence stops the packet being offered or filled.
+ *     `license_expires_at`), and an expired license stops the packet being offered or filled.
  *   · Fail closed: a refused read is an error, never "no packets"; an unmatched update is a refusal, not a success.
  *
  * Not server-only: every read is behind an injected client, so a plain tsx guard drives it on an in-memory client.
@@ -157,7 +157,7 @@ const todayIso = (now: Date = new Date()) => now.toISOString().slice(0, 10)
 function packetVisibleTo(row: Pick<TenantPacketRow, "brokerage_id" | "team_id" | "is_active" | "license_expires_at">, actor: PacketActor, today: string): { visible: boolean; reason: string | null } {
   if (row.brokerage_id !== actor.brokerageId) return { visible: false, reason: "the packet belongs to another brokerage" }
   if (!row.is_active) return { visible: false, reason: "the packet was retired" }
-  if (row.license_expires_at && row.license_expires_at < today) return { visible: false, reason: `the packet's licence expired on ${row.license_expires_at}` }
+  if (row.license_expires_at && row.license_expires_at < today) return { visible: false, reason: `the packet's license expired on ${row.license_expires_at}` }
   if (row.team_id && row.team_id !== actor.teamId && !actor.oversight) return { visible: false, reason: "the packet is shared with another team" }
   return { visible: true, reason: null }
 }
@@ -272,7 +272,7 @@ export async function listFormPacketsForActor(
 
 /**
  * The scope check's registry half: for these registered-packet paths, which may THIS actor fill right now? A path is admitted only
- * when it is EXACTLY the row's stored path and the row is visible to the actor (brokerage, active, in licence, membership). A
+ * when it is EXACTLY the row's stored path and the row is visible to the actor (brokerage, active, in license, membership). A
  * refused read refuses every path (fail closed). Called by lib/forms/form-path-scope.ts.
  */
 export async function usableTenantPacketPaths(svc: Svc, actor: PacketActor, paths: string[], now: Date = new Date()): Promise<{ ok: true; usable: Set<string> } | { ok: false; error: string }> {
@@ -291,7 +291,7 @@ export async function usableTenantPacketPaths(svc: Svc, actor: PacketActor, path
 /**
  * THE ONE MINTING DOOR FOR A REGISTERED PACKET MASTER (wave 145, lane 145A). A short-lived signed link, minted per view, only when
  * the row is the actor's brokerage's, its stored path is EXACTLY a well-formed tenant packet path under the row's own owner, and:
- *   · purpose "use"    — the row is visible to the actor right now (active, in licence, brokerage-wide or their own team — the fill
+ *   · purpose "use"    — the row is visible to the actor right now (active, in license, brokerage-wide or their own team — the fill
  *                        rule; the SQL twin is m854's registered-packet arm of brokerage_forms_path_readable);
  *   · purpose "manage" — the actor has authority over the row's scope (mayManagePacketScope — the oversight class, or the team's lead
  *                        for a team packet), retired / expired rows included so a manager can review before reactivating.
@@ -355,7 +355,7 @@ export interface RegisterTenantPacketInput {
   packetType: string
   formCode?: string | null
   description?: string | null
-  /** Under what licence the brokerage / team holds this form (association membership, a forms-provider agreement, its own form). */
+  /** Under what license the brokerage / team holds this form (association membership, a forms-provider agreement, its own form). */
   licenseNote?: string | null
   licenseExpiresAt?: string | null
   fieldSchema?: string[] | null
@@ -371,7 +371,7 @@ function validatePacketMeta(input: { name: string; state: string; packetType: st
   if (input.name.trim().length < 3) return "Give the packet a name (at least 3 characters)."
   if (!/^[A-Z]{2}$/.test(input.state.trim().toUpperCase())) return "Choose the state the packet is for (two-letter code)."
   if (!(FORM_PACKET_TYPES as readonly string[]).includes(input.packetType)) return `"${input.packetType}" is not a packet type (${FORM_PACKET_TYPES.join(", ")}).`
-  if (input.licenseExpiresAt && !/^\d{4}-\d{2}-\d{2}$/.test(input.licenseExpiresAt)) return "The licence expiry must be a date (YYYY-MM-DD)."
+  if (input.licenseExpiresAt && !/^\d{4}-\d{2}-\d{2}$/.test(input.licenseExpiresAt)) return "The license expiry must be a date (YYYY-MM-DD)."
   return null
 }
 

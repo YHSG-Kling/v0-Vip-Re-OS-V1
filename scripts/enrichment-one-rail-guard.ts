@@ -40,7 +40,7 @@
  *   Layer 5 — ASSESSORSEARCH: researched, NOT added — no env read and no
  *             connector for it anywhere (fixture flagged: control). The
  *             verdict (not cheaper than the public-records rung; internal-
- *             workflow licence) is in the lane notes and the registry entry.
+ *             workflow license) is in the lane notes and the registry entry.
  *   Layer 6 — PERSONA / PLATFORM REALISM (continues 79B): the customer bundle
  *             mounts the owner's five follow-ups + record_qualification; the
  *             widget capture routes create the person through captureContact

@@ -78,7 +78,7 @@ export default async function DashboardSettingsOfficesPage({ searchParams }: { s
                   </div>
                   <dl className="grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
                     <div><dt className="inline font-medium">Legal name: </dt><dd className="inline">{o.legalName ?? "Not stated"}{o.dba ? ` (DBA ${o.dba})` : ""}</dd></div>
-                    <div><dt className="inline font-medium">Licence: </dt><dd className="inline">{o.licenseNumber ? `${o.licenseNumber}${o.licenseState ? ` · ${o.licenseState}` : ""}` : "Not stated"}</dd></div>
+                    <div><dt className="inline font-medium">License: </dt><dd className="inline">{o.licenseNumber ? `${o.licenseNumber}${o.licenseState ? ` · ${o.licenseState}` : ""}` : "Not stated"}</dd></div>
                     <div><dt className="inline font-medium">Where: </dt><dd className="inline">{[o.city, o.state].filter(Boolean).join(", ") || "Not stated"}</dd></div>
                     <div><dt className="inline font-medium">Seats: </dt><dd className="inline">{o.seatCap === null ? `${o.seated} in use · the plan's band applies` : `${o.seated} of ${o.seatCap} owned by this office`}</dd></div>
                     <div className="sm:col-span-2"><dt className="inline font-medium">Markets: </dt><dd className="inline">{o.territories.length ? o.territories.join(", ") : "None set yet"}</dd></div>

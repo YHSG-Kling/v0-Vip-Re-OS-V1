@@ -296,8 +296,8 @@ function ctvBroadcastCreative(row: BroadcastVideoRow, opts: { requireMaster: boo
 /** What a TV master is, in words — DERIVED from the judge's spec, never re-spelled. */
 const TV_MASTER_SUMMARY = `${TV_SPOT_SPEC.width}×${TV_SPOT_SPEC.height}, ${TV_SPOT_SPEC.loudness.targetLkfs} LKFS, captions`
 
-/** The usage-rights line every TV launch package carries — the platform holds licence links, not their broadcast scope. */
-const CTV_RIGHTS_CHECK = "Usage rights: confirm the music bed, b-roll and any stock footage in this spot are licensed for streaming-TV broadcast (many social licences exclude broadcast). The platform records each music asset's licence link and attribution, not the scope of the licence."
+/** The usage-rights line every TV launch package carries — the platform holds license links, not their broadcast scope. */
+const CTV_RIGHTS_CHECK = "Usage rights: confirm the music bed, b-roll and any stock footage in this spot are licensed for streaming-TV broadcast (many social licenses exclude broadcast). The platform records each music asset's license link and attribution, not the scope of the license."
 
 // ─── SUMMARIES (pure) ────────────────────────────────────────────────────────
 

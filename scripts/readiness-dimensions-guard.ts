@@ -319,6 +319,28 @@ async function main() {
     ok(classified.statedDate === "2027-01-31" && /stated_date/.test(mv.MOVEMENT_CLASSIFIER_SYSTEM) && /never a guess from a season/.test(mv.MOVEMENT_CLASSIFIER_SYSTEM), "the classifier reads a stated_date only beside an author-voiced verbatim quote, and its brief forbids guessing one")
     const guessed = await mv.classifyPublicMovementText({ brokerageId: B, text: "Thinking about Denver sometime", sourceKey: "pp_reddit_relocation" }, { classify: async () => ({ relevant: true, event_relevance: "relocation", about: "third_party", side: "buyer", timeline_bucket: "unknown", stated_date: "2027-01-31", quote: "Thinking about Denver", needs_person: false, note: "x" }) })
     ok(guessed.statedDate === null, "(control) a date on a third-party reading is dropped")
+    // the PRODUCER half of row 28 (lane 151E's hint, built by lane 151L): an ingress that states the author's date on the C35 envelope
+    // → verbatim at evidence.stated_date → the watcher hands it to the public-post builder → a known deadline under the author rule.
+    {
+      const rt = await import("../lib/lead-pipeline/raw-record-types")
+      const envCtx = { brokerageId: B, rights: { rights: "licensed_vendor", licence: "x" }, entityKindOf: () => null, actorType: "cron" as const, costUsd: null }
+      const rec = (statedDate: unknown) => ({ source: "reddit_relocation", sourceRecordId: "t3_abc", fullName: "A Poster", city: "Austin", state: "TX", rawPayload: {}, envelope: { statedDate } }) as never
+      const hint = { kind: "lease_end", at: inDays(60).slice(0, 10), quote: "our lease is up June 30 and we're moving to Austin" }
+      const stored = rt.buildRawDataEnvelope(rec(hint), envCtx as never)
+      ok(JSON.stringify(stored.evidence.stated_date) === JSON.stringify(hint), "the producer stores the ingress's stated-date hint VERBATIM at evidence.stated_date (kind, date, the author's quote)")
+      const dropped = [rt.buildRawDataEnvelope(rec({ ...hint, quote: "" }), envCtx as never), rt.buildRawDataEnvelope(rec({ ...hint, at: "soon" }), envCtx as never), rt.buildRawDataEnvelope(rec(null), envCtx as never)]
+      ok(dropped.every((e) => !("stated_date" in e.evidence)), "(controls) no quote, no date, or no hint → nothing is stored (a date is never invented from a season or 'soon')")
+      const viaHint = mv.movementSignalFromPublicPost({ brokerageId: B, subject: { type: "raw_lead", id: "r1" }, sourceKey: "pp_reddit_relocation", postId: "p3", postedAt: daysAgo(2), retrievedAt: daysAgo(1), reading: reading({ statedDate: null }), statedDate: hint })
+      ok(viaHint.ok && viaHint.record.knownDeadline?.kind === "lease_end" && typeof viaHint.record.knownDeadline?.at === "string", "the watcher's path: a classifier reading with NO date of its own + the envelope hint → knownDeadline lease_end from the hint")
+      const classifierWins = mv.movementSignalFromPublicPost({ brokerageId: B, subject: { type: "raw_lead", id: "r1" }, sourceKey: "pp_reddit_relocation", postId: "p3", postedAt: daysAgo(2), retrievedAt: daysAgo(1), reading: reading(), statedDate: hint })
+      ok(classifierWins.ok && classifierWins.record.knownDeadline?.kind === "relocation_start", "the classifier's own date wins over the hint when both exist (it read the text the row carries)")
+      const hintThird = mv.movementSignalFromPublicPost({ brokerageId: B, subject: { type: "raw_lead", id: "r1" }, sourceKey: "pp_reddit_relocation", postId: "p3", postedAt: daysAgo(2), retrievedAt: daysAgo(1), reading: reading({ about: "third_party", statedDate: null }), statedDate: hint })
+      const hintBadKind = mv.movementSignalFromPublicPost({ brokerageId: B, subject: { type: "raw_lead", id: "r1" }, sourceKey: "pp_reddit_relocation", postId: "p3", postedAt: daysAgo(2), retrievedAt: daysAgo(1), reading: reading({ statedDate: null }), statedDate: { ...hint, kind: "move_in_soon" } })
+      const hintPast = mv.movementSignalFromPublicPost({ brokerageId: B, subject: { type: "raw_lead", id: "r1" }, sourceKey: "pp_reddit_relocation", postId: "p3", postedAt: daysAgo(2), retrievedAt: daysAgo(1), reading: reading({ statedDate: null }), statedDate: { ...hint, at: daysAgo(30).slice(0, 10) } })
+      ok(hintThird.ok && hintThird.record.knownDeadline === null && hintBadKind.ok && hintBadKind.record.knownDeadline === null && hintPast.ok && hintPast.record.knownDeadline === null, "(controls) the hint is refused when the post is about a third party, when its kind is not a KNOWN_DEADLINE_KINDS word, or when the date precedes the post")
+      const watcher = src("lib/intent/movement-source-watcher.ts")
+      ok(/rawdata\?\.evidence\?\.stated_date/.test(watcher) && /statedDate,?\s*\n?\s*\}\)/.test(slice(watcher, "function acquisitionPostsSource", "\n}\n")), "the watcher reads normalized_preview.rawdata.evidence.stated_date and hands it to movementSignalFromPublicPost")
+    }
     // the lead-desk door (row 29): a real product consumer OFF the crm page graph
     const act = src("app/actions/movement-signals.ts")
     ok(/export async function recordStatedDateAction\(/.test(act) && /reassessExistingContact\(/.test(act) && /await leadDeskSeat\(\)/.test(slice(act, "export async function recordStatedDateAction", "\n}\n")) && /quote\.length < 5/.test(act), "the lead-desk action records the date through reassessExistingContact, behind the lead-desk seat gate, with the quote required")

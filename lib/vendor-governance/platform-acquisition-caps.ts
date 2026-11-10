@@ -188,14 +188,41 @@ function foldPlatformAcquisitionSpend(rows: readonly AcquisitionLedgerRow[], ten
   return { platformUsd: Math.round(platform * 100) / 100, tenantUsd: Math.round(tenant * 100) / 100, rows: n }
 }
 
-/** The month-to-date read. A refused read is `null` figures (the decision refuses), never zeros. */
-export async function loadPlatformAcquisitionSpend(svc: Svc, opts: { tenantId: string | null; now?: Date }): Promise<{ platformUsd: number | null; tenantUsd: number | null; rows: number; error: string | null }> {
-  const now = opts.now ?? new Date()
+/**
+ * The month's acquisition ledger rows, read ONCE (the pooled lane folds them per tenant from one read — lane 151F's
+ * "per-tenant cap reading", built by lane 151L). A refused read is `null` (every caller refuses), never an empty list.
+ */
+export async function loadPlatformAcquisitionLedgerRows(svc: Svc, now: Date = new Date()): Promise<{ rows: AcquisitionLedgerRow[] | null; error: string | null }> {
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
   const { data, error } = await svc.from("vendor_usage_tracking").select("brokerage_id, total_cost, request_metadata, created_at").gte("created_at", monthStart).limit(50000)
-  if (error) return { platformUsd: null, tenantUsd: null, rows: 0, error: `vendor_usage_tracking read refused: ${error.message}` }
-  const f = foldPlatformAcquisitionSpend((data ?? []) as AcquisitionLedgerRow[], opts.tenantId)
+  if (error) return { rows: null, error: `vendor_usage_tracking read refused: ${error.message}` }
+  return { rows: (data ?? []) as AcquisitionLedgerRow[], error: null }
+}
+
+/** The month-to-date read. A refused read is `null` figures (the decision refuses), never zeros. */
+export async function loadPlatformAcquisitionSpend(svc: Svc, opts: { tenantId: string | null; now?: Date }): Promise<{ platformUsd: number | null; tenantUsd: number | null; rows: number; error: string | null }> {
+  const ledger = await loadPlatformAcquisitionLedgerRows(svc, opts.now ?? new Date())
+  if (ledger.rows === null) return { platformUsd: null, tenantUsd: null, rows: 0, error: ledger.error }
+  const f = foldPlatformAcquisitionSpend(ledger.rows, opts.tenantId)
   return { platformUsd: f.platformUsd, tenantUsd: f.tenantUsd, rows: f.rows, error: null }
+}
+
+/**
+ * PURE — THE ONE composition of caps × the month's ledger for ONE tenant (lane 151F's per-tenant cap reading, built by
+ * lane 151L): the platform month total and THIS tenant's month share are folded from the same rows, and the owner's
+ * monthly / per-tenant / per-pull caps are judged by decidePlatformAcquisitionSpend. `rows === null` (an unreadable ledger)
+ * refuses, never reads as zero spend. platformCapRemainingFor is this function over a live read; the pooled lane calls it
+ * per want over ONE read per cycle, so two tenants under one platform cap each see their own remainder.
+ */
+export function platformCapRemainingFromLedger(caps: PlatformAcquisitionCaps | null, rows: readonly AcquisitionLedgerRow[] | null, tenantId: string | null): { remainingUsd: number | null; verdict: PlatformAcquisitionSpendVerdict } {
+  const f = rows === null ? null : foldPlatformAcquisitionSpend(rows, tenantId)
+  const verdict = decidePlatformAcquisitionSpend({
+    caps,
+    platformSpentMonthUsd: f ? f.platformUsd : null,
+    tenantSpentMonthUsd: f ? (tenantId ? f.tenantUsd : 0) : null,
+    wantUsd: 0,
+  })
+  return { remainingUsd: verdict.action === "refuse" ? null : verdict.remainingUsd, verdict }
 }
 
 /**
@@ -203,12 +230,6 @@ export async function loadPlatformAcquisitionSpend(svc: Svc, opts: { tenantId: s
  * decideSpendBackpressure as `platformCapRemainingUsd`. null = caps unconfigured or ledger unreadable (backpressure refuses).
  */
 export async function platformCapRemainingFor(svc: Svc, tenantId: string | null, now: Date = new Date()): Promise<{ remainingUsd: number | null; verdict: PlatformAcquisitionSpendVerdict }> {
-  const [caps, spend] = await Promise.all([loadPlatformAcquisitionCaps(svc), loadPlatformAcquisitionSpend(svc, { tenantId, now })])
-  const verdict = decidePlatformAcquisitionSpend({
-    caps: caps.ok ? caps.caps : null,
-    platformSpentMonthUsd: spend.platformUsd,
-    tenantSpentMonthUsd: tenantId ? spend.tenantUsd : 0,
-    wantUsd: 0,
-  })
-  return { remainingUsd: verdict.action === "refuse" ? null : verdict.remainingUsd, verdict }
+  const [caps, ledger] = await Promise.all([loadPlatformAcquisitionCaps(svc), loadPlatformAcquisitionLedgerRows(svc, now)])
+  return platformCapRemainingFromLedger(caps.ok ? caps.caps : null, ledger.rows, tenantId)
 }

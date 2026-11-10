@@ -94,7 +94,7 @@ export function phoneDigits(phone: string | null): string | null {
 /**
  * The outside agent as the EMAIL describes them. Name precedence: the From
  * display name (the provider's own header), then the signature block. Phone,
- * brokerage and licence come from the signature block (the lines after the
+ * brokerage and license come from the signature block (the lines after the
  * sign-off), falling back to the whole body for the phone only. Nothing is
  * invented: an absent field is null, and `email` is the sender address.
  */

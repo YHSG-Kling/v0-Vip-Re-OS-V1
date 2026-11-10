@@ -184,7 +184,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   // WAVE 87 (lane 87D) — the frame's type scale and the lower-third's place and
   // time, from the ONE cinema frame (lib/video/cinema-finish.ts). The lane's
   // real render found the strap parked under the caption band for the whole
-  // body, the topic strip and the EHO/licence footer inside the platform-UI
+  // body, the topic strip and the EHO/license footer inside the platform-UI
   // bands, and the cover's hook set in 28 px caps beneath the agent's name.
   const { type } = cinemaFrame(width, height)
   const strap = cinemaLowerThirdPlacement(width, height, FPS)
@@ -406,7 +406,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             </div>
           )}
           <div style={{
-            // Wave 87 — the Equal Housing / licence line is a DISCLOSURE: it
+            // Wave 87 — the Equal Housing / license line is a DISCLOSURE: it
             // sat 24 px from the edge in 14 px type at 55 % — inside the
             // platform UI band and unreadable on a phone. Now on the safe
             // bottom inset, at the scale's caption step, at readable contrast.

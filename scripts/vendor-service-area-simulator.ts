@@ -165,7 +165,7 @@ function layerRulingA() {
   check("A4 an EXPIRED assignment grants NOTHING", !a4.ok && a4.reason === "no_door")
   const a4b = vendorContactAccessVerdict(
     { ...CLEAN_ACCESS, assignments: [{ scope: "pii_basic", status: "active", expires_at: "not-a-date" }] }, NOW)
-  check("A4b an UNREADABLE expiry fails CLOSED (a date nobody can read is not a licence)",
+  check("A4b an UNREADABLE expiry fails CLOSED (a date nobody can read is not a license)",
     !a4b.ok && a4b.reason === "no_door")
 
   // A5 — the paid door, and the tenant boundary on it.
@@ -247,7 +247,7 @@ function layerRulingA() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// LAYER 2 — RULING B: coverage, intersection, and the licence gate
+// LAYER 2 — RULING B: coverage, intersection, and the license gate
 // ═════════════════════════════════════════════════════════════════════════════
 
 const AZ_STATEWIDE_TITLE: VendorCoverageRow = {
@@ -324,14 +324,14 @@ function layerRulingB() {
   check("B11 a REFUSED READ fails closed and is nameable as such",
     !b11.ok && b11.reason === "read_refused")
 
-  // B12 — the compliance gate. Licensed trade, covered, but the licence is bad.
+  // B12 — the compliance gate. Licensed trade, covered, but the license is bad.
   const b12 = vendorGeoVerdict(
     { ...CLEAN_GEO, coverage: [{ ...AZ_STATEWIDE_TITLE, license: null }] }, NOW)
-  check("B12 a STATE-LICENSED trade with NO licence is NOT bookable, however well covered",
+  check("B12 a STATE-LICENSED trade with NO license is NOT bookable, however well covered",
     !b12.ok && b12.reason === "licence_missing")
   const b13 = vendorGeoVerdict(
     { ...CLEAN_GEO, coverage: [{ ...AZ_STATEWIDE_TITLE, license: { expiry: "2020-01-01" } }] }, NOW)
-  check("B13 …and an EXPIRED licence is refused distinctly from a missing one",
+  check("B13 …and an EXPIRED license is refused distinctly from a missing one",
     !b13.ok && b13.reason === "licence_expired")
   const b14 = vendorGeoVerdict({
     ...CLEAN_GEO,
@@ -349,23 +349,23 @@ function layerRulingB() {
     tradeCategory: "lender",
     coverage: [AZ_STATEWIDE_TITLE],   // title coverage, lender job
   }, NOW)
-  check("B16 a title licence is NOT a lender licence — coverage is per (trade, state)",
+  check("B16 a title license is NOT a lender license — coverage is per (trade, state)",
     !b16.ok && b16.reason === "no_overlap")
 
-  check("B17 licence freshness: missing / expired / current are three answers, and an unreadable expiry is EXPIRED",
+  check("B17 license freshness: missing / expired / current are three answers, and an unreadable expiry is EXPIRED",
     licenceIsCurrent(null, NOW) === "missing"
     && licenceIsCurrent({ expiry: "2020-01-01" }, NOW) === "expired"
     && licenceIsCurrent({ expiry: "2099-01-01" }, NOW) === "current"
     && licenceIsCurrent({}, NOW) === "current"
     && licenceIsCurrent({ expiry: "not-a-date" }, NOW) === "expired")
 
-  // B18 — the LOCAL bench row: no cross-territory claim, but the licence still bites.
+  // B18 — the LOCAL bench row: no cross-territory claim, but the license still bites.
   const local: VendorGeoFacts = {
     ...CLEAN_GEO, localBenchRow: true, coverage: [], tenantAreas: [],
     benchLicense: { expiry: "2099-01-01" },
   }
   const b18 = vendorGeoVerdict(local, NOW)
-  check("B18 a LOCAL bench row is bookable, and its licence is honestly 'state unknown'",
+  check("B18 a LOCAL bench row is bookable, and its license is honestly 'state unknown'",
     b18.ok && b18.reason === "local_bench_row" && b18.licence === "on_file_state_unknown")
   const b19 = vendorGeoVerdict({ ...local, benchLicense: null }, NOW)
   check("B19 …but a licensed trade with NO credential on the bench row is still refused",
@@ -468,7 +468,7 @@ function layerSource() {
     && !/vendor_service_areas[\s\S]{0,400}brokerage_id/.test(migCode))
 
   // ONE credential shape, not two.
-  check("the per-state licence reuses the EXISTING credential validator (§6)",
+  check("the per-state license reuses the EXISTING credential validator (§6)",
     /vendor_credential_record_ok\(license\)/.test(migCode))
 
   // The gate is fail-closed by construction: it returns reason codes, not booleans.
@@ -538,7 +538,7 @@ function layerSource() {
     && /\(count \?\? 0\) === 0/.test(writer))
   check("…and the statewide lookup uses `.is` not `.eq(col, null)` (which matches NO rows)",
     /\.is\("zip_code", null\)/.test(writer) && !/\.eq\("zip_code", null\)/.test(writer))
-  check("the declaration surface REFUSES a licensed trade with no licence, at the one moment a human is present",
+  check("the declaration surface REFUSES a licensed trade with no license, at the one moment a human is present",
     /isStateLicensedTrade\(input\.tradeCategory\)/.test(writer))
   check("the tenant-side reader takes its tenant from the SESSION, never from a parameter (§4)",
     /export async function listSurfaceableBenchAction/.test(writer)
@@ -646,7 +646,7 @@ async function main() {
   }
   console.log(" ✅ VENDOR_SERVICE_AREA_PASS — contact access has two doors and neither means nothing;" +
     " coverage belongs to the company, unknown coverage is not bookable, and a state-licensed trade" +
-    " cannot be booked where it holds no current licence")
+    " cannot be booked where it holds no current license")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

@@ -29,7 +29,8 @@
  * every model is scripted; React / HTTP routes are read as stripped source, not rendered or invoked.
  */
 import { readFileSync, existsSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { randomUUID } from "node:crypto"
 import { registerHooks } from "node:module"
 import { stripComments } from "./strip-comments"
@@ -84,10 +85,14 @@ async function quiet<T>(f: () => Promise<T>): Promise<T> {
 
 /** verdict: "built" (the capability works in memory) or "honest-state" (the canary asserts the refusal / dormancy / NOT OBSERVED
  *  state a lane recorded — PARTIAL, WAITING_EXTERNAL, owner decision). `note` is printed on a PASS too. */
-interface Verdict { positive: boolean; negative: boolean; detail?: string; note?: string; state?: "built" | "honest-state" }
-interface Canary { n: number; title: string; positiveHalf: string; negativeHalf: string; blindSpot: string; run: () => Promise<Verdict> }
+export interface Verdict { positive: boolean; negative: boolean; detail?: string; note?: string; state?: "built" | "honest-state" }
+export interface Canary { n: number; title: string; positiveHalf: string; negativeHalf: string; blindSpot: string; run: () => Promise<Verdict> }
 const CANARIES: Canary[] = []
 const canary = (c: Canary) => CANARIES.push(c)
+// wave 151 (lane 151L): the wave-151 runner REUSES these canaries by import (scripts/wave151-canaries.ts) — the roster, the
+// seam helpers and the background-rejection counter are exported; main() runs only when this file is the entry script.
+export const WAVE150_CANARIES: readonly Canary[] = CANARIES
+export { withSvc, quiet, backgroundRejections }
 
 // ═════════════════════════════════════════════════════════════════════════════
 // 1 — "Solo created by staff and self-enrolled; team with seats, brokerage with office, brokerage with two same-name locations and
@@ -536,14 +541,14 @@ canary({
 
 // ═════════════════════════════════════════════════════════════════════════════
 // 9 — "Appropriate property-only lead enrichment respects approved source/territory/rights; no false 50k paid call; Tracerfy
-//      skip-trace versus scored Lead Builder and DataZapp Signal_Seller_Score fields/units correctly labeled; provider licence
+//      skip-trace versus scored Lead Builder and DataZapp Signal_Seller_Score fields/units correctly labeled; provider license
 //      unknown blocks activation, not offline code testing."
 // ═════════════════════════════════════════════════════════════════════════════
 canary({
-  n: 9, title: "Enrichment honours approved source/territory/rights; no false 50k paid call; vendor scores in their own units; unknown licence blocks activation only",
+  n: 9, title: "Enrichment honours approved source/territory/rights; no false 50k paid call; vendor scores in their own units; unknown license blocks activation only",
   positiveHalf: "paidPullApproval admits the approved tenant + source; labelSellerSignal stores DataZapp 4x / PropertyRadar 90 / Tracerfy scores each in its own unit with probability null; activationVerdict lets RentCast run live; simulateProviderPilot scores the 2,400-candidate matched pilot offline (valid design, both arms attempted 1,800)",
   negativeHalf: "an unapproved source, another tenant and an expired approval are refused; DataZapp 4x vs PropertyRadar 90 compares as null (never cross-ranked); Tracerfy / DataZapp mayActivate false with named blockers while offline testing stays allowed; the pilot made 0 paid / 0 live calls and 0 writes; 50,000 appears only as SIMULATED_MONTHLY_RECORDS, never a request size",
-  blindSpot: "Tracerfy / DataZapp / PropertyRadar licences are WAITING_EXTERNAL (no key, no sandbox run, no purchase — the $1,000 paid cap is NOT approved); simulated answers prove the scoring, not any vendor's data; honest-state for activation",
+  blindSpot: "Tracerfy / DataZapp / PropertyRadar licenses are WAITING_EXTERNAL (no key, no sandbox run, no purchase — the $1,000 paid cap is NOT approved); simulated answers prove the scoring, not any vendor's data; honest-state for activation",
   run: async () => {
     const pl = await import("../lib/lead-pipeline/source-discovery-planner")
     const sc = await import("../lib/providers/provider-scorecard")
@@ -989,8 +994,8 @@ canary({
 // ═════════════════════════════════════════════════════════════════════════════
 canary({
   n: 17, title: "ZIP trend labels LISTING asking prices; one shared provider read per authorized refresh; report differs per agent + office",
-  positiveHalf: "loadMarketTwin labels the RentCast median 'listing_asking', the sold median only from recorded closed sales; duplicate zips are read once each (3 asked → 2 provider reads); produceMarketReport for two agents in two same-tenant offices renders each office's DBA / licence / colour / tagline",
-  negativeHalf: "the asking label never says 'sold' / 'sale price'; two sales are not a median (null); without an authorized refresh the provider is NEVER asked (0 reads); another tenant's sale never enters the median; a refused office read fails CLOSED (no report under the wrong licence line)",
+  positiveHalf: "loadMarketTwin labels the RentCast median 'listing_asking', the sold median only from recorded closed sales; duplicate zips are read once each (3 asked → 2 provider reads); produceMarketReport for two agents in two same-tenant offices renders each office's DBA / license / colour / tagline",
+  negativeHalf: "the asking label never says 'sold' / 'sale price'; two sales are not a median (null); without an authorized refresh the provider is NEVER asked (0 reads); another tenant's sale never enters the median; a refused office read fails CLOSED (no report under the wrong license line)",
   blindSpot: "no live RentCast call (RENTCAST_API_KEY WAITING_EXTERNAL); the platform-wide cache's once-per-window behaviour is proven on rentcast.ts source by test:market-twin, not by a live cache row; the PDF render is a seam",
   run: async () => {
     const { loadMarketTwin } = await import("../lib/market-reports/market-twin")
@@ -1178,4 +1183,6 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0)
 }
 
-main().catch((e) => { console.error(e); console.log("WAVE150_CANARIES_FAIL"); process.exit(1) })
+// Run only as the entry script: imported by scripts/wave151-canaries.ts, this file registers the seam and the roster and returns.
+const isEntry = (() => { try { return pathToFileURL(resolve(process.argv[1] ?? "")).href === import.meta.url } catch { return false } })()
+if (isEntry) main().catch((e) => { console.error(e); console.log("WAVE150_CANARIES_FAIL"); process.exit(1) })

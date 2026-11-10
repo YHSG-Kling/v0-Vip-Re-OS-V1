@@ -156,7 +156,7 @@ export interface TenantCreationInput {
   brokerageOnPlatform?: boolean
   teamOnPlatform?: boolean
   /** BROKERAGE IDENTITY (wave 141A): the affiliated brokerage a solo/team subscriber DECLARES —
-   *  a name (+ optional licence / location / reference) stored on THEIR OWN tenant for business
+   *  a name (+ optional license / location / reference) stored on THEIR OWN tenant for business
    *  context. CONTEXT ONLY: it never selects, merges or routes to another tenant (lib/kernel/
    *  brokerage-identity.ts). Written AFTER the brokerage row exists, best-effort and reported
    *  (extrasSkipped) — creation never fails on it, and a PGRST204 before m765 is applied is
@@ -1243,7 +1243,7 @@ export function planTenantOffices(tier: string, brokerageName: string, offices: 
   const dup = coded.find((o, i) => coded.findIndex((x) => x.code === o.code) !== i)
   if (dup) return { ok: false, error: `Two offices share the office code "${dup.code}" — every office needs its own code (names may repeat; codes may not).` }
   const badState = coded.find((o) => o.licenseState && !/^[A-Z]{2}$/.test(String(o.licenseState).trim().toUpperCase()))
-  if (badState) return { ok: false, error: `Office "${badState.name}": licence state must be a two-letter US state code.` }
+  if (badState) return { ok: false, error: `Office "${badState.name}": license state must be a two-letter US state code.` }
   const badCap = coded.find((o) => o.seatCap !== undefined && o.seatCap !== null && (!Number.isInteger(o.seatCap) || o.seatCap < 0))
   if (badCap) return { ok: false, error: `Office "${badCap.name}": seat ownership must be a whole number of seats (0 or more).` }
   return { ok: true, offices: coded, note: tier === "multi_location" && coded.length === 0 ? "multi-location tenant created without offices — staff add each location (Settings → Offices)" : null }

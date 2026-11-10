@@ -22,7 +22,7 @@
 //      rewrite stays OPEN and is named for the human (the phase never guesses at meaning);
 //   2. keeps every FACT: material terms (amounts, percentages, dates, counts) are extracted before and proven present after;
 //   3. preserves advertising / legal DISCLOSURES (the caller's required lines + every disclosure-like line the draft
-//      carried — Equal Housing, licence lines, NMLS / DRE numbers, rate and "not an appraisal" disclaimers, AI disclosure);
+//      carried — Equal Housing, license lines, NMLS / DRE numbers, rate and "not an appraisal" disclaimers, AI disclosure);
 //      a required line the draft lacked is appended, never invented beyond what the caller names;
 //   4. adds the tenant's APPROVED tagline (vetted by the claim guard + public-copy fair housing — a tagline that fails is
 //      left off and the human is told) where the asset kind carries one, and the brand's logo where the renderer places it;

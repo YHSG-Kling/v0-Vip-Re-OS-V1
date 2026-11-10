@@ -30,7 +30,7 @@
  *
  * Measured at the time of writing: ZERO violations. This guard has NO BASELINE
  * on purpose — it is a true invariant, not a debt ratchet. A baseline here would
- * be a licence to add the first one.
+ * be a license to add the first one.
  *
  * WHAT THIS GUARD DELIBERATELY DOES NOT CHECK. I first proposed asserting that
  * every emitted KernelEvent has a consumer. Measured: 308 of 315 emitted events

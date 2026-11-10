@@ -73,7 +73,7 @@ import { byPriorityDesc } from "@/lib/kernel/priority-rank"
  *                         user_type='admin', so nobody real is lost here.)
  *
  * `lib/auth/permissions.ts:32` also grants `lender` contacts:read. That is a
- * DISAGREEMENT with §5, not a licence: it is recorded in the lane report as an
+ * DISAGREEMENT with §5, not a license: it is recorded in the lane report as an
  * adjacent finding, and it does not widen this roster.
  */
 const CRM_CONTACT_STAFF_USER_TYPES: ReadonlySet<string> = new Set([

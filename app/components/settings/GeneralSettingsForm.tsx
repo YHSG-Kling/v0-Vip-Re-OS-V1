@@ -13,7 +13,7 @@ import { useFormChange } from '@/hooks/use-form-change';
 interface GeneralSettingsFormProps {
   initialData: any;
   /**
-   * The brokerage's own row (name, DBA, licence, address). Null when it could
+   * The brokerage's own row (name, DBA, license, address). Null when it could
    * not be read — the card then explains why instead of rendering blank inputs
    * that would fail to save.
    */
@@ -129,7 +129,7 @@ export function GeneralSettingsForm({
   return (
     <SettingsCard
       title="Brokerage Info"
-      description="Your brokerage's legal identity — the name, licence and address that appear on disclosures, marketing and client-facing documents."
+      description="Your brokerage's legal identity — the name, license and address that appear on disclosures, marketing and client-facing documents."
     >
       <form onSubmit={handleSubmit} className="space-y-6">
         {identityError && (
@@ -141,7 +141,7 @@ export function GeneralSettingsForm({
         {initialIdentity && !canEdit && (
           <div className="bg-gray-50 border border-gray-200 text-gray-700 px-4 py-3 rounded-lg text-sm">
             You can see your brokerage&rsquo;s details but not change them. Only a broker or an
-            admin on this brokerage can edit its name, licence and address.
+            admin on this brokerage can edit its name, license and address.
           </div>
         )}
 
@@ -194,7 +194,7 @@ export function GeneralSettingsForm({
                 htmlFor="brokerage-license-number"
                 className="block text-sm font-medium text-gray-700 mb-1"
               >
-                Brokerage Licence Number
+                Brokerage License Number
               </label>
               <input
                 id="brokerage-license-number"
@@ -211,7 +211,7 @@ export function GeneralSettingsForm({
                 htmlFor="brokerage-license-state"
                 className="block text-sm font-medium text-gray-700 mb-1"
               >
-                Licence State
+                License State
               </label>
               <select
                 id="brokerage-license-state"
@@ -230,7 +230,7 @@ export function GeneralSettingsForm({
             </div>
           </div>
           <p className="text-xs text-gray-500 -mt-2">
-            The licence the brokerage advertises under. It is required on disclosures in most
+            The license the brokerage advertises under. It is required on disclosures in most
             states, and it appears in the attribution line on generated marketing.
           </p>
 

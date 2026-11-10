@@ -749,7 +749,7 @@ async function main() {
     check("name from the From display name, split first/last", a.fullName === "Dana Cole" && a.firstName === "Dana" && a.lastName === "Cole")
     check("phone from the signature block, normalised", a.phone === "(561) 555-0142", String(a.phone))
     check("brokerage from the signature block", a.brokerageName === "Coastal Shores Realty", String(a.brokerageName))
-    check("licence number from the signature block", a.licenseNumber === "SL3456789", String(a.licenseNumber))
+    check("license number from the signature block", a.licenseNumber === "SL3456789", String(a.licenseNumber))
     check("phone_digits is ten digits", W94.phoneDigits(a.phone) === "5615550142")
     check("the buyers the agent names in the body are read", W94.parseBuyerNameFromEmail(body) === "Mia and Theo Park", String(W94.parseBuyerNameFromEmail(body)))
 
@@ -835,7 +835,7 @@ async function main() {
       fields: { ...fields, fullName: "Someone Else", phone: "(561) 555-0199", licenseNumber: "BK99" },
     })
     check("the second email REUSES it (no duplicate)", b.ok && !b.created && b.id === a.id && store.outside_agents.length === 1)
-    check("…filling only what was blank (phone, licence) and never the name the email already gave",
+    check("…filling only what was blank (phone, license) and never the name the email already gave",
       store.outside_agents[0].full_name === "Dana Cole" && store.outside_agents[0].phone === "(561) 555-0199" && store.outside_agents[0].license_number === "BK99" && b.filled.includes("phone"))
     const other = await W94.upsertOutsideAgentRecord(w94Stub(store), { brokerageId: OTHER_BROK, fields, source: "inbound_email" })
     check("another tenant gets its OWN record (the tenant is part of the key)", other.created && store.outside_agents.length === 2)
@@ -847,7 +847,7 @@ async function main() {
     const patch = W94.outsideAgentFillPatch({ full_name: "Dana Cole", phone: null }, { ...fields, fullName: "Not Dana", phone: "(561) 555-0100" })
     check("fill patch: blank columns only", !("full_name" in patch) && patch.phone === "(561) 555-0100" && patch.phone_digits === "5615550100")
     const over = W94.overlayOutsideAgentFields(fields, { fullName: "AI Name", licenseNumber: "AI123" })
-    check("AI overlay never replaces the email's own name; fills the missing licence", over.fullName === "Dana Cole" && over.licenseNumber === "AI123")
+    check("AI overlay never replaces the email's own name; fills the missing license", over.fullName === "Dana Cole" && over.licenseNumber === "AI123")
   }
 
   console.log("\n[W94·H3 the inbound lane CREATES the offer for an outside sender]")
@@ -964,7 +964,7 @@ async function main() {
     const pop = src("lib/transactions/participant-populator.ts")
     const at = pop.indexOf("resolveOutsideAgentForDeal(")
     check("the populator resolves the record from the deal's offer chain", at > 0)
-    check("…and writes it as the buyer_agent with its brokerage + licence",
+    check("…and writes it as the buyer_agent with its brokerage + license",
       /role:\s*"buyer_agent",[\s\S]{0,200}company:\s*outsideAgent\.outside_brokerage_name/.test(pop) && /license_number:\s*outsideAgent\.license_number/.test(pop))
     check("…the in-house agent read runs ONLY when the chain names no outside agent (no listing agent twice)",
       /\} else if \(!cooperating\.error\) \{[\s\S]{0,200}resolveAgent\(supabase, buyerAgentId\)/.test(pop))

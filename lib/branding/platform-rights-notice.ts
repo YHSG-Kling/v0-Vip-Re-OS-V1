@@ -37,7 +37,7 @@ export function platformRightsNotice(input: { holder: string; product?: string |
     copyrightLine,
     intro: [
       `The ${product} platform — its software and source code, its interface and visual design, its workflows, text, graphics, templates and other content — is owned by ${holder} or its licensors and is protected by copyright and other intellectual-property laws.`,
-      `Access to the platform is licensed, not sold. What you may do with it is set by your subscription agreement and the Terms of Service; nothing on this site grants any other right or licence, by implication or otherwise.`,
+      `Access to the platform is licensed, not sold. What you may do with it is set by your subscription agreement and the Terms of Service; nothing on this site grants any other right or license, by implication or otherwise.`,
     ],
     prohibited: [
       "copy, reproduce, republish or redistribute any part of the platform;",

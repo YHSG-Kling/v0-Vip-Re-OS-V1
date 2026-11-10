@@ -260,7 +260,7 @@ Be conservative — if you cannot clearly read or verify information, mark it as
     //
     // ROUTED WAS NOT AN OPTION HERE. generateTextRouted books, but it picks the
     // model from AI_TASK_ROUTING and ignores the caller's, so converting would
-    // change WHICH MODEL READS A LICENCE DOCUMENT. Booking beside the existing
+    // change WHICH MODEL READS A LICENSE DOCUMENT. Booking beside the existing
     // call keeps the model this call site already pinned; the ledger changes and
     // the spend does not. This is the same shape the ai-spend-booked guard's own
     // positive control demonstrates as `booked`.
