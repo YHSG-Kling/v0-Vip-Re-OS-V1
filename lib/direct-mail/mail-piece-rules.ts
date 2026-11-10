@@ -80,7 +80,7 @@ export const MAIL_LAYOUT_LIBRARY: Readonly<Record<"letter" | "personal_letter" |
   },
   postcard_back: {
     slot: "postcard_back", format: "postcard", pieceType: "postcard", label: "Postcard back (printed)",
-    layout: "4×6 / 6×9 back: left 48% message zone (body, signoff, agent photo, opt-out line), right 52% left EMPTY for Lob's address block, indicia and barcode (the return address Lob prints there is the tenant's `from`, never the platform's). Verbatim short disclosure and license line along the bottom.",
+    layout: "4×6 / 6×9 back: left 48% message zone (body, signoff, agent photo, opt-out line), right 52% left EMPTY for Lob's address block, indicia and postal markings (the return address Lob prints there is the tenant's `from`, never the platform's). Verbatim short disclosure and license line along the bottom.",
     mergeVariables: [...LAYOUT_COMMON, "back_art_url", "copy_text", "agent_photo_url"], typeface: "brand_font", status: "lob_global_template",
   },
   notecard: {

@@ -35,10 +35,11 @@ import { memSupabase } from "./in-memory-supabase"
 import {
   LOB_TEMPLATE_ENV, MAIL_FORMAT_LABELS, MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE, MAIL_DELIVERY_OUTCOMES,
   OPTIONAL_MAIL_PROVIDERS, routeMailFormat, fallbackLobTemplates, buildMailMergeVariables, layoutContentViolations,
-  pickSenderAddressRow, senderAddressFromRow, resolveTenantSenderAddress, mailPieceTruth, mailOutcomeFromLobEvent,
+  pickSenderAddressRow, senderAddressFromRow, resolveTenantSenderAddress,
   campaignSendGate, applyReturnedMailHandling, mailPieceIdempotencyKey, mailTemplateProvenance, formatForCampaignPieceType,
   type MailBrandFacts, type SenderAddressRow,
 } from "../lib/direct-mail/piece-type"
+import { mailPieceTruth, mailOutcomeFromLobEvent } from "../lib/direct-mail/mail-piece-rules"
 import { decideSenderAddress, senderAddressShapeRefusal, planReturnedMailHandling, type SenderAddress } from "../lib/providers/mailing-cass-gate"
 import { DEFAULT_PRODUCT_BRAND } from "../lib/platform/product-brand"
 import { withActionLedger, settleDispatchResult, replayDispatchResult, type DispatchLike } from "../lib/kernel/action-ledger"

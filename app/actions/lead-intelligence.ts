@@ -2752,7 +2752,8 @@ export async function scrapeExternalBehavior(
 
   const supabase = createServiceClient()
   const { ApifyClient } = await import("@/lib/apify-client")
-  const { BatchDataClient } = await import("@/lib/batchdata-client")
+  // Wave 151: read the survivor directly — the 3-line `@/lib/batchdata-client` shim (its only importer was this line) is deleted.
+  const { BatchDataClient } = await import("@/lib/external/batchdata-client")
 
   const apify = new ApifyClient()
   const batchData = new BatchDataClient()

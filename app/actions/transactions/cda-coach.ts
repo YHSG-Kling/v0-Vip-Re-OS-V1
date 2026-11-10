@@ -117,7 +117,12 @@ export async function explainCdaArithmeticAction(input: { cdaId: string; questio
         detail: { feature: COACH_FEATURE, withheld: filtered.withheld, discrepancies, structure, fills_cda: CDA_COACH_RULE.fillsCda },
       },
       async () => ({ ok: true as const }),
-      { settle: () => ({ status: "executed", outcome: "explained" }), replay: () => ({ ok: true as const }) },
+      {
+        settle: () => ({ status: "executed", outcome: "explained" }),
+        // Claim-aware: a REFUSED claim (the ledger would not record the explanation) is said; a replay is the same explanation
+        // asked twice and needs no second row. The explanation itself was already given either way.
+        replay: (claim) => { if (claim.kind === "refused") console.error(`[cda-coach] ledger refused the explanation row: ${claim.error}`); return { ok: true as const } },
+      },
       { client: svc as never },
     )
   } catch (e) {

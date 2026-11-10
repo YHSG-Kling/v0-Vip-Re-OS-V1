@@ -270,6 +270,18 @@ export function declarationHistory(files: Array<{ name: string; sql: string }>):
 } {
   const latest = new Map<string, CheckDeclaration>()
   const retired = new Map<string, { decl: CheckDeclaration; droppedIn: string }>()
+  // APPLIED ORDER BEATS NAME ORDER WHEN BOTH FILES SAY SO (wave 151). Name order is the default because most files carry no
+  // date — but two files that BOTH carry a line-1 `APPLIED LIVE <date>` stamp say which one the database ran LAST, and that
+  // one is in force. Wave 151's lanes were numbered m955–m986, BELOW wave 150's m99x: m966 (applied 2026-11-09) re-declared
+  // listing_media_photo_source_check after m993 (applied 2026-11-06), and name order read m993's older two-value list as
+  // the one in force — accusing the live three-value CHECK of an extra value. Only a strictly EARLIER stamped date yields;
+  // an unstamped file, or a tie, keeps name order exactly as before.
+  const appliedOn = new Map<string, string>()
+  for (const f of files) {
+    const m = /^--\s*── APPLIED LIVE (\d{4}-\d{2}-\d{2})/.exec(f.sql)
+    if (m) appliedOn.set(f.name, m[1])
+  }
+  const appliedBefore = (a: string, b: string) => { const da = appliedOn.get(a), db = appliedOn.get(b); return !!da && !!db && da < db }
   for (const f of [...files].sort((a, b) => a.name.localeCompare(b.name, "en"))) {
     const events: Array<{ at: number; add?: CheckDeclaration; drop?: ConstraintDrop }> = [
       ...parseCheckDeclarations(f.sql, f.name).map((d) => ({ at: d.index, add: d })),
@@ -278,12 +290,15 @@ export function declarationHistory(files: Array<{ name: string; sql: string }>):
     for (const e of events) {
       if (e.add) {
         const key = `${e.add.table}.${e.add.column}`
+        const held = latest.get(key)
+        if (held && appliedBefore(f.name, held.migration)) continue // this file ran BEFORE the one already in force
         latest.set(key, e.add)
         retired.delete(key)
         continue
       }
       const drop = e.drop!
       for (const [key, d] of latest) {
+        if (appliedBefore(f.name, d.migration)) continue // a drop that ran before the declaration it names cannot retire it
         if (d.table.toLowerCase() === drop.table.toLowerCase() && d.constraint.toLowerCase() === drop.constraint.toLowerCase()) {
           latest.delete(key)
           retired.set(key, { decl: d, droppedIn: drop.migration })
@@ -389,6 +404,19 @@ console.log("\n[pure — the SQL parser]")
     && declarationHistory([add1, { name: "m002.sql", sql: `ALTER TABLE public.widgets DROP CONSTRAINT widgets_other_check;` }]).latest.has("widgets.kind"))
   check("a commented-out DROP retires nothing",
     declarationHistory([add1, { name: "m002.sql", sql: `-- ALTER TABLE public.widgets DROP CONSTRAINT widgets_kind_check;` }]).latest.has("widgets.kind"))
+  // APPLIED ORDER (wave 151): the m966-after-m993 inversion, and the controls that keep it from reordering anything else.
+  const stamp = (d: string) => `-- ── APPLIED LIVE ${d} via Supabase MCP (project x) ──\n`
+  const reDecl = (vals: string) => `ALTER TABLE public.widgets DROP CONSTRAINT IF EXISTS widgets_kind_check;\nALTER TABLE public.widgets ADD CONSTRAINT widgets_kind_check CHECK (kind IN (${vals}));`
+  const inverted = declarationHistory([
+    { name: "m993.sql", sql: stamp("2026-11-06") + reDecl("'a','b'") },
+    { name: "m966.sql", sql: stamp("2026-11-09") + reDecl("'a','b','c'") },
+  ])
+  check("a lower-numbered file APPLIED LATER (both stamped) stays in force — its re-declaration is not undone by the name-later, applied-earlier file's DROP + ADD",
+    JSON.stringify(inverted.latest.get("widgets.kind")?.values) === JSON.stringify(["a", "b", "c"]) && inverted.latest.get("widgets.kind")?.migration === "m966.sql" && !inverted.retired.has("widgets.kind"))
+  const unstamped = declarationHistory([{ name: "m993.sql", sql: reDecl("'a','b'") }, { name: "m966.sql", sql: stamp("2026-11-09") + reDecl("'a','b','c'") }])
+  const tied = declarationHistory([{ name: "m993.sql", sql: stamp("2026-11-09") + reDecl("'a','b'") }, { name: "m966.sql", sql: stamp("2026-11-09") + reDecl("'a','b','c'") }])
+  check("CONTROL: with ONE file unstamped, or a tie on the date, name order holds exactly as before (the name-later file wins)",
+    unstamped.latest.get("widgets.kind")?.migration === "m993.sql" && tied.latest.get("widgets.kind")?.migration === "m993.sql")
 
   const cmp = compareVocabularies(["a", "b", "c"], ["a", "c", "d"])
   check("reports what the snapshot is missing", JSON.stringify(cmp.missingFromSnapshot) === JSON.stringify(["b"]))

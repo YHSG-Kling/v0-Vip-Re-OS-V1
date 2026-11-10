@@ -140,7 +140,25 @@ check(`every cron source's gate token sits inside the resolved-territory loop �
   check("POSITIVE CONTROL: a gate placed BEFORE the territory loop is flagged", !gateInsideLoop(fx, "facebook_marketplace", fx.indexOf("for (const market of markets)")))
 }
 const push = stripped("app/api/webhooks/batchdata-smart-search/route.ts")
-check("batchdata_push door matches every pushed record to a resolved territory before ingest", /resolveActiveScrapeTerritories\(/.test(push) && push.indexOf("resolveActiveScrapeTerritories(") < push.indexOf("ingestRawSourceBatch("))
+// TWO DOORS on one route since wave 151 (lane 151F): the PLATFORM door (route A, the shared secret) resolves the active
+// subscriber territories before it ingests; the TENANT door (route B, `?connection=`) ingests through
+// ingestTenantWebhookDelivery, which gates every record by the CONNECTION's own territory (the tenant's, never the
+// platform's) before it calls the producer. Each door is judged in ITS OWN segment — the tenant door's ingest token
+// sitting earlier in the file than the platform resolver is not a platform record ingested before its territory.
+// Anchored on CODE (the platform door's own auth refusal), never on the banner comment — `push` is stripped source.
+const platformDoorAt = push.indexOf("if (!verifySharedSecret(request))")
+check("the platform door's auth refusal is found in stripped source (the segment anchor is code, not a comment)", platformDoorAt >= 0)
+const platformSeg = platformDoorAt >= 0 ? push.slice(platformDoorAt) : ""
+check("batchdata_push PLATFORM door matches every pushed record to a resolved territory before ingest", /resolveActiveScrapeTerritories\(/.test(platformSeg) && /ingestRawSourceBatch\(/.test(platformSeg) && platformSeg.indexOf("resolveActiveScrapeTerritories(") < platformSeg.indexOf("ingestRawSourceBatch("))
+{
+  const tenantIngest = stripped("lib/providers/tenant-provider-connections.ts")
+  const fn = tenantIngest.slice(tenantIngest.indexOf("export async function ingestTenantWebhookDelivery"))
+  const body = fn.slice(0, fn.indexOf("\n}\n") > 0 ? fn.indexOf("\n}\n") : fn.length)
+  check("batchdata_push TENANT door ingests only through ingestTenantWebhookDelivery, which refuses a connection with no territory and hands the connection's geography to the producer before ingest",
+    /ingestTenantWebhookDelivery\(/.test(push) && /names no territory/.test(body) && body.indexOf("names no territory") < body.indexOf("deps.ingest(") && /marketGeo: geo/.test(body))
+  const fx = `const r = await ingestRawSourceBatch(p)\nconst t = await resolveActiveScrapeTerritories(s)`
+  check("POSITIVE CONTROL: a platform segment that ingests BEFORE resolving territories is flagged", !(fx.indexOf("resolveActiveScrapeTerritories(") < fx.indexOf("ingestRawSourceBatch(")))
+}
 const li = stripped("app/actions/lead-intelligence.ts")
 check("intent_campaign door (scrapeExternalBehavior) refuses a location outside the brokerage's active territories before spending", /resolveActiveScrapeTerritories\(/.test(li) && /outside this brokerage's active scrape territories/.test(li))
 check("inbound_mailbox door is the tenant's OWN mailbox ($0, SOURCE_VENDOR internal)", SOURCE_VENDOR.inbound_email_unknown === "internal" && existsSync("lib/lead-pipeline/unknown-sender-identification.ts"))

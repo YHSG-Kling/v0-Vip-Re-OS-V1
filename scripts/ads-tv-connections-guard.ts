@@ -143,8 +143,25 @@ async function main() {
     const liveAud = (CHECK_VOCABULARIES as any).facebook_custom_audiences?.target_platform as string[] ?? []
     check("m881 exists, line 1 is the lane stamp OR the APPLIED LIVE stamp (the rule, not the waypoint)", !!f && /^-- (WRITTEN, NOT APPLIED \(wave 146, lane 146E\)|── APPLIED LIVE )/.test(m))
     check("m881 admits groundtruth + stackadapt on campaigns and credentials, stackadapt on audiences", /ad_campaigns_platform_check[\s\S]*'groundtruth','stackadapt'/.test(m) && /platform_credentials_platform_check[\s\S]*'groundtruth','stackadapt'/.test(m) && /target_platform_check[\s\S]*'stackadapt'/.test(m))
-    check("m881 KEEPS every live value of all three CHECKs (no value dropped)", [...liveCred, ...liveCamp, ...liveAud].every((v) => m.includes(`'${v}'`)), [...liveCred, ...liveCamp, ...liveAud].filter((v) => !m.includes(`'${v}'`)).join(","))
-    check("POSITIVE CONTROL: the keep-check sees a value m881 does not carry", !m.includes("'not_a_live_platform'"))
+    // THE RULE, not the waypoint: m881 keeps every value that was live when it was written. A live value m881 does not carry
+    // is admitted ONLY by a LATER migration that re-declares the SAME CHECK (m975, wave 151 lane 151F, added 'batchdata'
+    // to platform_credentials_platform_check) — never silently, never by a migration that re-declares a different CHECK.
+    const { stripSqlComments } = await import("./strip-sql-comments")
+    const later = readdirSync("supabase/migrations").filter((n) => /^m(\d+)-/.test(n) && Number(/^m(\d+)-/.exec(n)![1]) > 881).map((n) => stripSqlComments(raw(`supabase/migrations/${n}`)))
+    // The value must sit inside THAT constraint's own statement (from its name to the statement's `;`), in comment-stripped SQL.
+    const declares = (text: string, constraint: string, v: string) => new RegExp(`ADD\\s+CONSTRAINT\\s+${constraint}\\b[^;]*'${v}'`, "i").test(text)
+    const declaredLater = (constraint: string, v: string) => later.some((t) => declares(t, constraint, v))
+    const carried = (constraint: string, v: string) => m.includes(`'${v}'`) || declaredLater(constraint, v)
+    const dropped = [
+      ...liveCred.filter((v) => !carried("platform_credentials_platform_check", v)).map((v) => `platform_credentials.platform:${v}`),
+      ...liveCamp.filter((v) => !carried("ad_campaigns_platform_check", v)).map((v) => `ad_campaigns.platform:${v}`),
+      ...liveAud.filter((v) => !carried("facebook_custom_audiences_target_platform_check", v)).map((v) => `facebook_custom_audiences.target_platform:${v}`),
+    ]
+    check("every live value of the three CHECKs is carried by m881 OR by a LATER migration that re-declares the same CHECK (no value dropped)", dropped.length === 0, dropped.join(","))
+    check("POSITIVE CONTROL: the keep-check sees a value m881 does not carry", !m.includes("'not_a_live_platform'") && !declaredLater("platform_credentials_platform_check", "not_a_live_platform"))
+    check("POSITIVE CONTROL: a value inside a DIFFERENT constraint's statement does not count as carried for this one; inside its own it does",
+      !declares(`ALTER TABLE ad_campaigns ADD CONSTRAINT ad_campaigns_platform_check CHECK (platform IN ('zzz'));\nALTER TABLE platform_credentials ADD CONSTRAINT platform_credentials_platform_check CHECK (platform IN ('a'));`, "platform_credentials_platform_check", "zzz")
+      && declares(`ALTER TABLE platform_credentials ADD CONSTRAINT platform_credentials_platform_check CHECK (platform IN ('a','zzz'));`, "platform_credentials_platform_check", "zzz"))
   }
 
   // ════════════════════════════════════════════════════════════════════════════════════════════

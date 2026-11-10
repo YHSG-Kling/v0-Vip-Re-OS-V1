@@ -820,7 +820,7 @@ canary({
   negativeHalf: "a postcard back equal to its front, and a personal letter sharing the letter id, are refused before spend; a format with no id names the env var to set; the second send of a piece REPLAYS (never charges); createLobProof refuses a live_ key with no network; handwritten_card naming LettrLabs stays refused (dormant, never downgraded to a typeset letter); no event proves household receipt",
   blindSpot: "the four global Lob HTML templates and LOB_TEST_API_KEY are WAITING_EXTERNAL (no proof URL is rendered); the sender's OFFICE is not yet in the brand cascade (readMailBrandFacts says not_in_brand_cascade — lane 150R PARTIAL); PostcardMania / PCM prices unconfirmed (owner quote)",
   run: async () => {
-    const pt = await import("../lib/direct-mail/piece-type")
+    const pt = { ...(await import("../lib/direct-mail/piece-type")), ...(await import("../lib/direct-mail/mail-piece-rules")) }
     const { createLobProof } = await import("../lib/providers/lob/client")
     const al = await import("../lib/kernel/action-ledger")
     const FOUR = { LOB_LETTER_TEMPLATE_ID: "tmpl_letter", LOB_PERSONAL_LETTER_TEMPLATE_ID: "tmpl_personal", LOB_POSTCARD_FRONT_TEMPLATE_ID: "tmpl_front", LOB_POSTCARD_BACK_TEMPLATE_ID: "tmpl_back" }

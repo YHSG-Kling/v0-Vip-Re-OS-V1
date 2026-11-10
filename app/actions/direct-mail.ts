@@ -545,12 +545,12 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
     // NEVER household receipt (householdReceiptProven is false by type). An unmatched piece is said, not
     // read as success: the UPDATE is .select()ed and counted (CLAUDE.md §3).
     let pieceSettled = 0
-    let truth: import("@/lib/direct-mail/piece-type").MailPieceTruth | null = null
+    let truth: import("@/lib/direct-mail/mail-piece-rules").MailPieceTruth | null = null
     let returnedMail: import("@/lib/direct-mail/piece-type").ReturnedMailResult | null = null
     const pieceId = typeof payload?.lob_piece_id === "string" ? payload.lob_piece_id : params.batchId
     const lobEvent = String(payload?.lob_event ?? payload?.status ?? "")
     if (pieceId && lobEvent) {
-      const { mailOutcomeFromLobEvent } = await import("@/lib/direct-mail/piece-type")
+      const { mailOutcomeFromLobEvent } = await import("@/lib/direct-mail/mail-piece-rules")
       const reading = mailOutcomeFromLobEvent(lobEvent)
       const at = payload?.delivered_at ?? payload?.returned_at ?? payload?.mailed_at ?? new Date().toISOString()
       const outcomePatch: Record<string, unknown> = { delivery_outcome: reading.outcome, last_provider_event: lobEvent, last_provider_event_at: at }
@@ -569,10 +569,11 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
       if (!settleErr && pieceSettled === 0) console.warn(`[DirectMail] Lob event ${lobEvent} for piece ${pieceId} matched no recipient of campaign ${params.campaignId} (a 1:1 drain piece has its own campaign row)`)
 
       // ── WAVE 151 (lane 151H): DELIVERY TRUTH + RETURNED MAIL ──
-      // Six separate truths (piece-type.ts mailPieceTruth): this event is what it proves and nothing more — an accepted or
-      // rendered piece is not mailed, a mailed piece is not delivered, a carrier scan is not household receipt. A piece that
-      // came BACK corrects the address record it was mailed to and stops the sequence (applyReturnedMailHandling).
-      const { mailPieceTruth, applyReturnedMailHandling } = await import("@/lib/direct-mail/piece-type")
+      // Six separate truths (mail-piece-rules.ts mailPieceTruth): this event is what it proves and nothing more — an accepted
+      // or rendered piece is not mailed, a mailed piece is not delivered, a carrier scan is not household receipt. A piece
+      // that came BACK corrects the address record it was mailed to and stops the sequence (applyReturnedMailHandling).
+      const { mailPieceTruth } = await import("@/lib/direct-mail/mail-piece-rules")
+      const { applyReturnedMailHandling } = await import("@/lib/direct-mail/piece-type")
       truth = mailPieceTruth(reading.outcome)
       if (reading.outcome === "returned_to_sender" && pieceSettled > 0) {
         const { data: rec, error: recErr } = await supabase

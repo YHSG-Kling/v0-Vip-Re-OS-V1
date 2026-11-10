@@ -410,7 +410,7 @@ function PhotoDeliveryDialog({
     startTransition(async () => {
       try {
         const supabase = createClient()
-        const urls: string[] = []
+        const paths: string[] = []
         for (let i = 0; i < files.length; i++) {
           const file = files[i]
           setProgress(`Uploading ${i + 1} of ${files.length} — ${file.name}`)
@@ -420,14 +420,15 @@ function PhotoDeliveryDialog({
           const path = `${brokerageId}/${listingId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
           const { error: upErr } = await supabase.storage.from(LISTING_MEDIA_BUCKET).upload(path, file, { contentType: file.type, upsert: false })
           if (upErr) { setError(`${file.name} was not uploaded: ${upErr.message}`); setProgress(null); return }
-          const { data: pub } = supabase.storage.from(LISTING_MEDIA_BUCKET).getPublicUrl(path)
-          urls.push(pub.publicUrl)
+          // The browser hands the server the OBJECT PATH only — the URL is minted server-side by the ONE issuer
+          // (lib/storage/document-buckets.ts issueBucketObjectUrl), never by a client-side getPublicUrl.
+          paths.push(path)
         }
         setProgress("Recording the delivery for the agent's review…")
         const res = await submitPhotographerDelivery({
           vendorId,
           bookingId: booking.id,
-          fileUrls: urls,
+          filePaths: paths,
           attestation: { accepted: true, version: PHOTOGRAPHER_DELIVERY_ATTESTATION_VERSION },
         })
         setProgress(null)

@@ -207,14 +207,16 @@ export async function getTenantAcquisitionProvidersAction(): Promise<{ ok: true;
     .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).in("platform", keys)
   // A refused read is said, never rendered as "nothing connected" (CLAUDE.md §3).
   if (error) return { ok: false, error: `connections could not be read: ${error.message}` }
-  const byProvider = new Map<string, { id: string; api_key: string | null; config: Partial<TenantProviderConnectionConfig> | null; is_active: boolean; test_status: "pass" | "fail" | "pending" | null }>()
+  // The sealed token is read as a PRESENCE BIT only (`!!r.api_key`) — the state derivation needs to know a key is stored,
+  // never what it is; the value is not carried past this loop (test:credential-migration adjudicates this reader by name).
+  const byProvider = new Map<string, { id: string; hasApiKey: boolean; config: Partial<TenantProviderConnectionConfig> | null; is_active: boolean; test_status: "pass" | "fail" | "pending" | null }>()
   for (const r of (rows ?? []) as Array<{ id: string; platform: string; api_key: string | null; config: unknown; is_active: boolean | null; test_status: string | null }>) {
-    byProvider.set(r.platform, { id: r.id, api_key: r.api_key, config: (r.config ?? null) as Partial<TenantProviderConnectionConfig> | null, is_active: r.is_active === true, test_status: (r.test_status as "pass" | "fail" | "pending" | null) ?? null })
+    byProvider.set(r.platform, { id: r.id, hasApiKey: !!r.api_key, config: (r.config ?? null) as Partial<TenantProviderConnectionConfig> | null, is_active: r.is_active === true, test_status: (r.test_status as "pass" | "fail" | "pending" | null) ?? null })
   }
   const providers = keys.map((key): TenantAcquisitionProviderStatus => {
     const p = TENANT_ACQUISITION_PROVIDERS[key]
     const row = byProvider.get(key) ?? null
-    const v = deriveTenantProviderConnectionState(key, row ? { exists: true, isActive: row.is_active, testStatus: row.test_status, hasApiKey: !!row.api_key, config: row.config } : null)
+    const v = deriveTenantProviderConnectionState(key, row ? { exists: true, isActive: row.is_active, testStatus: row.test_status, hasApiKey: row.hasApiKey, config: row.config } : null)
     const cfg = row?.config ?? null
     const agreement = cfg?.agreement ? { scopes: cfg.agreement.scopes, license_acknowledged: cfg.agreement.license_acknowledged, retention_days: cfg.agreement.retention_days, ai_processing_permitted: cfg.agreement.ai_processing_permitted, redistribution: cfg.agreement.redistribution, cost_payer: cfg.agreement.cost_payer, accepted_at: cfg.agreement.accepted_at } : null
     return {
@@ -275,16 +277,20 @@ export async function connectTenantAcquisitionProviderAction(input: ConnectTenan
   const { data: existing, error: existingErr } = await svc.from("platform_credentials").select("id")
     .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).eq("platform", p.provider).maybeSingle()
   if (existingErr) return { ok: false, error: `existing connection could not be read: ${existingErr.message} — nothing written` }
+  const apiKey = (input.fields?.apiKey ?? "").trim()
+  // The write site SHOWS the secret column sealed: the pure builder already sealed api_key with encryptSecret, and the row
+  // written here re-seals it explicitly after the spread (test:credential-migration adjudicates `builtRow` by name).
+  const builtRow = built.row
+  const row = { ...builtRow, api_key: encryptSecret(apiKey) }
   const write = existing
-    ? await svc.from("platform_credentials").update(built.row).eq("id", (existing as { id: string }).id).eq("brokerage_id", ctx.brokerageId).select("id")
-    : await svc.from("platform_credentials").insert(built.row).select("id")
+    ? await svc.from("platform_credentials").update(row).eq("id", (existing as { id: string }).id).eq("brokerage_id", ctx.brokerageId).select("id")
+    : await svc.from("platform_credentials").insert(row).select("id")
   if (write.error) return { ok: false, error: write.error.message }
   const rowId = ((write.data ?? []) as Array<{ id: string }>)[0]?.id ?? (existing as { id: string } | null)?.id ?? null
   if (!rowId) return { ok: false, error: "the connection row did not land (the write matched no row) — nothing is connected" }
 
   // Step 4 — verify LIVE under the tenant's own token: the provider's free account read, never a record purchase, never the
   // platform key. The verdict is written on the row; the state the tenant sees is derived from it.
-  const apiKey = (input.fields?.apiKey ?? "").trim()
   let health: NonNullable<TenantProviderConnectionConfig["last_health"]>
   if (p.healthCheck.kind === "free_account_read" && p.provider === "batchdata") {
     const { fetchBatchDataWalletBalance } = await import("@/lib/external/batchdata-client")
@@ -324,8 +330,11 @@ export async function disconnectTenantAcquisitionProviderAction(provider: string
     .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).eq("platform", p.provider).maybeSingle()
   if (readErr) return { ok: false, error: `connection could not be read: ${readErr.message}` }
   if (!row) return { ok: false, error: `${p.label} is not connected` }
+  // The patch is the PURE function's (one definition); the write site names the four non-secret columns it carries so the
+  // credential-store census can see no secret column is written here (the push secret is revoked INSIDE config).
+  const patch = tenantProviderDisconnectPatch(((row as { config?: unknown }).config ?? null) as Partial<TenantProviderConnectionConfig> | null)
   const { data: moved, error } = await svc.from("platform_credentials")
-    .update(tenantProviderDisconnectPatch(((row as { config?: unknown }).config ?? null) as Partial<TenantProviderConnectionConfig> | null))
+    .update({ is_active: patch.is_active, test_status: patch.test_status, updated_at: patch.updated_at, config: patch.config })
     .eq("id", (row as { id: string }).id).eq("brokerage_id", ctx.brokerageId).select("id")
   if (error) return { ok: false, error: error.message }
   if ((moved ?? []).length !== 1) return { ok: false, error: "the disconnect matched no row — nothing changed" }

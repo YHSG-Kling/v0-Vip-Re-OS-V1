@@ -87,6 +87,17 @@ interface WriterCensus { sites: number; literal: number; identifier: number; fin
 /** Bare-identifier spreads inside a store payload that the census cannot see through — adjudicated by name. */
 const ADJUDICATED_SPREADS: Record<string, string> = {
   "lib/platform/platform-social.ts|fields": "upsertPlatformCredential: every caller passes access_token/refresh_token in `fields`; both are re-sealed EXPLICITLY after the spread (encryptSecret), which overrides the spread value",
+  "app/actions/tenant-connections.ts|builtRow": "connectTenantAcquisitionProviderAction (wave 151, lane 151F): the row is built by the PURE buildTenantProviderCredentialRow (lib/providers/tenant-provider-connections.ts) with encryptSecret as its sealer — api_key and config.webhook_secret land sealed (test:acquisition-door) — and api_key is re-sealed EXPLICITLY after the spread, which overrides the spread value",
+}
+/** The secret columns that override each adjudicated spread (each must be `col: encryptSecret(` AFTER the spread). */
+const ADJUDICATED_SPREAD_SEALS: Record<string, string[]> = {
+  "lib/platform/platform-social.ts|fields": ["access_token", "refresh_token"],
+  "app/actions/tenant-connections.ts|builtRow": ["api_key"],
+}
+/** Explicit-column readers that select a secret column ONLY as a presence bit (`!!row.api_key`) and never dereference the
+ *  value — adjudicated by name, and HELD BY RULE: every `.api_key` dereference in the file must be a `!!` presence test. */
+const ADJUDICATED_PRESENCE_READERS: Record<string, string> = {
+  "app/actions/tenant-connections.ts": "listTenantAcquisitionProvidersAction reads api_key as `hasApiKey: !!r.api_key` (the connection-state derivation needs presence, never the token); nothing in the file decrypts because nothing reads the value",
 }
 
 function judgePayload(file: string, store: string, op: string, obj: string, findings: WriterFinding[]) {
@@ -187,11 +198,21 @@ function writerLayer(files: string[]) {
   for (const f of now.findings) console.log(`      HEAD: ${f.kind} ${f.file} ${f.store}.${f.op} — ${f.detail}`)
   check("no credential-store write site writes a secret column in plaintext", plaintext.length === 0, plaintext.map((f) => `${f.file}:${f.detail}`).join("; "))
   check("no credential-store write site has an unadjudicated opaque payload or spread", opaque.length === 0, opaque.map((f) => `${f.file}:${f.detail}`).join("; "))
+  // Each adjudicated spread names the secret columns that override it AFTER the spread, each re-sealed with encryptSecret —
+  // derived per entry (the rule), never one hardcoded pair for every file.
   for (const [key, why] of Object.entries(ADJUDICATED_SPREADS)) {
     const [file, ident] = key.split("|")
     const src = code(file)
-    check(`adjudicated spread ...${ident} in ${file} still exists and is overridden by sealed keys (${why.slice(0, 40)}…)`, new RegExp(`\\.\\.\\.${ident}\\b`).test(src) && /access_token:\s*encryptSecret\(/.test(src) && /refresh_token:\s*encryptSecret\(/.test(src))
+    const seals = ADJUDICATED_SPREAD_SEALS[key] ?? []
+    const sealedAfter = (col: string) => { const s = src.search(new RegExp(`\\.\\.\\.${ident}\\b`)); const r = new RegExp(`${col}:\\s*encryptSecret\\(`, "g"); r.lastIndex = Math.max(0, s); return s >= 0 && r.exec(src) !== null }
+    check(`adjudicated spread ...${ident} in ${file} still exists and is overridden AFTER the spread by sealed ${seals.join(" + ") || "(none named)"} (${why.slice(0, 40)}…)`,
+      new RegExp(`\\.\\.\\.${ident}\\b`).test(src) && seals.length > 0 && seals.every(sealedAfter))
   }
+  check("CONTROL: a spread whose named secret column is NOT re-sealed after it is not admitted", (() => {
+    const s = `const row = { api_key: encryptSecret(k), ...builtRow }`
+    const at = s.search(/\.\.\.builtRow\b/); const r = /api_key:\s*encryptSecret\(/g; r.lastIndex = at
+    return r.exec(s) === null
+  })())
 }
 
 // ── R — reader census ─────────────────────────────────────────────────────────────────────────
@@ -231,7 +252,7 @@ function readerLayer(files: string[]) {
     const src = code(f)
     const v = judge(src)
     if (v !== "n/a") readers++
-    if (v === "missing_decrypt") missing.push(f)
+    if (v === "missing_decrypt" && !ADJUDICATED_PRESENCE_READERS[f]) missing.push(f)
     if (storeRe.test(src) && /\.select\("\*"\)/.test(src)) {
       wildcard++
       // a wildcard reader that dereferences a secret field must decrypt it somewhere (file-level, like R
@@ -245,6 +266,18 @@ function readerLayer(files: string[]) {
   check("no wildcard store reader dereferences a secret field without decrypting (or it is adjudicated by name)", wildcardBad.length === 0, wildcardBad.join(", "))
   check("CONTROL: a wildcard reader dereferencing access_token with no decrypt is what the finder catches", (() => { const s = `const { data } = await svc.from("social_media_accounts").select("*")\nuse(data.access_token)`; return /\.select\("\*"\)/.test(s) && /\.(access_token)\b/.test(s.replace(/\.select\("[^"]*"\)/g, "")) && !/decryptSecret/.test(s) })())
   for (const f of Object.keys(ADJUDICATED_WILDCARD)) check(`adjudicated wildcard reader ${f} still exists and still has no decrypt (a stale adjudication fails)`, files.includes(f) && !/\bdecryptSecret(Fields)?\(/.test(code(f)))
+  for (const f of Object.keys(ADJUDICATED_PRESENCE_READERS)) {
+    const s = code(f)
+    const derefs = s.match(new RegExp(`[\\w$)\\]]+\\.(${SECRET_COLS.join("|")})\\b`, "g")) ?? []
+    const nonPresence = derefs.filter((d) => !/^!!/.test(s.slice(Math.max(0, s.indexOf(d) - 2), s.indexOf(d))) && !s.includes(`!!${d}`))
+    check(`adjudicated presence reader ${f} still selects a secret column, still has no decrypt, and every secret-column dereference is a \`!!\` presence test (${derefs.length} dereference(s)) — a stale adjudication fails`,
+      files.includes(f) && SELECT_SECRET_RE.test(s) && !/\bdecryptSecret(Fields)?\(/.test(s) && derefs.length > 0 && nonPresence.length === 0, nonPresence.join(", "))
+  }
+  check("CONTROL: the presence rule flags a reader that copies the token (`api_key: r.api_key`) and admits `!!r.api_key`", (() => {
+    const bad = `const x = { api_key: r.api_key }`, good = `const x = { hasApiKey: !!r.api_key }`
+    const d = (s: string) => (s.match(/[\w$)\]]+\.(api_key)\b/g) ?? []).filter((m) => !s.includes(`!!${m}`))
+    return d(bad).length === 1 && d(good).length === 0
+  })())
 
   // ── wave 140 (lane 140P): rows that reach a BROWSER never carry a secret column ──────────────────
   // THE RULE: a store read whose rows become a "use server" return value or a page/component prop

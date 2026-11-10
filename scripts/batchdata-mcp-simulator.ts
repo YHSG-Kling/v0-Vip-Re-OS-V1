@@ -173,9 +173,15 @@ const read = (rel: string) => stripComments(readFileSync(join(root, rel), "utf8"
   const skipsUnmatched = /unmatched\+\+/.test(src)
   // The ids-only event interface carries no market_id — geography match is the ONLY
   // routing. Scope the check to the interface BODY (not the whole file) so it can't
-  // be fooled by a market_id used elsewhere for the byMarket grouping map.
-  const eventInterfaceMatch = src.match(/interface\s+SmartSearchEvent\s*\{([\s\S]*?)\}/)
+  // be fooled by a market_id used elsewhere for the byMarket grouping map. The shape is
+  // declared WHEREVER the route imports it from (wave 151, lane 151F moved it to
+  // lib/providers/tenant-provider-connections.ts so the tenant door shares it) — follow
+  // the import rather than pin the file, and fail closed when it is declared nowhere.
+  const eventInterfaceRe = /interface\s+SmartSearchEvent\s*\{([\s\S]*?)\}/
+  const importedFrom = /\bSmartSearchEvent\b[\s\S]{0,400}?from\s+["']@\/(lib\/[^"']+)["']/.exec(src)?.[1]
+  const eventInterfaceMatch = src.match(eventInterfaceRe) ?? (importedFrom ? read(`${importedFrom}.ts`).match(eventInterfaceRe) : null)
   const noMarketIdInEventShape = !!eventInterfaceMatch && !/market_id/.test(eventInterfaceMatch[1])
+  ok(!!eventInterfaceMatch, `webhook fan-out: the SmartSearchEvent shape is declared in the route or in the module it imports it from (${importedFrom ?? "route"})`)
 
   ok(usesActiveTerritoryResolver, "webhook fan-out: resolves ACTIVE territories before ingesting any event")
   ok(matchesByGeography,          "webhook fan-out: matches each hydrated property to a market by geography (recordMatchesTerritory)")

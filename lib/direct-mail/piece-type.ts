@@ -82,10 +82,13 @@ export function canonicalCampaignPieceType(raw: string | null | undefined): Camp
  * §4e returned-mail handling. Proof: scripts/direct-mail-rendering-guard.ts.
  */
 import type { SenderAddress, SenderAddressSource, ReturnedMailRecipient, ReturnedMailPlan } from "@/lib/providers/mailing-cass-gate"
-// The PURE rules live in the client-safe sibling (mail-piece-rules.ts) and are re-exported here — one home, one import for servers.
-import { MAIL_FORMATS, MAIL_FORMAT_LABELS, MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE, layoutContentViolations, MAIL_DELIVERY_OUTCOMES, mailOutcomeFromLobEvent, mailPieceTruth, type MailFormat, type LobTemplateSlot, type MailDeliveryOutcome, type MailOutcomeReading, type MailPieceTruth } from "./mail-piece-rules"
-export { MAIL_FORMATS, MAIL_FORMAT_LABELS, MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE, layoutContentViolations, MAIL_DELIVERY_OUTCOMES, mailOutcomeFromLobEvent, mailPieceTruth } from "./mail-piece-rules"
-export type { MailFormat, LobTemplateSlot, MailDeliveryOutcome, MailOutcomeReading, MailPieceTruth } from "./mail-piece-rules"
+// The PURE rules live in the client-safe sibling (mail-piece-rules.ts). This file forwards the ones its own server callers
+// read beside the routing/sender functions below; the delivery-truth pair (mailOutcomeFromLobEvent, mailPieceTruth) and
+// its types are imported from mail-piece-rules DIRECTLY by every reader (app/actions/direct-mail.ts, the tracking tab,
+// the guards) — a forward nobody read was a hidden wire (test:hidden-wires, wave 151).
+import { MAIL_FORMAT_LABELS, HANDWRITING_STYLE_TYPEFACE, type MailFormat, type LobTemplateSlot } from "./mail-piece-rules"
+export { MAIL_FORMATS, MAIL_FORMAT_LABELS, MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE, layoutContentViolations, MAIL_DELIVERY_OUTCOMES } from "./mail-piece-rules"
+export type { MailFormat, LobTemplateSlot, MailDeliveryOutcome } from "./mail-piece-rules"
 
 // ─── 1. Formats and the Lob template slots ────────────────────────────────────
 

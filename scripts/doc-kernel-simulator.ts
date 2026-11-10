@@ -2037,7 +2037,14 @@ async function main() {
           && !src("app/actions/ai-closing-workflow.ts").includes("agent_user_id:")
           && !src("app/actions/ai-closing-workflow.ts").includes("item_label")
           && src("app/crm/components/closing-workflow-tab.tsx").includes("ownerFromNotes")
-          && src("app/actions/social/generate-social-post.ts").includes("bvpAgentRow")
+          // WAVE 151 (lane 151I): the private brand_voice_profile reads this clause froze as `bvpAgentRow` were DELETED
+          // (survivor: lib/kernel/brand-voice.ts loadSenderVoiceBrief — the ONE cascade). The CONSTRUCT the clause was
+          // about survives and is asserted instead of the vanished spelling: the social writer reads brand voice ONLY
+          // through the cascade, and the cascade keeps the two id spaces apart (users.id → agents.user_id, agents.id → agents.id).
+          && !/from\("brand_voice_profile"\)/.test(src("app/actions/social/generate-social-post.ts"))
+          && src("app/actions/social/generate-social-post.ts").includes("loadSenderVoiceBrief")
+          && src("lib/kernel/brand-voice.ts").includes('.eq("user_id", agentUserId)')
+          && src("lib/kernel/brand-voice.ts").includes('.eq("id", agentId)')
           && src("app/actions/ai-financial-management.ts").includes("agent_cap_tracking")
           && !src("app/actions/ai-financial-management.ts").includes("cap_progress")
           && src("package.json").includes("npm run test:e2e-lifecycle"))

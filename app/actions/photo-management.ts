@@ -621,7 +621,9 @@ export async function processVendorPhotos(params: {
 export async function submitPhotographerDelivery(params: {
   vendorId: string
   bookingId: string
-  fileUrls: string[]
+  /** OBJECT PATHS in the tenant's listing-media bucket (<brokerageId>/<listingId>/<file>) — the browser uploads and hands
+   *  the paths over; the URL each path is recorded under is minted HERE by the one issuer, never by a client getPublicUrl. */
+  filePaths: string[]
   attestation: { accepted: boolean; version: string } | null
 }): Promise<
   | { success: true; listingId: string; recorded: number; skipped: number; notified: boolean; warning: string | null }
@@ -630,8 +632,11 @@ export async function submitPhotographerDelivery(params: {
   if (!isValidUUID(params.vendorId) || !isValidUUID(params.bookingId)) {
     return { success: false, error: "Invalid booking or vendor id" }
   }
-  const urls = (params.fileUrls ?? []).map((u) => String(u ?? "").trim()).filter(Boolean)
-  if (urls.length === 0) return { success: false, error: "No photo files were delivered" }
+  const paths = (params.filePaths ?? []).map((u) => String(u ?? "").trim()).filter(Boolean)
+  if (paths.length === 0) return { success: false, error: "No photo files were delivered" }
+  if (paths.some((p) => p.includes("..") || p.startsWith("/") || /^https?:/i.test(p))) {
+    return { success: false, error: "A delivered file is named by its object path in the listing-media library, never by a URL" }
+  }
 
   // THE GATE: the session owns the claimed vendor seat. Nothing below runs without it.
   let actor: Awaited<ReturnType<typeof requireVendorActor>>
@@ -642,9 +647,18 @@ export async function submitPhotographerDelivery(params: {
     throw err
   }
 
-  const { recordPhotographerDelivery } = await import("@/lib/listings/owner-photo-upload")
+  const { recordPhotographerDelivery, LISTING_MEDIA_BUCKET } = await import("@/lib/listings/owner-photo-upload")
+  const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
   const { withActionLedger } = await import("@/lib/kernel/action-ledger")
   const svc = createServiceClient()
+  // THE ONE ISSUER (lib/storage/document-buckets.ts): listing-media is a public-media bucket, so the issuer answers a
+  // public URL; a refusal (no URL for a path) is said, never handed onward as an empty link.
+  const urls: string[] = []
+  for (const objectPath of paths) {
+    const issued = await issueBucketObjectUrl(svc, { bucket: LISTING_MEDIA_BUCKET, objectPath })
+    if (!issued.ok) return { success: false, error: `"${objectPath.split("/").pop()}" could not be addressed in the listing-media library: ${issued.reason}` }
+    urls.push(issued.url)
+  }
   const fileSet = createHash("sha1").update([...urls].sort().join("\n")).digest("hex").slice(0, 16)
 
   const result = await withActionLedger(

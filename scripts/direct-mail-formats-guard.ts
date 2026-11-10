@@ -30,9 +30,10 @@ import { stripComments, blankStrings } from "./strip-comments"
 import { memSupabase } from "./in-memory-supabase"
 import {
   LOB_TEMPLATE_ENV, HANDWRITTEN_CARD_PROVIDER_ENV, MAIL_FORMAT_LABELS, MAIL_DELIVERY_OUTCOMES, OPTIONAL_MAIL_PROVIDERS,
-  fallbackLobTemplates, routeMailFormat, mailOutcomeFromLobEvent, buildMailMergeVariables,
+  fallbackLobTemplates, routeMailFormat, buildMailMergeVariables,
   mailPieceIdempotencyKey, formatForCampaignPieceType, type MailBrandFacts,
 } from "../lib/direct-mail/piece-type"
+import { mailOutcomeFromLobEvent } from "../lib/direct-mail/mail-piece-rules"
 import { createLobProof } from "../lib/providers/lob/client"
 import { withActionLedger, settleDispatchResult, replayDispatchResult, type DispatchLike } from "../lib/kernel/action-ledger"
 

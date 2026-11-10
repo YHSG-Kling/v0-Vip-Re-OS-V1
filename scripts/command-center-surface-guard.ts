@@ -322,11 +322,21 @@ async function main() {
     // POSITIVE CONTROL on the literal reader itself (a reader that returned undefined made this check blind once).
     check("CONTROL: the literal reader returns each literal's text", stringLiterals(`const a = "Handwritten Letter"`).map((s) => s.text).join("") === "Handwritten Letter")
     const jsxText = readdirSync(join(ROOT, mailDir)).filter((f) => f.endsWith(".tsx")).map((f) => stripped(`${mailDir}/${f}`).replace(/handwritten_letter|HandwrittenLetterPreview/g, "")).join("\n")
-    const calls = (s: string) => /\bhandwrit(ten|ing)\b/i.test(s) && !/not pen handwriting|handwriting provider|handwritten cards come only/i.test(s)
+    // THE RULE (owner, wave 151: "handwritten font by computer can be a substitute"): a printed piece is never CALLED
+    // handwritten. "Handwriting-STYLE" names the typeface, not the pen — admitted ONLY as the hyphenated style word; a bare
+    // "handwriting"/"handwritten" claim on a printed piece is still refused, and the honest sentences stay admitted.
+    const calls = (s: string) => /\bhandwritten\b/i.test(s)
+      ? !/handwritten cards come only|not handwritten|never handwritten/i.test(s)
+      : /\bhandwriting\b/i.test(s) && !/handwriting-style|not pen handwriting|handwriting provider/i.test(s)
     check("CONTROL: the finder flags \"Handwritten Letter\" and passes the honest sentence", calls("Handwritten Letter") && !calls("a script typeface, not pen handwriting"))
+    check("CONTROL: the finder flags a bare \"Handwriting note\" and admits the style word \"Handwriting-style, printed\"", calls("Handwriting note") && !calls("Handwriting-style, printed"))
     const offenders = lits.filter((l) => l.v !== "handwritten_letter" && calls(l.v)).map((l) => `${l.f}: "${l.v}"`)
     const textHits = (jsxText.match(/>[^<{]*\bHandwritten\b[^<{]*</g) ?? [])
     check("no label, sub-label or JSX text calls a printed piece handwritten", offenders.length === 0 && textHits.length === 0, [...offenders, ...textHits].join(" | "))
+    // …and every file that uses the style word also says the piece is PRINTED (the style word never stands alone as a claim).
+    const styleFiles = readdirSync(join(ROOT, mailDir)).filter((f) => f.endsWith(".tsx")).filter((f) => /handwriting-style/i.test(stripped(`${mailDir}/${f}`)))
+    const styleWithoutPrinted = styleFiles.filter((f) => !/\bprinted\b/i.test(stripped(`${mailDir}/${f}`)))
+    check(`every mail surface file that says "handwriting-style" also says "printed" (${styleFiles.length} file(s) use the style word)`, styleFiles.length > 0 && styleWithoutPrinted.length === 0, styleWithoutPrinted.join(", "))
     check("the campaigns tab offers the zero-cost proof (sendCampaign({ …, previewOnly: true }))", /sendCampaign\(\{[^}]*previewOnly: true/.test(stripped(`${mailDir}/campaigns-tab.tsx`)))
   }
 

@@ -228,6 +228,8 @@ check("the facts rung's own gate is unchanged (isBatchDataRungAllowed: acquisiti
   rail.isBatchDataRungAllowed("acquisition", ALLOW) && !rail.isBatchDataRungAllowed("acquisition", NO_OPT) && !rail.isBatchDataRungAllowed("listing_intake", ALLOW))
 
 // Source census: who imports BatchData, and does the reach pass the gate?
+// (wave 151: the `@/lib/batchdata-client` shim is gone — its one importer, app/actions/lead-intelligence.ts, reads the
+// survivor lib/external/batchdata-client.ts directly; the specifier stays in the finder so a resurrected shim is seen.)
 const BD_IMPORT = /["']@\/lib\/external\/batchdata-[a-z-]+["']|["']@\/lib\/batchdata-client["']|["']\.\/batchdata-[a-z-]+["']|["']@\/lib\/external["']/
 // batchDataPreferMcp is generic — `batchDataPreferMcp<T>(` — so the reach token admits a type argument
 // (the first run reported the rail and public-record-preload as NOT reaching: the finder was blind).
@@ -257,13 +259,26 @@ const GATED = [
 // (a) transports / registries / probes / re-exports — they ARE the seam, not a caller.
 const TRANSPORT = new Set([
   "lib/external/batchdata-client.ts", "lib/external/batchdata-mcp.ts", "lib/external/batchdata-ai-tools.ts",
-  "lib/external/batchdata-batchrank.ts", "lib/external/batchdata-seller-signals.ts", "lib/external/index.ts", "lib/batchdata-client.ts",
+  "lib/external/batchdata-batchrank.ts", "lib/external/batchdata-seller-signals.ts", "lib/external/index.ts",
+  // (wave 151: lib/batchdata-client.ts — the 3-line backward-compat shim — DELETED; survivor lib/external/batchdata-client.ts)
   "lib/ai-isa/batchdata-isa-tools.ts", // persona DNC registry, tier-gated by its own registry (test:batchdata-isa-tools)
   "lib/platform/go-live-readiness.ts", // connectivity probe
-  "app/api/admin/billing/batchdata-wallet/route.ts", // wallet balance read
   "app/api/internal/ai-chat/route.ts", // mounts the tier-gated registry, no direct reach
   // (wave 92: lib/cma/comp-supplement-cache.ts left — its payload is RentcastComp now, no import)
 ])
+// (a2) ACCOUNT READS — the provider's FREE wallet/balance GET (fetchBatchDataWalletBalance): no record is bought, no
+// enrichment purpose applies, so the enrichment gate (resolveBatchDataAccess) has nothing to judge. HELD BY RULE below:
+// a file in this set reaches NOTHING else — its only BD_REACH-class token is the wallet read — so the exemption can
+// never quietly become an enrichment reach. Wave 151 (lane 151F): the tenant's own-token health check at connect time.
+const ACCOUNT_READ_ONLY = new Set<string>([
+  "app/api/admin/billing/batchdata-wallet/route.ts", // platform wallet balance read (admin billing)
+  "app/actions/tenant-connections.ts",               // the tenant's own token verified by the free account read (never a purchase)
+])
+const WALLET_READ = /fetchBatchDataWalletBalance\(/
+const accountReadReaching = [...ACCOUNT_READ_ONLY].filter((p) => BD_REACH.test(blankStrings(stripped(p))) || !WALLET_READ.test(blankStrings(stripped(p))))
+check(`every ACCOUNT-READ-ONLY file (${ACCOUNT_READ_ONLY.size}) reaches the wallet read and NOTHING else — no BD_REACH token in stripped+blanked source`, accountReadReaching.length === 0, accountReadReaching.join(", "))
+check("POSITIVE CONTROL: the same predicates flag an account-read file that starts buying records",
+  BD_REACH.test(blankStrings(`const b = await fetchBatchDataWalletBalance({ apiKey })\nawait lookupBatchDataPropertiesByIds(ids, { apiKey })`)))
 // (b) scraper lanes — FROZEN (wave 80): reachability proven by vercel.json / cron-dispatch, not this proof.
 const SCRAPER_LANE = new Set([
   "app/api/cron/lead-scraping/route.ts", "app/api/webhooks/batchdata-smart-search/route.ts",
@@ -300,7 +315,7 @@ check(`every VOCABULARY-ONLY importer (${VOCABULARY_ONLY.size}) still reaches NO
 check("POSITIVE CONTROL: the same reach finder flags a vocabulary importer that starts calling the provider",
   BD_REACH.test(blankStrings(`import { BATCHDATA_MOTIVATION_TYPES } from "@/lib/external/batchdata-client"\nawait fetchMotivatedSellers({ state: "TX" })`)))
 for (const p of importers) {
-  if (TRANSPORT.has(p) || SCRAPER_LANE.has(p) || BLIND_SPOTS.has(p) || VOCABULARY_ONLY.has(p)) continue
+  if (TRANSPORT.has(p) || SCRAPER_LANE.has(p) || BLIND_SPOTS.has(p) || VOCABULARY_ONLY.has(p) || ACCOUNT_READ_ONLY.has(p)) continue
   if (GATED.includes(p)) {
     const src = blankStrings(stripped(p))
     // The rail DEFINES its BatchData rung as a function above the ladder loop and INVOKES it only
@@ -316,10 +331,10 @@ for (const p of importers) {
   }
   unknown.push(p)
 }
-console.log(`  denominator: ${CORPUS.length} files under app/ lib/ · ${importers.length} import a BatchData module · transport ${TRANSPORT.size} · scraper-lane ${SCRAPER_LANE.size} · gated ${GATED.length} · blind spots ${BLIND_SPOTS.size}`)
+console.log(`  denominator: ${CORPUS.length} files under app/ lib/ · ${importers.length} import a BatchData module · transport ${TRANSPORT.size} · account-read-only ${ACCOUNT_READ_ONLY.size} · scraper-lane ${SCRAPER_LANE.size} · gated ${GATED.length} · blind spots ${BLIND_SPOTS.size}`)
 for (const b of BLIND_SPOTS) console.log(`     · blind spot (direct reach, not migrated): ${b}`)
 check(`every GATED caller calls resolveBatchDataAccess( BEFORE its first BatchData reach in stripped+blanked source (${gatedOk.length}/${GATED.length})`, gatedBad.length === 0 && gatedOk.length === GATED.length, gatedBad.join("; "))
-check("NO production file reaches BatchData outside the transport / scraper-lane / gated / published-blind-spot sets (shrink-only)", unknown.length === 0, unknown.join(", "))
+check("NO production file reaches BatchData outside the transport / account-read-only / scraper-lane / gated / published-blind-spot sets (shrink-only)", unknown.length === 0, unknown.join(", "))
 const missingGated = GATED.filter((p) => !importers.includes(p))
 check("every GATED file is still a real BatchData importer (a gate on a file that no longer reaches BatchData would be a stale claim)", missingGated.length === 0, missingGated.join(", "))
 const staleBlind = [...BLIND_SPOTS].filter((p) => !importers.includes(p))
