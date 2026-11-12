@@ -76,7 +76,7 @@ import { WEBHOOK_CONTRACT, type WebhookContractEntry } from "../lib/providers/we
 import { classifyProxyPath } from "../app/constants/auth"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
 import { claimOf } from "./migration-status"
-import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift, readReleaseEvidence, deriveO3, o3FullOpen } from "./release-rules"
+import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift, readReleaseEvidence, deriveO3, o3FullOpen, listingMediaPoliciesResolved } from "./release-rules"
 import { providerOfferVerdict, DEFAULT_ESIGN_PROVIDER } from "../lib/integrations/providers/catalog"
 
 const ROOT = process.cwd()
@@ -1974,8 +1974,9 @@ const WAVE151_GATES: Wave151Gate[] = [
     proofs: ["test:open-loop-ledger", "test:release-blockers", "test:operations-docs"],
     rule: () => rule151([["release-blockers carries the §L L1/L2 obligation derived from the stamps", /"L1-L2"/.test(src151("scripts/release-blockers-guard.ts"))]]) },
 ]
-/** PURE — a wave-151 gate's verdict: certify145's, then NOT CERTIFIED while a named migration lacks the applied stamp or the rule does not hold. */
-function certify151(g: Wave151Gate, env: GateEnv, contracts: Readonly<Record<string, readonly string[] | null>>, stamp: (n: number) => string, ruleOf: (g: Wave151Gate) => Rule151): GateVerdict & { stamps: string[]; rule: Rule151 } {
+/** PURE — a wave-151 gate's verdict: certify145's, then NOT CERTIFIED while a named migration lacks the applied stamp or the rule does not hold.
+ *  (wave 152, lane 152L: generic over the gate's lane vocabulary, so the wave-152 block reads its gates through this SAME function.) */
+function certify151<G extends GateSpec & { lanes: readonly string[]; rulings?: string; migrations: number[] }>(g: G, env: GateEnv, contracts: Readonly<Record<string, readonly string[] | null>>, stamp: (n: number) => string, ruleOf: (g: G) => Rule151): GateVerdict & { stamps: string[]; rule: Rule151 } {
   const v = certify145(g, env, contracts)
   const stamps = g.migrations.map((n) => `m${n} ${stamp(n)}`)
   const reasons = [...v.reasons]
@@ -2026,6 +2027,188 @@ check("G47 when the matrix carries a wave-151 release-gate section, it has a row
   [...WAVE151_GATES.filter((g) => !gateRows151.includes(g.gate.toLowerCase())).map((g) => `missing: ${g.gate}`), ...gateRows151.filter((r) => !WAVE151_GATES.some((g) => g.gate.toLowerCase() === r)).map((r) => `unknown row: ${r}`)].join(", "))
 
 // ═════════════════════════════════════════════════════════════════════════════
+// WAVE 152 (lane 152L) — G⁸ · THE WAVE-152 GATES. One gate per OWNER REQUIREMENT THAT CHANGED CODE (the owner's 2026-11-11 words,
+// $S/WAVE152_OWNER_NOTES.md: tenant-facing copy and payer truth; the ROI ledger reader; unique QR codes with destinations and an
+// optional region on every mail format; managers / arbiter / orchestrators; document readers that fill draft financial fields;
+// compliance that COMPARES terms; the correct final Closing Disclosure on any change, blocking without a CDA; the CDA opt-in;
+// the proposed-addendum signature door; customer journeys and the convergence lane). Certified by the SAME three readings as the
+// wave-151 block (certify151, unchanged): (1) the lane contract keys + the chained survivors; (2) the migration(s) the requirement
+// landed as carry the APPLIED stamp (claimOf); (3) THE RULE, read from STRIPPED source, the migrations' stripped SQL and the
+// GENERATED caches — never a waypoint (no pinned count, no line number, no stamp text). A requirement that needed no migration
+// certifies on (1) + (3). A gate whose rule no longer holds reads NOT CERTIFIED — never green by omission. CERTIFIED is an
+// engineering reading: the owner obligations below (O1 storage — now including the listing-media half —, O2 seeds, O3/O4
+// hosting) and the external verdicts (live provider calls, counsel sign-off, deployment smoke) are never discharged by it.
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[G⁸ · wave 152 gates — the owner's 2026-11-11 requirements that changed code → applied migration + the rule in the tree + the lane contracts]")
+const WAVE152_LANE_IDS = ["152A", "152B", "152C", "152D", "152E", "152F", "152G", "152H", "152I", "152J", "152K", "152L"] as const
+/** NEW proof keys per wave-152 lane ([] = the lane EXTENDED existing guards and registered no new key; null would mean unpublished). */
+const WAVE152_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE152_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
+  "152A": ["test:tenant-facing-copy"], "152B": ["test:roi-outcome-ledger"], "152C": [], "152D": ["test:receipt-intelligence"], "152E": [],
+  "152F": ["test:addendum-signatures"], "152G": ["test:settlement-reconciliation"], "152H": [], "152I": ["test:manager-ownership-matrix"],
+  "152J": [], "152K": [], "152L": ["test:wave152-canaries"],
+})
+const contract152 = (lane: (typeof WAVE152_LANE_IDS)[number]) => WAVE152_CONTRACT_PROOFS[lane] ?? []
+/** A code path that would mint a Contact / Lead from a scan (the QR scan door must never carry one). */
+const CONTACT_WRITE_152 = /from\(['"](contacts|leads)['"]\)[\s\S]{0,120}\.(insert|upsert)\(|captureContact\(|captureConsentedContact\(/
+/** A brokerage-payer claim in tenant copy (lane 152A's finder, the same shape). */
+const PAYER_CLAIM_152 = /\b(?:brokerage (?:pays|will pay|is paying)|(?:billed|charged|invoiced) to (?:your |the |my )?brokerage|bills? (?:your|the|my) brokerage|paid by (?:your|the|my) brokerage)\b/i
+/** A placeholder left on a user-visible door. */
+const PLACEHOLDER_152 = /not implemented|coming soon/i
+// The ABSENCE finders the wave-152 rules use — named once, so G51's positive controls exercise the very regex each rule reads.
+const SECOND_FORBIDDEN_LIST_152 = /TENANT_FACING_FORBIDDEN/
+const DIRECT_CREDIT_READ_152 = /from\("marketing_attribution_credits"\)/
+const INVENTED_REVENUE_152 = /DEFAULT_AVG_COMMISSION|\*\s*0\.3\b/
+const RAW_QR_WRITER_152 = /\bmintTrackedQr\(/
+const DUP_EXPENSE_WRITER_152 = /export async function createExpenseRecord\b/
+const INFORMATIONAL_ASK_152 = /informational:\s*true/
+const CDA_BLOCKS_CLOSE_152 = /blocksClosing:\s*true/
+const exports152 = (p: string, names: string[]) => { const s = src151(p); return names.every((n) => new RegExp(`export (?:async )?function ${n}\\b`).test(s)) }
+interface Wave152Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE152_LANE_IDS)[number]>; /** the migration numbers the requirement landed as — each must read `applied` through claimOf ([] = none) */ migrations: number[]; /** THE RULE, read from the tree on every run */ rule: () => Rule151 }
+const WAVE152_GATES: Wave152Gate[] = [
+  { gate: "tenant-facing copy + payer truth (no migration)", rulings: "owner 1 — connection states and every tenant-facing error are helpful and safe; a non-brokerage tenant never reads 'brokerage pays'", lanes: ["152A"], hookLanes: ["152A"], canaries: [], migrations: [],
+    proofs: ["test:immediate-operations", "test:tenant-provider-connections", ...contract152("152A")],
+    rule: () => { const e = src151("lib/errors/index.ts"), tt = src151("lib/support/ticket-triage.ts"); return rule151([
+      ["ONE presenter + ONE rule list + ONE payer resolver in lib/errors", exports152("lib/errors/index.ts", ["presentTenantMessage", "presentTenantError", "presentTenantConnection", "tenantCopyVerdict", "resolveTenantPayer"])],
+      ["the payer is read from the tenant's OWN plan tier (never user_type)", /plan_tier/.test(fnSlice151(e, "export async function resolveTenantPayer")) && !/user_type/.test(fnSlice151(e, "export async function resolveTenantPayer"))],
+      ["the triage gate delegates to the one list (no second forbidden list)", /return tenantCopyVerdict\(text/.test(tt) && !SECOND_FORBIDDEN_LIST_152.test(tt)],
+      ["the action boundary judges every relayed refusal through the one list (handleError → relayedErrorText → tenantCopyVerdict relayed)", /relayedErrorText\(/.test(fnSlice151(e, "export function handleError")) && /tenantCopyVerdict\(raw, \{ mode: "relayed" \}\)/.test(fnSlice151(e, "function relayedErrorText"))],
+      ["no brokerage-payer claim on the usage, phone and lead-source surfaces (stripped)", !["app/dashboard/settings/usage/page.tsx", "app/dashboard/admin/phone-settings/phone-settings-client.tsx", "app/dashboard/settings/integrations/lead-sources/acquisition-providers-panel.tsx"].some((p) => PAYER_CLAIM_152.test(src151(p).replace(/&apos;/g, "'")))]]) } },
+  { gate: "ROI ledger reader on outcome evidence (m943)", rulings: "owner 2 — the ROI reader reads real outcome evidence; no manufactured closed-sale attribution; never unknown spend as $0 or a division by zero", lanes: ["152B", "152K"], hookLanes: ["152B"], canaries: [], migrations: [943],
+    proofs: ["test:resource-allocation", "test:command-center-surface", ...contract152("152B")],
+    rule: () => { const roi = src151("lib/intelligence/roi-ledger.ts"), f = fnSlice151(roi, "export function realizedReturnOnMarketingSpend"); return rule151([
+      ["THE formula is N/A for unknown / partial / $0 spend and an unfinalized commission", /spendStatus === "unknown"/.test(f) && /spendStatus === "partial"/.test(f) && /spendCents <= 0/.test(f) && /contributionCents == null/.test(f)],
+      ["ONE realized-credit read: one model, closed deals only, fail closed on a refused deal read", /\.eq\("attribution_model", ROI_SOURCED_MODEL\)/.test(fnSlice151(roi, "export async function loadRealizedAttributionCredits")) && /inPipelineColumn\(t\.status, "closed"\)/.test(fnSlice151(roi, "export async function loadRealizedAttributionCredits"))],
+      ["the four kernel attribution readers read only through it", ["lib/kernel/resource-allocation.ts", "lib/kernel/board-packet.ts", "lib/kernel/intelligence-report.ts", "lib/kernel/reporting-autonomy.ts"].every((p) => /loadRealizedAttributionCredits\(/.test(src151(p)) && !DIRECT_CREDIT_READ_152.test(src151(p)))],
+      ["the campaign_roi writer invents no revenue (no average-commission constant, no ×0.3 lead estimate)", !INVENTED_REVENUE_152.test(src151("lib/campaigns/roi-calculator.ts"))],
+      ["m943 gives the channel writer its ON CONFLICT key", /channel_performance_brokerage_channel_window_key/.test(sql151(943)) && /\(brokerage_id, channel_type, window_start, window_end\)/.test(sql151(943))]]) } },
+  { gate: "QR registry + an optional QR region on every mail format (m945/m946)", rulings: "owner 3 — every code unique with a destination URL, created, managed and tracked; all mail including letters may carry a QR region", lanes: ["152C", "152J"], hookLanes: ["152C"], canaries: [], migrations: [945, 946],
+    proofs: ["test:qr-registry", "test:marketing-qr", "test:direct-mail-rendering"],
+    rule: () => { const gov = src151("lib/marketing/qr-governance.ts"), mint = fnSlice151(gov, "export async function mintGovernedQr"), tq = src151("lib/marketing/tracked-qr.ts"); return rule151([
+      ["m945 + m946 columns live", columnsLive151(945).ok && columnsLive151(946).ok],
+      ["the three QR vocabularies == the live CHECKs (retired reason, traffic class, device class)", sameSet151(constList151("lib/marketing/qr-contract.ts", "QR_RETIRED_REASONS"), liveVocab151("qr_codes", "retired_reason")) && sameSet151(constList151("lib/marketing/qr-contract.ts", "QR_TRAFFIC_CLASSES"), liveVocab151("qr_scan_events", "traffic_class")) && sameSet151(constList151("lib/marketing/qr-contract.ts", "QR_DEVICE_CLASSES"), liveVocab151("qr_scan_events", "device_class"))],
+      ["the governed mint judges the destination and ledgers the mint", mint.length > 0 && /validateQrDestination\(/.test(mint) && /withActionLedger/.test(mint)],
+      ["the token is drawn from a CSPRNG (never the label)", /randomBytes\(/.test(fnSlice151(tq, "function mintQrToken"))],
+      ["the letter renderer prints only through the region decision; the studio doors mint through the governed door", /decideMailQrRegion\(/.test(src151("lib/direct-mail/render-letter.ts")) && /mintGovernedQr\(/.test(src151("app/actions/marketing-studio.ts")) && !RAW_QR_WRITER_152.test(src151("app/actions/marketing-studio.ts"))],
+      ["a scan creates no Contact (the scan door never writes contacts / leads nor calls a capture path)", src151("app/api/qr/scan/route.ts").length > 0 && !CONTACT_WRITE_152.test(src151("app/api/qr/scan/route.ts"))]]) } },
+  { gate: "document and receipt extraction → draft financial fields (no migration)", rulings: "owner 9 — readers read and understand documents, input evidence-backed values into draft fields and summarize; receipts fill the agent / team / brokerage books after authorized review", lanes: ["152D"], hookLanes: ["152D"], canaries: [], migrations: [],
+    proofs: ["test:doc-kernel", "test:ai-spend-booked", ...contract152("152D")],
+    rule: () => { const ri = src151("lib/documents/receipt-intake.ts"); return rule151([
+      ["the vision door sends the document as an image part (not invented text)", /image_url/.test(src151("lib/documents/ocr-pdf.ts"))],
+      ["posting runs only on approval, under the action ledger (finance.expense.post_from_document)", /finance\.expense\.post_from_document/.test(fnSlice151(ri, "export async function approveReceipt")) && /withActionLedger/.test(fnSlice151(ri, "export async function approveReceipt"))],
+      ["auto-post only under an approved grant (fail closed)", /autopostGrantFor\(/.test(ri + src151("lib/documents/receipt-rules.ts"))],
+      ["ONE expense writer: logScopedExpense lives; the duplicate kernel writer is gone", /export async function logScopedExpense/.test(src151("app/actions/financials.ts")) && !DUP_EXPENSE_WRITER_152.test(src151("lib/kernel/financial.ts"))],
+      ["AI never fills a CDA", /aiFills:\s*false/.test(src151("lib/transactions/cda-closing-policy.ts"))]]) } },
+  { gate: "compliance compares governing terms + holds + governed overrides (no migration)", rulings: "owner 8 — compliance compares terms besides reading documents; a departure is a corrective request and a hold, never informational", lanes: ["152E"], hookLanes: ["152E"], canaries: [], migrations: [],
+    proofs: ["test:closing-compliance", "test:transaction-addenda", "test:closing-terms"],
+    rule: () => { const cc = src151("lib/transactions/closing-compliance.ts"); return rule151([
+      ["THE term ledger (governing instrument, signatures, evidence, prior value) — one reader", exports152("lib/offers/governing-terms.ts", ["contractTermLedger"]) && exports152("lib/offers/governing-terms-rule.ts", ["buildTermLedger"])],
+      ["executed terms compared to the settlement AND the deal record, classified (superseded / requires human interpretation)", exports152("lib/transactions/closing-compliance-core.ts", ["compareDealRecordTerms"]) && ["superseded", "requires_human_interpretation"].every((c) => constList151("lib/transactions/closing-compliance-core.ts", "TERM_COMPARISON_CLASSES").includes(c))],
+      ["every departure opens ONE ledgered corrective request (the runner's default requester) and the evidence hold is computed in the run", /\(deps\.correct \?\? requestCorrections\)\(/.test(cc) && /compliance\.correction_request\.open/.test(cc) && /await evidenceHoldSpecs\(/.test(cc)],
+      ["a computed check is never passed by a person; a waiver needs the override authority (both doors read the one rule)", exports152("lib/transactions/closing-compliance-core.ts", ["decideComplianceCheckChange"]) && /decideComplianceCheckChange\(/.test(src151("app/actions/transaction-compliance.ts"))]]) } },
+  { gate: "proposed-addendum signature door (m953)", rulings: "owner 10 — the requested-signatures door on a proposed addendum is built: governed signer routing, send, status, retrieve, verify; never 'not implemented'", lanes: ["152F"], hookLanes: ["152F"], canaries: [], migrations: [953],
+    proofs: ["test:esign-execution-loop", "test:outside-offer-loop", ...contract152("152F")],
+    rule: () => { const core = src151("lib/esign/addendum-signature-request.ts"), ui = src151("app/dashboard/offers/outside-offer-threads.tsx"); return rule151([
+      ["m953 columns live; SIGNATURE_REQUEST_STATUSES == the live CHECK", columnsLive151(953).ok && sameSet151(constList151("lib/esign/addendum-signature-rules.ts", "SIGNATURE_REQUEST_STATUSES"), liveVocab151("signature_requests", "request_status"))],
+      ["the door is a session-gated \"use server\" module", /^\s*["']use server["']/.test(rawText151("app/actions/buyer-offer/request-addendum-signatures.ts"))],
+      ["the send is ledgered and the executed version goes only through THE ONE recorder", /contract\.addendum_signatures\.request/.test(core) && /recordContractTermsVersion/.test(core)],
+      ["no placeholder is left on the addendum UI (stripped)", ui.length > 0 && !PLACEHOLDER_152.test(ui)]]) } },
+  { gate: "contract-to-settlement reconciliation + the blocking no-CDA close (no migration)", rulings: "owner 7 — any change at closing → the final Closing Disclosure must be correct; without a CDA compliance and the CD are still accurate — not informational", lanes: ["152G"], hookLanes: ["152G"], canaries: [], migrations: [],
+    proofs: ["test:closing-compliance", "test:cda-closing-flow", ...contract152("152G")],
+    rule: () => { const sp = src151("lib/transactions/stage-progression.ts"), pol = src151("lib/transactions/cda-closing-policy.ts"); return rule151([
+      ["the gated close runs the settlement gate and asks the closing question — never informationally", /closingSettlementGate\(/.test(sp) && /ensureClosingAttestationAsked\(/.test(sp) && !INFORMATIONAL_ASK_152.test(sp)],
+      ["an unanswered informational ask is upgraded to BLOCKING by the one writer", /is_blocking: true/.test(fnSlice151(src151("lib/commission/closing-verification.ts"), "export async function ensureClosingAttestationAsked"))],
+      ["the reconciliation runs at the tail of THE ONE closing check", /reconcileClosingSettlement|deps\.reconcile/.test(src151("lib/transactions/closing-compliance.ts"))],
+      ["TRID: a new wait only for APR / loan product / prepayment penalty; the CDA never blocks a close by itself", /function tridRevisionAssessment/.test(pol) && ["apr_inaccurate", "loan_product_changed", "prepayment_penalty_added"].every((t) => pol.includes(t)) && !CDA_BLOCKS_CLOSE_152.test(pol)]]) } },
+  { gate: "CDA policy change through the existing setting (no migration)", rulings: "owner 6 — a brokerage that moves from no CDA to CDA turns the existing setting on; effective dates and in-progress deals handled; no retroactive CDA", lanes: ["152H"], hookLanes: ["152H"], canaries: [], migrations: [],
+    proofs: ["test:cda-effective-terms", "test:tenant-policy-versions", "test:cda-closing-flow"],
+    rule: () => { const setter = fnSlice151(src151("app/actions/brokerage-cda-setup.ts"), "export async function setBrokerageCdaSettingAction"); return rule151([
+      ["THE ONE effective-policy reader is read at every milestone (close gate, finalizer, orchestration, reaper)", exports152("lib/transactions/cda-closing-policy.ts", ["loadEffectiveCdaModes"]) && ["lib/transactions/stage-progression.ts", "lib/commission/reconcile-tracking.ts", "lib/transactions/closing-orchestration.ts", "lib/transactions/cda-delivery-reaper.ts"].every((p) => /loadEffectiveCdaModes\(/.test(src151(p)))],
+      ["the setter gates the finance admin first, ledgers the change and versions the policy (rolls back when the version cannot be recorded)", before151(setter, "requireCdaPolicyAdmin(", ".update(") && /finance\.cda_policy\.set/.test(setter) && /appendTenantPolicyVersion\(/.test(setter) && /rolledBack:/.test(setter)],
+      ["a completed deal is never switched to a CDA afterward", /deal_completed/.test(fnSlice151(src151("lib/transactions/cda-closing-policy.ts"), "export function decideDealCdaSwitch"))],
+      ["cda_policy is a registered tenant policy (its history is the effective-date record)", /cda_policy:/.test(src151("lib/kernel/tenant-policy.ts"))]]) } },
+  { gate: "managers, arbiter and orchestrators own every consequential action (no migration)", rulings: "owner 4 + the arbiter model — intercept → typed instruction → allow / deny / rewrite / hold → execute → audit, on the EXISTING planes", lanes: ["152I"], hookLanes: ["152I"], canaries: [], migrations: [],
+    proofs: ["test:arbiter-timing", "test:manager-ownership", ...contract152("152I")],
+    rule: () => { const route = src151("app/api/agent-assistant/tool-call/route.ts"); return rule151([
+      ["a denied tool call is audited and a spoken confirm is honoured only against a persisted hold", /function denyToolCall/.test(route) && /function governSpokenConfirm/.test(route)],
+      ["a released FINANCIAL tool execution is ledgered through the one wrapper", exports152("lib/kernel/action-ledger.ts", ["ledgerToolCall"]) && /ledgerToolCall\(/.test(route)],
+      ["a parked tenant push has a replay runner", /async function replayParkedTenantPush/.test(src151("lib/kernel/ingress-reconciliation.ts"))],
+      ["the review ask and the lead-touch release pass THE arbiter", /review_ask:/.test(src151("lib/ai-isa/followup-arbiter.ts")) && /lead_touch_release:/.test(src151("lib/ai-isa/followup-arbiter.ts"))],
+      ["the ownership matrix is GENERATED (the doc and its generator exist)", existsSync(join(ROOT, "docs/architecture/MANAGER-OWNERSHIP-MATRIX.md")) && /--write-doc/.test(src151("scripts/manager-ownership-matrix-guard.ts"))]]) } },
+  { gate: "customer revenue journeys (no migration)", rulings: "owner 5 — close the open loops: QR across assets, IDX by the documented id read, source cursors, tenant-safe portal feedback, measured creative plays", lanes: ["152J"], hookLanes: ["152J"], canaries: [], migrations: [],
+    proofs: ["test:saved-home-alerts", "test:scrapers", "test:qr-registry"],
+    rule: () => rule151([
+      ["IDX saved homes verified from the documented account sets", /readAccountListingsById\(/.test(src151("lib/idxbroker-client.ts")) && /readIdxAccountListings|readAccountListingsById/.test(src151("lib/property-alerts/saved-home-watch.ts"))],
+      ["the Apify run cursor rides the scrape-job ledger (never a new paid run while one is open)", /apify_run_cursor/.test(src151("lib/external/apify-actors.ts"))],
+      ["the inventory-friction play runs on the alert tick", exports152("lib/property-alerts/inventory-friction.ts", ["detectInventoryFriction"]) && /detectInventoryFriction\(/.test(src151("app/api/property-alerts/run/route.ts"))],
+      ["a Contact's failed portal upload is told through THE presenter", /reportContactUploadFailure\(/.test(src151("app/actions/documents.ts")) && /presentTenant(Message|Error)\(/.test(src151("lib/portal/upload-feedback.ts"))]]) },
+  { gate: "convergence, schema discipline and owner decisions (no migration)", rulings: "owner 5 — the 96 rows re-derived; hidden refused writes fixed; L6.2 recorded as the owner's ruling; liveness + request-error hook; LICENSE plan", lanes: ["152K"], hookLanes: ["152K"], canaries: [], migrations: [],
+    proofs: ["test:check-vocabulary", "test:acquisition-door", "test:proxy-sessionless-doors", "test:open-loop-ledger"],
+    rule: () => rule151([
+      ["the write-literal census reads ternary / fallback / assigned literals", /export function resultLiterals/.test(src151("scripts/check-vocabulary-guard.ts")) && /export function assignedLiterals/.test(src151("scripts/check-vocabulary-guard.ts"))],
+      ["the liveness route exists and is public by name", existsSync(join(ROOT, "app/api/health/route.ts")) && classifyProxyPath("/api/health") === "public"],
+      ["OWNER-SQL records the wave-152 section (rulings, open decisions, read-backs)", /^## N\. Wave 152/m.test(rawText151("docs/operations/OWNER-SQL.md"))],
+      ["the legacy spelling has a migration plan (no rename)", /rights\.licence/.test(rawText151("docs/operations/SPELLING-MIGRATION-PLAN.md"))]]) },
+  { gate: "chains/registry (wave 152)", rulings: "brief 152L — every wave-152 proof key registered, chained and owned; this block", lanes: ["152L"], hookLanes: ["152L"], canaries: [], migrations: [],
+    proofs: ["test:proof-ownership", "test:manager-ownership", "test:manager-cross-cooperation", "test:production-readiness"],
+    rule: () => rule151([["every wave-152 contract key has an accountable manager", WAVE152_LANE_IDS.flatMap((l) => contract152(l)).every((k) => !!proofOwner.get(k))]]) },
+  { gate: "canaries (wave 152)", rulings: "the directive's 16 end-to-end scenarios + 8 regulatory / financial safety tests, each on memSupabase through the real survivors with an adverse case, a positive control and a blind spot; wave-150 canaries and wave-151 groups reused by import", lanes: ["152L"], hookLanes: ["152L"], canaries: [], migrations: [],
+    proofs: [...contract152("152L")],
+    rule: () => { const c = src151("scripts/wave152-canaries.ts"); const n = (c.match(/\bscenario\(\{/g) ?? []).length; const ids = [...c.matchAll(/\bn: "(\w+)", title:/g)].map((m) => m[1]); return rule151([
+      ["the runner reuses the wave-150 canaries and the wave-151 groups by import", /from "\.\/wave150-canaries"/.test(c) && /from "\.\/wave151-canaries"/.test(c)],
+      ["every directive scenario 1–16 and safety test R1–R8 is present", Array.from({ length: 16 }, (_, i) => String(i + 1)).every((x) => ids.includes(x)) && Array.from({ length: 8 }, (_, i) => `R${i + 1}`).every((x) => ids.includes(x))],
+      ["every scenario carries an adverse case, a positive control and a blind spot (counted — at least one per scenario, never pinned)", n > 0 && (c.match(/adverse:/g) ?? []).length >= n && (c.match(/positiveControl:/g) ?? []).length >= n && (c.match(/blindSpot:/g) ?? []).length >= n]]) } },
+  { gate: "release truth (wave 152)", rulings: "brief 152L — O1 (five buckets + listing-media) / O2 / O3 / O4 stay release-blocking from their stamps and status lines; the owner action sheet carries the exact steps and read-backs", lanes: ["152L"], hookLanes: ["152L"], canaries: [], migrations: [],
+    proofs: ["test:release-blockers", "test:operations-docs", "test:open-loop-ledger"],
+    rule: () => { const sheet = rawText151("docs/operations/WAVE152-OWNER-ACTION-SHEET.md"); return rule151([
+      ["release-blockers derives the listing-media half of O1 from the ONE shared rule", /listingMediaPoliciesResolved\(/.test(src151("scripts/release-blockers-guard.ts")) && /export function listingMediaPoliciesResolved/.test(src151("scripts/release-rules.ts"))],
+      ["the owner action sheet names O1, O2, O3 and O4 with read-backs", ["O1", "O2", "O3", "O4"].every((o) => new RegExp(`\\b${o}\\b`).test(sheet)) && /expect/i.test(sheet)]]) } },
+]
+const verdicts152 = WAVE152_GATES.map((g) => certify151(g, gateEnv, WAVE152_CONTRACT_PROOFS, stamp151, (x) => x.rule()))
+const certified152 = verdicts152.filter((v) => v.state === "CERTIFIED"), external152 = verdicts152.filter((v) => v.state === "EXTERNAL"), notCertified152 = verdicts152.filter((v) => v.state === "NOT CERTIFIED")
+for (const v of verdicts152) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(84)} owner ${v.owner.padEnd(22)} lanes ${(WAVE152_GATES.find((g) => g.gate === v.gate)!.lanes ?? []).join("+").padEnd(10)} proofs ${v.proofs.length} ${v.stamps.length ? `migrations ${v.stamps.join(", ")}` : "no migration"}\n                  rule: ${v.rule.why}${v.reasons.length ? `\n                  · ${v.reasons.join("\n                  · ")}` : ""}`)
+const contractKeys152 = WAVE152_LANE_IDS.flatMap((l) => contract152(l))
+const unpublished152 = WAVE152_LANE_IDS.filter((l) => WAVE152_CONTRACT_PROOFS[l] === null)
+const earlierContractKeys152 = [...earlierContractKeys151, ...contractKeys151]
+const migrations152 = [...new Set(WAVE152_GATES.flatMap((g) => g.migrations))].sort((a, b) => a - b)
+console.log(`    census: ${WAVE152_GATES.length} wave-152 gates; ${contractKeys152.length} lane contract keys (${contractKeys152.filter((k) => proofState(k) === "ok").length} landed+chained, ${contractKeys152.filter((k) => proofState(k) === "unchained").length} unchained, ${contractKeys152.filter((k) => proofState(k) === "no-file").length} script-missing, ${contractKeys152.filter((k) => proofState(k) === "absent").length} absent); ${unpublished152.length} lane(s) unpublished; migrations named ${migrations152.map((n) => `m${n} (${stamp151(n)})`).join(", ")}; ${certified152.length} CERTIFIED · ${external152.length} EXTERNAL · ${notCertified152.length} NOT CERTIFIED`)
+console.log("    BLIND SPOT: a gate reads the rule from stripped source and the generated caches — it proves the code says what the requirement says, not that a live provider, a live storage policy or a deployment behaves; those are the owner obligations and external verdicts below.")
+check("G48 every wave-152 gate names ≥1 proof, waits only on wave-152 lanes, names only migrations that exist in the tree, and every published wave-152 contract key is named by ≥1 wave-152 gate",
+  WAVE152_GATES.every((g) => g.proofs.length > 0 && g.lanes.length > 0 && g.lanes.every((l) => (WAVE152_LANE_IDS as readonly string[]).includes(l)) && g.migrations.every((n) => !!migrationNamed(n)))
+  && contractKeys152.every((k) => WAVE152_GATES.some((g) => g.proofs.includes(k))),
+  [...contractKeys152.filter((k) => !WAVE152_GATES.some((g) => g.proofs.includes(k))), ...WAVE152_GATES.flatMap((g) => g.migrations.filter((n) => !migrationNamed(n)).map((n) => `m${n} not in the tree`))].join(", "))
+check("G49 no wave-152 contract key is claimed twice, none re-claims a key an earlier wave published (a re-asserted guard is a SURVIVOR), and every survivor a wave-152 gate names is registered + chained TODAY",
+  new Set(contractKeys152).size === contractKeys152.length && reclaimedKeys(contractKeys152, earlierContractKeys152).length === 0
+  && WAVE152_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys152.includes(k)).every((k) => proofState(k) === "ok"),
+  [...reclaimedKeys(contractKeys152, earlierContractKeys152).map((k) => `${k} re-claimed`), ...WAVE152_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys152.includes(k) && proofState(k) !== "ok").map((k) => `${k} ${proofState(k)}`)].join(", "))
+check("G50 every published wave-152 contract key is registered in package.json AND in a guard chain, and has an accountable manager (a MAINTENANCE_DOMAINS proof owner)",
+  unwiredContractKeys(contractKeys152, proofState).length === 0 && unownedContractKeys(contractKeys152, (k) => proofOwner.get(k) ?? null).length === 0,
+  [...unwiredContractKeys(contractKeys152, proofState).map((k) => `${k} ${proofState(k)}`), ...unownedContractKeys(contractKeys152, (k) => proofOwner.get(k) ?? null).map((k) => `${k} has no owner`)].join(", "))
+check("G51 POSITIVE CONTROL — the wave-152 finders still see what they were written for: a payer claim, a placeholder in a user-visible string, a Contact write from a scan; an UNSTAMPED wave-152 migration and a failing wave-152 rule each read NOT CERTIFIED through the same certify151",
+  (() => {
+    const env152: GateEnv = { ...gateEnv, scripts: { "test:spec": "tsx scripts/spec.ts" }, chain: "npm run test:spec", fileExists: () => true, roster: [], pending: new Map(), ownerOf: () => "data_steward" }
+    const base: Wave152Gate = { gate: "x", rulings: "", lanes: ["152C"], proofs: ["test:spec"], canaries: [], migrations: [945], rule: () => rule151([["holds", true]]) }
+    const unstamped = certify151(base, env152, { "152C": ["test:spec"] }, () => "not_applied", (g) => g.rule())
+    const badRule = certify151(base, env152, { "152C": ["test:spec"] }, () => "applied", () => rule151([["the rule", false]]))
+    const ok = certify151(base, env152, { "152C": ["test:spec"] }, () => "applied", (g) => g.rule())
+    return PAYER_CLAIM_152.test("AI usage is billed to your brokerage") && !PAYER_CLAIM_152.test("BatchData bills your BatchData account directly")
+      && PLACEHOLDER_152.test(stripComments(`<p>{"Request signatures — not implemented"}</p>`)) && !PLACEHOLDER_152.test(stripComments(`// was: not implemented (wave 151)\nconst x = 1`))
+      && CONTACT_WRITE_152.test("svc.from('contacts').insert({})") && CONTACT_WRITE_152.test("await captureContact({ brokerageId })") && !CONTACT_WRITE_152.test("svc.from('qr_scan_events').insert({})")
+      && unstamped.state === "NOT CERTIFIED" && unstamped.reasons.some((r) => /m945 stamped not_applied/.test(r)) && badRule.state === "NOT CERTIFIED" && ok.state === "CERTIFIED"
+      // the ABSENCE finders each still see the pre-fix shape they were written for (a clean tree and a blind regex both read 0)
+      && SECOND_FORBIDDEN_LIST_152.test("const TENANT_FACING_FORBIDDEN = [/token/]") && DIRECT_CREDIT_READ_152.test(`svc.from("marketing_attribution_credits").select("credit_dollars")`)
+      && INVENTED_REVENUE_152.test("total_revenue: conversions * DEFAULT_AVG_COMMISSION") && INVENTED_REVENUE_152.test("qualified_leads: leads * 0.3") && !INVENTED_REVENUE_152.test("const share = 0.35")
+      && RAW_QR_WRITER_152.test("await mintTrackedQr({ brokerageId, label })") && !RAW_QR_WRITER_152.test("await mintGovernedQr(input, actor)")
+      && DUP_EXPENSE_WRITER_152.test("export async function createExpenseRecord(input) {}") && INFORMATIONAL_ASK_152.test("ensureClosingAttestationAsked(svc, { informational: true })")
+      && CDA_BLOCKS_CLOSE_152.test("return { mode: \"cda\", blocksClosing: true }") && !CDA_BLOCKS_CLOSE_152.test("blocksClosing: false")
+  })())
+const gateDoc152 = matrix.split(/^## /m).find((s) => /^Wave 152 release gate/i.test(s)) ?? ""
+const gateRows152 = parseGateRows(gateDoc152)
+console.log(`    reading: READINESS-MATRIX.md "Wave 152 release gate" section ${gateDoc152 ? `present — ${gateRows152.length} gate row(s)` : "absent"}`)
+check("G52 the matrix carries a wave-152 release-gate section with a row per wave-152 gate and no row for a gate this block does not know",
+  gateDoc152.length > 0 && WAVE152_GATES.every((g) => gateRows152.includes(g.gate.toLowerCase())) && gateRows152.every((r) => WAVE152_GATES.some((g) => g.gate.toLowerCase() === r)),
+  [...WAVE152_GATES.filter((g) => !gateRows152.includes(g.gate.toLowerCase())).map((g) => `missing: ${g.gate}`), ...gateRows152.filter((r) => !WAVE152_GATES.some((g) => g.gate.toLowerCase() === r)).map((r) => `unknown row: ${r}`)].join(", "))
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WAVE 147 (lane 147H) — O · THE OWNER OBLIGATIONS STAY RELEASE-BLOCKING IN THE OUTPUT. Two obligations no code can
 // discharge (wave 146 report §18–19): (O1) the storage.objects policies — m855 (OWNER-SQL §F) and m875 (§G) — read
 // from the migration stamps through the ONE classifier (the go-live board reads the LIVE state); (O2) the four unlinked
@@ -2047,6 +2230,9 @@ const deployFacts = readDeploymentFacts(ROOT)
 const o3Full = deriveO3(deployFacts, readReleaseEvidence(ROOT))
 const OWNER_OBLIGATIONS: OwnerObligation[] = [
   { id: "O1", what: "storage.objects policies on the five document buckets — m855 (brokerage-forms) and m875 (client / transaction / agent / offer documents)", blocking: !storageApplied146, where: `docs/operations/OWNER-SQL.md §F / §G — stamps: ${STORAGE_POLICY_MIGRATIONS_146.map((f) => `${f} (${stampOf(f)})`).join(", ") || "none in the tree"}; LIVE truth: public.storage_bucket_policy_readiness()` },
+  // wave 152 (lane 152L): O1's listing-media half (OWNER-SQL §M.1 — the RESTRICTIVE folder policies). It is owner SQL run as
+  // supabase_storage_admin with NO migration file, so its §M.1 status line is the record; ONE rule for both guards (release-rules).
+  { id: "O1-LM", what: "storage.objects RESTRICTIVE policies on listing-media (OWNER-SQL §M.1 — tenant staff into their own listing folders, the assigned photographer into exactly its booked listing)", blocking: !listingMediaPoliciesResolved(ownerSqlDoc), where: "docs/operations/OWNER-SQL.md §M.1 (status line) + §N.1c (read-back: the three RESTRICTIVE rows)" },
   { id: "O2", what: "the four unlinked portal-contact seed accounts (users.user_type='contact' with no contacts.contact_user_id) — link each or remove it", blocking: !seedAccountsResolved(ownerSqlDoc), where: "docs/operations/OWNER-SQL.md §I (census query + status line)" },
   // O3/O4 (wave 149, lanes 149K + 149I2): the deployment build and install parity, by the SAME pure rules over the SAME
   // repository facts test:release-blockers uses (scripts/release-rules.ts — one canonical path, never a copy).
@@ -2057,7 +2243,12 @@ for (const o of OWNER_OBLIGATIONS) console.log(`    ${o.blocking ? "RELEASE-BLOC
 check("O1 the storage-policy obligation (m855 §F / m875 §G) is RELEASE-BLOCKING while any storage.objects policy migration lacks the applied stamp (same classifier as the wave-146 access-control gate)",
   OWNER_OBLIGATIONS[0].blocking === !storageApplied146 && STORAGE_POLICY_MIGRATIONS_146.length > 0)
 check("O2 the seed-account obligation is RELEASE-BLOCKING until OWNER-SQL §I's status line reads RESOLVED with a date and the zero census (the section exists and carries its census query)",
-  /^## I\. /m.test(ownerSqlDoc) && /contact_user_id = u\.id/.test(ownerSqlDoc) && OWNER_OBLIGATIONS[1].blocking === !seedAccountsResolved(ownerSqlDoc))
+  /^## I\. /m.test(ownerSqlDoc) && /contact_user_id = u\.id/.test(ownerSqlDoc) && OWNER_OBLIGATIONS.find((o) => o.id === "O2")!.blocking === !seedAccountsResolved(ownerSqlDoc))
+check("O1-LM the listing-media half of O1 is RELEASE-BLOCKING until OWNER-SQL §M.1's status line reads RESOLVED with a date and the three RESTRICTIVE rows (the section exists and carries a status line) — the same shared rule test:release-blockers reads",
+  /^### M\.1\. /m.test(ownerSqlDoc) && /^- Status:/m.test(ownerSqlDoc.split(/^### /m).find((s) => /^M\.1\.\s/.test(s)) ?? "") && OWNER_OBLIGATIONS.find((o) => o.id === "O1-LM")!.blocking === !listingMediaPoliciesResolved(ownerSqlDoc))
+check("O1-LM POSITIVE CONTROL — an OPEN line blocks; RESOLVED with a date and the three RESTRICTIVE rows lifts it; RESOLVED without a date, or without the read-back, does not",
+  !listingMediaPoliciesResolved("### M.1. x\n- Status: OPEN — four PERMISSIVE rows (2026-11-09)\n") && listingMediaPoliciesResolved("### M.1. x\n- Status: RESOLVED 2026-11-20 — N.1c shows the 3 RESTRICTIVE rows\n")
+  && !listingMediaPoliciesResolved("### M.1. x\n- Status: RESOLVED — N.1c shows the 3 RESTRICTIVE rows\n") && !listingMediaPoliciesResolved("### M.1. x\n- Status: RESOLVED 2026-11-20\n"))
 check(`O3 the deployment-build obligation is RELEASE-BLOCKING exactly when release-rules' deriveO3 says so (heap ${deployFacts.vercelHeap} vs cap ${deployFacts.ciCap} MB ${o3Full.heapOpen ? "OPEN" : "clear"}; Node ${o3Full.nodeOpen ? "OPEN" : "clear"}; machine ${o3Full.machineOpen ? "OPEN" : "clear"}; domain ${o3Full.domainObserved ? "observed" : "OPEN"} → ${o3Full.open ? "OPEN" : "clear"}; derived, never pinned)`,
   deployFacts.vercelHeap > 0 && deployFacts.ciCap > 0 && o3Full.heapOpen === deployBuildOpen(deployFacts.vercelHeap, deployFacts.ciCap)
   && OWNER_OBLIGATIONS.find((o) => o.id === "O3")!.blocking === o3FullOpen(o3Full))
@@ -2096,14 +2287,15 @@ console.log(`WAVE 148 GATE: ${certified148.length}/${WAVE148_GATES.length} certi
 console.log(`WAVE 149 GATE: ${certified149.length}/${WAVE149_GATES.length} certified, ${external149.length} external-verdict, ${notCertified149.length} not certified${notCertified149.length ? ` — ${notCertified149.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 150 GATE: ${certified150.length}/${WAVE150_GATES.length} certified, ${external150.length} external-verdict, ${notCertified150.length} not certified${notCertified150.length ? ` — ${notCertified150.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 151 GATE: ${certified151.length}/${WAVE151_GATES.length} certified, ${external151.length} external-verdict, ${notCertified151.length} not certified${notCertified151.length ? ` — ${notCertified151.map((v) => v.gate).join(", ")}` : ""}`)
+console.log(`WAVE 152 GATE: ${certified152.length}/${WAVE152_GATES.length} certified, ${external152.length} external-verdict, ${notCertified152.length} not certified${notCertified152.length ? ` — ${notCertified152.map((v) => v.gate).join(", ")}` : ""}`)
 // Wave 149 (lane 149K finding, fixed by 149I2): the RELEASE verdict had summed waves 141/142/145/146/147 only and silently
-// ignored the wave-148 gates; it now sums every wave's gates, 148, 149, 150 and 151 included.
-const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length + notCertified148.length + notCertified149.length + notCertified150.length + notCertified151.length
-const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150, ...external151]
+// ignored the wave-148 gates; it now sums every wave's gates, 148, 149, 150, 151 and 152 included.
+const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length + notCertified148.length + notCertified149.length + notCertified150.length + notCertified151.length + notCertified152.length
+const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150, ...external151, ...external152]
 console.log(`OWNER OBLIGATIONS: ${ownerBlocking.length}/${OWNER_OBLIGATIONS.length} RELEASE-BLOCKING${ownerBlocking.length ? ` — ${ownerBlocking.map((o) => o.id).join(", ")}` : ""}`)
 // The owner obligations (lane 147H) join the verdict: a release with an undischarged obligation is NOT READY even when
 // every gate certifies in-repo.
-console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + 142 + 145 + 146 + 147 + 148 + 149 + 150 + 151) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length}, wave 147 ${notCertified147.length}, wave 148 ${notCertified148.length}, wave 149 ${notCertified149.length}, wave 150 ${notCertified150.length}, wave 151 ${notCertified151.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
+console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + 142 + 145 + 146 + 147 + 148 + 149 + 150 + 151 + 152) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length}, wave 147 ${notCertified147.length}, wave 148 ${notCertified148.length}, wave 149 ${notCertified149.length}, wave 150 ${notCertified150.length}, wave 151 ${notCertified151.length}, wave 152 ${notCertified152.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

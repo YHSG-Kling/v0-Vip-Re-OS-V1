@@ -28,7 +28,8 @@
  * the storage.objects policies (OWNER-SQL §F/§G/§M.1) and the four seed accounts (§I) are owner work no canary can see.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
 import { memSupabase, type MemClient } from "./in-memory-supabase"
 import { WAVE150_CANARIES, withSvc, quiet, backgroundRejections, type Verdict } from "./wave150-canaries"
@@ -61,6 +62,10 @@ const photo = (tenant: string, listing: string, name: string) => `${STORAGE}/${t
 interface Group { n: number; group: string; bullets: readonly string[]; reuses: ReadonlyArray<{ n: number; covers: string }>; positiveControl: string; blindSpot: string; run: () => Promise<Verdict> }
 const GROUPS: Group[] = []
 const canary = (g: Group) => GROUPS.push(g)
+// wave 152 (lane 152L): the wave-152 runner REUSES these groups by import (scripts/wave152-canaries.ts) — the roster is exported
+// and main() runs only when this file is the entry script (the wave-150 precedent, scripts/wave150-canaries.ts).
+interface Wave151Group { n: number; group: string; run: () => Promise<Verdict> }
+export const WAVE151_GROUPS: readonly Wave151Group[] = GROUPS
 
 /** The access world — ONE tenant with an agent, a team lead and their team, a second tenant, a photographer with a confirmed listing booking. */
 function accessWorld(): MemClient {
@@ -709,4 +714,6 @@ async function main() {
   process.exit(failed + reusedFailed > 0 ? 1 : 0)
 }
 
-main().catch((e) => { console.error(e); console.log("WAVE151_CANARIES_FAIL"); process.exit(1) })
+// Run only as the entry script: imported by scripts/wave152-canaries.ts, this file registers its groups (and the wave-150 seam) and returns.
+const isEntry = (() => { try { return pathToFileURL(resolve(process.argv[1] ?? "")).href === import.meta.url } catch { return false } })()
+if (isEntry) main().catch((e) => { console.error(e); console.log("WAVE151_CANARIES_FAIL"); process.exit(1) })

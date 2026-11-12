@@ -59,7 +59,7 @@ import {
   readDeploymentFacts, deployBuildOpen, installOf, lockDrift, installParityOpen,
   nodeMajorPinned, nodeParityOpen, BUILD_OFF_HEAP_MB, machineFitOpen, o3FullOpen, machineRamMb,
   RELEASE_GATES, CI_SIDE_ROWS, EVIDENCE_EXEMPT, parseEvidenceLedger, gateVerdict, freshnessOf, gitFreshness, productionLive,
-  readReleaseEvidence, deriveO3,
+  readReleaseEvidence, deriveO3, listingMediaPoliciesResolved,
   type Freshness, type GateState, type EvidenceRow,
 } from "./release-rules"
 
@@ -248,6 +248,25 @@ const J_STEPS = [
 ] as const
 const missingJ = J_STEPS.filter(([, re]) => !re.test(secJ)).map(([n]) => n)
 check(`B4 OWNER-SQL §J — the post-application close-out the owner runs, in order (${J_STEPS.length} items)`, secJ.length > 0 && missingJ.length === 0, missingJ.join(", "))
+
+// ═════════════════════════════════════════════════════════════════════════════
+// B′ · O1 — THE LISTING-MEDIA HALF (wave 152, lane 152L)
+// ═════════════════════════════════════════════════════════════════════════════
+// The directive defines O1 as "five document buckets plus listing-media restrictive folder policies". B derives the five buckets
+// from the m855 / m875 stamps; the listing-media AMEND (OWNER-SQL §M.1, convergence row 83) has NO migration file — it is owner
+// SQL run as supabase_storage_admin — so before this section NOTHING could keep it release-blocking once m855 / m875 were stamped.
+// It is derived from §M.1's status line through the ONE shared rule (scripts/release-rules.ts listingMediaPoliciesResolved) that
+// test:production-readiness O1-LM reads too. The read-back that discharges it is OWNER-SQL §N.1c (three RESTRICTIVE rows).
+console.log("\n[B′ · O1 listing-media half — OWNER-SQL §M.1 RESTRICTIVE folder policies, open until its status line reads RESOLVED with the read-back]")
+const secM1 = ownerSql.split(/^### /m).find((s) => /^M\.1\.\s/.test(s)) ?? ""
+const o1lmOpen = !listingMediaPoliciesResolved(ownerSql)
+obligations.push({ id: "O1-LM", kind: "owner-sql", open: o1lmOpen, what: "storage.objects RESTRICTIVE policies on listing-media (tenant staff into their own listing folders; the assigned photographer into exactly its booked listing)", where: "docs/operations/OWNER-SQL.md §M.1 (statements + status line) then §N.1c (read-back)" })
+check(`B5 §M.1 carries the listing-media statements and a status line, and N.1c the read-back (now: ${o1lmOpen ? "OPEN" : "discharged"})`,
+  /CREATE POLICY "listing-media tenant listing folder insert"/.test(secM1) && /AS RESTRICTIVE/.test(secM1) && /^- Status:/m.test(secM1) && /N\.1c/.test(ownerSql) && o1lmOpen === !listingMediaPoliciesResolved(ownerSql))
+check("B5 POSITIVE CONTROL — the shared rule: OPEN blocks; RESOLVED with a date and the three RESTRICTIVE rows lifts; RESOLVED without a date, or without the read-back, does not",
+  !listingMediaPoliciesResolved("### M.1. x\n- Status: OPEN — four PERMISSIVE rows\n") && listingMediaPoliciesResolved("### M.1. x\n- Status: RESOLVED 2026-11-20 — N.1c shows the 3 RESTRICTIVE rows\n")
+  && !listingMediaPoliciesResolved("### M.1. x\n- Status: RESOLVED — N.1c shows the 3 RESTRICTIVE rows\n") && !listingMediaPoliciesResolved("### M.1. x\n- Status: RESOLVED 2026-11-20 — done\n")
+  && !listingMediaPoliciesResolved("### M.2. x\n- Status: RESOLVED 2026-11-20 — N.1c shows the 3 RESTRICTIVE rows\n"))
 
 // ═════════════════════════════════════════════════════════════════════════════
 // C · O2 — THE FOUR PORTAL SEED ACCOUNTS

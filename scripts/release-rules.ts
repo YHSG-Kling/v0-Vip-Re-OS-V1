@@ -258,3 +258,16 @@ export function deriveO3(f: DeploymentFacts, ev: ReleaseEvidence): O3Derivation 
   ].filter(Boolean)
   return { open: o3FullOpen({ heapOpen, nodeOpen: f.nodeParityOpen, machineOpen, domainObserved }), heapOpen, nodeOpen: f.nodeParityOpen, machineOpen, domainObserved, ramMb, parts }
 }
+
+/**
+ * PURE (wave 152, lane 152L) — O1's LISTING-MEDIA half: the RESTRICTIVE `storage.objects` folder policies of OWNER-SQL §M.1. The
+ * directive names O1 as "five document buckets plus listing-media"; the five buckets are derived from the m855 / m875 stamps, but
+ * §M.1 is owner SQL run as `supabase_storage_admin` with NO migration file — so, like the seed accounts (§I), its STATUS LINE is the
+ * record: open until the owner writes `- Status: RESOLVED <YYYY-MM-DD> — N.1c shows the 3 RESTRICTIVE rows`. A RESOLVED line with no
+ * date, or without the read-back, does not lift it. ONE rule for both readers (scripts/release-blockers-guard.ts B′,
+ * scripts/production-readiness-guard.ts O1-LM) — never a copy.
+ */
+export function listingMediaPoliciesResolved(ownerSqlDoc: string): boolean {
+  const sec = ownerSqlDoc.split(/^### /m).find((s) => /^M\.1\.\s/.test(s)) ?? ""
+  return /^- Status:\s*RESOLVED\b[^\n]*\d{4}-\d{2}-\d{2}[^\n]*\b3\b[^\n]*RESTRICTIVE/m.test(sec)
+}

@@ -824,6 +824,8 @@ The owner ruled on §L items L1–L6 in the wave-151 directive (§151B). What ea
 
 ### M.1. L3 verdict — AMEND the `listing-media` `storage.objects` policies (owner SQL; Dashboard → Storage → Policies, or SQL editor as `supabase_storage_admin` — `postgres` is refused 42501, as in §F)
 
+- Status: OPEN — measured 2026-11-09 (lane 151B, `pg_policies` on `storage.objects`): four PERMISSIVE listing-media rows and no RESTRICTIVE `listing-media tenant listing folder *` row. After you run the block below, run §N.1c and change this line to `- Status: RESOLVED <YYYY-MM-DD> — N.1c shows the 3 RESTRICTIVE rows` (wave 152, lane 152L: `test:release-blockers` B′ and `test:production-readiness` O1-LM derive the listing-media half of O1 from this line only — no migration file carries this policy).
+
 **What is live today (measured 2026-11-09, `pg_policies` on `storage.objects`):** four PERMISSIVE policies — `Agents can upload listing media` (INSERT, `authenticated`, `bucket_id = 'listing-media'`), `Agents can update listing media` (UPDATE), `Agents can delete listing media` (DELETE), `Public can read listing media` (SELECT, `public`). Any signed-in seat of ANY tenant — a contact, a vendor, a stranger with an account — may PUT, overwrite or delete any object in the bucket. The bucket is `public`, 50 MB, image + video mime list.
 
 **The code's contracts, censused (every path that writes or reads the bucket):**
