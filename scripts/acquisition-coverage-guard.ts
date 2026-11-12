@@ -376,6 +376,26 @@ check("package.json registers test:acquisition-coverage", pkg.scripts["test:acqu
 check("guard runs it AFTER test:scrapers (ordering only)", guard.indexOf("npm run test:scrapers") >= 0 && guard.indexOf("npm run test:acquisition-coverage") > guard.indexOf("npm run test:scrapers"))
 check("MAINTENANCE_DOMAINS owns it with coOwners", /acquisition_coverage:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:acquisition-coverage",\s*coOwners:/.test(read("lib/kernel/manager-registry.ts")))
 
+// ── cost of discovery (wave 152 — scraper_executions.duplicates_skipped had no writer) ─────────────────────
+// RULE: every execution close the cron writes carries the duplicates tally, the cron wrapper adds the kernel's
+// skipped_duplicate to the shared row's tally, and the kernel's own-row close writes it. Derived from the source (the
+// number of close sites is counted, never pinned), over comment-stripped text.
+console.log("\n[cost of discovery]")
+const closeBlocks = (src: string): string[] => {
+  const out: string[] = []
+  const re = /\.from\("scraper_executions"\)\.update\(\{/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) out.push(src.slice(m.index, src.indexOf("})", m.index) + 2))
+  return out
+}
+const closesWithoutDupes = (src: string) => closeBlocks(src).filter((b) => !/duplicates_skipped:\s*takeDuplicatesSkipped\(/.test(b))
+const cronCloses = closeBlocks(route)
+check(`every cron scraper_executions close writes duplicates_skipped (${cronCloses.length} close site(s) found)`, cronCloses.length > 0 && closesWithoutDupes(route).length === 0, `${closesWithoutDupes(route).length} close(s) without it`)
+check("insertRawBatch tallies the kernel's skipped_duplicate onto the shared execution row", /res\.skipped_duplicate/.test(route) && /duplicatesByExecution\.set\(params\.executionId/.test(route))
+check("the kernel's own-row close writes duplicates_skipped from its result", /duplicates_skipped:\s*result\.skipped_duplicate/.test(kernel))
+check("POSITIVE CONTROL: a close WITHOUT the tally is flagged", closesWithoutDupes(`supabase.from("scraper_executions").update({ status: "completed", leads_created: 3 })`).length === 1)
+check("POSITIVE CONTROL: a close WITH the tally passes", closesWithoutDupes(`supabase.from("scraper_executions").update({ status: "completed", duplicates_skipped: takeDuplicatesSkipped(id) })`).length === 0)
+
 console.log(`\n  denominators: ${KEYS.length} SourceKeys · ${cronKeys.length} cron · ${paidKeys.length} paid · ${channelled.length} channel-checked · ${paidCron.length} cost-checked`)
 console.log("  blind spots: route-shape checks are text over comment-stripped source (a renamed insertSocial helper would read as unwritten — fails LOUD, never silent); the owner-intent producers run the real parsers on fixtures, not live pages (lead-intelligence's acquisition rows joined the SourceKey reconcile in lane 83A — test:lead-demographics D6)")
 console.log(`\n${"─".repeat(50)}\n RESULT: ${passed} passed, ${failed} failed`)

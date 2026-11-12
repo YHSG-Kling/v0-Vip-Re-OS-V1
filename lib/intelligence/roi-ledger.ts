@@ -743,6 +743,56 @@ function costPer(spendCents: number, spendComplete: boolean, denominator: number
   return { value: Math.round(spendCents / denominator), na: null }
 }
 
+const PLACEMENT_NOT_RECORDED = "placement not recorded"
+/** Pure: per-placement QR measurement (exported for the guard through loadRoiOutcomeLedger; no I/O). */
+function buildPlacementRows(
+  qrCodes: Array<{ id: string; marketing_campaign_id: string; mint_context?: { placement?: string | null } | null }>,
+  scans: Array<{ id: string; qr_code_id: string; contact_id: string | null; traffic_class?: string | null }>,
+  campaignCost: ReadonlyMap<string, { status: RoiCostStatus; cents: number | null }>,
+): RoiPlacementRow[] {
+  const placementOf = (q: { mint_context?: { placement?: string | null } | null }) => {
+    const raw = typeof q.mint_context?.placement === "string" ? q.mint_context.placement.trim() : ""
+    return raw ? raw.toLowerCase() : PLACEMENT_NOT_RECORDED
+  }
+  const codePlacement = new Map(qrCodes.map((q) => [q.id, placementOf(q)]))
+  const campaignPlacements = new Map<string, Set<string>>()
+  for (const q of qrCodes) { const set = campaignPlacements.get(q.marketing_campaign_id) ?? new Set<string>(); set.add(placementOf(q)); campaignPlacements.set(q.marketing_campaign_id, set) }
+  const groups = new Map<string, { codes: Set<string>; campaigns: Set<string>; scans: number; human: number; auto: number; unclassified: number; contacts: Set<string> }>()
+  for (const q of qrCodes) {
+    const key = placementOf(q)
+    const g = groups.get(key) ?? { codes: new Set<string>(), campaigns: new Set<string>(), scans: 0, human: 0, auto: 0, unclassified: 0, contacts: new Set<string>() }
+    g.codes.add(q.id); g.campaigns.add(q.marketing_campaign_id); groups.set(key, g)
+  }
+  for (const sc of scans) {
+    const key = codePlacement.get(sc.qr_code_id); if (!key) continue
+    const g = groups.get(key)!
+    g.scans++
+    if (sc.traffic_class === "human_likely") g.human++
+    else if (sc.traffic_class === "bot" || sc.traffic_class === "repeat") g.auto++
+    else g.unclassified++
+    if (sc.contact_id) g.contacts.add(sc.contact_id)
+  }
+  return [...groups.entries()].map(([placement, g]) => {
+    const camps = [...g.campaigns]
+    const shared = camps.some((c) => (campaignPlacements.get(c)?.size ?? 0) > 1)
+    const unknown = camps.some((c) => { const k = campaignCost.get(c); return !k || !(k.status === "confirmed" || k.status === "tenant_reported") })
+    const cost: RoiPlacementRow["cost"] = placement === PLACEMENT_NOT_RECORDED
+      ? { status: "unknown", cents: null, note: "these codes were created without a placement, so they are not compared" }
+      : shared
+        ? { status: "shared", cents: null, note: "a campaign printed codes on more than one placement, so its spend cannot be split without guessing" }
+        : unknown
+          ? { status: "unknown", cents: null, note: "at least one campaign carrying this placement has no recorded cost" }
+          : { status: "attributable", cents: camps.reduce((s, c) => s + (campaignCost.get(c)?.cents ?? 0), 0), note: `the whole recorded spend of ${camps.length} campaign(s) that printed only this placement` }
+    return {
+      placement, codes: g.codes.size, campaigns: camps.length, scans: g.scans,
+      humanLikelyScans: g.human, automatedOrRepeatScans: g.auto, unclassifiedScans: g.unclassified,
+      contactsCaptured: g.contacts.size, cost,
+      costPerContactCaptured: cost.status === "attributable" ? costPer(cost.cents ?? 0, true, g.contacts.size, "contact captured") : naRatio(cost.note),
+      refs: [...g.codes].slice(0, 10).map((id) => `qr_codes:${id}`),
+    }
+  }).sort((a, b) => b.contactsCaptured - a.contactsCaptured || b.scans - a.scans)
+}
+
 interface RoiDealFact {
   id: string; brokerage_id: string; status: string | null; deleted_at: string | null; deal_name: string | null
   contract_date: string | null; close_date: string | null; actual_close_date: string | null
@@ -927,8 +977,25 @@ interface RoiJourney {
   steps: Array<{ at: string | null; kind: "touchpoint" | "qr_scan" | "mail_response" | "appointment" | "contract" | "closed" | "reversed"; label: string; ref: string }>
   credits: Array<{ campaignId: string; weight: number; cents: number | null }>
 }
+/** WAVE 152 (integrator, closes lane 152J Outside-lane 4): where a printed QR code was placed, measured. The placement is the
+ *  governed mint's own record (qr_codes.mint_context.placement, lane 152C); visits are split by the scan route's traffic class
+ *  (lane 152C, m946). A placement's spend is counted ONLY when every campaign carrying it printed its codes on that one
+ *  placement and recorded its cost — a campaign spread over several placements has no honest split, so it says "shared". */
+interface RoiPlacementRow {
+  placement: string
+  codes: number
+  campaigns: number
+  scans: number
+  humanLikelyScans: number
+  automatedOrRepeatScans: number
+  unclassifiedScans: number
+  contactsCaptured: number
+  cost: { status: "attributable" | "shared" | "unknown"; cents: number | null; note: string }
+  costPerContactCaptured: RoiRatio
+  refs: string[]
+}
 interface RoiRecommendation {
-  manager: ManagerKey; kind: "review_reduce" | "record_spend" | "finalize_commission" | "repair_attribution"
+  manager: ManagerKey; kind: "review_reduce" | "record_spend" | "finalize_commission" | "repair_attribution" | "repeat_what_worked"
   campaignId: string | null; text: string; evidence: string[]; comparableSample: number | null
   /** Always true — the reader proposes, a person decides. Nothing here raises spend or moves another tenant's budget. */
   requiresApproval: true
@@ -949,6 +1016,7 @@ export interface RoiOutcomeLedger {
   attribution: { sourcedEarnedCents: number; sourcedDeals: number; reconciled: boolean; reconciliation: Array<{ transactionId: string; earnedCents: number; creditedCents: number }>; influencedDeals: number; influenceIsAdditive: false } | null
   ratios: { realizedReturnOnMarketingSpend: RoiRatio; costPerContact: RoiRatio; costPerAppointment: RoiRatio; costPerClosedTransaction: RoiRatio }
   campaigns: RoiCampaignRow[]
+  placements: RoiPlacementRow[]
   journeys: RoiJourney[]
   providerEconomics: {
     shownAtAccountLevel: boolean
@@ -1031,24 +1099,24 @@ export async function loadRoiOutcomeLedger(
     // ── 4. Activity, spend and reach per campaign ──
     const [tpR, qrR, dmR, adR] = await Promise.all([
       readByIds(svc, "marketing_campaign_touchpoints", "id, brokerage_id, campaign_id, contact_id, sent_at, status", brokerageId, "campaign_id", campaignIds, (q) => q.gte("sent_at", sinceIso).lte("sent_at", untilIso)),
-      readByIds(svc, "qr_codes", "id, brokerage_id, marketing_campaign_id", brokerageId, "marketing_campaign_id", campaignIds),
+      readByIds(svc, "qr_codes", "id, brokerage_id, marketing_campaign_id, mint_context", brokerageId, "marketing_campaign_id", campaignIds),
       readByIds(svc, "direct_mail_campaigns", "id, brokerage_id, marketing_campaign_id, per_piece_cost, pieces_mailed, mailing_date", brokerageId, "marketing_campaign_id", campaignIds),
       readByIds(svc, "ad_campaigns", "id, brokerage_id, marketing_campaign_id", brokerageId, "marketing_campaign_id", campaignIds),
     ])
     for (const [label, r] of [["touchpoints", tpR], ["QR codes", qrR], ["direct mail", dmR], ["ad campaigns", adR]] as const) if (!r.ok) return refused(label)
     const touchpoints = mine((tpR as any).rows as Array<{ id: string; brokerage_id: string; campaign_id: string; contact_id: string | null; sent_at: string; status: string | null }>).filter((t) => t.status !== "failed" && t.status !== "queued")
-    const qrCodes = mine((qrR as any).rows as Array<{ id: string; brokerage_id: string; marketing_campaign_id: string }>)
+    const qrCodes = mine((qrR as any).rows as Array<{ id: string; brokerage_id: string; marketing_campaign_id: string; mint_context?: { placement?: string | null } | null }>)
     const mailCampaigns = mine((dmR as any).rows as Array<{ id: string; brokerage_id: string; marketing_campaign_id: string; per_piece_cost: number | null; pieces_mailed: number | null; mailing_date: string | null }>)
     const adCampaigns = mine((adR as any).rows as Array<{ id: string; brokerage_id: string; marketing_campaign_id: string }>)
     const [scanR, respR, perfR] = await Promise.all([
-      readByIds(svc, "qr_scan_events", "id, brokerage_id, qr_code_id, contact_id, is_first_scan, scanned_at", brokerageId, "qr_code_id", qrCodes.map((q) => q.id), (q) => q.gte("scanned_at", sinceIso).lte("scanned_at", untilIso)),
+      readByIds(svc, "qr_scan_events", "id, brokerage_id, qr_code_id, contact_id, is_first_scan, scanned_at, traffic_class", brokerageId, "qr_code_id", qrCodes.map((q) => q.id), (q) => q.gte("scanned_at", sinceIso).lte("scanned_at", untilIso)),
       readByIds(svc, "mail_response_tracking", "id, brokerage_id, campaign_id, contact_id, lead_id, created_at", brokerageId, "campaign_id", mailCampaigns.map((m) => m.id), (q) => q.gte("created_at", sinceIso).lte("created_at", untilIso)),
       readByIds(svc, "ad_performance", "id, brokerage_id, ad_campaign_id, spend, captured_at", brokerageId, "ad_campaign_id", adCampaigns.map((a) => a.id), (q) => q.gte("captured_at", sinceDay).lte("captured_at", untilIso)),
     ])
     for (const [label, r] of [["QR scans", scanR], ["mail responses", respR], ["ad performance", perfR]] as const) if (!r.ok) return refused(label)
     // A replayed event is ONE event: rows dedupe on their own id before anything is counted.
     const uniq = <T extends { id: string }>(rows: T[]) => [...new Map(rows.map((r) => [r.id, r])).values()]
-    const scans = uniq(mine((scanR as any).rows as Array<{ id: string; brokerage_id: string; qr_code_id: string; contact_id: string | null; is_first_scan: boolean | null; scanned_at: string }>))
+    const scans = uniq(mine((scanR as any).rows as Array<{ id: string; brokerage_id: string; qr_code_id: string; contact_id: string | null; is_first_scan: boolean | null; scanned_at: string; traffic_class?: string | null }>))
     const responses = uniq(mine((respR as any).rows as Array<{ id: string; brokerage_id: string; campaign_id: string; contact_id: string | null; lead_id: string | null; created_at: string }>))
     const perf = uniq(mine((perfR as any).rows as Array<{ id: string; brokerage_id: string; ad_campaign_id: string; spend: number | null; captured_at: string }>))
     const qrCampaign = new Map(qrCodes.map((q) => [q.id, q.marketing_campaign_id]))
@@ -1298,6 +1366,19 @@ export async function loadRoiOutcomeLedger(
       text: `"${r.name}" reached ${r.acquisition.contactsReached} contact(s) but what it cost is ${r.cost.status === "unknown" ? "not recorded" : "only partly recorded"}. Record its cost to see its return.`,
       evidence: r.cost.refs.slice(0, 5), comparableSample: null, requiresApproval: true,
     })
+    // ── 8. QR placements — measured from the governed mint's placement and the scan route's traffic class ──
+    const placements = buildPlacementRows(qrCodes, scans, new Map(rows.map((r) => [r.campaignId, r.cost])))
+    const comparablePlacements = placements.filter((pl) => pl.cost.status === "attributable" && (pl.cost.cents ?? 0) > 0 && pl.contactsCaptured > 0)
+    if (comparablePlacements.length >= ROI_MIN_COMPARABLE) {
+      const perCapture = comparablePlacements.map((pl) => ({ pl, per: (pl.cost.cents as number) / pl.contactsCaptured })).sort((a, b) => a.per - b.per)
+      const median = perCapture[Math.floor(perCapture.length / 2)].per
+      const best = perCapture[0]
+      if (best.per > 0 && median >= ROI_OUTLIER_MULTIPLE * best.per) recommendations.push({
+        manager: "campaign_orchestrator", kind: "repeat_what_worked", campaignId: null,
+        text: `QR codes placed on "${best.pl.placement}" captured a contact for about ${(median / best.per).toFixed(1)}× less than the typical placement. Consider using that placement on your next printed piece; nothing changes until someone on your team decides.`,
+        evidence: [...best.pl.refs.slice(0, 5), `comparable placements: ${comparablePlacements.length}`], comparableSample: comparablePlacements.length, requiresApproval: true,
+      })
+    }
     if (notEstablishedClosed) recommendations.push({ manager: "finance_manager", kind: "finalize_commission", campaignId: null, text: `${notEstablishedClosed} closed deal(s) are waiting on a finalized commission. Finalizing them lets their marketing return be measured.`, evidence: [...money.entries()].filter(([, m]) => m.earnedCents == null).flatMap(([, m]) => m.refs).slice(0, 10), comparableSample: null, requiresApproval: true })
     if (!reconciled) recommendations.push({ manager: "data_steward", kind: "repair_attribution", campaignId: null, text: "A closed deal's campaign credit does not split exactly. Re-running attribution for it restores an exact split.", evidence: reconciliation.filter((r) => r.earnedCents !== r.creditedCents).map((r) => `transactions:${r.transactionId}`), comparableSample: null, requiresApproval: true })
 
@@ -1317,7 +1398,7 @@ export async function loadRoiOutcomeLedger(
         costPerAppointment: costPer(eligibleSpend, allComplete, eligibleAppts, "appointment"),
         costPerClosedTransaction: costPer(eligibleSpend, allComplete, eligibleSourced, "closed deal"),
       },
-      campaigns: rows, journeys,
+      campaigns: rows, placements, journeys,
       providerEconomics: {
         shownAtAccountLevel: accountLevel,
         vendorPlatformCoveredCents: vendorPlatform, vendorTenantPaidCents: vendorTenant, vendorUnpricedCalls: vendorUnpriced,
@@ -1336,6 +1417,7 @@ export async function loadRoiOutcomeLedger(
         disbursed: "Agent payouts recorded as paid on those deals.",
         pipeline: "Projected (open, no contract) and contracted (under contract) amounts are estimates for deals that have not closed — never part of the return.",
         costs: "Confirmed costs come from ad spend and direct-mail piece costs; tenant-reported is the amount entered on a campaign; unknown means nothing is recorded.",
+        placements: "Where each QR code was printed, as recorded when it was created. Visits are split into likely people, automated or repeat scans, and scans recorded before that split existed. A placement's cost is its campaigns' whole recorded spend, counted only when those campaigns printed every code on that one placement — otherwise the spend is shared and no per-placement cost is shown.",
       },
       foreignRowsDropped: foreign,
     }

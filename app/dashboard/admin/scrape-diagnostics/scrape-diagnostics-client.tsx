@@ -353,7 +353,9 @@ export function ScrapeDiagnosticsClient({
                       <TH>Status</TH>
                       <TH>Items Found</TH>
                       <TH>Created</TH>
+                      <TH>Already Held</TH>
                       <TH>API Cost</TH>
+                      <TH>Cost / New Record</TH>
                       <TH>Started</TH>
                     </tr>
                   </thead>
@@ -364,12 +366,15 @@ export function ScrapeDiagnosticsClient({
                         <td className="px-4 py-3"><StatusBadge status={e.status} /></td>
                         <TD mono>{e.total_items_found ?? "—"}</TD>
                         <TD mono>{e.leads_created ?? "—"}</TD>
+                        <TD mono>{e.duplicates_skipped ?? "—"}</TD>
                         <TD mono>{e.api_cost != null ? `$${e.api_cost.toFixed(4)}` : "—"}</TD>
+                        {/* Cost of discovery: spend divided by what was NEW. A run that paid and found only records already held shows "all held". */}
+                        <TD mono>{e.api_cost == null ? "—" : (e.leads_created ?? 0) > 0 ? `$${(e.api_cost / (e.leads_created as number)).toFixed(4)}` : e.api_cost > 0 ? ((e.duplicates_skipped ?? 0) > 0 ? "all held" : "none new") : "—"}</TD>
                         <TD mono>{e.started_at ? new Date(e.started_at).toLocaleString() : "—"}</TD>
                       </tr>
                     ))}
                     {data.executions.length === 0 && (
-                      <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-zinc-600">No executions recorded yet</td></tr>
+                      <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-zinc-600">No executions recorded yet</td></tr>
                     )}
                   </tbody>
                 </table>

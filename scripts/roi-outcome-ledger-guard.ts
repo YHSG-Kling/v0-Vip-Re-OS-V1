@@ -373,11 +373,52 @@ async function main() {
     const recs = r.ok ? r.ledger.recommendations : []
     const reduce = recs.filter((x) => x.kind === "review_reduce")
     check("the 10× cost-per-contact mailer is flagged for REVIEW, against 4 comparable mailers, owned by the campaign orchestrator", reduce.length === 1 && reduce[0].campaignId === u(203) && reduce[0].comparableSample === 4 && reduce[0].manager === "campaign_orchestrator")
-    check("every recommendation needs a person's approval and none raises spend", recs.length > 0 && recs.every((x) => x.requiresApproval === true && !/increase|raise|boost/i.test(x.text)) && recs.every((x) => ["review_reduce", "record_spend", "finalize_commission", "repair_attribution"].includes(x.kind)))
+    check("every recommendation needs a person's approval and none raises spend", recs.length > 0 && recs.every((x) => x.requiresApproval === true && !/increase|raise|boost/i.test(x.text)) && recs.every((x) => ["review_reduce", "record_spend", "finalize_commission", "repair_attribution", "repeat_what_worked"].includes(x.kind)))
     const thin = seed({ marketing_campaigns: many.slice(2), direct_mail_campaigns: mails.slice(2), marketing_campaign_touchpoints: tps.slice(2), transactions: [], qr_codes: [], ad_campaigns: [] })
     const rt = await ledgerOf(thin, U_BROKER)
     check("ADVERSE: with only 2 comparable campaigns nothing is recommended for reduction (no verified comparable sample)", rt.ok && !rt.ledger.recommendations.some((x) => x.kind === "review_reduce"))
     if (brokerL.ok) check("the unknown-cost campaign that reached a contact gets a 'record its cost' item for the data steward", brokerL.ledger.recommendations.some((x) => x.kind === "record_spend" && x.campaignId === C_SOCIAL && x.manager === "data_steward"))
+  }
+
+  // ── R2 ───────────────────────────────────────────────────────────────────
+  // WAVE 152 (integrator, closes lane 152J Outside-lane 4): QR placements — the governed mint's placement × the scan route's
+  // traffic class × contacts captured × spend counted only when a campaign printed one placement.
+  section("R2 · QR placements: measured per placement, spend never split by guess, repeat-what-worked needs ≥3 comparable")
+  {
+    const plan: Array<{ placement: string | null; captures: number }> = [
+      { placement: "postcard_back", captures: 10 }, { placement: "door_hanger", captures: 2 }, { placement: "yard_sign", captures: 2 },
+    ]
+    const camps: Row[] = [], mails: Row[] = [], codes: Row[] = [], scanRows: Row[] = []
+    plan.forEach((pl, i) => {
+      const cid = u(300 + i), did = u(310 + i), qid = u(320 + i)
+      camps.push({ id: cid, brokerage_id: A, campaign_name: `Placement test ${i + 1}`, campaign_type: "direct_mail", agent_user_id: U_AG1, team_id: null, budget_spent: 0 })
+      mails.push({ id: did, brokerage_id: A, marketing_campaign_id: cid, per_piece_cost: 1.0, pieces_mailed: 100, mailing_date: "2026-10-02" })
+      codes.push({ id: qid, brokerage_id: A, marketing_campaign_id: cid, mint_context: { minted_via: "governed", placement: pl.placement } })
+      for (let k = 0; k < pl.captures; k++) scanRows.push({ id: u(1000 + i * 100 + k), brokerage_id: A, qr_code_id: qid, contact_id: u(2000 + i * 100 + k), is_first_scan: true, scanned_at: "2026-10-08T10:00:00.000Z", traffic_class: "human_likely" })
+    })
+    // a bot hit and a pre-classification scan on the door hanger: counted as visits, never as people or captures
+    scanRows.push({ id: u(1900), brokerage_id: A, qr_code_id: u(321), contact_id: null, is_first_scan: false, scanned_at: "2026-10-09T10:00:00.000Z", traffic_class: "bot" })
+    scanRows.push({ id: u(1901), brokerage_id: A, qr_code_id: u(321), contact_id: null, is_first_scan: false, scanned_at: "2026-10-09T11:00:00.000Z", traffic_class: null })
+    const base = { marketing_campaigns: camps, direct_mail_campaigns: mails, qr_codes: codes, qr_scan_events: scanRows, marketing_campaign_touchpoints: [], transactions: [], ad_campaigns: [], mail_response_tracking: [] }
+    const r = await ledgerOf(seed(base), U_BROKER)
+    const pls = r.ok ? r.ledger.placements : []
+    const byName = new Map(pls.map((p) => [p.placement, p]))
+    const pc = byName.get("postcard_back"), dh = byName.get("door_hanger")
+    check("each recorded placement is its own row (3 placements, one code each)", pls.length === 3 && pls.every((p) => p.codes === 1))
+    check("the postcard back: 10 contacts captured on its campaign's whole $100 → $10 per contact captured", !!pc && pc.cost.status === "attributable" && pc.cost.cents === 10_000 && pc.contactsCaptured === 10 && pc.costPerContactCaptured.value === 1_000)
+    check("visits split by traffic class: the bot hit is automated, the unclassified scan is said, neither is a person or a capture", !!dh && dh.humanLikelyScans === 2 && dh.automatedOrRepeatScans === 1 && dh.unclassifiedScans === 1 && dh.contactsCaptured === 2 && dh.scans === 4)
+    const rep = r.ok ? r.ledger.recommendations.filter((x) => x.kind === "repeat_what_worked") : []
+    check("repeat-what-worked names the 5× cheaper placement, owned by the campaign orchestrator, against 3 comparable placements, approval required", rep.length === 1 && /postcard back|postcard_back/.test(rep[0].text) && rep[0].manager === "campaign_orchestrator" && rep[0].comparableSample === 3 && rep[0].requiresApproval === true && !/increase|raise|boost/i.test(rep[0].text))
+    // ADVERSE: a campaign that printed TWO placements — its spend has no honest split, so both placements say "shared"
+    const sharedCodes = [...codes, { id: u(329), brokerage_id: A, marketing_campaign_id: u(300), mint_context: { minted_via: "governed", placement: "window_cling" } }]
+    const rs = await ledgerOf(seed({ ...base, qr_codes: sharedCodes }), U_BROKER)
+    const sp = rs.ok ? new Map(rs.ledger.placements.map((p) => [p.placement, p])) : new Map()
+    check("ADVERSE: a campaign printed on two placements → both show 'shared', no per-placement cost is invented", sp.get("postcard_back")?.cost.status === "shared" && sp.get("window_cling")?.cost.status === "shared" && sp.get("postcard_back")?.cost.cents === null && sp.get("postcard_back")?.costPerContactCaptured.value === null)
+    check("ADVERSE: with the postcard's spend shared only 2 placements are comparable → no repeat-what-worked", rs.ok && !rs.ledger.recommendations.some((x) => x.kind === "repeat_what_worked"))
+    // POSITIVE CONTROL: a code minted without a placement is held apart and never compared
+    const noPl = await ledgerOf(seed({ ...base, qr_codes: codes.map((q, i) => (i === 0 ? { ...q, mint_context: {} } : q)) }), U_BROKER)
+    const np = noPl.ok ? noPl.ledger.placements.find((p) => p.placement === "placement not recorded") : undefined
+    check("POSITIVE CONTROL: a code minted without a placement is its own 'not recorded' row with unknown cost (never compared)", !!np && np.cost.status === "unknown" && np.contactsCaptured === 10 && noPl.ok && !noPl.ledger.recommendations.some((x) => x.kind === "repeat_what_worked"))
   }
 
   // ── S ────────────────────────────────────────────────────────────────────

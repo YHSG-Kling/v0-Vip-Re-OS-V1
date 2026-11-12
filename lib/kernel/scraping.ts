@@ -304,6 +304,8 @@ export interface ScrapingDiagnosticsData {
     completed_at: string | null
     total_items_found: number | null
     leads_created: number | null
+    /** Records the run re-found that the platform already held (wave 152 — the column had no writer before). */
+    duplicates_skipped: number | null
     api_cost: number | null
     error_message: string | null
   }>
@@ -970,6 +972,8 @@ export async function ingestRawSourceBatch(
         status:            'completed',
         total_items_found: params.records.length,
         leads_created:     result.inserted,
+        // Cost of discovery (wave 152): records this batch already held — the column had no writer.
+        duplicates_skipped: result.skipped_duplicate,
         completed_at:      new Date().toISOString(),
       }).eq('id', execId), { table: 'scraper_executions', flow: 'scrape_execution_close', brokerageId: params.brokerageId ?? null, reason: 'execution bookkeeping; the batch counts are returned to the caller' })
     }
@@ -1461,7 +1465,8 @@ export async function loadScrapingDiagnostics(
 
     supabase
       .from('scraper_executions')
-      .select('id, scraper_type, status, started_at, completed_at, total_items_found, leads_created, api_cost, error_message, brokerage_id')
+      // duplicates_skipped (wave 152): the cost-of-discovery half — what a run paid for that the platform already held.
+      .select('id, scraper_type, status, started_at, completed_at, total_items_found, leads_created, duplicates_skipped, api_cost, error_message, brokerage_id')
       .order('started_at', { ascending: false })
       .limit(40),
 

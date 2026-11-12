@@ -962,6 +962,43 @@ function OutcomesPanel({ ledger, csv, windowLabel }: { ledger: RoiOutcomeLedger;
         </CardContent>
       </Card>
 
+      {ledger.placements?.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">QR code placements</CardTitle>
+            <CardDescription>{ledger.why.placements}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Placement</TableHead>
+                  <TableHead className="text-right">Codes</TableHead>
+                  <TableHead className="text-right">Likely people</TableHead>
+                  <TableHead className="text-right">Automated / repeat</TableHead>
+                  <TableHead className="text-right">Contacts captured</TableHead>
+                  <TableHead className="text-right">Spend</TableHead>
+                  <TableHead className="text-right">Cost / contact captured</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {ledger.placements.map((p) => (
+                  <TableRow key={p.placement}>
+                    <TableCell className="capitalize">{p.placement.replace(/_/g, " ")}<div className="text-[10px] text-muted-foreground">{p.campaigns} campaign(s)</div></TableCell>
+                    <TableCell className="text-right">{p.codes}</TableCell>
+                    <TableCell className="text-right">{p.humanLikelyScans}{p.unclassifiedScans ? <div className="text-[10px] text-muted-foreground">+{p.unclassifiedScans} not classified</div> : null}</TableCell>
+                    <TableCell className="text-right">{p.automatedOrRepeatScans}</TableCell>
+                    <TableCell className="text-right">{p.contactsCaptured}</TableCell>
+                    <TableCell className="text-right" title={p.cost.note}>{p.cost.status === "attributable" ? usdCents(p.cost.cents) : p.cost.status === "shared" ? "Shared" : "Unknown"}</TableCell>
+                    <TableCell className="text-right"><RatioValue r={p.costPerContactCaptured} as="usd" /></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {ledger.journeys.length ? (
         <Card>
           <CardHeader><CardTitle className="text-base">Contact → deal journeys</CardTitle><CardDescription>Each step names the record it came from.</CardDescription></CardHeader>

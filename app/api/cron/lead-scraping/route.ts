@@ -622,6 +622,7 @@ export async function GET(request: Request) {
             total_items_found: sourceItemsFound,
             leads_created: sourceLeadsCreated,
             api_cost: sourceCostUsd,
+            duplicates_skipped: takeDuplicatesSkipped(execRecord?.id),
             error_message: sourceErr?.message ?? null,
           }).eq("id", execRecord?.id), { table: "scraper_executions", flow: "scrape_execution_close", brokerageId: market.brokerage_id ?? null, reason: "execution bookkeeping; the source outcome is already in results and scraper-health" })
 
@@ -804,6 +805,7 @@ export async function GET(request: Request) {
             total_items_found: sourceItemsFound,
             leads_created: leadsCreated,
             api_cost: motivatedCostUsd + expiredCostUsd + persistedCostUsd,
+            duplicates_skipped: takeDuplicatesSkipped(execRecord?.id),
             error_message: sourceErr?.message ?? null,
           }).eq("id", execRecord?.id), { table: "scraper_executions", flow: "scrape_execution_close", brokerageId: market.brokerage_id ?? null, reason: "execution bookkeeping; the source outcome is already in results and scraper-health" })
 
@@ -1316,6 +1318,7 @@ export async function GET(request: Request) {
           total_items_found: socialLeadsCreated,
           leads_created: socialLeadsCreated,
           api_cost: sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd + exaCostUsd,
+          duplicates_skipped: takeDuplicatesSkipped(execRecord?.id),
           error_message: sourceErr?.message ?? null,
         }).eq("id", execRecord?.id), { table: "scraper_executions", flow: "scrape_execution_close", brokerageId: market.brokerage_id ?? null, reason: "execution bookkeeping; the source outcome is already in results and scraper-health" })
 
@@ -2002,8 +2005,23 @@ async function persistPooledShares(supabase: ReturnType<typeof createServiceClie
   }
 }
 
-async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted: number; rawIds: string[] }> {
-  if (params.records.length === 0) return { inserted: 0, rawIds: [] }
+// ── COST OF DISCOVERY (wave 152, integrator — closes lane 152J Outside-lane 5) ──────────────────────────────────────
+// scraper_executions.duplicates_skipped existed live with NO writer: this wrapper dropped ingestRawSourceBatch's
+// skipped_duplicate, so a phase that re-found records it already held reported only what it inserted, and the
+// spend-per-new-record a source really costs was invisible. Every batch that rides a phase-level execution row now adds its
+// duplicates to that row's tally, and the phase close (STEP 5, three sites above) writes it once. A batch with NO shared row
+// lets the kernel open, count and close its own (lib/kernel/scraping.ts writes duplicates_skipped there). The tally is
+// keyed by the execution's own uuid and consumed by the close, so nothing carries into another run.
+const duplicatesByExecution = new Map<string, number>()
+function takeDuplicatesSkipped(executionId: string | null | undefined): number {
+  if (!executionId) return 0
+  const n = duplicatesByExecution.get(executionId) ?? 0
+  duplicatesByExecution.delete(executionId)
+  return n
+}
+
+async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted: number; rawIds: string[]; skippedDuplicate: number }> {
+  if (params.records.length === 0) return { inserted: 0, rawIds: [], skippedDuplicate: 0 }
 
   const res = await ingestRawSourceBatch({
     brokerageId:   params.brokerageId ?? null,
@@ -2020,5 +2038,7 @@ async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted:
     actor:         { type: "cron" },
   })
 
-  return { inserted: res.inserted, rawIds: res.rawIds }
+  const skippedDuplicate = Number(res.skipped_duplicate) || 0
+  if (params.executionId) duplicatesByExecution.set(params.executionId, (duplicatesByExecution.get(params.executionId) ?? 0) + skippedDuplicate)
+  return { inserted: res.inserted, rawIds: res.rawIds, skippedDuplicate }
 }
