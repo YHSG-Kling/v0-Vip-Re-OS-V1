@@ -602,8 +602,8 @@ export type {
 //   • business_expenses HAS brokerage_id (and team_id) — see the Reporting OS
 //     note above. NOT NULL since m516; trigger business_expenses_derive_tenant
 //     derives the tenant from agents.brokerage_id / teams.brokerage_id for any
-//     writer that omits it, and raises when neither can answer. createExpenseRecord
-//     in ./financial stamps ctx.brokerageId explicitly. Scope reads by the
+//     writer that omits it, and raises when neither can answer. The ONE writer,
+//     app/actions/financials.ts logScopedExpense, stamps the session tenant explicitly. Scope reads by the
 //     SESSION's tenant AND agent_id, never by agent_id alone.
 //   • agent_cap_tracking is source of truth for cap state
 //   • Only broker/admin/superadmin can approve/pay commissions
@@ -617,7 +617,7 @@ export {
   recalculateCommissionState,
   markCommissionApproved,
   markCommissionPaid,
-  createExpenseRecord,
+  // createExpenseRecord: TOMBSTONE (wave 152, lane 152D) — retired onto app/actions/financials.ts logScopedExpense.
   exportFinancialReport,
   emailFinancialReport,
 } from "./financial"
@@ -629,7 +629,6 @@ export type {
   BrokerageFinancialSummary,
   CommissionRecord,
   CommissionDistribution,
-  ExpenseRecord,
   FinancialExportResult,
   LoadFinancialWorkspaceInput,
   LoadAgentFinancialSummaryInput,
@@ -639,7 +638,6 @@ export type {
   RecalculateCommissionStateInput,
   MarkCommissionApprovedInput,
   MarkCommissionPaidInput,
-  CreateExpenseRecordInput,
   ExportFinancialReportInput,
   EmailFinancialReportInput,
 } from "./financial"

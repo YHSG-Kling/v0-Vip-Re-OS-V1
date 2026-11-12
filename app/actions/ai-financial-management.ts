@@ -15,7 +15,6 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { resolveCommissionStructure, type CalculateCommissionInput } from "@/lib/kernel/adapters/financial"
 import {
-  createExpenseRecordAction,
   createCommissionRecordAction,
   loadAgentProfitLossSummaryAction,
   loadCommissionQueueAction,
@@ -25,18 +24,6 @@ import {
 // AI FINANCIAL MANAGEMENT SYSTEM
 // QuickBooks integration, expense tracking, commission management, P&L
 // ============================================================================
-
-interface ExpenseEntry {
-  agentId: string
-  amount: number
-  category: string
-  description: string
-  vendor?: string
-  transactionId?: string
-  receiptUrl?: string
-  date: string
-  isDeductible?: boolean
-}
 
 type CommissionEntry = CalculateCommissionInput
 
@@ -170,55 +157,17 @@ Provide JSON:
   }
 }
 
-/**
- * Create Expense with AI Enhancement
- */
-export async function createExpense(params: ExpenseEntry) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  try {
-    const categoryResult = await aiCategorizeExpense({
-      agentId: params.agentId,
-      description: params.description,
-      amount: params.amount,
-      vendor: params.vendor,
-    })
-
-    const categorization = categoryResult.success ? categoryResult.categorization : {}
-
-    const expenseResult = await createExpenseRecordAction({
-      agentId: params.agentId,
-      category: params.category || categorization.category || "other",
-      amount: params.amount,
-      description: params.description,
-      receiptUrl: params.receiptUrl,
-      expenseDate: params.date,
-    })
-
-    if (!expenseResult.success || !expenseResult.data) {
-      throw new Error(expenseResult.error || "Failed to create expense record")
-    }
-
-    const expense = expenseResult.data
-
-    // Agent-scoped expenses are the AGENT'S book (Schedule C via CSV export) —
-    // they never post to the brokerage's QuickBooks (same principle as team
-    // financials not rolling up). Brokerage-scoped expenses ride the real
-    // accounting egress in lib/finance/accounting-egress.ts.
-
-    revalidatePath("/financials")
-
-    return {
-      success: true,
-      expense,
-      categorization,
-    }
-  } catch (error) {
-    return handleError(error, "createExpense")
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 152, lane 152D)
+// `createExpense` (and its input type `ExpenseEntry`) deleted.
+// SURVIVOR: app/actions/financials.ts:logScopedExpense — the ONE business_expenses writer for all three scopes (the
+// wave-27 ruling recorded at app/actions/agents.ts, "TOMBSTONE … addAgentExpense").
+// Its only caller was app/dashboard/financials/expenses/components/add-expense-dialog.tsx, and that path COULD NOT
+// SAVE: the dialog's Title-case categories ("Marketing", "Other" …) reached lib/kernel/financial.ts createExpenseRecord,
+// which refused every one of them against its lowercase list. The dialog now saves through the survivor with the one
+// category vocabulary (lib/documents/receipt-rules.ts EXPENSE_CATEGORIES).
+// MERGED FIRST: the AI category suggestion stays — the dialog still calls aiCategorizeExpense above and folds its label
+// onto the vocabulary; `vendor` is carried in the description; the kernel writer's audit-only EXPENSE_CREATED echo now
+// runs in the survivor. `transactionId` / `isDeductible` were accepted and never written by this function.
 
 /**
  * Get Expenses

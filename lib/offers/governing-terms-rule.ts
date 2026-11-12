@@ -38,8 +38,28 @@ export const GOVERNING_TERM_KEYS = [
   // not offer columns: only a recorded version (an addendum, an amendment, a confirmed counter reading) can name them
   "title_policy_payer",
   "title_company",
+  // WAVE 152 (lane 152E — owner: "compliance also need to compare terms besides reading documents"; directive 152E names
+  // property + parties, repairs / holdbacks / escrow and special conditions as governed terms). The property is an offers
+  // column (COUNTER_CARRIED_COLUMNS); the rest only an executed addendum / amendment (or a confirmed reading) can name — before
+  // this an executed repair-credit or party-change addendum was REFUSED by the recorder as "not contract terms in the vocabulary".
+  "property_address",
+  "buyer_names",
+  "seller_names",
+  "repair_credit",
+  "repair_holdback",
+  "special_conditions",
 ] as const
 export type GoverningTermKey = (typeof GOVERNING_TERM_KEYS)[number]
+
+/**
+ * The governing terms an `offers` row does NOT carry under the same name — the ONE reader (governing-terms.ts) selects every
+ * other key as an offers column, so a key added here can never become a column the database refuses (42703) and turn every
+ * governing read into a refused read.
+ */
+export const NOT_OFFER_COLUMN_TERM_KEYS: ReadonlySet<GoverningTermKey> = new Set<GoverningTermKey>([
+  "title_policy_payer", "title_company", "buyer_agent_commission_pct", "buyer_agent_commission_flat", "commission_payer",
+  "buyer_names", "seller_names", "repair_credit", "repair_holdback", "special_conditions",
+])
 
 /** offers column → governing term key, where the names differ. */
 export const OFFER_COLUMN_TO_KEY: Readonly<Record<string, GoverningTermKey>> = {
@@ -73,6 +93,9 @@ export interface TermsVersion {
    * execution. Precedence is by this instant; see foldTermsByPrecedence.
    */
   effectiveAt?: string | null
+  /** WAVE 152 (lane 152E): the recorded version's evidence (contract_term_versions.evidence — term_evidence per changed term,
+   *  effective_on, how it was recorded); null on a version derived from an offers row. The term ledger reads it. */
+  evidence?: Record<string, unknown> | null
 }
 
 // ─── WAVE 151 (lane 151K): PER-TERM SOURCE EVIDENCE ON AN EXECUTED ADDENDUM / AMENDMENT ─────────────────────────────────────
@@ -109,6 +132,7 @@ const TERM_EVIDENCE_FIELDS: Readonly<Partial<Record<GoverningTermKey, readonly s
   closing_date: ["closing_date"],
   closing_cost_contribution: ["seller_concession_amount", "closing_cost_contribution", "seller_credit_to_buyer"],
   title_policy_payer: ["owner_title_policy_payer", "title_policy_payer"],
+  property_address: ["property_address"],
 }
 
 export interface StatedTermEvidence { page?: number | null; field?: string | null; quote?: string | null }
@@ -182,6 +206,9 @@ export interface GoverningTerm {
   source: TermVersionSource
   offerId: string | null
   executedAt: string | null
+  /** WAVE 152 (lane 152E): the governing instrument's document and signed effective instant (the term ledger names them). */
+  documentId?: string | null
+  effectiveAt?: string | null
 }
 
 export interface TermConflict {
@@ -332,7 +359,7 @@ export function resolveGoverningTerms(versions: TermsVersion[]): GoverningTerms 
   const terms: GoverningTerms["terms"] = {}
   for (const key of Object.keys(fold.won) as GoverningTermKey[]) {
     const w = fold.won[key]!
-    terms[key] = { key, value: w.value, versionNo: w.version.versionNo, source: w.version.source, offerId: w.version.offerId, executedAt: w.version.executedAt }
+    terms[key] = { key, value: w.value, versionNo: w.version.versionNo, source: w.version.source, offerId: w.version.offerId, executedAt: w.version.executedAt, documentId: w.version.documentId ?? null, effectiveAt: w.version.effectiveAt ?? null }
   }
   const conflicts: TermConflict[] = fold.conflicts.map((c) => ({
     key: c.key,
@@ -351,6 +378,126 @@ export function resolveGoverningTerms(versions: TermsVersion[]): GoverningTerms 
     versions: ordered,
     pending: ordered.filter((v) => v.status === "proposed"),
   }
+}
+
+// ─── WAVE 152 (lane 152E): THE PER-TRANSACTION TERM LEDGER — a READ of the governing terms, not another summary ───────────
+//
+// Owner (verbatim): "compliance also need to compare terms besides reading documents." Directive 152E: "for each governed term,
+// show source document/version, signed effective date, party signatures, page/section/quote, prior value, new value and
+// authority … do not use highest version number alone". This is that read, PURE, over the ONE precedence result above
+// (resolveGoverningTerms) — it decides nothing the resolver did not: a proposed version is listed as pending and NEVER governs,
+// an unresolved tie has no value and lists its contenders, a superseded value is the prior value beside the governing one.
+// The I/O half (governing-terms.ts contractTermLedger) hands in each source document's signature reading; closing compliance
+// (lib/transactions/closing-compliance.ts) reads the rows to hold a term whose executed source was never located on the page.
+
+/** Every governed term in exactly one of the directive's groups (module-private: the rows carry their group). */
+const TERM_LEDGER_GROUPS: ReadonlyArray<{ key: string; label: string; terms: readonly GoverningTermKey[] }> = [
+  { key: "property_and_parties", label: "Property and parties", terms: ["property_address", "buyer_names", "seller_names"] },
+  { key: "price_and_financing", label: "Price and financing", terms: ["offer_price", "financing_type", "down_payment_amount", "down_payment_percent", "escalation_clause", "escalation_cap", "appraisal_gap"] },
+  { key: "deposits_and_credits", label: "Earnest money, deposits and credits", terms: ["earnest_money", "earnest_money_due_days", "due_diligence_fee", "closing_cost_contribution", "repair_credit"] },
+  { key: "costs_by_party", label: "Seller-paid and buyer-paid costs", terms: ["title_policy_payer", "title_company", "commission_payer"] },
+  { key: "deadlines", label: "Inspection, appraisal and financing deadlines", terms: ["inspection_period_days", "appraisal_contingency_days", "financing_contingency_days", "contingencies"] },
+  { key: "closing", label: "Closing date and possession", terms: ["closing_date", "possession_terms"] },
+  { key: "repairs_and_conditions", label: "Repairs, holdbacks, escrow and special conditions", terms: ["repair_holdback", "special_conditions"] },
+  { key: "commission", label: "Commission (buyer side, as the contract states it)", terms: ["buyer_agent_commission_pct", "buyer_agent_commission_flat"] },
+]
+
+export interface TermLedgerRow {
+  key: GoverningTermKey
+  group: string
+  status: "governing" | "unresolved" | "proposed_only"
+  /** The governing value (null when unresolved or only proposed — never a guess). */
+  value: unknown
+  /** The executed value the governing instrument replaced; undefined when nothing was replaced. */
+  priorValue?: unknown
+  /** The governing instrument (null when nothing executed names the term). */
+  source: { kind: TermVersionSource; versionNo: number; documentId: string | null; offerId: string | null } | null
+  executedAt: string | null
+  /** The instant the instrument's signed effective language makes it effective (null = on execution). */
+  effectiveAt: string | null
+  /** The governing instrument's document reading — which parties signed, which did not (null: an offers-row instrument). */
+  signatures: { signed: string[]; missing: string[] } | null
+  /** Where on the executed document the term was read (the recorded per-term evidence), or null when none was recorded. */
+  evidence: TermEvidence | null
+  /** In words: what makes this value the governing one. */
+  authority: string
+  recordedBy: string | null
+  /** Proposed (unsigned) versions naming the term — listed, NEVER governing. */
+  pending: Array<{ versionNo: number; source: TermVersionSource; value: unknown; documentId: string | null }>
+  /** The contenders when two executed instruments contradict each other and nothing signed orders them. */
+  unresolved: UnresolvedTermConflict["versions"] | null
+}
+
+export interface TermLedger {
+  rows: TermLedgerRow[]
+  /** Groups no executed, proposed or disputed version states at all — said, never defaulted. */
+  notStated: Array<{ group: string; label: string }>
+  /** How the executed contract words its closing date (transactions.contract_closing_terms), when the deal has read it. */
+  closingWording: "on" | "on_or_before" | null
+}
+
+const groupOf = (key: GoverningTermKey): string => TERM_LEDGER_GROUPS.find((g) => g.terms.includes(key))?.key ?? "other"
+
+/**
+ * PURE — the term ledger of one contract. `signaturesByDocument` maps a source document id to its signature_completeness
+ * reading (the same shape the recorder reads); a document absent from it reads `signatures: null` (not read), never "signed".
+ */
+export function buildTermLedger(
+  governing: GoverningTerms,
+  signaturesByDocument: Readonly<Record<string, unknown>> = {},
+  opts: { closingWording?: string | null } = {},
+): TermLedger {
+  const versionOf = (source: TermVersionSource, versionNo: number, offerId: string | null) =>
+    governing.versions.find((v) => v.source === source && v.versionNo === versionNo && (v.offerId ?? null) === (offerId ?? null) && v.status === "executed")
+  const sigs = (documentId: string | null): TermLedgerRow["signatures"] =>
+    documentId && Object.prototype.hasOwnProperty.call(signaturesByDocument, documentId) ? signaturesPresent(signaturesByDocument[documentId], ["buyer", "seller"]) : null
+  const evidenceOf = (v: TermsVersion | undefined, key: string): TermEvidence | null => {
+    const te = (v?.evidence as { term_evidence?: Record<string, TermEvidence> } | null | undefined)?.term_evidence
+    return te && typeof te === "object" && te[key] ? te[key] : null
+  }
+  const pendingFor = (key: string) => governing.pending.filter((p) => Object.prototype.hasOwnProperty.call(p.terms, key))
+    .map((p) => ({ versionNo: p.versionNo, source: p.source, value: p.terms[key], documentId: p.documentId }))
+  const named = new Set<GoverningTermKey>()
+  const rows: TermLedgerRow[] = []
+  for (const key of GOVERNING_TERM_KEYS) {
+    const t = governing.terms[key]
+    const u = governing.unresolved.find((x) => x.key === key)
+    const pending = pendingFor(key)
+    if (!t && !u && pending.length === 0) continue
+    named.add(key)
+    if (t) {
+      const v = versionOf(t.source, t.versionNo, t.offerId)
+      const replaced = [...governing.conflicts].reverse().find((c) => c.key === key && c.governing.versionNo === t.versionNo && c.governing.source === t.source)
+      const documentId = t.documentId ?? v?.documentId ?? null
+      const signatures = sigs(documentId)
+      const authority = documentId
+        ? `executed ${t.source} ${t.versionNo} (document ${documentId})${signatures ? (signatures.missing.length ? ` — the document does NOT show ${signatures.missing.join(" and ")} signed` : " — signed by buyer and seller") : ""}`
+        : v?.derived
+          ? `the executed ${t.source === "offer" ? "offer" : `counter (round ${t.versionNo})`} — both parties' signatures on the offer record`
+          : `executed ${t.source} ${t.versionNo} frozen in the terms record`
+      rows.push({
+        key, group: groupOf(key), status: "governing", value: t.value, ...(replaced ? { priorValue: replaced.superseded.value } : {}),
+        source: { kind: t.source, versionNo: t.versionNo, documentId, offerId: t.offerId }, executedAt: t.executedAt, effectiveAt: t.effectiveAt ?? v?.effectiveAt ?? null,
+        signatures, evidence: evidenceOf(v, key), authority, recordedBy: v?.recordedBy ?? null, pending, unresolved: null,
+      })
+      continue
+    }
+    if (u) {
+      rows.push({
+        key, group: groupOf(key), status: "unresolved", value: null, source: null, executedAt: null, effectiveAt: null, signatures: null, evidence: null,
+        authority: `NO governing value — ${u.versions.length} executed ${u.versions[0]?.source ?? "instrument"}s contradict each other (${u.reason === "same_effective_instant" ? "same effective instant" : "effective language contradicts the signing order"}); the responsible licensed professional or closing attorney decides which governs`,
+        recordedBy: null, pending, unresolved: u.versions,
+      })
+      continue
+    }
+    rows.push({
+      key, group: groupOf(key), status: "proposed_only", value: null, source: null, executedAt: null, effectiveAt: null, signatures: null, evidence: null,
+      authority: "only PROPOSED (unsigned) versions name this term — a proposal never governs until both parties sign it", recordedBy: null, pending, unresolved: null,
+    })
+  }
+  const notStated = TERM_LEDGER_GROUPS.filter((g) => !g.terms.some((k) => named.has(k))).map((g) => ({ group: g.key, label: g.label }))
+  const w = opts.closingWording
+  return { rows, notStated, closingWording: w === "on" || w === "on_or_before" ? w : null }
 }
 
 // ─── deriving versions from the offer chain (the existing, versioned, never-mutated store) ───────────────

@@ -51,6 +51,8 @@ import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 import { runFreeOsintLane } from "@/lib/external/osint-free"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { decryptSecret } from "@/lib/security/secret-crypto"
+// THE tenant presenter (wave 152, lane 152A) — the brokerage-readiness notes below are composed there.
+import { presentTenantConnection } from "@/lib/errors"
 
 // ── Webhook expectations (the URLs bindNumberToTwilioLane writes) ────────────
 // ONE VOCABULARY (§6): the paths come from lib/providers/webhook-contract.ts —
@@ -1253,30 +1255,37 @@ function tenantActionableFor(provider: string): boolean | undefined {
 }
 
 /** The honest one-liner for a state, sharpened by the provider's declared
- *  tenancy when the matrix has a ruling for it. */
-function readinessNote(state: BrokerageReadinessState, provider: string): string {
+ *  tenancy when the matrix has a ruling for it.
+ *
+ *  Wave 152 (lane 152A): every note is now composed by THE tenant presenter
+ *  (lib/errors presentTenantConnection — availability · who controls the
+ *  credentials · cost), so this tenant view and the lead-sources panel say one
+ *  thing in one voice. Two notes were untrue and are CORRECTED by the mapping:
+ *    · needs_connection + tenant_optional_key said "The platform key covers
+ *      this" — but resolveBrokerageReadinessState reaches needs_connection for a
+ *      `both`-scoped provider ONLY when the platform key is ABSENT (a present
+ *      key is live_platform). It now says the platform is not providing it;
+ *    · platform_dark said "it is provided with your plan" for a lane that is
+ *      not running — now "isn't available yet", nothing to set up. */
+function readinessNote(state: BrokerageReadinessState, provider: string, label: string): string {
   const t = providerTenancy(provider)
-  if (!t) return READINESS_NOTE[state]
-
-  if (state === "needs_connection") {
-    if (t.models.includes("user_oauth")) {
-      return "Connect your own account — this lane runs on your identity, not the platform's."
-    }
-    if (t.models.includes("tenant_optional_key")) {
-      return "The platform key covers this; connect your own only if you want the usage on your account."
-    }
-    return READINESS_NOTE[state]
+  const note = (availability: Parameters<typeof presentTenantConnection>[0]["availability"], credentials: "platform" | "this_account", cost?: "platform_internal") => {
+    const v = presentTenantConnection({ provider: label, availability, credentials, cost: cost ?? null })
+    return [v.message.text, v.costLine].filter(Boolean).join(" ")
   }
-
-  if (state === "platform_dark") {
-    const platformRun = t.models.includes("platform_subaccount") || t.models.includes("platform_metered")
-    if (platformRun && t.models.includes("byo_top_tier")) {
-      return "Not yet enabled at the platform level. The platform provisions this for you — bringing your own account is a multi-location-tier option, never a requirement."
+  switch (state) {
+    case "live_connected": return note("connected", "this_account")
+    case "live_platform": return note("platform_configured", "platform", "platform_internal")
+    case "keyless": return note("platform_configured", "platform")
+    case "needs_connection":
+      // tenant_optional_key reaches here only with the platform key absent — "you can connect your own" is the truth.
+      return note(t && !t.models.includes("user_oauth") && t.models.includes("tenant_optional_key") ? "tenant_configurable" : "needs_credentials", "this_account")
+    case "platform_dark": {
+      const base = note("awaiting_activation", "platform")
+      const platformRun = !!t && (t.models.includes("platform_subaccount") || t.models.includes("platform_metered"))
+      return platformRun && t!.models.includes("byo_top_tier") ? `${base} On the Multi-Location plan you may also bring your own account; it's never required.` : base
     }
-    if (platformRun) return "Not yet enabled at the platform level — nothing for you to set up; it is provided with your plan."
   }
-
-  return READINESS_NOTE[state]
 }
 
 export interface BrokerageProviderReadinessRow {
@@ -1302,13 +1311,9 @@ export interface BrokerageProviderReadiness {
   rows: BrokerageProviderReadinessRow[]
 }
 
-const READINESS_NOTE: Record<BrokerageReadinessState, string> = {
-  live_connected: "Connected — your own credentials are active.",
-  live_platform: "Included — provided by the platform, no setup needed.",
-  keyless: "Included — free data lane, always on.",
-  needs_connection: "Connect your account to switch this on.",
-  platform_dark: "Not yet enabled at the platform level.",
-}
+// TOMBSTONE (wave 152, lane 152A; §1.3): the module-private READINESS_NOTE table (one fixed sentence per
+// BrokerageReadinessState) is DELETED — its job went to readinessNote() above, which composes every note through
+// lib/errors/index.ts presentTenantConnection (the one tenant presenter). Nothing else read the table.
 
 /**
  * Brokerage-scoped provider readiness. Derives the full provider list from the
@@ -1338,7 +1343,7 @@ export async function getBrokerageProviderReadiness(
   const [intCreds, agentCreds, platCreds, brokIntegrations] = await Promise.all([
     svc.from("integration_credentials").select("provider_name").eq("is_active", true).eq("brokerage_id", brokerageId),
     svc.from("agent_api_credentials").select("service_name").eq("is_active", true).eq("brokerage_id", brokerageId),
-    svc.from("platform_credentials").select("platform").eq("is_active", true).eq("brokerage_id", brokerageId),
+    svc.from("platform_credentials").select("platform, test_status").eq("is_active", true).eq("brokerage_id", brokerageId),
     svc.from("brokerage_integrations").select("provider_type, provider_name, status").eq("brokerage_id", brokerageId),
   ])
 
@@ -1349,7 +1354,10 @@ export async function getBrokerageProviderReadiness(
   }
   for (const r of ((intCreds.data ?? []) as any[])) markConnected(r.provider_name)
   for (const r of ((agentCreds.data ?? []) as any[])) markConnected(r.service_name)
-  for (const r of ((platCreds.data ?? []) as any[])) markConnected(r.platform)
+  // Wave 152 (lane 152A): a credential row whose last provider check FAILED (test_status 'fail' — the provider refused
+  // the key, the connect-time check failed) is not "Connected": the tenant view must never say Connected for a provider
+  // action that failed. The row stays where it is; its own panel (Settings → Integrations → Lead sources) says what to do.
+  for (const r of ((platCreds.data ?? []) as any[])) if (r.test_status !== "fail") markConnected(r.platform)
   for (const r of ((brokIntegrations.data ?? []) as any[])) {
     if (r.status === "connected") { markConnected(r.provider_type); markConnected(r.provider_name) }
   }
@@ -1364,7 +1372,7 @@ export async function getBrokerageProviderReadiness(
       // The tenancy matrix's own ruling, not the registry's platform/tenant fold.
       tenantActionable: tenantActionableFor(e.provider),
     })
-    return { provider: e.provider, label: e.label, category: e.category, scope: e.scope, state, ready, note: readinessNote(state, e.provider) }
+    return { provider: e.provider, label: e.label, category: e.category, scope: e.scope, state, ready, note: readinessNote(state, e.provider, e.label) }
   })
 
   // Ready first, then needs-connection (tenant-actionable) ahead of platform-dark, then by category.

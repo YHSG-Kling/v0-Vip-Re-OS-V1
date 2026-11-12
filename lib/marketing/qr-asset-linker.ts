@@ -15,6 +15,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent, processKernelEvent } from "@/lib/kernel"
+// WAVE 152 (lane 152C): the one coarse device classifier and the pre-m946 read fallback (pure QR contract).
+import { qrDeviceClass } from "./qr-contract"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -276,9 +278,9 @@ export async function getQrCodePerformance(
     /** Mobile vs desktop vs other, parsed from qr_scan_events.user_agent —
      *  never the raw string (device class only, nothing identifying). */
     deviceBreakdown: { mobile: number; desktop: number; other: number }
-    /** Distinct qr_scan_events.ip_address among the loaded window — a
-     *  cross-check on isFirstScan-based uniqueScans (never displayed as a raw
-     *  IP, only as a count; the addresses themselves stay server-side). */
+    /** Distinct visitors among the loaded window — a cross-check on isFirstScan-based uniqueScans. Since wave 152
+     *  (152C) it counts the coarse per-code-per-day visitor key (qr_scan_events.visitor_key); only rows recorded before
+     *  m946 fall back to their stored address. Never displayed as anything but a count; nothing identifying leaves. */
     uniqueIpCount: number
   }
   error?: string
@@ -298,10 +300,15 @@ export async function getQrCodePerformance(
     return { success: false, error: "QR code not found" }
   }
 
-  // Get recent scan events
+  // Get recent scan events. WAVE 152 (152C): new rows carry only the PERMITTED context — a coarse
+  // device_class and a per-code-per-day visitor_key (m946); the raw ip_address / user_agent are no
+  // longer written by the scan door. They are still READ here for rows recorded before m946 (and by
+  // the lead-magnet tracker until its writer moves — see lane 152C notes), reduced to the same coarse
+  // class on the way out and never returned.
+  // m946 was applied live 2026-11-12 — one select; the pre-apply degrade (a shorter select on PGRST204) retired with it.
   const { data: scanEvents, error: scanError } = await supabase
     .from("qr_scan_events")
-    .select("scanned_at, is_first_scan, contact_id, ip_address, user_agent")
+    .select("scanned_at, is_first_scan, contact_id, ip_address, user_agent, device_class, visitor_key")
     .eq("qr_code_id", qrCodeId)
     .eq("brokerage_id", brokerageId)
     .order("scanned_at", { ascending: false })
@@ -317,15 +324,17 @@ export async function getQrCodePerformance(
   const conversionRate = totalScans > 0 ? (leadsGenerated / totalScans) * 100 : 0
 
   const deviceBreakdown = { mobile: 0, desktop: 0, other: 0 }
-  const ipSet = new Set<string>()
-  for (const e of (scanEvents ?? []) as Array<{ ip_address: string | null; user_agent: string | null }>) {
-    if (e.ip_address) ipSet.add(e.ip_address)
-    const ua = (e.user_agent ?? "").toLowerCase()
-    if (!ua) { deviceBreakdown.other++; continue }
-    if (/mobile|android|iphone|ipad/.test(ua)) deviceBreakdown.mobile++
-    else if (/windows|macintosh|linux|x11/.test(ua)) deviceBreakdown.desktop++
+  const visitorSet = new Set<string>()
+  for (const e of (scanEvents ?? []) as Array<{ ip_address?: string | null; user_agent?: string | null; device_class?: string | null; visitor_key?: string | null }>) {
+    // The visitor key (coarse, per code per day) when present; the legacy address only for older rows.
+    const visitor = e.visitor_key ?? e.ip_address ?? null
+    if (visitor) visitorSet.add(visitor)
+    const device = e.device_class ?? qrDeviceClass(e.user_agent)
+    if (device === "mobile" || device === "tablet") deviceBreakdown.mobile++
+    else if (device === "desktop") deviceBreakdown.desktop++
     else deviceBreakdown.other++
   }
+  const ipSet = visitorSet
 
   return {
     success: true,

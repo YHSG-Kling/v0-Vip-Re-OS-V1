@@ -250,6 +250,9 @@ export async function orchestratePresetSend(
         recipientZip:       args.zip,
         agentName:          brand.agentName ?? null,
         agentTitle:         null,
+        // Wave 152 (152C): the preset's registered code prints in the letter's optional QR region (it sits outside the
+        // body block, so the locked-copy swap below keeps it).
+        qrScanUrl:          args.qrScanUrl ?? null,
       })
       if (r.ok && r.html) {
         // Replace AI-drafted body with the preset's locked text.

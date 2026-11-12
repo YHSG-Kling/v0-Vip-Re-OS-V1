@@ -27,6 +27,10 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+// Wave 152 (lane 152B): THE authorized ROI reader decides whether this viewer may see commission dollars (an agent
+// may not — CLAUDE.md §5; a solo subscriber or a finance administrator may) and supplies the sourced-deal figures.
+import { loadRoiOutcomeLedger } from "@/lib/intelligence/roi-ledger"
+import { PIPELINE_COLUMN_STATUSES, inPipelineColumn, isOpenDeal } from "@/lib/transactions/transaction-status"
 
 // Per-feature time-saved multipliers (minutes saved per usage event).
 // Tuned to match the manual-work equivalent for each AI flow.
@@ -97,13 +101,20 @@ export type AttributionModelComparison =
       contactNameLookupError: string | null
     }
   | { ok: false; error: string }
+  /** Wave 152: commission dollars are off this viewer's display (CLAUDE.md §5) — a statement, not a failure. */
+  | { ok: false; hidden: true; error: string }
 
 export interface RoiSnapshot {
-  // Headline numbers
-  attributedRevenueCents: number
+  // Headline numbers — wave 152 (152B): the families are kept apart. Commission dollars are NULL whenever the
+  // authorized ROI reader keeps them off this viewer's display; time saved is an ESTIMATE and is never added to revenue.
+  /** Earned commission on CLOSED deals in the period that a campaign sourced (null when hidden). */
+  attributedRevenueCents: number | null
+  /** Closed deals in the period a campaign sourced — a count every viewer may see. */
+  closedDealsSourced: number
   estimatedTimeSavedMinutes: number
-  estimatedTimeSavedDollars: number   // hours × agent burn rate
-  totalValueDollars: number           // revenue + time-saved value
+  estimatedTimeSavedDollars: number   // hours × hourly value (an estimate; cents)
+  /** Why dollars are hidden, in plain words (null when they are shown). */
+  moneyNote: string | null
 
   // Breakdown for the per-feature cards
   byFeature: Array<{
@@ -117,7 +128,8 @@ export interface RoiSnapshot {
   // 90-day pipeline forecast
   pipeline: {
     activeTransactions:        number
-    pipelineCommissionCents:   number
+    /** An ESTIMATE on open deals — null when commission is off this viewer's display. */
+    pipelineCommissionCents:   number | null
     upcomingSphereTouchpoints: number
     isaAppointmentsBooked:     number
   }
@@ -150,13 +162,17 @@ export interface RoiSnapshot {
  */
 async function estimateAgentHourlyBurnCents(
   svc: ReturnType<typeof createServiceClient>,
-  agentRowId: string
+  agentRowId: string,
+  brokerageId: string,
 ): Promise<number> {
+  // Wave 152: CLOSED / FUNDED deals only (a lost deal with a past close date is not an earning), tenant-pinned.
   const { data: closed } = await svc
     .from("transactions")
     .select("estimated_commission, commission_amount")
+    .eq("brokerage_id", brokerageId)
     .eq("agent_id", agentRowId)
-    .or("status.eq.closed,close_date.lte." + new Date().toISOString().slice(0, 10))
+    .in("status", [...PIPELINE_COLUMN_STATUSES.closed])
+    .is("deleted_at", null)
     .limit(20)
   const sumCents = (closed ?? []).reduce((acc, t: any) => {
     const cents = Math.round(((t.commission_amount ?? t.estimated_commission ?? 0) as number) * 100)
@@ -200,29 +216,34 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   const agentRowId = agentRow?.id ?? null
   const { startISO, endISO } = periodBounds(period)
 
-  // ── Attributed revenue (closed deals × attribution credits) ───────────────
-  // marketing_attribution_credits stores credit_dollars per (campaign, txn,
-  // attribution_model). We use 'linear' so even-split campaigns count once
-  // each. Scope to transactions owned by this agent.
-  let attributedRevenueCents = 0
-  let modelComparison: AttributionModelComparison = { ok: true, rows: [], campaignNameLookupError: null, contactNameLookupError: null }
-  if (agentRowId) {
-    const { data: agentTxns } = await svc
+  // ── THE AUTHORIZED ROI READER (wave 152, lane 152B) ─────────────────────
+  // Session ids only. It decides whether commission dollars may show to THIS viewer (an agent: no — CLAUDE.md §5;
+  // a solo subscriber / finance administrator / team lead over their team: yes) and supplies the sourced figures:
+  // earned commission on CLOSED deals in the period, each deal split once across the campaigns that touched it.
+  // A ledger that cannot be read hides the dollars (fail closed) and says why.
+  const outcomes = await loadRoiOutcomeLedger(svc, { userId: user.id, brokerageId: profile.brokerage_id }, { sinceDay: startISO.slice(0, 10), untilDay: endISO.slice(0, 10) })
+  const moneyVisible = outcomes.ok && outcomes.ledger.scope.moneyVisible
+  const moneyNote = outcomes.ok ? outcomes.ledger.scope.moneyNote : outcomes.error
+  const attributedRevenueCents: number | null = moneyVisible && outcomes.ok ? (outcomes.ledger.attribution?.sourcedEarnedCents ?? null) : null
+  const closedDealsSourced = outcomes.ok ? outcomes.ledger.results.sourcedDealsClosed : 0
+
+  // ── Model comparison: the same deals' credit under all four models ──────
+  // Wave 152: CLOSED / FUNDED, non-deleted deals only (an under-contract deal is credited at its ESTIMATE and is not
+  // earned revenue), tenant-pinned; and only for a viewer who may see commission dollars.
+  let modelComparison: AttributionModelComparison = moneyVisible
+    ? { ok: true, rows: [], campaignNameLookupError: null, contactNameLookupError: null }
+    : { ok: false, hidden: true, error: moneyNote ?? "Commission amounts are hidden in this view." }
+  if (agentRowId && moneyVisible) {
+    const { data: agentTxns, error: agentTxnsErr } = await svc
       .from("transactions")
-      .select("id")
+      .select("id, status, deleted_at")
+      .eq("brokerage_id", profile.brokerage_id)
       .eq("agent_id", agentRowId)
-    const txnIds = (agentTxns ?? []).map((t: { id: string }) => t.id)
+    if (agentTxnsErr) modelComparison = { ok: false, error: agentTxnsErr.message }
+    const txnIds = ((agentTxns ?? []) as Array<{ id: string; status: string | null; deleted_at: string | null }>)
+      .filter((t) => !t.deleted_at && inPipelineColumn(t.status, "closed"))
+      .map((t) => t.id)
     if (txnIds.length > 0) {
-      const { data: credits } = await svc
-        .from("marketing_attribution_credits")
-        .select("credit_dollars, created_at")
-        .in("transaction_id", txnIds)
-        .eq("attribution_model", "linear")
-        .gte("created_at", startISO)
-      attributedRevenueCents = (credits ?? []).reduce(
-        (acc: number, c: any) => acc + Math.round(((c.credit_dollars ?? 0) as number) * 100),
-        0
-      )
 
       // ── All four models, same tenant scope as the headline read above ─────
       // §3: this read destructures { error } and a refusal is returned AS a
@@ -231,6 +252,7 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
       const { data: allModelRows, error: allModelErr } = await svc
         .from("marketing_attribution_credits")
         .select("campaign_id, transaction_id, attribution_model, credit_dollars, attribution_weight, touchpoint_count, first_touchpoint_at, last_touchpoint_at, contact_id, created_at")
+        .eq("brokerage_id", profile.brokerage_id)
         .in("transaction_id", txnIds)
         .gte("created_at", startISO)
       if (allModelErr) {
@@ -352,14 +374,34 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   }
 
   // ── ISA contributions (separate count for accepted appointments) ─────────
+  // Wave 152 (152B): this read named NO tenant and NO agent — it counted every tenant's ISA appointments on the
+  // platform into this agent's page (a cross-tenant count). It is now this tenant's activities on THIS agent's
+  // own contacts (contacts.agent_id is an agents.id — CLAUDE.md §3).
   let isaAppointmentsBooked = 0
+  const isaWinRows: Array<{ created_at: string; outcome: string; summary: string }> = []
   if (agentRowId) {
-    const { data: isaRows } = await svc
-      .from("ai_isa_activities")
-      .select("id, activity_type, outcome, created_at")
-      .gte("created_at", startISO)
-      .ilike("outcome", "%appointment%")
-    isaAppointmentsBooked = (isaRows ?? []).length
+    const { data: ownContacts, error: ownContactsErr } = await svc
+      .from("contacts")
+      .select("id")
+      .eq("brokerage_id", profile.brokerage_id)
+      .eq("agent_id", agentRowId)
+      .limit(2000)
+    if (ownContactsErr) console.error("[agent-roi] own contacts unreadable — ISA appointments not counted:", ownContactsErr.message)
+    const ownIds = ((ownContacts ?? []) as Array<{ id: string }>).map((c) => c.id)
+    const isaRows: Array<{ id: string; created_at: string; outcome: string; summary: string }> = []
+    for (let i = 0; i < ownIds.length; i += 200) {
+      const { data, error } = await svc
+        .from("ai_isa_activities")
+        .select("id, activity_type, outcome, summary, created_at")
+        .eq("brokerage_id", profile.brokerage_id)
+        .in("contact_id", ownIds.slice(i, i + 200))
+        .gte("created_at", startISO)
+        .ilike("outcome", "%appointment%")
+      if (error) { console.error("[agent-roi] ISA activities unreadable:", error.message); break }
+      isaRows.push(...((data ?? []) as typeof isaRows))
+    }
+    isaAppointmentsBooked = isaRows.length
+    isaWinRows.push(...isaRows.sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 5))
     if (isaAppointmentsBooked > 0) {
       usageByFeature.set("ai_isa_appointment_set", (usageByFeature.get("ai_isa_appointment_set") ?? 0) + isaAppointmentsBooked)
     }
@@ -399,7 +441,9 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   }
 
   // ── Hourly burn → dollarise the time saved ──────────────────────────────
-  const hourlyBurnCents = agentRowId ? await estimateAgentHourlyBurnCents(svc, agentRowId) : 6000
+  // Wave 152: the agent's own commission average is a commission figure — used only when commission may show to this
+  // viewer; otherwise the industry benchmark the function already falls back to.
+  const hourlyBurnCents = agentRowId && moneyVisible ? await estimateAgentHourlyBurnCents(svc, agentRowId, profile.brokerage_id) : 6000
   const totalMinutesSaved = Array.from(usageByFeature.entries()).reduce(
     (acc, [k, count]) => acc + timeSavedFor(k, count), 0
   )
@@ -434,19 +478,20 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
 
   // ── Pipeline forecast (next 90 days) ────────────────────────────────────
   const ninetyOut = new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10)
-  let pipelineCommissionCents = 0
+  // Wave 152: OPEN deals by the ONE vocabulary (isOpenDeal) — `.neq("status","closed")` counted funded, lost and
+  // archived deals as active pipeline. The amount is an ESTIMATE and shows only where commission may show.
+  let pipelineCommissionCents: number | null = moneyVisible ? 0 : null
   let activeTransactions = 0
   if (agentRowId) {
     const { data: openTxns } = await svc
       .from("transactions")
-      .select("estimated_commission, close_date, status")
+      .select("estimated_commission, close_date, status, deleted_at")
+      .eq("brokerage_id", profile.brokerage_id)
       .eq("agent_id", agentRowId)
-      .neq("status", "closed")
-    activeTransactions = openTxns?.length ?? 0
-    pipelineCommissionCents = (openTxns ?? []).reduce(
-      (acc: number, t: any) => acc + Math.round(((t.estimated_commission ?? 0) as number) * 100),
-      0
-    )
+      .is("deleted_at", null)
+    const open = ((openTxns ?? []) as Array<{ estimated_commission: number | null; status: string | null }>).filter((t) => isOpenDeal(t.status))
+    activeTransactions = open.length
+    if (moneyVisible) pipelineCommissionCents = open.reduce((acc, t) => acc + Math.round(Number(t.estimated_commission ?? 0) * 100), 0)
   }
   let upcomingSphereTouchpoints = 0
   if (agentRowId) {
@@ -462,16 +507,9 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
 
   // ── Recent wins timeline ────────────────────────────────────────────────
   const recentWins: RoiSnapshot["recentWins"] = []
-  // ISA wins
+  // ISA wins — the same tenant- and agent-scoped rows read above (wave 152: this read was unscoped too).
   if (agentRowId) {
-    const { data: isaWins } = await svc
-      .from("ai_isa_activities")
-      .select("created_at, outcome, summary")
-      .gte("created_at", startISO)
-      .ilike("outcome", "%appointment%")
-      .order("created_at", { ascending: false })
-      .limit(5)
-    for (const w of (isaWins ?? []) as Array<{ created_at: string; outcome: string; summary: string }>) {
+    for (const w of isaWinRows) {
       recentWins.push({
         happenedAt: w.created_at,
         headline:   `AI ISA booked an appointment — ${w.summary ?? w.outcome}`,
@@ -482,19 +520,25 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   }
   // Closed transactions in window (the actual money landing)
   if (agentRowId) {
+    // Wave 152: a deal is a WIN only when it actually CLOSED (closed / funded, not deleted) — a close_date alone also
+    // matched lost deals and future estimates. The amount is the FINALIZED commission only, and only where commission
+    // may show to this viewer.
     const { data: closedWins } = await svc
       .from("transactions")
-      .select("id, deal_name, estimated_commission, commission_amount, close_date, status")
+      .select("id, deal_name, commission_amount, commission_finalized_at, close_date, status")
+      .eq("brokerage_id", profile.brokerage_id)
       .eq("agent_id", agentRowId)
+      .in("status", [...PIPELINE_COLUMN_STATUSES.closed])
+      .is("deleted_at", null)
       .gte("close_date", startISO.slice(0, 10))
       .order("close_date", { ascending: false })
       .limit(5)
     for (const w of (closedWins ?? []) as any[]) {
-      const cents = Math.round(((w.commission_amount ?? w.estimated_commission ?? 0) as number) * 100)
+      const cents = w.commission_finalized_at ? Math.round(Number(w.commission_amount ?? 0) * 100) : 0
       recentWins.push({
         happenedAt: w.close_date ?? new Date().toISOString(),
         headline:   `Deal closed — ${w.deal_name ?? "transaction"}`,
-        valueCents: cents > 0 ? cents : null,
+        valueCents: moneyVisible && cents > 0 ? cents : null,
         featureKey: "deal_close",
       })
     }
@@ -503,9 +547,10 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
 
   return {
     attributedRevenueCents,
+    closedDealsSourced,
     estimatedTimeSavedMinutes: totalMinutesSaved,
     estimatedTimeSavedDollars: estimatedTimeSavedDollars * 100,  // store as cents
-    totalValueDollars:         attributedRevenueCents + estimatedTimeSavedDollars * 100,
+    moneyNote: moneyVisible ? null : moneyNote,
     byFeature,
     pipeline: {
       activeTransactions,

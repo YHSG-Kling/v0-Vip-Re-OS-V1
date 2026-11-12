@@ -24,9 +24,9 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
-  GOVERNING_TERM_KEYS, OFFER_COLUMN_TO_KEY, TERM_VERSION_SOURCES, TERM_VERSION_STATUSES, acceptedOfferSequence, canonicalTerms, endOfDayInstant, mergeVersions, resolveGoverningTerms,
+  GOVERNING_TERM_KEYS, NOT_OFFER_COLUMN_TERM_KEYS, OFFER_COLUMN_TO_KEY, TERM_VERSION_SOURCES, TERM_VERSION_STATUSES, acceptedOfferSequence, buildTermLedger, canonicalTerms, endOfDayInstant, mergeVersions, resolveGoverningTerms,
   signaturesPresent, termEvidenceFor, versionsFromOfferChain,
-  type AcceptedOfferSequence, type AcceptedSequenceRefusal, type GoverningTerms, type OfferRowForTerms, type StatedTermEvidence, type TermVersionSource, type TermVersionStatus, type TermsVersion,
+  type AcceptedOfferSequence, type AcceptedSequenceRefusal, type GoverningTerms, type OfferRowForTerms, type StatedTermEvidence, type TermLedger, type TermVersionSource, type TermVersionStatus, type TermsVersion,
 } from "./governing-terms-rule"
 
 type Svc = SupabaseClient<any, any, any>
@@ -35,7 +35,9 @@ type Svc = SupabaseClient<any, any, any>
 
 // `seller_response_type` rides along (wave 144, lane 144C): the executed reading now includes the ONE definition
 // (offer-execution-state isOfferFullyExecuted), which reads it.
-const OFFER_COLS_BASE = ["id", "parent_offer_id", "offer_type", "current_round", "status", "esign_status", "buyer_signed_at", "seller_signed_at", "seller_response_type", "fully_signed_contract_received_at", "esign_completed_at", "responded_at", "created_at", "transaction_id", ...GOVERNING_TERM_KEYS.filter((k) => !["title_policy_payer", "title_company", "buyer_agent_commission_pct", "buyer_agent_commission_flat", "commission_payer"].includes(k)), ...Object.keys(OFFER_COLUMN_TO_KEY)]
+// WAVE 152 (lane 152E): the keys an offers row does not carry come from ONE set beside the vocabulary (NOT_OFFER_COLUMN_TERM_KEYS),
+// so a recorded-only term added there is never selected as an offers column.
+const OFFER_COLS_BASE = ["id", "parent_offer_id", "offer_type", "current_round", "status", "esign_status", "buyer_signed_at", "seller_signed_at", "seller_response_type", "fully_signed_contract_received_at", "esign_completed_at", "responded_at", "created_at", "transaction_id", ...GOVERNING_TERM_KEYS.filter((k) => !NOT_OFFER_COLUMN_TERM_KEYS.has(k)), ...Object.keys(OFFER_COLUMN_TO_KEY)]
 const OFFER_COLS = OFFER_COLS_BASE.join(", ")
 
 const NO_SUCH_OFFER = "no such offer in this brokerage"
@@ -117,11 +119,43 @@ export async function governingContractTerms(
         recordedBy: (r.recorded_by as string | null) ?? null, transactionId: (r.transaction_id as string | null) ?? null,
         // WAVE 151 (lane 151K): the instrument's signed effective language, when it stated one (evidence.effective_on, a day).
         effectiveAt: endOfDayInstant((r.evidence as Record<string, unknown> | null)?.effective_on as string | undefined),
+        // WAVE 152 (lane 152E): the version's recorded evidence rides along — the term ledger reads its per-term term_evidence.
+        evidence: (r.evidence ?? null) as Record<string, unknown> | null,
       }))
     }
   }
   const derived = versionsFromOfferChain([...chainRows.values()])
   return { ok: true, rootOfferId: rootList[0] ?? null, transactionId, governing: resolveGoverningTerms(mergeVersions(recorded, derived)) }
+}
+
+/**
+ * WAVE 152 (lane 152E) — THE TERM LEDGER of one contract, through the ONE reader above: per governed term the governing
+ * instrument (document / version), its signed effective instant, the document's signatures, the page / field / quote it was
+ * read from, the value it replaced, the authority in words, the proposals that do NOT govern and any unresolved contenders.
+ * Read by closing compliance (the evidence hold — lib/transactions/closing-compliance.ts) and by the settlement / Closing
+ * Disclosure reconciliation (lane 152G). Tenant-pinned; a refused read is a returned reason, never an empty ledger.
+ */
+export async function contractTermLedger(
+  svc: Svc,
+  brokerageId: string,
+  ref: GoverningRef,
+): Promise<{ ok: true; ledger: TermLedger; transactionId: string | null } | { ok: false; reason: string }> {
+  const gov = await governingContractTerms(svc, brokerageId, ref)
+  if (!gov.ok) return gov
+  const documentIds = [...new Set(gov.governing.versions.map((v) => v.documentId).filter((d): d is string => typeof d === "string" && d.length > 0))]
+  const signatures: Record<string, unknown> = {}
+  if (documentIds.length) {
+    const { data, error } = await svc.from("documents").select("id, signature_completeness").eq("brokerage_id", brokerageId).in("id", documentIds)
+    if (error) return { ok: false, reason: `the source documents' signatures could not be read: ${error.message}` }
+    for (const d of (data ?? []) as Array<{ id: string; signature_completeness: unknown }>) signatures[d.id] = d.signature_completeness ?? null
+  }
+  let closingWording: string | null = null
+  if (gov.transactionId) {
+    const { data, error } = await svc.from("transactions").select("id, contract_closing_terms").eq("id", gov.transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (error) return { ok: false, reason: `the deal's closing wording could not be read: ${error.message}` }
+    closingWording = ((data as { contract_closing_terms?: string | null } | null)?.contract_closing_terms) ?? null
+  }
+  return { ok: true, ledger: buildTermLedger(gov.governing, signatures, { closingWording }), transactionId: gov.transactionId }
 }
 
 

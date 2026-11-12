@@ -18,7 +18,9 @@ import {
 } from "lucide-react"
 import type { RoiSnapshot } from "./actions"
 
-const dollars = (cents: number) => {
+const dollars = (cents: number | null) => {
+  // Wave 152 (152B): null = commission is off this viewer's display, or not established — never a silent $0.
+  if (cents == null) return "Hidden"
   const d = cents / 100
   if (d >= 1000) return `$${(d / 1000).toFixed(1)}k`
   return `$${d.toFixed(0)}`
@@ -50,7 +52,7 @@ export function AgentRoiClient({ snapshot }: Props) {
   }
   const periodLabel = period === "7d" ? "last 7 days" : period === "30d" ? "last 30 days" : "year to date"
 
-  const isZeroState = snapshot.totalValueDollars === 0 && snapshot.byFeature.length === 0
+  const isZeroState = (snapshot.attributedRevenueCents ?? 0) === 0 && snapshot.closedDealsSourced === 0 && snapshot.byFeature.length === 0
 
   return (
     <div className="container max-w-5xl mx-auto py-8 px-4">
@@ -82,12 +84,12 @@ export function AgentRoiClient({ snapshot }: Props) {
             <div className="flex items-center gap-2 mb-1">
               <DollarSign className="h-4 w-4 text-emerald-600" />
               <span className="text-xs uppercase tracking-wide text-emerald-700 font-medium">
-                Revenue attributed
+                Commission sourced by campaigns
               </span>
             </div>
             <p className="text-3xl font-bold text-emerald-900">{dollars(snapshot.attributedRevenueCents)}</p>
             <p className="text-xs text-emerald-950/70 mt-1">
-              From AI-influenced deals across all campaign attribution models (linear).
+              {snapshot.moneyNote ?? "Earned commission on deals that closed in this period, each deal split once across the campaigns that reached its client (linear)."}
             </p>
           </CardContent>
         </Card>
@@ -110,12 +112,12 @@ export function AgentRoiClient({ snapshot }: Props) {
             <div className="flex items-center gap-2 mb-1">
               <TrendingUp className="h-4 w-4 text-indigo-600" />
               <span className="text-xs uppercase tracking-wide text-indigo-700 font-medium">
-                Total value
+                Closed deals sourced
               </span>
             </div>
-            <p className="text-3xl font-bold text-indigo-900">{dollars(snapshot.totalValueDollars)}</p>
+            <p className="text-3xl font-bold text-indigo-900">{snapshot.closedDealsSourced}</p>
             <p className="text-xs text-indigo-950/70 mt-1">
-              Revenue + the dollar value of the hours your AI saved you.
+              Deals that closed this period after a campaign reached the client. Time saved is an estimate and is never added to revenue.
             </p>
           </CardContent>
         </Card>
@@ -246,7 +248,13 @@ export function AgentRoiClient({ snapshot }: Props) {
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           <DollarSign className="h-4 w-4 text-emerald-600" /> How the credit moves by attribution model
         </h2>
-        {!snapshot.modelComparison.ok ? (
+        {!snapshot.modelComparison.ok && "hidden" in snapshot.modelComparison ? (
+          <Card className="border-dashed">
+            <CardContent className="py-4 text-sm text-muted-foreground">
+              {snapshot.modelComparison.error}
+            </CardContent>
+          </Card>
+        ) : !snapshot.modelComparison.ok ? (
           <Card className="border-destructive/50">
             <CardContent className="py-4 text-sm text-destructive">
               The attribution credits could not be read: {snapshot.modelComparison.error}.

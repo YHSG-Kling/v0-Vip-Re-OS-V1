@@ -12,9 +12,17 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { mayUseFeature } from "@/lib/billing/billing-access"
+// Wave 152 (lane 152B): revenue and the return come from THE ROI reader's own definitions, so the cache row this
+// file writes and the reader the dashboard renders cannot disagree (CLAUDE.md §6 — one formula).
+import { loadRealizedCampaignRevenue, realizedReturnOnMarketingSpend } from "@/lib/intelligence/roi-ledger"
 
-// Default avg commission if not available (for ROI calculation)
-const DEFAULT_AVG_COMMISSION = 7500
+// TOMBSTONE (wave 152, lane 152B): `DEFAULT_AVG_COMMISSION = 7500` lived here and every campaign's and channel's
+// revenue was `conversions × $7,500` — an invented figure stored in campaign_roi.total_revenue / channel_performance
+// .revenue and divided into roi_percentage, while the real attributed commission sat unread in
+// marketing_attribution_credits. Survivor: lib/intelligence/roi-ledger.ts loadRealizedCampaignRevenue (earned
+// commission on CLOSED deals, split by attribution weight, NULL when a commission is not finalized). The same
+// lane retired `qualifiedLeads = totalLeads × 0.3` (an invented qualification rate stored as a count): no
+// qualification ledger is joined here, so qualified_leads / cost_per_qualified_lead are NULL — unknown, not 30%.
 
 // ONE spelling of the newsletter lead-rate ESTIMATE (§6). It was written 0.02
 // inline in both the campaign arm and the channel rollup, which is how the two
@@ -34,15 +42,23 @@ export async function recalculateCampaignROI(
   success: boolean
   error?: string
   roi?: {
-    total_spend: number
+    /** NULL when nothing records what the campaign cost (unknown is never $0). */
+    total_spend: number | null
     total_leads: number
-    qualified_leads: number
+    /** NULL — no qualification ledger is joined (the old ×0.3 estimate is retired). */
+    qualified_leads: number | null
     total_conversions: number
-    total_revenue: number
+    /** Earned commission on CLOSED deals this campaign sourced (linear share); NULL when a credited closed deal's
+     *  commission is not finalized. Never conversions × an average, never sale price. */
+    total_revenue: number | null
     cost_per_lead: number | null
     cost_per_qualified_lead: number | null
     cost_per_conversion: number | null
     roi_percentage: number | null
+    /** Wave 152: confirmed / partial / tenant_reported / unknown / none — the reader's cost vocabulary. */
+    spend_status: "confirmed" | "partial" | "tenant_reported" | "unknown" | "none"
+    /** Why roi_percentage is NULL, in plain words (null when it is a number). */
+    roi_na: string | null
     /** Where total_spend came from — "derived" from the channel ledger (ad,
      *  direct_mail) or "stored" from hand-entered budget_spent (channels with
      *  no spend source). Never silent. */
@@ -119,6 +135,10 @@ export async function recalculateCampaignROI(
     const storedSpend = Number(campaign.budget_spent ?? 0)
     let derivedSpend: number | null = null
     let derivedSpendNote: string | null = null
+    // Wave 152 (152B): a ledger that covers only part of the campaign (some mailings uncosted) is PARTIAL, and a lead
+    // count that is a newsletter ESTIMATE is not a measured denominator — both make the cost ratios N/A.
+    let spendPartial = false
+    let leadsEstimated = false
 
     // ══════════════════════════════════════════════════════════════════════════
     // STEP 2: Aggregate performance data by campaign type
@@ -297,6 +317,7 @@ export async function recalculateCampaignROI(
         }
         if (costed > 0) {
           derivedSpend = mailSpend
+          spendPartial = uncosted > 0
           derivedSpendNote =
             `Σ per_piece_cost × pieces_mailed over ${costed} costed direct_mail campaign(s)` +
             (uncosted > 0 ? `; ${uncosted} uncosted (spend NOT RECORDED, excluded — PARTIAL spend, ROI overstated)` : "")
@@ -405,6 +426,7 @@ export async function recalculateCampaignROI(
         for (const s of sends ?? []) {
           totalLeads += Math.floor((s.recipient_count ?? 0) * NEWSLETTER_LEAD_RATE)
         }
+        leadsEstimated = (sends ?? []).length > 0
       }
     }
 
@@ -528,21 +550,42 @@ export async function recalculateCampaignROI(
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // STEP 3: Calculate ROI metrics
+    // STEP 3: Calculate ROI metrics (wave 152, lane 152B — real outcomes only)
     // ══════════════════════════════════════════════════════════════════════════
-    qualifiedLeads = Math.floor(totalLeads * 0.3) // Estimate 30% qualification rate
+    // The spend in the reader's vocabulary: a ledger figure is confirmed (or partial when some mailings carry no
+    // cost, or none when the ledger holds nothing); with no ledger, a typed budget_spent is tenant_reported and a
+    // 0 / missing one is UNKNOWN — the create paths write a literal 0, which is not a measured $0.
+    const spendStatus: "confirmed" | "partial" | "tenant_reported" | "unknown" | "none" =
+      derivedSpend != null ? (spendPartial ? "partial" : derivedSpend > 0 ? "confirmed" : "none")
+      : storedSpend > 0 ? "tenant_reported" : "unknown"
+    const recordedSpend = spendStatus === "unknown" ? null : totalSpend
+    const spendComplete = spendStatus === "confirmed" || spendStatus === "tenant_reported"
+    // qualified_leads: no qualification ledger is joined here — stored as NULL below (see the tombstone at the top).
 
-    // Total revenue = conversions * avg commission
-    const totalRevenue = totalConversions * DEFAULT_AVG_COMMISSION
+    // REVENUE = earned commission on CLOSED deals this campaign sourced (its linear share of each), from the ROI
+    // reader's loader. A credited closed deal whose commission is not finalized makes the figure NOT ESTABLISHED.
+    const realized = await loadRealizedCampaignRevenue(supabase, brokerageId, [marketingCampaignId])
+    if (!realized.ok) {
+      // FAIL CLOSED: the previous row survives rather than a revenue nobody can stand behind.
+      console.error("[ROI Calculator] realized revenue read refused:", realized.error)
+      return { success: false, error: `realized revenue read refused: ${realized.error}` }
+    }
+    const mine = realized.byCampaign.get(marketingCampaignId)
+    const totalRevenue: number | null = mine && mine.established ? mine.earnedCents / 100 : null
 
-    // Cost metrics (avoid division by zero)
-    const costPerLead = totalLeads > 0 ? totalSpend / totalLeads : null
-    const costPerQualifiedLead = qualifiedLeads > 0 ? totalSpend / qualifiedLeads : null
-    const costPerConversion = totalConversions > 0 ? totalSpend / totalConversions : null
+    // Cost metrics only over a COMPLETE spend and a MEASURED, non-zero count (a newsletter lead count is an estimate).
+    const countable = spendComplete && totalSpend > 0
+    const costPerLead = countable && !leadsEstimated && totalLeads > 0 ? totalSpend / totalLeads : null
+    const costPerQualifiedLead = null
+    const costPerConversion = countable && totalConversions > 0 ? totalSpend / totalConversions : null
 
-    // ROI percentage = ((revenue - spend) / spend) * 100
-    const roiPercentage =
-      totalSpend > 0 ? ((totalRevenue - totalSpend) / totalSpend) * 100 : null
+    // The ONE formula (lib/intelligence/roi-ledger.ts realizedReturnOnMarketingSpend), as a percentage.
+    const roiRatio = realizedReturnOnMarketingSpend({
+      contributionCents: totalRevenue == null ? null : Math.round(totalRevenue * 100),
+      spendCents: recordedSpend == null ? null : Math.round(recordedSpend * 100),
+      spendStatus,
+    })
+    const roiPercentage = roiRatio.value == null ? null : roiRatio.value * 100
 
     // ══════════════════════════════════════════════════════════════════════════
     // STEP 4: UPSERT to campaign_roi (ON CONFLICT marketing_campaign_id)
@@ -551,9 +594,9 @@ export async function recalculateCampaignROI(
       {
         marketing_campaign_id: marketingCampaignId,
         brokerage_id: brokerageId,
-        total_spend: totalSpend,
+        total_spend: recordedSpend,
         total_leads: totalLeads,
-        qualified_leads: qualifiedLeads,
+        qualified_leads: null,
         total_conversions: totalConversions,
         total_revenue: totalRevenue,
         cost_per_lead: costPerLead,
@@ -587,15 +630,17 @@ export async function recalculateCampaignROI(
     return {
       success: true,
       roi: {
-        total_spend: totalSpend,
+        total_spend: recordedSpend,
         total_leads: totalLeads,
-        qualified_leads: qualifiedLeads,
+        qualified_leads: null,
         total_conversions: totalConversions,
         total_revenue: totalRevenue,
         cost_per_lead: costPerLead,
         cost_per_qualified_lead: costPerQualifiedLead,
         cost_per_conversion: costPerConversion,
         roi_percentage: roiPercentage,
+        spend_status: spendStatus,
+        roi_na: roiRatio.na,
         spend_source: spendSource,
         stored_budget_spent: storedSpend,
         derived_channel_spend: derivedSpend,
@@ -660,10 +705,12 @@ export async function recalculateChannelPerformance(
   error?: string
   channels?: Array<{
     channel_type: string
-    spend: number
+    /** NULL when the channel has no spend ledger (unknown, never $0) — wave 152. */
+    spend: number | null
     leads: number
     conversions: number
-    revenue: number
+    /** Earned commission on deals closed in the window that this channel's campaigns sourced; NULL when not established. */
+    revenue: number | null
     roi_percentage: number | null
   }>
 }> {
@@ -673,10 +720,10 @@ export async function recalculateChannelPerformance(
     const channelTypes = ["social", "newsletter", "direct_mail", "video", "ad", "podcast"]
     const results: Array<{
       channel_type: string
-      spend: number
+      spend: number | null
       leads: number
       conversions: number
-      revenue: number
+      revenue: number | null
       roi_percentage: number | null
     }> = []
 
@@ -684,6 +731,9 @@ export async function recalculateChannelPerformance(
       let spend = 0
       let leads = 0
       let conversions = 0
+      // Wave 152 (152B): the channel's cost in the reader's vocabulary. Only `ad` and `direct_mail` have a spend
+      // ledger; every other channel's spend is UNKNOWN (stored NULL), never $0.
+      let channelSpendStatus: "confirmed" | "partial" | "unknown" | "none" = "unknown"
 
       // ════════════════════════════════════════════════════════════════════════
       // Aggregate by channel type
@@ -711,20 +761,26 @@ export async function recalculateChannelPerformance(
       }
 
       if (channelType === "ad") {
-        const { data: adPerf } = await supabase
+        const { data: adPerf, error: adPerfError } = await supabase
           .from("ad_performance")
           .select("spend, leads, conversions")
           .eq("brokerage_id", brokerageId)
           .gte("captured_at", windowStart)
           .lte("captured_at", windowEnd)
 
-        if (adPerf) {
-          for (const p of adPerf) {
-            spend += p.spend ?? 0
-            leads += p.leads ?? 0
-            conversions += p.conversions ?? 0
-          }
+        // §3: a refused read is not "no ads ran" (wave 152 — this error was discarded).
+        if (adPerfError) {
+          console.error("[ROI Calculator] ad_performance read refused:", adPerfError.message)
+          return { success: false, error: `ad_performance read refused: ${adPerfError.message}` }
         }
+        let unpriced = 0
+        for (const p of adPerf ?? []) {
+          if (p.spend == null) unpriced++
+          spend += Number(p.spend ?? 0)
+          leads += p.leads ?? 0
+          conversions += p.conversions ?? 0
+        }
+        channelSpendStatus = unpriced > 0 ? (spend > 0 ? "partial" : "unknown") : spend > 0 ? "confirmed" : "none"
       }
 
       if (channelType === "direct_mail") {
@@ -800,6 +856,7 @@ export async function recalculateChannelPerformance(
           spend += perPiece * pieces
           costedCampaigns++
         }
+        channelSpendStatus = uncostedInWindow > 0 || undatedCampaigns > 0 ? (spend > 0 ? "partial" : "unknown") : spend > 0 ? "confirmed" : "none"
         if (uncostedInWindow > 0 || undatedCampaigns > 0) {
           console.warn(
             `[ROI Calculator] direct_mail channel spend ${windowStart}..${windowEnd}: derived from ${costedCampaigns} campaign(s); ` +
@@ -943,12 +1000,41 @@ export async function recalculateChannelPerformance(
       // cost column on any table this rollup reads, so their ROI stays null by
       // construction until one is added. That is a MISSING LEDGER, not a bug in
       // this file.
-      const revenue = conversions * DEFAULT_AVG_COMMISSION
-      const roiPercentage = spend > 0 ? ((revenue - spend) / spend) * 100 : null
+      //
+      // Wave 152 (152B): REVENUE is the earned commission on deals that CLOSED in this window and that this channel's
+      // campaigns sourced (their linear share) — THE ROI reader's loader, not conversions × an average. NULL when a
+      // credited closed deal's commission is not finalized. The return is the reader's ONE formula.
+      const { data: typedCampaigns, error: typedError } = await supabase
+        .from("marketing_campaigns")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .eq("campaign_type", channelType)
+      if (typedError) {
+        console.error("[ROI Calculator] channel campaigns read refused:", typedError.message)
+        return { success: false, error: `channel campaigns read refused: ${typedError.message}` }
+      }
+      const typedIds = (typedCampaigns ?? []).map((c: { id: string }) => c.id)
+      let revenue: number | null = 0
+      if (typedIds.length > 0) {
+        const realized = await loadRealizedCampaignRevenue(supabase, brokerageId, typedIds, { sinceDay: windowStart, untilDay: windowEnd })
+        if (!realized.ok) {
+          console.error("[ROI Calculator] channel realized revenue read refused:", realized.error)
+          return { success: false, error: `channel realized revenue read refused: ${realized.error}` }
+        }
+        const vals = [...realized.byCampaign.values()]
+        revenue = vals.every((x) => x.established) ? vals.reduce((s, x) => s + x.earnedCents, 0) / 100 : null
+      }
+      const storedSpend: number | null = channelSpendStatus === "unknown" ? null : spend
+      const roi = realizedReturnOnMarketingSpend({
+        contributionCents: revenue == null ? null : Math.round(revenue * 100),
+        spendCents: storedSpend == null ? null : Math.round(storedSpend * 100),
+        spendStatus: channelSpendStatus,
+      })
+      const roiPercentage = roi.value == null ? null : roi.value * 100
 
       results.push({
         channel_type: channelType,
-        spend,
+        spend: storedSpend,
         leads,
         conversions,
         revenue,
@@ -965,7 +1051,7 @@ export async function recalculateChannelPerformance(
           channel_type: channelType,
           window_start: windowStart,
           window_end: windowEnd,
-          spend,
+          spend: storedSpend,
           leads,
           conversions,
           revenue,

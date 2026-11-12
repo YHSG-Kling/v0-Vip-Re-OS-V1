@@ -1,7 +1,9 @@
-import { notFound } from 'next/navigation'
 import { createServiceClient } from '@/lib/supabase/service'
 import { publiclyVisibleListingStatuses } from '@/lib/listings/listing-status-sync'
-import { resolveQrScanDestination, qrContinueLabel } from '@/lib/marketing/qr-contract'
+// WAVE 152 (lane 152C): the ONE lifecycle classifier and the ONE unavailable-code wording — the same words the scan door
+// gives, so the two doors to a code never disagree (a missing code is a helpful notice too, never a bare 404).
+import { resolveQrScanDestination, qrContinueLabel, qrLifecycleState, qrUnavailableNotice, isAbsentColumnRefusal } from '@/lib/marketing/qr-contract'
+import { loadQrTenantHosts } from '@/lib/marketing/qr-governance'
 import QRLandingClient from './QRLandingClient'
 
 interface PageProps {
@@ -14,60 +16,47 @@ interface PageProps {
  * a bookmarked or shared /qr/<slug> link reaches this page directly, so a
  * paused or expired code has to be refused here too or the two doors disagree.
  */
-function QRRefusalNotice({ heading, detail }: { heading: string; detail: string }) {
+function QRRefusalNotice({ heading, detail, action }: { heading: string; detail: string; action: string }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-muted/30 p-8">
-      <div className="max-w-md text-center space-y-2">
+    <div className="min-h-screen flex items-center justify-center bg-muted/30 px-4 py-8">
+      <div className="w-full max-w-md text-center space-y-2">
         <h1 className="text-xl font-semibold text-foreground">{heading}</h1>
-        <p className="text-sm leading-relaxed text-muted-foreground">{detail}</p>
+        <p className="text-base leading-relaxed text-muted-foreground">{detail}</p>
+        <p className="text-base leading-relaxed text-muted-foreground">{action}</p>
       </div>
     </div>
   )
 }
+
+const LANDING_COLUMNS_LEGACY = 'id, slug, label, purpose, brokerage_id, agent_id, listing_id, target_url, destination_type, is_active, expires_at'
 
 export default async function QRLandingPage({ params }: PageProps) {
   const { slug } = await params
   const supabase = createServiceClient()
 
   // `is_active` is NOT part of the lookup: a paused code and a slug that never
-  // existed are different facts and get different answers.
-  const { data: qr, error } = await supabase
+  // existed are different facts and get different answers. WAVE 152: the m945
+  // retirement columns are read when present; before m945 the read degrades.
+  let { data: qr, error } = await supabase
     .from('qr_codes')
-    .select(`
-      id,
-      slug,
-      label,
-      purpose,
-      brokerage_id,
-      agent_id,
-      listing_id,
-      target_url,
-      destination_type,
-      is_active,
-      expires_at
-    `)
+    .select(`${LANDING_COLUMNS_LEGACY}, retired_at, retired_reason`)
     .eq('slug', slug)
     .maybeSingle()
-
-  if (error || !qr) {
-    notFound()
+  if (error && isAbsentColumnRefusal(error)) {
+    ({ data: qr, error } = await supabase.from('qr_codes').select(LANDING_COLUMNS_LEGACY).eq('slug', slug).maybeSingle())
   }
 
-  if (!qr.is_active) {
-    return (
-      <QRRefusalNotice
-        heading="This code is paused"
-        detail="The agent who created this QR code has paused it, so it is not routing scans right now. Please contact them directly."
-      />
-    )
+  if (error) {
+    console.error('[qr landing] code lookup refused:', error.message)
+    return <QRRefusalNotice {...qrUnavailableNotice('error')} />
   }
-  if (qr.expires_at && new Date(qr.expires_at).getTime() <= Date.now()) {
-    return (
-      <QRRefusalNotice
-        heading="This code has expired"
-        detail="This QR code was set to expire and that date has passed, so it no longer routes anywhere. Please contact the agent who shared it for a current link."
-      />
-    )
+  if (!qr) {
+    return <QRRefusalNotice {...qrUnavailableNotice('missing')} />
+  }
+
+  const state = qrLifecycleState(qr as Parameters<typeof qrLifecycleState>[0])
+  if (state !== 'active') {
+    return <QRRefusalNotice {...qrUnavailableNotice(state)} />
   }
 
   // Fetch agent profile if present. qr_codes.agent_id is an agents.id (FK → agents.id), so resolve
@@ -118,10 +107,12 @@ export default async function QRLandingPage({ params }: PageProps) {
   // host we do not own — which is never auto-followed (no open redirect) and is
   // offered instead as a link the person taps. The same pure resolver decides
   // both doors, so they cannot disagree.
+  // The tenant's verified custom domains serve this app (wave 152) — the same origins the scan door passes.
+  const tenantDomains = qr.brokerage_id ? (await loadQrTenantHosts(supabase, qr.brokerage_id)).customDomains.map((d) => `https://${d}`) : []
   const destination = resolveQrScanDestination({
     slug,
     targetUrl: qr.target_url ?? null,
-    appOrigins: [process.env.NEXT_PUBLIC_APP_URL ?? null],
+    appOrigins: [process.env.NEXT_PUBLIC_APP_URL ?? null, ...tenantDomains],
   })
   const continueTo =
     destination.kind === 'in_app'

@@ -40,6 +40,9 @@
 // resolved by dynamic import so this module's own graph stays a leaf.
 
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+// THE tenant-facing presenter (wave 152, lane 152A): the escalation bell is composed to the message contract — a
+// "tracked" clause only with the ticket id that makes it true.
+import { presentTenantMessage } from "@/lib/errors"
 import type { ReadinessKey, TenantReadinessReport } from "@/lib/kernel/tenant-readiness"
 import type { LifecycleEventSource } from "@/lib/kernel/emit"
 import type { ManagerSignal } from "@/lib/kernel/manager-signals"
@@ -276,6 +279,43 @@ export interface OperationHandlerDeps {
    *  by the owner on the tick through THE ONE resend semantic (lib/kernel/users.ts redispatchInvitation) before a human
    *  is bothered; still failing → the human rails + the ticket. Default = that survivor; the proof injects a spy. */
   redispatchInvitation?: (svc: Svc, p: { invitationId: string; brokerageId: string; actorUserId: string }) => Promise<{ ok: boolean; dispatched: boolean; status: "pending" | "failed" | null; note?: string; error?: string }>
+  /** The clock the credential re-check window reads (default: now). */
+  now?: Date
+}
+
+// ── 4a. The provider health reader for a TENANT credential (wave 152, lane 152A) ──────────────
+//
+// A provider_connection failure names the credential row it is about (subject platform_credentials). The readiness
+// key it re-verified, providerState, is PLATFORM configuration (lib/kernel/tenant-readiness.ts: "required provider lane
+// dark at the platform level") — it cannot see a tenant's own key. So a tenant connection the provider had REFUSED
+// re-verified as PASS whenever the platform lanes were lit, the signal closed as "post-condition re-verified", and no
+// admin was ever told (the tenant webhook door reports exactly this case). The row itself is the health reader: its
+// is_active / test_status / config.last_health are written by the connect door's free account read and by every pushed
+// delivery (app/api/webhooks/batchdata-smart-search/route.ts). It is now re-read on THIS tenant beside the readiness keys.
+
+/** How long a provider-side (retryable) failure stays open for the owner's re-check before a human is told. */
+const CREDENTIAL_RECHECK_WINDOW_MS = 6 * 60 * 60 * 1000
+
+type CredentialRecheck =
+  | { verdict: "verified" | "disconnected" | "retryable" | "missing" | "unreadable"; line: string; tenant: string | null }
+  | { verdict: "needs_tenant"; line: string; tenant: string }
+
+async function recheckCredentialRow(svc: Svc, brokerageId: string, credentialId: string): Promise<CredentialRecheck> {
+  const { data, error } = await svc.from("platform_credentials").select("id, is_active, test_status, config").eq("id", credentialId).eq("brokerage_id", brokerageId).limit(1)
+  if (error) return { verdict: "unreadable", line: `credential re-read refused: ${error.message}`, tenant: "The connection couldn't be re-checked just now." }
+  const row = ((data ?? []) as Array<{ id: string; is_active: boolean | null; test_status: string | null; config: Record<string, any> | null }>)[0] ?? null
+  // Pinned to the tenant: another tenant's credential id reads as "missing" here — nothing about it is disclosed.
+  if (!row) return { verdict: "missing", line: "no such credential on this tenant", tenant: "The connection is no longer on your account." }
+  const cfg = row.config ?? {}
+  const health = typeof cfg.last_health?.status === "string" ? (cfg.last_health.status as string) : null
+  if (cfg.disconnected_at) return { verdict: "disconnected", line: `disconnected by the account at ${String(cfg.disconnected_at)}`, tenant: null }
+  if (row.is_active !== true) return { verdict: "needs_tenant", line: `credential inactive (is_active ${JSON.stringify(row.is_active)})`, tenant: "The connection is still switched off; reconnecting it from Settings is the next step." }
+  if (health === "auth_failed") return { verdict: "needs_tenant", line: "last check: the provider refused the stored credential", tenant: "The connection still needs to be updated before new data can come in." }
+  if (health === "quota") return { verdict: "needs_tenant", line: "last check: provider quota / balance limit", tenant: "The provider still reports a usage or balance limit on your provider account." }
+  if (health === "unreachable" || health === "shape_drift") return { verdict: "retryable", line: `last check: ${health}`, tenant: "The provider still isn't responding as expected after repeated checks." }
+  if (health === "not_configured" || row.test_status === "fail") return { verdict: "needs_tenant", line: `last check failed (${health ?? row.test_status})`, tenant: "The connection still doesn't pass its check; updating it from Settings is the next step." }
+  if (health === "ok" || !cfg.last_health) return { verdict: "verified", line: health === "ok" ? `active, last check passed (${String(cfg.last_health?.at ?? "?")})` : "active (this connection records no provider check)", tenant: null }
+  return { verdict: "retryable", line: `last check ${health}`, tenant: "The provider still isn't responding as expected after repeated checks." }
 }
 
 /** The tenant may read only a sentence that passes the support lane's tenant-facing gate (lib/support/ticket-triage.ts
@@ -331,7 +371,7 @@ const defaultNotifyStaff: NonNullable<OperationHandlerDeps["notifyStaff"]> = asy
  * string the bus records on the consumed signal; a malformed payload is still consumed — by a human.
  */
 export async function handleOperationFailureEscalated(
-  signal: Pick<ManagerSignal, "id" | "payload" | "entityType" | "entityId">,
+  signal: Pick<ManagerSignal, "id" | "payload" | "entityType" | "entityId"> & { createdAt?: string | null },
   ctx: { brokerageId: string; supabase: Svc },
   deps: OperationHandlerDeps = {},
 ): Promise<string | null> {
@@ -351,18 +391,26 @@ export async function handleOperationFailureEscalated(
     // Wave 150 (lane 150DAC): the TENANT bell / ticket carry only a gated sentence (readiness reasons can name a
     // database code); staff keep the full detail.
     const label0 = isImmediateOperation(p.operation) ? OPERATION_LABEL[p.operation] : "An operation"
-    const body = await tenantSafe(rawBody, `${label0} needs your attention — the OS tried to repair it and could not. Our support team has the details.`)
-    staffDetail = staffDetail ?? (body === rawBody ? null : rawBody)
-    const org = await notifyOrg(svc, ctx.brokerageId, { title, body, entityType, entityId })
-    const staff = p.platform_visible ? await notifyStaff(svc, { title, body: staffDetail ?? body, entityType, entityId }) : 0
+    const body0 = await tenantSafe(rawBody, `${label0} needs your attention — the OS tried to fix it automatically and could not.`)
+    staffDetail = staffDetail ?? (body0 === rawBody ? null : rawBody)
+    // Wave 152 (lane 152A): the TICKET is opened FIRST, so the bell says the problem is tracked only when a ticket
+    // actually exists, and names the side that really answers it. Before this the fallback promised "Our support team
+    // has the details" ahead of any ticket — and a subject that is not platform-visible is ticketed in the account's
+    // OWN lane (user_to_brokerage), where the platform's support team is not the side that answers.
+    const answeredBy = p.platform_visible ? "platform_support" as const : "account_admin" as const
     let ticketNote = ""
-    if (entityType === "support_ticket" && entityId) ticketNote = `; tracked on support ticket ${entityId}`
+    let ticketId: string | null = null
+    if (entityType === "support_ticket" && entityId) { ticketNote = `; tracked on support ticket ${entityId}`; ticketId = entityId }
     else if (isImmediateOperation(p.operation)) {
       try {
-        const t = await openTicket(svc, { brokerageId: ctx.brokerageId, operation: p.operation, tenantFacing: body, platformVisible: !!p.platform_visible, actorUserId: p.actor_user_id ?? null, lifecycleEventId: p.lifecycle_event_id ?? null })
+        const t = await openTicket(svc, { brokerageId: ctx.brokerageId, operation: p.operation, tenantFacing: body0, platformVisible: !!p.platform_visible, actorUserId: p.actor_user_id ?? null, lifecycleEventId: p.lifecycle_event_id ?? null })
         ticketNote = t.ticketId ? `; ${t.created ? "opened" : "already tracked on"} support ticket ${t.ticketId}` : `; no ticket opened (${t.error ?? "refused"})`
+        ticketId = t.ticketId ?? null
       } catch (e) { ticketNote = `; no ticket opened (${e instanceof Error ? e.message : String(e)})` }
     }
+    const body = presentTenantMessage({ what: body0, work: { state: "ticket_open", ticketId, answeredBy }, next: "you" }).text.slice(0, 480)
+    const org = await notifyOrg(svc, ctx.brokerageId, { title, body, entityType, entityId })
+    const staff = p.platform_visible ? await notifyStaff(svc, { title, body: staffDetail ?? body, entityType, entityId }) : 0
     return `escalated to a human (${org} tenant admin(s)${p.platform_visible ? `, ${staff} platform staff` : ""}${ticketNote}) — ${staffDetail ?? body}`.slice(0, 600)
   }
 
@@ -389,8 +437,28 @@ export async function handleOperationFailureEscalated(
     return escalate(`${label} needs you`, tenantFacing, `${label}: the automatic re-send did not work (${threw ?? r?.error ?? "no result"}); evidence row ${p.lifecycle_event_id ?? "(none)"}`)
   }
 
+  // WAVE 152 (lane 152A): a failed CONNECTION is re-verified on THE credential row it names (4a) as well as through its
+  // readiness keys — the post-condition holds only when BOTH do (needs-attention → verified needs the row to say so).
+  let credential: CredentialRecheck | null = null
+  if (operation === "provider_connection" && entityType === "platform_credentials" && entityId) {
+    try { credential = await recheckCredentialRow(svc, ctx.brokerageId, entityId) }
+    catch (e) { credential = { verdict: "unreadable", line: `credential re-read threw: ${e instanceof Error ? e.message : String(e)}`, tenant: "The connection couldn't be re-checked just now." } }
+    if (credential.verdict === "disconnected") return `${label}: nothing to repair — ${credential.line}; the account turned this connection off (watch closed)`.slice(0, 600)
+    const createdMs = signal.createdAt ? Date.parse(signal.createdAt) : Number.NaN
+    const ageMs = Number.isFinite(createdMs) ? (deps.now ?? new Date()).getTime() - createdMs : Number.POSITIVE_INFINITY
+    // A provider-side failure stays OPEN in the owner's inbox (null = not consumed) and is re-read on the next tick; past
+    // the window a human is told. Nothing here claims a retry the provider did not make.
+    if (credential.verdict === "retryable" && ageMs < CREDENTIAL_RECHECK_WINDOW_MS) return null
+  }
+  const credentialOpen = credential !== null && credential.verdict !== "verified"
+  const credentialTenant = credentialOpen && credential?.tenant ? ` ${credential.tenant}` : ""
+  const credentialStaff = credential ? `; credential re-check: ${credential.verdict} — ${credential.line}` : ""
+  // A credential that is NOT on this tenant: the payload's sentence describes a row this tenant cannot see, so it is never
+  // echoed — the bell says only what is true here (defense in depth: the bus already pins every signal to its tenant).
+  const lead = credential?.verdict === "missing" ? `${label} needs your attention.` : tenantFacing
+
   if (keys.length === 0) {
-    return escalate(`${label} needs you`, tenantFacing, `${label}: no readiness check covers this post-condition — evidence row ${p.lifecycle_event_id ?? "(none)"}`)
+    return escalate(`${label} needs you`, `${lead}${credentialTenant}`, `${label}: no readiness check covers this post-condition${credentialStaff} — evidence row ${p.lifecycle_event_id ?? "(none)"}`)
   }
 
   let report: Pick<TenantReadinessReport, "checks" | "ready" | "blockers" | "repairs">
@@ -399,15 +467,18 @@ export async function handleOperationFailureEscalated(
     report = await evaluate(svc, ctx.brokerageId, { repair: true })
   } catch (e) {
     // The engine could not run — that is not "verified" (fail closed): a human gets it with the reason.
-    return escalate(`${label} needs you`, tenantFacing, `${label}: the readiness engine threw while re-verifying: ${e instanceof Error ? e.message : String(e)}`)
+    return escalate(`${label} needs you`, `${lead}${credentialTenant}`, `${label}: the readiness engine threw while re-verifying: ${e instanceof Error ? e.message : String(e)}${credentialStaff}`)
   }
   const relevant = report.checks.filter((c) => (keys as readonly string[]).includes(c.key))
   const open = relevant.filter((c) => c.required && c.status !== "PASS" && c.status !== "NOT_APPLICABLE")
   const repairs = (report.repairs ?? []).filter((r) => (keys as readonly string[]).includes(r.key))
   const repairLine = repairs.length ? `repairs: ${repairs.map((r) => `${r.key}→${r.playbook} ${r.ran ? (r.ok ? "ok" : "refused") : "not run"}${r.escalated ? " (escalated)" : ""}`).join("; ")}` : "no repair needed"
+  if (open.length === 0 && !credentialOpen) {
+    return `${label}: post-condition re-verified through the readiness contract — ${keys.join(", ")} ${relevant.length ? "PASS / N/A" : "(no check evaluated)"}; ${repairLine}${credential ? `; the connection itself re-read: ${credential.line}` : ""}`.slice(0, 600)
+  }
   if (open.length === 0) {
-    return `${label}: post-condition re-verified through the readiness contract — ${keys.join(", ")} ${relevant.length ? "PASS / N/A" : "(no check evaluated)"}; ${repairLine}`.slice(0, 600)
+    return escalate(`${label} needs you`, `${lead}${credentialTenant}`.slice(0, 480), `${label}: ${keys.join(", ")} PASS / N/A, but the connection itself is still not healthy${credentialStaff}; ${repairLine}; evidence row ${p.lifecycle_event_id ?? "(none)"}`)
   }
   const openLine = open.map((c) => `${c.key} ${c.status} — ${c.reason}`).join("; ")
-  return escalate(`${label} needs you`, `${tenantFacing} Still open after the OS tried: ${openLine}`.slice(0, 480), `${label}: ${openLine}; ${repairLine}; evidence row ${p.lifecycle_event_id ?? "(none)"}`)
+  return escalate(`${label} needs you`, `${lead}${credentialTenant} Still open after the OS tried: ${openLine}`.slice(0, 480), `${label}: ${openLine}${credentialStaff}; ${repairLine}; evidence row ${p.lifecycle_event_id ?? "(none)"}`)
 }

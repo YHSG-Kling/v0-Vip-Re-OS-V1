@@ -363,7 +363,67 @@ async function main() {
     check("the canary ran with no Lob key in the environment", !process.env.LOB_API_KEY && !process.env.LOB_TEST_API_KEY)
   }
 
+  console.log("\n[L · the OPTIONAL QR region in every mail format, letters included (wave 152, lane 152C)]")
+  {
+    // Owner (verbatim, 2026-11-11): "all mail including letters can have a section that can use a qr bar code."
+    const { decideMailQrRegion } = await import("../lib/direct-mail/mail-piece-rules")
+    const { QR_RENDER_DEFAULTS } = await import("../lib/marketing/qr-contract")
+    const { mintTrackedQr } = await import("../lib/marketing/tracked-qr")
+    const { renderLetterHtml } = await import("../lib/direct-mail/render-letter")
+    const printable = Object.entries(MAIL_LAYOUT_LIBRARY).filter(([, l]) => l.status === "lob_global_template")
+    check("every printable layout (letter, personal note, postcard front AND back) declares an OPTIONAL QR region", printable.length === 4 && printable.every(([, l]) => !!l.qrRegion && l.qrRegion.optional === true))
+    check("each region's print size is ≥ its minimum ≥ 0.8 in, and its quiet zone is the ONE encoding contract's (4 modules)", printable.every(([, l]) => !!l.qrRegion && l.qrRegion.sizeIn >= l.qrRegion.minSizeIn && l.qrRegion.minSizeIn >= 0.8 && l.qrRegion.quietZoneModules === QR_RENDER_DEFAULTS.margin && QR_RENDER_DEFAULTS.margin === 4))
+    check("the notecard (no provider) declares no region; its substitute — the personal note — carries one", MAIL_LAYOUT_LIBRARY.notecard.qrRegion === null && MAIL_LAYOUT_LIBRARY[MAIL_LAYOUT_LIBRARY.notecard.substitute as "personal_letter"].qrRegion !== null)
+    check("every layout with a region declares qr_destination_url among its merge variables (the Lob template path prints the region from it)", printable.every(([, l]) => l.mergeVariables.includes("qr_destination_url")))
+    check("the postcard back's region stays OUT of the address zone (Lob's right 52%)", /never in the right 52%/.test(MAIL_LAYOUT_LIBRARY.postcard_back.qrRegion?.anchor ?? ""))
+
+    const db = memSupabase({ qr_codes: [] }, { uuidIds: true })
+    const codeA = await mintTrackedQr({ brokerageId: "tenant-a", label: "direct_mail_campaign:camp-a", purpose: "campaign", origin: "https://app.example.test" }, db as never)
+    const codeB = await mintTrackedQr({ brokerageId: "tenant-b", label: "direct_mail_campaign:camp-b", purpose: "campaign", origin: "https://app.example.test" }, db as never)
+    const scanA = codeA?.scanUrl ?? ""
+    const yes = decideMailQrRegion({ layout: "letter", scanUrl: scanA })
+    const outcomes = [
+      decideMailQrRegion({ layout: "letter", scanUrl: null }),
+      decideMailQrRegion({ layout: "letter", scanUrl: "https://alderhomes.example/listing/12" }),
+      decideMailQrRegion({ layout: "personal_letter", scanUrl: scanA, codeState: "paused" }),
+      decideMailQrRegion({ layout: "notecard", scanUrl: scanA }),
+    ]
+    check("a REGISTERED code prints in the region with its own token (the slug its scan resolves by)", yes.print && !!codeA && yes.token === codeA.slug && yes.sizeIn === 1)
+    check("no code → region blank (not_requested); a typed URL → NOT printed (only registered codes print); a paused code → blank; the notecard → no region", outcomes.map((o) => (o.print ? "print" : o.reason)).join() === "not_requested,not_a_registered_code,code_not_active,layout_has_no_region")
+    check("AN UNCONFIGURED OR UNUSABLE CODE BLOCKS ONLY THE REGION, NEVER THE MAILING — every 'no' says the piece still mails", outcomes.every((o) => !o.print && /mails/.test(o.note)))
+
+    const brand = { displayName: "The Alder Team", brokerageName: "Alder Realty LLC", visual: { primaryColor: "#0F172A", accentColor: "#F59E0B" }, display: { websiteWordmark: "alderhomes.example", phone: "404-555-0100", licenseLine: "GA License # 123456" }, fairHousing: { longDisclosure: "Alder Realty LLC is committed to the Fair Housing Act." } }
+    const seams = { resolveBrand: (async () => brand) as never, draftCopy: (async () => ({ ok: true, copy: { greeting: "Hi {{first_name}},", body: "Spring is a good time to look at what your home is worth.\n\nI ran the numbers for your street.", signoff: "Warmly," }, complianceEventId: null })) as never }
+    const letterArgs = (over: Record<string, unknown>) => ({ brokerageId: "tenant-a", copyCtx: { brokerageId: "tenant-a", teamId: null, agentUserId: null } as never, recipientFirstName: "Jordan", recipientLastName: "Lee", recipientStreet: "9 Elm St", recipientCityState: "Atlanta, GA", recipientZip: "30303", agentName: "Maya Chen", agentTitle: null, ...over })
+    const withQr = await renderLetterHtml(letterArgs({ qrScanUrl: scanA }), seams)
+    const noteQr = await renderLetterHtml(letterArgs({ qrScanUrl: scanA, noteStyle: "handwriting_style" }), seams)
+    const plain = await renderLetterHtml(letterArgs({}), seams)
+    const raw = await renderLetterHtml(letterArgs({ qrScanUrl: "https://alderhomes.example/listing/12" }), seams)
+    const paused = await renderLetterHtml(letterArgs({ qrScanUrl: scanA, qrCodeState: "paused" }), seams)
+    const token = codeA?.slug ?? "∅"
+    check("the REAL letter renderer prints the region: a vector symbol at 1 in, the prompt, and the unique token in the print HTML", withQr.ok && !!withQr.html && withQr.html.includes(`data-qr-token="${token}"`) && /<svg[\s\S]*<\/svg>/.test(withQr.html) && withQr.html.includes("width: 1in") && withQr.html.includes(`<div class="qr-token">${token}</div>`) && withQr.qrRegion?.print === true)
+    // Placed OUTSIDE the body block: the preset path (lib/direct-mail/orchestrate-preset-send.ts) swaps everything from
+    // `<div class="body">` to the footer for locked copy — the region must survive that swap.
+    const presetSwap = (withQr.html ?? "").replace(/<div class="body">[\s\S]*?<\/div>\s*<div class="footer">/, `<div class="body"><p>locked</p></div><div class="footer">`)
+    check("the region survives the preset path's locked-copy body swap (it sits outside the body block)", presetSwap.includes(`data-qr-token="${token}"`) && presetSwap.includes("<p>locked</p>"))
+    check("the personal note prints its own region (0.9 in, beside the handwriting-style signature) with the same token", noteQr.ok && !!noteQr.html && noteQr.html.includes(`data-qr-token="${token}"`) && noteQr.html.includes("width: 0.9in") && noteQr.qrRegion?.layout === "personal_letter")
+    check("a letter with NO code, a typed URL, or a paused code still renders (ok) with the region left blank — the mailing is never held", plain.ok && !plain.html?.includes("data-qr-token") && raw.ok && !raw.html?.includes("data-qr-token") && raw.qrRegion?.print === false && paused.ok && !paused.html?.includes("data-qr-token"))
+    check("the printed region carries no platform identity and no address (the piece still passes layoutContentViolations)", withQr.ok && layoutContentViolations(withQr.html ?? "").length === 0)
+    const printedToken = /data-qr-token="([^"]+)"/.exec(withQr.html ?? "")?.[1]
+    const rowA = db.tables.qr_codes.find((r: any) => r.slug === printedToken) as any
+    check("the token printed on tenant A's LETTER maps back to tenant A's campaign code (and never tenant B's)", !!rowA && rowA.brokerage_id === "tenant-a" && rowA.label === "direct_mail_campaign:camp-a" && !!codeB && printedToken !== codeB.slug)
+    const mv = buildMailMergeVariables(brandA(), { qrDestinationUrl: scanA }).mergeVars
+    check("the Lob print/proof path (all four layouts, postcard back included) carries the same tracking link — token and all — as qr_destination_url", mv.qr_destination_url === scanA && mv.qr_destination_url.endsWith(`slug=${token}`))
+    const dmActions = noComments("app/actions/direct-mail.ts")
+    check("the exported print preview (sendCampaign previewOnly) returns those merge variables, built from the MINTED scan link", /qrDestinationUrl = minted\?\.scanUrl \?\? null/.test(dmActions) && /preview: \{[\s\S]{0,400}mergeVariables: brand\.mergeVars/.test(dmActions))
+    const postcard = noComments("lib/direct-mail/render-postcard.ts")
+    check("the postcard renderer prints its front QR only through the region decision (never a raw URL)", (postcard.match(/decideMailQrRegion\(\{ layout: "postcard_front", scanUrl: args\.qrScanUrl \}\)/g) ?? []).length === 2 && (postcard.match(/QRCode\.toDataURL\(qrRegion\.scanUrl,/g) ?? []).length === 2 && !/QRCode\.toDataURL\(args\.qrScanUrl/.test(postcard))
+    const preview = noComments("app/dashboard/campaigns/mail/components/mail-piece-preview.tsx")
+    check("the mail preview shows the region for every format with the token (letter, personal note, thank-you note, postcard front)", /decideMailQrRegion\(\{ layout, scanUrl: qrScanUrl \?\? null \}\)/.test(preview) && ["postcard_front", "letter", "personal_letter"].every((l) => preview.includes(`layout="${l}"`)) && /data-qr-token=\{region\.token\}/.test(preview))
+  }
+
   console.log("\n  Blind spots:")
+  console.log("  · wave 152 (152C): the letter's QR region is proven on the REAL renderer through its brand / copy seams; the orchestrator hunk that hands it the campaign's qrScanUrl (lib/direct-mail/orchestrate-send.ts, orchestrate-preset-send.ts) is an outside-lane request in lane 152C's notes — until it lands, a RENDERED letter prints its region only where a caller passes the link, while the Lob-template path prints it from qr_destination_url; the Remotion postcard BACK composition takes no campaign QR (the back's region is declared for the Lob template)")
   console.log("  · the Lob global templates themselves live on the platform's Lob account and are not in this tree: the layout contract (names, no brand / address) is asserted on MAIL_LAYOUT_LIBRARY and the in-repo layouts; whether the four Lob HTML templates match it needs one TEST-key proof per format (LOB_TEST_API_KEY, WAITING_EXTERNAL)")
   console.log("  · resolveTenantSenderAddress's Lob verification branch (verifyNow) is not driven here (no key, no network): the brokerage-of-record path is proven unverified → refused; a verified-at-resolve path is asserted by construction")
   console.log("  · the dispatcher, sendCampaign, trackDelivery and the settings actions are session / secret gated server code: their wiring is proven on STRIPPED source, the decisions they call at runtime")

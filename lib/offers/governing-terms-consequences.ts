@@ -51,6 +51,14 @@ const TERM_OBLIGATIONS: Readonly<Record<string, readonly FinancialObligation[]>>
   closing_date: ["closing_schedule", "agreement_as_of_date", "cap_contribution"],
   title_policy_payer: ["title_settlement", "settlement_lines"],
   title_company: ["title_settlement"],
+  // WAVE 152 (lane 152E): the governed terms the vocabulary gained. A repair credit comes out of the seller's proceeds (money —
+  // the CDA / ledger path follows); a holdback is escrowed by the settlement agent; the property and the parties are what the
+  // title commitment and the Closing Disclosure must name (a wrong party is a settlement correction, not money).
+  repair_credit: ["seller_credit", "seller_net", "settlement_lines"],
+  repair_holdback: ["settlement_lines", "title_settlement"],
+  property_address: ["title_settlement", "settlement_lines"],
+  buyer_names: ["title_settlement", "settlement_lines"],
+  seller_names: ["title_settlement", "settlement_lines"],
   // (a contingency PERIOD is a non-financial term: financialImpactOf lists it under nonFinancialTerms + contract_deadlines, and
   //  wave 151 (lane 151K) re-derives its deadline date below — "updated price / credits / deadlines")
 }

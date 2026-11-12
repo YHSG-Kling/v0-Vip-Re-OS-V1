@@ -36,6 +36,10 @@
 
 import { timingSafeEqual } from "node:crypto"
 import { PROVIDER_ACTIVATION, type ScorecardProvider } from "@/lib/ai-isa/property-lookup-rail"
+// THE tenant-facing presenter (wave 152, lane 152A): every sentence a tenant reads about a connection is composed there
+// (three truths: availability · who controls the credentials · cost and authority). The verdicts below keep their
+// technical `reason` / `detail` as the INTERNAL record (staff console, evidence rows, the provider's HTTP response).
+import { presentTenantConnection, type TenantConnectionView, type TenantPayer } from "@/lib/errors"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 import type { IngestRawSourceBatchParams, IngestBatchResult } from "@/lib/kernel/scraping"
 import type { MeterVendorInput } from "@/lib/vendor-governance/meter-vendor"
@@ -368,7 +372,7 @@ export function deriveTenantProviderConnectionState(provider: string, facts: Ten
   if (activation.state === "dormant_pending_rights") {
     return { state: "pending_owner_licensing", reason: `${p.label}: the platform keeps this provider dormant pending rights (${activation.rights.status}) — a tenant key is not offered until the owner's licensing decision`, actionable: "owner decision on the provider's rights (docs/operations/OWNER-SQL.md)", mayIngest: false }
   }
-  if (!facts || !facts.exists) return { state: "unconfigured", reason: `${p.label} is not connected for this brokerage`, actionable: "connect your own account under Settings → Integrations → Lead sources", mayIngest: false }
+  if (!facts || !facts.exists) return { state: "unconfigured", reason: `${p.label} is not connected for this account`, actionable: "connect your own account under Settings → Integrations → Lead sources", mayIngest: false }
   const cfg = facts.config ?? null
   if (cfg?.disconnected_at || !facts.isActive) return { state: "revoked", reason: `${p.label} was disconnected${cfg?.disconnected_at ? ` on ${cfg.disconnected_at}` : ""} — polls stopped, the push door refuses, history kept`, actionable: "reconnect with a fresh token to resume", mayIngest: false }
   if (cfg?.last_health?.status === "auth_failed") return { state: "revoked", reason: `${p.label} refused the stored token (${cfg.last_health.at}) — the provider revoked or rotated it`, actionable: "rotate the token at the provider and reconnect", mayIngest: false }
@@ -378,8 +382,8 @@ export function deriveTenantProviderConnectionState(provider: string, facts: Ten
   if (cfg?.sandbox === true) return { state: "sandbox", reason: `${p.label} is connected to a sandbox / test account — records are test data, never a production source`, actionable: "connect the production token when ready", mayIngest: false }
   const h = cfg?.last_health ?? null
   if (!h || facts.testStatus === "pending") return { state: "degraded", reason: `${p.label}: saved, not yet verified against the provider (${p.healthCheck.what})`, actionable: "the next verification runs on connect / the connector-health sweep", mayIngest: true }
-  if (h.status === "quota") return { state: "degraded", reason: `${p.label}: the provider reported a quota / balance limit (${h.at}) — the queue is kept and retried next cycle`, actionable: "top up or raise the limit at the provider", mayIngest: true }
-  if (h.status === "unreachable") return { state: "degraded", reason: `${p.label}: unreachable at the last verification (${h.at}) — retried next cycle`, actionable: null, mayIngest: true }
+  if (h.status === "quota") return { state: "degraded", reason: `${p.label}: the provider reported a quota / balance limit (${h.at}) — held deliveries are parked (kept); the next delivery re-checks the connection`, actionable: "top up or raise the limit at the provider", mayIngest: true }
+  if (h.status === "unreachable") return { state: "degraded", reason: `${p.label}: unreachable at the last verification (${h.at}) — the next delivery re-checks the connection`, actionable: null, mayIngest: true }
   if (h.status === "shape_drift") return { state: "degraded", reason: `${p.label}: the response shape drifted (${h.at}) — the connector healer reviews it`, actionable: null, mayIngest: true }
   if (h.status === "not_configured" || facts.testStatus === "fail") return { state: "degraded", reason: `${p.label}: the last verification failed (${h.detail ?? h.status})`, actionable: "reconnect", mayIngest: false }
   return { state: "healthy", reason: `${p.label}: verified under your own token (${h.kind}, ${h.at})`, actionable: null, mayIngest: true }
@@ -421,8 +425,21 @@ export interface TenantProviderFailureVerdict {
   state: Extract<TenantProviderConnectionState, "healthy" | "degraded" | "revoked">
   action: "none" | "retry_next_cycle" | "hold_queue" | "reconnect"
   notify: "tenant_admin" | "platform_staff" | null
-  /** Safe to show the tenant / put in a notification — no secret, no platform internals. */
+  /** Safe to show the tenant / put in a notification — composed by THE presenter: no secret, no HTTP status, no
+   *  provider error text, no platform internals, and no retry promise (nothing here schedules one). */
   tenantMessage: string
+  /** INTERNAL (staff / evidence): the HTTP status and the redacted provider text. Never shown to a tenant. */
+  detail: string
+}
+
+/** The presenter's cause for each probe verdict (one mapping — the settings view and the failure share it). */
+const PROBE_CAUSE: Readonly<Record<Exclude<TenantProviderProbeStatus, "ok">, "provider_refused" | "provider_limit" | "unreachable" | "unreadable" | "check_failed">> = {
+  auth_failed: "provider_refused", quota: "provider_limit", unreachable: "unreachable", shape_drift: "unreadable", not_configured: "check_failed",
+}
+
+/** The provider's name as a tenant reads it ("BatchData", never "BatchData (your own account)"). */
+function providerDisplayName(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*$/, "").trim() || label
 }
 
 /** PURE — strip anything that looks like a credential from a provider error before it is stored or shown. */
@@ -436,25 +453,68 @@ export function redactProviderSecrets(text: string | null | undefined): string {
     .slice(0, 400)
 }
 
-/** PURE — classify one provider failure (an HTTP status, a transport error) into recovery + notification. */
+/**
+ * PURE — classify one provider failure (an HTTP status, a transport error) into recovery + notification. The HTTP
+ * status and the redacted provider text go to `detail` (internal); the tenant sentence is THE presenter's and makes no
+ * retry promise — a parked delivery has no replay runner today (lib/kernel/ingress-reconciliation.ts ages an unknown
+ * kind to abandonment), so "retried next cycle" was a claim nothing kept (wave 152, lane 152A).
+ */
 export function classifyTenantProviderFailure(f: { httpStatus: number | null; networkError?: boolean; shapeDrift?: boolean; message?: string | null }, label = "the provider"): TenantProviderFailureVerdict {
   const msg = redactProviderSecrets(f.message)
+  const name = providerDisplayName(label)
+  const detail = (what: string) => `${what}${f.httpStatus !== null && f.httpStatus !== undefined ? ` (HTTP ${f.httpStatus})` : ""}${msg ? ` — ${msg}` : ""}`.slice(0, 400)
+  const tenant = (probe: Exclude<TenantProviderProbeStatus, "ok">) => presentTenantConnection({ provider: name, availability: "degraded", cause: PROBE_CAUSE[probe], credentials: "this_account" }).message.text
   if (f.httpStatus === 401 || f.httpStatus === 403) {
-    return { probe: "auth_failed", state: "revoked", action: "reconnect", notify: "tenant_admin", tenantMessage: `${label} refused your token (HTTP ${f.httpStatus}). Polling has stopped and pushed deliveries are refused until you reconnect with a valid token. Nothing was lost: queued deliveries are kept.` }
+    return { probe: "auth_failed", state: "revoked", action: "reconnect", notify: "tenant_admin", tenantMessage: tenant("auth_failed"), detail: detail("the provider refused the stored credential") }
   }
   if (f.httpStatus === 402 || f.httpStatus === 429) {
-    return { probe: "quota", state: "degraded", action: "hold_queue", notify: "tenant_admin", tenantMessage: `${label} reported a quota or balance limit (HTTP ${f.httpStatus}). Deliveries are held and retried next cycle; top up or raise the limit at ${label}.` }
+    return { probe: "quota", state: "degraded", action: "hold_queue", notify: "tenant_admin", tenantMessage: tenant("quota"), detail: detail("quota / balance limit") }
   }
   if (f.networkError || f.httpStatus === null || f.httpStatus >= 500) {
-    return { probe: "unreachable", state: "degraded", action: "retry_next_cycle", notify: null, tenantMessage: `${label} was unreachable${msg ? ` (${msg})` : ""}. The queue is kept and retried next cycle.` }
+    return { probe: "unreachable", state: "degraded", action: "retry_next_cycle", notify: null, tenantMessage: tenant("unreachable"), detail: detail("unreachable") }
   }
   if (f.shapeDrift) {
-    return { probe: "shape_drift", state: "degraded", action: "retry_next_cycle", notify: "platform_staff", tenantMessage: `${label} changed its response shape; platform staff are reviewing the connector. Deliveries are kept.` }
+    return { probe: "shape_drift", state: "degraded", action: "retry_next_cycle", notify: "platform_staff", tenantMessage: tenant("shape_drift"), detail: detail("response shape drifted") }
   }
   if (f.httpStatus >= 400) {
-    return { probe: "unreachable", state: "degraded", action: "retry_next_cycle", notify: "platform_staff", tenantMessage: `${label} answered HTTP ${f.httpStatus}${msg ? ` (${msg})` : ""}. Deliveries are kept and retried.` }
+    return { probe: "unreachable", state: "degraded", action: "retry_next_cycle", notify: "platform_staff", tenantMessage: tenant("unreachable"), detail: detail("refused the request") }
   }
-  return { probe: "ok", state: "healthy", action: "none", notify: null, tenantMessage: `${label} verified.` }
+  return { probe: "ok", state: "healthy", action: "none", notify: null, tenantMessage: presentTenantConnection({ provider: name, availability: "connected", confirmed: true, credentials: "this_account" }).message.text, detail: "verified" }
+}
+
+/**
+ * THE TENANT VIEW of one catalogue provider — the verdict above mapped onto THE presenter's three truths (availability ·
+ * credential control: always THIS account for route B · cost: the tenant's own provider account). `payer` is the
+ * session tenant's VERIFIED business kind (lib/errors resolveTenantPayer) — the cost and attestation wording say
+ * "your brokerage's" only for a brokerage. The verdict's `reason` / `actionable` stay internal.
+ */
+export function presentTenantProviderConnection(provider: string, verdict: TenantProviderConnectionVerdict, facts: TenantProviderCredentialFacts | null, payer: TenantPayer): TenantConnectionView {
+  const p = tenantAcquisitionProvider(provider)
+  const name = providerDisplayName(p?.label ?? provider)
+  const cfg = facts?.config ?? null
+  const base = { provider: name, credentials: "this_account" as const, payer }
+  switch (verdict.state) {
+    case "unavailable":
+    case "unsupported":
+      return presentTenantConnection({ ...base, availability: "unsupported" })
+    case "pending_owner_licensing":
+      return presentTenantConnection({ ...base, availability: "license_not_verified" })
+    case "unconfigured":
+      return presentTenantConnection({ ...base, availability: "needs_credentials", cost: "your_provider_account" })
+    case "sandbox":
+      return presentTenantConnection({ ...base, availability: "sandbox", cost: "your_provider_account" })
+    case "healthy":
+      // healthy = the free account read answered under the tenant's own key — the one state that may say "confirmed".
+      return presentTenantConnection({ ...base, availability: "connected", confirmed: true, cost: "your_provider_account" })
+    case "revoked":
+      if (cfg?.disconnected_at || facts?.isActive === false) return presentTenantConnection({ ...base, availability: "disconnected", since: cfg?.disconnected_at ?? null, cost: "your_provider_account" })
+      return presentTenantConnection({ ...base, availability: "degraded", cause: "provider_refused", cost: "your_provider_account" })
+    case "degraded": {
+      const probe = cfg?.last_health?.status ?? null
+      const cause = !probe || facts?.testStatus === "pending" ? "not_verified" as const : probe === "ok" ? "check_failed" as const : PROBE_CAUSE[probe]
+      return presentTenantConnection({ ...base, availability: "degraded", cause, cost: "your_provider_account" })
+    }
+  }
 }
 
 // ─── step 9: the signed push door ───────────────────────────────────────────────────────────────────────────────────
@@ -595,7 +655,7 @@ export async function ingestTenantWebhookDelivery(svc: Svc, connection: TenantPr
     if ((todays ?? []).length >= cap) {
       let parked = 0
       for (const e of events) { const ref = String(e.eventId ?? e.propertyId ?? ""); if (ref && deps.park) parked += (await deps.park({ provider: p.provider, eventKind: "smart-search-match", externalRef: `tenant:${connection.id}:${ref}`, payload: e })).parked ? 1 : 0 }
-      return { ...base, ok: true, held: events.length, parked, refused: `daily cap of ${cap} records reached for this connection — delivery held for tomorrow` }
+      return { ...base, ok: true, held: events.length, parked, refused: `daily cap of ${cap} records reached for this connection — delivery parked (${parked} kept as dead letters), not ingested; no replay runner re-delivers it automatically` }
     }
   }
 
@@ -618,7 +678,11 @@ export async function ingestTenantWebhookDelivery(svc: Svc, connection: TenantPr
       // the daily dead-letter replay re-asks; quota / unreachable → retried next cycle. Nothing is ingested unverified.
       let parked = 0
       for (const e of additions) { const ref = String(e.eventId ?? e.propertyId ?? ""); if (ref && deps.park) parked += (await deps.park({ provider: p.provider, eventKind: "smart-search-match", externalRef: `tenant:${connection.id}:${ref}`, payload: e as Record<string, unknown> })).parked ? 1 : 0 }
-      return { ...base, connectionState: f.state, parked, held: additions.length, refused: f.tenantMessage, healthPatch, notify: f.notify }
+      // The tenant sentence (the route hands it to reportOperationOutcome when the tenant must act) says "kept" only for
+      // deliveries that were actually parked, and promises no retry (wave 152, lane 152A).
+      const cause = f.probe === "ok" ? "check_failed" as const : PROBE_CAUSE[f.probe]
+      const tenantRefusal = presentTenantConnection({ provider: providerDisplayName(p.label), availability: "degraded", cause, credentials: "this_account", kept: parked }).message.text
+      return { ...base, connectionState: f.state, parked, held: additions.length, refused: tenantRefusal, healthPatch, notify: f.notify }
     }
     raws = [...raws, ...h.properties]
     hydrateCost = typeof h.cost === "number" && Number.isFinite(h.cost) ? h.cost : null

@@ -27,7 +27,9 @@ export function LeadSourcesClient({
       const r = await saveTenantConnectionAction({
         platform: key, apiKey: v.api_key, apiSecret: v.api_secret, apiUrl: v.api_url, accountId: v.account_id,
       })
-      setMsg((m) => ({ ...m, [key]: r.ok ? "Connected ✓" : (r.error ?? "Failed") }))
+      // Wave 152 (lane 152A): "saved", never "Connected ✓" — this door stores the details and does not test them with the
+      // vendor; the action's sentences come from THE presenter (lib/errors).
+      setMsg((m) => ({ ...m, [key]: r.ok ? (r.message ?? "Saved.") : (r.error ?? "That didn't save. Please try again.") }))
     })
   }
 
@@ -86,7 +88,7 @@ export function LeadSourcesClient({
       <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
         For-sale listings: your IDX feed when connected, otherwise the platform feed. Connect
         your IDX Broker account below to switch your buyers&apos; smart search to your own board
-        — there is nothing to configure otherwise, the platform covers it.
+        — there is nothing to configure otherwise; the platform feed is included in your subscription.
       </div>
       <IDXBrokerSettingsPage />
 
@@ -94,7 +96,7 @@ export function LeadSourcesClient({
       {connections.map((c) => (
         <Card key={c.key}>
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">{c.label} {c.connected && <span className="text-emerald-700 text-sm">✓ connected</span>}</CardTitle>
+            <CardTitle className="text-base">{c.label} {c.connected && <span className="text-muted-foreground text-sm font-normal">· details saved</span>}</CardTitle>
             <CardDescription className="text-xs">{c.note}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">

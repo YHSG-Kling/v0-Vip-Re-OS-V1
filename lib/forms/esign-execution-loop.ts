@@ -183,6 +183,9 @@ export async function resolveEnvelopeBrokerageId(
     ["transactions", "external_provider_transaction_id"],
     ["listing_agreements", "provider_ref"],
     ["listings", "external_provider_transaction_id"],
+    // WAVE 152 (lane 152F): a proposed addendum's own envelope lives on its signature request (m953) — without this source the
+    // webhook resolved no tenant and the completion was parked as a dead letter.
+    ["signature_requests", "provider_envelope_id"],
   ]
   for (const [table, column] of sources) {
     const { ids, refused } = await distinctBrokeragesFor(supabase, table, column, envelopeId)
@@ -225,6 +228,18 @@ export async function evaluateEnvelopeExecution(
   let listingId = input.listingId ?? null
   let matchedOfferId: string | null = null
   let matchedAgreementId: string | null = null
+
+  // ── 0. A PROPOSED ADDENDUM'S ENVELOPE (wave 152, lane 152F). Its completion is decided by reading the provider's own signer list
+  //       (a partial envelope is never executed), its signed copy is hashed and pinned, and the executed version is recorded through
+  //       the ONE contract recorder — lib/esign/addendum-signature-request.ts. None of the offer / listing ready-writes apply.
+  if (envelopeId) {
+    const { isAddendumEnvelope, syncAddendumSignatureRequest } = await import("@/lib/esign/addendum-signature-request")
+    if (await isAddendumEnvelope(supabase, input.brokerageId, envelopeId)) {
+      const s = await syncAddendumSignatureRequest(supabase, { brokerageId: input.brokerageId, envelopeId, source: "webhook" })
+      if (!s.ok) console.error(`[esign-execution-loop] addendum envelope ${envelopeId}: ${s.reason}`)
+      return { ...NOT_FOUND, evaluated: true, fullyExecuted: s.ok && s.executed, readyWritesApplied: s.ok && !s.noop }
+    }
+  }
 
   // ── 1. Resolve parents from the envelope id when the caller didn't already
   //       know them (the webhook case — the sweep always passes them). ──────
@@ -581,6 +596,8 @@ export interface EnvelopeTerminalStateResult {
   /** The packet records the provider's outcome landed on. */
   offers: number
   agreements: number
+  /** Proposed-addendum signature requests the outcome landed on (wave 152, lane 152F). */
+  addenda: number
   /** Every refusal, by name — never silence (a record at fully_executed is never regressed; a tenant that cannot be resolved records nothing). */
   refused: string[]
 }
@@ -598,7 +615,7 @@ export async function recordEnvelopeTerminalState(
   supabase: AnySupabase,
   input: { provider: string; envelopeId: string; state: EsignTerminalFailureState; reason?: string | null },
 ): Promise<EnvelopeTerminalStateResult> {
-  const out: EnvelopeTerminalStateResult = { brokerageId: null, offers: 0, agreements: 0, refused: [] }
+  const out: EnvelopeTerminalStateResult = { brokerageId: null, offers: 0, agreements: 0, addenda: 0, refused: [] }
   const brokerageId = await resolveEnvelopeBrokerageId(supabase, input.envelopeId)
   if (!brokerageId) { out.refused.push(`envelope ${input.envelopeId}: no single tenant resolves it — nothing recorded`); return out }
   out.brokerageId = brokerageId
@@ -619,6 +636,34 @@ export async function recordEnvelopeTerminalState(
     const r = await advanceEsignPacketState(supabase, { brokerageId, record: { table: "listing_agreements", id: a.id }, to: input.state, source: "webhook", provider: input.provider, envelopeId: input.envelopeId, detail })
     if (r.ok) { if (!r.noop) out.agreements++ } else out.refused.push(`listing agreement ${a.id}: ${r.reason}`)
   }
+
+  // A proposed addendum's request (wave 152, lane 152F) — the same outcome, through its own ladder (voided → cancelled).
+  const { applyAddendumProviderEvent } = await import("@/lib/esign/addendum-signature-request")
+  const addendum = await applyAddendumProviderEvent(supabase, { brokerageId, envelopeId: input.envelopeId, provider: input.provider, event: input.state, status: input.reason ?? null })
+  if (addendum.changed) out.addenda++
+  if (addendum.refused) out.refused.push(`addendum request: ${addendum.refused}`)
   for (const line of out.refused) console.error(`[esign-execution-loop] terminal ${input.state} via ${input.provider}: ${line}`)
   return out
+}
+
+/**
+ * THE PROGRESS EVENTS a webhook used to ignore — delivered, viewed, undeliverable (wave 152, lane 152F). They move only a proposed
+ * addendum's signature request (stamped on its evidence; a bounce fails it so the sender corrects the address); an offer or a listing
+ * agreement is untouched, exactly as before. Tenant = the envelope's resolved brokerage (ambiguous ⇒ nothing). Never throws.
+ */
+export async function recordEnvelopeProgress(
+  supabase: AnySupabase,
+  input: { provider: string; envelopeId: string; event: string | null; status: string | null },
+): Promise<{ matched: boolean; changed: boolean; to: string | null }> {
+  try {
+    const brokerageId = await resolveEnvelopeBrokerageId(supabase, input.envelopeId)
+    if (!brokerageId) return { matched: false, changed: false, to: null }
+    const { applyAddendumProviderEvent } = await import("@/lib/esign/addendum-signature-request")
+    const r = await applyAddendumProviderEvent(supabase, { brokerageId, envelopeId: input.envelopeId, provider: input.provider, event: input.event, status: input.status })
+    if (r.refused) console.error(`[esign-execution-loop] progress ${input.event ?? input.status} via ${input.provider}: ${r.refused}`)
+    return { matched: r.matched, changed: r.changed, to: r.to }
+  } catch (err) {
+    console.error("[esign-execution-loop] progress event failed (non-fatal):", (err as Error)?.message ?? err)
+    return { matched: false, changed: false, to: null }
+  }
 }

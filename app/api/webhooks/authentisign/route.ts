@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState } from "@/lib/forms/esign-execution-loop"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState, recordEnvelopeProgress } from "@/lib/forms/esign-execution-loop"
 import { providerTerminalState } from "@/lib/esign/packet-states"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,7 +86,12 @@ export async function POST(request: NextRequest) {
     const terminal = !isCompleted ? providerTerminalState(event, status) : null
     if (terminal && envelopeId) {
       const recorded = await recordEnvelopeTerminalState(supabase as any, { provider: "authentisign", envelopeId, state: terminal, reason: status || event || null })
-      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, refused: recorded.refused.length })
+      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, addenda: recorded.addenda, refused: recorded.refused.length })
+    }
+    if (!isCompleted && envelopeId) {
+      // WAVE 152 (lane 152F): delivered / viewed / undeliverable move a PROPOSED ADDENDUM's signature request (and nothing else).
+      const progress = await recordEnvelopeProgress(supabase as any, { provider: "authentisign", envelopeId, event, status })
+      if (progress.matched) return NextResponse.json({ received: true, action: "progress", envelopeId, changed: progress.changed, to: progress.to })
     }
     if (!isCompleted || !envelopeId) {
       return NextResponse.json({ received: true, action: "ignored", event, status })

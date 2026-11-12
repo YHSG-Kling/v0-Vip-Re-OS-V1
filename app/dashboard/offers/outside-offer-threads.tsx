@@ -27,7 +27,19 @@ import {
   type OutsideOfferThread,
 } from "@/app/actions/buyer-offer/outside-offer-loop"
 import { recordContractAddendum } from "@/app/actions/buyer-offer/record-contract-addendum"
-import { Loader2, Send, Upload, Check, X, AlertTriangle, MailQuestion } from "lucide-react"
+// WAVE 152 (lane 152F): the requested-signatures door for a PROPOSED addendum — every rule lives behind these actions.
+import {
+  proposeContractAddendum,
+  listAddendumSignatures,
+  reviewAddendumSignatureRequest,
+  requestAddendumSignatures,
+  startAddendumSignatureHandoff,
+  approveAddendumForSignature,
+  voidAddendumSignatureRequest,
+  withdrawProposedAddendum,
+  fileSignedAddendumCopy,
+} from "@/app/actions/buyer-offer/request-addendum-signatures"
+import { Loader2, Send, Upload, Check, X, AlertTriangle, MailQuestion, PenLine } from "lucide-react"
 
 type Message = OutsideOfferThread["messages"][number]
 
@@ -308,6 +320,9 @@ function ThreadCard({ thread, onChanged, onError, onNotice }: {
       {thread.governing && (
         <AddendumForm thread={thread} onChanged={onChanged} onError={onError} onNotice={onNotice} />
       )}
+      {thread.governing && (
+        <AddendumSignaturePanel thread={thread} onChanged={onChanged} onError={onError} onNotice={onNotice} />
+      )}
 
       {thread.messages.length > 0 && (
         <details className="text-xs">
@@ -432,6 +447,358 @@ function AddendumForm({ thread, onChanged, onError, onNotice }: {
           <button className={btnPrimary} onClick={submit} disabled={isPending || !documentId || !executedOn}>
             {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Record
           </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+type ProposalView = Awaited<ReturnType<typeof listAddendumSignatures>>["proposals"][number]
+type ReviewView = NonNullable<Awaited<ReturnType<typeof reviewAddendumSignatureRequest>>["review"]>
+
+const TONE: Record<string, string> = {
+  neutral: "text-muted-foreground",
+  progress: "text-sky-800",
+  done: "text-emerald-800",
+  attention: "text-amber-900",
+}
+const LIVE = new Set(["pending", "sent", "partially_signed"])
+
+/**
+ * WAVE 152 (lane 152F) — REQUEST SIGNATURES ON A PROPOSED ADDENDUM. Propose the change (the unsigned document + only the terms it
+ * changes), review who signs and through what route, send it through your e-sign connection, watch its status, void or resend it,
+ * or — with no e-sign connection — download it and file the signed copy. The contract changes only when every required party has
+ * signed and the record's checks pass; nothing here signs for anyone.
+ */
+function AddendumSignaturePanel({ thread, onChanged, onError, onNotice }: {
+  thread: OutsideOfferThread
+  onChanged: () => Promise<void>
+  onError: (m: string | null) => void
+  onNotice: (m: string | null) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [proposals, setProposals] = useState<ProposalView[] | null>(null)
+  const [isPending, startTransition] = useTransition()
+  const [kind, setKind] = useState<"addendum" | "amendment">("addendum")
+  const [documentId, setDocumentId] = useState("")
+  const [fileName, setFileName] = useState("")
+  const [effectiveOn, setEffectiveOn] = useState("")
+  const [termsText, setTermsText] = useState('{\n  "closing_date": "2026-12-20"\n}')
+  // Where each changed term is READ on the addendum (page / field / quote). The same pages go out for signature, so this becomes the
+  // executed version's located evidence (evidence.term_evidence_stated) — without it every changed term is held for review.
+  const [evidenceText, setEvidenceText] = useState('{\n  "closing_date": { "page": 1, "field": "Closing Date", "quote": "" }\n}')
+  const [uploading, setUploading] = useState(false)
+
+  async function load() {
+    const r = await listAddendumSignatures({ offerId: thread.offerId })
+    if (r.success) setProposals(r.proposals)
+    else onError(r.error ?? "The proposed addenda could not be loaded.")
+  }
+
+  async function upload(file: File) {
+    onError(null)
+    setUploading(true)
+    try {
+      const body = new FormData()
+      body.append("file", file)
+      body.append("docType", kind)
+      const res = await fetch(`/api/offers/${thread.offerId}/upload-document`, { method: "POST", body })
+      const json = (await res.json().catch(() => ({}))) as { document_id?: string; error?: string }
+      if (!res.ok || !json.document_id) { onError(json.error ?? "The upload failed."); return }
+      setDocumentId(json.document_id)
+      setFileName(file.name)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  function propose() {
+    onError(null); onNotice(null)
+    let terms: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(termsText || "{}")
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object")
+      terms = parsed as Record<string, unknown>
+    } catch {
+      onError("The terms must be valid JSON — only the terms the addendum would change.")
+      return
+    }
+    let termEvidence: Record<string, { page?: number | null; field?: string | null; quote?: string | null }> | null = null
+    if (evidenceText.trim()) {
+      try {
+        const parsed = JSON.parse(evidenceText)
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object")
+        termEvidence = parsed as typeof termEvidence
+      } catch {
+        onError("The evidence must be valid JSON — each changed term with its page / field / quote (or clear the box).")
+        return
+      }
+    }
+    startTransition(async () => {
+      const r = await proposeContractAddendum({ offerId: thread.offerId, kind, documentId, terms, effectiveOn: effectiveOn || null, termEvidence })
+      if (!r.success) { onError(r.error ?? "The addendum could not be proposed."); return }
+      setDocumentId(""); setFileName(""); setEffectiveOn("")
+      onNotice("Proposed. It does not change the contract until every required party signs it — review the signers below to send it.")
+      await load()
+      await onChanged()
+    })
+  }
+
+  return (
+    <div className="space-y-2">
+      <button className={btn} onClick={() => { const next = !open; setOpen(next); if (next) startTransition(load) }}>
+        <PenLine className="h-3 w-3" /> {open ? "Hide addenda for signature" : "Propose an addendum for signatures"}
+      </button>
+      {open && (
+        <div className="rounded-md border border-border bg-background p-3 space-y-3">
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium">New proposal</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <label className="block text-[11px] font-medium">Kind
+                <select className={cn(input, "mt-1")} value={kind} onChange={(e) => setKind(e.target.value as "addendum" | "amendment")}>
+                  <option value="addendum">Addendum</option>
+                  <option value="amendment">Amendment</option>
+                </select>
+              </label>
+              <label className="block text-[11px] font-medium">Takes effect on (only if the addendum states a date)
+                <input className={cn(input, "mt-1")} type="date" value={effectiveOn} onChange={(e) => setEffectiveOn(e.target.value)} />
+              </label>
+            </div>
+            <label className={cn(btn, "cursor-pointer", uploading && "opacity-50")}>
+              {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />} {fileName ? `Unsigned addendum: ${fileName}` : "Upload the unsigned addendum (PDF)"}
+              <input type="file" accept="application/pdf" className="hidden" disabled={uploading}
+                onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void upload(f) }} />
+            </label>
+            <label className="block text-[11px] font-medium">Terms it would change (JSON; null strikes a term)
+              <textarea className={cn(input, "mt-1 font-mono")} rows={3} value={termsText} onChange={(e) => setTermsText(e.target.value)} />
+            </label>
+            <label className="block text-[11px] font-medium">Where each term is read on the addendum (JSON: page, field, quote — a term with none is held for review once signed)
+              <textarea className={cn(input, "mt-1 font-mono")} rows={3} value={evidenceText} onChange={(e) => setEvidenceText(e.target.value)} />
+            </label>
+            <button className={btnPrimary} onClick={propose} disabled={isPending || !documentId}>
+              {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Propose
+            </button>
+          </div>
+          {proposals === null && <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Loading…</p>}
+          {proposals?.length === 0 && <p className="text-[11px] text-muted-foreground">No addendum has been proposed on this contract yet.</p>}
+          {proposals?.map((p) => (
+            <ProposalCard key={p.id} offerId={thread.offerId} proposal={p} onChanged={async () => { await load(); await onChanged() }} onError={onError} onNotice={onNotice} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProposalCard({ offerId, proposal: p, onChanged, onError, onNotice }: {
+  /** The offer the signed copy is filed against (the same upload door as every other document on this card). */
+  offerId: string
+  proposal: ProposalView
+  onChanged: () => Promise<void>
+  onError: (m: string | null) => void
+  onNotice: (m: string | null) => void
+}) {
+  const [isPending, startTransition] = useTransition()
+  const [review, setReview] = useState<ReviewView | null>(null)
+  const [agentEmail, setAgentEmail] = useState("")
+  const [confirmAgent, setConfirmAgent] = useState(false)
+  const [includeAttorneys, setIncludeAttorneys] = useState(true)
+  const [reminders, setReminders] = useState(true)
+  const [handoff, setHandoff] = useState<{ urls: Array<{ label: string; url: string }>; instructions: string } | null>(null)
+  const [voidReason, setVoidReason] = useState("")
+  const [signedDocId, setSignedDocId] = useState("")
+  const [signedName, setSignedName] = useState("")
+  const [signedOn, setSignedOn] = useState("")
+  const [uploading, setUploading] = useState(false)
+
+  const latest = p.requests[0] ?? null
+  const live = latest && LIVE.has(latest.status) ? latest : null
+  const choices = { counterpartyAgentEmail: agentEmail.trim() || null, confirmCounterpartyAgent: confirmAgent || undefined, includeAttorneys, reminders }
+  const canFile = !!latest?.fileable
+  const held = !!latest?.held
+
+  function act(fn: () => Promise<void>) {
+    onError(null); onNotice(null)
+    startTransition(async () => { try { await fn() } catch (err) { onError((err as Error)?.message ?? "That didn't go through — try again.") } })
+  }
+
+  const doReview = () => act(async () => {
+    const r = await reviewAddendumSignatureRequest({ versionId: p.id, choices })
+    if (!r.success || !r.review) { onError(r.error ?? "The signers could not be reviewed."); return }
+    setReview(r.review)
+  })
+  const doSend = () => act(async () => {
+    const r = await requestAddendumSignatures({ versionId: p.id, choices })
+    if (!r.success) { onError(r.error ?? "The addendum was not sent."); await onChanged(); return }
+    if (r.handoff) setHandoff({ urls: r.handoff.urls, instructions: r.handoff.instructions })
+    onNotice(r.replayed ? `Already out for signature — ${r.label?.toLowerCase()}. Nothing was sent twice.` : `${r.label}. ${r.detail ?? ""}`)
+    setReview(null)
+    await onChanged()
+  })
+  const doHandoff = () => act(async () => {
+    const r = await startAddendumSignatureHandoff({ versionId: p.id })
+    if (!r.success) { onError(r.error ?? "The hand-off could not be started."); return }
+    onNotice(`${r.label}. ${r.detail ?? ""}`)
+    await onChanged()
+  })
+  const doApprove = () => act(async () => {
+    const r = await approveAddendumForSignature({ versionId: p.id })
+    if (!r.success) { onError(r.error ?? "The approval was not saved."); return }
+    onNotice("Approved for signature. The agent can now send it.")
+    await onChanged()
+  })
+  const doVoid = () => act(async () => {
+    if (!live) return
+    const r = await voidAddendumSignatureRequest({ requestId: live.id, reason: voidReason })
+    if (!r.success) { onError(r.error ?? "The request was not voided."); return }
+    setVoidReason("")
+    onNotice(r.providerVoided ? "Voided at the e-sign provider. Nothing it carried can be signed any more." : "Withdrawn here. If you already sent it from your own e-sign window, cancel it there too.")
+    await onChanged()
+  })
+  const doWithdraw = () => act(async () => {
+    const r = await withdrawProposedAddendum({ versionId: p.id, reason: voidReason || "withdrawn by the agent" })
+    if (!r.success) { onError(r.error ?? "The proposal was not withdrawn."); return }
+    onNotice("Proposal withdrawn. It stays in the contract history; propose a revised addendum if the terms are still changing.")
+    await onChanged()
+  })
+  const doFile = () => act(async () => {
+    if (!latest) return
+    const r = await fileSignedAddendumCopy({ requestId: latest.id, documentId: signedDocId || null, executedOn: signedOn })
+    if (!r.success) { onError(r.error ?? "The signed copy was not recorded."); return }
+    setSignedDocId(""); setSignedName(""); setSignedOn("")
+    onNotice(`Recorded as executed version ${r.versionNo}. Compliance re-checked the terms it changes; the earlier values stay on file.`)
+    await onChanged()
+  })
+
+  async function uploadSigned(file: File) {
+    onError(null)
+    setUploading(true)
+    try {
+      const body = new FormData()
+      body.append("file", file)
+      body.append("docType", p.source)
+      const res = await fetch(`/api/offers/${offerId}/upload-document`, { method: "POST", body })
+      const json = (await res.json().catch(() => ({}))) as { document_id?: string; error?: string }
+      if (!res.ok || !json.document_id) { onError(json.error ?? "The upload failed."); return }
+      setSignedDocId(json.document_id)
+      setSignedName(file.name)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const approvalBlocked = review?.plan.blockers.some((b) => b.code === "broker_approval_required") ?? false
+  const sendable = !!review && review.plan.ready && review.provider.state !== "connection_required" && !live
+
+  return (
+    <div className="rounded-md border border-border px-3 py-2 space-y-2">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">
+            Proposed {p.source} {p.createdAt ? `· ${when(p.createdAt)}` : ""}
+            {p.status === "void" ? (p.closedAs === "executed" ? " · executed" : " · withdrawn") : ""}
+          </p>
+          <p className="text-[11px] text-muted-foreground break-words">
+            {Object.entries(p.terms).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v === null ? "struck" : String(v)}`).join(" · ")}
+          </p>
+        </div>
+      </div>
+
+      {latest && (
+        <div className={cn("text-[11px] space-y-0.5", TONE[latest.display.tone] ?? "")}>
+          <p className="font-medium">{latest.display.label}</p>
+          <p>{latest.display.detail}</p>
+          {latest.display.action && <p>Next: {latest.display.action}.</p>}
+        </div>
+      )}
+
+      {p.status === "proposed" && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button className={btn} onClick={doReview} disabled={isPending}>{isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null} Review signers</button>
+            {sendable && (
+              <button className={btnPrimary} onClick={doSend} disabled={isPending}>
+                <Send className="h-3 w-3" /> {latest && !live ? "Send a new request" : "Send for signatures"}
+              </button>
+            )}
+            {approvalBlocked && <button className={btn} onClick={doApprove} disabled={isPending}>Approve for signature (broker)</button>}
+            {review?.provider.state === "connection_required" && !live && (
+              <button className={btn} onClick={doHandoff} disabled={isPending}>Collect signatures outside the platform</button>
+            )}
+          </div>
+
+          {review && (
+            <div className="rounded-md border border-border bg-muted/20 p-2 space-y-1.5 text-[11px]">
+              <p className={review.provider.state === "connection_required" ? "text-amber-900" : "text-muted-foreground"}>{review.provider.message}</p>
+              {review.provider.state === "connection_required" && review.documentUrl && (
+                <a className="underline" href={review.documentUrl} target="_blank" rel="noopener noreferrer">Download the addendum</a>
+              )}
+              {review.plan.recipients.length > 0 && (
+                <ol className="list-decimal pl-4 space-y-0.5">
+                  {review.plan.recipients.map((r, i) => (
+                    <li key={i}>{r.name} — {r.role.replace(/_/g, " ")}{r.kind === "attorney_review" ? " (reviews; does not sign for a party)" : ""} · {r.email}</li>
+                  ))}
+                </ol>
+              )}
+              {review.plan.routed.map((r) => (
+                <p key={r.side}>The {r.side} is represented by another brokerage — their signature is requested through their agent ({r.agentEmail}{r.verified ? "" : ", confirmed by you"}) after your client signs.</p>
+              ))}
+              {review.plan.approvals.map((a, i) => (
+                <p key={i}>{a.satisfied ? "Broker approval: in place" : "Needs your broker's approval"} — {a.reason}.</p>
+              ))}
+              {review.plan.blockers.map((b, i) => (
+                <p key={i} className="text-amber-900 flex items-start gap-1"><AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" /> {b.message}</p>
+              ))}
+              {review.plan.blockers.some((b) => b.code === "no_counterparty_route" || b.code === "counterparty_unverified") && (
+                <div className="space-y-1">
+                  <label className="block font-medium">Their agent's email
+                    <input className={cn(input, "mt-1")} value={agentEmail} onChange={(e) => setAgentEmail(e.target.value)} placeholder="agent@otherbrokerage.com" />
+                  </label>
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={confirmAgent} onChange={(e) => setConfirmAgent(e.target.checked)} /> I know this is their agent's address.</label>
+                </div>
+              )}
+              <label className="flex items-center gap-2"><input type="checkbox" checked={includeAttorneys} onChange={(e) => setIncludeAttorneys(e.target.checked)} /> Copy attorneys on the deal for review</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={reminders} onChange={(e) => setReminders(e.target.checked)} /> Remind me if it stalls</label>
+              <button className={btn} onClick={doReview} disabled={isPending}>Check again</button>
+            </div>
+          )}
+
+          {handoff && (
+            <div className="rounded-md border border-sky-300 bg-sky-50 px-2 py-2 text-[11px] text-sky-900 space-y-1">
+              <p>{handoff.instructions}</p>
+              {handoff.urls.map((u) => <a key={u.url} className="block underline" href={u.url} target="_blank" rel="noopener noreferrer">{u.label}</a>)}
+            </div>
+          )}
+
+          {live && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <input className={cn(input, "max-w-xs")} value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Why it is being voided (the signers see this)" />
+              <button className={btn} onClick={doVoid} disabled={isPending || !voidReason.trim()}><X className="h-3 w-3" /> Void request</button>
+            </div>
+          )}
+
+          {canFile && (
+            <div className="rounded-md border border-border p-2 space-y-1.5 text-[11px]">
+              <p className="font-medium">File the fully signed copy</p>
+              {held && <p className="text-muted-foreground">Retries the record on the copy the e-sign provider returned — no new file is needed.</p>}
+              {!held && (
+                <label className={cn(btn, "cursor-pointer", uploading && "opacity-50")}>
+                  {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />} {signedName ? `Signed copy: ${signedName}` : "Upload the signed copy"}
+                  <input type="file" accept="application/pdf,image/*" className="hidden" disabled={uploading}
+                    onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void uploadSigned(f) }} />
+                </label>
+              )}
+              <label className="block font-medium">Date the last party signed
+                <input className={cn(input, "mt-1 max-w-[12rem]")} type="date" value={signedOn} onChange={(e) => setSignedOn(e.target.value)} />
+              </label>
+              <p className="text-muted-foreground">Recorded only if the copy shows every required party's signature. Nothing is signed for anyone.</p>
+              <button className={btnPrimary} onClick={doFile} disabled={isPending || !signedOn || (!signedDocId && !held)}>
+                <Check className="h-3 w-3" /> Record the signed copy
+              </button>
+            </div>
+          )}
+
+          <button className={cn(btn, "text-muted-foreground")} onClick={doWithdraw} disabled={isPending}>Withdraw this proposal</button>
         </div>
       )}
     </div>

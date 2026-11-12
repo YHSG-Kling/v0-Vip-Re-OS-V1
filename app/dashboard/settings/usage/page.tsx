@@ -21,6 +21,7 @@ import { AlertTriangle, CheckCircle2, Infinity as InfinityIcon, TrendingUp } fro
 // of spelling. The survivor is lib/kernel/tier-role-matrix.ts:TIER_LABELS, which
 // the invite/upgrade copy already reads.
 import { TIER_LABELS, isCanonicalTier } from "@/lib/kernel/tier-role-matrix"
+import { presentTenantError } from "@/lib/errors"
 
 export const dynamic = "force-dynamic"
 
@@ -35,13 +36,18 @@ export default async function UsagePage() {
     // What was wrong was bouncing without saying why. Consumption is billed to the
     // brokerage, so the meter is the broker's; an agent's own activity is on their
     // dashboard.
+    //
+    // Wave 152 (lane 152A — owner: "the connections for tenant shouldn't say brokerage pays unless the tenant is a
+    // brokerage"): this sentence said "billed to your brokerage" and "visible to your broker" to EVERY subscriber,
+    // including a solo agent's or a team's members. It is now actor-neutral — usage counts toward the account's
+    // subscription and is visible to the account's admins (and team leads, who share this navigation).
     if (res.error === "Forbidden") {
       return (
         <div className="p-6 max-w-lg space-y-2">
-          <p className="text-sm font-medium">Plan usage is tracked at the brokerage level</p>
+          <p className="text-sm font-medium">Plan usage is tracked for your whole account</p>
           <p className="text-sm text-muted-foreground">
-            AI, voice and storage consumption is billed to your brokerage, so the meter is
-            visible to your broker, admins and team leads. Your own activity and results are
+            AI, voice and storage use counts toward your account&apos;s subscription, so the meter is
+            visible to the admins on your account and to team leads. Your own activity and results are
             on your{" "}
             <a href="/dashboard" className="text-blue-600 hover:underline">
               dashboard
@@ -51,9 +57,10 @@ export default async function UsagePage() {
         </div>
       )
     }
+    // The raw refusal stays in the log with a reference; the person reads the contract (THE presenter, lib/errors).
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Couldn&apos;t load usage. {res.error}
+        {presentTenantError({ what: "Usage couldn't be loaded right now", raw: res.error, work: { state: "unchanged" }, action: { label: "Refresh the page" }, context: "settings.usage" }).sentence}
       </div>
     )
   }

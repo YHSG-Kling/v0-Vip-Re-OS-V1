@@ -20,6 +20,14 @@ const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 import { TENANT_CONNECTION_SLOTS } from "@/lib/settings/tenant-connection-slots"
 import { CONFIG_SECRET_KEYS } from "@/lib/connections/credential-secret"
 import { encryptSecret } from "@/lib/security/secret-crypto"
+// THE tenant-facing presenter (wave 152, lane 152A): every error / status sentence this file hands a person is composed
+// there — no raw database text, no internal state reason, no "brokerage" payer wording unless the tenant IS one.
+import { presentTenantError, presentTenantMessage, resolveTenantPayer, tenantProviderAttestation, type TenantConnectionView } from "@/lib/errors"
+
+/** The refusal every admin-gated door here returns — actor-neutral (a solo agent's or a team's owner is the admin). */
+function adminOnly(what: string): string {
+  return presentTenantMessage({ what, affects: "Only an admin on this account can do this", next: "account_admin" }).sentence
+}
 
 /**
  * ONE gate, TWO channels (§6).
@@ -63,12 +71,12 @@ export async function saveTenantConnectionAction(input: {
   apiSecret?: string
   apiUrl?: string
   accountId?: string
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; error?: string; message?: string }> {
   // WRITE — stores a tenant vendor credential. read_only refused in the gate.
   const ctx = await requireAdmin("write")
-  if (!ctx) return { ok: false, error: "Unauthorized" }
+  if (!ctx) return { ok: false, error: adminOnly("This connection wasn't changed") }
   const slot = TENANT_CONNECTION_SLOTS.find((s) => s.key === input.platform)
-  if (!slot) return { ok: false, error: "Unknown connection" }
+  if (!slot) return { ok: false, error: "That connection can't be set up here." }
   const apiKey = input.apiKey?.trim()
   if (!apiKey || apiKey.length < 6) return { ok: false, error: "A valid key/credential is required" }
 
@@ -86,7 +94,7 @@ export async function saveTenantConnectionAction(input: {
   const { error } = existing
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
     : await svc.from("platform_credentials").insert(row)
-  if (error) return { ok: false, error: error.message }
+  if (error) return { ok: false, error: presentTenantError({ what: `${slot.label} couldn't be saved`, raw: error, work: { state: "not_saved" }, context: "tenant-connections.save" }).sentence }
 
   // IMMEDIATE POST-CONDITION (wave 141B — provider_connection): re-read the credential row ON THIS
   // TENANT and verify it is active; evidence lands on lifecycle_events, a failed verify is routed to
@@ -100,8 +108,10 @@ export async function saveTenantConnectionAction(input: {
     evidence: { slot: slot.key, label: slot.label, ...verified.evidence }, error: verified.error,
     tenantFacing: verified.ok ? null : `your ${slot.label} credential was saved but could not be verified as active — re-enter it from Settings › Connections`,
   })
-  if (!verified.ok) return { ok: false, error: `${slot.label} was saved but did not verify as an active connection: ${verified.error}` }
-  return { ok: true }
+  if (!verified.ok) return { ok: false, error: presentTenantError({ what: `${slot.label} was saved but couldn't be confirmed as active`, raw: verified.error, next: "you", action: { label: "Re-enter it" }, context: "tenant-connections.save.verify" }).sentence }
+  // Saved and active — NOT "connected": nothing on this door tests the credential with the vendor, so the person is
+  // told exactly that (a failed or untested provider action never reads "Connected").
+  return { ok: true, message: presentTenantMessage({ what: `${slot.label} details saved`, affects: "They haven't been tested with the provider yet", next: "you" }).text }
 }
 
 export interface TenantConnectionStatus {
@@ -168,6 +178,7 @@ import {
   buildTenantProviderCredentialRow,
   classifyTenantProviderFailure,
   deriveTenantProviderConnectionState,
+  presentTenantProviderConnection,
   tenantAcquisitionProvider,
   tenantProviderDisconnectPatch,
   validateProviderAgreement,
@@ -179,34 +190,42 @@ import {
 
 export interface TenantAcquisitionProviderStatus {
   key: string
+  /** The provider's name as a tenant reads it (no catalogue annotation). */
   label: string
+  /** The INTERNAL state — the panel's logic only (which buttons apply); the person reads `view`. */
   state: TenantProviderConnectionState
-  reason: string
-  actionable: string | null
+  /** THE presenter's three truths: availability (label + message), who controls the credentials, cost and authority. */
+  view: TenantConnectionView
+  /** The first-person attestation, worded for THIS account's verified business kind (never "my brokerage" for a solo agent). */
+  attestation: string
   /** The documented transports and fields (empty for an unsupported provider — no form is offered). */
   transports: readonly string[]
   fields: ReadonlyArray<{ key: string; label: string; secret?: boolean; required: boolean; placeholder?: string }>
   capabilities: readonly string[]
-  docs: string
-  pricingNote: string
-  why: string
   /** For a connected push provider: the URL path the tenant pastes at the provider (the secret is never re-shown). */
   webhookPath: string | null
-  /** The non-secret half of the stored connection (never a token, never the signing secret). */
-  connection: { accountLabel: string | null; territory: TenantProviderConnectionConfig["territory"] | null; frequency: TenantProviderFrequency | null; rateLimitPerDay: number | null; agreement: Omit<TenantProviderConnectionConfig["agreement"], "accepted_by_user_id"> | null; lastHealth: TenantProviderConnectionConfig["last_health"]; disconnectedAt: string | null } | null
+  /** The non-secret half of the stored connection (never a token, never the signing secret, never an internal probe code). */
+  connection: { accountLabel: string | null; territory: TenantProviderConnectionConfig["territory"] | null; frequency: TenantProviderFrequency | null; rateLimitPerDay: number | null; agreement: Omit<TenantProviderConnectionConfig["agreement"], "accepted_by_user_id"> | null; lastCheckedAt: string | null; disconnectedAt: string | null } | null
+}
+
+/** The tenant's name for a catalogue provider ("BatchData", never "BatchData (your own account)"). */
+function tenantProviderName(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*$/, "").trim() || label
 }
 
 /** Every catalogue provider with its DERIVED state for this tenant (read_only grant may see it — §5, like the slots above). */
 export async function getTenantAcquisitionProvidersAction(): Promise<{ ok: true; providers: TenantAcquisitionProviderStatus[]; encryptionConfigured: boolean } | { ok: false; error: string }> {
   const ctx = await requireAdmin("read")
-  if (!ctx) return { ok: false, error: "Brokerage admin access required." }
+  if (!ctx) return { ok: false, error: adminOnly("These connections can't be shown to you") }
   const svc = createServiceClient()
   const keys = Object.keys(TENANT_ACQUISITION_PROVIDERS)
   const { data: rows, error } = await svc.from("platform_credentials")
     .select("id, platform, api_key, config, is_active, test_status")
     .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).in("platform", keys)
-  // A refused read is said, never rendered as "nothing connected" (CLAUDE.md §3).
-  if (error) return { ok: false, error: `connections could not be read: ${error.message}` }
+  // A refused read is said, never rendered as "nothing connected" (CLAUDE.md §3) — and said WITHOUT the database text.
+  if (error) return { ok: false, error: presentTenantError({ what: "Your provider connections couldn't be loaded right now", raw: error, work: { state: "unchanged" }, context: "tenant-connections.acquisition.read" }).sentence }
+  // The payer wording follows THIS tenant's verified business kind (its own plan tier, read on the session tenant).
+  const payer = await resolveTenantPayer(svc, ctx.brokerageId)
   // The sealed token is read as a PRESENCE BIT only (`!!r.api_key`) — the state derivation needs to know a key is stored,
   // never what it is; the value is not carried past this loop (test:credential-migration adjudicates this reader by name).
   const byProvider = new Map<string, { id: string; hasApiKey: boolean; config: Partial<TenantProviderConnectionConfig> | null; is_active: boolean; test_status: "pass" | "fail" | "pending" | null }>()
@@ -216,13 +235,16 @@ export async function getTenantAcquisitionProvidersAction(): Promise<{ ok: true;
   const providers = keys.map((key): TenantAcquisitionProviderStatus => {
     const p = TENANT_ACQUISITION_PROVIDERS[key]
     const row = byProvider.get(key) ?? null
-    const v = deriveTenantProviderConnectionState(key, row ? { exists: true, isActive: row.is_active, testStatus: row.test_status, hasApiKey: row.hasApiKey, config: row.config } : null)
+    const facts = row ? { exists: true, isActive: row.is_active, testStatus: row.test_status, hasApiKey: row.hasApiKey, config: row.config } : null
+    const v = deriveTenantProviderConnectionState(key, facts)
     const cfg = row?.config ?? null
     const agreement = cfg?.agreement ? { scopes: cfg.agreement.scopes, license_acknowledged: cfg.agreement.license_acknowledged, retention_days: cfg.agreement.retention_days, ai_processing_permitted: cfg.agreement.ai_processing_permitted, redistribution: cfg.agreement.redistribution, cost_payer: cfg.agreement.cost_payer, accepted_at: cfg.agreement.accepted_at } : null
+    const name = tenantProviderName(p.label)
     return {
-      key, label: p.label, state: v.state, reason: v.reason, actionable: v.actionable, transports: p.transports, fields: p.fields, capabilities: p.capabilities, docs: p.docs, pricingNote: p.pricing.note, why: p.why,
+      key, label: name, state: v.state, view: presentTenantProviderConnection(key, v, facts, payer), attestation: tenantProviderAttestation(name, payer),
+      transports: p.transports, fields: p.fields, capabilities: p.capabilities,
       webhookPath: row && p.webhook && row.is_active && cfg?.webhook_secret ? `${p.webhook.path}?${TENANT_WEBHOOK_CONNECTION_PARAM}=${row.id}` : null,
-      connection: row ? { accountLabel: cfg?.account_label ?? null, territory: cfg?.territory ?? null, frequency: cfg?.frequency ?? null, rateLimitPerDay: typeof cfg?.rate_limit_per_day === "number" ? cfg.rate_limit_per_day : null, agreement, lastHealth: cfg?.last_health ?? null, disconnectedAt: cfg?.disconnected_at ?? null } : null,
+      connection: row ? { accountLabel: cfg?.account_label ?? null, territory: cfg?.territory ?? null, frequency: cfg?.frequency ?? null, rateLimitPerDay: typeof cfg?.rate_limit_per_day === "number" ? cfg.rate_limit_per_day : null, agreement, lastCheckedAt: cfg?.last_health?.at ?? null, disconnectedAt: cfg?.disconnected_at ?? null } : null,
     }
   })
   return { ok: true, providers, encryptionConfigured: isEncryptionConfigured() }
@@ -244,39 +266,65 @@ export interface ConnectTenantAcquisitionProviderInput {
  * platform incident is raised). Verifies the token by the provider's free account read and records the honest result on the
  * row; returns the push signing secret ONCE (it is stored encrypted and never re-shown).
  */
+/** The agreement / territory / field problems the pure validators name by FIELD, said the way a person fills the form. */
+const FORM_PROBLEM: ReadonlyArray<[RegExp, string]> = [
+  [/^scopes/, "choose at least one use for this account"],
+  [/^license_acknowledged/, "confirm you hold this account under the provider's own terms and license"],
+  [/^retention_days/, "set how many days records are kept (1 to 3,650)"],
+  [/^ai_processing_permitted/, "say whether the AI may work these records"],
+  [/^(?:redistribution|cost_payer)/, "the fixed agreement terms can't be changed"],
+  [/^accepted_by_user_id/, "sign in again"],
+  [/^territory\.state/, "enter a two-letter state"],
+  [/^territory\.zip_codes/, "enter at least one five-digit ZIP code"],
+  [/^frequency/, "choose how new data arrives"],
+  [/^rate_limit_per_day/, "enter a whole number of records per day (0 for no limit of your own)"],
+  [/: required$/, "fill in every required field"],
+]
+function formProblems(problems: readonly string[]): string {
+  const said = [...new Set(problems.map((x) => FORM_PROBLEM.find(([re]) => re.test(x))?.[1] ?? "check the highlighted fields"))]
+  return `Please ${said.join("; ")}.`
+}
+
 export async function connectTenantAcquisitionProviderAction(input: ConnectTenantAcquisitionProviderInput): Promise<
-  | { ok: true; state: TenantProviderConnectionState; reason: string; webhookPath: string | null; webhookSecretOnce: string | null }
+  | { ok: true; state: TenantProviderConnectionState; view: TenantConnectionView; webhookPath: string | null; webhookSecretOnce: string | null }
   | { ok: false; error: string; state?: TenantProviderConnectionState }
 > {
   const ctx = await requireAdmin("write")
-  if (!ctx) return { ok: false, error: "Unauthorized" }
+  if (!ctx) return { ok: false, error: adminOnly("Nothing was connected") }
   const p = tenantAcquisitionProvider(input?.provider ?? "")
-  if (!p) return { ok: false, error: `${String(input?.provider)} is not a supported acquisition provider — there is no generic API connection`, state: "unavailable" }
+  if (!p) return { ok: false, error: "That provider can't be connected here. Choose one from the list.", state: "unavailable" }
   const preState = deriveTenantProviderConnectionState(p.provider, null)
-  if (preState.state === "unsupported" || preState.state === "pending_owner_licensing") return { ok: false, error: preState.reason, state: preState.state }
-  if (!TENANT_PROVIDER_FREQUENCIES.includes(input.frequency)) return { ok: false, error: `frequency: one of ${TENANT_PROVIDER_FREQUENCIES.join(" / ")}` }
-  const agreement = validateProviderAgreement(p.provider, input.agreement, { userId: ctx.userId })
-  if (!agreement.ok) return { ok: false, error: `agreement incomplete — ${agreement.problems.join("; ")}` }
-  const territory = validateProviderTerritory(input.territory)
-  if (!territory.ok) return { ok: false, error: territory.problems.join("; ") }
-
   const svc = createServiceClient()
+  const payer = await resolveTenantPayer(svc, ctx.brokerageId)
+  if (preState.state === "unsupported" || preState.state === "pending_owner_licensing") return { ok: false, error: presentTenantProviderConnection(p.provider, preState, null, payer).message.sentence, state: preState.state }
+  if (!TENANT_PROVIDER_FREQUENCIES.includes(input.frequency)) return { ok: false, error: formProblems(["frequency"]) }
+  const agreement = validateProviderAgreement(p.provider, input.agreement, { userId: ctx.userId })
+  if (!agreement.ok) return { ok: false, error: formProblems(agreement.problems) }
+  const territory = validateProviderTerritory(input.territory)
+  if (!territory.ok) return { ok: false, error: formProblems(territory.problems) }
+
   // FAIL CLOSED on the encryption key (owner, wave 139): no key → no row, and the platform incident is raised.
   if (!isEncryptionConfigured()) {
     const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
-    await raiseSecretStorageIncident(svc, { surface: "tenant acquisition provider connect", brokerageId: ctx.brokerageId, code: "secrets_key_missing" })
-    return { ok: false, error: "Secret storage is not configured on this deployment — your token was NOT stored (never in plaintext). Platform staff have been notified." }
+    const incident = await raiseSecretStorageIncident(svc, { surface: "tenant acquisition provider connect", brokerageId: ctx.brokerageId, code: "secrets_key_missing" })
+    // "Support has been told" only when the incident actually notified someone (a deduped or failed raise says nothing).
+    return { ok: false, error: presentTenantMessage({
+      what: "Connecting your own provider account isn't available yet",
+      affects: `Nothing you entered was stored, and your other sources keep working${incident.raised ? ". Platform support has been told" : ""}`,
+      next: "platform_support", action: { label: "Contact support" },
+    }).sentence }
   }
   const webhookSecret = p.webhook ? randomBytes(24).toString("base64url") : null
   const built = buildTenantProviderCredentialRow(p, {
     brokerageId: ctx.brokerageId, fields: input.fields ?? {}, agreement: agreement.agreement, territory: territory.territory, frequency: input.frequency,
     rateLimitPerDay: Number(input.rateLimitPerDay ?? 0), webhookSecret, sandbox: input.sandbox === true, encrypt: encryptSecret,
   })
-  if (!built.ok) return { ok: false, error: built.problems.join("; ") }
+  if (!built.ok) return { ok: false, error: formProblems(built.problems) }
 
+  const name = tenantProviderName(p.label)
   const { data: existing, error: existingErr } = await svc.from("platform_credentials").select("id")
     .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).eq("platform", p.provider).maybeSingle()
-  if (existingErr) return { ok: false, error: `existing connection could not be read: ${existingErr.message} — nothing written` }
+  if (existingErr) return { ok: false, error: presentTenantError({ what: `Your ${name} connection couldn't be saved`, raw: existingErr, work: { state: "not_saved" }, context: "tenant-connections.acquisition.connect.read" }).sentence }
   const apiKey = (input.fields?.apiKey ?? "").trim()
   // The write site SHOWS the secret column sealed: the pure builder already sealed api_key with encryptSecret, and the row
   // written here re-seals it explicitly after the spread (test:credential-migration adjudicates `builtRow` by name).
@@ -285,9 +333,9 @@ export async function connectTenantAcquisitionProviderAction(input: ConnectTenan
   const write = existing
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as { id: string }).id).eq("brokerage_id", ctx.brokerageId).select("id")
     : await svc.from("platform_credentials").insert(row).select("id")
-  if (write.error) return { ok: false, error: write.error.message }
+  if (write.error) return { ok: false, error: presentTenantError({ what: `Your ${name} connection couldn't be saved`, raw: write.error, work: { state: "not_saved" }, context: "tenant-connections.acquisition.connect.write" }).sentence }
   const rowId = ((write.data ?? []) as Array<{ id: string }>)[0]?.id ?? (existing as { id: string } | null)?.id ?? null
-  if (!rowId) return { ok: false, error: "the connection row did not land (the write matched no row) — nothing is connected" }
+  if (!rowId) return { ok: false, error: presentTenantError({ what: `Your ${name} connection wasn't saved, so nothing is connected`, raw: "the write matched no row", work: { state: "not_saved" }, context: "tenant-connections.acquisition.connect.write" }).sentence }
 
   // Step 4 — verify LIVE under the tenant's own token: the provider's free account read, never a record purchase, never the
   // platform key. The verdict is written on the row; the state the tenant sees is derived from it.
@@ -296,7 +344,8 @@ export async function connectTenantAcquisitionProviderAction(input: ConnectTenan
     const { fetchBatchDataWalletBalance } = await import("@/lib/external/batchdata-client")
     const r = await fetchBatchDataWalletBalance({ apiKey, brokerageId: ctx.brokerageId })
     const f = r.ok ? classifyTenantProviderFailure({ httpStatus: 200 }, p.label) : classifyTenantProviderFailure({ httpStatus: r.httpStatus ?? null, networkError: r.httpStatus === null || r.httpStatus === undefined, message: r.error ?? null }, p.label)
-    health = { kind: "wallet_balance", status: f.probe, at: new Date().toISOString(), detail: r.ok ? null : f.tenantMessage }
+    // The row keeps the INTERNAL detail (status + redacted provider text) for staff; the tenant reads the presenter's view.
+    health = { kind: "wallet_balance", status: f.probe, at: new Date().toISOString(), detail: r.ok ? null : f.detail }
   } else {
     health = { kind: "none", status: "not_configured", at: new Date().toISOString(), detail: "no free health read for this provider" }
   }
@@ -308,36 +357,45 @@ export async function connectTenantAcquisitionProviderAction(input: ConnectTenan
   // IMMEDIATE POST-CONDITION (wave 141B — provider_connection): the same survivor the slots use.
   const { verifyCredentialRow, reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
   const verified = await verifyCredentialRow(svc, { brokerageId: ctx.brokerageId, platform: p.provider })
-  const state = deriveTenantProviderConnectionState(p.provider, { exists: verified.ok, isActive: verified.ok, testStatus: health.status === "ok" ? "pass" : "fail", hasApiKey: true, config: { ...(built.row.config as TenantProviderConnectionConfig), last_health: health } })
+  const facts = { exists: verified.ok, isActive: verified.ok, testStatus: (health.status === "ok" ? "pass" : "fail") as "pass" | "fail", hasApiKey: true, config: { ...(built.row.config as TenantProviderConnectionConfig), last_health: health } }
+  const state = deriveTenantProviderConnectionState(p.provider, facts)
+  const view = presentTenantProviderConnection(p.provider, state, facts, payer)
+  // Wave 152 (lane 152A): the post-condition is "the connection is CONFIRMED", not "a row exists". Before this a
+  // degraded connect (the free account read unreachable / quota / failed) reported ok:true, and the tenant's feed read
+  // "Provider connection completed and verified." Now ok only when the provider confirmed it (healthy) or the tenant
+  // deliberately connected a test account (sandbox); anything else is routed to the owner with the presenter's sentence,
+  // and the owner re-reads THIS row (lib/kernel/immediate-operations.ts recheckCredentialRow) until it holds or a human is told.
+  const confirmed = verified.ok && (state.state === "healthy" || state.state === "sandbox")
   await reportOperationOutcome(svc, {
-    operation: "provider_connection", brokerageId: ctx.brokerageId, ok: verified.ok && state.state !== "revoked",
+    operation: "provider_connection", brokerageId: ctx.brokerageId, ok: confirmed,
     subjectType: "platform_credentials", subjectId: rowId, actorUserId: ctx.userId, source: "ui",
-    evidence: { provider: p.provider, state: state.state, health: health.status, scopes: agreement.agreement.scopes, cost_payer: "tenant", ...verified.evidence }, error: verified.ok ? (state.state === "revoked" ? health.detail : null) : verified.error,
-    tenantFacing: verified.ok ? (state.state === "revoked" ? health.detail : null) : `your ${p.label} connection was saved but could not be verified as active — re-enter it from Settings › Integrations › Lead sources`,
+    evidence: { provider: p.provider, state: state.state, health: health.status, health_detail: health.detail, scopes: agreement.agreement.scopes, cost_payer: "tenant", ...verified.evidence }, error: confirmed ? null : (verified.ok ? `${state.state}: ${state.reason}` : verified.error),
+    tenantFacing: confirmed ? null : verified.ok ? view.message.text : `your ${name} connection was saved but could not be confirmed as active — re-enter it from Settings › Integrations › Lead sources`,
   })
-  if (!verified.ok) return { ok: false, error: `${p.label} was saved but did not verify as an active connection: ${verified.error}` }
-  return { ok: true, state: state.state, reason: state.reason, webhookPath: p.webhook && webhookSecret ? `${p.webhook.path}?${TENANT_WEBHOOK_CONNECTION_PARAM}=${rowId}` : null, webhookSecretOnce: webhookSecret }
+  if (!verified.ok) return { ok: false, error: presentTenantError({ what: `Your ${name} connection was saved but couldn't be confirmed as active`, raw: verified.error, next: "you", action: { label: "Update connection" }, context: "tenant-connections.acquisition.connect.verify" }).sentence }
+  return { ok: true, state: state.state, view, webhookPath: p.webhook && webhookSecret ? `${p.webhook.path}?${TENANT_WEBHOOK_CONNECTION_PARAM}=${rowId}` : null, webhookSecretOnce: webhookSecret }
 }
 
 /** Disconnect (step 13): polls stop, our push secret is revoked, lawful history stays. Counted; a no-match is a failure. */
 export async function disconnectTenantAcquisitionProviderAction(provider: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const ctx = await requireAdmin("write")
-  if (!ctx) return { ok: false, error: "Unauthorized" }
+  if (!ctx) return { ok: false, error: adminOnly("Nothing was disconnected") }
   const p = tenantAcquisitionProvider(provider)
-  if (!p) return { ok: false, error: "Unknown provider" }
+  if (!p) return { ok: false, error: "That provider isn't one you can manage here." }
+  const name = tenantProviderName(p.label)
   const svc = createServiceClient()
   const { data: row, error: readErr } = await svc.from("platform_credentials").select("id, config")
     .eq("owner_type", "brokerage").eq("owner_id", ctx.brokerageId).eq("platform", p.provider).maybeSingle()
-  if (readErr) return { ok: false, error: `connection could not be read: ${readErr.message}` }
-  if (!row) return { ok: false, error: `${p.label} is not connected` }
+  if (readErr) return { ok: false, error: presentTenantError({ what: `Your ${name} connection couldn't be disconnected right now`, raw: readErr, work: { state: "unchanged" }, context: "tenant-connections.acquisition.disconnect.read" }).sentence }
+  if (!row) return { ok: false, error: `${name} isn't connected on this account, so there's nothing to disconnect.` }
   // The patch is the PURE function's (one definition); the write site names the four non-secret columns it carries so the
   // credential-store census can see no secret column is written here (the push secret is revoked INSIDE config).
   const patch = tenantProviderDisconnectPatch(((row as { config?: unknown }).config ?? null) as Partial<TenantProviderConnectionConfig> | null)
   const { data: moved, error } = await svc.from("platform_credentials")
     .update({ is_active: patch.is_active, test_status: patch.test_status, updated_at: patch.updated_at, config: patch.config })
     .eq("id", (row as { id: string }).id).eq("brokerage_id", ctx.brokerageId).select("id")
-  if (error) return { ok: false, error: error.message }
-  if ((moved ?? []).length !== 1) return { ok: false, error: "the disconnect matched no row — nothing changed" }
+  if (error) return { ok: false, error: presentTenantError({ what: `Your ${name} connection couldn't be disconnected right now`, raw: error, work: { state: "unchanged" }, context: "tenant-connections.acquisition.disconnect.write" }).sentence }
+  if ((moved ?? []).length !== 1) return { ok: false, error: presentTenantError({ what: `Your ${name} connection couldn't be disconnected right now`, raw: "the disconnect matched no row", work: { state: "unchanged" }, context: "tenant-connections.acquisition.disconnect.write" }).sentence }
   const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
   await reportOperationOutcome(svc, {
     operation: "provider_connection", brokerageId: ctx.brokerageId, ok: true, subjectType: "platform_credentials", subjectId: (row as { id: string }).id, actorUserId: ctx.userId, source: "ui",

@@ -6,6 +6,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { captureConsentedContact, consentGrantsFromComponent, resolveCapturedLanguage, resolveConsentBrand, situationFromBody } from '@/lib/contact-pipeline/contact-capture'
+// WAVE 152 (lane 152C): the ONE lifecycle classifier + wording, and the per-code-per-day visitor key — the only basis on
+// which a consented submission may claim the scan that preceded it.
+import { qrLifecycleState, qrUnavailableNotice, isAbsentColumnRefusal, QR_REPEAT_WINDOW_MS } from '@/lib/marketing/qr-contract'
+import { qrScanEvidence } from '@/lib/marketing/tracked-qr'
 
 // The wording the QR landing shows beside its box (app/qr/[slug]/QRLandingClient.tsx, the tcpa_checked label) — hashed onto the
 // consent record (C8). Kept verbatim; a change to the label is a new version here.
@@ -74,36 +78,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // let a forged body file a capture under one code's tenant while naming another code's
     // slug in the evidence (rawPayload / the touchpoint metadata). Both predicates, fail
     // closed — a mismatched pair is "not found", not a guess at which half to trust.
-    const { data: qr, error: qrError } = await supabase
-      .from('qr_codes')
-      .select('id, brokerage_id, agent_id, lead_count, is_active, expires_at, marketing_campaign_id')
-      .eq('id', qrCodeId)
-      .eq('slug', slug)
-      .maybeSingle()
+    // WAVE 152 (152C): the m945 retirement columns are read when present (a retired or
+    // revoked code takes no submissions either); before m945 the read degrades.
+    const readCode = (cols: string) => supabase.from('qr_codes').select(cols).eq('id', qrCodeId).eq('slug', slug).maybeSingle()
+    const SUBMIT_COLUMNS = 'id, brokerage_id, agent_id, lead_count, is_active, expires_at, marketing_campaign_id'
+    let { data: qrRow, error: qrError } = await readCode(`${SUBMIT_COLUMNS}, retired_at, retired_reason`)
+    if (qrError && isAbsentColumnRefusal(qrError)) ({ data: qrRow, error: qrError } = await readCode(SUBMIT_COLUMNS))
+    const qr = qrRow as unknown as { id: string; brokerage_id: string; agent_id: string | null; lead_count: number | null; is_active: boolean | null; expires_at: string | null; marketing_campaign_id: string | null; retired_at?: string | null; retired_reason?: string | null } | null
 
     if (qrError || !qr) {
       return NextResponse.json(
-        { success: false, error: 'QR code not found' },
-        { status: 404 },
+        { success: false, error: qrError ? 'We couldn\'t reach this code right now. Nothing was saved — please try again in a minute.' : 'We don\'t recognize this QR code. Nothing was saved — contact the business that gave you the code for the right link.' },
+        { status: qrError ? 503 : 404 },
       )
     }
 
-    if (!qr.is_active) {
+    // Paused (403), expired / retired / revoked (410) — the same words the scan door shows,
+    // and nothing is captured for any of them.
+    const state = qrLifecycleState(qr)
+    if (state !== 'active') {
+      const notice = qrUnavailableNotice(state)
       return NextResponse.json(
-        {
-          success: false,
-          error: 'This code is paused — the agent who created this QR code has paused it, so it is not accepting submissions right now.',
-        },
-        { status: 403 },
-      )
-    }
-    if (qr.expires_at && new Date(qr.expires_at).getTime() <= Date.now()) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'This code has expired — this QR code was set to expire and that date has passed, so it is no longer accepting submissions.',
-        },
-        { status: 410 },
+        { success: false, error: `${notice.heading}. ${notice.detail} ${notice.action}` },
+        { status: state === 'paused' ? 403 : 410 },
       )
     }
 
@@ -260,17 +257,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     }
 
-    // ── Step 5: Link most recent unlinked scan event to contact ───────────────
-    const { data: scanEvent } = await supabase
+    // ── Step 5: Link THIS person's own scan to the contact — never someone else's ───
+    // WAVE 152 (152C). TOMBSTONE: this step linked "the most recent unlinked scan" of the
+    // code to whoever submitted — on a code printed on 500 postcards that is a STRANGER's
+    // scan (the directive: "Do not claim an anonymous scan = a known consumer"). A scan is
+    // now linked only when it carries the SAME visitor key this submission computes (same
+    // code, same UTC day, same coarse network + browser) inside the repeat window; anything
+    // else stays anonymous. SURVIVOR: the visitor-key predicate below. Before m946 there is
+    // no key column, the read is refused, and no scan is linked (fail closed — the Contact
+    // itself was still captured above, through the consent it gave).
+    // The SAME derivation the scan door uses (app/api/qr/scan: x-forwarded-for's first hop + the browser string).
+    const submitEvidence = qrScanEvidence({ qrCodeId: qr.id, ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, userAgent: req.headers.get('user-agent'), referrer: null })
+    const { data: scanEvent, error: scanLinkError } = await supabase
       .from('qr_scan_events')
       .select('id')
       .eq('qr_code_id', qr.id)
+      .eq('visitor_key', submitEvidence.visitorKey)
       .is('contact_id', null)
+      .gte('scanned_at', new Date(Date.now() - QR_REPEAT_WINDOW_MS).toISOString())
       .order('scanned_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+    if (scanLinkError && !isAbsentColumnRefusal(scanLinkError)) {
+      console.error('[qr/submit] own-scan lookup refused — no scan linked:', scanLinkError.message)
+    }
 
-    if (scanEvent) {
+    if (scanEvent && !scanLinkError) {
       await sentinelWrite(supabase, supabase
         .from('qr_scan_events')
         .update({ contact_id: contactId })

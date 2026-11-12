@@ -42,7 +42,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 // breaks the build here instead of silently matching nothing (CLAUDE.md §6).
 import type { AgentConcessionApprovalStatus, ConcessionSettlementTreatment } from "@/lib/commission/agent-concession"
 // WAVE 151 (lane 151K): the ONE reader's "two executed addenda contradict each other" shape — TYPE only (the rule is pure).
-import type { UnresolvedTermConflict } from "@/lib/offers/governing-terms-rule"
+// WAVE 152 (lane 152E): + the term ledger's row shape and the ONE per-term evidence rule (re-asked of the document's current readings).
+import { termEvidenceFor, type UnresolvedTermConflict, type TermLedgerRow } from "@/lib/offers/governing-terms-rule"
 import { isValidUUID } from "@/lib/validations"
 import { auditTransactionDocuments } from "@/lib/compliance/required-documents"
 import { documentClassificationLabel } from "@/lib/compliance/required-documents"
@@ -55,7 +56,9 @@ import {
   CLOSING_TERM_CHECK_PREFIX,
   CONTRACT_FIELD_TO_TERM,
   SETTLEMENT_FIELD_TO_TERM,
+  DEAL_RECORD_TERM_COLUMNS,
   compareClosingTerms,
+  compareDealRecordTerms,
   findingToLogRow,
   parseDateOnly,
   parseParty,
@@ -69,6 +72,7 @@ import {
   type SettlementSnapshot,
   type TermConflict,
   type TermFact,
+  type TermFinding,
   type TermMap,
   type TermsInstrument,
   type ClosingTermKey,
@@ -79,7 +83,7 @@ type Svc = SupabaseClient<any, any, any>
 
 // ── Row shapes (hoisted: scripts/tenant-scope-guard.ts reads the 500 characters after `.from("<table>")`) ──
 
-const TX_COLUMNS = "id, brokerage_id, offer_id, listing_id, deal_type, agent_id, buyer_agent_id, seller_agent_id, property_state, financing_type, purchase_price, close_date, earnest_money, closing_cost_contribution, listing_offered_commission_percentage, contract_date, buyer_contact_id, seller_contact_id, contact_id"
+const TX_COLUMNS = "id, brokerage_id, offer_id, listing_id, deal_type, agent_id, buyer_agent_id, seller_agent_id, property_state, financing_type, purchase_price, close_date, earnest_money, closing_cost_contribution, listing_offered_commission_percentage, contract_date, buyer_contact_id, seller_contact_id, contact_id, contract_closing_date, contract_closing_terms, contract_closing_source"
 const OFFER_COLUMNS = "id, parent_offer_id, current_round, offer_type, offer_number, offer_price, earnest_money, closing_date, closing_cost_contribution, disclosed_buyer_commission_pct, disclosed_buyer_commission_flat, esign_status, buyer_signed_at, seller_signed_at, fully_signed_contract_received_at, created_at, updated_at, brokerage_id"
 const DOC_COLUMNS = "id, classification, classification_confidence, signature_completeness, extracted_fields, metadata, created_at, updated_at, transaction_id"
 
@@ -103,6 +107,10 @@ export interface TransactionRow {
   buyer_contact_id: string | null
   seller_contact_id: string | null
   contact_id: string | null
+  /** WAVE 152 (lane 152E): the contractual closing date the governed writer holds, how the contract words it, and what set it. */
+  contract_closing_date?: string | null
+  contract_closing_terms?: string | null
+  contract_closing_source?: string | null
 }
 
 /** The seam for lane A's `governingContractTerms`; the default reads the records. `unresolvedTerms` (wave 151, lane 151K): the closing
@@ -151,11 +159,18 @@ export interface ClosingComplianceOutcome {
   blockingSummary: string[]
   /** An unsupported state's question, or null. */
   stateQuestion: string | null
+  /** WAVE 152 (lane 152E): the executed terms against the deal record (empty when that side did not run). */
+  recordComparison: TermFinding[]
+  /** WAVE 152 (lane 152E): executed terms held because their reading on the signed document is not confirmed. */
+  evidenceHolds: number
+  /** WAVE 152 (lane 152E): the corrective requests opened / refreshed / settled by this run. */
+  corrections: { opened: number; refreshed: number; completed: number; errors: string[] }
 }
 
 const empty = (reason: string): ClosingComplianceOutcome => ({
   ran: false, reason, governingOnFile: false, settlementOnFile: false, comparison: null,
   rows: { inserted: 0, updated: 0, unchanged: 0, reopened: 0 }, openBlocking: 0, openReview: 0, notified: 0, summary: [], blockingSummary: [], stateQuestion: null,
+  recordComparison: [], evidenceHolds: 0, corrections: { opened: 0, refreshed: 0, completed: 0, errors: [] },
 })
 
 // ── Facts out of extraction rows ───────────────────────────────────────────────
@@ -448,6 +463,9 @@ function closingTermsFor(governingKeys: readonly string[]): Set<ClosingTermKey> 
     for (const [from, to] of RECORD_KEY_MAP) if (from === k) out.add(to)
     if ((CLOSING_TERM_KEYS as readonly string[]).includes(k)) out.add(k as ClosingTermKey)
   }
+  // WAVE 152 (lane 152E — "RECOMPUTE DEPENDENT FIELDS"): a percentage commission's DOLLARS are the governing price times its rate, so
+  // an executed price change re-judges the commission lines too (the changed-terms-only re-check had left them on the old price).
+  if (out.has("purchase_price")) for (const dep of ["commission_listing_side", "commission_buyer_side", "commission_total"] as const) out.add(dep)
   return out
 }
 
@@ -484,7 +502,8 @@ async function recordedTermsInstrument(svc: Svc, tx: TransactionRow): Promise<{ 
     if (Object.keys(terms).length === 0) return { instrument: null, conflicts }
     const gv = r.governing.governingVersion
     const kind: InstrumentKind = gv.source === "offer" ? "original_offer" : gv.source === "counter" ? "counter" : "addendum"
-    return { instrument: { id: `record:${gv.source}:v${gv.versionNo}`, kind, label: `authoritative terms record (${gv.source} v${gv.versionNo})`, executed: true, executedAt, terms }, conflicts }
+    // wave 152 (lane 152E): the label is read by a TC in a corrective request ("the value executed addendum 2 replaced"), so it is plain words
+    return { instrument: { id: `record:${gv.source}:v${gv.versionNo}`, kind, label: gv.source === "offer" ? "executed contract (contract terms record)" : `executed ${gv.source} ${gv.versionNo} (contract terms record)`, executed: true, executedAt, terms }, conflicts }
   } catch (e) {
     console.warn("[closing-compliance] authoritative terms record unreadable — the instruments alone decide:", e instanceof Error ? e.message : String(e))
     return { instrument: null, conflicts: {} }
@@ -591,11 +610,15 @@ const FAULT_ROW_TYPES = [
   `${CLOSING_TERM_CHECK_PREFIX}settlement_statement`,
   `${CLOSING_TERM_CHECK_PREFIX}governing_terms`,
   `${CLOSING_DOC_CHECK_PREFIX}checklist`,
+  // WAVE 152 (lane 152E): the executed terms' evidence could not be read (the evidence hold could not run — a blocking fault)
+  `${CLOSING_TERM_CHECK_PREFIX}evidence_ledger`,
 ] as const
 
-async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], opts: { partial?: boolean } = {}): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; error: string | null; raced?: boolean }> {
+async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], opts: { partial?: boolean } = {}): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; cleared: LogRowSpec[]; error: string | null; raced?: boolean }> {
   const counts: RowWriteCounts = { inserted: 0, updated: 0, unchanged: 0, reopened: 0 }
   const changed: LogRowSpec[] = []
+  // WAVE 152 (lane 152E): the rows that were OPEN and now agree — their corrective request is settled (exactly those, no other).
+  const cleared: LogRowSpec[] = []
 
   const { data: existingRows, error: readErr } = await svc
     .from("transaction_compliance_log")
@@ -603,7 +626,7 @@ async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[
     .eq("brokerage_id", tx.brokerage_id)
     .eq("transaction_id", tx.id)
   // A refused read is NOT "no rows yet": writing duplicates over an unread log is the worse outcome.
-  if (readErr) return { counts, changed, error: `the compliance log could not be read: ${readErr.message}` }
+  if (readErr) return { counts, changed, cleared, error: `the compliance log could not be read: ${readErr.message}` }
   const byType = new Map<string, ExistingLogRow>()
   for (const r of (existingRows ?? []) as ExistingLogRow[]) byType.set(r.check_type, r)
 
@@ -643,12 +666,13 @@ async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[
       .eq("id", existing.id)
       .eq("brokerage_id", tx.brokerage_id)
       .select("id")
-    if (updErr) return { counts, changed, error: `a compliance row could not be updated: ${updErr.message}` }
+    if (updErr) return { counts, changed, cleared, error: `a compliance row could not be updated: ${updErr.message}` }
     // An UPDATE that matches nothing also resolves (CLAUDE.md §3): the row is gone or the tenant predicate refused.
-    if (!upd || upd.length === 0) return { counts, changed, error: `compliance row ${existing.check_type} was not updated — it no longer exists in this brokerage` }
+    if (!upd || upd.length === 0) return { counts, changed, cleared, error: `compliance row ${existing.check_type} was not updated — it no longer exists in this brokerage` }
     counts.updated++
     if (reopened) counts.reopened++
     if (spec.status !== "pass") changed.push(spec)
+    else if (existing.status === "fail" || existing.status === "needs_review") cleared.push(spec)
   }
 
   // A fault row whose fault is gone clears itself (an unreadable input that is readable again). A PARTIAL run (wave 151, lane 151K:
@@ -658,23 +682,24 @@ async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[
     const stale = byType.get(type)
     if (!stale || stale.status === "pass" || stale.status === "waived") continue
     const clearPatch = { status: "pass", failure_reason: null, resolved_at: now, updated_at: now, checked_at: now, resolution_notes: "Cleared automatically: the check ran and the condition no longer holds." }
-    const { data: cleared, error: clearErr } = await svc
+    // (the local result is `clearedRows`, never `cleared` — that name is the outer list of specs this run cleared, returned below)
+    const { data: clearedRows, error: clearErr } = await svc
       .from("transaction_compliance_log")
       .update(clearPatch)
       .eq("brokerage_id", tx.brokerage_id)
       .eq("id", stale.id)
       .select("id")
-    if (clearErr) return { counts, changed, error: `a stale compliance row could not be cleared: ${clearErr.message}` }
-    if (cleared && cleared.length > 0) counts.updated++
+    if (clearErr) return { counts, changed, cleared, error: `a stale compliance row could not be cleared: ${clearErr.message}` }
+    if (clearedRows && clearedRows.length > 0) counts.updated++
   }
 
   if (inserts.length > 0) {
     const { data: ins, error: insErr } = await svc.from("transaction_compliance_log").insert(inserts).select("id")
-    if (insErr) return { counts, changed, error: `compliance rows could not be written: ${insErr.message}`, raced: String((insErr as { code?: string }).code ?? "") === "23505" }
+    if (insErr) return { counts, changed, cleared, error: `compliance rows could not be written: ${insErr.message}`, raced: String((insErr as { code?: string }).code ?? "") === "23505" }
     counts.inserted = (ins ?? []).length
-    if (counts.inserted !== inserts.length) return { counts, changed, error: `only ${counts.inserted} of ${inserts.length} compliance rows were written` }
+    if (counts.inserted !== inserts.length) return { counts, changed, cleared, error: `only ${counts.inserted} of ${inserts.length} compliance rows were written` }
   }
-  return { counts, changed, error: null }
+  return { counts, changed, cleared, error: null }
 }
 
 /**
@@ -682,7 +707,7 @@ async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[
  * unique index admits ONE closing row per (transaction, check_type); the loser of that race re-reads the log —
  * which now holds the winner's rows — and reconciles instead of failing the check.
  */
-async function applyLogRows(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], opts: { partial?: boolean } = {}): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; error: string | null }> {
+async function applyLogRows(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], opts: { partial?: boolean } = {}): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; cleared: LogRowSpec[]; error: string | null }> {
   const first = await applyLogRowsOnce(svc, tx, specs, opts)
   if (!first.raced) return first
   return applyLogRowsOnce(svc, tx, specs, opts)
@@ -875,12 +900,199 @@ const auditClosingRun: ClosingAuditor = async (tx, event) => {
   }
 }
 
+// ── WAVE 152 (lane 152E): THE CONTRACT SIDE — the deal record, the evidence hold, the corrective request ─────────────────────
+
+/** The closing terms the deal record states (DEAL_RECORD_TERM_COLUMNS), as record-confidence facts. A contractual closing date the
+ *  governed writer took from an EXECUTED AMENDMENT names its own executed instrument, so it is not held against the terms record. */
+function dealRecordTerms(tx: TransactionRow): TermMap {
+  const out: TermMap = {}
+  const row = tx as unknown as Record<string, unknown>
+  for (const [term, column] of Object.entries(DEAL_RECORD_TERM_COLUMNS) as Array<[ClosingTermKey, string]>) {
+    const src = `deal record (transactions.${column})`
+    if (term === "closing_date") {
+      if (tx.contract_closing_source === "executed_amendment") continue
+      const d = parseDateOnly(row[column]); if (d) out[term] = { unit: "date", value: d, confidence: "record", source: src }
+      continue
+    }
+    const n = parseUsd(row[column]); if (n !== null) out[term] = { unit: "usd", value: n, confidence: "record", source: src }
+  }
+  return out
+}
+
+type TermLedgerReader = (svc: Svc, tx: TransactionRow) => Promise<{ ok: true; rows: TermLedgerRow[] } | { ok: false; error: string }>
+
+/** THE ONE READER's term ledger (lib/offers/governing-terms.ts contractTermLedger), tenant-pinned to the verified row. */
+const readTermLedger: TermLedgerReader = async (svc, tx) => {
+  const { contractTermLedger } = await import("@/lib/offers/governing-terms")
+  const r = await contractTermLedger(svc as any, tx.brokerage_id, { transactionId: tx.id })
+  return r.ok ? { ok: true, rows: r.ledger.rows } : { ok: false, error: r.reason }
+}
+
+const EVIDENCE_CHECK_PREFIX = `${CLOSING_TERM_CHECK_PREFIX}evidence.`
+const EVIDENCE_LEDGER_FAULT = `${CLOSING_TERM_CHECK_PREFIX}evidence_ledger`
+const EVIDENCE_RESPONSIBLE = "a person who reads the signed document — the transaction coordinator or the compliance officer confirms the reading in the document's review; an authorized reviewer may instead override with a written reason"
+
+/**
+ * THE EVIDENCE HOLD (owner decision "addendum evidence — refuse or flag", OWNER-SQL §M; the SAFE DEFAULT — HOLD + FLAG, never
+ * silently accept, never refuse the history). An executed addendum / amendment whose governing term was recorded WITHOUT a located
+ * reading (term_evidence `person_reading_unlocated`) or against a disagreeing low-confidence reading stays recorded — and the
+ * closing is HELD on that term until a VERIFIED / HIGH reading of the same signed document agrees (re-asked here through the ONE
+ * evidence rule, termEvidenceFor, on every run) or an authorized person overrides. A confirmed reading that DISAGREES is a
+ * contradiction (fail). A version recorded before per-term evidence existed is not accused (published blind spot).
+ */
+async function evidenceHoldSpecs(svc: Svc, tx: TransactionRow, rows: TermLedgerRow[], scopeKeys: ReadonlySet<string> | null): Promise<{ ok: true; specs: LogRowSpec[] } | { ok: false; error: string }> {
+  const owed = rows.filter((r) => r.status === "governing" && !!r.source?.documentId && (r.source.kind === "addendum" || r.source.kind === "amendment")
+    && !!r.evidence && (r.evidence.source === "person_reading_unlocated" || r.evidence.agrees === false) && (!scopeKeys || scopeKeys.has(r.key)))
+  if (owed.length === 0) return { ok: true, specs: [] }
+  const documentIds = [...new Set(owed.map((r) => r.source!.documentId as string))]
+  const { data, error } = await svc
+    .from("document_field_extractions")
+    .select("document_id, field_key, field_value_json, confidence, verified_at")
+    .eq("brokerage_id", tx.brokerage_id)
+    .in("document_id", documentIds)
+  if (error) return { ok: false, error: `the executed documents' readings could not be read: ${error.message}` }
+  const readings = (data ?? []) as LedgerRow[]
+  return { ok: true, specs: owed.map((r): LogRowSpec => {
+    const src = r.source!
+    const instrument = `${src.kind} ${src.versionNo}`
+    const term = r.key.replace(/_/g, " ")
+    const value = JSON.stringify(r.value)
+    const base = { check_type: `${EVIDENCE_CHECK_PREFIX}${r.key}`, check_label: `Closing: ${term} confirmed on the executed ${instrument}` }
+    const again = termEvidenceFor({ terms: { [r.key]: r.value }, extractions: readings.filter((x) => x.document_id === src.documentId) })
+    if (!again.ok) {
+      return { ...base, status: "fail", is_blocking: true, signature: `evidence|contradicted|${instrument}|${value}`, responsible: EVIDENCE_RESPONSIBLE,
+        failure_reason: `The executed ${instrument} was recorded as setting ${term} to ${value}, but a confirmed reading of that signed document says otherwise (${again.reason}). The closing is held on this term until the paper and the recorded term agree — record the corrected executed instrument, or an authorized reviewer overrides with a written reason.` }
+    }
+    const te = again.termEvidence[r.key]
+    if (te?.source === "document_extraction" && te.agrees === true && (te.confidence === "verified" || te.confidence === "high")) {
+      return { ...base, status: "pass", is_blocking: false, failure_reason: null, signature: `evidence|confirmed|${instrument}|${value}` }
+    }
+    return { ...base, status: "needs_review", is_blocking: true, signature: `evidence|unlocated|${instrument}|${value}`, responsible: EVIDENCE_RESPONSIBLE,
+      failure_reason: `The executed ${instrument} sets ${term} to ${value}. It is recorded, but where the signed document states it was never noted and no confident reading of the document confirms it yet, so the closing is held on this term. Confirm it on the page in the document's reading review (it then clears on its own), or an authorized reviewer overrides with a written reason.` }
+  }) }
+}
+
+const CORRECTION_CATEGORY = "compliance_correction"
+const correctionTitle = (checkLabel: string): string => `[Compliance correction] ${checkLabel.replace(/^Closing:\s*/, "")}`.slice(0, 180)
+
+type CorrectionOutcome = { opened: number; refreshed: number; completed: number; errors: string[] }
+type CorrectionRequester = (svc: Svc, tx: TransactionRow, open: LogRowSpec[], cleared: LogRowSpec[], trigger: string) => Promise<CorrectionOutcome>
+
+/**
+ * Settle the corrective requests of EXACTLY these checks (the rows that now agree, or that one authorized person overrode) —
+ * a counted update of the open `transaction_tasks` rows the request opened; any other request stays open. Also read by the
+ * override door (app/actions/transaction-compliance.ts) when a person waives a computed check.
+ */
+export async function completeCorrectionRequests(svc: Svc, input: { brokerageId: string; transactionId: string; checkLabels: string[]; completedBy?: string | null }): Promise<{ completed: number; error: string | null }> {
+  let completed = 0
+  const now = new Date().toISOString()
+  for (const label of [...new Set(input.checkLabels)]) {
+    const { data, error } = await svc
+      .from("transaction_tasks")
+      .update({ status: "completed", completed_at: now, completed_by: input.completedBy ?? null, updated_at: now })
+      .eq("brokerage_id", input.brokerageId)
+      .eq("transaction_id", input.transactionId)
+      .eq("category", CORRECTION_CATEGORY)
+      .eq("title", correctionTitle(label))
+      .in("status", ["pending", "in_progress"])
+      .select("id")
+    if (error) return { completed, error: `a corrective request could not be settled: ${error.message}` }
+    completed += (data ?? []).length
+  }
+  return { completed, error: null }
+}
+
+/**
+ * THE CORRECTIVE REQUEST + FOLLOW-UP (directive 152E: "trigger corrective request and follow-up, not merely a warning in a document
+ * viewer"; "notify responsible party via existing managers"). For every finding that is a real departure (a fail, or anything that
+ * holds the closing), the Compliance Officer opens ONE deduped `transaction_tasks` row — the deal coordination task survivor the
+ * manager bus already uses — assigned to the deal's TC (else its agent), naming what differs, what it affects and WHO corrects it.
+ * Ledgered (LAW 5) with an idempotency key of the check AND the values compared, so a replayed scan / webhook opens nothing twice;
+ * a changed finding refreshes the open request; a row that clears settles exactly its own request. The platform never messages
+ * the title company or attorney itself (an external request is the TC's, under the deal's communication rules).
+ */
+const requestCorrections: CorrectionRequester = async (svc, tx, open, cleared, trigger) => {
+  const out: CorrectionOutcome = { opened: 0, refreshed: 0, completed: 0, errors: [] }
+  try {
+    if (open.length > 0) {
+      const { resolveTransactionTeamUsers } = await import("@/lib/kernel/deal-save-huddle")
+      const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+      const team = await resolveTransactionTeamUsers(svc as any, tx.id, tx.brokerage_id)
+      const assignee = team.coordinatorUserId ?? team.agentUserId ?? null
+      const now = new Date().toISOString()
+      for (const spec of open) {
+        const title = correctionTitle(spec.check_label)
+        const description = `${(spec.failure_reason ?? "").replace(/\s*\[sig:[^\]]*\]\s*$/, "")}\n\nWho corrects it: ${spec.responsible ?? "the transaction coordinator"}.\nThe closing gate holds while this is open; it re-checks on its own when the corrected document or the executed instrument is recorded. Nothing on the signed contract was changed.`.slice(0, 2000)
+        const { data: have, error: readErr } = await svc
+          .from("transaction_tasks")
+          .select("id, description")
+          .eq("brokerage_id", tx.brokerage_id)
+          .eq("transaction_id", tx.id)
+          .eq("category", CORRECTION_CATEGORY)
+          .eq("title", title)
+          .in("status", ["pending", "in_progress"])
+          .limit(1)
+        if (readErr) { out.errors.push(`the open corrective requests could not be read: ${readErr.message}`); continue }
+        const existing = ((have ?? []) as Array<{ id: string; description: string | null }>)[0]
+        if (existing) {
+          if (existing.description === description) continue
+          const { data: upd, error: uErr } = await svc.from("transaction_tasks").update({ description, updated_at: now }).eq("id", existing.id).eq("brokerage_id", tx.brokerage_id).select("id")
+          if (uErr || !upd || upd.length === 0) out.errors.push(`the corrective request for ${spec.check_type} was not refreshed${uErr ? `: ${uErr.message}` : " (no row matched)"}`)
+          else out.refreshed++
+          continue
+        }
+        const made = await withActionLedger<{ inserted: number }>(
+          {
+            brokerageId: tx.brokerage_id,
+            action: "compliance.correction_request.open",
+            actor: { type: "manager", managerKey: "compliance_officer" },
+            subject: { type: "transaction", id: tx.id, ref: spec.check_type },
+            reasonCode: "COMPLIANCE_NOTICE",
+            reasonDetail: `${spec.check_label} — corrective request (${trigger})`.slice(0, 500),
+            riskClass: "LOW_RISK_WRITE",
+            systemSource: "closing_compliance",
+            idempotencyKey: `compliance-correction:${tx.brokerage_id}:${tx.id}:${spec.check_type}:${spec.signature}`,
+            detail: { check_type: spec.check_type, signature: spec.signature, responsible: spec.responsible ?? null, assigned_user_id: assignee, blocking: spec.is_blocking, trigger },
+          },
+          async () => {
+            const { data: ins, error } = await svc.from("transaction_tasks").insert({
+              transaction_id: tx.id, brokerage_id: tx.brokerage_id, title, description, priority: spec.is_blocking ? "high" : "medium",
+              category: CORRECTION_CATEGORY, ai_generated: false, status: "pending", assigned_user_id: assignee,
+            }).select("id")
+            if (error) throw new Error(`the corrective request was not written: ${error.message}`)
+            return { inserted: (ins ?? []).length }
+          },
+          {
+            settle: (r) => r.inserted === 1 ? { status: "executed", outcome: "corrective_request_opened" } : { status: "failed", outcome: "no_row", error: "the corrective request insert matched no row" },
+            // a replayed scan / webhook with the same values: the request already exists — nothing is opened twice
+            replay: (claim) => { if (claim.kind === "refused") console.error(`[closing-compliance] corrective request for ${tx.id} not opened — the action ledger refused the claim: ${claim.error}`); return { inserted: 0 } },
+          },
+          { client: svc as never },
+        )
+        if (made.inserted === 1) out.opened++
+      }
+    }
+    if (cleared.length > 0) {
+      const done = await completeCorrectionRequests(svc, { brokerageId: tx.brokerage_id, transactionId: tx.id, checkLabels: cleared.map((c) => c.check_label) })
+      out.completed += done.completed
+      if (done.error) out.errors.push(done.error)
+    }
+  } catch (e) {
+    out.errors.push(`corrective requests: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  return out
+}
+
 // ── The runner ──────────────────────────────────────────────────────────────────
 
 export async function runClosingCompliance(
   svc: Svc,
   input: RunClosingComplianceInput,
-  deps: { governingTerms?: GoverningTermsReader; notify?: ClosingNotifier; audit?: ClosingAuditor; closingEntity?: (brokerageId: string) => Promise<string | null> } = {},
+  deps: {
+    governingTerms?: GoverningTermsReader; notify?: ClosingNotifier; audit?: ClosingAuditor; closingEntity?: (brokerageId: string) => Promise<string | null>
+    /** WAVE 152 (lane 152E): the term ledger (default: THE ONE READER's contractTermLedger) and the corrective-request door. */
+    termLedger?: TermLedgerReader; correct?: CorrectionRequester
+  } = {},
 ): Promise<ClosingComplianceOutcome> {
   if (!isValidUUID(input.transactionId)) return empty("invalid transaction id")
   if (!input.brokerageId) return empty("no brokerage — the closing check cannot run without a tenant")
@@ -916,12 +1128,17 @@ export async function runClosingCompliance(
   /** The comparison narrowed to the unresolved terms alone (no settlement on file yet): only the contradiction rows are filed. */
   const onlyUnresolved = <T,>(m: Partial<Record<ClosingTermKey, T>>): Partial<Record<ClosingTermKey, T>> =>
     Object.fromEntries(Object.entries(m).filter(([k]) => unresolvedTerms.has(k as ClosingTermKey))) as Partial<Record<ClosingTermKey, T>>
+  // WAVE 152 (lane 152E): how the executed contract words its closing date — an earlier settlement date under "on or before" IS the contract.
+  const closingWording = tx.contract_closing_terms === "on" || tx.contract_closing_terms === "on_or_before" ? tx.contract_closing_terms : null
 
   const specs: LogRowSpec[] = []
   let comparison: ClosingComparison | null = null
   let readFault: string | null = null
   // A run that writes a SUBSET of the rows must not clear the fault rows it did not re-evaluate.
   let partial = !!scope
+  // WAVE 152 (lane 152E): the CONTRACT SIDE (deal record + evidence hold) runs at every checkpoint that compares terms — a
+  // settlement statement on file, the pre-CDA gate, an executed addendum — and never on a bare contract scan mid-deal.
+  let contractSide = false
 
   if (!gov.ok) readFault = gov.error
   else if (!settlement.ok) readFault = settlement.error
@@ -942,6 +1159,16 @@ export async function runClosingCompliance(
           comparison = compareClosingTerms(onlyUnresolved(gov.governing.terms), {}, onlyUnresolved(gov.governing.conflicts))
           for (const f of comparison.findings) if (f.verdict === "conflict") specs.push(findingToLogRow(f))
         }
+        contractSide = true
+      } else if (input.trigger === "contract_addendum") {
+        // WAVE 152 (lane 152E): an executed addendum BEFORE the settlement statement — the deal record it should have moved and the
+        // changed terms' evidence are checked now (directive: "recompute dependent fields → verified resolution").
+        partial = true
+        contractSide = true
+        if (unresolvedTerms.size > 0) {
+          comparison = compareClosingTerms(onlyUnresolved(gov.governing.terms), {}, onlyUnresolved(gov.governing.conflicts))
+          for (const f of comparison.findings) if (f.verdict === "conflict") specs.push(findingToLogRow(f))
+        }
       } else if (unresolvedTerms.size === 0) {
         return { ...empty("no settlement statement on file yet — nothing to compare"), governingOnFile: Object.keys(gov.governing.terms).length > 0 }
       } else {
@@ -953,13 +1180,34 @@ export async function runClosingCompliance(
       specs.push({ check_type: `${CLOSING_TERM_CHECK_PREFIX}governing_terms`, check_label: "Closing: executed contract terms are on file", status: "fail", is_blocking: true,
         failure_reason: "No executed contract, counter or addendum states any term, so nothing can be checked against the settlement statement. Upload the fully executed contract.", signature: "no-governing" })
     } else {
-      comparison = compareClosingTerms(gov.governing.terms, settlement.snapshot.terms, gov.governing.conflicts)
+      comparison = compareClosingTerms(gov.governing.terms, settlement.snapshot.terms, gov.governing.conflicts, { closingWording, history: gov.governing.history })
       // Listing-side commission belongs to the brokerage that took the listing; skip it on a buyer-only deal.
       for (const f of comparison.findings) {
         if (tx.deal_type === "buyer" && f.term === "commission_listing_side") continue
         if (!inScope(f.term)) continue
         specs.push(findingToLogRow(f))
       }
+      contractSide = true
+    }
+  }
+
+  // WAVE 152 (lane 152E) — THE CONTRACT SIDE. (1) The executed terms against the DEAL RECORD the commission, the CDA and the closing
+  // figures are priced from. (2) THE EVIDENCE HOLD: an executed addendum term never located on its signed document holds the
+  // closing until a confident reading agrees or an authorized person overrides (owner decision "refuse or flag" — the safe default).
+  let recordComparison: TermFinding[] = []
+  let evidenceHolds = 0
+  if (contractSide && gov.ok) {
+    recordComparison = compareDealRecordTerms(gov.governing.terms, dealRecordTerms(tx)).filter((f) => inScope(f.term))
+    for (const f of recordComparison) specs.push(findingToLogRow(f))
+    const ledger = await (deps.termLedger ?? readTermLedger)(svc, tx)
+    const holds = ledger.ok ? await evidenceHoldSpecs(svc, tx, ledger.rows, scope ? new Set(input.changedTerms ?? []) : null) : ledger
+    if (!holds.ok) {
+      // the hold could not be evaluated: that is a hold, not a pass ("nobody checked" never reads as "checked and fine")
+      specs.push({ check_type: EVIDENCE_LEDGER_FAULT, check_label: "Closing: the executed terms' evidence could be read", status: "fail", is_blocking: true,
+        failure_reason: `Where the executed terms were read on their signed documents could not be checked (${holds.error}). Nothing was verified.`, signature: `fault|${holds.error}` })
+    } else {
+      specs.push(...holds.specs)
+      evidenceHolds = holds.specs.filter((s) => s.status !== "pass").length
     }
   }
 
@@ -971,12 +1219,15 @@ export async function runClosingCompliance(
 
   const written = await applyLogRows(svc, tx, specs, { partial })
   if (written.error) {
-    return { ...empty(written.error), governingOnFile: gov.ok && Object.keys(gov.governing.terms).length > 0, settlementOnFile: settlement.ok && settlement.snapshot.documents.length > 0, comparison }
+    return { ...empty(written.error), governingOnFile: gov.ok && Object.keys(gov.governing.terms).length > 0, settlementOnFile: settlement.ok && settlement.snapshot.documents.length > 0, comparison, recordComparison, evidenceHolds }
   }
 
   const open = specs.filter((s) => s.status !== "pass")
   const openBlocking = open.filter((s) => s.is_blocking).length
   const notified = await (deps.notify ?? notifyOpenFindings)(svc, tx, written.changed, input.trigger)
+  // WAVE 152 (lane 152E): a real departure (a fail, or anything that holds the closing) gets ONE corrective request with its
+  // follow-up owner; a row that now agrees settles exactly its own request. Unchanged rows open nothing (replay-safe).
+  const corrections = await (deps.correct ?? requestCorrections)(svc, tx, written.changed.filter((c) => c.status === "fail" || c.is_blocking), written.cleared, input.trigger)
 
   // LAW 5 evidence. Not allowed to fail the check (the auditor swallows and logs its own fault).
   await (deps.audit ?? auditClosingRun)(tx, {
@@ -987,6 +1238,9 @@ export async function runClosingCompliance(
       governing_applied: gov.ok ? gov.governing.applied.map((a) => ({ id: a.id, kind: a.kind, executedAt: a.executedAt })) : [],
       governing_ignored: gov.ok ? gov.governing.ignored : [],
       scope: scope ? [...scope] : null, unresolved_terms: [...unresolvedTerms],
+      classes: comparison ? comparison.findings.map((f) => `${f.term}:${f.classification}`) : [],
+      deal_record: recordComparison.map((f) => `${f.term}:${f.classification}`), evidence_holds: evidenceHolds,
+      corrections: { opened: corrections.opened, refreshed: corrections.refreshed, completed: corrections.completed, errors: corrections.errors.length },
     },
   })
 
@@ -1003,5 +1257,8 @@ export async function runClosingCompliance(
     summary: open.map((s) => `${s.check_label}: ${(s.failure_reason ?? "").replace(/\s*\[sig:[^\]]*\]\s*$/, "")}`),
     blockingSummary: open.filter((s) => s.is_blocking).map((s) => `${s.check_label}: ${(s.failure_reason ?? "").replace(/\s*\[sig:[^\]]*\]\s*$/, "")}`),
     stateQuestion: people.question,
+    recordComparison,
+    evidenceHolds,
+    corrections,
   }
 }

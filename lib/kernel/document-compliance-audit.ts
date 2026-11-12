@@ -158,7 +158,7 @@ const defaultTextExtractor: TextExtractor = async (input) => {
   }
   try {
     const { ocrDocumentFromUrl } = await import("@/lib/documents/ocr-pdf")
-    const ocr = await ocrDocumentFromUrl({ storageUrl: input.documentUrl, brokerageId: input.brokerageId })
+    const ocr = await ocrDocumentFromUrl({ storageUrl: input.documentUrl, brokerageId: input.brokerageId, allowVision: false })
     if (!ocr.success || !ocr.text || ocr.text.trim().length === 0) {
       return { ok: false, reason: ocr.error ?? "no extractable text (encrypted/image-only with no text layer)" }
     }

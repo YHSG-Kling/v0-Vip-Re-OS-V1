@@ -11,7 +11,9 @@
  * what died and what was merged in first.
  *
  * Reuses the existing qr_codes + qr_scan_events tables and the dynamic /api/qr/scan?slug=
- * resolver (the printed/encoded slug never goes stale). Adds NOTHING to the schema.
+ * resolver (the printed/encoded slug never goes stale). WAVE 152 (lane 152C): the slug is an
+ * UNPREDICTABLE token (mintQrToken), and every row carries its provenance (m945: created_by_user_id,
+ * mint_context, destination_history) — the governed doors live in lib/marketing/qr-governance.ts.
  *
  * IDEMPOTENT per `label` (the deterministic "(entity, kind)" key): a re-render / re-generate /
  * re-launch reuses the SAME tracked code so scans accrue to one row. NEVER throws — an asset must
@@ -26,7 +28,8 @@
  *                    row self-referential and destroyed the caller's destination — so routing the
  *                    remaining minters here would have LOST the URL their users typed. It no
  *                    longer does that. When a caller supplies no target, target_url falls back to
- *                    the public QR landing `${origin}/qr/<slug>` (patched once the slug exists).
+ *                    the public QR landing `${origin}/qr/<slug>` (set in the insert itself since wave
+ *                    152 — the token is drawn before the row is written).
  *
  * LIVE CHECK VOCABULARIES (hrvaqgvukzxfskkcrwbt, verified — a value outside these is a REFUSED
  * insert, and supabase-js resolves that refusal, it does not throw):
@@ -37,10 +40,12 @@
  */
 import "server-only"
 import QRCode from "qrcode"
+import { randomBytes, createHash } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 // THE ENCODING CONTRACT (wave 141F): quiet zone, error correction, contrast — one option
 // builder every encoder (server + client) shares. lib/marketing/qr-contract.ts is pure.
-import { qrEncodeOptions, QR_RENDER_DEFAULTS } from "./qr-contract"
+// WAVE 152 (lane 152C): the token shape and the mint provenance shape live there too.
+import { qrEncodeOptions, QR_RENDER_DEFAULTS, QR_TOKEN_SHAPE, qrLabelKind, isAbsentColumnRefusal, qrDeviceClass, coarseNetworkPrefix, qrReferrerHost, type QrMintContext, type QrDestinationVersion, type QrDeviceClass } from "./qr-contract"
 
 type AnyClient = ReturnType<typeof createServiceClient>
 
@@ -167,6 +172,17 @@ export interface MintTrackedQrArgs {
   expiresAt?: string | null
   purpose?: QrPurpose
   origin?: string
+  /** WAVE 152 (152C) — qr_codes.created_by_user_id: the SESSION user who minted it (users.id, never agents.id). */
+  createdByUserId?: string | null
+  /** WAVE 152 (152C) — provenance merged into qr_codes.mint_context (channel, placement, asset, office/team, consent
+   *  context, token scope, print size, tracking). The minter always stamps minted_via / label_kind / token_scope. */
+  mintContext?: Partial<QrMintContext> | null
+  /**
+   * WAVE 152 (152C) — a GOVERNED mint (lib/marketing/qr-governance.ts mintGovernedQr) is unique per IDEMPOTENCY KEY
+   * (the action ledger holds it), not per label: two people may name two codes "Spring flyer" and get two codes. It
+   * skips the label reuse and REFUSES rather than degrade when the provenance columns are absent.
+   */
+  governed?: boolean
 }
 
 export interface MintedTrackedQr {
@@ -189,6 +205,35 @@ export interface MintedTrackedQr {
  *  error correction M, black on white. */
 export async function renderQrPng(url: string, width: number = QR_RENDER_DEFAULTS.printWidth): Promise<string> {
   return QRCode.toDataURL(url, qrEncodeOptions(width))
+}
+
+/**
+ * WAVE 152 (152C) — THE TOKEN. An unpredictable slug drawn from the CSPRNG: 22 symbols of a 32-symbol alphabet (each
+ * byte mod 32 — 256 is a multiple of 32, so no symbol is favored). NOT derived from the label: the label is a
+ * server-side key (`pre_listing_kit:<contactId>`, `estimate_comparison:<street-address>`, …) and the slug is printed on
+ * paper, so a Contact id or an address never reaches the scanned URL. The old recipe (label + Date.now() base36) was
+ * guessable from the label and the minute. Codes minted before keep their slugs and keep resolving (the resolver
+ * looks up by slug, whatever its shape).
+ */
+function mintQrToken(): string {
+  const bytes = randomBytes(QR_TOKEN_SHAPE.length)
+  let out = ""
+  for (let i = 0; i < QR_TOKEN_SHAPE.length; i++) out += QR_TOKEN_SHAPE.alphabet[bytes[i] % QR_TOKEN_SHAPE.alphabet.length]
+  return out
+}
+
+/**
+ * WAVE 152 (152C) — WHAT ONE SCAN MAY RECORD: a coarse device class, the referring HOST only, and a visitor key — a
+ * one-way hash of (code, UTC day, coarse network /24·/48, browser string), so the same phone on the same day reads as
+ * one visitor of THIS code and nothing more. The raw IP and the full browser string are never stored, and the key cannot
+ * follow a person across codes or days. Lives beside the minter (not in lib/marketing/qr-governance.ts) so every scan
+ * writer — the scan door and the lead-magnet tracker, both already in the CRM page's module graph — derives the same
+ * evidence without adding a module to that graph (test:proxy-graph-budget).
+ */
+export function qrScanEvidence(input: { qrCodeId: string; ip: string | null | undefined; userAgent: string | null | undefined; referrer: string | null | undefined; nowMs?: number }): { visitorKey: string; deviceClass: QrDeviceClass; referrerHost: string | null } {
+  const day = new Date(input.nowMs ?? Date.now()).toISOString().slice(0, 10)
+  const visitorKey = createHash("sha256").update(`${input.qrCodeId}|${day}|${coarseNetworkPrefix(input.ip)}|${(input.userAgent ?? "").trim()}`).digest("hex").slice(0, 32)
+  return { visitorKey, deviceClass: qrDeviceClass(input.userAgent), referrerHost: qrReferrerHost(input.referrer) }
 }
 
 export async function mintTrackedQr(
@@ -215,17 +260,23 @@ export async function mintTrackedQr(
     //    consolidation exists to end. supabase-js RESOLVES refusals, so destructure the error.
     //    The owner predicate is EXPLICIT on both branches: a tenant's key is looked up under
     //    its brokerage, a platform key under brokerage_id IS NULL — never every tenant.
-    let lookup = svc
-      .from("qr_codes")
-      .select("id, slug, target_url, destination_type, listing_id, marketing_campaign_id, expires_at")
-      .eq("label", label)
-      .eq("is_active", true)
-    lookup = brokerageId ? lookup.eq("brokerage_id", brokerageId) : lookup.is("brokerage_id", null)
-    const { data: existing, error: lookupError } = await lookup.maybeSingle()
+    //    WAVE 152 (152C): a GOVERNED mint skips this — its idempotency is the action ledger's key
+    //    (lib/marketing/qr-governance.ts), so two distinct requests under one display label are two codes.
+    let existing: { id?: string; slug?: string; target_url?: string | null; destination_type?: string | null; listing_id?: string | null; marketing_campaign_id?: string | null; expires_at?: string | null } | null = null
+    if (!args.governed) {
+      let lookup = svc
+        .from("qr_codes")
+        .select("id, slug, target_url, destination_type, listing_id, marketing_campaign_id, expires_at")
+        .eq("label", label)
+        .eq("is_active", true)
+      lookup = brokerageId ? lookup.eq("brokerage_id", brokerageId) : lookup.is("brokerage_id", null)
+      const { data: found, error: lookupError } = await lookup.maybeSingle()
 
-    if (lookupError) {
-      console.error("[mintTrackedQr] idempotency lookup refused — refusing to mint a duplicate:", lookupError.message)
-      return null
+      if (lookupError) {
+        console.error("[mintTrackedQr] idempotency lookup refused — refusing to mint a duplicate:", lookupError.message)
+        return null
+      }
+      existing = found
     }
 
     let qrCodeId: string
@@ -258,26 +309,35 @@ export async function mintTrackedQr(
         }
       }
     } else {
-      // 2. Mint a fresh tracked row.
-      const newSlug = `${label
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "-")
-        .replace(/-+/g, "-")
-        .slice(0, 40)}-${Date.now().toString(36)}`
-
+      // 2. Mint a fresh tracked row under a NEW UNPREDICTABLE TOKEN (wave 152, 152C — mintQrToken above).
+      // TOMBSTONE (152C): the slug used to be `${label lower-cased, 40 chars}-${Date.now().toString(36)}` and the
+      // target_url a `${origin}/qr` placeholder PATCHED to `/qr/<slug>` after the insert. The token is now drawn
+      // BEFORE the insert, so the row lands complete in one write (no patch — and m945's history trigger never sees
+      // a target change that has no version). SURVIVOR: mintQrToken + the single insert below.
       const suppliedTarget = (args.targetUrl ?? "").trim() || null
+      const mintedAt = new Date().toISOString()
+      const context: QrMintContext = {
+        token_scope: "per_design",
+        tracking: "enabled",
+        ...(args.mintContext ?? {}),
+        minted_via: args.governed ? "governed" : "automated",
+        label_kind: qrLabelKind(label),
+      }
 
-      const { data: inserted, error } = await svc
-        .from("qr_codes")
-        .insert({
+      let inserted: { id?: string; slug?: string } | null = null
+      let insertedTarget: string | null = null
+      for (let attempt = 0; attempt < 2 && !inserted; attempt++) {
+        const newSlug = mintQrToken()
+        const target = suppliedTarget ?? `${origin}/qr/${newSlug}`
+        const firstVersion: QrDestinationVersion = { version: 1, target_url: target, destination_type: args.destinationType ?? null, kind: "minted", changed_at: mintedAt, changed_by_user_id: args.createdByUserId ?? null, reason: null }
+        const base = {
           // null ONLY for a platform-owned code (label platform:… — m664 applied 2026-09-24;
           // a refusal stays an honest null result, never a row filed under some tenant).
           brokerage_id: brokerageId,
           agent_id: args.agentId ?? null,
           label,
-          // target_url is NOT NULL — seed with the semantic URL when we have one, else a
-          // placeholder that is patched to the real landing the moment the slug is known.
-          target_url: suppliedTarget ?? `${origin}/qr`,
+          // target_url is NOT NULL — the semantic URL when we have one, else this code's own public landing.
+          target_url: target,
           purpose: args.purpose ?? "campaign",
           destination_type: args.destinationType ?? null,
           slug: newSlug,
@@ -287,27 +347,35 @@ export async function mintTrackedQr(
           is_active: true,
           scan_count: 0,
           lead_count: 0,
-        })
-        .select("id, slug")
-        .maybeSingle()
-
-      if (error || !inserted?.id || !inserted?.slug) {
-        if (error) console.error("[mintTrackedQr] insert refused:", error.message)
-        return null
+        }
+        // m945 provenance — creator, mint context and the first destination version — on EVERY code.
+        let { data, error } = await svc
+          .from("qr_codes")
+          .insert({ ...base, created_by_user_id: args.createdByUserId ?? null, mint_context: context, destination_history: [firstVersion] })
+          .select("id, slug")
+          .maybeSingle()
+        // DEGRADES SAFELY until m945 is applied (the action ledger's precedent): an AUTOMATED mint — a listing launch,
+        // a postcard, an open house — must not lose its code to a missing provenance column, so it is re-written once
+        // without them and says so. A GOVERNED mint refuses: its provenance is the point of the request.
+        if (error && isAbsentColumnRefusal(error) && !args.governed) {
+          console.error("[mintTrackedQr] provenance columns absent (m945 not applied) — minted WITHOUT creator/context/history:", error.message)
+          ;({ data, error } = await svc.from("qr_codes").insert(base).select("id, slug").maybeSingle())
+        }
+        if (error) {
+          // 23505 on slug: a token collision (≈ 2^-110) — draw again once; anything else is a refusal.
+          if (error.code === "23505" && /slug/.test(error.message ?? "") && attempt === 0) continue
+          console.error("[mintTrackedQr] insert refused:", error.message)
+          return null
+        }
+        inserted = data as { id?: string; slug?: string } | null
+        if (inserted?.id) insertedTarget = target
       }
+
+      if (!inserted?.id || !inserted?.slug || !insertedTarget) return null
+      targetUrl = insertedTarget
       qrCodeId = inserted.id as string
       slug = inserted.slug as string
       created = true
-
-      if (suppliedTarget) {
-        targetUrl = suppliedTarget
-      } else {
-        // No semantic destination from the caller — point at this code's own public landing,
-        // which only becomes knowable after the slug exists.
-        targetUrl = `${origin}/qr/${slug}`
-        const { error: patchError } = await svc.from("qr_codes").update({ target_url: targetUrl }).eq("id", qrCodeId)
-        if (patchError) console.error("[mintTrackedQr] target_url patch refused:", patchError.message)
-      }
     }
 
     const scanUrl = `${origin}/api/qr/scan?slug=${slug}`

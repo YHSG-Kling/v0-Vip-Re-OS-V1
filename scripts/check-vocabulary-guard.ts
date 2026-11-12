@@ -924,6 +924,12 @@ console.log("\n[code-side vocabularies mirrored by a CHECK]")
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_REASON_CODES", table: "agent_action_ledger", column: "reason_code", constraint: "agent_action_ledger_reason_code_check" },
     // wave 151 (151J): the saved-home watch's source vocabulary (m983) — ONE constant, ONE CHECK.
     { file: "lib/property-alerts/saved-home-watch.ts", constant: "SAVED_HOME_VERIFICATION_SOURCES", table: "saved_properties", column: "last_verified_source", constraint: "saved_properties_last_verified_source_check" },
+    // Wave 152 (152F, m953 applied 2026-11-11): the addendum signature-request lifecycle — the ONE code constant and the live CHECK held together.
+    { file: "lib/esign/addendum-signature-rules.ts", constant: "SIGNATURE_REQUEST_STATUSES", table: "signature_requests", column: "request_status", constraint: "signature_requests_request_status_check" },
+    // Wave 152 (152C, m945 / m946 applied 2026-11-12): QR retirement and scan classification.
+    { file: "lib/marketing/qr-contract.ts", constant: "QR_RETIRED_REASONS", table: "qr_codes", column: "retired_reason", constraint: "qr_codes_retired_reason_check" },
+    { file: "lib/marketing/qr-contract.ts", constant: "QR_TRAFFIC_CLASSES", table: "qr_scan_events", column: "traffic_class", constraint: "qr_scan_events_traffic_class_check" },
+    { file: "lib/marketing/qr-contract.ts", constant: "QR_DEVICE_CLASSES", table: "qr_scan_events", column: "device_class", constraint: "qr_scan_events_device_class_check" },
     // wave 151 (151L, closing — the mirrors lanes 151A / 151B / 151C / 151D requested once their migrations were live; every CHECK below
     // is APPLIED LIVE 2026-11-09 and in the regenerated cache): one code constant per vocabulary.
     { file: "lib/lead-pipeline/freshness.ts", constant: "FRESHNESS_VERDICTS", table: "raw_scraped_leads", column: "freshness_verdict", constraint: "raw_scraped_leads_freshness_verdict_check" },

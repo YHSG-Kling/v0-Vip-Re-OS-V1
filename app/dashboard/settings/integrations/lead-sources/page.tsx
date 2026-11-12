@@ -3,7 +3,6 @@ import { createClient } from "@/lib/supabase/server"
 import { getTenantConnectionsAction, getTenantAcquisitionProvidersAction } from "@/app/actions/tenant-connections"
 import { LeadSourcesClient } from "./lead-sources-client"
 import { AcquisitionProvidersPanel } from "./acquisition-providers-panel"
-import { TENANT_PROVIDER_CONNECTION_STATES } from "@/lib/providers/tenant-provider-connections"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "Lead Sources & Listing Feeds" }
@@ -25,8 +24,10 @@ export default async function LeadSourcesPage() {
   if (!user) redirect("/login")
 
   const res = await getTenantConnectionsAction()
-  if (!res.ok) return <div className="p-6 text-red-600">Brokerage admin access required.</div>
-  // Wave 151 (lane 151F, route B): the tenant's OWN acquisition provider accounts, with their honest derived states.
+  // Wave 152 (lane 152A): actor-neutral — the admin of a solo or team subscription is not a "brokerage admin".
+  if (!res.ok) return <div className="p-6 text-sm text-muted-foreground">Lead sources are managed by an admin on your account. Ask one of them to set these up.</div>
+  // Wave 151 (lane 151F, route B): the tenant's OWN acquisition provider accounts, with their honest derived states —
+  // worded by THE presenter (wave 152, lane 152A).
   const acq = await getTenantAcquisitionProvidersAction()
 
   return (
@@ -37,8 +38,8 @@ export default async function LeadSourcesPage() {
       />
       <div className="px-6 pb-6 max-w-3xl mx-auto">
         {acq.ok
-          ? <AcquisitionProvidersPanel providers={acq.providers} encryptionConfigured={acq.encryptionConfigured} stateLegend={TENANT_PROVIDER_CONNECTION_STATES} />
-          : <p className="text-xs text-destructive">Acquisition providers could not be read: {acq.error}</p>}
+          ? <AcquisitionProvidersPanel providers={acq.providers} encryptionConfigured={acq.encryptionConfigured} />
+          : <p className="text-xs text-destructive">{acq.error}</p>}
       </div>
     </>
   )

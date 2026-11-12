@@ -117,6 +117,7 @@ Per-classification extracted_fields shape:
   title_report          → { title_company, report_date, key_exceptions[] }
   hoa_documents         → { hoa_name, dues_amount, dues_frequency }
   closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close,
+                            buyer_names[], seller_names[], property_address,
                             total_closing_costs, owner_title_premium, lender_title_premium,
                             settlement_fee, transfer_taxes, recording_fees,
                             sales_price, earnest_money_deposit, seller_credit_to_buyer,
@@ -158,6 +159,7 @@ Per-classification extracted_fields shape:
                            figure not explicitly stated — never estimate.)
   seller_broker_agreement → { seller_name, brokerage_name, commission_rate, effective_date, expires_at }
   preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company,
+                            buyer_names[], seller_names[], property_address,
                             sales_price, earnest_money_deposit, seller_credit_to_buyer,
                             agent_credit_to_buyer, broker_credit_to_buyer,
                             agent_credit_to_seller, broker_credit_to_seller,
@@ -165,6 +167,12 @@ Per-classification extracted_fields shape:
                             buyer_transaction_fee, buyer_admin_fee,
                             owner_title_policy_payer, commission_listing_broker,
                             commission_buyer_broker, commission_total }
+                          (PARTIES AND PROPERTY on closing_disclosure and preliminary_closing_statement — buyer_names
+                           (the borrowers / buyers) and seller_names exactly as each name is printed, one entry per
+                           person or entity, and property_address exactly as printed; use null for any the statement
+                           does not print — never fill a name or address from the contract or from memory. These are
+                           compared against the contract's parties and property, so a guessed one would accuse a
+                           correct statement or hide a wrong-party one.)
                           (SETTLEMENT-COMPARISON FIELDS on closing_disclosure and preliminary_closing_statement —
                            sales_price, earnest_money_deposit, seller_credit_to_buyer, agent_credit_to_buyer /
                            broker_credit_to_buyer (a credit the buyer's or listing AGENT / BROKER gives the buyer — NOT the

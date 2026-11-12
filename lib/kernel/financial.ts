@@ -9,10 +9,12 @@
 //   - NO direct DB writes for financial data outside this file
 //   - Every mutation emits a KernelEvent via lifecycle_events
 //   - business_expenses HAS a brokerage_id column (and team_id). CORRECTED
-//     2026-08-22: this line claimed the opposite, and createExpenseRecord below
-//     already contradicts it. brokerage_id is NOT NULL since m516 and is stamped
-//     from ctx.brokerageId; trigger business_expenses_derive_tenant is the DB
-//     backstop for writers that omit it. Scope reads by tenant AND agent_id.
+//     2026-08-22: this line claimed the opposite. brokerage_id is NOT NULL since
+//     m516 and is stamped from the session tenant by the ONE expense writer,
+//     app/actions/financials.ts logScopedExpense (this file's createExpenseRecord
+//     was retired onto it in wave 152 — tombstone below); trigger
+//     business_expenses_derive_tenant is the DB backstop for writers that omit
+//     it. Scope reads by tenant AND agent_id.
 //   - agent_commissions.status transitions: pending → approved → paid
 //   - agent_cap_tracking is source of truth for cap state (not agents.cap_progress)
 //   - All functions are pure async — no global state, no module-level DB calls
@@ -26,7 +28,7 @@
 //   6. recalculateCommissionState — trigger cap recalc + audit trail
 //   7. markCommissionApproved — status: pending → approved
 //   8. markCommissionPaid — status: approved → paid
-//   9. createExpenseRecord — new business expense
+//   9. (retired wave 152 — expenses are written by app/actions/financials.ts logScopedExpense)
 //   10. exportFinancialReport — CSV/PDF export with audit trail
 //   11. emailFinancialReport — send report via email_queue
 
@@ -73,16 +75,8 @@ const COMMISSION_STATUS_TRANSITIONS: Record<string, string[]> = {
   disputed:   ["approved", "pending"],         // resolve: uphold/correct → approved, or reopen → pending
 }
 
-const VALID_EXPENSE_CATEGORIES = [
-  "marketing",
-  "training",
-  "technology",
-  "office_supplies",
-  "travel",
-  "professional_services",
-  "other",
-] as const
-type ExpenseCategory = typeof VALID_EXPENSE_CATEGORIES[number]
+// TOMBSTONE (wave 152, lane 152D): VALID_EXPENSE_CATEGORIES / ExpenseCategory deleted with createExpenseRecord.
+// The ONE expense category vocabulary is lib/documents/receipt-rules.ts EXPENSE_CATEGORIES (the P&L fold's buckets).
 
 // ─── INPUT / OUTPUT TYPES ─────────────────────────────────────────────────────
 
@@ -251,16 +245,7 @@ export interface CommissionDistribution {
   paidAt:             string | null
 }
 
-export interface ExpenseRecord {
-  id:          string
-  agentId:     string
-  category:    string
-  amount:      number
-  description: string | null
-  receiptUrl:  string | null
-  expenseDate: string
-  createdAt:   string
-}
+// TOMBSTONE (wave 152, lane 152D): `ExpenseRecord` deleted with createExpenseRecord (its only producer).
 
 export interface FinancialExportResult {
   fileUrl:     string
@@ -366,15 +351,8 @@ export interface MarkCommissionPaidInput {
   advanceReason?: string | null
 }
 
-export interface CreateExpenseRecordInput {
-  ctx:         FinancialActorContext
-  agentId:     string
-  category:    string
-  amount:      number
-  description?: string
-  receiptUrl?: string
-  expenseDate?: string
-}
+// TOMBSTONE (wave 152, lane 152D): `CreateExpenseRecordInput` deleted with createExpenseRecord — see the tombstone
+// above createCommissionRecord; the survivor's input is app/actions/financials.ts:logScopedExpense's.
 
 export interface ExportFinancialReportInput {
   ctx:         FinancialActorContext
@@ -1620,119 +1598,14 @@ export async function resolveCommissionDispute(input: {
   }
 }
 
-/**
- * createExpenseRecord — New business expense
- */
-export async function createExpenseRecord(
-  input: CreateExpenseRecordInput
-): Promise<KernelFinancialResult<ExpenseRecord>> {
-  const { ctx, agentId, category, amount, description, receiptUrl, expenseDate } = input
-  const supabase = createServiceClient()
-
-  try {
-    // Guard: owner can only create own expenses (unless broker/admin).
-    //
-    // THIS IS NOT THE WHOLE GATE, and saying so here is the point. `agentId`
-    // arrives as a PARAMETER and this function writes on the SERVICE-ROLE client,
-    // so the roster check below answers "may this rank book someone else's cost"
-    // but NOT "is that someone in the caller's brokerage" — without which a
-    // finance admin could name an agent in ANOTHER tenant while brokerage_id
-    // downstream is stamped with the CALLER's, filing one brokerage's cost onto
-    // another's books.
-    //
-    // The tenant half lives ONE layer up, at
-    // app/actions/financial-kernel.ts#authorizeAgentScope, which every other
-    // agentId-taking action already calls and which createExpenseRecordAction now
-    // calls too (added 2026-08-22). It is not re-implemented here: docs/wave4-slice3.md
-    // rules that authorization belongs in the action layer and that these kernel
-    // functions trust the ctx they are handed, and a second dialect of the same
-    // clause is the drift CLAUDE.md §6 forbids. Any NEW caller of
-    // createExpenseRecord that does not come through that action must apply the
-    // same helper before calling.
-    if (ctx.agentId !== agentId && !isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
-      return { success: false, error: "Can only create expenses for yourself" }
-    }
-
-    // Validate category
-    if (!VALID_EXPENSE_CATEGORIES.includes(category as ExpenseCategory)) {
-      return { success: false, error: `Invalid expense category: ${category}` }
-    }
-
-    // Validate amount
-    if (amount <= 0) {
-      return { success: false, error: "Amount must be positive" }
-    }
-
-    const now = new Date().toISOString()
-    const recordDate = expenseDate ?? new Date().toISOString().split("T")[0]
-
-    // business_expenses.description is NOT NULL in the live schema, so
-    // `description ?? null` did not write an anonymous expense — it made the
-    // whole insert fail, and the caller learned that only from a raw Postgres
-    // message. Ask for the description instead.
-    const expenseDescription = description?.trim()
-    if (!expenseDescription) {
-      return { success: false, error: "A description is required for an expense" }
-    }
-
-    // Insert expense record.
-    //
-    // The comment here used to read "business_expenses has NO brokerage_id
-    // column — only agent_id". That is false against the live schema: the table
-    // carries brokerage_id AND team_id. Believing it meant every expense written
-    // through the kernel was tenant-orphaned, while logScopedExpense in
-    // app/actions/financials.ts set them — two writers, two shapes, and reports
-    // that scope by brokerage silently missed the kernel's rows.
-    const { data: expense, error: insertError } = await supabase
-      .from("business_expenses")
-      .insert({
-        agent_id:     agentId,
-        brokerage_id: ctx.brokerageId,
-        // team_id is left to the DB: FinancialActorContext does not carry a
-        // team, and guessing one from the actor would mis-file an expense a
-        // broker recorded for an agent on a different team.
-        category,
-        amount,
-        description:  expenseDescription,
-        receipt_url:  receiptUrl ?? null,
-        expense_date: recordDate,
-        created_at:   now,
-      })
-      .select()
-      .single()
-
-    if (insertError) {
-      return { success: false, error: `Insert failed: ${insertError.message}` }
-    }
-
-    // Emit lifecycle event
-    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
-        brokerageId: ctx.brokerageId, // NOT NULL (pass 5)
-        entityType: "business_expense",
-        entityId:   expense.id,
-        event:  KernelEvent.EXPENSE_CREATED,
-        metadata:    { agentId, category, amount, description },
-        createdAt:  now,
-        auditOnly: true,
-      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "expense_created_echo", brokerageId: ctx.brokerageId, reason: "lifecycle echo after the expense row landed" })
-
-    return {
-      success: true,
-      data: {
-        id:          expense.id,
-        agentId,
-        category,
-        amount,
-        description: description ?? null,
-        receiptUrl:  receiptUrl ?? null,
-        expenseDate: recordDate,
-        createdAt:   now,
-      },
-    }
-  } catch (error) {
-    return { success: false, error: String(error) }
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 152, lane 152D)
+// `createExpenseRecord` deleted — a second business_expenses writer beside the ruled survivor.
+// SURVIVOR: app/actions/financials.ts:logScopedExpense (the ONE writer for agent / team / brokerage scope; wave-27 ruling).
+// Its only path in was app/actions/financial-kernel.ts createExpenseRecordAction ← app/actions/ai-financial-management.ts
+// createExpense ← the expenses-page dialog, which could not save (its Title-case categories were refused by this
+// function's own lowercase list). MERGED FIRST onto the survivor: the audit-only EXPENSE_CREATED lifecycle echo. The
+// survivor already carried the rest (session actor + tenant, the brokerage-money roster for another agent's ledger, the
+// named agent proved inside the caller's tenant, brokerage_id stamped at the insert, team scope, the accounting push).
 export async function createCommissionRecord(
   input: CreateCommissionRecordInput
 ): Promise<KernelFinancialResult<CreatedCommissionRecord>> {

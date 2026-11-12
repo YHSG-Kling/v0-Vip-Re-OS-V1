@@ -35,6 +35,10 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { resolveActingContext, resolveWriteContext } from '@/lib/platform/acting-context'
 import { resolveAgentIdInBrokerage } from '@/lib/kernel/agent-identity'
 import { resolveLedTeamId } from '@/lib/kernel/resolve-user-team'
+// WAVE 152 (lane 152C): the governed lifecycle / duplicate / activity doors and the one lifecycle classifier. This file
+// stays the board's SESSION gate (tenant from the session, read-only impersonation refused) in front of them.
+import { changeQrLifecycle, duplicateQrDesign, loadQrActivity, type QrActor, type QrLifecycleAction, type QrActivity } from '@/lib/marketing/qr-governance'
+import { qrLifecycleState, type QrLifecycleState, type QrMintContext, type QrDestinationVersion } from '@/lib/marketing/qr-contract'
 
 const BROKERAGE_SCOPE_ROLES = new Set(['broker', 'broker_owner', 'broker_admin', 'admin'])
 
@@ -71,6 +75,24 @@ function qrDisplayName(input: {
   return input.label
 }
 
+/** NOT EXPORTED (same reason as qrDisplayName above): the board's wave-152 provenance + lifecycle fields for one row. */
+function provenanceOf(c: Record<string, any>, creatorNames: Map<string, string>): Pick<QrManagerCode,
+  'lifecycle_state' | 'token_scope' | 'placement' | 'mail_layout' | 'tracking' | 'print_size_in' | 'consent_context' | 'destination_versions' | 'creator_name'> {
+  const ctx = (c.mint_context ?? {}) as Partial<QrMintContext>
+  const history = Array.isArray(c.destination_history) ? (c.destination_history as QrDestinationVersion[]) : []
+  return {
+    lifecycle_state:      qrLifecycleState(c),
+    token_scope:          ctx.token_scope ?? null,
+    placement:            ctx.placement ?? null,
+    mail_layout:          ctx.mail_layout ?? null,
+    tracking:             ctx.tracking === 'disabled' ? 'disabled' : 'enabled',
+    print_size_in:        typeof ctx.print_size_in === 'number' ? ctx.print_size_in : null,
+    consent_context:      ctx.consent_context ?? null,
+    destination_versions: history.length,
+    creator_name:         c.created_by_user_id ? creatorNames.get(c.created_by_user_id) ?? null : null,
+  }
+}
+
 export type QrScopeKind = 'agent' | 'team' | 'brokerage'
 
 export interface QrManagerCode {
@@ -97,6 +119,20 @@ export interface QrManagerCode {
   agent_name:           string | null
   /** What the board renders: the subject's own name, never a bare idempotency key. */
   display_name:         string
+  /** WAVE 152 (152C) — the ONE lifecycle classifier's answer (active · paused · expired · retired · revoked). */
+  lifecycle_state:      QrLifecycleState
+  /** Provenance (m945 mint_context): token scope, placement, mail layout, tracking, print size, consent context. Null
+   *  where the code was minted before wave 152 or the field was not stated — shown as "not recorded", never guessed. */
+  token_scope:          string | null
+  placement:            string | null
+  mail_layout:          string | null
+  tracking:             'enabled' | 'disabled'
+  print_size_in:        number | null
+  consent_context:      string | null
+  /** How many destination versions the code has (1 = never changed; 0 = minted before version history). */
+  destination_versions: number
+  /** The person who minted it (m945 created_by_user_id → users name), null for an automatic or older code. */
+  creator_name:         string | null
 }
 
 export interface QrCampaignRollup {
@@ -125,9 +161,6 @@ export type QrManagerData =
     }
   | { ok: false; error: string }
 
-const CODE_COLUMNS =
-  'id, slug, label, purpose, target_url, destination_type, listing_id, scan_count, ' +
-  'lead_count, is_active, created_at, expires_at, marketing_campaign_id, agent_id'
 
 /**
  * Every QR code the caller is entitled to see, with both campaign linkages
@@ -187,15 +220,17 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
     }
   }
 
+  // WAVE 152 (152C): the m945 provenance + lifecycle columns (created_by_user_id → the creator's name, mint_context,
+  // destination_history, retired_at / retired_reason). m945 was applied live 2026-11-12, so the column list is ONE literal —
+  // the pre-apply degrade (a second, shorter select on PGRST204) retired with it.
   let query = svc
     .from('qr_codes')
-    .select(CODE_COLUMNS)
+    .select('id, slug, label, purpose, target_url, destination_type, listing_id, scan_count, lead_count, is_active, created_at, expires_at, marketing_campaign_id, agent_id, created_by_user_id, mint_context, destination_history, retired_at, retired_reason')
     .eq('brokerage_id', brokerageId)
     .order('created_at', { ascending: false })
   if (agentIds) query = query.in('agent_id', agentIds)
-
   const { data: rows, error: rowsError } = await query
-  if (rowsError) return { ok: false, error: `Could not load QR codes: ${rowsError.message}` }
+  if (rowsError) return { ok: false, error: 'We couldn\'t load your QR codes right now. Nothing was changed — refresh the page in a moment.' }
 
   // The campaigns a NEW code can be linked to. Fetched whether or not any codes
   // exist — the first code an agent mints is the one most worth linking.
@@ -314,6 +349,24 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
     }
   }
 
+  // ── Creator names (wave 152): who minted each code (m945 created_by_user_id, a users.id
+  // stamped from the SESSION at mint time). Read for every scope — provenance, not ownership.
+  const creatorNames = new Map<string, string>()
+  {
+    const creatorIds = [...new Set(codeRows.map((c) => c.created_by_user_id).filter(Boolean))] as string[]
+    if (creatorIds.length > 0) {
+      const { data: creators, error: creatorsError } = await svc
+        .from('users')
+        .select('id, first_name, last_name')
+        .eq('brokerage_id', brokerageId)
+        .in('id', creatorIds)
+      if (creatorsError) console.error('[qr-management] creator names not resolved:', creatorsError.message)
+      for (const u of (creators ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+        creatorNames.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Unnamed')
+      }
+    }
+  }
+
   const codes: QrManagerCode[] = codeRows.map((c) => ({
     id:                    c.id,
     slug:                  c.slug,
@@ -337,6 +390,7 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
       listingLine:  c.listing_id ? listingAddresses.get(c.listing_id) ?? null : null,
       campaignName: c.marketing_campaign_id ? campaignNames.get(c.marketing_campaign_id) ?? null : null,
     }),
+    ...provenanceOf(c, creatorNames),
   }))
 
   // Scans per campaign, from the codes CURRENTLY linked to each campaign. This
@@ -368,10 +422,30 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
   }
 }
 
+/** The SESSION actor for the governed doors — the gate's own facts, never an argument. */
+function actorFrom(ctx: { brokerageId: string | null; userId: string; agentId: string | null; userType: string }): QrActor | null {
+  return ctx.brokerageId ? { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType } : null
+}
+
+/** The ONE session gate in front of the governed lifecycle door (module-private — not an endpoint). */
+async function gatedLifecycle(qrCodeId: string, action: QrLifecycleAction, reason: string | null): Promise<{ ok: true; state: QrLifecycleState; changed: boolean } | { ok: false; error: string }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
+  const actor = actorFrom(ctx)
+  if (!actor) return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
+  const res = await changeQrLifecycle({ qrCodeId, action, reason }, actor)
+  return res.ok ? res : { ok: false, error: res.message }
+}
+
 /**
  * Pause or resume one code. "Keep an eye on all active, inactive codes" only
  * means something if the state is reversible from the same surface that lists
  * it — an inactive code is a paused campaign, not a deleted one.
+ *
+ * WAVE 152 (152C): the raw `is_active` UPDATE that lived here (no evidence, and it could
+ * "resume" a code that must never route again) now goes through the ONE lifecycle door —
+ * lib/marketing/qr-governance.ts changeQrLifecycle (the transition table, a counted write,
+ * ledgered `marketing.qr.lifecycle`). A retired code is refused, never resumed.
  *
  * ★ ACT-AS WRITE SEAM ★ — read_only impersonation is refused before the
  * service-client write, which this gate alone protects. The tenant is taken
@@ -381,26 +455,57 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
 export async function setQrCodeActive(input: {
   qrCodeId: string
   isActive: boolean
-}): Promise<{ ok: true; isActive: boolean } | { ok: false; error: string }> {
+}): Promise<{ ok: true; isActive: boolean; state: QrLifecycleState } | { ok: false; error: string }> {
+  if (!input?.qrCodeId) return { ok: false, error: 'No QR code id supplied.' }
+  const res = await gatedLifecycle(input.qrCodeId, input.isActive ? 'resume' : 'pause', null)
+  return res.ok ? { ok: true, isActive: res.state === 'active' || res.state === 'expired', state: res.state } : res
+}
+
+/**
+ * Retire one code for good — or turn it off because its destination became UNSAFE (a
+ * reason is required and kept on the record). Retirement is TERMINAL: the code never
+ * routes again and its row is never deleted (it records what was printed and mailed).
+ * To print again, duplicate it (duplicateQrCode) — a new unique token.
+ */
+export async function retireQrCode(input: {
+  qrCodeId: string
+  unsafe?: boolean
+  reason?: string
+}): Promise<{ ok: true; state: QrLifecycleState; changed: boolean } | { ok: false; error: string }> {
+  if (!input?.qrCodeId) return { ok: false, error: 'No QR code id supplied.' }
+  return gatedLifecycle(input.qrCodeId, input.unsafe ? 'revoke_unsafe' : 'retire', input.reason?.trim() || null)
+}
+
+/**
+ * Duplicate a code's design ON PURPOSE — same destination, purpose and context, a NEW
+ * unpredictable token (two printed runs stay separately measurable). Idempotent per key:
+ * a double click returns the same new code.
+ */
+export async function duplicateQrCode(input: {
+  qrCodeId: string
+  idempotencyKey: string
+  label?: string
+}): Promise<{ ok: true; replayed: boolean; code: { id: string; slug: string; label: string; scanUrl: string; targetUrl: string } } | { ok: false; error: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { ok: false, error: ctx.error }
-  if (!ctx.brokerageId) {
-    return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
-  }
-  if (!input?.qrCodeId) return { ok: false, error: 'No QR code id supplied.' }
+  const actor = actorFrom(ctx)
+  if (!actor) return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
+  const res = await duplicateQrDesign({ sourceQrCodeId: input?.qrCodeId, idempotencyKey: input?.idempotencyKey, label: input?.label ?? null }, actor)
+  if (!res.ok) return { ok: false, error: res.message }
+  const { id, slug, label, scanUrl, targetUrl } = res.code
+  return { ok: true, replayed: res.replayed, code: { id, slug, label, scanUrl, targetUrl } }
+}
 
-  const svc = createServiceClient()
-  const { data, error } = await svc
-    .from('qr_codes')
-    .update({ is_active: input.isActive })
-    .eq('id', input.qrCodeId)
-    .eq('brokerage_id', ctx.brokerageId)
-    .select('id, is_active')
-    .maybeSingle()
-
-  if (error) return { ok: false, error: `Could not update this QR code: ${error.message}` }
-  if (!data) {
-    return { ok: false, error: 'That QR code is not in your brokerage.' }
-  }
-  return { ok: true, isActive: !!data.is_active }
+/**
+ * One code's scan history and aggregate outcomes for the board: raw scans, human-likely
+ * visits, unique visitor-days (only where a visitor key exists), consented submissions —
+ * never a person (no visitor key or contact id leaves the server).
+ */
+export async function loadQrCodeActivity(qrCodeId: string): Promise<{ ok: true; activity: QrActivity } | { ok: false; error: string }> {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { ok: false, error: ctx.error ?? 'Not authenticated' }
+  const actor = actorFrom(ctx)
+  if (!actor) return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
+  const res = await loadQrActivity(qrCodeId, actor)
+  return res.ok ? res : { ok: false, error: res.message }
 }

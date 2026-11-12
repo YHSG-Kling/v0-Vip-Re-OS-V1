@@ -66,7 +66,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
       } else {
         setAddError(
           res.notConfigured
-            ? "Telephony isn't connected for your brokerage yet. Once your carrier is set up, you can search and buy numbers here."
+            ? "Phone service isn't connected for your account yet. Once it is set up, you can search and buy numbers here."
             : res.error,
         )
       }
@@ -86,7 +86,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
       } else {
         setAddError(
           res.notConfigured
-            ? "Telephony isn't connected for your brokerage yet. Once your carrier is set up, you can search and buy numbers here."
+            ? "Phone service isn't connected for your account yet. Once it is set up, you can search and buy numbers here."
             : res.error,
         )
       }
@@ -219,7 +219,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
             Phone & ISA Voice
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Configure how your brokerage provisions phone numbers for agents and which voice
+            Configure how your account provisions phone numbers for agents and which voice
             the AI ISA uses when no agent voice clone is available.
           </p>
         </div>
@@ -247,8 +247,12 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
               {settings.autoProvisionPhoneNumbers ? "Auto-provisioning is ON" : "Auto-provisioning is OFF"}
             </p>
             <p className="text-xs text-muted-foreground mt-0.5">
+              {/* Wave 152 (lane 152A): this line hard-coded a guessed per-number price and "billed to brokerage" for
+                  EVERY subscriber. The truth is the plan's number allowance this page already reads (the Add a Number
+                  card below): numbers inside the plan are included, beyond it they are metered overage on the
+                  account's subscription — actor-neutral, and no price this card did not read. */}
               {settings.autoProvisionPhoneNumbers
-                ? "~$1.15/mo per number, billed to brokerage. Agents get a number on signup."
+                ? `Each new agent gets a number on signup. Numbers within your plan are included; numbers beyond it are metered overage on your subscription${allowance ? ` (${allowance.activeNumbers} of ${allowance.includedNumbers} included numbers in use)` : ""}.`
                 : "Each agent must add their own number manually. Bring your own (BYO) Twilio numbers supported."}
             </p>
           </div>
@@ -269,7 +273,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
             Add a Number
           </CardTitle>
           <CardDescription className="text-xs">
-            Search available numbers by area code and add one to your brokerage. Numbers inside
+            Search available numbers by area code and add one to your account. Numbers inside
             your plan are included; beyond that they're metered overage.
           </CardDescription>
         </CardHeader>

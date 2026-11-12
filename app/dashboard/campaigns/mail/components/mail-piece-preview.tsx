@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/app/components/ui/card"
 import { Mail } from "lucide-react"
 // The blank layout library (wave 151, lane 151H) — the preview says which GLOBAL layout the piece prints on; piece-type.ts is
 // client-safe (type-only import).
-import { MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE } from "@/lib/direct-mail/mail-piece-rules"
+import { MAIL_LAYOUT_LIBRARY, HANDWRITING_STYLE_TYPEFACE, decideMailQrRegion, type MailLayoutKey } from "@/lib/direct-mail/mail-piece-rules"
 
 export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
 
@@ -35,8 +35,39 @@ interface Props {
   agentPhone?: string
   agentLogoUrl?: string
   qrImageUrl?: string | null
+  /** Wave 152 (152C): the campaign's REGISTERED code tracking link — the region prints its token under the symbol. */
+  qrScanUrl?: string | null
   recipientName?: string
   colors?: MailPreviewColors
+}
+
+/**
+ * Wave 152 (lane 152C) — THE OPTIONAL QR REGION, previewed with the SAME decision the renderers use
+ * (decideMailQrRegion). A registered code prints with its unique token beneath it; anything else shows the empty
+ * region and says the piece still mails — a QR never holds up a mailing.
+ */
+function QrRegionPreview({ layout, qrImageUrl, qrScanUrl, px }: { layout: MailLayoutKey; qrImageUrl?: string | null; qrScanUrl?: string | null; px: number }) {
+  const region = decideMailQrRegion({ layout, scanUrl: qrScanUrl ?? null })
+  const spec = MAIL_LAYOUT_LIBRARY[layout].qrRegion
+  if (!spec) return null
+  if (region.print && qrImageUrl) {
+    return (
+      <div className="flex flex-col items-center gap-0.5" data-qr-token={region.token}>
+        <Image src={qrImageUrl} alt="QR code" width={px} height={px} unoptimized />
+        <p className="text-[8px] text-gray-600">Scan with your phone camera</p>
+        <p className="font-mono text-[7px] text-gray-500 break-all max-w-[90px] text-center">{region.token}</p>
+      </div>
+    )
+  }
+  return (
+    <div
+      className="border-2 border-dashed border-gray-300 flex items-center justify-center text-[8px] text-gray-500 text-center p-1"
+      style={{ width: px, height: px }}
+      title={region.print ? "Your campaign's code prints here." : region.note}
+    >
+      Optional QR<br />{spec.sizeIn} in
+    </div>
+  )
 }
 
 const PIECE_LABELS: Record<DirectMailPieceType, string> = {
@@ -57,6 +88,7 @@ export function MailPiecePreview({
   agentPhone,
   agentLogoUrl,
   qrImageUrl,
+  qrScanUrl,
   recipientName,
   colors,
 }: Props) {
@@ -70,16 +102,19 @@ export function MailPiecePreview({
         Prints on the global blank layout{LAYOUTS_FOR[pieceType].length > 1 ? "s" : ""} {LAYOUTS_FOR[pieceType].map((k) => MAIL_LAYOUT_LIBRARY[k].label).join(" + ")} — your logo, colors, name, license line, QR and
         return address are filled in from your settings at proof time; the layout itself carries no brand and no address.
       </p>
+      <p className="text-[11px] text-muted-foreground">
+        Every layout has an optional QR area. It prints this campaign&apos;s own unique code when one is set; otherwise it stays blank and the piece mails as usual.
+      </p>
 
-      {pieceType === "postcard" && <PostcardPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, colors }} />}
-      {pieceType === "letter" && <LetterPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, recipientName, colors }} />}
-      {pieceType === "handwritten_letter" && <HandwritingStyleNotePreview {...{ body, agentName, recipientName }} />}
-      {pieceType === "thank_you_note" && <ThankYouNotePreview {...{ body, agentName, recipientName }} />}
+      {pieceType === "postcard" && <PostcardPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, qrScanUrl, colors }} />}
+      {pieceType === "letter" && <LetterPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, qrScanUrl, recipientName, colors }} />}
+      {pieceType === "handwritten_letter" && <HandwritingStyleNotePreview {...{ body, agentName, recipientName, qrImageUrl, qrScanUrl }} />}
+      {pieceType === "thank_you_note" && <ThankYouNotePreview {...{ body, agentName, recipientName, qrImageUrl, qrScanUrl }} />}
     </div>
   )
 }
 
-function PostcardPreview({ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, colors }: Omit<Props, "pieceType" | "recipientName">) {
+function PostcardPreview({ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, qrScanUrl, colors }: Omit<Props, "pieceType" | "recipientName">) {
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
@@ -98,13 +133,7 @@ function PostcardPreview({ headline, body, cta, agentName, agentPhone, agentLogo
               {agentPhone && <p>{agentPhone}</p>}
             </div>
             <div className="flex flex-col items-center gap-1">
-              {qrImageUrl ? (
-                <Image src={qrImageUrl} alt="QR code" width={72} height={72} unoptimized />
-              ) : (
-                <div className="h-[72px] w-[72px] border-2 border-dashed border-gray-300 flex items-center justify-center text-[8px] text-gray-500 text-center">
-                  QR<br />placeholder
-                </div>
-              )}
+              <QrRegionPreview layout="postcard_front" qrImageUrl={qrImageUrl} qrScanUrl={qrScanUrl} px={72} />
               <p className="text-[8px] text-gray-600 max-w-[80px] text-center">{cta}</p>
             </div>
           </div>
@@ -114,7 +143,7 @@ function PostcardPreview({ headline, body, cta, agentName, agentPhone, agentLogo
   )
 }
 
-function LetterPreview({ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, recipientName }: Omit<Props, "pieceType">) {
+function LetterPreview({ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, qrScanUrl, recipientName }: Omit<Props, "pieceType">) {
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
@@ -133,13 +162,7 @@ function LetterPreview({ headline, body, cta, agentName, agentPhone, agentLogoUr
           <div className="flex items-end justify-between border-t pt-3">
             <p className="text-xs italic text-gray-700">Warm regards,<br />{agentName}</p>
             <div className="flex flex-col items-center gap-1">
-              {qrImageUrl ? (
-                <Image src={qrImageUrl} alt="QR code" width={64} height={64} unoptimized />
-              ) : (
-                <div className="h-[64px] w-[64px] border-2 border-dashed border-gray-300 flex items-center justify-center text-[8px] text-gray-500 text-center">
-                  QR<br />placeholder
-                </div>
-              )}
+              <QrRegionPreview layout="letter" qrImageUrl={qrImageUrl} qrScanUrl={qrScanUrl} px={64} />
               <p className="text-[8px] text-gray-600 max-w-[70px] text-center">{cta}</p>
             </div>
           </div>
@@ -149,7 +172,7 @@ function LetterPreview({ headline, body, cta, agentName, agentPhone, agentLogoUr
   )
 }
 
-function HandwritingStyleNotePreview({ body, agentName, recipientName }: Pick<Props, "body" | "agentName" | "recipientName">) {
+function HandwritingStyleNotePreview({ body, agentName, recipientName, qrImageUrl, qrScanUrl }: Pick<Props, "body" | "agentName" | "recipientName" | "qrImageUrl" | "qrScanUrl">) {
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
@@ -157,6 +180,7 @@ function HandwritingStyleNotePreview({ body, agentName, recipientName }: Pick<Pr
           <p className="text-base text-blue-900">Dear {recipientName || "[Recipient]"},</p>
           <p className="text-base text-blue-900 leading-relaxed flex-1 whitespace-pre-wrap">{body}</p>
           <p className="text-base text-blue-900 self-end">Warmly, {agentName}</p>
+          <div className="self-end"><QrRegionPreview layout="personal_letter" qrImageUrl={qrImageUrl} qrScanUrl={qrScanUrl} px={56} /></div>
         </div>
         <div className="px-3 py-2 text-[10px] text-muted-foreground bg-gray-50 border-t">
           {HANDWRITING_STYLE_TYPEFACE.description}. A pen-written card comes only from a handwriting provider (none is active).
@@ -166,7 +190,7 @@ function HandwritingStyleNotePreview({ body, agentName, recipientName }: Pick<Pr
   )
 }
 
-function ThankYouNotePreview({ body, agentName, recipientName }: Pick<Props, "body" | "agentName" | "recipientName">) {
+function ThankYouNotePreview({ body, agentName, recipientName, qrImageUrl, qrScanUrl }: Pick<Props, "body" | "agentName" | "recipientName" | "qrImageUrl" | "qrScanUrl">) {
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
@@ -179,6 +203,8 @@ function ThankYouNotePreview({ body, agentName, recipientName }: Pick<Props, "bo
             <p className="text-xs text-gray-800">Dear {recipientName || "[Recipient]"},</p>
             <p className="text-xs text-gray-800 flex-1 whitespace-pre-wrap leading-relaxed">{body}</p>
             <p className="text-xs italic text-gray-700 self-end">— {agentName}</p>
+            {/* The thank-you note mails on the personal-note layout (LAYOUTS_FOR) — its optional QR area. */}
+            <div className="self-end"><QrRegionPreview layout="personal_letter" qrImageUrl={qrImageUrl} qrScanUrl={qrScanUrl} px={48} /></div>
           </div>
         </div>
       </CardContent>

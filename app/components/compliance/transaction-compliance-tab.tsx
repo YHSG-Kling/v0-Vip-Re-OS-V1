@@ -225,6 +225,10 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
         )
         setShowReviewDialog(false)
         router.refresh()
+      } else {
+        // wave 152 (lane 152E): a refused review says why (a computed check clears when the documents agree; an override needs
+        // the override authority and a written reason) — never a silent no-op
+        toast.error(result.error ?? "The check was not updated")
       }
     })
   }
@@ -419,6 +423,9 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
     }
 
     let totalPassed = 0
+    // wave 152 (lane 152E): a computed or blocking check never rides in a batch — the server names each one back; only what it
+    // actually passed is shown as passed
+    const notPassed = new Set<string>()
     for (const [transactionId, { brokerageId, checkIds }] of byTxn.entries()) {
       const result = await batchPassComplianceChecks({
         transactionId,
@@ -426,13 +433,16 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
         brokerageId,
       })
       if (result.success) totalPassed += result.updated
+      else checkIds.forEach((id) => notPassed.add(id))
+      for (const r of result.refused ?? []) notPassed.add(r.id)
     }
 
     setLogs((prev) =>
-      prev.map((l) => (selectedIds.has(l.id) ? { ...l, status: "pass" } : l))
+      prev.map((l) => (selectedIds.has(l.id) && !notPassed.has(l.id) ? { ...l, status: "pass" } : l))
     )
     setSelectedIds(new Set())
     toast.success(`${totalPassed} check${totalPassed !== 1 ? "s" : ""} approved`)
+    if (notPassed.size > 0) toast.info(`${notPassed.size} check${notPassed.size !== 1 ? "s were" : " was"} not approved in the batch — a blocking check, or one the closing comparison computes, is reviewed one at a time.`)
     router.refresh()
   }
 

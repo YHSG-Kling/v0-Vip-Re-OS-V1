@@ -30,6 +30,9 @@
  *     a MATCH is a match whatever the confidence (two independent sources agreeing is evidence).
  */
 
+// WAVE 152 (lane 152E): the ONE override reason floor (client-safe, no server imports) — an override of a computed check holds it too.
+import { OVERRIDE_REASON_MIN_CHARS } from "@/lib/kernel/status-override"
+
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
 /** Every term the comparison speaks. One spelling each (CLAUDE.md §6). */
@@ -279,10 +282,28 @@ const STATED_USD_TOLERANCE = 0.005
 /** `conflict` = the executed paper disagrees with itself and does not say which instrument governs. */
 export type Verdict = "match" | "mismatch" | "unverifiable" | "conflict"
 
+/**
+ * WAVE 152 (lane 152E — directive 152E "CLASSIFY MATCH / MISSING / CONTRADICTORY / SUPERSEDED / REQUIRES HUMAN INTERPRETATION").
+ * NOT a second spelling of the verdict (CLAUDE.md §6): it REFINES it, by ONE mapping (classOf below) — the verdict still drives the
+ * row's status and signature (so no waiver re-opens); the class says WHAT KIND of correction is owed and by whom:
+ *   match → nothing · missing → one side does not state the term (obtain it) · contradictory → both state it, decisively, differently
+ *   (the issuer corrects) · superseded → the other side still shows a value a LATER executed instrument replaced (send the issuer the
+ *   executed instrument) · requires_human_interpretation → the paper disagrees with itself, or a difference rests on a low-confidence
+ *   reading or an incomparable form — a person (the responsible licensed professional / closing attorney where meaning is in doubt)
+ *   reads it; nothing here interprets a clause.
+ */
+const TERM_COMPARISON_CLASSES = ["match", "missing", "contradictory", "superseded", "requires_human_interpretation"] as const
+// module-private: readers take it as TermFinding["classification"] (lane 152G reads the runner's outcome)
+type TermComparisonClass = (typeof TERM_COMPARISON_CLASSES)[number]
+
 export interface TermFinding {
   term:        ClosingTermKey
   label:       string
   verdict:     Verdict
+  /** WAVE 152 (lane 152E): the directive's class — a refinement of `verdict` (classOf). */
+  classification: TermComparisonClass
+  /** WAVE 152 (lane 152E): what the governing terms were compared AGAINST (default: the settlement statement). */
+  against?:    "settlement" | "deal_record"
   governing:   string | null
   settlement:  string | null
   /** One sentence a TC can act on. */
@@ -341,7 +362,35 @@ function expectedCommissionUsd(fact: TermFact | undefined, price: number | null)
   return null
 }
 
-function compareTerm(term: ClosingTermKey, gov: TermFact | undefined, set: TermFact | undefined, governingPrice: number | null, conflict?: TermConflict): TermFinding {
+/** The comparison's options (wave 152, lane 152E). */
+interface CompareOptions {
+  /** How the executed contract words its closing date (transactions.contract_closing_terms); null = not read — unknown stays unknown. */
+  closingWording?: "on" | "on_or_before" | null
+  /** Values a later executed instrument REPLACED, per term (superimposeGoverningTerms' history) — a settlement showing one is SUPERSEDED. */
+  history?: GoverningTerms["history"]
+}
+
+/** PURE — the directive's class of one finding (see TERM_COMPARISON_CLASSES). The ONE mapping from the verdict. */
+function classOf(f: Omit<TermFinding, "classification">, superseded: boolean): TermComparisonClass {
+  if (f.verdict === "match") return "match"
+  if (f.verdict === "conflict") return "requires_human_interpretation"
+  if (f.verdict === "mismatch") return superseded ? "superseded" : "contradictory"
+  return f.governing !== null && f.settlement !== null ? "requires_human_interpretation" : "missing"
+}
+
+function compareTerm(term: ClosingTermKey, gov: TermFact | undefined, set: TermFact | undefined, governingPrice: number | null, conflict?: TermConflict, opts: CompareOptions = {}): TermFinding {
+  // WAVE 152 (lane 152E): the other side still shows a value a LATER executed instrument replaced — the issuer used the pre-amendment term.
+  const replaced = set ? (opts.history?.[term] ?? []).find((h) => h.fact.unit === set.unit && h.fact.value === set.value && (!gov || gov.value !== set.value)) : undefined
+  const f = compareTermVerdict(term, gov, set, governingPrice, conflict, opts)
+  if (f.verdict === "mismatch" && replaced) {
+    return { ...f, classification: "superseded",
+      why: `${CLOSING_TERM_LABEL[term]}: the settlement statement shows ${f.settlement}, the value REPLACED by the ${replaced.supersededBy} — the governing term is ${f.governing}.`,
+      correction: `Send the issuer of the statement (title company / closing attorney) the ${replaced.supersededBy} and ask for a corrected statement; the signed terms are never edited here.` }
+  }
+  return { ...f, classification: classOf(f, false) }
+}
+
+function compareTermVerdict(term: ClosingTermKey, gov: TermFact | undefined, set: TermFact | undefined, governingPrice: number | null, conflict: TermConflict | undefined, opts: CompareOptions): Omit<TermFinding, "classification"> {
   const base = {
     term, label: CLOSING_TERM_LABEL[term],
     governingSource: gov?.source ?? null, settlementSource: set?.source ?? null,
@@ -386,6 +435,15 @@ function compareTerm(term: ClosingTermKey, gov: TermFact | undefined, set: TermF
     equal = Math.abs(gov.value - set.value) <= STATED_USD_TOLERANCE
   } else if (gov.unit === "date" && set.unit === "date") {
     equal = gov.value === set.value
+    // WAVE 152 (lane 152E — directive 476: "'on or before' early close does not fabricate need for amendment"). The executed contract
+    // says closing occurs ON OR BEFORE its date (read deterministically — lib/transactions/contract-terms.ts readClosingDateWording —
+    // and held on transactions.contract_closing_terms): an earlier settlement date IS the contract, not a departure from it. A fixed
+    // "on" day, or wording nobody has read, keeps the existing reading (a difference flagged for review); a LATER date always needs
+    // the executed extension.
+    if (!equal && term === "closing_date" && opts.closingWording === "on_or_before" && set.value < gov.value && isDecisive(set.confidence)) {
+      return { ...base, verdict: "match", governing: `on or before ${gov.value}`, settlement: setText, blocking: false,
+        why: `${CLOSING_TERM_LABEL[term]}: the statement's ${set.value} is within the executed contract's "on or before ${gov.value}" — an earlier closing needs no amendment.`, correction: "" }
+    }
   } else if (gov.unit === "party" && set.unit === "party") {
     equal = gov.value === set.value
   } else {
@@ -414,7 +472,7 @@ function compareTerm(term: ClosingTermKey, gov: TermFact | undefined, set: TermF
  * reads `governingOnFile` / `settlementOnFile` and files the right finding (a missing settlement
  * statement is a different problem from a missing term).
  */
-export function compareClosingTerms(governing: TermMap, settlement: TermMap, conflicts: GoverningTerms["conflicts"] = {}): ClosingComparison {
+export function compareClosingTerms(governing: TermMap, settlement: TermMap, conflicts: GoverningTerms["conflicts"] = {}, opts: CompareOptions = {}): ClosingComparison {
   const price = governing.purchase_price?.unit === "usd" ? governing.purchase_price.value : null
   const findings: TermFinding[] = []
   for (const term of CLOSING_TERM_KEYS) {
@@ -428,7 +486,7 @@ export function compareClosingTerms(governing: TermMap, settlement: TermMap, con
       const synthetic: TermFact | undefined = l && b
         ? { unit: "usd", value: Math.round((l.usd + b.usd) * 100) / 100, confidence: "record", source: "listing-side + buyer-side governing commission" }
         : undefined
-      findings.push(compareTerm(term, synthetic ?? governing.commission_total, settlement.commission_total, price))
+      findings.push(compareTerm(term, synthetic ?? governing.commission_total, settlement.commission_total, price, undefined, opts))
       continue
     }
     const gov = governing[term]
@@ -437,7 +495,7 @@ export function compareClosingTerms(governing: TermMap, settlement: TermMap, con
     // CONTRADICTS ITSELF on it (wave 151, lane 151K: two executed addenda, nothing signed to order them): that is a finding for a
     // person whether or not a settlement statement states the term yet.
     if (!gov && !set && !conflicts[term]) continue
-    findings.push(compareTerm(term, gov, set, price, conflicts[term]))
+    findings.push(compareTerm(term, gov, set, price, conflicts[term], opts))
   }
   const counts = {
     match: findings.filter((f) => f.verdict === "match").length,
@@ -447,6 +505,59 @@ export function compareClosingTerms(governing: TermMap, settlement: TermMap, con
     blocking: findings.filter((f) => f.blocking).length,
   }
   return { findings, governingOnFile: Object.keys(governing).length > 0, settlementOnFile: Object.keys(settlement).length > 0, counts }
+}
+
+// ── WAVE 152 (lane 152E): the governing terms against the STRUCTURED TRANSACTION RECORD ─────────────────────────────────────
+//
+// Directive 152E: "→ COMPARE TO STRUCTURED TRANSACTION RECORD → COMPARE TO APPLICABLE FINANCIAL/SETTLEMENT RECORDS". The settlement
+// half existed (compareClosingTerms); the record half did not: the commission engine, the CDA and the closing figures are PRICED
+// FROM the deal record (transactions.purchase_price / earnest_money / closing_cost_contribution / contract_closing_date), and a deal
+// record that drifted from the executed contract (a hand edit, a mirror that failed) was compared against nothing. Pure.
+
+/** The closing terms the deal record carries, and the record column each one is (the runner reads exactly these). */
+export const DEAL_RECORD_TERM_COLUMNS: Readonly<Partial<Record<ClosingTermKey, string>>> = {
+  purchase_price: "purchase_price",
+  earnest_money: "earnest_money",
+  seller_credit: "closing_cost_contribution",
+  closing_date: "contract_closing_date",
+}
+
+const RECORD_CORRECTION: Partial<Record<ClosingTermKey, string>> = {
+  purchase_price: "The transaction coordinator corrects the deal's price to the executed term — or records the executed amendment that changed it, which updates the deal record itself. The signed contract is never edited here.",
+  earnest_money: "The transaction coordinator corrects the deal's earnest money to the executed term, or records the executed amendment that changed it.",
+  seller_credit: "The transaction coordinator corrects the deal's seller credit to the executed term, or records the executed amendment that changed it.",
+  closing_date: "Record the executed contract's closing date on the deal's closing dates, or record the executed extension that moved it.",
+}
+
+/**
+ * PURE — the governing executed terms against the deal record. Only a term the EXECUTED paper states is compared (a governing
+ * fact that IS the deal record — a hand-built deal with no offer — is never compared with itself). Both sides stated → match or
+ * contradictory (money terms block: they price the commission). The deal record silent on the PRICE the contract states → missing,
+ * for review (the engine cannot price it). Formatting never matters: the values are parsed figures and calendar days.
+ */
+export function compareDealRecordTerms(governing: TermMap, record: TermMap): TermFinding[] {
+  const out: TermFinding[] = []
+  for (const term of Object.keys(DEAL_RECORD_TERM_COLUMNS) as ClosingTermKey[]) {
+    const gov = governing[term]
+    if (!gov || String(gov.instrumentId ?? "").startsWith("tx:")) continue
+    const rec = record[term]
+    const label = `${CLOSING_TERM_LABEL[term]} on the deal record`
+    const base = { term, label, against: "deal_record" as const, governingSource: gov.source, settlementSource: rec?.source ?? null, correction: RECORD_CORRECTION[term] ?? "" }
+    if (!rec) {
+      if (term !== "purchase_price") continue
+      out.push({ ...base, verdict: "unverifiable", classification: "missing", governing: formatFact(gov), settlement: null, blocking: false,
+        why: `The executed contract states ${CLOSING_TERM_LABEL[term].toLowerCase()} ${formatFact(gov)}, but the deal record does not carry it — the commission and the closing figures are priced from the deal record.` })
+      continue
+    }
+    const equal = gov.unit === "usd" && rec.unit === "usd" ? Math.abs(gov.value - rec.value) <= STATED_USD_TOLERANCE : gov.unit === rec.unit && gov.value === rec.value
+    if (equal) {
+      out.push({ ...base, verdict: "match", classification: "match", governing: formatFact(gov), settlement: formatFact(rec), blocking: false, why: `${label} agrees with the executed contract (${formatFact(rec)}).`, correction: "" })
+      continue
+    }
+    out.push({ ...base, verdict: "mismatch", classification: "contradictory", governing: formatFact(gov), settlement: formatFact(rec), blocking: BLOCKING_TERMS.has(term),
+      why: `The deal record says ${formatFact(rec)}; the executed contract (${gov.source}) says ${formatFact(gov)}. What is priced from the deal record — the commission, the CDA, the closing figures — would be wrong.` })
+  }
+  return out
 }
 
 // ── The compliance-log shape (what the runner writes; pure so the guard can assert it) ──────
@@ -467,18 +578,68 @@ export interface LogRowSpec {
   failure_reason: string | null
   /** A stable signature of the values compared — a changed signature re-opens a waived row. */
   signature:      string
+  /** WAVE 152 (lane 152E): WHO corrects it, in words — the corrective request the runner opens names them. */
+  responsible?:   string | null
+}
+
+/** WAVE 152 (lane 152E): the person / party who owes the correction, by class and by what the terms were compared against. */
+function responsibleFor(f: TermFinding): string {
+  if (f.against === "deal_record") return "the transaction coordinator (the deal record)"
+  if (f.classification === "requires_human_interpretation") return "the responsible licensed professional or closing attorney (a person reads the instruments — nothing here interprets them)"
+  if (f.classification === "missing" && !f.governing) return "the agent or transaction coordinator (upload the executed instrument that states it)"
+  return "the issuer of the settlement statement / Closing Disclosure (title company or closing attorney), asked by the transaction coordinator"
 }
 
 /** PURE. A term finding as the compliance-log row it becomes. */
 export function findingToLogRow(f: TermFinding): LogRowSpec {
   const status: LogStatus = f.verdict === "match" ? "pass" : f.verdict === "mismatch" ? "fail" : "needs_review"
+  const record = f.against === "deal_record"
   return {
-    check_type:  closingTermCheckType(f.term),
-    check_label: `Closing: ${f.label} matches the settlement`,
+    check_type:  record ? `${CLOSING_TERM_CHECK_PREFIX}record.${f.term}` : closingTermCheckType(f.term),
+    check_label: record ? `Closing: ${f.label} matches the executed contract` : `Closing: ${f.label} matches the settlement`,
     status,
     // A mismatch on a money / who-pays term holds the closing; so does executed paper that contradicts itself on one.
     is_blocking: (status === "fail" || f.verdict === "conflict") && f.blocking,
     failure_reason: status === "pass" ? null : `${f.why} ${f.correction}`.trim(),
     signature: `${f.verdict}|${f.governing ?? "-"}|${f.settlement ?? "-"}`,
+    responsible: status === "pass" ? null : responsibleFor(f),
   }
+}
+
+// ── WAVE 152 (lane 152E): THE OVERRIDE RULE for a compliance-log row ───────────────────────────────────────────────────────
+//
+// Directive 152E: "Preserve urgent, responsible human override only when actually authorized, reasoned and audited; no
+// indiscriminate 'approve all'" and "prevent falsely certifying contract compliance". A row the closing engine COMPUTES (its
+// three prefixes) is CLEARED only by the comparison when the documents agree — a person marking it "pass" would certify what
+// nobody verified, and the next run would re-open it anyway. A person may OVERRIDE it: WAIVE, with the override authority and a
+// written reason (the same floor every override holds — OVERRIDE_REASON_MIN_CHARS), ledgered by the door. A waiver of any other
+// BLOCKING row is an override too. A batch never carries a computed or a blocking row. PURE: the door hands in whether the actor
+// holds the override authority.
+
+const COMPUTED_CHECK_PREFIXES = [CLOSING_TERM_CHECK_PREFIX, CLOSING_DOC_CHECK_PREFIX, CLOSING_PARTICIPANT_CHECK_PREFIX] as const
+const isComputedCheck = (checkType: string): boolean => COMPUTED_CHECK_PREFIXES.some((p) => checkType.startsWith(p))
+
+export function decideComplianceCheckChange(input: {
+  checkType: string
+  isBlocking: boolean
+  toStatus: string
+  /** The actor holds the override authority (the door derives it from the tenant roster — never a body field). */
+  actorMayOverride: boolean
+  reason?: string | null
+  /** A batch request (several rows at once). */
+  batch?: boolean
+}): { ok: true; override: boolean } | { ok: false; reason: string } {
+  const computed = isComputedCheck(input.checkType)
+  if (input.batch && (computed || input.isBlocking)) {
+    return { ok: false, reason: computed ? "a check the closing comparison computes is never approved in a batch — it clears when the documents agree, or one authorized person waives it with a reason" : "a blocking check is reviewed one at a time, never in a batch" }
+  }
+  if (computed && input.toStatus === "pass") {
+    return { ok: false, reason: "this check clears only when the compared documents agree — upload the corrected statement, the executed amendment or the confirmed reading and it re-checks; an authorized reviewer may instead WAIVE it with a written reason" }
+  }
+  if (input.toStatus === "waived" && (computed || input.isBlocking)) {
+    if (!input.actorMayOverride) return { ok: false, reason: "only a broker, a brokerage admin or the compliance officer may override a blocking compliance check" }
+    if (!input.reason || input.reason.trim().length < OVERRIDE_REASON_MIN_CHARS) return { ok: false, reason: `an override needs a written reason (at least ${OVERRIDE_REASON_MIN_CHARS} characters) — it is kept as the audit record` }
+    return { ok: true, override: true }
+  }
+  return { ok: true, override: false }
 }

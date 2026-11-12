@@ -13,6 +13,7 @@ import {
   getChannelPerformanceData,
   getTopCampaigns,
 } from "@/lib/campaigns/roi-calculator"
+import { loadRoiOutcomeLedger, roiOutcomeCsv } from "@/lib/intelligence/roi-ledger"
 import { DEFAULT_ROI_WINDOW, isRoiWindowKey, resolveRoiWindow } from "./roi-window"
 
 export const metadata = {
@@ -61,12 +62,32 @@ export default async function CampaignROIPage({
   const windowStart = roiWindow.start
   const windowEnd = roiWindow.end
 
-  // Fetch ROI data in parallel
-  const [roiResult, channelResult, topCampaignsResult] = await Promise.all([
+  // Fetch ROI data in parallel. Wave 152 (lane 152B): THE authorized ROI outcome reader runs beside the cache reads —
+  // the SESSION's own ids (user.id + the profile's brokerage), the service client, and the reader itself is the gate
+  // (scope from the hierarchy / team roster, commission dollars only for the finance roster, a team's lead or a solo
+  // subscriber). Its campaign list is also the visibility filter for the cache rows below.
+  const [roiResult, channelResult, topCampaignsResult, outcomes] = await Promise.all([
     getCampaignROIData(profile.brokerage_id, user.id),
     getChannelPerformanceData(profile.brokerage_id, user.id, windowStart, windowEnd),
     getTopCampaigns(profile.brokerage_id, user.id, 5),
+    loadRoiOutcomeLedger(createServiceClient(), { userId: user.id, brokerageId: profile.brokerage_id }, { sinceDay: windowStart, untilDay: windowEnd }),
   ])
+  // SERVER-ENFORCED VISIBILITY. campaign_roi is read brokerage-wide by the cache reader; only the campaigns the
+  // authorized reader admits for THIS viewer reach the page, and a viewer whose scope could not be resolved sees
+  // none (fail closed — "nobody checked" never renders as the whole brokerage). Revenue columns are withheld when
+  // commission is off this viewer's display (CLAUDE.md §5).
+  const inView = outcomes.ok ? new Set(outcomes.ledger.campaigns.map((c) => c.campaignId)) : new Set<string>()
+  const moneyVisible = outcomes.ok && outcomes.ledger.scope.moneyVisible
+  const scopeRows = (rows: any[]) => rows
+    .filter((r) => inView.has(r.marketing_campaign_id))
+    .map((r) => (moneyVisible ? r : { ...r, total_revenue: null, roi_percentage: null }))
+  const scopedCampaigns = roiResult.success ? scopeRows(roiResult.campaigns || []) : []
+  const scopedTop = topCampaignsResult.success && moneyVisible ? scopeRows(topCampaignsResult.campaigns || []) : []
+  // Channel rows are TENANT-wide rollups: a narrower view sees its own campaigns in the outcomes tab instead.
+  const channelVisible = outcomes.ok && outcomes.ledger.scope.kind === "tenant"
+  const channels = channelVisible && channelResult.success
+    ? (channelResult.channels || []).map((c: any) => (moneyVisible ? c : { ...c, revenue: null, roi_percentage: null }))
+    : []
 
   // Get agents for the filter dropdown. Lane 90A (89D P1-5): the scope is the
   // ONE resolver (lib/kernel/egress-scope.ts) — broker / owner / admin /
@@ -105,13 +126,16 @@ export default async function CampaignROIPage({
       userId={user.id}
       brokerageId={profile.brokerage_id}
       userRole={profile.user_type || "agent"}
-      campaigns={roiResult.success ? roiResult.campaigns || [] : []}
+      campaigns={scopedCampaigns}
       summary={roiResult.success ? roiResult.summary ?? null : null}
-      channelPerformance={channelResult.success ? channelResult.channels || [] : []}
-      topCampaigns={topCampaignsResult.success ? topCampaignsResult.campaigns || [] : []}
+      channelPerformance={channels}
+      topCampaigns={scopedTop}
       agents={agents}
       window={roiWindow.key}
       accessError={!roiResult.success ? roiResult.error : undefined}
+      outcomes={outcomes.ok ? outcomes.ledger : null}
+      outcomesError={outcomes.ok ? null : outcomes.error}
+      outcomesCsv={outcomes.ok ? roiOutcomeCsv(outcomes.ledger) : null}
     />
   )
 }

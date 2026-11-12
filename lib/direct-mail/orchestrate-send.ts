@@ -52,8 +52,10 @@ export interface OrchestrateSendArgs {
   pieceType: DirectMailPieceType
   copyCtx:   DirectMailCopyContext
   /** Optional CAMPAIGN-level QR scan URL (already minted by caller, a
-   *  qr_codes slug shared by every recipient of the campaign) embedded in
-   *  the postcard FRONT's response QR. Letters typically don't carry QRs. */
+   *  qr_codes slug shared by every recipient of the campaign) printed in the
+   *  layout's OPTIONAL QR region — the postcard FRONT and, since wave 152
+   *  (lane 152C), the letter and the personal note too. Absent or unusable →
+   *  the region stays blank and the piece still mails (decideMailQrRegion). */
   qrScanUrl?: string | null
   /**
    * THIS RECIPIENT's `direct_mail_recipients.unsubscribe_token` — the
@@ -260,6 +262,8 @@ export async function orchestrateRenderAndSend(
       // Wave 151 (151H): the handwriting-style PRINTED note on the personal-note layout; the tenant's return address on the letterhead.
       noteStyle:          format === "personal_letter" ? "handwriting_style" : null,
       returnAddress:      senderAddress,
+      // Wave 152 (152C): the campaign's registered code prints in the letter's / note's optional QR region.
+      qrScanUrl:          args.qrScanUrl ?? null,
     })
     if (r.ok && r.html) {
       // Lob letters accept HTML directly via the `file` parameter.

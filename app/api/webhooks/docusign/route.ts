@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState } from "@/lib/forms/esign-execution-loop"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState, recordEnvelopeProgress } from "@/lib/forms/esign-execution-loop"
 import { providerTerminalState } from "@/lib/esign/packet-states"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -87,7 +87,13 @@ export async function POST(request: NextRequest) {
     const terminal = !isCompleted ? providerTerminalState(event, envelopeStatus) : null
     if (terminal && envelopeId) {
       const recorded = await recordEnvelopeTerminalState(supabase as any, { provider: "docusign", envelopeId, state: terminal, reason: envelopeStatus || event || null })
-      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, refused: recorded.refused.length })
+      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, addenda: recorded.addenda, refused: recorded.refused.length })
+    }
+    if (!isCompleted && envelopeId) {
+      // WAVE 152 (lane 152F): delivered / viewed / undeliverable move a PROPOSED ADDENDUM's signature request (and nothing else —
+      // an offer or listing envelope is untouched, as before).
+      const progress = await recordEnvelopeProgress(supabase as any, { provider: "docusign", envelopeId, event, status: envelopeStatus })
+      if (progress.matched) return NextResponse.json({ received: true, action: "progress", envelopeId, changed: progress.changed, to: progress.to })
     }
     if (!isCompleted || !envelopeId) {
       // We log non-completion events but don't take action on them.

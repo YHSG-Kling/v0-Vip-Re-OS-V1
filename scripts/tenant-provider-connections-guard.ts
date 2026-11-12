@@ -209,6 +209,133 @@ async function main() {
   const empty = await loadAcquisitionEconomics(memSupabase({ vendor_usage_tracking: [], raw_scraped_leads: [], leads: [] } as never) as never, { sinceIso: since, duplicateUnitUsd: null })
   check("positive control: zero denominators read NULL (n/a), never 0% claimed", empty.rawLeadGateYield === null && empty.contactConversion === null && empty.costPerUsableRecordUsd === null && empty.duplicateAvoidanceSavingsUsd === null)
 
+  // ── I · wave 152, lane 152A — what the TENANT reads, and the recovery loop behind it ─────────────────────────────────
+  // The verdict's reason / actionable stay INTERNAL (staff console, evidence); the tenant reads THE presenter
+  // (lib/errors presentTenantConnection via presentTenantProviderConnection). Recovery: failed connection → classify →
+  // reportOperationOutcome → data_steward's inbox → the consumer re-reads THE credential row (the provider health reader)
+  // beside its readiness keys → escalate (bell + ticket, truthful) or verified → the watch closes.
+  console.log("\nI — tenant presentation and recovery (wave 152, lane 152A)")
+  const E = await import("../lib/errors")
+  const io = await import("../lib/kernel/immediate-operations")
+  const at152 = "2026-11-11T09:00:00.000Z"
+  const agreed = good.ok ? good.agreement : null
+  const factsOf = (probe: string | null, over: Record<string, unknown> = {}) => ({
+    exists: true, isActive: true, testStatus: (probe === "ok" ? "pass" : probe ? "fail" : "pending") as "pass" | "fail" | "pending", hasApiKey: true,
+    config: { agreement: agreed, territory: terr.ok ? terr.territory : null, frequency: "push", webhook_secret: "enc:v1:aaaa:bbbb:cccc", account_label: "Acme Data", last_health: probe ? { kind: "wallet_balance", status: probe, at: at152, detail: "HTTP 401 — Bearer [redacted]" } : null, ...over } as never,
+  })
+  const viewOf = (provider: string, facts: ReturnType<typeof factsOf> | null, payer = { kind: "team" as const }) => tp.presentTenantProviderConnection(provider, tp.deriveTenantProviderConnectionState(provider, facts), facts, payer)
+  const INTERNAL = /pending_owner_licensing|unconfigured|auth_failed|shape_drift|not_configured|wallet_balance|HTTP \d{3}|lib\/|OWNER-SQL|token|transport|dormant/i
+  const cases: Array<[string, ReturnType<typeof factsOf> | null, string]> = [
+    ["batchdata", null, "unconfigured"], ["batchdata", factsOf(null), "degraded (not yet confirmed)"], ["batchdata", factsOf("ok"), "healthy"],
+    ["batchdata", factsOf("auth_failed"), "revoked (provider refused)"], ["batchdata", factsOf("quota"), "degraded (quota)"], ["batchdata", factsOf("unreachable"), "degraded (unreachable)"],
+    ["batchdata", factsOf("shape_drift"), "degraded (unreadable)"], ["batchdata", factsOf("not_configured"), "degraded (check failed)"],
+    ["batchdata", { ...factsOf("ok"), isActive: false, config: { ...(factsOf("ok").config as object), disconnected_at: at152 } as never }, "revoked (disconnected)"],
+    ["batchdata", { ...factsOf("ok"), config: { ...(factsOf("ok").config as object), sandbox: true } as never }, "sandbox"],
+    ["propertyradar", null, "unsupported"], ["acme-anything", null, "unavailable"],
+  ]
+  const leaks = cases.map(([prov, f, name]) => ({ name, v: viewOf(prov, f) })).filter(({ v }) => {
+    const all = [v.label, v.message.text, v.message.sentence, v.credentialLine, v.costLine].filter(Boolean).join(" ")
+    return INTERNAL.test(all) || !E.tenantCopyVerdict(all, { payer: { kind: "team" } }).ok || !v.label || !v.message.text
+  })
+  check(`every state (${cases.length} cases, all eight states + the causes) reads as the presenter's sentence — no internal state name, probe code, HTTP status, module path, credential word or owner-SQL pointer`, leaks.length === 0, leaks.map((l) => `${l.name}: ${l.v.message.sentence}`).join(" | "))
+  const internalUnsupported = tp.deriveTenantProviderConnectionState("propertyradar", null).reason
+  check("positive control: the INTERNAL reason the panel used to render is caught by the same finders (it names a module path / state)", INTERNAL.test(internalUnsupported) && !E.tenantCopyVerdict(internalUnsupported).ok, internalUnsupported.slice(0, 120))
+  const failing = ["auth_failed", "quota", "unreachable", "shape_drift", "not_configured", null].map((probe) => ({ probe, v: viewOf("batchdata", factsOf(probe)) }))
+  check("a FAILED provider check never reads 'Connected' (label or message) — six failure shapes", failing.every(({ v }) => v.label !== "Connected" && !/^connected/i.test(v.message.text) && !/connected and confirmed/i.test(v.message.text)), failing.map((x) => `${x.probe}:${x.v.label}: ${x.v.message.text}`).join(" | "))
+  check("positive control: the one confirmed state DOES read 'Connected' and 'confirmed' (the finder can see it)", viewOf("batchdata", factsOf("ok")).label === "Connected" && /confirmed with your BatchData account/.test(viewOf("batchdata", factsOf("ok")).message.text))
+  const f429 = tp.classifyTenantProviderFailure({ httpStatus: 429, message: "rate limited for key sk_live_ABCDEFGHIJKLMNOP" }, "BatchData (your own account)")
+  check("classified failures: the tenant sentence carries no HTTP status and no retry promise; the INTERNAL detail keeps the status, redacted", !/HTTP|retr|sk_live/i.test(f429.tenantMessage) && /HTTP 429/.test(f429.detail) && !/ABCDEFGHIJ/.test(f429.detail), `${f429.tenantMessage} || ${f429.detail}`)
+  const actionSrc = stripped("app/actions/tenant-connections.ts")
+  check("the connect post-condition is 'CONFIRMED' (healthy, or a deliberate test account) — a degraded connect is routed, never reported 'completed and verified'", /const confirmed = verified\.ok && \(state\.state === "healthy" \|\| state\.state === "sandbox"\)/.test(actionSrc) && /ok: confirmed,/.test(actionSrc))
+  check("positive control: the pre-fix post-condition shape is not what the finder accepts", !/const confirmed = verified\.ok && \(state\.state === "healthy"/.test('ok: verified.ok && state.state !== "revoked",'))
+
+  // The push door on a refused key: the tenant sentence says "kept" ONLY for deliveries actually parked.
+  {
+    const conn401 = { id: "c-401", brokerage_id: "b1", platform: "batchdata", is_active: true, test_status: "pass" as const, apiKey: "tenant-token-xxxxxxxxxxxxxxxxxxxx", config: factsOf("ok").config }
+    const ev = [{ eventId: "evt-401", propertyId: "P-401", addedToSubscriptionIds: ["sub-a"], propertyChangedAt: at152 }]
+    const base401 = { hydrate: async () => ({ ok: false, properties: [], cost: null, httpStatus: 401, error: "Unauthorized Bearer tenant-token-xxxxxxxxxxxxxxxxxxxx" }), normalize: () => ({}) as never, ingest: async () => ({}) as never, book: async () => true }
+    const parkedRun = await tp.ingestTenantWebhookDelivery({ from: () => ({}) } as never, conn401 as never, ev, { ...base401, park: async () => ({ parked: true }) } as never)
+    const unparkedRun = await tp.ingestTenantWebhookDelivery({ from: () => ({}) } as never, conn401 as never, ev, base401 as never)
+    check("the push door's tenant sentence: 'needs to be updated', 'kept' only when a delivery WAS parked, no retry promise, no token, never 'Connected'",
+      /needs to be updated/.test(parkedRun.refused ?? "") && /kept/.test(parkedRun.refused ?? "") && parkedRun.parked === 1 && unparkedRun.parked === 0 && !/kept/.test(unparkedRun.refused ?? "") && ![parkedRun.refused, unparkedRun.refused].some((s) => /retr|token|HTTP|connected/i.test(s ?? "")),
+      `${parkedRun.refused} || ${unparkedRun.refused}`)
+  }
+
+  // THE RECOVERY LOOP, end to end over the REAL reporter and consumer (in memory).
+  {
+    const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", C1 = "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1"
+    const db = memSupabase({
+      platform_credentials: [{ id: C1, brokerage_id: A, owner_type: "brokerage", owner_id: A, platform: "batchdata", is_active: true, test_status: "fail", account_name: "Acme Data", config: { account_label: "Acme Data", last_health: { kind: "hydrate", status: "auth_failed", at: at152, detail: "HTTP 401" } } }],
+      lifecycle_events: [], manager_signals: [], notifications: [], support_tickets: [], users: [],
+    } as never, { uuidIds: true, stampCreatedAt: true }) as unknown as { tables: Record<string, Array<Record<string, any>>>; from: (t: string) => any }
+    const bells: Array<{ brokerage: string; body: string }> = []
+    const staffBodies: string[] = []
+    const deps = (brokerage: string, now?: Date) => ({
+      readiness: async () => ({ ready: true, blockers: [], checks: [{ key: "providerState", required: true, status: "PASS", reason: "platform lanes lit", evidence: {}, owner: "platform", label: "x", repairable: false }] as never, repairs: [] }),
+      notifyOrg: async (_s: unknown, b: string, n: { body: string }) => { bells.push({ brokerage: b, body: n.body }); return 1 },
+      notifyStaff: async (_s: unknown, n: { body: string }) => { staffBodies.push(n.body); return 1 },
+      now,
+    })
+    const refusal = tp.classifyTenantProviderFailure({ httpStatus: 401 }, "BatchData (your own account)")
+    const rep = await io.reportOperationOutcome(db, { operation: "provider_connection", brokerageId: A, ok: false, subjectType: "platform_credentials", subjectId: C1, evidence: { connectionState: "revoked" }, error: refusal.detail, tenantFacing: refusal.tenantMessage, source: "webhook" })
+    const sigRow = (db.tables.manager_signals ?? []).find((s) => s.id === rep.signalId)
+    check("a refused tenant key is REPORTED to its registered owner (data_steward) with the presenter's sentence on the feed", !!sigRow && sigRow.to_manager === "data_steward" && sigRow.brokerage_id === A && /needs to be updated/.test(String(sigRow.message)) && !/HTTP|token/i.test(String(sigRow.message)), String(sigRow?.message))
+    const asSignal = (row: Record<string, any>, createdAt?: string) => ({ id: row.id, payload: row.payload, entityType: row.entity_type, entityId: row.entity_id, createdAt: createdAt ?? row.created_at })
+    const r1 = await io.handleOperationFailureEscalated(asSignal(sigRow!), { brokerageId: A, supabase: db }, deps(A))
+    const ticketA = (db.tables.support_tickets ?? []).find((t) => t.brokerage_id === A)
+    check("NEEDS ATTENTION: platform readiness PASSES but the key is still refused → NOT 're-verified' (the pre-fix false close) → the account's admins are told, with a ticket", !!r1 && !/re-verified/.test(r1) && /escalated to a human/.test(r1) && /credential re-check: needs_tenant/.test(r1) && bells.length === 1 && bells[0].brokerage === A && !!ticketA && ticketA.lane === "user_to_brokerage", r1 ?? "null")
+    check("…and the bell is the contract: what to do, nothing internal, 'tracked' because a ticket exists", /needs to be updated/.test(bells[0]?.body ?? "") && /tracked as a support request your account's admins can see/.test(bells[0]?.body ?? "") && !/HTTP|auth_failed|token|platform_credentials/i.test(bells[0]?.body ?? ""), bells[0]?.body)
+    // THE REPAIR: the tenant reconnects; the connect door's free read stamps the row healthy.
+    const row = db.tables.platform_credentials[0]
+    row.test_status = "pass"; row.config = { ...row.config, last_health: { kind: "wallet_balance", status: "ok", at: at152, detail: null } }
+    const r2 = await io.handleOperationFailureEscalated(asSignal(sigRow!), { brokerageId: A, supabase: db }, deps(A))
+    check("REPAIRED: needs-attention → VERIFIED on the row itself (active, last check passed) and through the readiness contract — no human bothered", !!r2 && /re-verified/.test(r2) && /the connection itself re-read: active, last check passed/.test(r2) && bells.length === 1, r2 ?? "null")
+    // Provider-side (retryable) failure: stays OPEN in the owner's inbox while young; a human is told past the window.
+    row.test_status = "fail"; row.config = { ...row.config, last_health: { kind: "hydrate", status: "unreachable", at: at152, detail: null } }
+    const now = new Date("2026-11-11T12:00:00.000Z")
+    const young = await io.handleOperationFailureEscalated(asSignal(sigRow!, "2026-11-11T11:00:00.000Z"), { brokerageId: A, supabase: db }, deps(A, now))
+    const old = await io.handleOperationFailureEscalated(asSignal(sigRow!, "2026-11-11T02:00:00.000Z"), { brokerageId: A, supabase: db }, deps(A, now))
+    check("a provider-side failure stays OPEN for the owner's next re-read (null = not consumed, nobody told yet); past the window the admins are told", young === null && !!old && /escalated/.test(old) && bells.length === 2, `${young} || ${old}`)
+    // The tenant turned it off: nothing to repair.
+    row.is_active = false; row.config = { ...row.config, disconnected_at: at152 }
+    const off = await io.handleOperationFailureEscalated(asSignal(sigRow!), { brokerageId: A, supabase: db }, deps(A))
+    check("disconnected by the account → the watch closes (nothing to repair), no bell", !!off && /nothing to repair/.test(off) && bells.length === 2, off ?? "null")
+    // TENANT ISOLATION: tenant B's inbox handed tenant A's credential id learns nothing about A's connection.
+    row.is_active = true; row.config = { ...row.config, disconnected_at: null, last_health: { kind: "hydrate", status: "auth_failed", at: at152, detail: "HTTP 401" } }
+    const rB = await io.handleOperationFailureEscalated({ ...asSignal(sigRow!), id: "sig-b" }, { brokerageId: B, supabase: db }, deps(B))
+    const bBell = bells.filter((b) => b.brokerage === B)
+    const bTickets = (db.tables.support_tickets ?? []).filter((t) => t.brokerage_id === B)
+    check("TENANT B cannot read tenant A's connection incident: B's re-read is pinned to B (missing), B's bell / ticket carry nothing of A's (no label, no id, no provider state)",
+      !!rB && /credential re-check: missing — no such credential on this tenant/.test(rB) && bBell.length === 1 && /no longer on your account/.test(bBell[0].body) && ![bBell[0].body, ...bTickets.map((t) => String(t.description))].some((s) => /Acme Data|c1c1c1c1|auth_failed|refused|BatchData/.test(s)),
+      JSON.stringify({ rB, bBell, bTickets: bTickets.map((t) => t.description) }))
+    const openForB = (db.tables.manager_signals ?? []).filter((s) => s.brokerage_id === B && s.status === "open")
+    check("…and A's open signal is not in B's inbox (the bus predicate brokerage_id = B finds none)", openForB.length === 0 && (db.tables.manager_signals ?? []).some((s) => s.brokerage_id === A))
+    check("positive control: the SAME re-read on tenant A does find the row (the isolation is the pin, not an empty table)", /credential re-check: needs_tenant/.test((await io.handleOperationFailureEscalated(asSignal(sigRow!), { brokerageId: A, supabase: db }, deps(A))) ?? ""))
+  }
+
+  // Secrets: a stored token / signing secret never reaches anything the tenant reads.
+  {
+    const withSecrets = factsOf("ok")
+    const rendered = JSON.stringify(viewOf("batchdata", withSecrets)) + JSON.stringify(viewOf("batchdata", factsOf("auth_failed")))
+    const f = tp.classifyTenantProviderFailure({ httpStatus: 401, message: "denied for key=tenant-token-xxxxxxxxxxxxxxxxxxxx" }, "BatchData")
+    check("missing / refused keys never render a secret: no signing secret, no token fragment in any view or failure sentence (detail redacted)", !/enc:v1|aaaa:bbbb|tenant-token/.test(rendered) && !/tenant-token-x/.test(f.tenantMessage + f.detail), rendered.slice(0, 160))
+    const statusMap = fnBody(actionSrc, "getTenantAcquisitionProvidersAction")
+    // The object the map RETURNS (from `key, label: name` to the end of the `connection:` line) — the row-typing above it
+    // legitimately names api_key as a presence bit and is not handed to the browser.
+    const returned = statusMap.slice(statusMap.indexOf("key, label: name"), statusMap.indexOf("\n", statusMap.indexOf("connection: row ?")))
+    check("the status object handed to the browser carries no token / signing-secret field (stripped source of the read action)", returned.length > 40 && /connection: row \?/.test(returned) && !/api_key|apiKey|webhook_secret:|webhookSecret/.test(returned.replace(/cfg\?\.webhook_secret \?/g, "")), returned.slice(0, 200))
+    check("positive control: the finder flags a status object that would carry the secret", /api_key|apiKey|webhook_secret:|webhookSecret/.test("key, label: name, view, connection: row ? { accountLabel: x, apiKey: row.apiKey }") && /api_key|apiKey|webhook_secret:|webhookSecret/.test("connection: row ? { webhook_secret: cfg.webhook_secret }"))
+  }
+
+  // Honest pending states: no claim of live acquisition, of confirmation, of a retry or of a cost incurred.
+  {
+    const pending = [viewOf("batchdata", null), viewOf("batchdata", factsOf(null)), viewOf("batchdata", { ...factsOf("ok"), config: { ...(factsOf("ok").config as object), sandbox: true } as never }), viewOf("propertyradar", null)]
+    check("pending / test / not-yet-confirmed / unsupported states claim no live connection, no confirmation, no retry, no price and nothing 'included'", pending.every((v) => v.label !== "Connected" && !/connected and confirmed|retry|\$\d|included|\bis live\b|now live/i.test(`${v.message.text} ${v.costLine ?? ""}`)), pending.map((v) => `${v.label}: ${v.message.text}`).join(" | "))
+    const modSrc = stripped("lib/providers/tenant-provider-connections.ts")
+    check("the module no longer promises 'retried next cycle' / 'held for tomorrow' anywhere (no replay runner exists for a parked smart-search delivery)", !/retried next cycle|held for tomorrow/.test(modSrc))
+    check("positive control: the pre-fix promise is what the finder catches", /retried next cycle/.test("the queue is kept and retried next cycle"))
+  }
+
   console.log(`\nTENANT PROVIDER CONNECTIONS — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ TENANT_PROVIDER_CONNECTIONS_PASS" : "❌ TENANT_PROVIDER_CONNECTIONS_FAIL"}`)
   if (failed > 0) process.exit(1)
 }

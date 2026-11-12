@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1940 of 2020 pairs) — storing them would be
+ * overwhelming majority (1942 of 2022 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2125 edges across 756 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2020 unordered
+ * MEASURED AT GENERATION: 2127 edges across 756 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2022 unordered
  * table pairs carry at least one FK; 80
  * carry more than one and are listed below. 21 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-09
+ * generated: 2026-11-12
  * source: public.live_foreign_keys_json()
- * body-sha256: 91d2edcac32996b4fd180f4d392ef11eb665bb8e37a6f36259ef0aa04abcb169
+ * body-sha256: b17fcefa2049a1b5e6146eb27a9a177ef31009333fe8403e07101bf4a384ee3f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -655,7 +655,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "provider_monitors": { "brokerage_id": "brokerages", "created_by_user_id": "users", "market_id": "lead_scraping_markets" },
   "push_notification_queue": { "brokerage_id": "brokerages" },
   "push_subscriptions": { "brokerage_id": "brokerages", "user_id": "users" },
-  "qr_codes": { "agent_id": "agents", "brokerage_id": "brokerages", "listing_id": "listings", "marketing_campaign_id": "marketing_campaigns" },
+  "qr_codes": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by_user_id": "users", "listing_id": "listings", "marketing_campaign_id": "marketing_campaigns" },
   "qr_scan_events": { "brokerage_id": "brokerages", "contact_id": "contacts", "qr_code_id": "qr_codes" },
   "raw_recruit_prospects": { "brokerage_id": "brokerages", "market_id": "lead_scraping_markets", "recruit_id": "recruits" },
   "raw_scraped_leads": { "brokerage_id": "brokerages", "lead_id": "leads", "market_id": "lead_scraping_markets", "scraper_execution_id": "scraper_executions" },
@@ -701,7 +701,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "showing_routes": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "showings": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "tour_id": "tours" },
   "signal_reactivations": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
-  "signature_requests": { "brokerage_id": "brokerages", "contact_id": "contacts", "document_id": "client_documents", "transaction_id": "transactions" },
+  "signature_requests": { "brokerage_id": "brokerages", "contact_id": "contacts", "contract_term_version_id": "contract_term_versions", "document_id": "client_documents", "transaction_id": "transactions" },
   "site_activity": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "skill_marketplace_listings": { "approved_by": "users", "brokerage_id": "brokerages", "submitted_by": "users" },
   "smart_assistant_suggestions": { "agent_id": "agents", "brokerage_id": "brokerages" },

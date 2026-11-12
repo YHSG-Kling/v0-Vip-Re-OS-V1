@@ -33,6 +33,23 @@
  *       close under "on or before" needs no amendment, lender / title / attorney coordinated by the deal coordinator's list.
  *   H · REGISTRATION — package key, guard chain, m986 (stamp line, trigger on the versions table).
  *
+ * WAVE 152 (lane 152E — owner: "compliance also need to compare terms besides reading documents"; "even though the brokerage doesnt
+ * support a cda, compliance still needs to accurate along with the closing disclosure. that is not informational."):
+ *   I · THE TERM LEDGER — per governed term: source document / version, signed effective instant, signatures, page / quote, prior and
+ *       new value, authority; a proposal is pending and never governs; a tie is unresolved; the vocabulary now holds property,
+ *       parties, repairs, holdbacks and special conditions (and never selects a non-offers column — held to the generated cache).
+ *   J · THE COMPARISON PIPELINE — signed addendum moves the price → the deal record and compliance re-evaluated (dependent commission
+ *       lines too); a settlement still showing the replaced price is SUPERSEDED; wrong commission / credit → CONTRADICTORY + hold +
+ *       corrective request (assigned, responsible party named); the corrected statement clears EXACTLY its hold and its request;
+ *       a replayed scan opens nothing twice; an unrelated deal is untouched.
+ *   K · NOT INFORMATIONAL — a deal record that drifted from the executed contract holds the closing (formatting never does); the
+ *       "on or before" early close is a MATCH (no fabricated amendment; positive control: a fixed "on" day); the CDA-disabled deal
+ *       with a consistent statement continues; the pre-CDA gate refuses while a hold is open.
+ *   L · THE EVIDENCE HOLD (owner decision "refuse or flag" — the safe default): an executed term never located on its signed page
+ *       holds the closing; a confident agreeing reading clears it; a confident disagreeing one is a contradiction.
+ *   M · THE OVERRIDE RULE — a computed check is never "passed" by a person; a waiver needs the override authority + a written reason
+ *       and is ledgered; no batch carries a computed or blocking check (pure rule driven; the doors read by stripped source).
+ *
  * Every absence assertion carries a POSITIVE CONTROL (CLAUDE.md §2); every code-token scan reads STRIPPED source. Blind spots at the end.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
@@ -41,12 +58,14 @@ import { stripComments, blankStrings } from "./strip-comments"
 import { memSupabase } from "./in-memory-supabase"
 import {
   resolveGoverningTerms, foldTermsByPrecedence, termEvidenceFor, GOVERNING_TERM_KEYS, TERM_VERSION_SOURCES, endOfDayInstant,
+  NOT_OFFER_COLUMN_TERM_KEYS, buildTermLedger, canonicalTerms,
   type TermsVersion,
 } from "../lib/offers/governing-terms-rule"
-import { recordContractTermsVersion, governingContractTerms } from "../lib/offers/governing-terms"
+import { recordContractTermsVersion, governingContractTerms, contractTermLedger } from "../lib/offers/governing-terms"
 import { afterExecutedContractChange } from "../lib/offers/governing-terms-consequences"
 import { runClosingCompliance } from "../lib/transactions/closing-compliance"
-import { compareClosingTerms } from "../lib/transactions/closing-compliance-core"
+import { compareClosingTerms, compareDealRecordTerms, decideComplianceCheckChange } from "../lib/transactions/closing-compliance-core"
+import { evaluateFinalCompliance } from "../lib/transactions/final-compliance-check"
 import { resolveCdaMode, CDA_FILL_RULE, noCdaClosingProof, NO_CDA_CLOSING_PROOF_RULE, cdaDeliveryRoute, cdaDeadlineVerdict, deliveryIdempotency } from "../lib/transactions/cda-closing-policy"
 import { canBrokerSignCda } from "../lib/transactions/cda-signing-policy"
 import { CDA_COACH_RULE, allowedFigureSet, filterCoachWords, buildCoachBrief } from "../lib/commission/cda-coach-rule"
@@ -328,6 +347,203 @@ async function main() {
     check("the migration admits the one legitimate transition (executed → void, evidence only added) and refuses DELETE", /NEW\.status <> 'void'/.test(mig) && /NEW\.evidence @> OLD\.evidence/.test(mig) && /TG_OP = 'DELETE'/.test(mig))
   }
 
+  // ═══ WAVE 152 (lane 152E) — compliance as a comparison and governed decision engine ═══
+  const U_TC = "22222222-2222-4222-8222-222222222224", U_BROKER = U_ADMIN
+  const TXN2 = "55555555-5555-4555-8555-555555555556", OFFER2 = "44444444-4444-4444-8444-444444444445"
+  const DOC_HALF = "66666666-6666-4666-8666-666666666665"
+  /** A CDA-DISABLED brokerage (offers_cda false — no CDA row anywhere), one executed contract, its TC, a consistent final statement,
+   *  and an UNRELATED second deal with its own open row and request (to prove it is never touched). */
+  const seed152 = (o: { statement?: Record<string, unknown>; wording?: string | null; txPrice?: unknown } = {}) => {
+    const db = seed()
+    const t = db.tables.transactions[0]
+    Object.assign(t, { coordinator_id: U_TC, deal_type: "buyer", contract_closing_terms: o.wording === undefined ? "on_or_before" : o.wording, closing_cost_contribution: 3_000, purchase_price: o.txPrice ?? 500_000 })
+    Object.assign(db.tables.offers[0], { closing_cost_contribution: 3_000, disclosed_buyer_commission_pct: 2.5 })
+    db.tables.users.push({ id: U_TC, brokerage_id: B, user_type: "tc", email: "tc@example.test" })
+    db.tables.documents.push({ id: DOC_CD, brokerage_id: B, transaction_id: TXN, classification: "closing_disclosure", classification_confidence: "high", signature_completeness: null, created_at: "2026-11-20T00:00:00Z", updated_at: "2026-11-20T00:00:00Z", metadata: null,
+      extracted_fields: o.statement ?? { sales_price: "500000", earnest_money_deposit: "5000", seller_credit_to_buyer: "3000", commission_buyer_broker: "12500", closing_date: "2026-12-15" } })
+    db.tables.offers.push({ id: OFFER2, brokerage_id: B, agent_id: AG, parent_offer_id: null, offer_type: "standard", current_round: 1, status: "accepted", esign_status: "fully_executed", buyer_signed_at: "2026-10-02T10:00:00Z", seller_signed_at: "2026-10-02T12:00:00Z", fully_signed_contract_received_at: "2026-10-02T12:00:00Z", transaction_id: TXN2, offer_price: 300_000, created_at: "2026-10-02T09:00:00Z" })
+    db.tables.transactions.push({ ...t, id: TXN2, offer_id: OFFER2, purchase_price: 300_000, coordinator_id: U_TC })
+    db.tables.transaction_compliance_log.push({ id: "other-deal-row", brokerage_id: B, transaction_id: TXN2, check_type: "closing_terms.purchase_price", check_label: "other deal", status: "fail", is_blocking: true, failure_reason: "x [sig:mismatch|a|b]", created_at: "2026-11-01T00:00:00Z" })
+    ;(db.tables.transaction_tasks ??= []).push({ id: "other-deal-task", brokerage_id: B, transaction_id: TXN2, title: "[Compliance correction] Purchase price matches the settlement", category: "compliance_correction", status: "pending" })
+    return db
+  }
+  const stubs = { notify: async () => 0, audit: async () => {}, closingEntity: async () => "title_company" as string | null }
+  const logOf = (db: ReturnType<typeof seed>, type: string, tx = TXN) => db.tables.transaction_compliance_log.find((r) => r.check_type === type && r.transaction_id === tx)
+  const tasksOf = (db: ReturnType<typeof seed>, tx = TXN) => (db.tables.transaction_tasks ?? []).filter((r) => r.transaction_id === tx && r.category === "compliance_correction")
+  const untouched = (db: ReturnType<typeof seed>) => logOf(db, "closing_terms.purchase_price", TXN2)?.status === "fail" && logOf(db, "closing_terms.purchase_price", TXN2)?.failure_reason === "x [sig:mismatch|a|b]" && (db.tables.transaction_tasks ?? []).find((r) => r.id === "other-deal-task")?.status === "pending"
+  const stated = (page: number) => ({ offer_price: { page, field: "Paragraph 3", quote: "The Purchase Price is amended to $490,000." } })
+
+  section("I · the term ledger — a read of every governed term, with its source, signatures, evidence and authority")
+  {
+    const db = seed152()
+    const rec = await quiet(() => recordContractTermsVersion(db as never, { brokerageId: B, rootOfferId: ROOT_OFFER, transactionId: TXN, source: "addendum", status: "executed", terms: { offer_price: 490_000 }, documentId: DOC_A, executedAt: `${day(3)}T23:59:59.999Z`, recordedBy: U_AGENT, evidence: { recorded_via: "guard", effective_on: day(2), term_evidence_stated: stated(1) } }, { consequences: false }))
+    const prop = await quiet(() => recordContractTermsVersion(db as never, { brokerageId: B, rootOfferId: ROOT_OFFER, transactionId: TXN, source: "addendum", status: "proposed", terms: { offer_price: 470_000, repair_credit: 2_500 }, recordedBy: U_AGENT }, { consequences: false }))
+    const L = await contractTermLedger(db as never, B, { transactionId: TXN })
+    const price = L.ok ? L.ledger.rows.find((r) => r.key === "offer_price") : undefined
+    check("THE LEDGER names, for the governing price: the executed addendum and its document, the SIGNED EFFECTIVE instant, both signatures, the page / field / quote, the PRIOR and NEW value, who recorded it and the authority in words",
+      rec.ok && !!price && price.status === "governing" && price.value === 490_000 && price.priorValue === 500_000 && price.source?.kind === "addendum" && price.source.documentId === DOC_A
+      && price.effectiveAt === endOfDayInstant(day(2)) && price.signatures?.missing.length === 0 && price.signatures?.signed.join() === "buyer,seller" && price.evidence?.source === "person_reading" && price.evidence.page === 1 && /amended to \$490,000/.test(String(price.evidence.quote))
+      && price.recordedBy === U_AGENT && /signed by buyer and seller/.test(price.authority), JSON.stringify(price))
+    check("a PROPOSED (unsigned) addendum is listed as pending beside the term and NEVER governs it; a term only a proposal names reads 'proposed only' with no value",
+      prop.ok && price?.pending.some((p) => p.value === 470_000) === true && L.ok && L.ledger.rows.find((r) => r.key === "repair_credit")?.status === "proposed_only" && L.ledger.rows.find((r) => r.key === "repair_credit")?.value === null)
+    check("…and the deal is not moved by the proposal: the transaction price is untouched (no consequences ran for a proposal)", db.tables.transactions[0].purchase_price === 500_000)
+    check("the ledger carries the executed contract's closing wording and names every group no instrument states (never defaulted)", L.ok && L.ledger.closingWording === "on_or_before" && L.ledger.notStated.some((g) => g.group === "repairs_and_conditions"))
+    // the pure ledger over a tie: no value, the contenders, the person who decides
+    const t = "2026-10-25T23:59:59.999Z"
+    const tied = buildTermLedger(resolveGoverningTerms([v({ terms: { offer_price: 500_000 } }), v({ versionNo: 1, source: "addendum", terms: { offer_price: 490_000 }, executedAt: t, documentId: DOC_A }), v({ versionNo: 2, source: "addendum", terms: { offer_price: 495_000 }, executedAt: t, documentId: DOC_B })]))
+    const tr = tied.rows.find((r) => r.key === "offer_price")
+    check("UNCERTAIN PRECEDENCE: two same-day executed addenda → the ledger row has NO value, lists both contenders and names the licensed professional / closing attorney — never a version-number winner", tr?.status === "unresolved" && tr.value === null && tr.unresolved?.length === 2 && /licensed professional or closing attorney/.test(tr.authority))
+    // the vocabulary: property, parties, repairs, holdbacks, special conditions are governed terms now
+    const ok152 = canonicalTerms({ repair_credit: 2_500, repair_holdback: 1_000, buyer_names: ["Ann Buyer"], seller_names: ["Sam Seller"], property_address: "1 Main St", special_conditions: "Seller to leave the washer." })
+    check("an executed repair-credit / holdback / party / property / special-conditions term is IN the vocabulary (the recorder used to refuse it); POSITIVE CONTROL: an unknown key is still refused by name", ok152.unknownKeys.length === 0 && canonicalTerms({ repair_credit_typo: 1 }).unknownKeys.join() === "repair_credit_typo")
+    const every = buildTermLedger(resolveGoverningTerms([v({ terms: Object.fromEntries(GOVERNING_TERM_KEYS.map((k) => [k, 1])) })]))
+    check("every governed term belongs to exactly one ledger group (none falls to 'other')", every.rows.length === GOVERNING_TERM_KEYS.length && every.rows.every((r) => r.group !== "other"))
+    // the RULE that keeps the ONE reader readable: every key it selects as an offers column IS a live offers column (generated cache)
+    const snap = raw("scripts/schema-snapshot.ts")
+    const offersCols = new Set((/\n\s*offers:\s*\[([^\]]*)\]/.exec(snap)?.[1] ?? "").split(",").map((c) => c.trim().replace(/"/g, "")).filter(Boolean))
+    const selected = GOVERNING_TERM_KEYS.filter((k) => !NOT_OFFER_COLUMN_TERM_KEYS.has(k))
+    const absent = selected.filter((k) => !offersCols.has(k))
+    check("every governed key the ONE reader selects from `offers` is a column in the generated schema cache (a recorded-only key can never become a refused 42703 read)", offersCols.size > 50 && absent.length === 0, absent.join(", "))
+    check("POSITIVE CONTROL: the finder recognises a recorded-only key that would be selected as an offers column", !offersCols.has("repair_credit") && !offersCols.has("buyer_names"))
+    const cons = await quiet(() => afterExecutedContractChange(seed() as never, { brokerageId: B, transactionId: null, rootOfferId: ROOT_OFFER, versionNo: 1, source: "addendum", changedTerms: { repair_credit: 2_500 }, documentId: DOC_A, executedOn: day(2), recordedBy: U_AGENT }))
+    check("an executed repair credit reaches the money it moves (seller credit / seller net / settlement lines → the CDA and ledger paths follow)", cons.impact.moneyMoved && cons.impact.obligations.includes("seller_credit") && cons.impact.obligations.includes("settlement_lines"))
+    // missing signatures block executed status
+    db.tables.documents.push({ id: DOC_HALF, brokerage_id: B, transaction_id: TXN, classification: "addendum", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }] }, extracted_fields: null })
+    const half = await quiet(() => recordContractTermsVersion(db as never, { brokerageId: B, rootOfferId: ROOT_OFFER, transactionId: TXN, source: "addendum", status: "executed", terms: { offer_price: 480_000 }, documentId: DOC_HALF, executedAt: `${day(1)}T23:59:59.999Z`, recordedBy: U_AGENT }, { consequences: false }))
+    const after = await contractTermLedger(db as never, B, { transactionId: TXN })
+    check("MISSING SIGNATURES BLOCK EXECUTED STATUS: an addendum showing only the buyer's signature is refused by name, and the ledger's governing price is unchanged", !half.ok && /seller/.test(half.reason) && after.ok && after.ledger.rows.find((r) => r.key === "offer_price")?.value === 490_000)
+  }
+
+  section("J · the comparison pipeline — executed change → record + settlement re-evaluated → classified → hold + corrective request → exact clearing")
+  {
+    const db = seed152()
+    const r = await quiet(() => recordContractTermsVersion(db as never, { brokerageId: B, rootOfferId: ROOT_OFFER, transactionId: TXN, source: "addendum", status: "executed", terms: { offer_price: 490_000 }, documentId: DOC_A, executedAt: `${day(3)}T23:59:59.999Z`, recordedBy: U_AGENT, evidence: { recorded_via: "guard", term_evidence_stated: stated(1) } }))
+    const cons = r.ok ? r.consequences : undefined
+    check("SIGNED ADDENDUM CHANGES THE PRICE → the deal record is moved to it (the mirror) and compliance re-evaluated", r.ok && db.tables.transactions[0].purchase_price === 490_000 && cons?.complianceReReview.ran === true)
+    const priceRow = logOf(db, "closing_terms.purchase_price"), commRow = logOf(db, "closing_terms.commission_buyer_side"), recRow = logOf(db, "closing_terms.record.purchase_price")
+    check("…the statement still shows the REPLACED $500,000 → a BLOCKING fail classified SUPERSEDED that tells the issuer to use the executed addendum (named in plain words)",
+      priceRow?.status === "fail" && priceRow.is_blocking === true && /\$500,000\.00, the value REPLACED by the executed addendum 1/.test(String(priceRow.failure_reason)) && /Send the issuer[^.]*executed addendum 1/.test(String(priceRow.failure_reason)), String(priceRow?.failure_reason))
+    const sup = compareClosingTerms({ purchase_price: { unit: "usd", value: 490_000, confidence: "record", source: "a1" } }, { purchase_price: { unit: "usd", value: 500_000, confidence: "high", source: "cd" } }, {}, { history: { purchase_price: [{ fact: { unit: "usd", value: 500_000, confidence: "record", source: "offer" }, supersededBy: "executed addendum 1" }] } })
+    const contra = compareClosingTerms({ purchase_price: { unit: "usd", value: 490_000, confidence: "record", source: "a1" } }, { purchase_price: { unit: "usd", value: 505_000, confidence: "high", source: "cd" } }, {}, { history: { purchase_price: [{ fact: { unit: "usd", value: 500_000, confidence: "record", source: "offer" }, supersededBy: "executed addendum 1" }] } })
+    check("the PURE classes: a statement showing a replaced value is SUPERSEDED; POSITIVE CONTROL: a value nobody ever signed is CONTRADICTORY (same verdict, same blocking)", sup.findings[0].classification === "superseded" && contra.findings[0].classification === "contradictory" && sup.findings[0].verdict === "mismatch" && sup.findings[0].blocking && contra.findings[0].blocking)
+    check("…the DEPENDENT commission line is re-judged on the new price (2.5% of $490,000 = $12,250 vs the statement's $12,500 → blocking fail), and the deal record now agrees with the contract",
+      commRow?.status === "fail" && commRow.is_blocking === true && /12,250/.test(String(commRow.failure_reason)) && recRow?.status === "pass")
+    const tasks = tasksOf(db)
+    check("…ONE corrective request per departure, assigned to the deal's TC, naming who corrects it (the statement's issuer) — not a viewer warning",
+      tasks.length === 2 && tasks.every((t) => t.assigned_user_id === U_TC && t.status === "pending" && /Who corrects it: the issuer of the settlement statement/.test(String(t.description))) && tasks.some((t) => /Purchase price/.test(String(t.title))))
+    check("…each request is LEDGERED by the Compliance Officer (compliance.correction_request.open, an idempotency key of the check and its values)",
+      db.tables.agent_action_ledger.filter((l) => l.action === "compliance.correction_request.open").length === 2 && db.tables.agent_action_ledger.every((l) => l.action !== "compliance.correction_request.open" || (l.actor_manager_key === "compliance_officer" && String(l.idempotency_key).startsWith("compliance-correction:"))))
+    // replay: the statement's scan delivered, then delivered AGAIN (a webhook / scanner retry)
+    const first = await quiet(() => runClosingCompliance(db as never, { transactionId: TXN, brokerageId: B, trigger: "settlement_scanned" }, stubs))
+    const ledgerBefore = db.tables.agent_action_ledger.length, logBefore = JSON.stringify(db.tables.transaction_compliance_log), tasksBefore = JSON.stringify(tasksOf(db))
+    const replay = await quiet(() => runClosingCompliance(db as never, { transactionId: TXN, brokerageId: B, trigger: "settlement_scanned" }, stubs))
+    check("NO DUPLICATE ACTION ON REPLAY: the same delivery again opens no request, writes no ledger row, changes no log row (and the first delivery did not re-open the two price-driven requests)",
+      first.ran && replay.ran && replay.corrections.opened === 0 && replay.rows.inserted === 0 && replay.rows.updated === 0 && JSON.stringify(tasksOf(db)) === tasksBefore && db.tables.agent_action_ledger.length === ledgerBefore && JSON.stringify(db.tables.transaction_compliance_log) === logBefore
+      && tasksOf(db).filter((t) => /Purchase price matches|Buyer-side commission/.test(String(t.title))).length === 2)
+    // the corrected statement arrives — price fixed, commission still wrong
+    db.tables.documents.find((d) => d.id === DOC_CD)!.extracted_fields = { sales_price: "490000", earnest_money_deposit: "5000", seller_credit_to_buyer: "3000", commission_buyer_broker: "12500", closing_date: "2026-12-15" }
+    const fixed = await quiet(() => runClosingCompliance(db as never, { transactionId: TXN, brokerageId: B, trigger: "settlement_scanned" }, stubs))
+    const priceTask = tasksOf(db).find((t) => /Purchase price/.test(String(t.title))), commTask = tasksOf(db).find((t) => /Buyer-side commission/.test(String(t.title)))
+    check("CORRECT DOCUMENTS CLEAR THE EXACT HOLD: the price row passes and ITS request is completed; the commission row and its request stay open",
+      fixed.ran && logOf(db, "closing_terms.purchase_price")?.status === "pass" && priceTask?.status === "completed" && logOf(db, "closing_terms.commission_buyer_side")?.status === "fail" && commTask?.status === "pending" && fixed.corrections.completed === 1)
+    check("UNRELATED DEALS ARE UNTOUCHED: the other deal's open row and open request are exactly as they were", untouched(db))
+    // wrong commission / credit on the statement of a deal whose contract never changed
+    const w = seed152({ statement: { sales_price: "500000", earnest_money_deposit: "5000", seller_credit_to_buyer: "4000", commission_buyer_broker: "13000", closing_date: "2026-12-15" } })
+    const wr = await quiet(() => runClosingCompliance(w as never, { transactionId: TXN, brokerageId: B, trigger: "settlement_scanned" }, stubs))
+    const credit = wr.comparison?.findings.find((f) => f.term === "seller_credit"), comm = wr.comparison?.findings.find((f) => f.term === "commission_buyer_side")
+    check("WRONG CREDIT / WRONG COMMISSION on the statement → CONTRADICTORY, blocking, each with its corrective request; the matching terms are MATCH",
+      credit?.classification === "contradictory" && credit.blocking && comm?.classification === "contradictory" && comm.blocking && wr.comparison?.findings.find((f) => f.term === "purchase_price")?.classification === "match"
+      && tasksOf(w).filter((t) => /Seller credit to buyer matches|Buyer-side commission matches/.test(String(t.title))).length === 2 && !tasksOf(w).some((t) => /Purchase price/.test(String(t.title))) && wr.openBlocking >= 2)
+    check("…and the contradiction is never \"fixed\" by the engine: the signed terms and the statement are untouched (the request asks the issuer)", w.tables.offers[0].closing_cost_contribution === 3_000 && (w.tables.documents.find((d) => d.id === DOC_CD)!.extracted_fields as Record<string, unknown>).seller_credit_to_buyer === "4000")
+    const pure = compareClosingTerms({ purchase_price: { unit: "usd", value: 1, confidence: "record", source: "c" } }, { purchase_price: { unit: "usd", value: 2, confidence: "low", source: "scan" } })
+    check("a difference resting on a LOW-confidence reading is REQUIRES_HUMAN_INTERPRETATION (never an accusation); a term the statement omits is MISSING",
+      pure.findings[0].classification === "requires_human_interpretation" && compareClosingTerms({ earnest_money: { unit: "usd", value: 1, confidence: "record", source: "c" } }, {}).findings[0].classification === "missing")
+  }
+
+  section("K · not informational — the deal record, the on-or-before close, the CDA-disabled deal, the pre-CDA gate")
+  {
+    const drift = seed152({ txPrice: 505_000 })
+    const d = await quiet(() => runClosingCompliance(drift as never, { transactionId: TXN, brokerageId: B, trigger: "final_check" }, stubs))
+    const rr = logOf(drift, "closing_terms.record.purchase_price")
+    check("A DEAL RECORD THAT DRIFTED from the executed contract ($505,000 typed vs $500,000 signed) HOLDS the closing with a corrective request to the TC — the commission is priced from that record",
+      d.ran && rr?.status === "fail" && rr.is_blocking === true && d.recordComparison.some((f) => f.term === "purchase_price" && f.classification === "contradictory") && tasksOf(drift).some((t) => /deal record/.test(String(t.title)) && /transaction coordinator/.test(String(t.description))))
+    const fmt = seed152({ txPrice: "500000.00" })
+    await quiet(() => runClosingCompliance(fmt as never, { transactionId: TXN, brokerageId: B, trigger: "final_check" }, stubs))
+    check("A HARMLESS FORMATTING DIFFERENCE never blocks ('500000.00' on the record vs 500,000 signed → pass)", logOf(fmt, "closing_terms.record.purchase_price")?.status === "pass")
+    check("POSITIVE CONTROL: the pure record comparison recognises the drift it was written for", compareDealRecordTerms({ purchase_price: { unit: "usd", value: 500_000, confidence: "record", source: "contract", instrumentId: "o1" } }, { purchase_price: { unit: "usd", value: 505_000, confidence: "record", source: "deal" } })[0]?.verdict === "mismatch"
+      && compareDealRecordTerms({ purchase_price: { unit: "usd", value: 500_000, confidence: "record", source: "deal", instrumentId: "tx:1" } }, { purchase_price: { unit: "usd", value: 505_000, confidence: "record", source: "deal" } }).length === 0)
+    // "on or before": an earlier statement date is the contract
+    const early = seed152({ statement: { sales_price: "500000", earnest_money_deposit: "5000", seller_credit_to_buyer: "3000", commission_buyer_broker: "12500", closing_date: "2026-12-09" } })
+    await quiet(() => runClosingCompliance(early as never, { transactionId: TXN, brokerageId: B, trigger: "settlement_scanned" }, stubs))
+    check("'ON OR BEFORE' EARLY CLOSE fabricates no amendment: the statement's 12-09 under 'on or before 12-15' is a PASS, and no corrective request is opened for it",
+      logOf(early, "closing_terms.closing_date")?.status === "pass" && !tasksOf(early).some((t) => /Closing date/.test(String(t.title))))
+    const fixedDay = seed152({ wording: "on", statement: { sales_price: "500000", earnest_money_deposit: "5000", seller_credit_to_buyer: "3000", commission_buyer_broker: "12500", closing_date: "2026-12-09" } })
+    await quiet(() => runClosingCompliance(fixedDay as never, { transactionId: TXN, brokerageId: B, trigger: "settlement_scanned" }, stubs))
+    check("POSITIVE CONTROL: a FIXED 'on' day moved earlier is a departure (fail, with its corrective request) — the wording, not the direction, decides", logOf(fixedDay, "closing_terms.closing_date")?.status === "fail" && tasksOf(fixedDay).some((t) => /Closing date/.test(String(t.title))))
+    // the CDA-disabled valid deal continues
+    const ok = seed152()
+    const okRun = await quiet(() => runClosingCompliance(ok as never, { transactionId: TXN, brokerageId: B, trigger: "final_check" }, stubs))
+    const termRows = ok.tables.transaction_compliance_log.filter((x) => x.transaction_id === TXN && String(x.check_type).startsWith("closing_terms."))
+    const termTasks = (db: ReturnType<typeof seed>) => tasksOf(db).filter((t) => /matches the (settlement|executed contract)|confirmed on the executed/.test(String(t.title)))
+    check("A CDA-DISABLED brokerage (no CDA row) with a statement that agrees with the executed contract CONTINUES: every term row passes, no term hold, no term corrective request",
+      resolveCdaMode({ offersCda: false }).blocksClosing === false && ok.tables.closing_disclosure_agreement.length === 0 && okRun.ran && termRows.length >= 5 && termRows.every((x) => x.status === "pass") && termTasks(ok).length === 0,
+      JSON.stringify(termRows.filter((x) => x.status !== "pass").map((x) => `${x.check_type}:${x.status}`)))
+    const termLines = (s: string[]) => s.filter((l) => /matches the (settlement|executed contract)|confirmed on the executed/.test(l))
+    check("THE PRE-CDA GATE REFUSES while a term hold is open (the drifted record's blocking line reaches the final check) and the clean deal carries no term blocker",
+      termLines(d.blockingSummary).length >= 1 && !evaluateFinalCompliance({ pendingSignatures: 0, missingDocs: 0, rejectedDocs: 0, blockingComplianceFailures: 0, closingFindings: termLines(d.blockingSummary) }).passed
+      && termLines(okRun.blockingSummary).length === 0 && evaluateFinalCompliance({ pendingSignatures: 0, missingDocs: 0, rejectedDocs: 0, blockingComplianceFailures: 0, closingFindings: termLines(okRun.blockingSummary) }).passed)
+  }
+
+  section("L · the evidence hold — owner decision 'refuse or flag', the SAFE DEFAULT (hold + flag, never silently accept)")
+  {
+    const db = seed152()
+    const r = await quiet(() => recordContractTermsVersion(db as never, { brokerageId: B, rootOfferId: ROOT_OFFER, transactionId: TXN, source: "addendum", status: "executed", terms: { offer_price: 490_000 }, documentId: DOC_A, executedAt: `${day(3)}T23:59:59.999Z`, recordedBy: U_AGENT }))
+    const hold = logOf(db, "closing_terms.evidence.offer_price")
+    check("an executed addendum term recorded with NO located reading is RECORDED (history is never refused) and HOLDS the closing on that term — blocking review row + its corrective request",
+      r.ok && db.tables.contract_term_versions.some((x) => x.document_id === DOC_A) && hold?.status === "needs_review" && hold.is_blocking === true && /never noted/.test(String(hold.failure_reason)) && tasksOf(db).some((t) => /confirmed on the executed addendum 1/.test(String(t.title))))
+    db.tables.document_field_extractions.push({ brokerage_id: B, document_id: DOC_A, field_key: "price", field_value_json: { value: 490000, page: 1 }, confidence: "high", verified_at: "2026-11-21T00:00:00Z" })
+    const cleared = await quiet(() => runClosingCompliance(db as never, { transactionId: TXN, brokerageId: B, trigger: "final_check" }, stubs))
+    check("a VERIFIED reading of the signed document that agrees CLEARS exactly that hold and settles its request", cleared.ran && logOf(db, "closing_terms.evidence.offer_price")?.status === "pass" && tasksOf(db).find((t) => /confirmed on the executed addendum 1/.test(String(t.title)))?.status === "completed")
+    const db2 = seed152()
+    await quiet(() => recordContractTermsVersion(db2 as never, { brokerageId: B, rootOfferId: ROOT_OFFER, transactionId: TXN, source: "addendum", status: "executed", terms: { offer_price: 490_000 }, documentId: DOC_A, executedAt: `${day(3)}T23:59:59.999Z`, recordedBy: U_AGENT }))
+    db2.tables.document_field_extractions.push({ brokerage_id: B, document_id: DOC_A, field_key: "price", field_value_json: "480000", confidence: "high", verified_at: "2026-11-21T00:00:00Z" })
+    await quiet(() => runClosingCompliance(db2 as never, { transactionId: TXN, brokerageId: B, trigger: "final_check" }, stubs))
+    check("a confident reading that arrives LATER and DISAGREES is a contradiction (fail, blocking) — paper and recorded term disagree, nothing picks one", logOf(db2, "closing_terms.evidence.offer_price")?.status === "fail" && logOf(db2, "closing_terms.evidence.offer_price")?.is_blocking === true)
+    const db3 = seed152()
+    await quiet(() => recordContractTermsVersion(db3 as never, { brokerageId: B, rootOfferId: ROOT_OFFER, transactionId: TXN, source: "addendum", status: "executed", terms: { offer_price: 490_000 }, documentId: DOC_A, executedAt: `${day(3)}T23:59:59.999Z`, recordedBy: U_AGENT, evidence: { term_evidence_stated: stated(2) } }))
+    check("POSITIVE CONTROL: the same addendum recorded WITH its page / field / quote opens no evidence hold", !logOf(db3, "closing_terms.evidence.offer_price"))
+    const refusedLedger = seed152()
+    const rf = await quiet(() => runClosingCompliance(refusedLedger as never, { transactionId: TXN, brokerageId: B, trigger: "final_check" }, { ...stubs, termLedger: async () => ({ ok: false as const, error: "simulated refusal" }) }))
+    check("a term ledger that cannot be read is a BLOCKING fault row, never a silent pass (fail closed)", rf.ran && logOf(refusedLedger, "closing_terms.evidence_ledger")?.status === "fail" && logOf(refusedLedger, "closing_terms.evidence_ledger")?.is_blocking === true)
+  }
+
+  section("M · the override rule — authorized, reasoned, audited; never 'approve all'; never a false certification")
+  {
+    const base = { checkType: "closing_terms.purchase_price", isBlocking: true }
+    check("a COMPUTED check is never marked 'pass' by a person — not even by the broker (it clears when the documents agree)", decideComplianceCheckChange({ ...base, toStatus: "pass", actorMayOverride: true, reason: "looks fine to me" }).ok === false)
+    check("an AGENT (no override authority) cannot waive it, whatever the reason", decideComplianceCheckChange({ ...base, toStatus: "waived", actorMayOverride: false, reason: "the buyer said it is fine" }).ok === false)
+    check("the broker cannot waive it WITHOUT a written reason (the one override floor)", decideComplianceCheckChange({ ...base, toStatus: "waived", actorMayOverride: true, reason: "ok" }).ok === false)
+    const w = decideComplianceCheckChange({ ...base, toStatus: "waived", actorMayOverride: true, reason: "Title confirmed the corrected CD is in transit; closing tomorrow 9am." })
+    check("…and CAN with the authority and a reason — the decision marks it an OVERRIDE (the door ledgers it)", w.ok && w.override === true)
+    check("a non-blocking manual checklist item is still passed by the reviewer as before (no new friction where nothing is held)", (() => { const x = decideComplianceCheckChange({ checkType: "hoa_documents", isBlocking: false, toStatus: "pass", actorMayOverride: false }); return x.ok && !x.override })())
+    check("NO 'APPROVE ALL': a batch refuses every computed check and every blocking check, and passes only non-blocking manual items",
+      !decideComplianceCheckChange({ ...base, toStatus: "pass", actorMayOverride: true, batch: true }).ok && !decideComplianceCheckChange({ checkType: "earnest_money_receipt", isBlocking: true, toStatus: "pass", actorMayOverride: true, batch: true }).ok && decideComplianceCheckChange({ checkType: "hoa_documents", isBlocking: false, toStatus: "pass", actorMayOverride: false, batch: true }).ok)
+    const door = code("app/actions/transaction-compliance.ts"), doorBare = bare("app/actions/transaction-compliance.ts")
+    const upd = door.slice(door.indexOf("export async function updateComplianceCheck"), door.indexOf("export async function canProceedToClosingPrep"))
+    const batch = door.slice(door.indexOf("export async function batchPassComplianceChecks"))
+    check("THE DOORS (stripped source): the single update asks the rule BEFORE it writes and ledgers an override (compliance.check.override); the batch reads the rows, asks the rule per row with batch:true, and counts what it wrote",
+      upd.indexOf("decideComplianceCheckChange(") > 0 && upd.indexOf("decideComplianceCheckChange(") < upd.indexOf(".update(updateData)") && /action:\s*"compliance\.check\.override"/.test(upd)
+      && batch.indexOf("decideComplianceCheckChange(") > 0 && batch.indexOf("decideComplianceCheckChange(") < batch.indexOf(".update(") && /batch:\s*true/.test(batch) && /\.select\("id"\)/.test(batch.slice(batch.indexOf(".update("))))
+    check("the override authority is DERIVED from the one tenant roster minus team_lead (never retyped) and is module-private", /new Set\(\[\.\.\.TENANT_ADMIN_USER_TYPES\]\.filter\(\(t\) => t !== "team_lead"\)\)/.test(door) && !/export const COMPLIANCE_OVERRIDE_USER_TYPES/.test(door) && !/"broker_owner"/.test(doorBare.slice(0, doorBare.indexOf("export async function"))))
+    check("POSITIVE CONTROL: the order finder recognises a door that writes before it decides", (() => { const s = `x.update(updateData); decideComplianceCheckChange(`; return !(s.indexOf("decideComplianceCheckChange(") < s.indexOf(".update(updateData)")) })())
+    check("the TC fast-action panel's 'pass all open checks' reports what the server actually passed (refused rows named back), never the selection size", /result\.updated/.test(code("app/dashboard/coordinator/components/tc-fast-action-panel.tsx")) && /result\.refused/.test(code("app/dashboard/coordinator/components/tc-fast-action-panel.tsx")))
+  }
+
+  console.log("\nBLIND SPOTS (wave 152, lane 152E): the settlement extractor states no party names or property address, so 'wrong parties' is compared")
+  console.log("  on the ledger and the deal record only — not against the Closing Disclosure (outside-lane request to the document lane); a version")
+  console.log("  recorded before per-term evidence existed (wave 151) carries no term_evidence and is never held; the corrective request is the TC's")
+  console.log("  task — the platform does not message the title company itself; free-text terms (special conditions, possession) are listed, never")
+  console.log("  compared by meaning; the override doors are proved by the pure rule + stripped source (a session cannot be minted here).")
   console.log("\nBLIND SPOTS: the model call itself is not driven (no network) — the coach's filter and brief are proved pure, the door by source; the live")
   console.log("  document_field_extractions rows' page shape (page / page_number) is assumed from the writer, not measured live; the attestation's informational")
   console.log("  ask is proved on the in-memory client (the live is_blocking column has no CHECK); m986's trigger is read from the file and its stamp line —")

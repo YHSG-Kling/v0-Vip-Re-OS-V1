@@ -87,6 +87,12 @@ export function grantTargetForShape(shape: string): { agentKind: string; configK
   if (shape.startsWith("social_post:") || shape.startsWith("newsletter:") || shape.startsWith("blog:")) {
     return { agentKind: "campaign_orchestrator", configKey: "marketing_grants" }
   }
+  // Wave 152 (lane 152D): a receipt auto-post grant (`receipt_autopost:<kind>:max_usd=<n>`) belongs to the books'
+  // manager. NOT ratchetable — the sweep below proposes deadline shapes only; a person grants this one explicitly.
+  // Read fail-closed by lib/documents/receipt-intake.ts; no grant → every receipt is reviewed by a person.
+  if (shape.startsWith("receipt_autopost:")) {
+    return { agentKind: "finance_manager", configKey: "expense_grants" }
+  }
   return { agentKind: "deal_coordinator", configKey: "doc_kernel_grants" }
 }
 

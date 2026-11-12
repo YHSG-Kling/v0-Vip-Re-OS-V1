@@ -6,6 +6,17 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+// WAVE 152 (lane 152E): THE OVERRIDE RULE for a compliance row (pure — lib/transactions/closing-compliance-core.ts) and the tenant
+// roster the override authority is DERIVED from (never retyped — CLAUDE.md §4).
+import { decideComplianceCheckChange } from "@/lib/transactions/closing-compliance-core"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+
+/**
+ * WHO MAY OVERRIDE a blocking / computed compliance check — the authority requireOverrideActor (lib/kernel/portal-auth.ts) holds for
+ * every gate override: the tenant admin roster MINUS team_lead (a team lead runs a team's board, not the brokerage's legal and
+ * financial approval). Derived by named subtraction from the ONE roster. Module-private ("use server": every export is an endpoint).
+ */
+const COMPLIANCE_OVERRIDE_USER_TYPES: ReadonlySet<string> = new Set([...TENANT_ADMIN_USER_TYPES].filter((t) => t !== "team_lead"))
 
 // ─── COMPLIANCE CHECK DEFINITIONS ────────────────────────────────────────────
 // These checks are seeded when a transaction advances to INSPECTION stage
@@ -132,18 +143,28 @@ export async function updateComplianceCheck(params: {
 
   const supabase = createServiceClient()
 
-  // Get current check for context
-  const { data: check } = await supabase
+  // Get current check for context (a refused read is said, never read as "not found")
+  const { data: check, error: checkErr } = await supabase
     .from("transaction_compliance_log")
     .select("check_type, check_label, status, is_blocking")
     .eq("id", params.checkId)
     .eq("transaction_id", params.transactionId)
     .eq("brokerage_id", brokerageId)
-    .single()
+    .maybeSingle()
 
+  if (checkErr) return { success: false, error: "The compliance check could not be read right now — nothing was changed. Try again in a moment." }
   if (!check) {
     return { success: false, error: "Compliance check not found" }
   }
+
+  // WAVE 152 (lane 152E — "only an authorized, reasoned, audited human override; no approve all; never falsely certify"): a check the
+  // closing comparison COMPUTES is cleared only by the comparison; a WAIVER of it — or of any blocking check — is an override that
+  // needs the override authority and a written reason, and leaves evidence. The rule is pure (decideComplianceCheckChange).
+  const decision = decideComplianceCheckChange({
+    checkType: String(check.check_type ?? ""), isBlocking: check.is_blocking === true, toStatus: params.status,
+    actorMayOverride: COMPLIANCE_OVERRIDE_USER_TYPES.has(String(ctx.userType ?? "").toLowerCase()), reason: params.resolutionNotes ?? null,
+  })
+  if (!decision.ok) return { success: false, error: `Nothing was changed: ${decision.reason}.` }
 
   const previousStatus = check.status
 
@@ -159,22 +180,65 @@ export async function updateComplianceCheck(params: {
   if (params.status === STATUS_PASS || params.status === STATUS_WAIVED) {
     updateData.resolved_by = user.id
     updateData.resolved_at = new Date().toISOString()
-    updateData.resolution_notes = params.resolutionNotes ?? null
+    updateData.resolution_notes = decision.override ? `OVERRIDE by ${ctx.userType}: ${String(params.resolutionNotes ?? "").trim()}` : (params.resolutionNotes ?? null)
   }
 
   if (params.status === STATUS_FAIL) {
     updateData.failure_reason = params.failureReason ?? null
   }
 
-  const { error: updateError } = await supabase
-    .from("transaction_compliance_log")
-    .update(updateData)
-    .eq("id", params.checkId)
-    .eq("transaction_id", params.transactionId)
-    .eq("brokerage_id", brokerageId)
+  const write = async (): Promise<{ updated: number; error: string | null }> => {
+    const { data: upd, error: updateError } = await supabase
+      .from("transaction_compliance_log")
+      .update(updateData)
+      .eq("id", params.checkId)
+      .eq("transaction_id", params.transactionId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
+    return { updated: (upd ?? []).length, error: updateError?.message ?? null }
+  }
 
-  if (updateError) {
-    return { success: false, error: updateError.message }
+  let wrote: { updated: number; error: string | null }
+  if (decision.override) {
+    // LAW 5: the override is the consequential act — who, why (the written reason), what check, from → to.
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    wrote = await withActionLedger<{ updated: number; error: string | null }>(
+      {
+        brokerageId,
+        action: "compliance.check.override",
+        actor: { type: "user", userId: user.id },
+        subject: { type: "transaction", id: params.transactionId, ref: String(check.check_type ?? params.checkId) },
+        reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: String(params.resolutionNotes ?? "").trim().slice(0, 500),
+        riskClass: "LEGAL",
+        systemSource: "compliance_override",
+        idempotencyKey: `compliance-override:${brokerageId}:${params.checkId}:${String(check.status)}->${params.status}:${new Date().toISOString().slice(0, 16)}`,
+        detail: { check_id: params.checkId, check_type: check.check_type, check_label: check.check_label, from: previousStatus, to: params.status, user_type: ctx.userType, blocking: check.is_blocking },
+      },
+      write,
+      {
+        settle: (r) => r.error ? { status: "failed", outcome: "refused", error: r.error } : r.updated === 1 ? { status: "executed", outcome: "overridden" } : { status: "failed", outcome: "no_row", error: "the override matched no row" },
+        replay: (claim) => ({ updated: 0, error: claim.kind === "refused" ? `the override could not be recorded on the action ledger (${claim.error}) — nothing was changed` : "this override was just recorded — refresh to see it" }),
+      },
+    )
+  } else {
+    wrote = await write()
+  }
+
+  if (wrote.error) {
+    return { success: false, error: wrote.error }
+  }
+  // An UPDATE that matches nothing also resolves (CLAUDE.md §3) — the row is gone or the tenant predicate refused.
+  if (wrote.updated === 0) return { success: false, error: "The compliance check was not updated — it no longer exists on this transaction." }
+
+  // A waived computed check settles its own corrective request (and only that one).
+  if (decision.override) {
+    try {
+      const { completeCorrectionRequests } = await import("@/lib/transactions/closing-compliance")
+      await completeCorrectionRequests(supabase, { brokerageId, transactionId: params.transactionId, checkLabels: [String(check.check_label ?? "")], completedBy: user.id })
+    } catch (err) {
+      console.error("[transaction-compliance] the overridden check's corrective request was not settled:", (err as Error)?.message ?? err)
+    }
   }
 
   // Create timeline entry for compliance change (normalized status)
@@ -404,7 +468,7 @@ export async function batchPassComplianceChecks(params: {
   transactionId: string
   brokerageId: string
   resolutionNotes?: string
-}): Promise<{ success: boolean; updated: number; error?: string }> {
+}): Promise<{ success: boolean; updated: number; refused?: Array<{ id: string; label: string; reason: string }>; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, updated: 0, error: "Invalid transaction ID" }
   if (!params.checkIds.length) return { success: true, updated: 0 }
 
@@ -423,8 +487,27 @@ export async function batchPassComplianceChecks(params: {
 
   const supabase = createServiceClient()
 
-  // Normalize writes: use "pass"
-  const { error, count } = await supabase
+  // WAVE 152 (lane 152E — "no indiscriminate 'approve all'"): read what was selected FIRST. A check the closing comparison computes
+  // and any BLOCKING check never ride in a batch (decideComplianceCheckChange) — each is named back as refused, so the reviewer
+  // opens it on its own; only non-blocking manual review items are passed together.
+  const { data: rows, error: readErr } = await supabase
+    .from("transaction_compliance_log")
+    .select("id, check_type, check_label, is_blocking, status")
+    .in("id", params.checkIds)
+    .eq("transaction_id", params.transactionId)
+    .eq("brokerage_id", brokerageId)
+  if (readErr) return { success: false, updated: 0, error: "The selected checks could not be read right now — nothing was changed. Try again in a moment." }
+  const refused: Array<{ id: string; label: string; reason: string }> = []
+  const passable: string[] = []
+  for (const r of (rows ?? []) as Array<{ id: string; check_type: string | null; check_label: string | null; is_blocking: boolean | null }>) {
+    const d = decideComplianceCheckChange({ checkType: String(r.check_type ?? ""), isBlocking: r.is_blocking === true, toStatus: STATUS_PASS, actorMayOverride: false, batch: true })
+    if (d.ok) passable.push(r.id)
+    else refused.push({ id: r.id, label: String(r.check_label ?? r.check_type ?? r.id), reason: d.reason })
+  }
+  if (passable.length === 0) return { success: true, updated: 0, refused }
+
+  // Normalize writes: use "pass" — counted (CLAUDE.md §3: an UPDATE that matches nothing also resolves)
+  const { data: passed, error } = await supabase
     .from("transaction_compliance_log")
     .update({
       status: STATUS_PASS,
@@ -435,27 +518,29 @@ export async function batchPassComplianceChecks(params: {
       resolution_notes: params.resolutionNotes ?? null,
       updated_at: new Date().toISOString(),
     })
-    .in("id", params.checkIds)
+    .in("id", passable)
     .eq("transaction_id", params.transactionId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
-    return { success: false, updated: 0, error: error.message }
+    return { success: false, updated: 0, refused, error: error.message }
   }
+  const updated = (passed ?? []).length
 
   // Log timeline entry
   await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
     brokerage_id: brokerageId,
     activity_type: "compliance_batch_pass",
-    description: `${params.checkIds.length} compliance checks marked as pass`,
+    description: `${updated} compliance check${updated === 1 ? "" : "s"} marked as pass${refused.length ? ` (${refused.length} refused — computed or blocking checks are reviewed one at a time)` : ""}`,
     performed_by: user.id,
-    metadata: { check_ids: params.checkIds, status: STATUS_PASS },
+    metadata: { check_ids: passable, refused_ids: refused.map((r) => r.id), status: STATUS_PASS },
     created_at: new Date().toISOString(),
   }), { table: "transaction_timeline", flow: "transaction_timeline_write", reason: "timeline echo of a batch pass already written (checked above)" })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   revalidatePath("/dashboard/compliance")
 
-  return { success: true, updated: count ?? params.checkIds.length }
+  return { success: true, updated, refused }
 }

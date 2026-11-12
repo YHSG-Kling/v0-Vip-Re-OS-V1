@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-09
+ * generated: 2026-11-12
  * source: public.live_schema_json()
- * body-sha256: 1391e8660ae5c4b31b5c16c3373391686bd9c67290504aef3abd116a44f1df2e
+ * body-sha256: 33cec637194803ad60567bb153c83c5339e0c0252d6170ca6e0a70cc2e756b5f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -581,8 +581,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   provider_overrides: ["config", "created_at", "enabled", "id", "provider_key", "provider_type", "scope_id", "scope_type", "updated_at"],
   push_notification_queue: ["body", "brokerage_id", "created_at", "data", "delivered_at", "error_message", "failed_at", "id", "status", "title", "user_id"],
   push_subscriptions: ["auth", "brokerage_id", "created_at", "disabled_at", "disabled_reason", "endpoint", "id", "last_seen_at", "p256dh", "user_agent", "user_id"],
-  qr_codes: ["agent_id", "brokerage_id", "created_at", "destination_type", "expires_at", "id", "is_active", "label", "lead_count", "listing_id", "marketing_campaign_id", "purpose", "scan_count", "slug", "target_url"],
-  qr_scan_events: ["brokerage_id", "campaign_id", "contact_id", "id", "ip_address", "is_first_scan", "qr_code_id", "referrer", "scanned_at", "user_agent"],
+  qr_codes: ["agent_id", "brokerage_id", "created_at", "created_by_user_id", "destination_history", "destination_type", "expires_at", "id", "is_active", "label", "lead_count", "listing_id", "marketing_campaign_id", "mint_context", "purpose", "retired_at", "retired_reason", "scan_count", "slug", "target_url"],
+  qr_scan_events: ["brokerage_id", "campaign_id", "contact_id", "device_class", "id", "ip_address", "is_first_scan", "qr_code_id", "referrer", "scanned_at", "traffic_class", "user_agent", "visitor_key"],
   raw_recruit_prospects: ["brokerage_id", "created_at", "id", "market_id", "normalized_preview", "processed_at", "processing_status", "raw_data", "recruit_id", "scraper_execution_id", "source", "source_record_id"],
   raw_scraped_leads: ["address", "brokerage_id", "city", "cost_per_record", "created_at", "dedupe_status", "email", "email_verified", "enriched_at", "error_message", "evidence", "external_ids", "first_name", "freshness_verdict", "id", "idempotency_key", "last_name", "last_promotion_attempt_at", "last_verified_at", "lead_id", "mailing_address", "mailing_address_source", "mailing_address_verified", "mailing_city", "mailing_state", "mailing_zip", "market_id", "normalized_preview", "observed_at", "phone", "processed_at", "processing_status", "producer_actor_id", "producer_actor_type", "producer_version", "promotion_attempts", "proof_urls", "raw_data", "scrape_category", "scraper_execution_id", "signal_at", "source", "source_channel", "source_family", "source_licence", "source_origin", "source_record_id", "source_rights", "source_subtype", "state", "subject_kind", "ttl_expires_at", "updated_at", "zip_code"],
   reaper_runs: ["brokerage_id", "detail", "domain", "escalated", "id", "manager", "ran_at", "reaped", "scanned"],
@@ -629,7 +629,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   showing_routes: ["agent_id", "brokerage_id", "created_at", "estimated_miles", "id", "optimization_score", "optimized_order", "route_date", "route_notes", "showings", "total_duration"],
   showings: ["access_code", "access_instructions", "access_method", "agent_id", "brokerage_id", "buyer_agent_email", "buyer_agent_name", "buyer_agent_phone", "buyer_interest_level", "completed_at", "confirmed_at", "contact_id", "created_at", "duration_minutes", "external_address", "external_metadata", "external_mls_id", "external_source", "feedback", "id", "is_confirmed", "listing_agent_company", "listing_agent_name", "listing_agent_phone", "listing_id", "notes", "offline_cached", "rating", "scheduled_at", "scheduled_date", "scheduled_time", "scheduling_method", "scheduling_reference", "showingtime_id", "status", "sync_source", "synced_at", "tour_id", "updated_at"],
   signal_reactivations: ["brokerage_id", "contact_id", "id", "isa_reactivated", "isa_reactivated_at", "lead_id", "signal_data", "signal_strength", "signal_type", "triggered_at"],
-  signature_requests: ["all_parties", "brokerage_id", "completed_at", "contact_id", "created_at", "document_id", "expires_at", "id", "provider_envelope_id", "request_status", "sent_at", "signing_order", "signing_url", "transaction_id"],
+  signature_requests: ["all_parties", "brokerage_id", "completed_at", "contact_id", "contract_term_version_id", "created_at", "document_id", "evidence", "expires_at", "id", "provider_envelope_id", "request_status", "sent_at", "signing_order", "signing_url", "transaction_id"],
   site_activity: ["action_taken", "behavioral_signal_id", "brokerage_id", "contact_id", "id", "occurred_at", "page_visited", "search_terms", "time_on_page_seconds", "timestamp"],
   skill_marketplace_listings: ["approved_at", "approved_by", "brokerage_id", "created_at", "declaration", "declaration_digest", "deprecated_at", "disabled_at", "disabled_reason", "enabled_at", "evaluated_at", "evaluation_evidence", "extension_kind", "id", "publisher", "publisher_name", "skill_id", "status", "submitted_by", "suspended_at", "suspended_reason", "updated_at", "version"],
   smart_assistant_suggestions: ["action_payload_json", "action_type", "action_url", "agent_id", "brokerage_id", "context_type", "created_at", "description", "feedback_text", "id", "metadata", "priority", "rating", "rating_at", "source_system", "status", "suggestion_type", "title"],

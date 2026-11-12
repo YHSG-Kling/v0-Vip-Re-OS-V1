@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 484 tables, 952 columns.
+ * MEASURED AT GENERATION: 485 tables, 955 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-09
+ * generated: 2026-11-12
  * source: public.live_check_constraints_json()
- * body-sha256: 28661f6df332ea2586b9e60f691e0909ba263e6440ae979c5303546829b28acc
+ * body-sha256: 1856f3dc43ee770e1211092732ab2bf80033cc4bacd9cbd29d47de10604b360d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1505,6 +1505,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   qr_codes: {
     destination_type: ["anniversary_video", "book_meeting", "cma_form", "landing_page", "listing_detail", "other", "podcast_episode", "video_avatar_tour"],
     purpose: ["business_card", "campaign", "event", "general", "lead_capture", "lead_magnet", "listing", "listing_inquiry", "open_house"],
+    retired_reason: ["retired", "revoked_unsafe"],
+  },
+  qr_scan_events: {
+    device_class: ["desktop", "mobile", "tablet", "unknown"],
+    traffic_class: ["bot", "human_likely", "repeat"],
   },
   raw_scraped_leads: {
     freshness_verdict: ["aging", "contradicted", "fresh", "history", "stale", "undated"],
@@ -1619,7 +1624,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     sync_source: ["ai_scheduler", "manual", "other", "showingtime", "workflow_sequence"],
   },
   signature_requests: {
-    request_status: ["cancelled", "completed", "expired", "partially_signed", "pending", "sent"],
+    request_status: ["cancelled", "completed", "declined", "expired", "failed", "partially_signed", "pending", "sent"],
   },
   skill_marketplace_listings: {
     extension_kind: ["custom_manager", "provider_adapter", "skill", "strategy", "webhook_app"],

@@ -1721,6 +1721,13 @@ export async function trackMagnetEvent(
     if (qr) {
       // Errors are READ (§3): a refused scan insert used to resolve silently and
       // the scan_count still went up, so the count and the event log disagreed.
+      // Wave 152 (152C): the PERMITTED scan context only — the same coarse evidence the scan door records
+      // (lib/marketing/tracked-qr.ts qrScanEvidence: a per-code-per-day visitor key, a coarse device, a traffic
+      // class); never the raw IP or the full browser string. Apply after m946. Both modules are already in the CRM
+      // page's graph — this adds no module to it.
+      const { qrScanEvidence } = await import("@/lib/marketing/tracked-qr")
+      const { classifyQrScan } = await import("@/lib/marketing/qr-contract")
+      const scanEvidence = qrScanEvidence({ qrCodeId: qr.id, ip: input.ipAddress ?? null, userAgent: input.userAgent ?? null, referrer: null })
       const { error: scanError } = await supabase
         .from("qr_scan_events")
         .insert({
@@ -1728,8 +1735,9 @@ export async function trackMagnetEvent(
           brokerage_id: tenantId,
           contact_id: input.contactId ?? null,
           scanned_at: new Date().toISOString(),
-          ip_address: input.ipAddress ?? null,
-          user_agent: input.userAgent ?? null,
+          visitor_key: scanEvidence.visitorKey,
+          device_class: scanEvidence.deviceClass,
+          traffic_class: classifyQrScan({ userAgent: input.userAgent ?? null }),
         })
       if (scanError) {
         console.error("[lead-magnets] qr_scan_events insert refused:", scanError.message)

@@ -71,10 +71,14 @@ export async function listRecentExtractionsAction(input?: {
   const svc = createServiceClient()
 
   // `error` is read: a refused ledger read used to resolve as "no facts yet".
+  // RECEIPT FACTS ARE NOT DEAL-FILE FACTS (wave 152, lane 152D). `expense.*` rows are someone's BOOKS — merchant,
+  // amount, payment card — reviewed only on the receipt review page by the uploader or an admin who keeps the books
+  // (lib/documents/receipt-intake.ts). This list is every authenticated seat's; it never shows them.
   const { data, error: listErr } = await svc
     .from("document_field_extractions")
     .select("id, document_id, field_key, field_value_json, confidence, verified_at, verified_by_user_id, created_at")
     .eq("brokerage_id", actor.brokerageId)
+    .not("field_key", "like", "expense.%")
     .order("created_at", { ascending: false })
     .limit(input?.limit ?? 30)
   if (listErr) return { ok: false, error: listErr.message }
@@ -159,6 +163,12 @@ export async function verifyExtractionAction(input: {
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
   if (!row) return { ok: false, error: "Extraction not found" }
+  // A receipt fact is confirmed ONLY through the receipt review (approve → the one expense writer, under the books'
+  // authority). Verifying it here would stamp a human's name on a fact no books-keeper approved, and a corrected value
+  // written here would replace its evidence envelope with a bare string.
+  if (String((row as any).field_key ?? "").startsWith("expense.")) {
+    return { ok: false, error: "Receipt details are confirmed on the receipt's review page." }
+  }
 
   const corrected = typeof input.correctedValue === "string" && input.correctedValue.trim() !== ""
   const update: Record<string, unknown> = {

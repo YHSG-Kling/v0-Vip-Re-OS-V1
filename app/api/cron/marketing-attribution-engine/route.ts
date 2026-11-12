@@ -8,6 +8,7 @@ import {
 import { resolveSequenceConversions } from "@/lib/campaign-sequences/sequence-conversion"
 import { rollupSequenceCounters, type SequenceCounterRollup } from "@/lib/campaign-sequences/sequence-counters"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { platformScope } from "@/lib/kernel/tenant-scope"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -50,10 +51,18 @@ export async function GET(request: NextRequest) {
   await recordCronStartAction({ context_id: contextId })
 
   const svc = createServiceClient()
-  const results: Array<{ txnId: string; totalCredits?: number; enrollmentsConverted?: number; error?: string }> = []
+  // Wave 152 (152B): candidates are NEW and STALE work — a credited deal whose commission changed is refreshed, a
+  // credited deal that fell through is RETRACTED (lib/marketing/attribution.ts). Both are counted below.
+  const results: Array<{ txnId: string; totalCredits?: number; outcome?: "credited" | "retracted"; removedRows?: number; enrollmentsConverted?: number; error?: string }> = []
 
   try {
-    const candidates = await findTransactionsNeedingAttribution(svc, LOOKBACK_DAYS)
+    // Platform-wide BY DESIGN (verifyCronAuth above): the scan crosses tenants; each candidate is credited only
+    // inside its own tenant. Stated, not inferred (lib/kernel/tenant-scope.ts).
+    const candidates = await findTransactionsNeedingAttribution(
+      svc,
+      platformScope("daily marketing-attribution cron (CRON_SECRET-verified): finds every tenant's recently changed deals; each is credited only within its own brokerage"),
+      LOOKBACK_DAYS,
+    )
     const toProcess  = candidates.slice(0, MAX_PER_RUN)
 
     for (const txnId of toProcess) {
@@ -68,14 +77,17 @@ export async function GET(request: NextRequest) {
         // showed a permanent zero. Failing here must not lose the attribution
         // that already succeeded, so it is caught separately.
         let enrollmentsConverted: number | undefined
-        try {
-          const c = await resolveSequenceConversions(svc, txnId)
-          enrollmentsConverted = c?.enrollmentsConverted
-        } catch (convErr) {
-          console.error(`[attribution] sequence conversion failed for ${txnId}:`, convErr)
+        // A deal that fell through is not a conversion — only a credited (live) deal reaches the sequence side.
+        if (r?.outcome !== "retracted") {
+          try {
+            const c = await resolveSequenceConversions(svc, txnId)
+            enrollmentsConverted = c?.enrollmentsConverted
+          } catch (convErr) {
+            console.error(`[attribution] sequence conversion failed for ${txnId}:`, convErr)
+          }
         }
         if (r) {
-          results.push({ txnId, totalCredits: r.totalCredits, enrollmentsConverted })
+          results.push({ txnId, totalCredits: r.totalCredits, outcome: r.outcome, removedRows: r.removedRows, enrollmentsConverted })
         }
       } catch (err) {
         results.push({ txnId, error: err instanceof Error ? err.message : String(err) })
@@ -99,7 +111,9 @@ export async function GET(request: NextRequest) {
       sequence_counters: sequenceCounters,
       candidates_found: candidates.length,
       processed:        toProcess.length,
-      attributed:       results.filter(r => !r.error).length,
+      attributed:       results.filter(r => !r.error && r.outcome === "credited").length,
+      retracted:        results.filter(r => r.outcome === "retracted").length,
+      credit_rows_removed: results.reduce((s, r) => s + (r.removedRows ?? 0), 0),
       failed:           results.filter(r => r.error).length,
       enrollments_converted: results.reduce((s, r) => s + (r.enrollmentsConverted ?? 0), 0),
     }

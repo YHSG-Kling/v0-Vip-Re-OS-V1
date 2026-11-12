@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from '@/lib/supabase/service'
 import { resolveWriteContext } from '@/lib/platform/acting-context'
-import { mintTrackedQr, QR_DESTINATION_TYPES, isQrPurpose } from '@/lib/marketing/tracked-qr'
-import { qrInAppDefaultPath } from '@/lib/marketing/qr-contract'
+import { QR_DESTINATION_TYPES, isQrPurpose, isQrDestinationType, type QrPurpose, type QrDestinationType } from '@/lib/marketing/tracked-qr'
+import { qrInAppDefaultPath, type QrTokenScope, type QrConsentContext } from '@/lib/marketing/qr-contract'
+// WAVE 152 (lane 152C): the GOVERNED doors — a mint is unique per idempotency key with ledger evidence and a safe
+// destination; a destination edit is versioned; pause / resume go through the one lifecycle table.
+import { mintGovernedQr, editQrDestination, changeQrLifecycle, type QrActor } from '@/lib/marketing/qr-governance'
 
 export const dynamic = 'force-dynamic'
 
@@ -55,6 +58,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       expiresAt?: string
       agentUserId?: string
       brokerageId?: string
+      /** WAVE 152 (152C) — the request's idempotency key (the board draws one per create form; a retry re-sends it). */
+      idempotencyKey?: string
+      tokenScope?: QrTokenScope
+      placement?: string
+      mailLayout?: string
+      channel?: string
+      source?: string
+      teamId?: string
+      locationId?: string
+      printSizeIn?: number
+      trackingEnabled?: boolean
+      consentContext?: QrConsentContext
+      purposeContext?: string
+      assetId?: string
     }
 
     const { label, purpose, destinationType, targetUrl, listingId, agentUserId, brokerageId } = body
@@ -78,23 +95,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const supabase = createServiceClient()
     const origin = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin
 
-    // A campaign FK proves the campaign exists, never that it is ours.
-    let marketingCampaignId: string | null = null
-    if (body.marketingCampaignId) {
-      const { data: campaign, error: campaignError } = await supabase
-        .from('marketing_campaigns')
-        .select('id')
-        .eq('id', body.marketingCampaignId)
-        .eq('brokerage_id', ctx.brokerageId)
-        .maybeSingle()
-      if (campaignError) {
-        return NextResponse.json({ success: false, error: campaignError.message }, { status: 500 })
-      }
-      if (!campaign) {
-        return NextResponse.json({ success: false, error: 'That campaign is not on your brokerage' }, { status: 403 })
-      }
-      marketingCampaignId = campaign.id as string
-    }
+    // TOMBSTONE (wave 152, 152C): the campaign-ownership read that lived here moved INTO the governed mint
+    // (lib/marketing/qr-governance.ts mintGovernedQr — campaign AND listing, both under the session's brokerage),
+    // so every governed door checks it, not only this one. SURVIVOR: mintGovernedQr.
 
     // qr_codes.agent_id FKs agents(id); tolerate callers already sending agents.id, else the session's.
     const agentId = agentUserId
@@ -136,39 +139,56 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }, { status: 400 })
     }
 
-    const minted = await mintTrackedQr({
-      brokerageId: ctx.brokerageId,
-      agentId,
+    // WAVE 152 (152C): THE GOVERNED MINT. The tenant and the creator come from the SESSION (ctx); the
+    // idempotency key makes a retried click return the SAME code; the destination is validated (https,
+    // verified tenant hosts + the external allow-list, no loop, no personal data); the mint is ledgered.
+    const actor: QrActor = { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: (agentId as string | null) ?? null, userType: ctx.userType }
+    const minted = await mintGovernedQr({
+      idempotencyKey: (body.idempotencyKey ?? '').trim(),
       label,
-      destinationType: (destinationType as any) ?? null,
+      purpose: (isQrPurpose(purpose) ? purpose : 'general') as QrPurpose,
+      destinationType: isQrDestinationType(destinationType) ? (destinationType as QrDestinationType) : null,
       targetUrl: resolvedUrl,
       listingId: listingId ?? null,
-      marketingCampaignId,
+      marketingCampaignId: body.marketingCampaignId ?? null,
       expiresAt: body.expiresAt ?? null,
-      purpose: (purpose as any) ?? undefined,
-      origin,
-    }, supabase)
+      teamId: body.teamId ?? null,
+      locationId: body.locationId ?? null,
+      channel: body.channel ?? null,
+      source: body.source ?? null,
+      placement: body.placement ?? null,
+      mailLayout: body.mailLayout ?? null,
+      assetId: body.assetId ?? null,
+      purposeContext: body.purposeContext ?? null,
+      consentContext: body.consentContext ?? null,
+      tokenScope: body.tokenScope,
+      printSizeIn: typeof body.printSizeIn === 'number' ? body.printSizeIn : null,
+      trackingEnabled: body.trackingEnabled !== false,
+    }, actor, { client: supabase, origin, appOrigins: [origin, new URL(req.url).origin] })
 
-    if (!minted) {
-      return NextResponse.json({ success: false, error: 'Failed to create QR code' }, { status: 500 })
+    if (!minted.ok) {
+      const status = minted.code === 'not_permitted' ? 403 : minted.code === 'in_flight' ? 409 : minted.code === 'refused' ? 503 : 400
+      return NextResponse.json({ success: false, error: minted.message }, { status })
     }
 
     const { data: qrCode, error } = await supabase
       .from('qr_codes')
       .select('id, slug, label, purpose, target_url, destination_type, listing_id, marketing_campaign_id, expires_at, scan_count, lead_count, is_active, created_at')
-      .eq('id', minted.qrCodeId)
+      .eq('id', minted.code.id)
+      .eq('brokerage_id', ctx.brokerageId)
       .single()
 
     if (error || !qrCode) {
-      return NextResponse.json({ success: false, error: error?.message ?? 'Failed to read back QR code' }, { status: 500 })
+      return NextResponse.json({ success: false, error: 'The code was created, but it could not be read back. Reload the page to see it.' }, { status: 500 })
     }
 
     return NextResponse.json({
       success: true,
       qrCode,
-      scanUrl: minted.scanUrl,
-      qrImageDataUrl: minted.qrCodeDataUrl,
-      created: minted.created,
+      scanUrl: minted.code.scanUrl,
+      qrImageDataUrl: minted.code.imageDataUrl,
+      created: !minted.replayed,
+      replayed: minted.replayed,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
@@ -215,6 +235,8 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
       targetUrl?: string
       expiresAt?: string | null
       isActive?: boolean
+      /** WAVE 152 (152C): why the destination changed — kept on the new version and the ledger row. */
+      reason?: string
     }
     const { id } = body
     if (!id) {
@@ -245,37 +267,69 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ success: false, error: 'Not found' }, { status: 404 })
     }
 
-    // Build the patch — only include fields the caller specified so
-    // the partial PATCH semantics are preserved.
+    // WAVE 152 (152C): THREE KINDS OF CHANGE, THREE DOORS. TOMBSTONE: this handler wrote
+    // `target_url`, `destination_type` and `is_active` in one raw UPDATE — any URL (http,
+    // `javascript:`, another tenant's tracking link, a page carrying a phone number), no
+    // version kept, no evidence. SURVIVORS (lib/marketing/qr-governance.ts): the destination
+    // → editQrDestination (validated, versioned, ledgered); pause/resume → changeQrLifecycle
+    // (the one transition table; a retired code never resumes). Only the board's own
+    // metadata (name, purpose, end date) is a plain tenant-scoped update here.
+    const actor: QrActor = { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType }
+    const origin = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin
+    const notices: string[] = []
+
+    if (body.targetUrl !== undefined || body.destinationType !== undefined) {
+      const { data: current, error: curErr } = await supabase.from('qr_codes').select('target_url').eq('id', id).eq('brokerage_id', ctx.brokerageId).maybeSingle()
+      if (curErr || !current) return NextResponse.json({ success: false, error: curErr ? 'We couldn\'t load this code. Nothing was changed.' : 'Not found' }, { status: curErr ? 503 : 404 })
+      const nextType = body.destinationType === undefined ? undefined : (isQrDestinationType(body.destinationType) ? body.destinationType : null)
+      const edit = await editQrDestination(
+        { qrCodeId: id, targetUrl: body.targetUrl !== undefined ? body.targetUrl : (current as { target_url: string }).target_url, destinationType: nextType, reason: body.reason ?? null },
+        actor,
+        { client: supabase, origin, appOrigins: [origin, new URL(req.url).origin] },
+      )
+      if (!edit.ok) {
+        const status = edit.code === 'not_found' ? 404 : edit.code === 'conflict' || edit.code === 'in_flight' ? 409 : edit.code === 'refused' || edit.code === 'unavailable' ? 503 : 400
+        return NextResponse.json({ success: false, error: edit.message }, { status })
+      }
+      if (!edit.unchanged) notices.push(`Destination saved as version ${edit.history[edit.history.length - 1]?.version ?? 1}; printed copies follow it on their next scan.`)
+    }
+
+    if (body.isActive !== undefined) {
+      const life = await changeQrLifecycle({ qrCodeId: id, action: body.isActive ? 'resume' : 'pause' }, actor, { client: supabase })
+      if (!life.ok) {
+        return NextResponse.json({ success: false, error: life.message }, { status: life.code === 'not_found' ? 404 : life.code === 'terminal' ? 409 : 400 })
+      }
+    }
+
+    // Metadata only — only the fields the caller specified (partial PATCH semantics).
     const patch: Record<string, unknown> = {}
     if (body.label !== undefined)        patch.label = body.label.trim()
     if (body.purpose !== undefined)      patch.purpose = body.purpose
-    if (body.destinationType !== undefined) patch.destination_type = body.destinationType
-    if (body.targetUrl !== undefined) {
-      const trimmed = body.targetUrl.trim()
-      if (!trimmed) {
-        return NextResponse.json({ success: false, error: 'targetUrl cannot be empty' }, { status: 400 })
-      }
-      patch.target_url = trimmed
-    }
     if (body.expiresAt !== undefined)    patch.expires_at = body.expiresAt
-    if (body.isActive !== undefined)     patch.is_active = body.isActive
 
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length > 0) {
+      const { data: written, error: metaErr } = await supabase
+        .from('qr_codes')
+        .update(patch)
+        .eq('id', id)
+        .eq('brokerage_id', ctx.brokerageId)
+        .select('id')
+      if (metaErr) return NextResponse.json({ success: false, error: 'The name, purpose or end date wasn\'t saved. Try again in a moment.' }, { status: 503 })
+      if (!Array.isArray(written) || written.length !== 1) return NextResponse.json({ success: false, error: 'Not found' }, { status: 404 })
+    } else if (body.targetUrl === undefined && body.destinationType === undefined && body.isActive === undefined) {
       return NextResponse.json({ success: false, error: 'No fields to update' }, { status: 400 })
     }
 
     const { data: updated, error } = await supabase
       .from('qr_codes')
-      .update(patch)
+      .select('id, slug, label, purpose, target_url, destination_type, listing_id, marketing_campaign_id, expires_at, scan_count, lead_count, is_active, created_at')
       .eq('id', id)
       .eq('brokerage_id', ctx.brokerageId)
-      .select('id, slug, label, purpose, target_url, destination_type, listing_id, marketing_campaign_id, expires_at, scan_count, lead_count, is_active, created_at')
       .single()
     if (error || !updated) {
-      return NextResponse.json({ success: false, error: error?.message ?? 'Update failed' }, { status: 500 })
+      return NextResponse.json({ success: false, error: 'The change was saved, but the code could not be read back. Reload the page to see it.' }, { status: 500 })
     }
-    return NextResponse.json({ success: true, qrCode: updated })
+    return NextResponse.json({ success: true, qrCode: updated, notices })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     return NextResponse.json({ success: false, error: message }, { status: 500 })

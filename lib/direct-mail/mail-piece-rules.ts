@@ -7,6 +7,9 @@
 // sender-address resolver, the send gate, returned-mail handling — reaches the service client and the brand cascade).
 // piece-type.ts RE-EXPORTS everything here, so every server importer keeps its one home (wave 151, integrator split
 // after lane 151H; no definition is duplicated — each lives here once).
+// WAVE 152 (lane 152C): the one import is the PURE QR contract (it imports nothing either), for the quiet zone the
+// optional QR region of every layout prints with — still client-safe by construction.
+import { QR_RENDER_DEFAULTS } from "@/lib/marketing/qr-contract"
 
 export const MAIL_FORMATS = ["letter", "personal_letter", "postcard", "handwritten_card"] as const
 export type MailFormat = (typeof MAIL_FORMATS)[number]
@@ -56,7 +59,26 @@ interface MailLayout {
   status: "lob_global_template" | "unsupported_by_provider"
   /** For an unsupported layout: the layout that stands in for it. */
   substitute?: MailFormat
+  /** WAVE 152 (152C) — the layout's OPTIONAL reusable QR region (null = the layout has none). Owner (verbatim): "all mail
+   *  including letters can have a section that can use a qr bar code." The region prints the campaign's REGISTERED code
+   *  (`qr_destination_url`, a /api/qr/scan?slug=<token> link) or stays blank; it never blocks the piece. */
+  qrRegion: MailQrRegion | null
 }
+
+interface MailQrRegion {
+  /** Always optional — a piece mails with or without a code. */
+  optional: true
+  /** Where the region sits in the blank layout (structure only — no brand, no address). */
+  anchor: string
+  /** The printed edge of the symbol INCLUDING its quiet zone, in inches. */
+  sizeIn: number
+  /** Below this a phone camera at arm's length misreads a URL-length code. */
+  minSizeIn: number
+  /** The quiet zone in modules — the one encoding contract's (lib/marketing/qr-contract.ts, ISO/IEC 18004: 4). */
+  quietZoneModules: number
+}
+
+const QR_QUIET = QR_RENDER_DEFAULTS.margin
 
 const LAYOUT_COMMON = ["brand_display_name", "brand_legal_name", "brand_logo_url", "brand_primary_color", "brand_secondary_color", "brand_accent_color", "brand_font_family", "brand_font_css_url", "brand_tagline", "brand_website", "brand_phone", "agent_name", "agent_license_line", "sender_legal_identity", "creator_attribution", "return_name", "return_address_line1", "return_address_line2", "return_city", "return_state", "return_zip", "recipient_name", "recipient_first_name", "qr_destination_url", "disclosure_short"] as const
 
@@ -67,26 +89,32 @@ export const MAIL_LAYOUT_LIBRARY: Readonly<Record<"letter" | "personal_letter" |
     slot: "letter", format: "letter", pieceType: "letter", label: MAIL_FORMAT_LABELS.letter,
     layout: "8.5×11 letter: letterhead strip (logo, display name, tagline), #10 window address block at 0.94in/0.5in, date, body grid, signature block with creator attribution and license line, footer with the verbatim long disclosure. No brand, address or name is in the layout itself.",
     mergeVariables: [...LAYOUT_COMMON, "copy_text", "agent_photo_url", "disclosure_long"], typeface: "brand_font", status: "lob_global_template",
+    qrRegion: { optional: true, anchor: "bottom-right of the page beside the signature block, above the footer disclosure, clear of the #10 window", sizeIn: 1, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
   },
   personal_letter: {
     slot: "personal_letter", format: "personal_letter", pieceType: "letter", label: MAIL_FORMAT_LABELS.personal_letter,
     layout: "8.5×11 note: generous margins, a short body set in the handwriting-style printed typeface (note_font_family / note_font_css_url), a first-name salutation, a signature line in the same typeface with the sender's printed name, a small letterhead and footer in the brand font with the verbatim short disclosure. Printed in color. Labeled handwriting-style printed, never handwritten.",
     mergeVariables: [...LAYOUT_COMMON, "note_body", "note_font_family", "note_font_css_url", "agent_photo_url"], typeface: "handwriting_style", status: "lob_global_template",
+    qrRegion: { optional: true, anchor: "bottom-right of the page beside the handwriting-style signature, above the footer — the symbol prints black on white whatever the note's ink color", sizeIn: 0.9, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
   },
   postcard_front: {
     slot: "postcard_front", format: "postcard", pieceType: "postcard", label: "Postcard front (printed)",
     layout: "4×6 / 6×9 front: full-bleed art zone (front_art_url or picture_url), headline, logo lockup, QR with its destination URL. No address zone on the front.",
     mergeVariables: [...LAYOUT_COMMON, "front_art_url", "picture_url", "copy_text"], typeface: "brand_font", status: "lob_global_template",
+    qrRegion: { optional: true, anchor: "lower-right of the art zone inside the logo lockup band, on a white plate the size of the quiet zone", sizeIn: 1, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
   },
   postcard_back: {
     slot: "postcard_back", format: "postcard", pieceType: "postcard", label: "Postcard back (printed)",
     layout: "4×6 / 6×9 back: left 48% message zone (body, signoff, agent photo, opt-out line), right 52% left EMPTY for Lob's address block, indicia and postal markings (the return address Lob prints there is the tenant's `from`, never the platform's). Verbatim short disclosure and license line along the bottom.",
     mergeVariables: [...LAYOUT_COMMON, "back_art_url", "copy_text", "agent_photo_url"], typeface: "brand_font", status: "lob_global_template",
+    qrRegion: { optional: true, anchor: "message zone (left 48%) under the body, above the opt-out line — never in the right 52% reserved for the address block and postal markings", sizeIn: 0.8, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
   },
   notecard: {
     slot: null, format: "notecard", pieceType: null, label: "Folded notecard (no Lob product)",
     layout: "EVALUATED—NOT IMPLEMENTED: Lob prints postcards, letters, self-mailers, snap packs, booklets and checks — no folded notecard product (docs.lob.com products, read 2026-11-06 in §12). The handwriting-style printed note (personal_letter) is the substitute; a printed greeting-card provider (AMcards) stays dormant in OPTIONAL_MAIL_PROVIDERS.",
     mergeVariables: [], typeface: "handwriting_style", status: "unsupported_by_provider", substitute: "personal_letter",
+    // No provider prints a notecard, so there is no region to print into; its substitute (personal_letter) carries one.
+    qrRegion: null,
   },
 })
 
@@ -108,6 +136,37 @@ export function layoutContentViolations(text: string): string[] {
     if (m) out.push(`${f.why}: "${m[0].slice(0, 60)}"`)
   }
   return out
+}
+
+// ─── 2b. THE OPTIONAL QR REGION (wave 152, lane 152C) ─────────────────────────
+
+export type MailLayoutKey = keyof typeof MAIL_LAYOUT_LIBRARY
+
+/** A registered code's tracking link — the only thing a mail QR region may encode (never a typed destination URL). */
+const REGISTERED_SCAN_LINK_RE = /^https?:\/\/[^/\s?#]+\/api\/qr\/scan\?slug=([a-z0-9-]{1,120})$/i
+
+export type MailQrRegionDecision =
+  | { print: true; layout: MailLayoutKey; scanUrl: string; token: string; sizeIn: number; quietZoneModules: number; anchor: string }
+  | { print: false; layout: MailLayoutKey; reason: "not_requested" | "layout_has_no_region" | "not_a_registered_code" | "code_not_active"; note: string }
+
+/**
+ * PURE — does THIS piece print a QR code in its layout's region? It answers for the REGION only: every "no" says the
+ * piece mails without a code and nothing else changes — an unconfigured or unusable code never blocks the mailing
+ * (directive 152C: "A blank/unconfigured destination must block QR printing, not the whole unrelated mail capability").
+ * The token it returns is the code's own (printed under the symbol, and the key the scan maps back to its campaign).
+ */
+export function decideMailQrRegion(input: { layout: MailLayoutKey; scanUrl?: string | null; codeState?: string | null }): MailQrRegionDecision {
+  const layout = input.layout
+  const region = MAIL_LAYOUT_LIBRARY[layout]?.qrRegion ?? null
+  if (!region) return { print: false, layout, reason: "layout_has_no_region", note: "This format has no QR area (no provider prints it); the piece mails without a code." }
+  const url = (input.scanUrl ?? "").trim()
+  if (!url) return { print: false, layout, reason: "not_requested", note: "No QR code on this piece — its QR area stays blank and the piece mails as usual." }
+  const m = REGISTERED_SCAN_LINK_RE.exec(url)
+  if (!m) return { print: false, layout, reason: "not_a_registered_code", note: "Only a code from your QR codes list can print here, so this one was left off; the piece mails without it." }
+  if (input.codeState && input.codeState !== "active") {
+    return { print: false, layout, reason: "code_not_active", note: `This campaign's QR code is ${input.codeState}, so the piece mails without it. Resume or replace the code on the QR codes page to print it.` }
+  }
+  return { print: true, layout, scanUrl: url, token: m[1], sizeIn: region.sizeIn, quietZoneModules: region.quietZoneModules, anchor: region.anchor }
 }
 
 // ─── 3. What a Lob tracking event proves ──────────────────────────────────────

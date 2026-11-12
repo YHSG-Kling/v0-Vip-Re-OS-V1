@@ -13,6 +13,8 @@ import {
 } from '../components/os'
 import { AddExpenseDialog } from './components/add-expense-dialog'
 import { DeleteExpenseButton } from './components/delete-expense-button'
+import { ScanReceiptButton } from './components/scan-receipt-button'
+import { ReceiptReviewQueue } from './components/receipt-review-queue'
 
 export const dynamic = 'force-dynamic'
 
@@ -117,9 +119,13 @@ export default async function ExpensesPage() {
               business_expenses.agent_id and the dialog's kernel write is
               permission-gated on ctx.agentId; raw user.id broke both. */}
           <ExportCSVButton agentId={expenseAgentId} type="expenses" />
+          <ScanReceiptButton />
           <AddExpenseDialog agentId={expenseAgentId} />
         </div>
       </div>
+
+      {/* Receipts read by the AI and waiting for a person (wave 152, lane 152D). Nothing in this list is on the books yet. */}
+      <ReceiptReviewQueue />
 
       {/* KPI Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

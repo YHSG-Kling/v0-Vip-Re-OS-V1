@@ -465,8 +465,11 @@ export function CreateCampaignDialog({
               <div className="flex items-center gap-2">
                 <QrCode className="h-4 w-4 text-primary" />
                 <div>
-                  <p className="text-sm font-medium">Enable QR Tracking</p>
-                  <p className="text-xs text-muted-foreground">Generate a QR code to track responses from this campaign</p>
+                  <p className="text-sm font-medium">Add a QR code (optional)</p>
+                  <p className="text-xs text-muted-foreground">
+                    Prints this campaign&apos;s own unique code in the piece&apos;s QR area — letters and notes too — and counts scans
+                    (never who scanned). If the code can&apos;t be printed, the piece still mails without it.
+                  </p>
                 </div>
               </div>
               <Switch

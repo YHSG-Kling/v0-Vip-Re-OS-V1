@@ -50,6 +50,8 @@ import {
   TICKET_CATEGORIES, TICKET_PRIORITIES, ticketPriorityRank, ticketAnsweredBy,
   type TicketCategory, type TicketLane, type TicketPriority,
 } from "@/lib/support/ticket-constants"
+// THE ONE tenant-copy rule list (wave 152, lane 152A) — tenantFacingGate below delegates to it.
+import { tenantCopyVerdict } from "@/lib/errors"
 
 type Svc = any
 
@@ -142,20 +144,15 @@ export function applyTriageRule(
 }
 
 /** The phrases a TENANT may never read from the AI (owner: never "platform-covered"; never a credential, price
- *  or provider internals). Returns the first offending phrase, or null when the text is clean. */
-const TENANT_FACING_FORBIDDEN: ReadonlyArray<[RegExp, string]> = [
-  [/platform[- ]?covered/i, "the platform-pays phrase"],
-  [/\b(api[_ -]?key|secret|password|token|bearer)\b/i, "credential vocabulary"],
-  [/\b(sk_live|sk_test|whsec|pk_live)[a-z0-9_]*/i, "a key-shaped string"],
-  [/\$\s?\d[\d,]*(\.\d+)?/, "a price"],
-  [/\b(stack ?trace|exception|null pointer|ECONNREFUSED|PGRST\d{3}|42P01|42501)\b/i, "a provider / database internal"],
-]
+ *  or provider internals).
+ *  TOMBSTONE (wave 152, lane 152A; §1.1 merge-then-delete): the local TENANT_FACING_FORBIDDEN list that stood here —
+ *  platform-covered, credential words, key shapes, prices, PGRST / 42P01 / 42501 / stack-trace — is MERGED onto
+ *  lib/errors/index.ts TENANT_COPY_RULES (every one of its five rules is there, plus the payer, HTTP-status, SQL / RLS
+ *  wording, source-path and internal-identifier rules it lacked) and read through tenantCopyVerdict; this gate keeps
+ *  its name, its callers (the AI answer, ensureOperationTicket, the operation reporter) and its "contains …" reasons. */
 /** @proofSeam the proof forges each forbidden shape and a clean sentence */
 export function tenantFacingGate(text: string | null | undefined): { ok: true } | { ok: false; reason: string } {
-  const t = (text ?? "").trim()
-  if (!t) return { ok: false, reason: "empty" }
-  for (const [re, why] of TENANT_FACING_FORBIDDEN) if (re.test(t)) return { ok: false, reason: `contains ${why}` }
-  return { ok: true }
+  return tenantCopyVerdict(text, { mode: "authored" })
 }
 
 // ── 3. The help base: candidates the ANSWER must be grounded in ───────────────────────────────
@@ -451,7 +448,7 @@ export async function triageSupportTicket(svc: Svc, input: TriageInput, deps: Tr
             evidence: { ticket_id: input.ticketId, lane: input.lane, category: out.category, priority: out.priority, triage_event_id: out.lifecycleEventId },
             error: `support ticket reports ${OPERATION_LABEL[out.operation]} did not hold: ${out.summary}`.slice(0, 400),
             actorUserId: input.submitterUserId ?? null, source: "ui",
-            tenantFacing: `a support ticket reports it (“${input.subject.slice(0, 60)}”); the OS is re-checking and repairing it`,
+            tenantFacing: `a support ticket reports it (“${input.subject.slice(0, 60)}”); the OS is re-checking it`,
             platformVisible: platformLane,
           })
           out.signalId = r.signalId; out.routedTo = r.routedTo
@@ -570,7 +567,9 @@ export async function ensureOperationTicket(svc: Svc, p: {
   const existing = ((open ?? []) as Array<{ id: string }>)[0]
   if (existing) return { ticketId: existing.id, created: false, error: null }
   const gate = tenantFacingGate(p.tenantFacing)
-  const body = gate.ok ? p.tenantFacing : `${OPERATION_LABEL[p.operation]} did not verify; the OS is checking and repairing it.`
+  // A ticket is opened by the consumer's escalation — AFTER the automatic re-check could not fix it (wave 152A: the old
+  // fallback said "the OS is checking and repairing it", which was no longer true by the time a ticket existed).
+  const body = gate.ok ? p.tenantFacing : `${OPERATION_LABEL[p.operation]} did not verify, and the automatic re-check could not fix it.`
   const { data, error } = await svc.from("support_tickets").insert({
     brokerage_id: p.brokerageId, agent_id: null, submitted_by_user_id: p.actorUserId ?? null, lane, subject,
     description: `${body}\n\nOpened automatically by the OS from an operation that did not verify (owner: ${OPERATION_OWNER[p.operation]}${p.lifecycleEventId ? `; evidence ${p.lifecycleEventId}` : ""}).`.slice(0, 2000),

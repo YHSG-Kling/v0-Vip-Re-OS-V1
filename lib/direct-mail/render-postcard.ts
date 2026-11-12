@@ -29,6 +29,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import QRCode from "qrcode"
 // ONE encoding contract (wave 141F): a printed postcard gets the spec's 4-module quiet zone.
 import { qrEncodeOptions } from "@/lib/marketing/qr-contract"
+// WAVE 152 (lane 152C): the front's QR is the layout's OPTIONAL region — printed only for a REGISTERED code's tracking
+// link (decideMailQrRegion), never a raw URL; a missing or unusable code leaves the region blank and the card renders.
+import { decideMailQrRegion, type MailQrRegionDecision } from "@/lib/direct-mail/mail-piece-rules"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
@@ -48,6 +51,8 @@ export interface RenderPostcardBothSidesResult {
   complianceEventId?: string | null
   error?:    string
   violations?: string[]
+  /** Wave 152 (152C): what the front's optional QR region did (printed with its token, or blank and why). */
+  qrRegion?: MailQrRegionDecision
 }
 
 // TOMBSTONE (orphan tranche 4): renderPostcardFront4x6 deleted. The survivor is
@@ -106,8 +111,9 @@ export async function renderPostcardBothSides4x6(args: {
   }
 
   let qrCodeDataUrl: string | null = null
-  if (args.qrScanUrl) {
-    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, qrEncodeOptions(600))
+  const qrRegion = decideMailQrRegion({ layout: "postcard_front", scanUrl: args.qrScanUrl })
+  if (qrRegion.print) {
+    qrCodeDataUrl = await QRCode.toDataURL(qrRegion.scanUrl, qrEncodeOptions(600))
   }
 
   const entry = path.join(process.cwd(), "remotion", "Root.tsx")
@@ -184,6 +190,7 @@ export async function renderPostcardBothSides4x6(args: {
     backUrl:  backUp,
     copy:     copyResult.copy,
     complianceEventId: copyResult.complianceEventId,
+    qrRegion,
   }
 }
 
@@ -226,8 +233,9 @@ export async function renderPostcardBothSides6x9(args: {
   }
 
   let qrCodeDataUrl: string | null = null
-  if (args.qrScanUrl) {
-    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, qrEncodeOptions(720))
+  const qrRegion = decideMailQrRegion({ layout: "postcard_front", scanUrl: args.qrScanUrl })
+  if (qrRegion.print) {
+    qrCodeDataUrl = await QRCode.toDataURL(qrRegion.scanUrl, qrEncodeOptions(720))
   }
 
   const entry = path.join(process.cwd(), "remotion", "Root.tsx")
@@ -292,5 +300,6 @@ export async function renderPostcardBothSides6x9(args: {
     backUrl:  backUp,
     copy:     copyResult.copy,
     complianceEventId: copyResult.complianceEventId,
+    qrRegion,
   }
 }

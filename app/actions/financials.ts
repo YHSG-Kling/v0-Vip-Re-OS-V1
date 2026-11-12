@@ -11,6 +11,10 @@ import { uploadBufferToBucket } from "@/lib/storage/buckets"
 // is also what lets scripts/expense-export-scope-simulator.ts run the REAL
 // builder and PROVE the owner's "no credentials in csv" ruling holds.
 import { buildExpenseCsv, type ExpenseCsvInput } from "@/lib/finance/expense-csv"
+import { reversalVerdict, reversalMarker } from "@/lib/documents/receipt-rules"
+import type { ReceiptActor } from "@/lib/documents/receipt-intake"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { KernelEvent } from "@/lib/kernel/events"
 import { generateTextRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 
@@ -822,6 +826,15 @@ export async function logScopedExpense(input: {
    */
   agentId?: string | null
   receiptUrl?: string | null
+  /**
+   * WAVE 152 (lane 152D) — A REFUND OR CREDIT REDUCES THE EXPENSE IT REVERSES, never more. `amount` stays the positive
+   * magnitude the validation below demands; the row is booked NEGATIVE, on the SAME books (agent / team / brokerage)
+   * as the original, and the cumulative reversals of one expense can never exceed it (reversalVerdict,
+   * lib/documents/receipt-rules.ts). Every cost reader that sums business_expenses — the P&L fold, the tax concierge,
+   * the reports, the ROI cost reader — nets it with no change of its own. A refund with no recorded original is
+   * REFUSED, not booked as a free-standing negative cost.
+   */
+  reversalOfExpenseId?: string | null
 }): Promise<{ success: boolean; expenseId?: string; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
@@ -891,14 +904,60 @@ export async function logScopedExpense(input: {
     return { success: false, error: "unknown_scope" }
   }
 
+  // THE REVERSAL GATE (see `reversalOfExpenseId`). The original is read tenant-pinned; earlier reversals of it are
+  // found by the marker their descriptions carry. A refused read refuses the write — never a blind negative row.
+  let isReversal = false
+  if (input.reversalOfExpenseId) {
+    const marker = reversalMarker(input.reversalOfExpenseId)
+    const { data: original, error: originalErr } = await svc
+      .from("business_expenses")
+      .select("id, amount, agent_id, team_id")
+      .eq("id", input.reversalOfExpenseId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (originalErr) return { success: false, error: originalErr.message }
+    const { data: prior, error: priorErr } = await svc
+      .from("business_expenses")
+      .select("amount")
+      .eq("brokerage_id", ctx.brokerageId)
+      .ilike("description", `%${marker}%`)
+    if (priorErr) return { success: false, error: priorErr.message }
+    const alreadyReversed = ((prior ?? []) as Array<{ amount: number | string | null }>).reduce((s, r) => s + Math.abs(Number(r.amount) || 0), 0)
+    const verdict = reversalVerdict({
+      original: (original as { id: string; amount: number | string; agent_id: string | null; team_id: string | null } | null) ?? null,
+      magnitude: amount,
+      alreadyReversed,
+      row: { agent_id: (row.agent_id as string | undefined) ?? null, team_id: (row.team_id as string | undefined) ?? null },
+    })
+    if (!verdict.ok) return { success: false, error: verdict.code }
+    if (!String(row.description).includes(marker)) row.description = `${String(row.description)} ${marker}`
+    row.amount = -amount
+    isReversal = true
+  }
+
   const { data, error } = await svc.from("business_expenses").insert(row).select("id").single()
   if (error) return { success: false, error: error.message }
+
+  // MERGED FIRST (orphan doctrine §1.1, wave 152 lane 152D) from lib/kernel/financial.ts createExpenseRecord before that
+  // duplicate writer was retired onto this one: the audit-only EXPENSE_CREATED lifecycle echo it wrote after every row.
+  // Best-effort and ledgered by the sentinel — the expense row above is already committed.
+  await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: ctx.brokerageId as string,
+    entityType: "business_expense",
+    entityId: data.id as string,
+    event: KernelEvent.EXPENSE_CREATED,
+    metadata: { scope: input.scope, agentId: row.agent_id ?? null, teamId: row.team_id ?? null, category: row.category, amount: row.amount, reversalOf: input.reversalOfExpenseId ?? null },
+    createdAt: new Date().toISOString(),
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "expense_created_echo", brokerageId: ctx.brokerageId, reason: "lifecycle echo after the expense row landed" })
 
   // Brokerage-scoped expenses post to the brokerage's QuickBooks (when connected)
   // through the ONE accounting egress — best-effort: a sync failure lands in the
   // sync-errors UI, never blocks the local ledger entry. Agent/team expenses
   // stay off the brokerage books (owner rule: no cross-book rollup).
-  if (input.scope === "brokerage") {
+  // A REVERSAL is not pushed: the egress books a QuickBooks Purchase, which carries no negative amount — the refund
+  // is recorded here and the connected books are reconciled by the account's bookkeeper (stated, not guessed).
+  if (input.scope === "brokerage" && !isReversal) {
     try {
       const { pushExpenseToAccounting } = await import("@/lib/finance/accounting-egress")
       await pushExpenseToAccounting(svc, {
@@ -914,4 +973,135 @@ export async function logScopedExpense(input: {
   revalidatePath("/dashboard/financials/brokerage")
   revalidatePath("/dashboard/financials/expenses")
   return { success: true, expenseId: data.id as string }
+}
+
+// ─── RECEIPT → BOOKS (wave 152, lane 152D) ────────────────────────────────────
+// Owner: "…receipts are scanned or a picture of them and then ai inputs the data into the financial fields for the
+// brokerage, teams or agents financial records." The flow lives in lib/documents/receipt-intake.ts; these doors only
+// GATE (tenant + actor from the SESSION, never the body — §4) and hand it THE ONE WRITER above, logScopedExpense, so a
+// receipt reaches business_expenses through exactly the authority a typed expense does. Nothing is posted without a
+// person's approval unless an approved grant on finance_manager's policy row names that exact low-risk case.
+// What the tenant sees is the message contract (what happened · what it affects · saved? · who acts · one action);
+// technical detail goes to the server log only.
+
+async function sessionReceiptActor(): Promise<ReceiptActor | null> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return null
+  return { userId: ctx.userId, agentId: ctx.agentId ?? null, teamId: ctx.teamId ?? null, brokerageId: ctx.brokerageId, userType: ctx.userType }
+}
+
+const SIGN_IN_COPY = {
+  whatHappened: "You are not signed in to an account.",
+  whatItAffects: "Nothing was uploaded or recorded.",
+  saved: "Nothing was saved.",
+  whoActs: "You can sign in and try again.",
+  action: "Sign in",
+}
+
+const RECEIPT_UPLOAD_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf", "text/plain", "text/html"])
+
+export async function scanReceiptForReview(input: {
+  /** base64 (no data: prefix) — the browser reads the File and encodes it. */
+  base64: string
+  mimeType: string
+  fileName?: string | null
+  /** Optional deal this receipt is FOR — linked only when the receipt's own text shows that deal's address. */
+  transactionId?: string | null
+}) {
+  const actor = await sessionReceiptActor()
+  if (!actor) return { ok: false, documentId: null, state: "not_saved", message: SIGN_IN_COPY, reasons: [] as string[], expenseId: null }
+  const { RECEIPT_BUCKET, intakeReceipt, mayKeepReceipts } = await import("@/lib/documents/receipt-intake")
+  // A seat that keeps no books (a Contact, a vendor) is refused before a file is stored or AI is spent.
+  if (!mayKeepReceipts(actor)) return { ok: false, documentId: null, state: "not_saved", reasons: [] as string[], expenseId: null, message: { whatHappened: "Receipts are recorded on an agent's, a team's or the brokerage's books, and this sign-in keeps none of them.", whatItAffects: "Nothing was uploaded or recorded.", saved: "Nothing was saved.", whoActs: "An account admin can confirm your seat if you should be keeping expenses.", action: "Back" } }
+  const mimeType = (input.mimeType || "").toLowerCase()
+  const badFile = (whatHappened: string) => ({ ok: false, documentId: null, state: "not_saved", reasons: [] as string[], expenseId: null, message: { whatHappened, whatItAffects: "Nothing was uploaded or recorded.", saved: "Nothing was saved.", whoActs: "You can choose a different file.", action: "Choose a file" } })
+  if (!RECEIPT_UPLOAD_MIME.has(mimeType)) return badFile("A receipt must be a photo (JPEG, PNG, WebP, HEIC), a PDF, or a saved email or text receipt.")
+  let buffer: Buffer
+  try { buffer = Buffer.from(input.base64 ?? "", "base64") } catch { return badFile("The file could not be opened.") }
+  if (buffer.length === 0) return badFile("The file was empty.")
+  const { checkUpload } = await import("@/lib/storage/file-limits")
+  const gate = checkUpload({ bucket: RECEIPT_BUCKET, transport: "server_action_base64", bytes: buffer.length, contentType: mimeType })
+  if (!gate.ok) return badFile(gate.reason)
+
+  const { randomUUID } = await import("node:crypto")
+  const ext = mimeType === "application/pdf" ? "pdf" : mimeType === "image/png" ? "png" : mimeType === "image/webp" ? "webp" : mimeType === "image/heic" ? "heic" : mimeType === "text/plain" ? "txt" : mimeType === "text/html" ? "html" : "jpg"
+  // The OBJECT PATH is what the row keeps; a URL is minted per viewer at read time (sign-on-read), never stored.
+  const objectPath = `${actor.brokerageId}/${actor.userId}/${randomUUID()}.${ext}`
+  const upload = await uploadBufferToBucket({ bucket: RECEIPT_BUCKET, path: objectPath, buffer, contentType: mimeType, public: false, signedTtlSeconds: 600 })
+  if (!upload.ok) {
+    console.error("[receipt] upload refused:", upload.error)
+    return { ok: false, documentId: null, state: "not_saved", reasons: [] as string[], expenseId: null, message: { whatHappened: "Your receipt could not be uploaded.", whatItAffects: "Nothing was recorded.", saved: "Nothing was saved.", whoActs: "Please try again in a moment; if it keeps happening, contact platform support.", action: "Try again" } }
+  }
+
+  const outcome = await intakeReceipt(
+    createServiceClient(),
+    { actor, file: { buffer, mime: mimeType, name: input.fileName?.slice(0, 200) ?? null }, objectPath, transactionId: input.transactionId ?? null },
+    { postExpense: logScopedExpense },
+  )
+  if (outcome.internal) console.error(`[receipt] intake ${outcome.documentId ?? "-"} (${outcome.state}):`, outcome.internal)
+  revalidatePath("/dashboard/financials/expenses")
+  return { ok: outcome.ok, documentId: outcome.documentId, state: outcome.state, message: outcome.message, reasons: outcome.reasons, expenseId: outcome.expenseId ?? null }
+}
+
+export async function getReceiptReview(documentId: string) {
+  const actor = await sessionReceiptActor()
+  if (!actor) return { ok: false as const, error: "Sign in to open this receipt." }
+  const { loadReceiptReview, RECEIPT_BUCKET } = await import("@/lib/documents/receipt-intake")
+  const svc = createServiceClient()
+  const r = await loadReceiptReview(svc, { actor, documentId })
+  if (!r.ok) return r
+  // SIGN-ON-READ, and only for an object INSIDE this tenant's prefix of the receipts bucket: documents rows are
+  // staff-updatable under RLS, so a tampered metadata path must not become a service-signed URL to anything else.
+  let imageUrl: string | null = null
+  const { bucket, objectPath } = r.review.storage
+  if (bucket === RECEIPT_BUCKET && objectPath.startsWith(`${actor.brokerageId}/`) && !objectPath.includes("..")) {
+    const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
+    const issued = await issueBucketObjectUrl(svc as never, { bucket, objectPath, ttlSeconds: 600 })
+    if (issued.ok) imageUrl = issued.url
+    else console.error("[receipt] could not sign the receipt image:", issued.reason)
+  }
+  return { ok: true as const, review: { ...r.review, imageUrl } }
+}
+
+export async function listReceiptReviewQueue() {
+  const actor = await sessionReceiptActor()
+  if (!actor) return { ok: false as const, error: "Sign in to see receipts waiting for review." }
+  const { listReceiptReviews } = await import("@/lib/documents/receipt-intake")
+  return listReceiptReviews(createServiceClient(), { actor })
+}
+
+export async function approveReceiptExpense(input: {
+  documentId: string
+  corrections?: Record<string, string>
+  scope?: ExpenseScope | null
+  teamId?: string | null
+  confirmNotDuplicate?: boolean
+  reversalOfExpenseId?: string | null
+}) {
+  const actor = await sessionReceiptActor()
+  if (!actor) return { ok: false, state: "held", message: SIGN_IN_COPY, reasons: [] as string[], expenseId: null }
+  const { approveReceipt } = await import("@/lib/documents/receipt-intake")
+  const outcome = await approveReceipt(createServiceClient(), {
+    actor,
+    documentId: input.documentId,
+    corrections: input.corrections,
+    scope: input.scope ?? null,
+    teamId: input.teamId ?? null,
+    confirmNotDuplicate: input.confirmNotDuplicate === true,
+    reversalOfExpenseId: input.reversalOfExpenseId ?? null,
+  }, { postExpense: logScopedExpense })
+  if (outcome.internal) console.error(`[receipt] approve ${input.documentId} (${outcome.state}):`, outcome.internal)
+  revalidatePath("/dashboard/financials/expenses")
+  revalidatePath(`/dashboard/financials/expenses/receipts/${input.documentId}`)
+  return { ok: outcome.ok, state: outcome.state, message: outcome.message, reasons: outcome.reasons, expenseId: outcome.expenseId ?? null }
+}
+
+export async function rejectReceiptExpense(input: { documentId: string; reason?: string | null }) {
+  const actor = await sessionReceiptActor()
+  if (!actor) return { ok: false, state: "held", message: SIGN_IN_COPY, reasons: [] as string[] }
+  const { rejectReceipt } = await import("@/lib/documents/receipt-intake")
+  const outcome = await rejectReceipt(createServiceClient(), { actor, documentId: input.documentId, reason: input.reason ?? null })
+  if (outcome.internal) console.error(`[receipt] reject ${input.documentId}:`, outcome.internal)
+  revalidatePath("/dashboard/financials/expenses")
+  return { ok: outcome.ok, state: outcome.state, message: outcome.message, reasons: outcome.reasons }
 }

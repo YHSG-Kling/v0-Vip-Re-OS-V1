@@ -20,26 +20,23 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Plus, Sparkles, Loader2, CheckCircle2 } from "lucide-react"
-import { aiCategorizeExpense, createExpense } from "@/app/actions/ai-financial-management"
+import { aiCategorizeExpense } from "@/app/actions/ai-financial-management"
+import { logScopedExpense } from "@/app/actions/financials"
+import { EXPENSE_CATEGORIES, canonicalExpenseCategory } from "@/lib/documents/receipt-rules"
 import { useRouter } from "next/navigation"
 
-const EXPENSE_CATEGORIES = [
-  "Marketing",
-  "Advertising",
-  "Transportation",
-  "Meals & Entertainment",
-  "Office Supplies",
-  "Technology",
-  "Professional Development",
-  "Professional Services",
-  "Photography",
-  "Staging",
-  "Signs & Lockboxes",
-  "MLS Fees",
-  "Licensing",
-  "Insurance",
-  "Other",
-]
+// WAVE 152 (lane 152D) — THIS DIALOG COULD NOT SAVE AN EXPENSE. It offered Title-case labels ("Marketing", "Office
+// Supplies", "Other" …) and saved through createExpense → createExpenseRecordAction → lib/kernel/financial.ts
+// createExpenseRecord, which REFUSES any category outside its lowercase list ("Invalid expense category: Marketing")
+// — every one of the fifteen labels, "Other" included. It now offers the ONE category vocabulary
+// (lib/documents/receipt-rules.ts EXPENSE_CATEGORIES — the values the P&L fold buckets on) and saves through the ONE
+// business_expenses writer for all three scopes, app/actions/financials.ts logScopedExpense (agent scope; the agentId
+// the page resolved is honoured only behind that writer's own finance-admin + tenant gate). The AI suggestion still
+// runs and is folded onto the vocabulary; a label it cannot map is left for the person to pick.
+const CATEGORY_LABEL: Record<string, string> = {
+  marketing: "Marketing & advertising", office: "Office & supplies", technology: "Technology & software",
+  education: "Education & training", transportation: "Transportation & travel", other: "Other",
+}
 
 interface AddExpenseDialogProps {
   agentId: string
@@ -90,7 +87,8 @@ export function AddExpenseDialog({ agentId }: AddExpenseDialogProps) {
     })
     if (result.success && result.categorization?.category) {
       setAiSuggestion(result.categorization)
-      setCategory(result.categorization.category)
+      const mapped = canonicalExpenseCategory(result.categorization.category)
+      if (mapped) setCategory(mapped)
     }
     setCategorizingAI(false)
   }
@@ -99,13 +97,13 @@ export function AddExpenseDialog({ agentId }: AddExpenseDialogProps) {
     if (!description || !amount || !category || !date) return
     setSaving(true)
     setSaveError(null)
-    const result = await createExpense({
+    const result = await logScopedExpense({
+      scope: "agent",
       agentId,
-      description,
-      amount: Number(amount),
       category,
-      vendor: vendor || undefined,
-      date,
+      description: vendor.trim() ? `${vendor.trim()} — ${description.trim()}` : description.trim(),
+      amount: Number(amount),
+      expenseDate: date,
     })
     if (result.success) {
       setOpen(false)
@@ -214,7 +212,7 @@ export function AddExpenseDialog({ agentId }: AddExpenseDialogProps) {
                 </SelectTrigger>
                 <SelectContent>
                   {EXPENSE_CATEGORIES.map((c) => (
-                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                    <SelectItem key={c} value={c}>{CATEGORY_LABEL[c] ?? c}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

@@ -70,7 +70,9 @@ export function TcFastActionPanel({
       })
 
     if (result.success) {
-      toast.success(`Passed ${openChecks.length} compliance check${openChecks.length !== 1 ? "s" : ""}`)
+      // wave 152 (lane 152E): the count is what the server actually passed; blocking and computed checks are named back, never swept
+      const refused = result.refused?.length ?? 0
+      toast.success(`Passed ${result.updated} compliance check${result.updated !== 1 ? "s" : ""}${refused ? ` — ${refused} left for one-at-a-time review (blocking, or computed by the closing comparison)` : ""}`)
       router.refresh()
     } else {
       toast.error(result.error ?? "Batch pass failed")

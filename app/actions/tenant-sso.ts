@@ -33,6 +33,13 @@ import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { isCanonicalTier, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+// THE tenant presenter (wave 152, lane 152A): a refused write is said without the database text (logged with a reference).
+import { presentTenantError } from "@/lib/errors"
+
+/** Module-private (a "use server" export would be a public endpoint): one refused single-statement write → the contract. */
+function ssoRefusal(what: string, raw: unknown, step: string): string {
+  return presentTenantError({ what, raw, work: { state: "unchanged" }, context: `tenant-sso.${step}` }).sentence
+}
 import {
   validateSsoEmailDomain,
   validateMetadataUrl,
@@ -259,7 +266,7 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
       })
       .eq("id", (existing as any).id)
       .select(ROW_COLUMNS).single()
-    if (error) return { ok: false, error: error.message }
+    if (error) return { ok: false, error: ssoRefusal("Your single sign-on settings couldn't be saved", error, "configure.update") }
     row = data
   } else {
     const { data, error } = await svc.from("tenant_sso_connections")
@@ -276,7 +283,7 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
       if ((error as any).code === "23505") {
         return { ok: false, error: "That email domain is already connected to another workspace." }
       }
-      return { ok: false, error: error.message }
+      return { ok: false, error: ssoRefusal("Your single sign-on settings couldn't be saved", error, "configure.insert") }
     }
     row = data
   }
@@ -367,7 +374,7 @@ export async function checkSsoStatusAction(): Promise<
 
   const { data: updated, error: upErr } = await svc.from("tenant_sso_connections")
     .update(patch).eq("id", (existing as any).id).select(ROW_COLUMNS).single()
-  if (upErr) return { ok: false, error: upErr.message }
+  if (upErr) return { ok: false, error: ssoRefusal("The single sign-on status couldn't be updated", upErr, "status.update") }
 
   if (patch.status !== (existing as any).status) {
     await audit(svc, gate.userId, "sso_connection_status_checked", String((existing as any).id), {
@@ -412,7 +419,7 @@ export async function disableSsoAction(): Promise<
     })
     .eq("id", (existing as any).id)
     .select(ROW_COLUMNS).single()
-  if (error) return { ok: false, error: error.message }
+  if (error) return { ok: false, error: ssoRefusal("Single sign-on couldn't be turned off", error, "disable") }
 
   await audit(svc, gate.userId, "sso_connection_disabled", String((existing as any).id), {
     brokerage_id: gate.brokerageId,

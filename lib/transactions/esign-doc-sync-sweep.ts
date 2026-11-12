@@ -45,6 +45,8 @@ export type EsignDocSyncSweepOutcome =
       synced:               number
       failed:               number
       entries:              EsignDocSyncSweepEntry[]
+      /** Proposed-addendum signature requests (wave 152, lane 152F): polled, expired, nudged, escalated. */
+      addenda:              import("@/lib/esign/addendum-signature-request").AddendumSweepResult | null
     }
 
 /**
@@ -188,6 +190,18 @@ export async function sweepEsignDocSync(
     }
   }
 
+  // ── Proposed-addendum lane (wave 152, lane 152F) ─────────────────────────
+  // A signature request on a proposed addendum is its own envelope: the same poll reads the provider's signer list for an
+  // envelope whose webhook never arrived (or a provider with none), expires a request past its date, and escalates a stalled
+  // one to the deal coordinator — lib/esign/addendum-signature-request.ts. Best-effort: it never blocks the deal-document legs.
+  let addenda: import("@/lib/esign/addendum-signature-request").AddendumSweepResult | null = null
+  try {
+    const { sweepAddendumSignatureRequests } = await import("@/lib/esign/addendum-signature-request")
+    addenda = await sweepAddendumSignatureRequests(supabase, {}, { limit })
+  } catch (err) {
+    console.error("[esign-doc-sync-sweep] addendum signature leg failed (non-blocking):", err)
+  }
+
   return {
     outcome: "swept",
     transactionsExamined: txnRows.size,
@@ -195,5 +209,6 @@ export async function sweepEsignDocSync(
     synced: entries.filter((e) => e.result.ok && e.result.synced > 0).reduce((s, e) => s + e.result.synced, 0),
     failed: entries.filter((e) => !e.result.ok).length,
     entries,
+    addenda,
   }
 }
