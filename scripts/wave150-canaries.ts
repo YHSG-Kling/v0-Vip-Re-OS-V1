@@ -705,7 +705,8 @@ canary({
     const pa = await import("../lib/ads/persona-audience")
     const { metaConnector } = await import("../lib/ads/connectors/meta")
     const payload = await import("../lib/ads/connectors/ad-payload")
-    const ii = await import("../lib/voice-admin/intent-interface")
+    // Wave 152 (152K — row 66): the persona label set is ONE function, lib/portal/persona-config.ts personaAudienceLabels.
+    const ii = await import("../lib/portal/persona-config")
     const cs = await import("../lib/campaigns/contact-sources")
     const aud2 = await import("../lib/compliance-rules/audience-compliance")
     const t0 = "2026-11-05T00:00:00Z", t1 = "2026-11-06T00:00:00Z"
@@ -735,7 +736,7 @@ canary({
       const ack: any = await (metaConnector as any).fetchAudienceStatus({ externalAudienceId: "aud-9", cred })
       const st: any = await (metaConnector as any).fetchStatus({ campaignExternalId: "cmp-1", cred })
       G.__W150.graphReply = null
-      const labels = ii.everyPersonaAudienceLabel()
+      const labels = ii.personaAudienceLabels()
       const covered = (w: string) => aud2.audienceProxyHits(w, labels).length === 0
       const personas = cs.CAMPAIGN_PERSONAS.filter((p: string) => p !== "other")
       const lk: any = pa.planPersonaAudience({ persona: "senior", platform: "facebook", lookalike: true } as never)

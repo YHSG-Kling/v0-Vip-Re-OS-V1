@@ -295,17 +295,14 @@ async function main() {
     check("the once-only payment holds stand: the funds-received gate refuses without a recorded receipt (an advance needs a stated reason), and `paid` is a terminal status (no transition out of it)",
       gate.ok === false && gateAdv.ok === true && /paid:\s*\[\]/.test(code("lib/kernel/financial.ts")))
     check("CLOSED / PAYOUT PENDING: the lifetime verdict holds a closed deal when the tenant requires a verified payout and none is recorded", lifetimeConversionVerdict({ closed: true, requiredRecordsComplete: true, payoutVerified: false, requirePayoutVerified: true }).label === LIFETIME_HOLD_LABEL)
-    // the closing question: informational at the no-CDA close (option b), blocking on the CDA path (positive control)
+    // the closing question — WAVE 152 (lane 152G; owner: "that is not informational"): BLOCKING on both paths, asked BEFORE the no-CDA close
     const db = seed()
-    const info = await ensureClosingAttestationAsked(db as never, { brokerageId: B, transactionId: TXN, informational: true })
-    const infoRow = db.tables.transaction_compliance_log.find((r) => r.check_type === CLOSING_ATTESTATION_CHECK_TYPE)
-    const dbC = seed()
-    await ensureClosingAttestationAsked(dbC as never, { brokerageId: B, transactionId: TXN })
-    const cdaRow = dbC.tables.transaction_compliance_log.find((r) => r.check_type === CLOSING_ATTESTATION_CHECK_TYPE)
-    check("the no-CDA close asks the closing question INFORMATIONALLY (pending, NOT blocking — option b); POSITIVE CONTROL: the CDA path's ask is blocking", info.ok && infoRow?.status === "pending" && infoRow?.is_blocking === false && cdaRow?.is_blocking === true)
+    const asked = await ensureClosingAttestationAsked(db as never, { brokerageId: B, transactionId: TXN })
+    const askedRow = db.tables.transaction_compliance_log.find((r) => r.check_type === CLOSING_ATTESTATION_CHECK_TYPE)
+    check("the closing question is asked as a pending BLOCKING row on every path (OWNER-SQL §L L6.2 option (b) superseded by the owner's wave-152 ruling)", asked.ok && askedRow?.status === "pending" && askedRow?.is_blocking === true)
     const sp = code("lib/transactions/stage-progression.ts")
-    const i = sp.indexOf("closedWithoutCda) {")
-    check("the gated close asks it only when the brokerage closed WITHOUT a CDA (finalizeCommissionAtClose's ONE switch), informational, non-blocking", i > 0 && /informational:\s*true/.test(sp.slice(i, i + 600)) && /finalized\.offersCda/.test(sp))
+    const can = sp.slice(sp.indexOf("export async function canAdvanceStage"), sp.indexOf("export async function advanceStage"))
+    check("the gated close asks it BEFORE closing (canAdvanceStage's CLOSED target, through closingSettlementGate) and never informationally; POSITIVE CONTROL: the finder sees a specimen", /closingSettlementGate\(/.test(can) && /ensureClosingAttestationAsked\(supabase/.test(can) && !/informational:\s*true/.test(sp) && /informational:\s*true/.test("ensureClosingAttestationAsked(db, { informational: true })"))
     const proofDoor = code("app/actions/transactions/closing-proof.ts"), proofBare = bare("app/actions/transactions/closing-proof.ts")
     check("THE PROOF DOOR: every export async; session actor + mayAttestClosing before the service client's reads; it WRITES NOTHING (no insert / update / upsert / delete)",
       !/export (?!async function)/.test(proofDoor) && proofDoor.indexOf("resolveSessionActor()") < proofDoor.indexOf("createServiceClient()") && /mayAttestClosing\(/.test(proofDoor) && !/\.(insert|update|upsert|delete)\(/.test(proofBare))

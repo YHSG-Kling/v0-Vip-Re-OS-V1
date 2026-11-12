@@ -62,7 +62,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       body: f.contractAddress
         ? `On ${f.contractAddress} — deadline is ${new Date(f.deadline).toLocaleDateString()}. One-tap to send a removal addendum.`
         : `Deadline ${new Date(f.deadline).toLocaleDateString()}. One-tap to send removal.`,
-      priority: f.daysUntil <= 1 ? "high" : "normal",
+      // notifications.priority CHECK: critical | high | low | medium (wave 152, 152K — row 45 census): "normal" refused
+      // the whole insert, so every contingency more than a day out expired with no bell.
+      priority: f.daysUntil <= 1 ? "high" : "medium",
       entity_type: "transaction",
       entity_id: f.transactionId,
       channel: "in_app",

@@ -59,7 +59,7 @@
 import { ERROR_MESSAGES } from "../constants"
 // The tier vocabulary (client-safe: client components already import it) — the tenant presenter below reads WHICH
 // business the tenant is from its own plan tier, never from a user_type.
-import { TIER_ORDER, isCanonicalTier } from "@/lib/kernel/tier-role-matrix"
+import { isCanonicalTier, tierCarriesOffices } from "@/lib/kernel/tier-role-matrix"
 // The UUID_REGEX import that used to sit here went out with throwIfInvalidUUID
 // (orphan burn-down, lane O). The canonical pattern still lives in
 // lib/validations, which owns UUID checking (isValidUUID, 116 call sites) —
@@ -397,11 +397,12 @@ export interface TenantPayer { kind: "brokerage" | "team" | "solo" | "unknown" }
 /** The actor-neutral payer: what every caller gets when the tier was not (or could not be) read. */
 const UNKNOWN_PAYER: TenantPayer = { kind: "unknown" }
 
-/** PURE — the business kind for a plan tier. The tiers that carry offices (brokerage and above in TIER_ORDER — the
- *  same set lib/kernel/tenant-creation.ts OFFICE_TIERS names) are brokerages; a team is a team; solo is solo. */
+/** PURE — the business kind for a plan tier. The tiers that carry offices (tierCarriesOffices — brokerage and above in
+ *  TIER_ORDER, the same set lib/kernel/tenant-creation.ts planTenantOffices reads) are brokerages; a team is a team; solo is solo. */
 function tenantPayerForTier(tier: string | null | undefined): TenantPayer {
   if (!isCanonicalTier(tier)) return UNKNOWN_PAYER
-  if (TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf("brokerage")) return { kind: "brokerage" }
+  // THE one office-tier spelling (lib/kernel/tier-role-matrix.ts tierCarriesOffices — wave 152, 152K).
+  if (tierCarriesOffices(tier)) return { kind: "brokerage" }
   return tier === "team" ? { kind: "team" } : { kind: "solo" }
 }
 

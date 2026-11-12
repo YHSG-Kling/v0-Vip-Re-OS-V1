@@ -48,6 +48,13 @@ export interface FlowContract {
  * contract are concrete rows, so a detection is a real break, never noise.
  */
 export const FLOW_CONTRACTS: Record<string, FlowContract> = {
+  // Wave 152 (lane 152I): a tenant's own provider push parked while its key was refused, replayed once the connection is repaired.
+  tenant_push_orphan: {
+    tier: "probation",
+    action: "replay_tenant_push",
+    reason: "Replaying a parked tenant push re-runs the tenant door's own idempotent ingest (provider event id → m961 key, pre-pull dedup before the paid hydrate) once the connection admits ingestion — heals under supervision until earned.",
+    describes: "a tenant's own provider delivery that arrived while its key was refused — kept, then delivered once the connection was repaired",
+  },
   // ── SEED-SAFE: idempotent finalizer re-runs (is-null / status-guarded) ──
   packet_completion: {
     tier: "seed_safe",

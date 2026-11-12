@@ -456,8 +456,9 @@ export function redactProviderSecrets(text: string | null | undefined): string {
 /**
  * PURE — classify one provider failure (an HTTP status, a transport error) into recovery + notification. The HTTP
  * status and the redacted provider text go to `detail` (internal); the tenant sentence is THE presenter's and makes no
- * retry promise — a parked delivery has no replay runner today (lib/kernel/ingress-reconciliation.ts ages an unknown
- * kind to abandonment), so "retried next cycle" was a claim nothing kept (wave 152, lane 152A).
+ * retry promise of its own — a parked delivery is replayed by lib/kernel/ingress-reconciliation.ts replayParkedTenantPush once
+ * the connection admits ingestion (wave 152, lane 152I); before that runner existed "retried next cycle" was a claim nothing kept
+ * (wave 152, lane 152A), and the sentence still never promises a time.
  */
 export function classifyTenantProviderFailure(f: { httpStatus: number | null; networkError?: boolean; shapeDrift?: boolean; message?: string | null }, label = "the provider"): TenantProviderFailureVerdict {
   const msg = redactProviderSecrets(f.message)
@@ -655,7 +656,7 @@ export async function ingestTenantWebhookDelivery(svc: Svc, connection: TenantPr
     if ((todays ?? []).length >= cap) {
       let parked = 0
       for (const e of events) { const ref = String(e.eventId ?? e.propertyId ?? ""); if (ref && deps.park) parked += (await deps.park({ provider: p.provider, eventKind: "smart-search-match", externalRef: `tenant:${connection.id}:${ref}`, payload: e })).parked ? 1 : 0 }
-      return { ...base, ok: true, held: events.length, parked, refused: `daily cap of ${cap} records reached for this connection — delivery parked (${parked} kept as dead letters), not ingested; no replay runner re-delivers it automatically` }
+      return { ...base, ok: true, held: events.length, parked, refused: `daily cap of ${cap} records reached for this connection — delivery parked (${parked} kept) — the daily reconciliation delivers it once this connection's daily cap allows` }
     }
   }
 

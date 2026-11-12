@@ -47,9 +47,6 @@ import { voiceCapabilities, humanManager, VOICE_NEVER_SPOKEN } from "./kernel-co
 import { assistantSkillRefusal } from "./assistant-reach"
 import { parseTeamCommandText, type ParsedTeamCommand } from "@/lib/voice/parse-team-command"
 import { personaAudienceLabels } from "@/lib/portal/persona-config"
-import { CAMPAIGN_PERSONAS, rawSpellingsForPersona } from "@/lib/campaigns/contact-sources"
-import { MARKETING_NEEDS } from "@/lib/contacts/persona-layers"
-import { personaLabelSet } from "@/lib/compliance-rules/audience-compliance"
 import { getNavigationForRole } from "@/app/config/navigation-config"
 
 // ─── Vocabulary ──────────────────────────────────────────────────────────────
@@ -691,31 +688,10 @@ const HOUSING_DELIVERY_NARROWING: ReadonlyArray<{ rule: string; re: RegExp }> = 
   { rule: "a lookalike audience", re: /\blook[\s-]?alikes?\b|\bsimilar\s+audiences?\b/i },
 ]
 
-/**
- * R7 (wave 150, lane 150QTV — owner, 2026-11-06: "every persona is allowed" covers a typed audience word that equals a persona
- * label; "extend the label set to every persona source"). The wave-149 set (`personaAudienceLabels`, lib/portal/persona-config.ts)
- * carries the kernel-portal personas and the C20 life-event situations. Three persona sources were missing and are added here:
- *   · the canonical Persona union (lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS) — what contacts.contact_persona and every
- *     persona audience are segmented on;
- *   · its drifted stored spellings (rawSpellingsForPersona — "veteran", "downsizer", "relocation", "pre_foreclosure" …);
- *   · the marketing-persona NEEDS the persona study writes (lib/contacts/persona-layers.ts MARKETING_NEEDS — key and label:
- *     "later_life_housing" / "Later-life housing", "military_relocation", "estate_property_sale" …).
- * `other` is excluded: it names no situation. Memoised (every source is frozen). Outside-lane: fold these three sources into
- * `personaAudienceLabels` itself (lib/portal/persona-config.ts, the portal lane's file) and delete this composition.
- */
-let everyPersonaLabelMemo: ReadonlySet<string> | null = null
-/** @proofSeam read by scripts/two-way-channels-guard.ts (R7: the label set covers every persona source — counted, not assumed). */
-export function everyPersonaAudienceLabel(): ReadonlySet<string> {
-  if (everyPersonaLabelMemo) return everyPersonaLabelMemo
-  const raw: string[] = []
-  for (const p of CAMPAIGN_PERSONAS) {
-    if (p === "other") continue
-    raw.push(p, ...rawSpellingsForPersona(p))
-  }
-  for (const [key, spec] of Object.entries(MARKETING_NEEDS)) raw.push(key, spec.label)
-  everyPersonaLabelMemo = new Set([...personaAudienceLabels(), ...personaLabelSet(raw)])
-  return everyPersonaLabelMemo
-}
+// TOMBSTONE (wave 152, lane 152K — convergence row 66, orphan doctrine §1.1): `everyPersonaAudienceLabel()` stood here — a
+// SECOND composition of the persona label set that added R7's three sources (the canonical Persona union CAMPAIGN_PERSONAS,
+// its drifted spellings rawSpellingsForPersona, the persona-study MARKETING_NEEDS) on top of personaAudienceLabels. Its own
+// header asked for the fold. Survivor: lib/portal/persona-config.ts personaAudienceLabels (all five sources, one set).
 
 /** PURE: a spoken ad audience is DROPPED (the ad still drafts on location targeting) only when its words select people by
  *  a protected-class proxy or ask for narrowing the housing ad platform refuses. Every persona audience passes. */
@@ -723,8 +699,8 @@ function screenAdAudience(audience: string | null): { audience: string | null; r
   if (!audience) return { audience: null, refusedReason: null }
   // A persona label ("empty nesters", "retirement", "probate") is an audience BASIS, never a proxy (owner ruling 1; the labels
   // come from EVERY persona source — kernel-portal personas, C20 situations, the Persona union + its spellings, persona-study
-  // needs; R7, everyPersonaAudienceLabel above).
-  const proxy = audienceProxyHits(audience, everyPersonaAudienceLabel())[0]
+  // needs; R7 — lib/portal/persona-config.ts personaAudienceLabels, the one set since row 66).
+  const proxy = audienceProxyHits(audience, personaAudienceLabels())[0]
   const narrowing = HOUSING_DELIVERY_NARROWING.find((n) => n.re.test(audience))
   if (narrowing) {
     return {

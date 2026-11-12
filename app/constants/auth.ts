@@ -87,6 +87,10 @@ export const SESSIONLESS_API_DOORS = [
 
 export const PUBLIC_ROUTES = [
   ...SESSIONLESS_API_DOORS,
+  // THE LIVENESS ROUTE (wave 152, lane 152K — convergence row 93, finding F-4): an external uptime monitor / Vercel
+  // check carries no session. Public BY NAME (not merely 'open'), anonymous by design: no database call, no secret,
+  // no tenant data (app/api/health/route.ts); held by scripts/proxy-sessionless-doors-guard.ts.
+  '/api/health',
   // Token-gated vendor invitation landing (the invitee has no account yet).
   // Public only by ACCIDENT before lane 88E ('/v' loose-prefix match).
   '/vendor-invite',

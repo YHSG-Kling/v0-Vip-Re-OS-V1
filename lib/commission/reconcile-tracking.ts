@@ -78,16 +78,28 @@ export async function finalizeCommissionAtClose(
   svc: Svc,
   params: { transactionId: string; brokerageId: string; actorUserId: string },
 ): Promise<{ autoApproved: number; offersCda: boolean }> {
-  const { data: brk } = await svc
+  const { data: brk, error: brkErr } = await svc
     .from("brokerages")
     .select("offers_cda, non_cda_payout_default")
     .eq("id", params.brokerageId)
     .maybeSingle()
   // ONE answer to "does this brokerage use a CDA?" (wave 142, lane 142C): resolveCdaMode — the CDA page
   // used to default the undeclared setting to TRUE while this read defaulted it to FALSE.
-  const { resolveCdaMode } = await import("@/lib/transactions/cda-closing-policy")
+  // WAVE 152 (lane 152H): asked of the policy that governs THIS deal (the setting in force when it opened, or a finance admin's switch
+  // of the deal — cda-closing-policy.ts §1c), so a deal opened before the brokerage opted in is still authorized at its close, and one
+  // opened before an opt-out still waits for its CDA's broker signature. FAIL CLOSED: a refused read (it used to read as "no CDA" and
+  // auto-approve) now approves nothing — the earnings stay pending for a person.
+  const { resolveCdaMode, loadEffectiveCdaModes } = await import("@/lib/transactions/cda-closing-policy")
   const b = brk as { offers_cda?: boolean | null; non_cda_payout_default?: string | null } | null
-  const offersCda = resolveCdaMode({ offersCda: b?.offers_cda, nonCdaPayoutDefault: b?.non_cda_payout_default }).mode === "cda"
+  const effective = brkErr || !b
+    ? null
+    : await loadEffectiveCdaModes(svc as never, { brokerageId: params.brokerageId, transactionIds: [params.transactionId], live: { offersCda: b.offers_cda ?? null, nonCdaPayoutDefault: b.non_cda_payout_default ?? null } })
+  const governing = effective && effective.ok ? effective.deals[params.transactionId]?.governing : undefined
+  if (!governing) {
+    console.error(`[reconcile-tracking] the CDA policy for ${params.transactionId} could not be read (${brkErr?.message ?? (effective && !effective.ok ? effective.error : "brokerage or deal not found")}) — nothing auto-approved at close`)
+    return { autoApproved: 0, offersCda: true }
+  }
+  const offersCda = resolveCdaMode(governing).mode === "cda"
 
   // Non-CDA: no CDA authorization step exists, so closing the deal authorizes the amount.
   if (offersCda) return { autoApproved: 0, offersCda }

@@ -265,10 +265,14 @@ export async function runSentinelOnInbound(
     // Leads halt via the same fields the opt-out seed sets on a lead.
     const { error } = await supabase
       .from("leads")
+      // Wave 152 (lane 152K — convergence row 45 census): this also wrote lifecycle_state "do_not_contact" /
+      // "needs_review", values the leads.lifecycle_state CHECK does not admit, so the WHOLE halt was refused —
+      // call_stop_flag included — and a flagged lead kept being worked (`halted` read false). The same defect was fixed
+      // once before in lib/ai-isa/conversation-handler.ts haltEngagementForNegativeReply: suppression lives on the flags;
+      // lifecycle_state has no value for it. The tier still reaches the broker through the escalation below.
       .update({
         call_stop_flag: true,
         ai_isa_owner: false,
-        lifecycle_state: tier === "critical" ? "do_not_contact" : "needs_review",
         updated_at: now,
       })
       .eq("id", leadId)

@@ -285,19 +285,39 @@ export async function uploadDocument(
   // The brokerage checks above admit a contact seat too (contacts carry brokerage_id), so without this a contact
   // could file into another contact's folder or deal of the same brokerage. m875 refuses it at storage once the
   // owner applies it; the action refuses it now. Every read's error is READ (a refused read is a refusal, §3).
-  if (ctx.userType === "contact") {
-    if (!contactId) return { success: false, error: "Forbidden" }
+  // WAVE 152 (152J): every failure a CONTACT can hit is told in the presenter's words (lib/portal/upload-feedback.ts) —
+  // what happened, that nothing was saved, who can help, one action — never a provider string or a stack trace; a
+  // failure on OUR side also opens one recoverable task for the Contact's agent.
+  const isContactSeat = ctx.userType === "contact"
+  const { reportContactUploadFailure } = await import("@/lib/portal/upload-feedback")
+  const contactRefusal = async (stage: "not_permitted" | "size" | "content_type" | "unmeasurable", limitText: string | null = null) => {
+    const r = await reportContactUploadFailure(svc, { brokerageId: ctx.brokerageId as string, contactId: contactId || null, fileName: file.name, stage, limitText })
+    return { success: false, saved: false, error: r.message, reference: r.reference }
+  }
+  if (isContactSeat) {
+    if (!contactId) return contactRefusal("not_permitted")
     const { data: own, error: ownErr } = await svc
       .from("contacts").select("id").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).eq("contact_user_id", userId).maybeSingle()
-    if (ownErr || !own) return { success: false, error: "Forbidden" }
+    if (ownErr || !own) return contactRefusal("not_permitted")
     if (transactionId) {
       const { data: deal, error: dealErr } = await svc
         .from("transactions").select("contact_id, buyer_contact_id, seller_contact_id").eq("id", transactionId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
       const d = deal as { contact_id?: string | null; buyer_contact_id?: string | null; seller_contact_id?: string | null } | null
       if (dealErr || !d || ![d.contact_id, d.buyer_contact_id, d.seller_contact_id].includes(contactId)) {
-        return { success: false, error: "Forbidden" }
+        return contactRefusal("not_permitted")
       }
     }
+  }
+  /** A failure on OUR side (storage / the record refused): the Contact's sentence + the agent's task; staff get the
+   *  account-audience sentence. The raw text is logged under the reference, never returned. */
+  const systemFailure = async (stage: "storage" | "record", raw: unknown) => {
+    if (isContactSeat) {
+      const r = await reportContactUploadFailure(svc, { brokerageId: ctx.brokerageId as string, contactId: contactId || null, fileName: file.name, stage, raw })
+      return { success: false, saved: false, error: r.message, reference: r.reference }
+    }
+    const { presentTenantError } = await import("@/lib/errors")
+    const m = presentTenantError({ what: "The document didn't upload because of a problem on our side", raw, work: { state: "not_saved" }, context: `document_upload_${stage}` })
+    return { success: false, saved: false, error: m.sentence, reference: m.referenceId }
   }
 
   const filePath = transactionId
@@ -321,7 +341,10 @@ export async function uploadDocument(
     bytes: fileBuffer.length,
     contentType: file.type,
   })
-  if (!sizeGate.ok) return { success: false, error: sizeGate.reason }
+  if (!sizeGate.ok) {
+    if (isContactSeat) return contactRefusal(sizeGate.refusedBy, `${Math.max(0.1, Math.floor((sizeGate.ceilingBytes / 1_048_576) * 10) / 10)} MB`)
+    return { success: false, saved: false, error: sizeGate.reason }
+  }
 
   let publicUrl: string
   // Non-null once the bytes are really in the bucket — the compensating handle
@@ -368,9 +391,10 @@ export async function uploadDocument(
     // BIG. This branch still fires on a missing bucket, an RLS refusal, or a
     // network fault, so gating the size did not make it unreachable.
     console.error(`[v0] Storage ${stored.stage} error:`, stored.error)
-    throw new Error(
-      `Failed to store document: ${stored.error ?? stored.stage}. The file was not saved — please try again.`,
-    )
+    // WAVE 152 (152J): returned, not thrown — a throw reached the client as `Upload failed: <provider text>` (or Next's
+    // generic server-action failure) and told nobody on the account. The bytes are gone (putAndSign undid them), so
+    // "nothing was saved" is TRUE.
+    return systemFailure("storage", `Failed to store document: ${stored.error ?? stored.stage}`)
   } else {
     publicUrl = stored.signedUrl
     storedObjectPath = stored.path
@@ -405,7 +429,9 @@ export async function uploadDocument(
         brokerageId: ctx.brokerageId,
       })
     }
-    throw new Error("Failed to create document record")
+    // WAVE 152 (152J): returned, not thrown (see the storage branch). The stored bytes were removed (or recorded as an
+    // orphan for the worklist) just above, so no document exists — "nothing was saved" is TRUE.
+    return systemFailure("record", `client_documents insert refused: ${docError.message}`)
   }
 
   // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose

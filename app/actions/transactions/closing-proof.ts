@@ -16,8 +16,9 @@
  */
 
 import { resolveSessionActor } from "@/lib/agreements/session-actor"
-import { noCdaClosingProof, resolveCdaMode, type NoCdaClosingProof } from "@/lib/transactions/cda-closing-policy"
+import { noCdaClosingProof, resolveCdaMode, settlementReconciliationForViewer, SETTLEMENT_READINESS_STATES, type NoCdaClosingProof, type SettlementReconciliation } from "@/lib/transactions/cda-closing-policy"
 import { LIFETIME_HOLD_ACTIVITY_TYPE } from "@/lib/kernel/lifetime-conversion"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type ActionResult<T> = ({ success: true } & T) | { success: false; error: string }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -47,7 +48,13 @@ export async function getNoCdaClosingProofAction(input: { transactionId: string 
   const { data: brk, error: bErr } = await db.from("brokerages").select("offers_cda, non_cda_payout_default").eq("id", brokerageId).maybeSingle()
   if (bErr) return { success: false, error: `brokerage_read_refused: ${bErr.message}` }
   const b = (brk ?? {}) as { offers_cda?: boolean | null; non_cda_payout_default?: string | null }
-  const cdaMode = resolveCdaMode({ offersCda: b.offers_cda ?? null, nonCdaPayoutDefault: b.non_cda_payout_default ?? null })
+  // WAVE 152 (lane 152H): the policy that governs THIS deal — the setting in force when it opened, or a finance admin's switch of
+  // the deal (cda-closing-policy.ts §6). A deal opened before an opt-in reads "no CDA" here even after the brokerage opted in.
+  const { loadEffectiveCdaModes } = await import("@/lib/transactions/cda-closing-policy")
+  const eff = await loadEffectiveCdaModes(db, { brokerageId, transactionIds: [input.transactionId], live: { offersCda: b.offers_cda ?? null, nonCdaPayoutDefault: b.non_cda_payout_default ?? null } })
+  const governing = eff.ok ? eff.deals[input.transactionId]?.governing : undefined
+  if (!governing) return { success: false, error: `cda_policy_read_refused: ${eff.ok ? "deal not found" : eff.error}` }
+  const cdaMode = resolveCdaMode(governing)
 
   // the final settlement / closing record: the CDA row's attached final statement (with the person who attached it), else a
   // closing disclosure on the document kernel (actor not recorded there — said as null, never guessed)
@@ -92,4 +99,67 @@ export async function getNoCdaClosingProofAction(input: { transactionId: string 
   const a = await closingAttestationState(db, { brokerageId, transactionId: input.transactionId })
   if (!a.ok) return { success: false, error: a.error }
   return { success: true, proof, attestation: { status: a.status, reason: a.reason } }
+}
+
+/**
+ * WAVE 152 (lane 152G) — THE SETTLEMENT RECONCILIATION, READ. "Contract says / latest title or lender document says" per item, the
+ * responsible party, the correction-request status and the readiness (ready / needs review / awaiting a revised closing document /
+ * compliance blocked) — from the LATEST versioned snapshot on the policy ledger (policy_decisions, target settlement_reconciliation;
+ * written by lib/offers/closing-cost-accuracy.ts reconcileClosingSettlement at the tail of every closing check). Reads only.
+ *
+ * ROLE PRIVACY (directive: buyer-only vs seller-only disclosures stay separate): the session tenant, then the deal's own roster
+ * (mayAttestClosing — its agents, its transaction coordinator, tenant staff); a buyer-side agent never receives a seller-only line nor a
+ * seller-side agent a buyer-only one, and commission values reach brokerage staff only (settlementReconciliationForViewer). A vendor,
+ * a Contact or another tenant's session is refused before any read.
+ */
+export async function getSettlementReconciliationAction(input: { transactionId: string }): Promise<ActionResult<{
+  reconciliation: (SettlementReconciliation & { withheld: number }) | null
+  snapshot: { version: number | null; at: string | null } | null
+  history: Array<{ version: number | null; state: string; at: string }>
+}>> {
+  if (!UUID.test(String(input?.transactionId ?? ""))) return { success: false, error: "invalid_transaction" }
+  const s = await resolveSessionActor()
+  if (!s.ok) return { success: false, error: s.error }
+  const brokerageId = s.actor.brokerageId
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const db = createServiceClient() as unknown as { from: (t: string) => any }
+
+  const { data: txn, error: tErr } = await db.from("transactions").select("id, agent_id, buyer_agent_id, seller_agent_id, coordinator_id, deal_type").eq("id", input.transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (tErr) return { success: false, error: `transaction_read_refused: ${tErr.message}` }
+  if (!txn) return { success: false, error: "transaction_not_found" }
+  const t = txn as Record<string, any>
+  let coordinatorUserId: string | null = null
+  if (t.coordinator_id) {
+    const { data: tc, error: tcErr } = await db.from("transaction_coordinators").select("user_id").eq("id", t.coordinator_id).eq("brokerage_id", brokerageId).maybeSingle()
+    if (tcErr) return { success: false, error: `coordinator_read_refused: ${tcErr.message}` }
+    coordinatorUserId = (tc as { user_id?: string | null } | null)?.user_id ?? null
+  }
+  const { mayAttestClosing } = await import("@/lib/commission/closing-verification")
+  if (!mayAttestClosing(s.actor, { agentIds: [t.agent_id, t.buyer_agent_id, t.seller_agent_id], coordinatorUserId })) return { success: false, error: "forbidden" }
+
+  // which side this viewer sits on — staff (the TC, the tenant roster, compliance) see both and the commission lines
+  const userType = String(s.actor.userType ?? "").toLowerCase()
+  const staff = TENANT_ADMIN_USER_TYPES.has(userType) || userType === "compliance_officer" || userType === "tc" || (!!coordinatorUserId && coordinatorUserId === s.actor.userId)
+  const agentId = s.actor.agentId
+  const side: "buyer" | "seller" | "both" = staff ? "both"
+    : agentId && agentId === t.buyer_agent_id && agentId !== t.seller_agent_id ? "buyer"
+    : agentId && agentId === t.seller_agent_id && agentId !== t.buyer_agent_id ? "seller"
+    : agentId && agentId === t.agent_id ? (t.deal_type === "seller" ? "seller" : t.deal_type === "buyer" ? "buyer" : "both")
+    : "both"
+
+  const { data: rows, error: pErr } = await db.from("policy_decisions").select("id, created_at, decision, reasons_json, evidence_json").eq("brokerage_id", brokerageId).eq("transaction_id", input.transactionId).eq("target_type", "settlement_reconciliation").order("created_at", { ascending: false }).limit(10)
+  if (pErr) return { success: false, error: `reconciliation_read_refused: ${pErr.message}` }
+  const list = (rows ?? []) as Array<{ created_at: string; reasons_json: unknown; evidence_json: Record<string, any> | null }>
+  const history = list.map((r) => ({ version: typeof r.evidence_json?.version === "number" ? r.evidence_json.version : null, state: String(r.evidence_json?.state ?? "unknown"), at: r.created_at }))
+  const latest = list[0]
+  const ev = latest?.evidence_json ?? null
+  if (!latest || !ev || !(SETTLEMENT_READINESS_STATES as readonly string[]).includes(String(ev.state))) {
+    return { success: true, reconciliation: null, snapshot: null, history }
+  }
+  const rec: SettlementReconciliation = {
+    state: ev.state, record: ev.record, items: Array.isArray(ev.items) ? ev.items : [], trid: ev.trid, request: ev.request,
+    blockers: ev.state === "ready" ? [] : Array.isArray(latest.reasons_json) ? (latest.reasons_json as unknown[]).map(String) : [],
+    fingerprint: String(ev.fingerprint ?? ""),
+  }
+  return { success: true, reconciliation: settlementReconciliationForViewer(rec, { side, staff }), snapshot: { version: typeof ev.version === "number" ? ev.version : null, at: latest.created_at }, history }
 }

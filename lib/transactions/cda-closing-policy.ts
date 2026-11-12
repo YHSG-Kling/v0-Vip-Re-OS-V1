@@ -22,7 +22,9 @@
 // (the agent-filled form — money never pre-filled), lib/commission/cda-discrepancy.ts (contract vs CDA).
 // This file is the PURE half the server actions (app/actions/cda-portal.ts), the deadline reaper
 // (lib/transactions/cda-delivery-reaper.ts) and the proof (scripts/cda-closing-flow-guard.ts) share.
-// No I/O, no model: every function here is deterministic over the inputs it is handed.
+// No model; every function is deterministic over the inputs it is handed. ONE exception (§1c, wave 152 lane 152H):
+// loadEffectiveCdaModes reads the policy history through the CALLER's client — it imports nothing, so the client
+// components that import this module's pure half reach no server module.
 
 import { timeZoneForState } from "@/lib/fatigue/after-hours"
 
@@ -100,6 +102,288 @@ export function resolvePayoutTiming(input: { offersCda: boolean | null | undefin
   }
   if (input.payoutTiming === "after_brokerage_receipt") return { timing: "after_brokerage_receipt", declared: true, finding: null }
   return { timing: "after_brokerage_receipt", declared: false, finding: null }
+}
+
+// ─── 1c. THE EFFECTIVE CDA POLICY — a brokerage that changes its CDA policy (wave 152, lane 152H) ────────────────────────
+//
+// Owner (wave 152, verbatim): "if a brokerage changes their policy from a no cda to now using cda can turn the setting to opt in."
+// Directive 152H: "Read current effective policy at relevant transaction milestones … do not silently and retroactively impose a CDA
+// on an already-completed transaction … Changing the CDA setting is not a substitute for correct Closing Disclosure or settlement review."
+//
+// THE SETTING STAYS THE ONE SWITCH (brokerages.offers_cda, read by resolveCdaMode above — never renamed, no opt-in product). This
+// section answers WHICH value of that switch governs a given deal. Every audited change of the setting (app/actions/brokerage-cda-
+// setup.ts setBrokerageCdaSettingAction: finance admin, brokerage-wide scope, reason, ledgered) appends a version of `cda_policy` to the
+// ONE tenant policy history (lib/kernel/tenant-policy.ts appendTenantPolicyVersion → tenant_policy_versions, append-only since m696)
+// carrying { offers_cda, non_cda_payout_default, effective_at, scope }. A deal is governed by the value in force WHEN IT OPENED
+// (transactions.created_at), unless a finance admin switched that ONE deal (closing_disclosure_agreement.field_values.cda_mode_switch,
+// written only by switchDealCdaModeAction, ledgered). Each milestone reader hands `governing` to resolveCdaMode.
+//
+// THE TREATMENT MATRIX — the SAFE DEFAULT proposed to the owner (lane 152H notes, "Owner decisions"):
+//   deal at the change            no CDA → CDA (opt in)                         CDA → no CDA (opt out)
+//   opened after the change       CDA required: the agent fills it, compliance  closes without a CDA on the smallest honest
+//                                 approves, the broker signs, title receives it proof — compliance and settlement still checked
+//   in progress, opened before    keeps NO CDA unless a finance admin switches  keeps its CDA unless a finance admin switches it
+//                                 the deal to a CDA                             off (refused once approved / signed / with title)
+//   closed / funded / lost        never given a CDA (no switch accepted)        keeps the CDA it closed with (no switch accepted)
+// Nothing here creates, fills, generates or signs a CDA (CDA_FILL_RULE): a switch to CDA opens the deal's row for the AGENT to fill.
+// No compliance, settlement or Closing Disclosure gate reads the CDA mode, so changing it never clears one of those holds.
+
+/** The tenant_policy_versions stream that records every change of the brokerage's CDA setting (registered in lib/kernel/tenant-policy.ts). */
+export const CDA_POLICY_KEY = "cda_policy" as const
+
+/** One version's value: the setting as saved, the instant it took effect (the save instant — never back-dated) and its scope. */
+interface CdaPolicyValue {
+  offers_cda: boolean | null
+  non_cda_payout_default: "direct_deposit" | "check" | null
+  effective_at: string | null
+  /** The setting governs the whole brokerage — every office and team inherits it; no office carries its own. */
+  scope: "brokerage"
+}
+
+/** PURE — the value a cda_policy version carries, from the brokerage columns as they stand (before or after a change). */
+export function cdaPolicyValue(
+  row: { offers_cda?: boolean | null; non_cda_payout_default?: string | null } | null | undefined,
+  effectiveAt: string | null,
+): CdaPolicyValue {
+  const offers = row?.offers_cda === true ? true : row?.offers_cda === false ? false : null
+  const def = row?.non_cda_payout_default === "check" ? "check" : row?.non_cda_payout_default === "direct_deposit" ? "direct_deposit" : null
+  return { offers_cda: offers, non_cda_payout_default: def, effective_at: effectiveAt, scope: "brokerage" }
+}
+
+/** A finance admin's switch of ONE deal, as switchDealCdaModeAction stores it on the deal's CDA row. */
+interface DealCdaSwitch {
+  mode: "cda" | "no_cda"
+  by: string
+  at: string
+  reason: string
+  from: "cda" | "no_cda" | null
+  policy_version: number | null
+}
+
+/** A reason is "a few words" — the same floor the delivery re-send asks for. */
+const CDA_CHANGE_REASON_MIN = 5
+
+/** PURE — a stored switch, or null when absent / incomplete (a switch without who, when and why does not govern). */
+function readDealCdaSwitch(fieldValues: unknown): DealCdaSwitch | null {
+  const fv = fieldValues && typeof fieldValues === "object" ? (fieldValues as Record<string, unknown>) : null
+  const s = fv?.cda_mode_switch
+  if (!s || typeof s !== "object") return null
+  const r = s as Record<string, unknown>
+  if (r.mode !== "cda" && r.mode !== "no_cda") return null
+  if (typeof r.by !== "string" || !r.by || typeof r.at !== "string" || Number.isNaN(Date.parse(r.at))) return null
+  if (typeof r.reason !== "string" || r.reason.trim().length < CDA_CHANGE_REASON_MIN) return null
+  return {
+    mode: r.mode, by: r.by, at: r.at, reason: r.reason.trim(),
+    from: r.from === "cda" || r.from === "no_cda" ? r.from : null,
+    policy_version: typeof r.policy_version === "number" ? r.policy_version : null,
+  }
+}
+
+/** transactions.created_at is `timestamp without time zone` (UTC by the database default) — a zone-less value is read as UTC. */
+function instantMs(raw: unknown): number | null {
+  if (typeof raw !== "string" || !raw.trim()) return null
+  const s = raw.trim()
+  const zoned = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00Z` : `${s.replace(" ", "T")}Z`
+  const ms = Date.parse(zoned)
+  return Number.isNaN(ms) ? null : ms
+}
+
+const dayOf = (raw: string | null | undefined): string => { const ms = instantMs(raw ?? null); return ms == null ? "an unknown date" : new Date(ms).toISOString().slice(0, 10) }
+const modeWords = (m: "cda" | "no_cda") => (m === "cda" ? "CDA" : "no-CDA")
+
+interface EffectiveCdaMode extends CdaModeVerdict {
+  /** The policy value that governs — the input a milestone reader hands to resolveCdaMode (the ONE switch). */
+  governing: { offersCda: boolean | null; nonCdaPayoutDefault: string | null }
+  basis: "deal_switch" | "policy_when_opened" | "current_policy"
+  /** The mode in force when the deal opened (null for the brokerage-level reading). */
+  openedUnder: "cda" | "no_cda" | null
+  /** What a deal opened right now gets. */
+  current: "cda" | "no_cda"
+  /** The cda_policy version this reading rests on (0 = the value before any recorded change, or none recorded). */
+  policyVersion: number
+  differsFromCurrent: boolean
+  dealSwitch: DealCdaSwitch | null
+  /** The live setting disagrees with the last recorded version: it was changed outside the audited door, at an unknown time. */
+  unrecordedChange: boolean
+  /** Plain words for the agent / TC / finance admin. */
+  explanation: string
+}
+
+type HistoryStep = { version: number; value: CdaPolicyValue; previous: CdaPolicyValue; effectiveMs: number | null; created_at: string | null }
+
+function historySteps(history: ReadonlyArray<{ version: number; value: unknown; previous: unknown; created_at?: string | null }>): HistoryStep[] {
+  const asValue = (v: unknown): CdaPolicyValue | null => {
+    if (!v || typeof v !== "object" || !("offers_cda" in (v as Record<string, unknown>))) return null
+    const r = v as Record<string, unknown>
+    return cdaPolicyValue({ offers_cda: r.offers_cda as boolean | null, non_cda_payout_default: r.non_cda_payout_default as string | null }, typeof r.effective_at === "string" ? r.effective_at : null)
+  }
+  const steps: HistoryStep[] = []
+  for (const row of history) {
+    const value = asValue(row.value)
+    if (!value || !Number.isInteger(row.version)) continue
+    steps.push({
+      version: row.version, value, previous: asValue(row.previous) ?? cdaPolicyValue(null, null),
+      effectiveMs: instantMs(value.effective_at) ?? instantMs(row.created_at ?? null), created_at: row.created_at ?? null,
+    })
+  }
+  return steps.sort((a, b) => a.version - b.version)
+}
+
+/**
+ * PURE — which value of the brokerage's CDA setting governs (the deal, or — with no deal — a deal opened now). The setting's history
+ * decides an in-progress deal: the value in force when it opened, unless a finance admin switched that one deal. A deal opened after
+ * the last recorded change follows the live setting. No recorded change at all → the live setting (today's behaviour, unchanged).
+ */
+function resolveEffectiveCdaMode(input: {
+  live: { offersCda: boolean | null | undefined; nonCdaPayoutDefault?: string | null }
+  history: ReadonlyArray<{ version: number; value: unknown; previous: unknown; created_at?: string | null }>
+  deal?: { openedAt?: string | null } | null
+  dealSwitch?: unknown
+}): EffectiveCdaMode {
+  const live = { offersCda: input.live.offersCda === true ? true : input.live.offersCda === false ? false : null, nonCdaPayoutDefault: input.live.nonCdaPayoutDefault ?? null }
+  const current = resolveCdaMode(live).mode
+  const steps = historySteps(input.history)
+  const latest = steps.length ? steps[steps.length - 1] : null
+  const unrecordedChange = !!latest && resolveCdaMode({ offersCda: latest.value.offers_cda }).mode !== current
+  const sw = input.deal ? readDealCdaSwitch(input.dealSwitch) : null
+  const build = (governing: EffectiveCdaMode["governing"], basis: EffectiveCdaMode["basis"], openedUnder: EffectiveCdaMode["openedUnder"], policyVersion: number, explanation: string): EffectiveCdaMode => {
+    const verdict = resolveCdaMode(governing)
+    return { ...verdict, governing, basis, openedUnder, current, policyVersion, differsFromCurrent: verdict.mode !== current, dealSwitch: sw, unrecordedChange, explanation }
+  }
+  const unrecordedNote = unrecordedChange ? " The setting was changed outside CDA settings, so when that change took effect is not on record." : ""
+
+  if (!input.deal) {
+    return build(live, "current_policy", null, latest?.version ?? 0, `Your brokerage's ${modeWords(current)} policy applies to new deals.${unrecordedNote}`)
+  }
+
+  // The policy in force when the deal opened.
+  let openedGoverning: EffectiveCdaMode["governing"] = live
+  let basis: EffectiveCdaMode["basis"] = "current_policy"
+  let version = latest?.version ?? 0
+  const why = steps.length === 0 ? "no change of the CDA policy is on record" : "the deal's opening time is unknown"
+  const openedMs = instantMs(input.deal.openedAt ?? null)
+  if (openedMs != null && steps.length > 0) {
+    let idx = -1
+    for (let i = 0; i < steps.length; i++) { const e = steps[i].effectiveMs; if (e != null && e <= openedMs) idx = i }
+    basis = "policy_when_opened"
+    if (idx === steps.length - 1) { openedGoverning = live; version = steps[idx].version }
+    else if (idx >= 0) { openedGoverning = { offersCda: steps[idx].value.offers_cda, nonCdaPayoutDefault: steps[idx].value.non_cda_payout_default }; version = steps[idx].version }
+    else { openedGoverning = { offersCda: steps[0].previous.offers_cda, nonCdaPayoutDefault: steps[0].previous.non_cda_payout_default }; version = 0 }
+  }
+  const openedUnder = resolveCdaMode(openedGoverning).mode
+
+  if (sw) {
+    return build({ offersCda: sw.mode === "cda", nonCdaPayoutDefault: live.nonCdaPayoutDefault }, "deal_switch", openedUnder, sw.policy_version ?? version,
+      `A finance admin switched this deal to ${sw.mode === "cda" ? "use a CDA" : "close without a CDA"} on ${dayOf(sw.at)} ("${sw.reason}").`)
+  }
+  if (basis === "policy_when_opened" && openedUnder !== current) {
+    return build(openedGoverning, basis, openedUnder, version,
+      `This deal opened on ${dayOf(input.deal.openedAt)} under your brokerage's ${modeWords(openedUnder)} policy, so it ${openedUnder === "cda" ? "still uses a CDA" : "closes without a CDA"}. The ${modeWords(current)} policy applies to deals opened after the change; a finance admin can switch this deal in CDA settings.${unrecordedNote}`)
+  }
+  return build(openedGoverning, basis, openedUnder, version,
+    basis === "policy_when_opened" ? `This deal follows your brokerage's ${modeWords(openedUnder)} policy.${unrecordedNote}` : `This deal follows your brokerage's current ${modeWords(openedUnder)} policy (${why}).${unrecordedNote}`)
+}
+
+/** PURE — may this change of the brokerage's setting be saved, and with what recorded reason? */
+export function decideCdaPolicyChange(input: {
+  before: { offersCda: boolean | null | undefined; nonCdaPayoutDefault?: string | null }
+  next: { offersCda: boolean; nonCdaPayoutDefault?: string | null }
+  reason?: string | null
+  /** Deals not yet closed / lost — the ones whose treatment a mode change touches. */
+  openDeals: number
+}): { ok: true; changed: boolean; modeChanged: boolean; firstAnswer: boolean; reason: string } | { ok: false; error: "reason_required"; message: string } {
+  const beforeOffers = input.before.offersCda === true ? true : input.before.offersCda === false ? false : null
+  const nextPayout = input.next.offersCda ? null : input.next.nonCdaPayoutDefault === "check" ? "check" : "direct_deposit"
+  const changed = beforeOffers !== input.next.offersCda || (input.before.nonCdaPayoutDefault ?? null) !== nextPayout
+  const modeChanged = resolveCdaMode({ offersCda: beforeOffers }).mode !== resolveCdaMode({ offersCda: input.next.offersCda }).mode
+  const firstAnswer = beforeOffers === null
+  const reason = String(input.reason ?? "").trim()
+  if (modeChanged && (!firstAnswer || input.openDeals > 0) && reason.length < CDA_CHANGE_REASON_MIN) {
+    return { ok: false, error: "reason_required", message: "Say in a few words why your CDA policy is changing. The reason is saved with the change. Deals already in progress keep the policy they opened under." }
+  }
+  return { ok: true, changed, modeChanged, firstAnswer, reason: reason || (firstAnswer ? "first answer to the CDA policy question" : modeChanged ? "CDA policy changed" : "no-CDA payout default updated") }
+}
+
+/** PURE — may a finance admin switch ONE deal to (or away from) a CDA? A closed deal never changes; a signed CDA is never dropped here. */
+export function decideDealCdaSwitch(input: {
+  effective: Pick<EffectiveCdaMode, "mode">
+  target: "cda" | "no_cda"
+  dealStatus: string | null | undefined
+  cdaRow: { status?: string | null; broker_approved_at?: string | null; sent_to_title_at?: string | null; uses_cda?: boolean | null } | null
+  reason: string | null | undefined
+}): { ok: true } | { ok: false; error: string; message: string } {
+  const status = String(input.dealStatus ?? "").toLowerCase()
+  if (["closed", "funded", "lost", "archived"].includes(status)) {
+    return { ok: false, error: "deal_completed", message: "This deal is no longer in progress. A completed deal keeps the closing it had — a CDA is never added (or removed) afterward." }
+  }
+  if (input.target !== "cda" && input.target !== "no_cda") return { ok: false, error: "mode_invalid", message: "Choose CDA or no CDA for this deal." }
+  if (input.effective.mode === input.target) {
+    return { ok: false, error: "already_in_mode", message: input.target === "cda" ? "This deal already uses a CDA." : "This deal already closes without a CDA." }
+  }
+  if (String(input.reason ?? "").trim().length < CDA_CHANGE_REASON_MIN) {
+    return { ok: false, error: "reason_required", message: "Say in a few words why this deal's CDA treatment is changing. The reason is saved with the change." }
+  }
+  const row = input.cdaRow
+  if (input.target === "no_cda" && row && row.uses_cda !== false && (String(row.status ?? "").toLowerCase() === "approved" || !!row.broker_approved_at || !!row.sent_to_title_at)) {
+    return { ok: false, error: "cda_already_authorized", message: "This deal's CDA is already approved, signed or with the title company, so it stays the payout authorization. To stop using it, cancel it in the deal's CDA workflow first." }
+  }
+  return { ok: true }
+}
+
+/** The client shape the one reader needs — the caller's own (session or service, after its gate). Any supabase-js client fits. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the supabase-js query builder (its `from` is an overloaded generic)
+type PolicyReadClient = { from: (...args: any[]) => any }
+
+/**
+ * THE ONE READER of the effective CDA policy (I/O through the caller's client; the tenant is the caller's verified brokerage). Reads the
+ * brokerage setting (unless the caller already read it — `live`), the cda_policy history, and each deal's opening time + switch.
+ * FAIL CLOSED: any refused read returns `{ ok: false }` with its reason — a caller never guesses a mode. A deal outside this brokerage
+ * is absent from `deals` (the caller treats absence as unreadable).
+ */
+export async function loadEffectiveCdaModes(
+  client: PolicyReadClient,
+  input: { brokerageId: string; transactionIds?: ReadonlyArray<string>; live?: { offersCda: boolean | null | undefined; nonCdaPayoutDefault?: string | null } | null },
+): Promise<
+  | { ok: true; current: EffectiveCdaMode; deals: Record<string, EffectiveCdaMode & { status: string | null; openedAt: string | null }>; history: Array<{ version: number; value: CdaPolicyValue; previous: CdaPolicyValue; created_at: string | null; changed_by: string | null; reason: string | null }> }
+  | { ok: false; error: string }
+> {
+  if (!input.brokerageId) return { ok: false, error: "no brokerage" }
+  let live = input.live ?? null
+  if (!live) {
+    const { data: brk, error } = await client.from("brokerages").select("offers_cda, non_cda_payout_default").eq("id", input.brokerageId).maybeSingle()
+    if (error) return { ok: false, error: `the brokerage's CDA setting could not be read (${error.message})` }
+    if (!brk) return { ok: false, error: "brokerage not found" }
+    live = { offersCda: (brk as { offers_cda?: boolean | null }).offers_cda ?? null, nonCdaPayoutDefault: (brk as { non_cda_payout_default?: string | null }).non_cda_payout_default ?? null }
+  }
+  const { data: versions, error: vErr } = await client
+    .from("tenant_policy_versions")
+    .select("version, value, previous, created_at, changed_by, reason")
+    .eq("brokerage_id", input.brokerageId)
+    .eq("policy_key", CDA_POLICY_KEY)
+    .order("version", { ascending: true })
+  if (vErr) return { ok: false, error: `the CDA policy history could not be read (${vErr.message})` }
+  const rawHistory = (versions ?? []) as Array<{ version: number; value: unknown; previous: unknown; created_at: string | null; changed_by: string | null; reason: string | null }>
+  const current = resolveEffectiveCdaMode({ live, history: rawHistory })
+  const deals: Record<string, EffectiveCdaMode & { status: string | null; openedAt: string | null }> = {}
+  const ids = Array.from(new Set((input.transactionIds ?? []).filter((id) => typeof id === "string" && id)))
+  if (ids.length) {
+    const [txRes, cdaRes] = await Promise.all([
+      client.from("transactions").select("id, created_at, status").eq("brokerage_id", input.brokerageId).in("id", ids),
+      client.from("closing_disclosure_agreement").select("transaction_id, field_values").eq("brokerage_id", input.brokerageId).in("transaction_id", ids),
+    ])
+    if (txRes.error) return { ok: false, error: `the deal could not be read (${txRes.error.message})` }
+    if (cdaRes.error) return { ok: false, error: `the deal's CDA record could not be read (${cdaRes.error.message})` }
+    const switchByTx = new Map<string, unknown>()
+    for (const r of (cdaRes.data ?? []) as Array<{ transaction_id: string; field_values: unknown }>) if (readDealCdaSwitch(r.field_values)) switchByTx.set(r.transaction_id, r.field_values)
+    for (const t of (txRes.data ?? []) as Array<{ id: string; created_at: string | null; status: string | null }>) {
+      deals[t.id] = { ...resolveEffectiveCdaMode({ live, history: rawHistory, deal: { openedAt: t.created_at }, dealSwitch: switchByTx.get(t.id) }), status: t.status ?? null, openedAt: t.created_at ?? null }
+    }
+  }
+  const history = historySteps(rawHistory).map((s) => {
+    const r = rawHistory.find((x) => x.version === s.version)
+    return { version: s.version, value: s.value, previous: s.previous, created_at: s.created_at, changed_by: r?.changed_by ?? null, reason: r?.reason ?? null }
+  })
+  return { ok: true, current, deals, history }
 }
 
 // ─── 2. THE PRELIMINARY STATEMENT (HUD / ALTA / CD) — versions, comparison, review state ──────────
@@ -550,4 +834,440 @@ export function noCdaClosingProof(input: NoCdaClosingProofInput): NoCdaClosingPr
     mode: input.cdaMode.mode, blocksClosing: false, closed, settlement, receipt, fundsReceived, compliance, payout,
     missing: input.cdaMode.mode === "cda" ? ["this brokerage uses a CDA — the CDA workflow is the closing proof; this reading is informational"] : missing,
   }
+}
+
+// ─── 6. CONTRACT-TO-SETTLEMENT RECONCILIATION — THE FINAL CLOSING DISCLOSURE / SETTLEMENT STATEMENT (wave 152, lane 152G) ─────────
+//
+// Owner (verbatim, 2026-11-11): "anytime there is a change at closing to transaction, the final closing desclosure has to be correct.
+// evn though the brokerage doesnt support a cda, compliance still needs to accurate along with the closing disclosure. that is not
+// informational." OWNER RULING THIS IMPLIES: at the gated close the settlement / CD accuracy is BLOCKING in both CDA modes (the CDA is
+// still never a closing requirement — resolveCdaMode.blocksClosing stays false; what blocks is the RECORD being wrong).
+//
+// This is the PURE rule. The I/O (lib/offers/closing-cost-accuracy.ts reconcileClosingSettlement) reads the 152E comparison
+// (lib/transactions/closing-compliance-core.ts — the executed terms vs the latest statement, per term), the latest statement's
+// issuer figures and the TRID facts, and hands them here. LAWFUL RESPONSIBILITY, as data: for a TRID-covered loan the LENDER
+// (creditor) issues the borrower's Closing Disclosure (a settlement agent may deliver it); the seller's statement follows the settlement
+// arrangement; a cash / non-TRID closing is reconciled against the settlement statement (ALTA / HUD-1 / attorney's closing statement)
+// — never a manufactured borrower CD. Nothing here edits, issues or "balances" an official document: an item that is not computable
+// from the evidence is UNRESOLVED and names who must supply the authoritative value. APR is never reconstructed — two lender-stated
+// APRs are compared, nothing more.
+//
+// SOURCES the TRID branch follows (the CFPB pages the directive names — 12 CFR 1026.19(f)(2), 1026.22(a), 1026.38 and the TILA-RESPA
+// FAQ): a corrected CD restarts the three-business-day waiting period ONLY when the APR becomes inaccurate under 1026.22 (beyond 1/8
+// of a percentage point for a regular transaction, 1/4 for an irregular one), the loan product changes, or a prepayment penalty is
+// added (1026.19(f)(2)(ii)); any other change before consummation is a corrected CD at or before consummation with no new wait
+// (1026.19(f)(2)(i)). An overstated (decreased) APR can still be accurate (1026.22(a)(4)) — that is the LENDER's call, so it is
+// escalated, never decided here. State title / closing-attorney rules are NOT modelled: they resolve through the deal's state closing
+// policy, and an uncertain case is escalated to the responsible licensed professional.
+
+/** How each reconciled item is known — the directive's three bases, ONE spelling. */
+const SETTLEMENT_ITEM_BASES = ["exact", "extracted_estimate", "authoritative_required"] as const
+type SettlementItemBasis = (typeof SETTLEMENT_ITEM_BASES)[number]
+
+/** Where the closing stands — the four states the tenant sees, ONE spelling (CLAUDE.md §6). */
+export const SETTLEMENT_READINESS_STATES = ["ready", "needs_review", "awaiting_revised_document", "compliance_blocked"] as const
+type SettlementReadiness = (typeof SETTLEMENT_READINESS_STATES)[number]
+
+export const SETTLEMENT_READINESS_LABEL: Record<SettlementReadiness, string> = {
+  ready: "Ready",
+  needs_review: "Needs review",
+  awaiting_revised_document: "Awaiting a revised closing document",
+  compliance_blocked: "Compliance blocked",
+}
+
+/** Who corrects an item — the ACTUAL responsible party, never the agent for an official document. */
+type SettlementParty = "lender" | "settlement_agent" | "transaction_coordinator" | "licensed_professional" | "brokerage_finance"
+
+const PARTY_WORDS: Record<SettlementParty, string> = {
+  lender: "the lender (it issues the borrower's Closing Disclosure)",
+  settlement_agent: "the title company / settlement agent or closing attorney (it issues the settlement statement)",
+  transaction_coordinator: "the transaction coordinator",
+  licensed_professional: "the responsible licensed professional or closing attorney",
+  brokerage_finance: "the brokerage's finance admin",
+}
+
+/**
+ * THE ITEM CATALOG — which items VIPAgents can calculate EXACTLY from the governing executed terms, which are EXTRACTED ESTIMATES,
+ * and which only the title company / lender can state (AUTHORITATIVE). Every reconciled item carries its basis from here; items with
+ * `evaluated: false` are listed so the boundary is published, never implied.
+ */
+export const SETTLEMENT_ITEM_CATALOG: ReadonlyArray<{ key: string; label: string; basis: SettlementItemBasis; evaluated: boolean; note: string }> = [
+  { key: "purchase_price", label: "Purchase price", basis: "exact", evaluated: true, note: "the governing executed instrument states it" },
+  { key: "earnest_money", label: "Earnest money / deposit", basis: "exact", evaluated: true, note: "the governing executed instrument states it" },
+  { key: "seller_credit", label: "Seller credit to buyer", basis: "exact", evaluated: true, note: "executed contract / addendum" },
+  { key: "agent_credit", label: "Agent credit to buyer", basis: "exact", evaluated: true, note: "broker-approved concession" },
+  { key: "agent_credit_seller", label: "Agent credit to seller", basis: "exact", evaluated: true, note: "broker-approved concession" },
+  { key: "client_fees", label: "Client-agreement fees", basis: "exact", evaluated: true, note: "verified client-agreement fee record" },
+  { key: "owner_title_policy_payer", label: "Who pays the owner's title policy", basis: "exact", evaluated: true, note: "executed contract / counter" },
+  { key: "commission", label: "Commission lines", basis: "exact", evaluated: true, note: "governing terms × governing price (staff view only)" },
+  { key: "closing_date", label: "Closing date", basis: "exact", evaluated: true, note: "contractual date and wording" },
+  { key: "cash_to_close", label: "Cash to close / due from borrower", basis: "authoritative_required", evaluated: true, note: "the issuer's figure — never computed here" },
+  { key: "loan_amount", label: "Loan amount", basis: "authoritative_required", evaluated: true, note: "the lender's figure governs the deal record" },
+  { key: "total_closing_costs", label: "Total closing costs", basis: "authoritative_required", evaluated: true, note: "the issuer's figure" },
+  { key: "seller_proceeds", label: "Seller proceeds", basis: "authoritative_required", evaluated: true, note: "the settlement agent's figure" },
+  { key: "loan_terms", label: "APR · loan product · prepayment penalty", basis: "authoritative_required", evaluated: true, note: "lender-stated; APR is never reconstructed" },
+  { key: "prorations", label: "Tax / HOA prorations", basis: "extracted_estimate", evaluated: false, note: "estimated by the net sheet from the deal's convention; the statement's figure is authoritative" },
+  { key: "title_settlement_fees", label: "Title / settlement / transfer / recording fees", basis: "extracted_estimate", evaluated: false, note: "regional estimate only (the closing-cost accuracy flywheel); the statement's figure is authoritative" },
+  { key: "lender_charges", label: "Lender and loan-related charges", basis: "authoritative_required", evaluated: false, note: "only the lender states them" },
+]
+
+/** Money terms whose ABSENCE from the latest statement means the statement is incomplete (directive case 1: a signed credit missing). */
+const MISSING_ON_STATEMENT_BLOCKS = new Set(["purchase_price", "earnest_money", "seller_credit", "agent_credit", "agent_credit_seller"])
+/** Money terms (a difference holds the closing). Commission lines are money too — and never shown to an agent (CLAUDE.md §5). */
+const MONEY_TERMS = new Set([...MISSING_ON_STATEMENT_BLOCKS, "seller_transaction_fee", "seller_admin_fee", "buyer_transaction_fee", "buyer_admin_fee", "owner_title_policy_payer", "commission_listing_side", "commission_buyer_side", "commission_total"])
+const STAFF_ONLY_TERMS = new Set(["commission_listing_side", "commission_buyer_side", "commission_total"])
+const BUYER_SIDE_TERMS = new Set(["agent_credit", "buyer_transaction_fee", "buyer_admin_fee"])
+const SELLER_SIDE_TERMS = new Set(["agent_credit_seller", "seller_transaction_fee", "seller_admin_fee"])
+
+type ItemStatus =
+  | "agrees" | "differs" | "missing_on_document" | "not_stated_by_contract" | "unverified_reading"
+  | "requires_interpretation" | "issuer_value" | "not_on_file" | "resolved_by_override" | "advisory"
+
+interface SettlementItem {
+  key: string
+  label: string
+  basis: SettlementItemBasis
+  /** who may see it: a buyer-only / seller-only disclosure stays on its side; staff see both */
+  side: "shared" | "buyer" | "seller"
+  /** commission is off agent-facing display — the value is shown to brokerage staff only */
+  staffOnly: boolean
+  contractSays: string | null
+  documentSays: string | null
+  status: ItemStatus
+  /** this item holds the closing */
+  blocking: boolean
+  /** the readiness bucket a blocking item lands in */
+  bucket: SettlementReadiness | null
+  responsible: string | null
+  /** ONE action, in plain words */
+  action: string | null
+}
+
+/** One term finding of the 152E comparison, as the reconciler consumes it (closing-compliance-core TermFinding, structurally). */
+interface ReconTermFinding {
+  term: string
+  label: string
+  verdict: "match" | "mismatch" | "unverifiable" | "conflict"
+  classification: string
+  governing: string | null
+  settlement: string | null
+  blocking: boolean
+  against?: "settlement" | "deal_record"
+}
+
+type Figure = { value: number | string | boolean; confidence: string } | null
+
+interface StatementIssuerFigures {
+  cashToClose?: Figure
+  loanAmount?: Figure
+  totalClosingCosts?: Figure
+  sellerProceeds?: Figure
+  apr?: Figure
+  loanProduct?: Figure
+  prepaymentPenalty?: Figure
+}
+
+interface SettlementReconciliationInput {
+  closing: { financing: "cash" | "financed" | null; tridTracked: boolean; closed: boolean; commissionFinalized: boolean }
+  /** the 152E comparison of the executed terms against the latest statement (null = it did not run) */
+  findings: ReadonlyArray<ReconTermFinding> | null
+  /** OPEN blocking closing rows that are NOT a statement term (deal record drift, evidence holds, checklist, participants, faults) */
+  otherOpenBlocking: string[]
+  /** statement term rows an authorized reviewer WAIVED with a written reason (152E's override door) */
+  waivedTerms: string[]
+  /** the latest statement on file (documents rail), or null */
+  statement: { documentId: string; classification: string; stage: "final" | "preliminary" | "unlabeled"; receivedAt: string | null; versions: number } | null
+  figures: StatementIssuerFigures
+  /** the previous Closing Disclosure version's figures, for the TRID re-wait comparison (null = no earlier CD) */
+  priorCdFigures: StatementIssuerFigures | null
+  dealRecord: { loanAmount: number | null }
+  trid: { cdDeliveredDate: string | null } | null
+  /** the brokerage's ONE switch (resolveCdaMode) and what the CDA workflow holds for the statement */
+  cdaMode: "cda" | "no_cda"
+  cdaRail: { finalAttached: boolean; preliminaryReviewed: boolean; correctionRequestedAt: string | null; correctionRoute: string | null }
+  /** a statement uploaded on the transaction-documents rail (title portal / CDA page) that the platform never read */
+  unreadStatementOnFile: boolean
+  /** open corrective requests (transaction_tasks, compliance_correction) on the deal */
+  openCorrectionTasks: number
+  readFault: string | null
+}
+
+type TridRevisionPath = "not_applicable" | "initial_disclosure" | "new_waiting_period" | "corrected_cd_no_new_wait" | "escalate_to_lender"
+
+interface TridRevisionAssessment {
+  path: TridRevisionPath
+  /** the triggers found (apr_inaccurate, loan_product_changed, prepayment_penalty_added) */
+  triggers: string[]
+  /** the revised CD's receipt starts a new wait and the delivery on file predates it */
+  waitingPeriodOutstanding: boolean
+  detail: string
+}
+
+export interface SettlementReconciliation {
+  state: SettlementReadiness
+  record: { kind: "trid_cd" | "settlement_statement" | "undetermined"; issuer: string; finalOnFile: boolean; documentId: string | null; stage: string | null; receivedAt: string | null; versions: number }
+  items: SettlementItem[]
+  trid: TridRevisionAssessment
+  request: { status: "none" | "open_task" | "requested" | "revision_received"; requestedAt: string | null; route: string | null }
+  /** plain lines a close gate shows (no commission amounts) */
+  blockers: string[]
+  fingerprint: string
+}
+
+const reconNum = (f: Figure | undefined): number | null => {
+  if (!f) return null
+  if (typeof f.value === "number") return Number.isFinite(f.value) ? f.value : null
+  if (typeof f.value === "string") { const t = f.value.replace(/[$,%\s]/g, ""); return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : null }
+  return null
+}
+const reconStr = (f: Figure | undefined): string | null => (f && (typeof f.value === "string" || typeof f.value === "number") ? String(f.value).trim() || null : null)
+const reconBool = (f: Figure | undefined): boolean | null => {
+  if (!f) return null
+  if (typeof f.value === "boolean") return f.value
+  const t = String(f.value).trim().toLowerCase()
+  if (["yes", "true", "y"].includes(t)) return true
+  if (["no", "false", "n", "none"].includes(t)) return false
+  return null
+}
+const usdText = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/** PURE — who issues the authoritative record for this closing. A financed deal with no TRID tracking is PRESUMED covered and says so. */
+function closingRecordKind(input: { financing: "cash" | "financed" | null; tridTracked: boolean }): { kind: "trid_cd" | "settlement_statement" | "undetermined"; issuer: string; presumed: boolean } {
+  if (input.tridTracked) return { kind: "trid_cd", issuer: PARTY_WORDS.lender, presumed: false }
+  if (input.financing === "cash") return { kind: "settlement_statement", issuer: PARTY_WORDS.settlement_agent, presumed: false }
+  if (input.financing === "financed") return { kind: "trid_cd", issuer: PARTY_WORDS.lender, presumed: true }
+  return { kind: "undetermined", issuer: PARTY_WORDS.settlement_agent, presumed: true }
+}
+
+/**
+ * PURE — does a revised Closing Disclosure restart the three-business-day wait? Compares LENDER-STATED values only. A trigger the
+ * documents cannot show (a figure not stated on one of the two CDs) is escalated to the lender — never assumed either way.
+ */
+function tridRevisionAssessment(input: {
+  kind: "trid_cd" | "settlement_statement" | "undetermined"
+  prior: StatementIssuerFigures | null
+  current: StatementIssuerFigures
+  currentReceivedAt: string | null
+  cdDeliveredDate: string | null
+}): TridRevisionAssessment {
+  if (input.kind !== "trid_cd") {
+    return { path: "not_applicable", triggers: [], waitingPeriodOutstanding: false, detail: "Cash or non-TRID closing: the settlement statement is the record — no borrower Closing Disclosure and no TRID waiting period apply." }
+  }
+  if (!input.prior) {
+    return { path: "initial_disclosure", triggers: [], waitingPeriodOutstanding: false, detail: "One Closing Disclosure is on file. The buyer must receive it at least three business days before closing (the closing gate checks the delivery date)." }
+  }
+  const triggers: string[] = []
+  const unknowns: string[] = []
+  const aprA = reconNum(input.prior.apr), aprB = reconNum(input.current.apr)
+  let aprBand: "within" | "over" | "irregular_band" | "decrease_over" | null = null
+  if (aprA == null || aprB == null) unknowns.push("the APR")
+  else {
+    const d = Math.round((aprB - aprA) * 1000) / 1000
+    aprBand = Math.abs(d) <= 0.125 ? "within" : d < 0 ? "decrease_over" : d <= 0.25 ? "irregular_band" : "over"
+    if (aprBand === "over") triggers.push("apr_inaccurate")
+  }
+  const prodA = reconStr(input.prior.loanProduct)?.toLowerCase() ?? null, prodB = reconStr(input.current.loanProduct)?.toLowerCase() ?? null
+  if (prodA == null || prodB == null) unknowns.push("the loan product")
+  else if (prodA !== prodB) triggers.push("loan_product_changed")
+  const ppA = reconBool(input.prior.prepaymentPenalty), ppB = reconBool(input.current.prepaymentPenalty)
+  if (ppA == null || ppB == null) unknowns.push("the prepayment penalty")
+  else if (!ppA && ppB) triggers.push("prepayment_penalty_added")
+
+  if (triggers.length > 0) {
+    const received = input.currentReceivedAt ? input.currentReceivedAt.slice(0, 10) : null
+    const outstanding = !input.cdDeliveredDate || (received != null && input.cdDeliveredDate < received)
+    const words = triggers.map((t) => t === "apr_inaccurate" ? "changed the APR beyond the 1/8-point tolerance" : t === "loan_product_changed" ? "changed the loan product" : "added a prepayment penalty").join(" and ")
+    return {
+      path: "new_waiting_period", triggers, waitingPeriodOutstanding: outstanding,
+      detail: `The revised Closing Disclosure ${words} — a new three-business-day waiting period starts when the buyer receives it (12 CFR 1026.19(f)(2)(ii)). The lender owns the timing.${outstanding ? " The delivery date on file is earlier than the revised Closing Disclosure — record when the buyer received the revised one." : ""}`,
+    }
+  }
+  if (aprBand === "irregular_band" || aprBand === "decrease_over" || unknowns.length > 0) {
+    const why = aprBand === "irregular_band" ? "the APR rose more than 1/8 but not more than 1/4 of a point — accurate only if the loan is an irregular transaction"
+      : aprBand === "decrease_over" ? "the APR fell more than 1/8 of a point — it can still be accurate when the finance charge was overstated (12 CFR 1026.22(a)(4))"
+      : `the documents on file do not state ${unknowns.join(", ")} on both Closing Disclosures`
+    return { path: "escalate_to_lender", triggers: [], waitingPeriodOutstanding: false, detail: `Whether this revision restarts the three-business-day wait cannot be decided from the documents: ${why}. The lender confirms it.` }
+  }
+  return { path: "corrected_cd_no_new_wait", triggers: [], waitingPeriodOutstanding: false, detail: "The revision changes no APR beyond tolerance, no loan product and adds no prepayment penalty: the lender provides the corrected Closing Disclosure at or before closing (12 CFR 1026.19(f)(2)(i)) — no new three-business-day wait." }
+}
+
+/** PURE — a stable fingerprint of what the reconciliation saw (FNV-style over its canonical JSON; no crypto — this module is client-safe). */
+function reconciliationFingerprint(value: unknown): string {
+  const s = JSON.stringify(value)
+  let h1 = 0x811c9dc5, h2 = 0x01000193
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0
+    h2 = Math.imul(h2 ^ c, 0x5bd1e995) >>> 0
+  }
+  return `${h1.toString(16).padStart(8, "0")}${h2.toString(16).padStart(8, "0")}`
+}
+
+/**
+ * PURE — THE RECONCILIATION. Every executed term the 152E comparison judged becomes an item labelled with its basis, its side and
+ * who corrects it; the issuer's own figures are listed as the issuer's (never computed); the TRID branch decides corrected-CD vs new
+ * wait. The state is the WORST bucket of the blocking items: compliance_blocked > awaiting_revised_document > needs_review > ready.
+ * The final record is reported beside the state (finalOnFile) — the close gate requires both; a pre-closing review of a preliminary
+ * statement is judged on its figures alone. After closing nothing holds (the deal closed) — a difference becomes a finance correction.
+ */
+export function reconcileSettlement(input: SettlementReconciliationInput): SettlementReconciliation {
+  const kind = closingRecordKind({ financing: input.closing.financing, tridTracked: input.closing.tridTracked })
+  const issuerParty: SettlementParty = kind.kind === "trid_cd" ? "lender" : "settlement_agent"
+  const issuerDoc = kind.kind === "trid_cd" ? "Closing Disclosure / settlement statement" : "settlement statement"
+  const items: SettlementItem[] = []
+  const postClose = input.closing.closed
+  const push = (i: Omit<SettlementItem, "bucket"> & { bucket?: SettlementReadiness | null }) => { items.push({ ...i, bucket: i.blocking ? (i.bucket ?? "needs_review") : null }) }
+
+  if (input.readFault) {
+    push({ key: "inputs", label: "The closing records could be read", basis: "exact", side: "shared", staffOnly: false, contractSays: null, documentSays: null, status: "not_on_file", blocking: true, bucket: "compliance_blocked",
+      responsible: PARTY_WORDS.transaction_coordinator, action: "Nothing was verified because the closing records could not be read. Try again; if it repeats, contact platform support." })
+  }
+
+  // 1 · the record itself. A statement the platform READ (documents rail) is reconciled figure by figure. Without one: in CDA mode a
+  //     person already compared the preliminary statement in the CDA workflow (its review state) — said so, not re-claimed; without a
+  //     CDA nothing else reviews it, so an upload the platform never read holds the close until it is read (the owner's ruling).
+  const recordLabel = kind.kind === "trid_cd" ? "Closing Disclosure / settlement statement on file" : "Settlement statement on file"
+  const finalOnDocuments = !!input.statement && (input.statement.stage === "final" || (input.statement.stage === "unlabeled" && input.statement.classification === "closing_disclosure"))
+  const finalOnFile = finalOnDocuments || (input.cdaMode === "cda" && input.cdaRail.finalAttached)
+  if (!input.statement && !input.readFault) {
+    if (input.cdaMode === "cda" && input.cdaRail.preliminaryReviewed) {
+      push({ key: "record", label: recordLabel, basis: "authoritative_required", side: "shared", staffOnly: false, contractSays: null, documentSays: null, status: "advisory", blocking: false,
+        responsible: null, action: "A person compared the statement in the CDA workflow; the platform has not read it. Upload it to the deal's documents to have every figure compared." })
+    } else if (input.unreadStatementOnFile) {
+      push({ key: "record", label: recordLabel, basis: "authoritative_required", side: "shared", staffOnly: false, contractSays: null, documentSays: "uploaded, not read", status: "not_on_file", blocking: !postClose, bucket: "needs_review",
+        responsible: PARTY_WORDS.transaction_coordinator, action: "The statement was uploaded but never read, so nothing on it was compared. Upload it to the deal's documents — it is read and compared automatically." })
+    } else {
+      push({ key: "record", label: recordLabel, basis: "authoritative_required", side: "shared", staffOnly: false,
+        contractSays: null, documentSays: null, status: "not_on_file", blocking: !postClose, bucket: "awaiting_revised_document", responsible: PARTY_WORDS[issuerParty],
+        action: kind.kind === "trid_cd" ? "Ask the lender and the settlement agent for the Closing Disclosure and settlement statement, then upload them." : "Ask the title company / settlement agent or closing attorney for the settlement statement (ALTA / HUD-1 / closing statement), then upload it." })
+    }
+  }
+  // the CDA workflow asked title for a corrected statement and nothing newer has been read since — MONITOR: awaiting the revision
+  const requestedAt = input.cdaRail.correctionRequestedAt
+  const revisionReceived = !!requestedAt && !!input.statement?.receivedAt && input.statement.receivedAt > requestedAt
+  if (requestedAt && !revisionReceived) {
+    push({ key: "record.correction_requested", label: "Corrected statement requested from the title company", basis: "authoritative_required", side: "shared", staffOnly: false, contractSays: null, documentSays: `requested ${requestedAt.slice(0, 10)}${input.cdaRail.correctionRoute && input.cdaRail.correctionRoute !== "none" ? ` (${input.cdaRail.correctionRoute})` : " (deliver it by hand — no title recipient on file)"}`,
+      status: "not_on_file", blocking: !postClose, bucket: "awaiting_revised_document", responsible: PARTY_WORDS.settlement_agent, action: "Waiting for the revised statement. When it arrives, upload it — it is compared automatically." })
+  }
+  if (kind.presumed && input.statement) {
+    push({ key: "trid_coverage", label: "Which disclosure rules apply", basis: "authoritative_required", side: "buyer", staffOnly: false, contractSays: null, documentSays: null, status: "advisory", blocking: false,
+      responsible: PARTY_WORDS.lender, action: kind.kind === "undetermined" ? "The deal's financing is not recorded. Record it (cash or financed) so the right closing record is checked." : "No TRID timeline is tracked on this financed deal. Confirm with the lender that the loan is TRID-covered (business-purpose loans, HELOCs, reverse mortgages and some seller-financed loans are not) and record the Closing Disclosure delivery date." })
+  }
+
+  // 2 · the executed terms against the latest statement (152E's comparison)
+  const waived = new Set(input.waivedTerms)
+  for (const f of input.findings ?? []) {
+    if (f.against === "deal_record") continue // a deal-record drift is a compliance row (otherOpenBlocking), not a statement line
+    const money = MONEY_TERMS.has(f.term)
+    const side: SettlementItem["side"] = BUYER_SIDE_TERMS.has(f.term) ? "buyer" : SELLER_SIDE_TERMS.has(f.term) ? "seller" : "shared"
+    const base = { key: `term.${f.term}`, label: f.label, basis: "exact" as const, side, staffOnly: STAFF_ONLY_TERMS.has(f.term), contractSays: f.governing, documentSays: f.settlement }
+    if (f.verdict === "match") { push({ ...base, status: "agrees", blocking: false, responsible: null, action: null }); continue }
+    if (waived.has(f.term)) {
+      push({ ...base, status: "resolved_by_override", blocking: false, responsible: null, action: "Waived by an authorized reviewer with a written reason (kept as the audit record)." })
+      continue
+    }
+    if (f.verdict === "mismatch") {
+      push({ ...base, status: "differs", blocking: f.blocking && !postClose, bucket: "awaiting_revised_document", responsible: PARTY_WORDS[issuerParty],
+        action: f.classification === "superseded" ? `Send the issuer the executed instrument that replaced this value and ask for a corrected ${issuerDoc}.` : `Ask the issuer for a corrected ${issuerDoc} — or record the executed amendment if the contract changed.` })
+      continue
+    }
+    if (f.verdict === "conflict") {
+      push({ ...base, status: "requires_interpretation", blocking: money && !postClose, bucket: "needs_review", responsible: PARTY_WORDS.licensed_professional,
+        action: "Two executed instruments disagree on this term. A licensed professional reads them; record the instrument that settles it." })
+      continue
+    }
+    if (f.governing != null && f.settlement == null) {
+      const blocks = MISSING_ON_STATEMENT_BLOCKS.has(f.term) && !postClose && !!input.statement
+      push({ ...base, status: "missing_on_document", blocking: blocks, bucket: "awaiting_revised_document", responsible: PARTY_WORDS[issuerParty],
+        action: blocks ? `The executed contract states this but the latest ${issuerDoc} does not show it. Ask the issuer for a corrected statement that includes it.` : "The latest statement does not show this line. Confirm it on the other party's statement, or ask the issuer." })
+    } else if (f.governing != null && f.settlement != null) {
+      push({ ...base, status: "unverified_reading", blocking: money && !postClose, bucket: "needs_review", responsible: PARTY_WORDS.transaction_coordinator,
+        action: "The figures differ but one reading is low-confidence. Verify the figure on the document in its reading review; it re-checks on its own." })
+    } else {
+      push({ ...base, status: "not_stated_by_contract", blocking: false, responsible: null, action: "No executed instrument states this term — nothing to compare." })
+    }
+  }
+
+  // 3 · the issuer's own figures — listed as the issuer's, never computed or "balanced" here
+  const fig = input.figures
+  const issuerItem = (key: string, label: string, side: SettlementItem["side"], value: Figure | undefined) => {
+    const v = reconNum(value)
+    push({ key: `issuer.${key}`, label, basis: "authoritative_required", side, staffOnly: false, contractSays: null, documentSays: v != null ? usdText(v) : null,
+      status: v != null ? "issuer_value" : "not_on_file", blocking: false, responsible: v != null ? null : PARTY_WORDS[issuerParty],
+      action: v != null ? "The issuer's figure — VIPAgents never computes or edits it." : "Not read from the statement. Verify it on the document; only the issuer can state it." })
+  }
+  if (input.statement) {
+    if (kind.kind === "trid_cd") {
+      issuerItem("cash_to_close", "Cash to close", "buyer", fig.cashToClose)
+      issuerItem("total_closing_costs", "Total closing costs", "buyer", fig.totalClosingCosts)
+      const loan = reconNum(fig.loanAmount)
+      const rec = input.dealRecord.loanAmount
+      if (loan != null && rec != null && Math.abs(loan - rec) > 0.5) {
+        push({ key: "issuer.loan_amount", label: "Loan amount", basis: "authoritative_required", side: "buyer", staffOnly: false, contractSays: `${usdText(rec)} (deal record)`, documentSays: usdText(loan), status: "differs", blocking: false,
+          responsible: PARTY_WORDS.transaction_coordinator, action: "The lender's figure governs. Update the deal record's loan amount to the lender's figure." })
+      } else issuerItem("loan_amount", "Loan amount", "buyer", fig.loanAmount)
+    }
+    if (reconNum(fig.sellerProceeds) != null) issuerItem("seller_proceeds", "Seller proceeds", "seller", fig.sellerProceeds)
+  }
+
+  // 4 · TRID — a corrected CD vs a new three-business-day wait
+  const trid = tridRevisionAssessment({ kind: kind.kind, prior: input.priorCdFigures, current: fig, currentReceivedAt: input.statement?.receivedAt ?? null, cdDeliveredDate: input.trid?.cdDeliveredDate ?? null })
+  if (trid.path === "new_waiting_period") {
+    push({ key: "trid.waiting_period", label: "TRID waiting period after the revised Closing Disclosure", basis: "authoritative_required", side: "buyer", staffOnly: false, contractSays: null, documentSays: trid.triggers.join(", "),
+      status: trid.waitingPeriodOutstanding ? "not_on_file" : "agrees", blocking: trid.waitingPeriodOutstanding && !postClose, bucket: "awaiting_revised_document", responsible: PARTY_WORDS.lender,
+      action: trid.waitingPeriodOutstanding ? "Record the date the buyer received the revised Closing Disclosure; closing waits three business days from it. The lender owns the timing." : "The revised Closing Disclosure's delivery is on file; the closing gate counts the three business days." })
+  } else if (trid.path === "escalate_to_lender") {
+    push({ key: "trid.revision", label: "Does the revised Closing Disclosure restart the waiting period?", basis: "authoritative_required", side: "buyer", staffOnly: false, contractSays: null, documentSays: null, status: "advisory", blocking: false,
+      responsible: PARTY_WORDS.lender, action: "Ask the lender to confirm in writing whether the revision restarts the three-business-day wait." })
+  }
+
+  // 5 · the compliance rows that are not statement lines — they hold the closing as they always did
+  for (const label of input.otherOpenBlocking) {
+    push({ key: `compliance.${label}`, label, basis: "exact", side: "shared", staffOnly: false, contractSays: null, documentSays: null, status: "requires_interpretation", blocking: !postClose, bucket: "compliance_blocked",
+      responsible: PARTY_WORDS.transaction_coordinator, action: "Open the compliance tab and resolve this item; it re-checks on its own." })
+  }
+
+  // 6 · after closing: a corrected statement is reconciled — never a silent rewrite of a paid / finalized ledger
+  if (postClose && items.some((i) => i.status === "differs" || i.status === "missing_on_document")) {
+    push({ key: "post_closing.correction", label: "Corrected statement after closing", basis: "authoritative_required", side: "shared", staffOnly: true, contractSays: null, documentSays: null, status: "advisory", blocking: false,
+      responsible: PARTY_WORDS.brokerage_finance,
+      action: input.closing.commissionFinalized
+        ? "The commission is finalized. If money moved, a finance admin records an approved adjustment through the ledger correction path — the paid entry is never re-written."
+        : "Review the corrected statement against the commission before any payout is approved." })
+  }
+
+  const blocking = items.filter((i) => i.blocking)
+  const has = (b: SettlementReadiness) => blocking.some((i) => i.bucket === b)
+  const state: SettlementReadiness = has("compliance_blocked") ? "compliance_blocked" : has("awaiting_revised_document") ? "awaiting_revised_document" : has("needs_review") ? "needs_review" : "ready"
+  const route = input.cdaRail.correctionRoute
+  const request: SettlementReconciliation["request"] = revisionReceived
+    ? { status: "revision_received", requestedAt, route }
+    : requestedAt ? { status: "requested", requestedAt, route }
+    : input.openCorrectionTasks > 0 ? { status: "open_task", requestedAt: null, route: null } : { status: "none", requestedAt: null, route: null }
+  const blockers = blocking.map((i) => i.staffOnly
+    ? `${i.label}: the brokerage reviews this line before closing.`
+    : `${i.label}: ${i.contractSays != null || i.documentSays != null ? `contract says ${i.contractSays ?? "—"}; latest document says ${i.documentSays ?? "not shown"}. ` : ""}${i.action ?? ""}`.trim())
+  const record = { kind: kind.kind, issuer: kind.issuer, finalOnFile, documentId: input.statement?.documentId ?? null, stage: input.statement?.stage ?? null, receivedAt: input.statement?.receivedAt ?? null, versions: input.statement?.versions ?? 0 }
+  const fingerprint = reconciliationFingerprint({ state, record: [record.kind, record.documentId, finalOnFile], trid: [trid.path, trid.waitingPeriodOutstanding], items: items.map((i) => [i.key, i.status, i.contractSays, i.documentSays, i.blocking]) })
+  return { state, record, items, trid, request, blockers, fingerprint }
+}
+
+/**
+ * PURE — ROLE PRIVACY. A buyer-side viewer never sees a seller-only line and a seller-side viewer never a buyer-only one (the
+ * borrower's loan figures, the seller's proceeds); commission values are blanked for anyone who is not brokerage staff (commission is
+ * off agent-facing display). Staff (the TC, compliance, the books roster) see every line. What is withheld is COUNTED, never silently
+ * dropped.
+ */
+export function settlementReconciliationForViewer(r: SettlementReconciliation, viewer: { side: "buyer" | "seller" | "both"; staff: boolean }): SettlementReconciliation & { withheld: number } {
+  let withheld = 0
+  const items = r.items.flatMap((i) => {
+    if (!viewer.staff && viewer.side !== "both" && i.side !== "shared" && i.side !== viewer.side) { withheld++; return [] }
+    if (!viewer.staff && i.staffOnly) return [{ ...i, contractSays: null, documentSays: null, action: i.blocking ? "The brokerage reviews this line before closing." : null }]
+    return [i]
+  })
+  const blockers = viewer.staff ? r.blockers : r.blockers.filter((_, idx) => {
+    const b = r.items.filter((i) => i.blocking)[idx]
+    return !b || viewer.side === "both" || b.side === "shared" || b.side === viewer.side
+  })
+  return { ...r, items, blockers, withheld }
 }

@@ -40,7 +40,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 import { resolveMilestoneIdentity } from "./milestone-identity"
 import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
-import { resolveCdaMode } from "./cda-closing-policy"
+import { resolveCdaMode, loadEffectiveCdaModes } from "./cda-closing-policy"
 import { readinessClosingDay } from "./closing-dates"
 import {
   readHazardInsurance,
@@ -520,20 +520,30 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
 
   // WAVE 144 (lane 144D): the brokerage's CDA setting, read ONCE per brokerage (the runner spans tenants on the service
   // client). A refused read is named and makes only the CDA detector abstain for that brokerage's deals.
-  const cdaRequiredByBrokerage = new Map<string, boolean | null>()
-  const cdaRequiredFor = async (brokerageId: string): Promise<boolean | null> => {
-    if (cdaRequiredByBrokerage.has(brokerageId)) return cdaRequiredByBrokerage.get(brokerageId) ?? null
-    const { data: brk, error: brkErr } = await svc.from("brokerages").select("id, offers_cda").eq("id", brokerageId).maybeSingle()
-    let value: boolean | null
-    if (brkErr) {
-      console.error(`[closing-orchestration] brokerages.offers_cda read refused for ${brokerageId}: ${brkErr.message}`)
-      refusals.push({ transactionId: null, read: "brokerages.offers_cda", error: brkErr.message })
-      value = null
-    } else {
-      value = resolveCdaMode({ offersCda: (brk as { offers_cda?: boolean | null } | null)?.offers_cda ?? null }).cdaRequired
+  // WAVE 152 (lane 152H): asked PER DEAL — the setting in force when the deal opened (or a finance admin's switch of the deal), read
+  // once per brokerage for this batch's deals (cda-closing-policy.ts loadEffectiveCdaModes). A deal opened before the brokerage opted in
+  // gets no "CDA missing" alarm; one opened before an opt-out keeps it. A refused read keeps the abstention (null), named.
+  const cdaRequiredByDeal = new Map<string, Map<string, boolean | null> | null>()
+  const cdaRequiredFor = async (brokerageId: string, transactionId: string): Promise<boolean | null> => {
+    if (!cdaRequiredByDeal.has(brokerageId)) {
+      const { data: brk, error: brkErr } = await svc.from("brokerages").select("id, offers_cda").eq("id", brokerageId).maybeSingle()
+      if (brkErr) {
+        console.error(`[closing-orchestration] brokerages.offers_cda read refused for ${brokerageId}: ${brkErr.message}`)
+        refusals.push({ transactionId: null, read: "brokerages.offers_cda", error: brkErr.message })
+        cdaRequiredByDeal.set(brokerageId, null)
+      } else {
+        const ids = (txns as Array<{ id: string; brokerage_id: string }>).filter((x) => x.brokerage_id === brokerageId).map((x) => x.id)
+        const effective = await loadEffectiveCdaModes(svc, { brokerageId, transactionIds: ids, live: { offersCda: (brk as { offers_cda?: boolean | null } | null)?.offers_cda ?? null } })
+        if (!effective.ok) {
+          console.error(`[closing-orchestration] the CDA policy history could not be read for ${brokerageId}: ${effective.error}`)
+          refusals.push({ transactionId: null, read: "cda_policy", error: effective.error })
+          cdaRequiredByDeal.set(brokerageId, null)
+        } else {
+          cdaRequiredByDeal.set(brokerageId, new Map(ids.map((id) => [id, effective.deals[id] ? resolveCdaMode(effective.deals[id].governing).cdaRequired : null])))
+        }
+      }
     }
-    cdaRequiredByBrokerage.set(brokerageId, value)
-    return value
+    return cdaRequiredByDeal.get(brokerageId)?.get(transactionId) ?? null
   }
 
   for (const t of txns as any[]) {
@@ -657,7 +667,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       propertyAddress:   t.property_address,
       earnestMoneyDueAt: emMile?.target_date ?? null,
       dealType:          t.deal_type ?? null,
-      cdaRequired:       await cdaRequiredFor(t.brokerage_id),
+      cdaRequired:       await cdaRequiredFor(t.brokerage_id, t.id),
     }
 
     // Run all detectors

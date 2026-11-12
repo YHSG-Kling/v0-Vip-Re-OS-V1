@@ -85,7 +85,7 @@ const DISPOSITIONS: Record<string, Disposition> = {
   "lib/listings/relist-recovery.ts#FOLLOWUP_WINDOW_DAYS": { kind: "carried", owner: "listing_concierge", reason: "a detection window for expired listings (who is a candidate) — the touch goes through engageContact → arbitrateAndRecordExperience" },
   "lib/lead-pipeline/offer-rejection-recovery.ts#FOLLOWUP_WINDOW_HOURS": { kind: "carried", owner: "shopping_agent", reason: "a detection window after a rejected offer (who is a candidate); the recovery touch's arbitration is Still open (lane 149C notes)" },
   // ── CARRIED: a real outbound timetable that does not yet pass the arbiter — owner lane + the exact next step in the notes ──
-  "lib/ai-isa/settings-types.ts#touch_interval_days": { kind: "carried", owner: "lane 149C (Still open 1)", reason: "planNextLeadTouch spaces lead touches by the broker's touch_interval_days (lib/ai-isa/lead-action-plan.ts releaseDueLeadTouches) — not yet routed through arbitratePlannedTouch" },
+  "lib/ai-isa/settings-types.ts#touch_interval_days": { kind: "carried", owner: "lane 152I (row 86 — partly routed)", reason: "the RELEASE of every due lead touch now passes arbitratePlannedTouch (planner lead_touch_release, lib/ai-isa/lead-action-plan.ts releaseDueLeadTouches — release now or a bounded wait); the interval still bounds when planNextLeadTouch may AUTHOR the next step — an EARLY touch on fresh lead activity (ruling 7, the arbitrateCadence shape) is the remaining step" },
   "app/dashboard/isa/campaigns/components/CreateCampaignDrawer.tsx#DEFAULT_TOUCH_INTERVAL": { kind: "carried", owner: "lane 149C (Still open 1)", reason: "the UI default of the same touch_interval_days setting" },
   "lib/kernel/strategy-library.ts#cadenceDays": { kind: "carried", owner: "lane 149C (Still open 2)", reason: "strategy-library step cadence (activateStrategy delegations) — guidance the strategy engine schedules on; arbitration of each delegated touch is Still open" },
   // CLOSED (wave 150, lane 150SZ — wave-149 §4 C-3): creative-playbooks `sendAfterMinutes` removed; the playbook proposes order only and
@@ -196,6 +196,14 @@ async function main() {
     check("routeSavedHomeNudge routes on the arbiter's decision (decideSavedHomeNudge)", /decideSavedHomeNudge\s*\(/.test(ms))
     const se = code("lib/campaign-sequences/step-executor.ts")
     check("the sequence step executor asks the arbiter before a due step and holds next_step_at on its wait", /planner:\s*"sequence_step"/.test(se) && /arb\.decision\.kind\s*===\s*"wait"/.test(se) && /next_step_at:\s*retryAt/.test(se))
+    const lap = code("lib/ai-isa/lead-action-plan.ts")
+    const releaseBody = lap.slice(lap.indexOf("export async function releaseDueLeadTouches"))
+    const ORDER_ARB = /arbitratePlannedTouch\(supabase,\s*\{[\s\S]{0,200}planner:\s*"lead_touch_release"/
+    const ORDER_SEND = /approveClientMessage\(messageId/
+    const arbAt = releaseBody.search(ORDER_ARB), sendAt = releaseBody.search(ORDER_SEND)
+    check("row 86 · releaseDueLeadTouches asks the arbiter (planner lead_touch_release) BEFORE the sender releases a due lead touch, and an arbiter wait skips the send", arbAt > 0 && sendAt > arbAt && /arb\.choice\s*===\s*"wait"[\s\S]{0,600}continue/.test(releaseBody))
+    const fixture = 'x\napproveClientMessage(messageId, null)\n arbitratePlannedTouch(supabase, { planner: "lead_touch_release" })'
+    check("row 86 · POSITIVE CONTROL: the order finder refuses a release that sends before it asks", !(fixture.search(ORDER_ARB) > 0 && fixture.search(ORDER_SEND) > fixture.search(ORDER_ARB)) && fixture.search(ORDER_ARB) > 0)
     const ec = code("app/actions/ai-isa/engage-contact.ts")
     check("stale-contact candidates reach the arbiter (engageContact → arbitrateAndRecordExperience) and the arbiter's channel wins over next-best-touch", /arbitrateAndRecordExperience\s*\(/.test(ec) && /touchChannelForDecision\(arbiterDecision\)\s*\?\?\s*resolvedChannel/.test(ec))
   }
@@ -280,6 +288,52 @@ async function main() {
     const w = db({ leads: [{ id: L1, brokerage_id: B1, ai_isa_owner: true, contact_id: null, first_name: "Sam", email: "sam@example.com", email_verified: true, email_opt_out: false, mailing_address: "1 Elm St", mailing_city: "Pace", mailing_state: "FL", mailing_zip: "32571", mailing_address_verified: true }] })
     const r = await ln.proposeLeadNurture({ brokerageId: B1, leadId: L1, agentUserId: U1, intentScore: 0.82 }, w as never, { decide: says("wait", { waitHours: 48 }) as never })
     check("lead-nurture: both channels are PERMITTED by verification, and the arbiter's bounded wait proposes NEITHER (nothing staged)", r.channels.email && r.channels.postcard && r.emailVideo === null && r.postcard === null && r.actions.some((a) => /arbiter \(ai\) chose wait/.test(a)), JSON.stringify(r.actions))
+  }
+
+  {
+    // WAVE 152 (lane 152I — convergence row 73): the review ask at a verified closing passes the arbiter's planner door.
+    const ra = await import("../lib/reputation/review-ask")
+    const TX = "tx-ra-1", AG = "ag-ra-1", BUYER = "c-ra-b", SELLER = "c-ra-s", GOOGLE = "https://g.page/r/CabcdEfgh123/review"
+    const closeDate = new Date(NOW.getTime() - 6 * 86_400_000).toISOString().slice(0, 10)
+    const world = (seed: Row[] = []) => db({
+      transactions: [{ id: TX, brokerage_id: B1, agent_id: AG, status: "closed", close_date: closeDate, deal_type: "dual", contact_id: BUYER, buyer_contact_id: BUYER, seller_contact_id: SELLER }],
+      brokerage_settings: [{ id: "s1", brokerage_id: B1, review_request_delay_days: 3, settings: { reputation_profiles: { google: { url: GOOGLE } } } }],
+      contacts: [BUYER, SELLER].map((id) => ({ id, brokerage_id: B1, first_name: "Pat", last_name: "Lee", email: `${id}@example.test`, phone: null, preferred_channel: null, tcpa_consent: false, email_opt_out: false, email_unsubscribed: false, sms_opt_out: false, sms_unsubscribed: false, dnc_status: false })),
+      agents: [{ id: AG, brokerage_id: B1, user_id: U1 }], review_requests: seed,
+    })
+    const R = { drafts: 0, sends: 0, notes: [] as string[] }
+    const deps = (decide: Decide | null) => ({
+      now: () => NOW,
+      draft: async (svc: any, input: any) => { R.drafts++; const id = `rr-${R.drafts}`; svc.tables.review_requests.push({ id, brokerage_id: input.brokerageId, contact_id: input.contactId, status: "pending", sent_at: null, created_at: NOW.toISOString() }); return { success: true, reviewRequestId: id, message: `Hi Pat — an honest review of your experience would mean a lot: ${GOOGLE}`, data: { subject: "How was your experience?" } } },
+      dispatchEmail: async () => { R.sends++; return { success: true, messageId: `m${R.sends}` } },
+      dispatchSms: async () => { R.sends++; return { success: true, messageId: `s${R.sends}` } },
+      emit: async () => ({}),
+      notifyAgent: async (_s: unknown, a: { type: string }) => { R.notes.push(a.type) },
+      notifyBrokerageAdmins: async () => ({}),
+      ...(decide ? { arbitrate: (svc: any, a: any) => arb.arbitratePlannedTouch(svc, { brokerageId: a.brokerageId, planner: "review_ask", subject: { type: "contact", id: a.contactId }, now: a.now, options: [{ id: "ask_now", kind: "communication", channels: ["email"], why: ["due"] }, { id: "agent_asks", kind: "agent_intervention", channels: ["human_task"], why: ["personal"] }], planned: "ask_now", moment: { key: "review_ask_at_close", intent: "ask" }, policy }, { decide: decide as never }) } : {}),
+    })
+    const reset = () => { R.drafts = 0; R.sends = 0; R.notes.length = 0 }
+    reset()
+    const w1 = world()
+    const held = await ra.askForReviewAtClose(w1 as never, { brokerageId: B1, transactionId: TX }, deps(says("wait", { waitHours: 24 })) as never)
+    check("row 73 · the arbiter may HOLD the review ask a bounded time: nothing drafted (no spend), nothing sent, the result says until when", held.results.length === 2 && held.results.every((r) => r.status === "skipped" && r.reason === "arbiter_wait" && !!r.dueAt) && R.drafts === 0 && R.sends === 0, JSON.stringify(held.results))
+    check("row 73 · …and each decision is ledgered under the review_ask planner (followup.decision.*, LAW 5)", (w1.tables.agent_action_ledger ?? []).filter((r) => String(r.action).startsWith("followup.decision.") && r.system_source === "review_ask").length === 2, JSON.stringify((w1.tables.agent_action_ledger ?? []).map((r) => [r.action, r.system_source])))
+    reset()
+    const handoff = await ra.askForReviewAtClose(world() as never, { brokerageId: B1, transactionId: TX }, deps(says("agent_asks")) as never)
+    check("row 73 · the arbiter may hand the ask to the AGENT: a ready draft is staged + the agent is told; nothing goes to the client", handoff.results.every((r) => r.status === "staged" && r.why === "arbiter_handoff") && R.sends === 0 && R.drafts === 2 && R.notes.filter((t) => t === "review_request_ready").length === 2, JSON.stringify(handoff.results))
+    reset()
+    const down = await ra.askForReviewAtClose(world() as never, { brokerageId: B1, transactionId: TX }, deps(outage) as never)
+    check("row 73 · model down → the planner's verdict stands: the ask goes now (a review is ALWAYS asked at closing)", down.results.every((r) => r.status === "sent") && R.sends === 2, JSON.stringify(down.results))
+    reset()
+    const offMenu = await ra.askForReviewAtClose(world() as never, { brokerageId: B1, transactionId: TX }, deps(says("send_a_gift_card")) as never)
+    check("row 73 · ADVERSE: an option off the closed menu (an incentive) is refused → the planner's ask, nothing else", offMenu.results.every((r) => r.status === "sent") && R.sends === 2)
+    reset()
+    const dupWorld = world([{ id: "rr-old", brokerage_id: B1, contact_id: BUYER, status: "sent", sent_at: NOW.toISOString(), created_at: NOW.toISOString() }])
+    const rec = recorder(says("ask_now"))
+    const dup = await ra.askForReviewAtClose(dupWorld as never, { brokerageId: B1, transactionId: TX }, deps(rec.d) as never)
+    check("row 73 · ADVERSE: an already-asked client never reaches the arbiter (deterministic duplicate gate first) — one model question, for the other client only", dup.results.some((r) => r.status === "skipped" && r.reason === "already_asked") && rec.calls.length === 1, `${rec.calls.length} model calls · ${JSON.stringify(dup.results.map((r) => r.status))}`)
+    const raSrc = code("lib/reputation/review-ask.ts")
+    check("row 73 · the production default asks a model only inside the application server (NEXT_RUNTIME), so a simulator never calls one by accident", /!process\.env\.NEXT_RUNTIME/.test(raSrc) && /planner:\s*"review_ask"/.test(raSrc))
   }
 
   // ══ §D ═══════════════════════════════════════════════════════════════════════════════════════════

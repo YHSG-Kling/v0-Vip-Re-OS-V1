@@ -6,7 +6,7 @@
 // agent opens on the seller's kitchen table — "meet the team that will sell
 // your home" — fronted by the AGENT'S OWN face and name (contact-facing rule:
 // the licensed human, never the assistant) over the brokerage's MEASURED
-// proof: attributed closed volume, calls answered around the clock, the
+// proof: closed deals our marketing is credited with, calls answered around the clock, the
 // compliance discipline. Every number from the ROI ledger (keep-one — the
 // same counting the command-center tile shows), never a claim.
 //
@@ -23,7 +23,6 @@ import { geometryFor } from "@/lib/remotion/composition-geometry"
 // the sentence the refusal log names.
 import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { describeMissingContent } from "@/lib/remotion/content-contract"
-import { compactCentsMoney } from "@/lib/format/money"
 
 export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
 
@@ -34,7 +33,8 @@ export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
 const LISTING_PITCH_COMPOSITION = "PartnersMeetingReel"
 
 // TOMBSTONE (§1.1, 2026-09-08): the local `money` (cents → "$1.2M"/"$45K"/"$900")
-// lived here; survivor lib/format/money.ts:compactCentsMoney.
+// lived here; survivor lib/format/money.ts:compactCentsMoney. (Wave 152, 152K: this reel no longer speaks commission
+// dollars to a seller, so it no longer needs the formatter; the survivor is unchanged.)
 
 /** PURE: the pitch props — earned proof only (a young brokerage gets a shorter,
  *  still-honest pitch; zero-proof tenants get the team-promise card alone). */
@@ -46,10 +46,12 @@ export function buildListingPitchReelProps(
     value: "24/7", label: "AN AI TEAM ON YOUR LISTING", kind: "team",
     sub: "every inquiry answered, every showing followed up, day one",
   })
-  if (p.roi.attributedGciCents > 0) {
+  // Wave 152 (lane 152K): the card showed attributedGciCents — COMMISSION (GCI) — labelled "CLOSED VOLUME". A seller
+  // sees the measured closed-deal count instead; commission dollars stay off a seller-facing card (see the narration).
+  if (p.roi.attributedGciCents > 0 && p.roi.attributedDeals > 0) {
     cards.push({
-      value: compactCentsMoney(p.roi.attributedGciCents), label: "CLOSED VOLUME OUR MARKETING PRODUCED",
-      sub: `across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} in ${p.roi.periodDays} days — attribution-measured, not claimed`,
+      value: String(p.roi.attributedDeals), label: p.roi.attributedDeals === 1 ? "CLOSED DEAL OUR MARKETING IS CREDITED WITH" : "CLOSED DEALS OUR MARKETING IS CREDITED WITH",
+      sub: `in the last ${p.roi.periodDays} days — attribution-measured, not claimed`,
       kind: "finance",
     })
   }
@@ -82,8 +84,11 @@ export function buildListingPitchReelProps(
     narration: [
       `Here's what listing ${p.address} with ${p.brand.brokerageName} actually looks like.`,
       `From day one, an AI team works your listing around the clock — every inquiry answered, every showing followed up.`,
-      p.roi.attributedGciCents > 0
-        ? `In the last ${p.roi.periodDays} days, our marketing produced ${compactCentsMoney(p.roi.attributedGciCents)} in closed volume across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`
+      // Wave 152 (lane 152K): attributedGciCents is COMMISSION (GCI), never sale price — this line called it "closed
+      // volume" (understating real volume ~30×, overstating nothing a seller can check). A prospective SELLER is told the
+      // closed-deal count the engine measured; brokerage commission dollars are not spoken to a seller in the room.
+      p.roi.attributedGciCents > 0 && p.roi.attributedDeals > 0
+        ? `In the last ${p.roi.periodDays} days, our marketing is credited with ${p.roi.attributedDeals} closed deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`
         : null,
       p.roi.callsAnswered > 0
         ? `${p.roi.callsAnswered} buyer call${p.roi.callsAnswered === 1 ? "" : "s"} answered live${p.roi.appointmentsBooked > 0 ? `, ${p.roi.appointmentsBooked} appointment${p.roi.appointmentsBooked === 1 ? "" : "s"} booked on the call` : ""} — no buyer goes to voicemail.`
@@ -212,7 +217,7 @@ export async function queueListingPitchReel(
   // alt text. Cut verbatim from the pitch's own narration.
   //
   // CAPPED AT TWO SENTENCES (§5). buildListingPitchReelProps' third sentence is
-  // the ROI line — "…in closed volume across N deals" — brokerage money spoken
+  // the ROI line — "…credited with N closed deals" — brokerage results spoken
   // to a prospective seller in the room, not something to publish as the page
   // summary if this render is ever put on /v/[slug]. The first two sentences
   // are the introduction and the promise, which is what the card is for.

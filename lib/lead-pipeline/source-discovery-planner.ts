@@ -86,6 +86,49 @@ export interface SourcePreview { count: number; at: string; via: string }
 /** A price per record from a quote or the catalogue — never a guess. */
 export interface SourceQuote { unitUsd: number; minimumUsd?: number | null; basis: "provider_quote" | "catalogue" | "history" }
 
+/**
+ * The quickList lanes whose count reads as DISTRESS for the hunting-vs-farming question (rei-list-builder step 4 —
+ * preforeclosure / tax-delinquent / vacant and the recorded foreclosure stages), named by the slugs
+ * lib/external/batchdata-client.ts BATCHDATA_QUICKLIST_CATALOGUE carries.
+ */
+const DISTRESS_QUICKLIST_LANES: ReadonlySet<string> = new Set([
+  "preforeclosure", "notice-of-sale", "tax-default", "vacant", "notice-of-lis-pendens", "notice-of-default", "active-auction", "involuntary-lien",
+])
+
+/**
+ * CONVERGENCE ROW 23 (wave 152, lane 152K) — "BatchData count into the plan", built WITHOUT a new provider call.
+ * BatchData documents the count as `results.meta.results.resultsFound` on every Property Search response and bills per
+ * RETURNED record (`resultCount`); it documents no free count-only endpoint. So a proposal (which never spends) reads
+ * the count BatchData ALREADY returned on this territory's own paid incremental pulls — persisted per (market, lane) in
+ * `batchdata_incremental_search_state.results_found` by lib/kernel/listings-batchdata-feed.ts — and never asks again.
+ * PURE. A lane's count is used only when it is a non-negative number observed within `maxAgeDays`; lanes overlap, so
+ * the motivated line's reach is the LARGEST single-lane count (a lower bound on the union — never a sum); the distress
+ * count is the largest fresh distress lane (null when none → the planner still says "unknown").
+ */
+export function previewsFromObservedSearchCounts(
+  rows: ReadonlyArray<{ lane: string | null; results_found: number | null; updated_at?: string | null; last_run_at?: string | null }>,
+  opts: { now: Date; maxAgeDays: number },
+): { previews: Partial<Record<SourceKey, SourcePreview>>; distressPreviewCount: number | null; used: number; stale: number } {
+  const cutoff = opts.now.getTime() - opts.maxAgeDays * 86_400_000
+  let best: { count: number; lane: string; at: string } | null = null
+  let distress: number | null = null
+  let used = 0, stale = 0
+  for (const r of rows) {
+    const n = r.results_found
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || !r.lane) continue
+    const at = r.last_run_at ?? r.updated_at ?? null
+    const t = at ? Date.parse(at) : NaN
+    if (!Number.isFinite(t) || t < cutoff) { stale++; continue }
+    used++
+    const count = Math.floor(n)
+    if (!best || count > best.count) best = { count, lane: r.lane, at: at as string }
+    if (DISTRESS_QUICKLIST_LANES.has(r.lane)) distress = Math.max(distress ?? 0, count)
+  }
+  const previews: Partial<Record<SourceKey, SourcePreview>> = {}
+  if (best) previews.batchdata_motivated = { count: best.count, at: best.at, via: `BatchData's own count on this territory's last paid pull (${best.lane}, ${best.at.slice(0, 10)}) — the largest of ${used} lane${used === 1 ? "" : "s"}, a lower bound; no new call` }
+  return { previews, distressPreviewCount: distress, used, stale }
+}
+
 /** `held` (wave 151, lane 151C): the pre-pull value formula held the line — never approvable, re-preview first. */
 type PlanLineStatus = "free_ready" | "proposed" | "needs_preview" | "needs_quote" | "over_budget" | "blocked_rights" | "held" | "approved"
 

@@ -41,6 +41,7 @@ import { OUTSIDE_LISTING_AGENT_EMAIL_KEY, OUTSIDE_LISTING_AGENT_NAME_KEY } from 
 import { TENANT_ADMIN_USER_TYPES, BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { NUDGE_HOURS, ESCALATE_HOURS } from "@/lib/kernel/signature-chase"
+import { presentTenantError } from "@/lib/errors"
 import type { DispatchPacketInput, DispatchPacketResult } from "@/lib/esign/dispatch-packet"
 import type { ITransactionProvider } from "@/lib/integrations/providers/transaction-provider.interface"
 import {
@@ -152,15 +153,18 @@ type Fail = { ok: false; code: string; message: string }
 const fail = (code: string, message: string): Fail => ({ ok: false, code, message })
 /** A read that could not run: the TENANT hears what happened, that nothing changed, and who can act; the database's own words stay
  *  in the server log (the charter's message contract — no SQL / RLS / provider strings in tenant copy). */
-const unreadable = (what: string, detail: string): Fail => {
-  console.error(`[addendum-signatures] ${what} could not be read: ${detail}`)
-  return fail("unreadable", `${what} could not be read right now, so nothing was changed or sent. Try again in a moment; if it keeps happening, platform support can look into it.`)
-}
+// PRESENTER WIRING (wave 152, lane 152K — the integrator queue): both copy helpers now compose through THE tenant
+// presenter (lib/errors/index.ts presentTenantError): the raw refusal is LOGGED with a quotable reference, the sentence
+// passes the ONE tenant-copy gate (a leaking label is replaced, never shown), and "nothing was changed" is said only as
+// the work truth. Same 23 call sites, same contract shape.
+const unreadable = (what: string, detail: string): Fail =>
+  fail("unreadable", presentTenantError({
+    what: `${what} could not be read right now, so nothing was sent`, raw: `${what} could not be read: ${detail}`,
+    work: { state: "unchanged" }, next: "platform_support", action: { label: "Try again in a moment" }, context: "addendum-signatures",
+  }).sentence)
 /** A write that could not land: same contract — the detail is logged, the tenant hears the outcome and the next step. */
-const unsaved = (what: string, detail: string, next: string): string => {
-  console.error(`[addendum-signatures] ${what}: ${detail}`)
-  return `${what}. ${next}`
-}
+const unsaved = (what: string, detail: string, next: string): string =>
+  presentTenantError({ what: `${what}. ${next}`, raw: `${what}: ${detail}`, next: "you", action: null, context: "addendum-signatures" }).sentence
 
 async function loadProposal(svc: Svc, brokerageId: string, versionId: string): Promise<{ ok: true; row: ProposalRow } | Fail> {
   const { data, error } = await svc.from("contract_term_versions").select("id, root_offer_id, transaction_id, offer_id, document_id, source, status, terms, evidence, version_no").eq("id", versionId).eq("brokerage_id", brokerageId).maybeSingle()

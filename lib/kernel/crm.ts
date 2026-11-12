@@ -596,7 +596,9 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
       phone:            params.phone ?? null,
       lead_type:        params.lead_type ?? "buyer",
       source:           params.source ?? "scraper",
-      source_family:    params.source_family ?? "acquisition",
+      // leads.source_family CHECK: contact_direct | lead | raw (wave 152, 152K — row 45 census): the "acquisition"
+      // default refused the whole insert. This door creates the lead DIRECTLY (not through raw), so its family is "lead".
+      source_family:    params.source_family ?? "lead",
       source_channel:   params.source_channel ?? "digital",
       motivation_type:  params.motivation_type ?? null,
       lifecycle_state:  "raw",

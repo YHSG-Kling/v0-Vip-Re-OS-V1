@@ -3,7 +3,7 @@
 // THE ROI LEDGER — "what your AI team earned", live on the Command Center
 // instead of buried in a monthly artifact. Every number traces to a ledger row
 // in the trailing window (the SAME counting rules as the board packet — no
-// second formula): marketing-attributed closed volume from the attribution
+// second formula): marketing-attributed closed commission from the attribution
 // engine, calls the AI answered, appointments it booked live, drafts agents
 // actually sent, opt-outs honored. This is the renewal conversation and the
 // anti-churn weapon in one tile: competitors show brokers their agents'
@@ -19,6 +19,9 @@ import { inPipelineColumn, isInEscrow, TRANSACTION_STATUSES, TRANSACTION_STATUSE
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import type { AttributionModel } from "@/lib/marketing/attribution"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
+// Wave 152 (lane 152K presenter wiring): the reader's refusals compose through THE tenant presenter — lib/errors is
+// already in this module's CRM-page graph (152A put the presenter there for that reason), so no module is added.
+import { presentTenantMessage } from "@/lib/errors"
 
 export interface RoiLedger {
   periodDays: number
@@ -58,15 +61,47 @@ export function composeRoiHeadline(l: Omit<RoiLedger, "headline">): string {
   return `Last ${l.periodDays} days: ${parts.join(" · ")} — measured by the attribution engine, not claimed.`
 }
 
+/**
+ * THE realized attribution-credit read — the ONE place a caller turns `marketing_attribution_credits` into earned
+ * commission. Two rules, both from wave 152 lane 152B, held here once (wave 152, lane 152K — the integrator queue's
+ * 152B outside-lane 1–2, which found the same 4×/pending defect in four more readers):
+ *   · ONE model (`ROI_SOURCED_MODEL`, linear). The engine writes a row per model per (campaign, deal) and every model's
+ *     rows sum to the deal's GCI, so reading them all multiplied each deal by the number of models.
+ *   · REALIZED only: a credit counts when its deal is CLOSED / FUNDED (`inPipelineColumn(status, "closed")`) and not
+ *     deleted. The engine also credits in-escrow deals (at the estimate) and a deal can later fall through — both are
+ *     pipeline, never earned.
+ * Fail closed: a refused credit read OR a refused deal read returns `ok:false` (and no rows) — never a partial sum shown
+ * as earned. `window.beforeIso` is exclusive, `window.throughIso` inclusive (each caller keeps its own window shape).
+ * Callers: generateRoiLedger (below), lib/kernel/resource-allocation.ts, lib/kernel/board-packet.ts,
+ * lib/kernel/intelligence-report.ts, lib/kernel/reporting-autonomy.ts.
+ */
+export async function loadRealizedAttributionCredits(
+  svc: any, brokerageId: string, window: { sinceIso: string; beforeIso?: string; throughIso?: string }, limit = 2000,
+): Promise<{ ok: true; rows: Array<{ campaign_id: string | null; credit_dollars: number | null; transaction_id: string }> } | { ok: false; error: string }> {
+  let q = svc.from("marketing_attribution_credits").select("campaign_id, credit_dollars, transaction_id")
+    .eq("brokerage_id", brokerageId).eq("attribution_model", ROI_SOURCED_MODEL).gte("created_at", window.sinceIso)
+  if (window.beforeIso) q = q.lt("created_at", window.beforeIso)
+  if (window.throughIso) q = q.lte("created_at", window.throughIso)
+  const { data, error } = await q.limit(limit)
+  if (error) return { ok: false, error: `attribution credits unreadable: ${error.message ?? String(error)}` }
+  const creditRows = (data ?? []) as Array<{ campaign_id: string | null; credit_dollars: number | null; transaction_id: string | null }>
+  const realized = new Set<string>()
+  const creditTxIds = [...new Set(creditRows.map((c) => c.transaction_id).filter((t): t is string => !!t))]
+  for (let i = 0; i < creditTxIds.length; i += 200) {
+    const tx = await svc.from("transactions").select("id, status, deleted_at").eq("brokerage_id", brokerageId).in("id", creditTxIds.slice(i, i + 200))
+    if (tx.error) return { ok: false, error: `credited deals unreadable — no commission is shown as earned: ${tx.error.message ?? String(tx.error)}` }
+    for (const t of (tx.data ?? []) as Array<{ id: string; status: string | null; deleted_at: string | null }>) if (!t.deleted_at && inPipelineColumn(t.status, "closed")) realized.add(t.id)
+  }
+  return { ok: true, rows: creditRows.filter((c): c is { campaign_id: string | null; credit_dollars: number | null; transaction_id: string } => !!c.transaction_id && realized.has(c.transaction_id)) }
+}
+
 /** Trailing-window ROI from the live ledgers (board-packet counting rules). */
 export async function generateRoiLedger(svc: any, brokerageId: string, periodDays = 90, opts: { attribution?: boolean } = {}): Promise<RoiLedger> {
   const sinceIso = new Date(Date.now() - periodDays * 86_400_000).toISOString()
   const cnt = async (q: any) => ((await q) as any)?.count ?? 0
   const [credits, calls, bookings, drafts, optOuts] = await Promise.all([
-    // ONE model (the engine's reporting default) — every model's rows sum to the same GCI, so reading them all
-    // multiplied each deal by the number of models (wave 152, 152B).
-    svc.from("marketing_attribution_credits").select("credit_dollars, transaction_id")
-      .eq("brokerage_id", brokerageId).eq("attribution_model", ROI_SOURCED_MODEL).gte("created_at", sinceIso).limit(2000),
+    // ONE model, CLOSED / FUNDED deals only — the shared realized-credit read above (wave 152, 152B → 152K).
+    loadRealizedAttributionCredits(svc, brokerageId, { sinceIso }),
     cnt(svc.from("voice_calls").select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId).eq("direction", "inbound").gte("started_at", sinceIso)),
     cnt(svc.from("showings").select("id", { count: "exact", head: true })
@@ -76,18 +111,8 @@ export async function generateRoiLedger(svc: any, brokerageId: string, periodDay
     cnt(svc.from("voice_calls").select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId).eq("outcome", "opt_out").gte("started_at", sinceIso)),
   ])
-  if ((credits as any)?.error) console.error("[roi-ledger] attribution credits unreadable:", (credits as any).error.message)
-  const creditRows = ((credits as any)?.data ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
-  // REALIZED ONLY: a credit counts when its deal is CLOSED / FUNDED and not deleted. The engine also credits
-  // in-escrow deals (at the estimate) and a deal can later fall through — both are pipeline, never earned.
-  const realized = new Set<string>()
-  const creditTxIds = [...new Set(creditRows.map((c) => c.transaction_id).filter((t): t is string => !!t))]
-  for (let i = 0; i < creditTxIds.length; i += 200) {
-    const tx = await svc.from("transactions").select("id, status, deleted_at").eq("brokerage_id", brokerageId).in("id", creditTxIds.slice(i, i + 200))
-    if (tx.error) { console.error("[roi-ledger] credited deals unreadable — no commission is shown as earned:", tx.error.message); realized.clear(); break }
-    for (const t of (tx.data ?? []) as Array<{ id: string; status: string | null; deleted_at: string | null }>) if (!t.deleted_at && inPipelineColumn(t.status, "closed")) realized.add(t.id)
-  }
-  const rows = creditRows.filter((c) => !!c.transaction_id && realized.has(c.transaction_id))
+  if (!credits.ok) console.error("[roi-ledger]", credits.error)
+  const rows = credits.ok ? credits.rows : []
   const base = {
     periodDays, sinceIso,
     attributedGciCents: rows.reduce((a, c) => a + Math.round(Number(c.credit_dollars ?? 0) * 100), 0),
@@ -799,18 +824,27 @@ interface RoiViewer {
 const ROI_MONEY_HIDDEN_NOTE =
   "Commission amounts are hidden in this view. Counts, costs and closings are complete; dollar amounts from deals show only to your account's finance administrators. To see them, ask an account administrator."
 
+/** A reader refusal composed by THE tenant presenter (lib/errors/index.ts presentTenantMessage — wave 152, lane 152K
+ *  presenter wiring): what happened · what it affects · who acts next · ONE action, through the ONE tenant-copy gate.
+ *  A read refusal changes nothing, so no work clause is claimed. */
+function roiRefusal(what: string, opts: { next?: "you" | "account_admin" | "platform_support"; action?: string | null; audience?: "account" | "contact" | "vendor" } = {}): { ok: false; error: string } {
+  const next = opts.next ?? "platform_support"
+  const action = opts.action === undefined ? "Try again in a moment" : opts.action
+  return { ok: false, error: presentTenantMessage({ what, next, action: action ? { label: action } : null, audience: opts.audience }).sentence }
+}
+
 /** Resolve WHO is asking and WHAT they may see, from the session's own ids. Fails closed: any refused read refuses. */
 async function resolveRoiViewer(svc: RoiSvc, session: { userId: string; brokerageId: string }): Promise<{ ok: true; viewer: RoiViewer } | { ok: false; error: string }> {
-  if (!session.userId || !session.brokerageId) return { ok: false, error: "Your workspace could not be confirmed. Sign in again to see results." }
+  if (!session.userId || !session.brokerageId) return roiRefusal("Your workspace could not be confirmed, so results are held", { next: "you", action: "Sign in again to see results" })
   const brokerageId = session.brokerageId
   const u = await svc.from("users").select("id, brokerage_id, user_type").eq("id", session.userId).eq("brokerage_id", brokerageId).maybeSingle()
-  if (u.error) return { ok: false, error: "Your access could not be checked right now, so results are held. Try again in a moment." }
+  if (u.error) return roiRefusal("Your access could not be checked right now, so results are held")
   const userType = String(u.data?.user_type ?? "").toLowerCase()
-  if (!u.data || u.data.brokerage_id !== session.brokerageId) return { ok: false, error: "This view belongs to a different workspace, so its results are not shown. Sign in with an account in that workspace to see them." }
-  if (userType === "contact" || userType === "vendor") return { ok: false, error: "Marketing results are available to the team that runs the campaigns, not to client or vendor accounts. Your agent can share anything that applies to you." }
+  if (!u.data || u.data.brokerage_id !== session.brokerageId) return roiRefusal("This view belongs to a different workspace, so its results are not shown", { next: "you", action: "Sign in with an account in that workspace to see them" })
+  if (userType === "contact" || userType === "vendor") return roiRefusal("Marketing results are available to the team that runs the campaigns, not to client or vendor accounts", { next: "account_admin", action: null, audience: userType === "contact" ? "contact" : "vendor" })
   const { resolveViewerHierarchy } = await import("@/lib/kernel/resolve-user-office")
   const h = await resolveViewerHierarchy(svc, session)
-  if (!h.ok) return { ok: false, error: "Your office and team access could not be checked right now, so results are held. Try again in a moment." }
+  if (!h.ok) return roiRefusal("Your office and team access could not be checked right now, so results are held")
   const financeRoster = isBrokerageFinanceAdmin({ user_type: userType }) || userType === "compliance_officer"
   const soloParity = h.tier === "solo_agent"
   const basis = [...h.scope.basis]
@@ -820,7 +854,7 @@ async function resolveRoiViewer(svc: RoiSvc, session: { userId: string; brokerag
     const rows = (r.data ?? []) as Array<{ id: string; user_id: string | null }>
     return { ok: true, ids: rows.map((a) => a.id), userIds: rows.map((a) => a.user_id).filter((x): x is string => !!x) }
   }
-  const held = { ok: false as const, error: "The people in your view could not be read right now, so results are held. Try again in a moment." }
+  const held = roiRefusal("The people in your view could not be read right now, so results are held")
   const base = { userId: session.userId, brokerageId: session.brokerageId, userType, basis }
   // THE TEAM LEAD (wave 151 ruling L4, the same composition as lib/search/scoped-record-search.ts): a team_lead seat —
   // or anyone the hierarchy knows leads a team — reads through the ONE team roster unless an explicit TENANT
@@ -951,7 +985,7 @@ export async function loadRoiOutcomeLedger(
     const inWin = (d: string | null) => !!d && d >= sinceDay && d <= untilDay
     let foreign = 0
     const mine = <T extends { brokerage_id?: string | null }>(rows: T[]): T[] => rows.filter((r) => { const ok = r.brokerage_id == null || r.brokerage_id === brokerageId; if (!ok) foreign++; return ok })
-    const refused = (what: string) => ({ ok: false as const, error: `Marketing results could not be read right now (${what}), so nothing is shown rather than a partial picture. Try again in a moment.` })
+    const refused = (what: string) => roiRefusal(`Marketing results could not be read right now (${what}), so nothing is shown rather than a partial picture`)
 
     // ── 1. Campaigns in view ──
     let cq = svc.from("marketing_campaigns").select("id, brokerage_id, campaign_name, campaign_type, agent_user_id, team_id, budget_spent").eq("brokerage_id", brokerageId)
@@ -1308,7 +1342,7 @@ export async function loadRoiOutcomeLedger(
     return { ok: true, ledger }
   } catch (e) {
     console.error("[roi-ledger] outcome ledger failed:", e)
-    return { ok: false, error: "Marketing results could not be put together right now. Nothing was changed; try again in a moment." }
+    return { ok: false, error: presentTenantMessage({ what: "Marketing results could not be put together right now", work: { state: "unchanged" }, next: "platform_support", action: { label: "Try again in a moment" } }).sentence }
   }
 }
 

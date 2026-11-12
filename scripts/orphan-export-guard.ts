@@ -484,8 +484,31 @@ for (const f of files) {
   }
 }
 
+/**
+ * FRAMEWORK-CALLED EXPORTS (wave 152 — CLAUDE.md §1 "Unreferenced is not dead"). Next.js calls these BY NAME from its own
+ * runtime, never through an import in this tree: the HTTP-verb handlers and route-segment config of an `app/**\/route.ts`, and
+ * `register` / `onRequestError` of the root `instrumentation.ts`. Until this rule a `GET` passed only by accident (other files
+ * mention the word) while a new `HEAD` handler or the instrumentation hook read as an orphan. The list is Next's documented
+ * contract, scoped to exactly those file shapes — any OTHER export of such a file is still judged (positive control below).
+ */
+const NEXT_ROUTE_EXPORTS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "dynamic", "dynamicParams", "revalidate", "fetchCache", "runtime", "preferredRegion", "maxDuration", "generateStaticParams"])
+const NEXT_INSTRUMENTATION_EXPORTS = new Set(["register", "onRequestError"])
+function isFrameworkCalled(e: { file: string; name: string }): boolean {
+  if (/^app\/(?:.+\/)?route\.(?:ts|tsx|js)$/.test(e.file)) return NEXT_ROUTE_EXPORTS.has(e.name)
+  if (/^(?:src\/)?instrumentation\.(?:ts|js)$/.test(e.file)) return NEXT_INSTRUMENTATION_EXPORTS.has(e.name)
+  return false
+}
+if (!isFrameworkCalled({ file: "app/api/health/route.ts", name: "HEAD" }) || !isFrameworkCalled({ file: "instrumentation.ts", name: "onRequestError" })
+  || isFrameworkCalled({ file: "app/api/health/route.ts", name: "buildHealthBody" }) || isFrameworkCalled({ file: "lib/health.ts", name: "GET" })
+  || isFrameworkCalled({ file: "lib/instrumentation.ts", name: "register" })) {
+  console.log("\n[orphan-export guard] ✗ THE INSTRUMENT IS BROKEN — the framework-called rule admits a non-framework export or refuses a framework hook")
+  console.log(" ❌ ORPHAN_EXPORT_FAIL — positive control")
+  process.exit(1)
+}
+
 const orphans: ExportRef[] = []
 for (const e of exportsFound) {
+  if (isFrameworkCalled(e)) continue
   const re = new RegExp(`\\b${e.name.replace(/\$/g, "\\$")}\\b`)
   let referenced = false
   for (const f of files) {

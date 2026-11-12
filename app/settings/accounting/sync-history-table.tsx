@@ -68,14 +68,18 @@ export function SyncHistoryTable({ logs, brokerageId }: SyncHistoryTableProps) {
             Completed
           </Badge>
         )
-      case "completed_with_errors":
+      // ONE vocabulary (CLAUDE.md §6): accounting_sync_log.status is CHECK-constrained to completed | failed | pending |
+      // running (scripts/check-vocabularies.ts). "completed_with_errors" and "in_progress" were branches no row could
+      // ever carry (wave 152, lane 152K — the writer that tried "completed_with_errors" sent nothing; see
+      // app/api/accounting/sync/route.ts).
+      case "pending":
         return (
           <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">
             <AlertCircle className="h-3 w-3 mr-1" />
-            With Errors
+            Pending
           </Badge>
         )
-      case "in_progress":
+      case "running":
         return (
           <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100">
             <Loader2 className="h-3 w-3 mr-1 animate-spin" />

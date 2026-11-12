@@ -80,8 +80,10 @@ const ok = (cond: boolean, msg: string) => { if (cond) pass++; else { fail++; fa
     author: null, publishedDate: null, highlights: ["got pre-approved", "first-time home buyer"], summary: null,
   } as any)
   ok(buyer.intent === "buyer",                       "Exa: buyer intent wins")
-  ok(buyer.persona === "first_time_buyer",           "Exa: first_time_buyer persona attached")
   ok(buyer.scores.buyer > buyer.scores.seller,       "Exa: buyer score > seller score")
+  // CONVERGENCE ROW 62 (wave 152, 152K): the side classifier is split from the person fields — the research normalizer
+  // carries NO author persona and NO street address (owner R9; the person door is lib/providers/exa/hunting.ts).
+  ok(!("persona" in buyer) && !("propertyAddresses" in buyer), "Exa (row 62): no person reading — no `persona`, no `propertyAddresses` on a research result")
 
   const seller = normalizeExaIntentRow({
     id: "2", url: "https://example.com/b", title: "Must sell my house in Phoenix",
@@ -89,9 +91,9 @@ const ok = (cond: boolean, msg: string) => { if (cond) pass++; else { fail++; fa
     author: null, publishedDate: null,
   } as any)
   ok(seller.intent === "seller",                                    "Exa: seller intent wins")
-  ok(seller.persona === "fsbo_seller" || seller.persona === "motivated_seller", "Exa: FSBO/motivated persona attached")
-  ok(seller.propertyAddresses.some(a => a.includes("Oak Ave")),     "Exa: property address extracted")
-  ok(seller.prices.includes(325000),                                "Exa: $325,000 price extracted")
+  ok(seller.prices.includes(325000),                                "Exa: $325,000 price extracted (a market fact, kept)")
+  // POSITIVE CONTROL: the page DOES carry a street address — the normalizer simply never reads it out any more.
+  ok(/456 Oak Ave/.test(seller.context) && !JSON.stringify({ ...seller, context: "" }).includes("Oak Ave"), "Exa (row 62) POSITIVE CONTROL: the address is in the page text, yet no output field but the raw context carries it")
 
   const investor = normalizeExaIntentRow({
     id: "3", url: "https://example.com/c", title: "1031 exchange options in Phoenix",
@@ -99,14 +101,13 @@ const ok = (cond: boolean, msg: string) => { if (cond) pass++; else { fail++; fa
     author: null, publishedDate: null,
   } as any)
   ok(investor.intent === "investor",                                "Exa: investor intent wins")
-  ok(investor.persona === "investor_1031" || investor.persona === "investor_buy_hold", "Exa: investor persona attached")
 
   const generic = normalizeExaIntentRow({
     id: "4", url: "https://example.com/d", title: "Local bakery opens downtown",
     text: "Nothing real-estate-related here.", author: null, publishedDate: null,
   } as any)
   ok(generic.intent === "generic",                                  "Exa: no real-estate signal → generic")
-  ok(generic.persona === null,                                      "Exa: no persona on generic")
+  ok(generic.matched.length === 0,                                  "Exa: nothing fired on generic")
 }
 
 // ── BatchData rich profile ─────────────────────────────────────────────────

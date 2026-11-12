@@ -1313,6 +1313,127 @@ async function testActorResilience() {
   const allFail = async () => { throw new Error("down") }
   const r2 = await runApifyTask("facebook", {}, { runner: allFail })
   check("all actors down → empty + actorUsed null (no throw)", r2.actorUsed === null && r2.data.length === 0)
+
+  await testApifyRunCursor()
+}
+
+// ── 18b. Apify RUN CURSOR (wave 152, lane 152J — convergence row 55) ─────────
+// The adapter on an injected SDK; runApifyTask on the REAL job-ledger store over the in-memory client. No network.
+async function testApifyRunCursor() {
+  console.log("\n[Apify run cursor — a started (billed) run is drained, never re-bought (row 55)]")
+  const { runActorSyncGetDatasetItems, resumeRunDataset } = await import("../lib/providers/apify/client")
+  const { memSupabase } = await import("./in-memory-supabase")
+  const { stripComments } = await import("./strip-comments")
+  const { readFileSync } = await import("node:fs")
+  check("proof context: NEXT_RUNTIME is unset, so no default store can write a live ledger here", !process.env.NEXT_RUNTIME)
+
+  // 1. THE ADAPTER — paged reads + the cursor, on a fake SDK.
+  type Run = { id: string; status: string; defaultDatasetId: string }
+  const fakeSdk = (o: { run: Run; items: number; failPageAt?: number; callThrows?: boolean; getRun?: Run | null }) => {
+    const pages: Array<{ offset: number; limit: number }> = []
+    return {
+      pages,
+      sdk: {
+        actor: () => ({ call: async () => { if (o.callThrows) throw Object.assign(new Error("Actor not found"), { statusCode: 404 }); return o.run }, get: async () => ({}) }),
+        dataset: () => ({ listItems: async (q?: { offset?: number; limit?: number }) => {
+          const offset = q?.offset ?? 0, limit = q?.limit ?? 1_000_000
+          pages.push({ offset, limit })
+          if (o.failPageAt !== undefined && pages.length === o.failPageAt) throw new Error("socket hang up")
+          const n = Math.max(0, Math.min(limit, o.items - offset))
+          return { items: Array.from({ length: n }, (_, i) => ({ i: offset + i })), total: o.items }
+        } }),
+        run: () => ({ get: async () => (o.getRun === undefined ? o.run : o.getRun) }),
+      },
+    }
+  }
+  const running: Run = { id: "run-1", status: "RUNNING", defaultDatasetId: "ds-1" }
+  const a = fakeSdk({ run: running, items: 2500 })
+  const r1 = await runActorSyncGetDatasetItems("tok", "owner~actor", {}, { timeoutSecs: 60, sdk: a.sdk as never })
+  check("the dataset is read in PAGES with offset/limit (1000, 1000, 500) — never one unbounded read", r1.ok && (r1.data ?? []).length === 2500 && a.pages.map((p) => p.offset).join(",") === "0,1000,2000" && a.pages.every((p) => p.limit === 1000), JSON.stringify(a.pages))
+  check("a run still RUNNING at the wait cap carries its cursor: finished false, offset = items read", r1.run?.runId === "run-1" && r1.run?.datasetId === "ds-1" && r1.run?.offset === 2500 && r1.run?.finished === false && r1.run?.runStatus === "RUNNING")
+  const b = fakeSdk({ run: { ...running, status: "SUCCEEDED" }, items: 2500, failPageAt: 2 })
+  const r2 = await runActorSyncGetDatasetItems("tok", "owner~actor", {}, { sdk: b.sdk as never })
+  check("ADVERSE: a page that fails part-way → ok:false WITH the run cursor at the last good offset and the items read so far", !r2.ok && (r2.data ?? []).length === 1000 && r2.run?.offset === 1000 && r2.run?.finished === true && /socket hang up/.test(String(r2.error)))
+  const c = fakeSdk({ run: running, items: 0, callThrows: true })
+  const r3 = await runActorSyncGetDatasetItems("tok", "owner~gone", {}, { sdk: c.sdk as never })
+  check("a run that never STARTED (removed Actor) has NO cursor — the only case another candidate may run", !r3.ok && r3.run === undefined && r3.status === 404 && c.pages.length === 0)
+  const d = fakeSdk({ run: { ...running, status: "SUCCEEDED" }, items: 3000 })
+  const r4 = await resumeRunDataset("tok", r1.run!, { sdk: d.sdk as never })
+  check("RESUME reads the run's CURRENT status, then only the items after the cursor (2500 → 3000), finished", r4.ok && (r4.data ?? []).length === 500 && (r4.data as Array<{ i: number }>)[0].i === 2500 && r4.run?.offset === 3000 && r4.run?.finished === true)
+  const e = fakeSdk({ run: running, items: 0, getRun: null })
+  const r5 = await resumeRunDataset("tok", r1.run!, { sdk: e.sdk as never })
+  check("ADVERSE: a vanished run resumes as ok:false 404 with the cursor UNCHANGED (the caller retires it)", !r5.ok && r5.status === 404 && r5.run?.offset === 2500 && e.pages.length === 0)
+  const noTok = await runActorSyncGetDatasetItems("", "owner~actor", {}, { sdk: a.sdk as never })
+  check("FAIL CLOSED: no token → no call at all", !noTok.ok && /unconfigured/.test(String(noTok.error)))
+
+  // 2. runApifyTask on the REAL job-ledger store (lead_scraping_jobs), in memory.
+  const NOW = new Date("2026-11-12T12:00:00Z")
+  const db = memSupabase({ lead_scraping_jobs: [] }, { stampCreatedAt: true, uuidIds: true })
+  const jobs = () => db.tables.lead_scraping_jobs ?? []
+  const input = { subreddits: ["r/frisco"], maxPosts: 100 }
+  const reddit = ACTOR_REGISTRY.reddit
+  const unfinishedRunner = (offset: number, status = "RUNNING") => async (actorId: string) => ({ data: Array.from({ length: offset }, (_, i) => ({ actorId, i })), cost: 0.5, run: { runId: `run-${actorId}`, datasetId: `ds-${actorId}`, offset, runStatus: status, finished: status !== "RUNNING" } })
+  let runnerCalls = 0
+  const counted = (fn: (actorId: string) => Promise<any>) => async (actorId: string) => { runnerCalls++; return fn(actorId) }
+
+  const t1 = await runApifyTask("reddit", input, { runner: counted(unfinishedRunner(50)), cursorLedgerClient: db, now: NOW })
+  const row = jobs()[0]
+  check("an UNFINISHED run leaves ONE cursor row on the scrape job ledger: job_type apify_run_cursor, running, run/dataset/offset in metadata, items read", jobs().length === 1 && row.job_type === "apify_run_cursor" && row.status === "running" && row.source === "apify:reddit" && row.metadata?.run_id === `run-${reddit[0]}` && row.metadata?.dataset_id === `ds-${reddit[0]}` && row.metadata?.item_offset === 50 && row.leads_found === 50 && row.brokerage_id === null && row.market_id === null, JSON.stringify(row))
+  check("the run's 50 items are returned now and the cost of the ONE run is booked", t1.data.length === 50 && t1.cost === 0.5 && t1.actorUsed === reddit[0] && t1.triedActors.length === 1 && runnerCalls === 1)
+
+  let resumeCalls = 0
+  const stillRunning = async (cur: any) => { resumeCalls++; return { ok: true, status: 200, error: null, data: Array.from({ length: 10 }, (_, i) => ({ resumed: cur.offset + i })), run: { ...cur, offset: cur.offset + 10, finished: false, runStatus: "RUNNING" } } }
+  const t2 = await runApifyTask("reddit", input, { runner: counted(unfinishedRunner(50)), resumer: stillRunning, cursorLedgerClient: db, now: NOW })
+  check("the SAME work next time drains the open run from its offset and starts NO new run while it is still running", t2.newRunSkipped && t2.resumedItems === 10 && t2.data.length === 10 && t2.cost === 0 && runnerCalls === 1 && resumeCalls === 1 && jobs()[0].metadata?.item_offset === 60 && jobs()[0].leads_found === 60 && jobs()[0].status === "running", JSON.stringify({ t2, row: jobs()[0] }))
+
+  const finished = async (cur: any) => ({ ok: true, status: 200, error: null, data: Array.from({ length: 30 }, (_, i) => ({ resumed: cur.offset + i })), run: { ...cur, offset: cur.offset + 30, finished: true, runStatus: "SUCCEEDED" } })
+  const t3 = await runApifyTask("reddit", input, { runner: counted(async (actorId) => ({ data: [{ fresh: actorId }], cost: 0.5, run: { runId: "run-new", datasetId: "ds-new", offset: 1, runStatus: "SUCCEEDED", finished: true } })), resumer: finished, cursorLedgerClient: db, now: NOW })
+  check("once the earlier run FINISHES its remaining items are drained, its cursor COMPLETED (90 read), and the normal run proceeds", t3.resumedItems === 30 && t3.data.length === 31 && !t3.newRunSkipped && runnerCalls === 2 && jobs()[0].status === "completed" && jobs()[0].leads_found === 90 && !!jobs()[0].completed_at && jobs().length === 1, JSON.stringify(jobs()))
+
+  const other = await runApifyTask("reddit", { subreddits: ["r/plano"], maxPosts: 100 }, { runner: counted(unfinishedRunner(5)), resumer: async () => { throw new Error("must not resume another scope") }, cursorLedgerClient: db, now: NOW })
+  check("different input = different work: another scope's cursor is never drained into this one", other.resumedItems === 0 && other.actorUsed === reddit[0] && jobs().filter((j) => j.status === "running").length === 1)
+
+  // ADVERSE cases.
+  const db2 = memSupabase({ lead_scraping_jobs: [] }, { stampCreatedAt: true, uuidIds: true })
+  let fbCalls = 0
+  const paidThenReadFails = async (actorId: string) => { fbCalls++; return { data: [{ a: 1 }], cost: 0.5, run: { runId: `run-${actorId}`, datasetId: "ds-x", offset: 1, runStatus: "SUCCEEDED", finished: true }, readError: "socket hang up" } }
+  const t4 = await runApifyTask("facebook", { g: 1 }, { runner: paidThenReadFails, cursorLedgerClient: db2, now: NOW })
+  check("ADVERSE (double spend): a STARTED run whose read failed is never followed by a second candidate's run; its cursor is saved with attempt 1", fbCalls === 1 && t4.triedActors.length === 1 && t4.cost === 0.5 && db2.tables.lead_scraping_jobs.length === 1 && db2.tables.lead_scraping_jobs[0].metadata?.attempts === 1 && /socket hang up/.test(String(db2.tables.lead_scraping_jobs[0].error_message)))
+  const failing = async (cur: any) => ({ ok: false, status: null, data: null, error: "dataset unavailable", run: cur })
+  await runApifyTask("facebook", { g: 1 }, { runner: paidThenReadFails, resumer: failing, cursorLedgerClient: db2, now: NOW })
+  const after2 = JSON.parse(JSON.stringify(db2.tables.lead_scraping_jobs[0] ?? {})) // a snapshot — the in-memory row mutates in place
+  const t5 = await runApifyTask("facebook", { g: 1 }, { runner: paidThenReadFails, resumer: failing, cursorLedgerClient: db2, now: NOW })
+  const after3 = JSON.parse(JSON.stringify(db2.tables.lead_scraping_jobs[0] ?? {}))
+  check("ADVERSE (retry bounded): a cursor that keeps failing is RETIRED as failed at the third attempt — retry state never loops forever", after2.status === "running" && after2.metadata?.attempts === 2 && after3.status === "failed" && after3.metadata?.attempts === 3 && !t5.newRunSkipped, JSON.stringify([after2.metadata, after3.metadata]))
+  const db3 = memSupabase({ lead_scraping_jobs: [{ id: "old-1", job_type: "apify_run_cursor", source: "apify:reddit", status: "running", leads_found: 5, metadata: { scope_key: "", actor: reddit[0], run_id: "run-old", dataset_id: "ds-old", item_offset: 5, run_status: "RUNNING", finished: false, attempts: 0, opened_at: new Date(NOW.getTime() - 8 * 86_400_000).toISOString() }, created_at: new Date(NOW.getTime() - 8 * 86_400_000).toISOString() }] }, { stampCreatedAt: true, uuidIds: true })
+  // Give the seeded row THIS work's scope key (read back from a first open on a scratch ledger — the key is module-private).
+  const scratch = memSupabase({ lead_scraping_jobs: [] }, { stampCreatedAt: true, uuidIds: true })
+  await runApifyTask("reddit", input, { runner: unfinishedRunner(1), cursorLedgerClient: scratch, now: NOW })
+  db3.tables.lead_scraping_jobs[0].metadata.scope_key = scratch.tables.lead_scraping_jobs[0]?.metadata?.scope_key ?? ""
+  let staleResumes = 0
+  const t6 = await runApifyTask("reddit", input, { runner: async () => ({ data: [], cost: 0.5 }), resumer: async () => { staleResumes++; return { ok: true, status: 200, error: null, data: [] } }, cursorLedgerClient: db3, now: NOW })
+  check("ADVERSE (retention): a cursor older than the dataset retention window is retired, never resumed", staleResumes === 0 && db3.tables.lead_scraping_jobs[0].status === "failed" && /retention/.test(String(db3.tables.lead_scraping_jobs[0].error_message)) && !t6.newRunSkipped)
+  const old = new Date(NOW.getTime() - 9 * 86_400_000).toISOString(), fresh = new Date(NOW.getTime() - 86_400_000).toISOString()
+  const cursorRow = (id: string, scope: string, at: string, task = "reddit") => ({ id, job_type: "apify_run_cursor", source: `apify:${task}`, status: "running", leads_found: 1, metadata: { scope_key: scope, actor: "a", run_id: `r-${id}`, dataset_id: `d-${id}`, item_offset: 1, attempts: 0, opened_at: at }, created_at: at })
+  const db4 = memSupabase({ lead_scraping_jobs: [cursorRow("orphan-old", "reddit:territory-that-changed", old), cursorRow("other-fresh", "reddit:another-live-scope", fresh), cursorRow("fb-old", "facebook:x", old, "facebook")] }, { stampCreatedAt: true, uuidIds: true })
+  await runApifyTask("reddit", input, { runner: async () => ({ data: [], cost: 0.5 }), resumer: async () => { throw new Error("not this scope") }, cursorLedgerClient: db4, now: NOW })
+  const st = (id: string) => db4.tables.lead_scraping_jobs.find((r: any) => r.id === id)
+  check("HOUSEKEEPING: an expired cursor of ANY scope of the task is retired (a territory whose input never recurs leaves nothing 'running' forever); a fresh one of another scope and another task's are untouched", st("orphan-old")?.status === "failed" && /retention/.test(String(st("orphan-old")?.error_message)) && st("other-fresh")?.status === "running" && st("fb-old")?.status === "running")
+  const refused = memSupabase({ lead_scraping_jobs: [] }, { refuse: { lead_scraping_jobs: "permission denied for table lead_scraping_jobs" } })
+  let blindCalls = 0
+  const t7 = await runApifyTask("reddit", input, { runner: async () => { blindCalls++; return { data: [], cost: 0.5 } }, cursorLedgerClient: refused, now: NOW })
+  check("ADVERSE (fail closed): an UNREADABLE cursor ledger starts NO paid run (an earlier run may still be open) and says so", blindCalls === 0 && t7.newRunSkipped && /could not be read/.test(String(t7.cursorNote)))
+  let noStoreCalls = 0
+  const t8 = await runApifyTask("craigslist", { c: 1 }, { runner: async (actorId) => { noStoreCalls++; return { data: [{ x: 1 }], cost: 0.5, run: { runId: `run-${actorId}`, datasetId: "d", offset: 1, runStatus: "RUNNING", finished: false } } } })
+  check("no store in this context (a script, not the app server): nothing is written, the run is still not doubled, and the note says the cursor was not kept", noStoreCalls === 1 && t8.data.length === 1 && /no cursor store/.test(String(t8.cursorNote)))
+
+  // 3. Stripped source: the read is paged, the started-run branch does not throw.
+  const adapter = stripComments(readFileSync("lib/providers/apify/client.ts", "utf8"))
+  check("the adapter has no unbounded listItems() (every dataset read names offset + limit)", !/listItems\(\s*\)/.test(adapter) && /listItems\(\{ offset: at, limit: DATASET_PAGE \}\)/.test(adapter))
+  check("POSITIVE CONTROL: the finder sees an unbounded read when it is there", /listItems\(\s*\)/.test("await client.dataset(id).listItems()"))
+  const actorClient = stripComments(readFileSync("lib/external/apify-client.ts", "utf8"))
+  const body = actorClient.slice(actorClient.indexOf("export async function runApifyActor("), actorClient.indexOf("export async function scrapeFacebookGroupPosts("))
+  check("runApifyActor returns a STARTED run's partial data + cursor and throws only for a run that never started", /if \(runResponse\.run\) \{\s*return \{ data:/.test(body) && body.indexOf("if (runResponse.run)") < body.indexOf("throw new Error"))
 }
 
 // ── 19. Exa neural-search buyer intent (AI-native) ───────────────────────────

@@ -39,6 +39,7 @@ Read from `scripts/schema-snapshot.ts` (generated 2026-11-09 after m986), `scrip
 |---|---|---|---|---|---|
 | column | `market_dataset_verifications.licence` | `jsonb` (`{ class, text }` — `DatasetLicence`) | `supabase/migrations/m918-market-dataset-verifications-c19.sql:36` (APPLIED) | `lib/intent/dataset-verification.ts:267` (`licence: c.licence` in the upsert row) | `lib/intent/dataset-verification.ts:105–109` (`statusOf` — an unread license is a reason the dataset is not usable), `app/actions/movement-signals.ts:57` → `app/dashboard/intelligence/movement-signals/movement-signals-client.tsx:50,128` (`v.licence`) |
 | column | `raw_scraped_leads.source_licence` | `text` — the NAME of the governing terms | `supabase/migrations/m961-rawdata-producer-contract-c35.sql:33` (APPLIED) | `lib/lead-pipeline/raw-record-types.ts:296` (`source_licence: ctx.rights.licence`) → `lib/kernel/scraping.ts:172,180` (column list + insert mapping) | no production reader — it is evidence on the row; `scripts/rawdata-ingress-guard.ts:83` asserts it is set |
+| jsonb KEY (added wave 152, lane 152K — the 151L census read columns only) | `marketing_assets.rights` → key `licence` (and the legacy pre-m719 shape `marketing_assets.metadata.media.rights.licence`) | key inside `jsonb` | `lib/kernel/media-intelligence.ts:86` `MediaRights.licence` | the media-intelligence writer (rights object as given) | `lib/kernel/media-intelligence.ts:167–168` `rightsVerdict` (a stock / external asset needs it) |
 | CHECK value | — | — | — | — | **none**: no `CHECK_VOCABULARIES` value, no `live-tables` entry and no FK-map entry carries the spelling |
 | migration filename | `m459-a-licence-record-anyone-in-the-tenant-can-rewrite-is-not-a-compliance-record.sql` | — | history | — | filenames are immutable history; never renamed |
 
@@ -148,7 +149,56 @@ from the applied stamps; this one would be derived the same way, never pinned to
   spelling must keep its specimen (`scripts/legal-packets-guard.ts` P4).
 - No rename of the m459 migration filename.
 
-## 6. Blind spots of the census behind this plan
+## 6. `rights.licence` — the compatibility strategy (wave 152, lane 152K; renames NOTHING this wave)
+
+The directive (152K): *"explicitly inspect the existing `rights.licence` legacy field/vocabulary and document a safe compatibility
+strategy; avoid breaking provider rights records or conflating language cleanup with licensing logic."* No DB-facing name changes
+in wave 152 — this section is the plan the lane that executes it follows.
+
+### 6.1 What `licence` means here — three DATA-RIGHTS carriers, and one thing it is not
+
+| Carrier | Meaning | Is it an input to licensing logic? | Stored rows (live, read-only, 2026-11-12) |
+|---|---|---|---|
+| `SourceRights.licence` (`lib/lead-pipeline/raw-record-types.ts:272`) → `raw_scraped_leads.source_licence` (written at `:296`, column list `lib/kernel/scraping.ts:172,180`) | the NAME of the terms that govern a data source — evidence on the row | **no** — nothing branches on it; `source-discovery-planner.ts:506,525` only prints it in a door's reason | 0 of 0 raw rows |
+| `market_dataset_verifications.licence` (jsonb `{ class, text, readOn }`, `lib/intent/dataset-verification.ts`) | a public dataset's license CLASS | **yes** — `statusOf` (`dataset-verification.ts:109`) refuses a dataset whose class is missing / `unknown`; the decision reads the `class` VALUE, never the key's spelling | 0 rows |
+| `marketing_assets.rights.licence` (jsonb key; `MediaRights.licence`) | the license of a stock / externally sourced media asset | **yes** — `rightsVerdict` (`media-intelligence.ts:167–168`) refuses a stock / external asset without it | 0 of 0 asset rows |
+| NOT a data-rights carrier: professional licensing — `license_number`, `license_state`, … (already American) and the vendor-service-area reason codes `licence_missing` / `licence_expired` (`lib/vendors/vendor-service-area.ts`, returned to the UI, never stored) | a PERSON's / vendor's professional license | a different domain entirely | — |
+
+The rule this plan keeps: **the spelling of a key is never a licensing decision.** Every value a license gate reads — the
+`class` vocabulary (`public_domain`, `portal_terms`, `unknown`, …), the presence of a stock asset's license, a source's rights
+basis — is carried across the rename unchanged, and no gate may read "the key is missing" as "the right is missing" while both
+spellings can exist.
+
+### 6.2 Read both, write one, a window, a rollback — per carrier
+
+1. **ONE accessor per carrier, reading BOTH spellings** (written first, in the module that owns the type, before any writer
+   changes): `sourceLicenseOf(rights) = rights.license ?? rights.licence ?? null` beside `SourceRights`; the dataset reader takes
+   `row.license ?? row.licence`; `mediaLicenseOf(rights) = rights.license ?? rights.licence ?? null` beside `MediaRights`, and
+   `rightsVerdict` calls it (so a stock asset stored under either key passes, and one stored under neither still refuses). Every
+   reader in §3 moves onto its accessor; a census (stripped source) then finds no direct `.licence` read outside the accessors.
+2. **WRITE ONE (American)** — only after the database accepts it: the two COLUMNS need §4 step 1 applied first (the additive
+   columns + the mirror trigger keep both spellings filled whichever one a writer uses, so a writer deployed before or after the
+   migration never loses a row — PGRST204 refuses a whole insert that names an absent column). The jsonb KEY needs no DDL: the
+   writer writes `license`; old rows keep `licence` and the accessor reads them.
+3. **THE WINDOW** opens when step 1's migration is applied and closes only when all of: step 2 is deployed; one full acquisition
+   cycle has written `source_license`; the §4 step-3 disagreement read-backs return 0; and a backfill of the jsonb key
+   (`UPDATE public.marketing_assets SET rights = (rights - 'licence') || jsonb_build_object('license', rights -> 'licence') WHERE rights ? 'licence' AND NOT rights ? 'license';`
+   — a no-op on today's 0 rows; an ordinary data migration, not owner SQL) leaves `SELECT count(*) FROM public.marketing_assets WHERE rights ? 'licence'` at 0.
+4. **CLOSE** — §4 step 3 (owner SQL: drop the trigger, the function and the two old columns), then delete the accessors' old-key arm
+   with a tombstone naming the American key as the survivor.
+5. **ROLLBACK** — inside the window: redeploy the previous code (it writes the old names; the trigger keeps the new columns in step
+   and the accessors still read both) — nothing is dropped. After step 3: `ADD COLUMN` the old name back, backfill it from the new
+   one, re-create the mirror trigger, then redeploy — the data never left the new column.
+
+### 6.3 What proves it when it runs (no guard pinned to a waypoint)
+
+`test:rawdata-ingress` (`source_license` set on every raw row), `test:movement-signals` + `test:readiness-dimensions` (the dataset
+class still gates — an `unknown` class still refuses, under either key), `test:media-intelligence` (a stock asset under `licence`,
+under `license`, and under neither — pass / pass / refuse: the positive control), `test:acquisition-door` / `test:provider-waterfall`
+(door reasons still name the terms), plus a spelling-window census that asserts the RULE — every reader goes through an accessor,
+every writer writes one name — with a planted direct `.licence` read as its positive control.
+
+## 7. Blind spots of the census behind this plan
 
 - The census regex is `\b(licen)(c)(e|ed|es|ing|ure)\b`, case-insensitive: it does not see `licencee`
   or a hyphenated `licence-holder` (none were found by a wider `licenc` grep: the §3 table is from that grep).
@@ -157,3 +207,6 @@ from the applied stamps; this one would be derived the same way, never pinned to
   JSX text; a one-word quoted label would still read British. The repo-wide grep after both passes found
   none in `app/`.
 - `.json` files were classified and left alone (0 hits after the passes).
+- (wave 152, 152K) The 151L census read COLUMNS, not keys inside `jsonb`: `marketing_assets.rights.licence` was missing
+  from §2 and is added there. Other stored jsonb keys spelled the British way would be missed the same way — a key census
+  over every `jsonb` writer's object literal is the step-1 lane's first task.

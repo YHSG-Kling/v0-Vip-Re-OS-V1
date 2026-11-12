@@ -17,6 +17,10 @@
  *
  * Audit: every call (success or failure) is logged to
  *   agent_assistant_tool_calls so brokers can audit "what did the AI do?".
+ *   Since wave 152 (lane 152I) that includes every REFUSAL (a `deny` decision with
+ *   its stage) and every row carries `tool_output.governance` — the decision
+ *   (allow / deny / rewrite / hold), the typed instruction, and the hold it
+ *   created or released (see "THE ARBITER AT THE TOOL BOUNDARY" below).
  *
  * Tools (v1):
  *   - lookup_contact(query)
@@ -29,7 +33,7 @@
 
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
-import { timingSafeEqual } from "node:crypto"
+import { createHash, timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -166,25 +170,44 @@ export async function POST(request: NextRequest) {
   //      (evaluate_outbound, tcpa_outbound, dnc_check, active_bba, ai_fair_use)
   //      and service_role need the message/artifact the tool builds, so they
   //      stay with the backends — named in `deferredToHandler`, never assumed.
+  // WAVE 152 (lane 152I — the owner's arbiter model: intercept → typed instruction → allow / deny / rewrite / hold → execute only
+  // what is approved → audit every decision). This block IS the intercept; `instruction` is the typed instruction with its security
+  // metadata (the registry row + the owning manager); every refusal below is now AUDITED as a `deny` decision (before wave 152 each
+  // refusal returned before the audit insert, so a denied call left no record), and the spoken-confirm hold is PERSISTED and checked
+  // here, at the boundary, instead of trusting the model's own `confirm: true` (governSpokenConfirm below).
+  let instruction: ToolInstruction = { tool: toolName, registered: false }
+  let dispatchParams: Record<string, unknown> = params
+  let governance: ToolGovernance = { decision: "allow", stage: "dispatch" }
   {
-    const { getVoiceTool, gatesFor, authorityAllows } = await import("@/lib/voice/tool-registry")
+    const { getVoiceTool, gatesFor, authorityAllows, VOICE_TOOL_MANAGER } = await import("@/lib/voice/tool-registry")
     const tool = getVoiceTool(toolName)
     if (!tool) {
-      return jsonToolError(`"${toolName.replace(/_/g, " ")}" isn't a registered voice tool, so I can't run it.`)
+      return denyToolCall(supabase, session, toolName, params, instruction, start, "registry",
+        `"${toolName.replace(/_/g, " ")}" isn't a registered voice tool, so I can't run it.`)
+    }
+    instruction = {
+      tool: toolName, registered: true, category: tool.category, authority: tool.authority, gates: tool.gates,
+      is_outbound: tool.is_outbound, is_telco_initiating: tool.is_telco_initiating, is_nar_regulated: tool.is_nar_regulated,
+      manager: (VOICE_TOOL_MANAGER as Readonly<Record<string, string>>)[toolName] ?? null,
+      held_for_spoken_confirm: HELD_FOR_SPOKEN_CONFIRM.has(toolName),
     }
     const { data: sessionUser, error: sessionUserErr } = await supabase
       .from("users").select("user_type").eq("id", session.user_id).maybeSingle()
     const sessionUserType = (sessionUser as { user_type?: string | null } | null)?.user_type ?? null
     if (sessionUserErr || !sessionUserType) {
-      return jsonToolError("I couldn't verify your role for that action — try re-opening the assistant.")
+      return denyToolCall(supabase, session, toolName, params, instruction, start, "role_unreadable",
+        "I couldn't verify your role for that action — try re-opening the assistant.")
     }
     if (!authorityAllows(toolName, sessionUserType)) {
-      return jsonToolError(
-        `That action isn't available for your role — ${toolName.replace(/_/g, " ")} requires a different permission level.`,
-      )
+      return denyToolCall(supabase, session, toolName, params, instruction, start, "authority",
+        `That action isn't available for your role — ${toolName.replace(/_/g, " ")} requires a different permission level.`)
     }
     const preflight = await preflightDeclaredGates(gatesFor(toolName), params, session, supabase)
-    if (!preflight.ok) return jsonToolError(preflight.error)
+    if (!preflight.ok) return denyToolCall(supabase, session, toolName, params, instruction, start, "declared_gate", preflight.error)
+    const held = await governSpokenConfirm(supabase, session, toolName, params, new Date(start))
+    if (held.decision === "deny") return denyToolCall(supabase, session, toolName, params, instruction, start, "hold", held.reason)
+    dispatchParams = held.params
+    governance = held.governance
   }
 
   // ── Dispatch ───────────────────────────────────────────────────────────
@@ -192,11 +215,39 @@ export async function POST(request: NextRequest) {
   let success = true
   let errorMessage: string | null = null
   try {
-    result = await runTool(toolName, params, session, supabase)
+    if (governance.released_hold) {
+      // LAW 5: the FINANCIAL state change a released hold authorizes is claimed → run → settled on agent_action_ledger, keyed by
+      // the hold — a racing or replayed confirm of the same read-back can never execute twice (the claim replays instead).
+      const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+      const contactRef = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      result = await ledgerToolCall({
+        brokerageId: session.brokerage_id,
+        action: `ai.tool.${toolName}`,
+        channel: "ai_tool",
+        actor: { type: "user", userId: session.user_id, agentId: session.agent_id },
+        subject: contactRef ? { type: "contact", id: contactRef } : { type: "agent_assistant_session", id: session.id },
+        riskClass: "FINANCIAL",
+        systemSource: "voice_assistant",
+        cycle: `voice_hold:${governance.released_hold}`,
+        reasonDetail: "spoken confirm of a read-back held at the tool boundary",
+        detail: { tool: toolName, hold_id: governance.released_hold, session_id: session.id },
+      }, () => runTool(toolName, dispatchParams, session, supabase), { client: supabase })
+    } else {
+      result = await runTool(toolName, dispatchParams, session, supabase)
+    }
   } catch (e: any) {
     success = false
     errorMessage = e?.message ?? "Tool failed"
     result = { error: errorMessage }
+  }
+  // A tool that answered "say confirm first" PERSISTS its hold on this call's audit row: the digest of exactly what was read back
+  // and when it expires. Only a later confirm that matches this digest, inside the window, on this session, releases it — once.
+  if (HELD_FOR_SPOKEN_CONFIRM.has(toolName) && result && typeof result === "object" && result.needs_confirmation === true) {
+    governance = {
+      decision: "hold", stage: "hold",
+      reason: governance.decision === "rewrite" ? governance.reason : "a state change waits for the speaker's own spoken confirm",
+      hold: { digest: spokenConfirmDigest(params), expires_at: new Date(start + SPOKEN_CONFIRM_HOLD_TTL_MS).toISOString() },
+    }
   }
 
   const latencyMs = Date.now() - start
@@ -216,10 +267,13 @@ export async function POST(request: NextRequest) {
       session_id: session.id,
       tool_name: toolName,
       tool_input: params,
-      tool_output: typeof result === "object" ? result : { value: result },
+      // The decision and the typed instruction ride the audit row (wave 152, 152I) — replayable: what was asked, what the gate
+      // decided, which hold it created or released, what ran.
+      tool_output: { ...(result && typeof result === "object" ? result : { value: result }), governance: { ...governance, instruction } },
       success,
       error_message: errorMessage,
       latency_ms: latencyMs,
+      ts: new Date(start).toISOString(),
     }), { table: "agent_assistant_tool_calls", flow: "assistant_tool_call_audit", brokerageId: session.brokerage_id, reason: "audit row of a tool call already executed and returned" }),
     sentinelWrite(supabase, supabase
       .from("agent_assistant_sessions")
@@ -2870,6 +2924,133 @@ async function bookStudioSession(
 
 function jsonToolError(message: string) {
   return NextResponse.json({ result: { error: message } })
+}
+
+// ─── THE ARBITER AT THE TOOL BOUNDARY (wave 152, lane 152I) ─────────────────────
+// Zero-code intrusion: the governance lives HERE, at the one door every spoken tool call passes, not inside each handler.
+//   intercept      → POST above (signed webhook, session row, never a body-supplied tenant)
+//   typed instruction → ToolInstruction (the registry row's category / authority / gates / outbound / telco / NAR flags + the
+//                    owning manager from VOICE_TOOL_MANAGER)
+//   policy decision → allow · deny (registry, role, authority, declared identity gate, unverifiable hold) · rewrite (a model-sent
+//                    `confirm` with no live hold becomes a fresh read-back) · hold (a state change waits for the speaker)
+//   execute        → runTool, only for allow / rewrite / a released hold
+//   audit          → one agent_assistant_tool_calls row per decision, denials included, with the decision and the instruction
+
+/** The tools whose handler reads `params.confirm` before a state change (each flips the buyer-financing gate). A model's own
+ *  `confirm: true` is a probabilistic output — it is honoured only against a hold THIS session persisted for exactly these
+ *  parameters (test:manager-ownership-matrix holds this set equal to the handlers that read `params.confirm`, stripped source). */
+const HELD_FOR_SPOKEN_CONFIRM: ReadonlySet<string> = new Set(["lender_confirm_financials", "confirm_buyer_financials"])
+/** How long a read-back waits for the speaker's "confirm" before it expires and must be read back again. */
+const SPOKEN_CONFIRM_HOLD_TTL_MS = 10 * 60 * 1000
+
+type ToolInstruction = {
+  tool: string
+  registered: boolean
+  category?: string
+  authority?: string
+  gates?: string[]
+  is_outbound?: boolean
+  is_telco_initiating?: boolean
+  is_nar_regulated?: boolean
+  manager?: string | null
+  held_for_spoken_confirm?: boolean
+}
+
+type ToolGovernance = {
+  decision: "allow" | "deny" | "rewrite" | "hold"
+  stage: string
+  reason?: string
+  hold?: { digest: string; expires_at: string }
+  released_hold?: string
+}
+
+/** The parameters a read-back named, minus the confirm flag itself — the speaker confirms exactly what was read back. */
+function spokenConfirmDigest(params: Record<string, unknown>): string {
+  const canon = Object.keys(params)
+    .filter((k) => k !== "confirm" && params[k] !== undefined && params[k] !== null && String(params[k]).trim() !== "")
+    .sort()
+    .map((k) => [k, String(params[k]).trim().toLowerCase()])
+  return createHash("sha256").update(JSON.stringify(canon)).digest("hex").slice(0, 32)
+}
+
+function confirmRequested(params: Record<string, unknown>): boolean {
+  const raw = String(params.confirm ?? "").toLowerCase()
+  return params.confirm === true || raw === "true" || raw === "yes"
+}
+
+/**
+ * THE HOLD, PERSISTED. A confirm is honoured only when this session holds an unexpired, unreleased read-back for the same tool and
+ * the same parameters; the release is a compare-and-set on that hold row (`tool_output->>hold_released_at IS NULL`, counted), so a
+ * replayed or concurrent confirm cannot release it twice. No live hold → REWRITE: the confirm is dropped and the handler reads the
+ * request back again (a fresh hold). An unreadable hold store → DENY (fail closed: nothing changes on an unverifiable confirm).
+ */
+async function governSpokenConfirm(
+  supabase: ReturnType<typeof createServiceClient>,
+  session: SessionRow,
+  toolName: string,
+  params: Record<string, unknown>,
+  now: Date,
+): Promise<{ decision: "deny"; reason: string } | { decision: "go"; params: Record<string, unknown>; governance: ToolGovernance }> {
+  if (!HELD_FOR_SPOKEN_CONFIRM.has(toolName) || !confirmRequested(params)) {
+    return { decision: "go", params, governance: { decision: "allow", stage: "dispatch" } }
+  }
+  const digest = spokenConfirmDigest(params)
+  const floor = new Date(now.getTime() - SPOKEN_CONFIRM_HOLD_TTL_MS).toISOString()
+  const { data: rows, error } = await supabase
+    .from("agent_assistant_tool_calls")
+    .select("id, tool_output, ts")
+    .eq("session_id", session.id)
+    .eq("brokerage_id", session.brokerage_id)
+    .eq("tool_name", toolName)
+    .gte("ts", floor)
+    .order("ts", { ascending: false })
+    .limit(25)
+  if (error) return { decision: "deny", reason: "I couldn't verify your earlier confirmation, so nothing was changed — ask me again and I'll read it back." }
+  const live = ((rows ?? []) as Array<{ id: string; tool_output: Record<string, any> | null }>).find((r) => {
+    const g = r.tool_output?.governance
+    return g?.decision === "hold" && g?.hold?.digest === digest && !r.tool_output?.hold_released_at
+  })
+  const withoutConfirm = Object.fromEntries(Object.entries(params).filter(([k]) => k !== "confirm"))
+  if (!live) {
+    return { decision: "go", params: withoutConfirm, governance: { decision: "rewrite", stage: "hold", reason: "a confirm arrived with no live read-back for these details — read back again" } }
+  }
+  const { data: released, error: releaseErr } = await supabase
+    .from("agent_assistant_tool_calls")
+    .update({ tool_output: { ...(live.tool_output ?? {}), hold_released_at: now.toISOString() } })
+    .eq("id", live.id)
+    .eq("session_id", session.id)
+    .is("tool_output->>hold_released_at", null)
+    .select("id")
+  if (releaseErr) return { decision: "deny", reason: "I couldn't verify your earlier confirmation, so nothing was changed — ask me again and I'll read it back." }
+  if ((released ?? []).length !== 1) {
+    return { decision: "go", params: withoutConfirm, governance: { decision: "rewrite", stage: "hold", reason: "that read-back was already confirmed once — read back again" } }
+  }
+  return { decision: "go", params, governance: { decision: "allow", stage: "hold_released", released_hold: live.id } }
+}
+
+/** A refusal is a DECISION: audited with its stage and the typed instruction, then said to the speaker. */
+async function denyToolCall(
+  supabase: ReturnType<typeof createServiceClient>,
+  session: SessionRow,
+  toolName: string,
+  params: Record<string, unknown>,
+  instruction: ToolInstruction,
+  start: number,
+  stage: string,
+  message: string,
+) {
+  await sentinelWrite(supabase, supabase.from("agent_assistant_tool_calls").insert({
+    brokerage_id: session.brokerage_id,
+    session_id: session.id,
+    tool_name: toolName,
+    tool_input: params,
+    tool_output: { governance: { decision: "deny", stage, reason: message, instruction } },
+    success: false,
+    error_message: message,
+    latency_ms: Date.now() - start,
+    ts: new Date(start).toISOString(),
+  }), { table: "agent_assistant_tool_calls", flow: "assistant_tool_call_audit", brokerageId: session.brokerage_id, reason: "audit row of a refused tool call (the refusal itself is returned to the speaker)" })
+  return jsonToolError(message)
 }
 
 function secretMatches(expected: string, provided: string): boolean {

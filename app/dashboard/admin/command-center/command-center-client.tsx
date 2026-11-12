@@ -306,7 +306,7 @@ export function CommandCenterClient({
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Card className="p-4 border-emerald-300 bg-emerald-50/40">
-              <div className="text-xs text-muted-foreground">Attributed closed volume</div>
+              <div className="text-xs text-muted-foreground">Attributed closed commission</div>
               <div className="text-2xl font-semibold text-emerald-700">
                 ${Math.round(data.roiLedger.attributedGciCents / 100).toLocaleString()}
               </div>

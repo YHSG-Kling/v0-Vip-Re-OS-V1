@@ -10,6 +10,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { INGRESS_MAX_ATTEMPTS, decideIngressAction, envelopeHasAnyArtifact, ensureEsignIngressContinuity, type EsignIngressProvider } from "./ingress-continuity"
+import type { TenantProviderConnectionRow, TenantWebhookIngestDeps } from "@/lib/providers/tenant-provider-connections"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -37,7 +38,7 @@ interface DeadLetterRow { id: string; provider: string; event_kind: string; exte
  * ingest path its webhook runs (shared helpers, so the paths can never
  * drift), and reports whether the destination has appeared yet.
  */
-async function attemptReplay(svc: Svc, letter: DeadLetterRow): Promise<ReplayAttempt> {
+async function attemptReplay(svc: Svc, letter: DeadLetterRow, tenantPush?: TenantPushReplayDeps): Promise<ReplayAttempt> {
   if (letter.event_kind === "esign_envelope_completed") {
     const base: ReplayAttempt = { result: "unmatched", flow: "esign_ingress_orphan", action: "reconcile_esign_ingress" }
     const matched = await envelopeHasAnyArtifact(svc, letter.external_ref).catch(() => false)
@@ -178,8 +179,97 @@ async function attemptReplay(svc: Svc, letter: DeadLetterRow): Promise<ReplayAtt
     }
   }
 
+  // WAVE 152 (lane 152I — lane 152A outside-lane BUILD request 2, directive Play 6): a TENANT's own Smart Search delivery the
+  // tenant's key could not hydrate is parked by ingestTenantWebhookDelivery as `smart-search-match` / `tenant:<connectionId>:<eventId>`.
+  // Before this branch the kind had no runner, so a repaired connection never received what it missed and every letter aged to
+  // abandonment. The platform door's own letters (no `tenant:` prefix) still fall through to the unknown-kind rule below.
+  if (letter.event_kind === "smart-search-match" && letter.external_ref.startsWith("tenant:")) {
+    return replayParkedTenantPush(svc, letter, tenantPush)
+  }
+
   // Unknown kind: never replay blindly — age it to abandonment + escalation.
   return { result: "unmatched", flow: "ingress_unknown_kind", action: "none" }
+}
+
+/** The tenant-push replay's provider seams — the SAME four the tenant door builds (app/api/webhooks/batchdata-smart-search/route.ts
+ *  handleTenantDelivery): the tenant-keyed hydrate behind pre-pull dedup, the BatchData normalizer, THE RawData producer and the ONE
+ *  vendor-spend gateway. No `park`: a replay that cannot land leaves its own letter pending — it never parks a second copy. */
+type TenantPushReplayDeps = Pick<TenantWebhookIngestDeps, "hydrate" | "normalize" | "ingest" | "book">
+
+async function defaultTenantPushReplayDeps(svc: Svc, brokerageId: string): Promise<TenantPushReplayDeps> {
+  const { normalizeBatchDataRecord } = await import("@/lib/lead-pipeline/scraper-parsers")
+  return {
+    hydrate: async (ids, key) => {
+      // PRE-PULL DEDUP BEFORE THE PAID HYDRATE (the route's rule): an id this tenant already holds — e.g. landed by an earlier
+      // replay whose letter was not marked reconciled — is never bought twice. An unreadable known-set hydrates as the route does.
+      const { loadKnownAcquisitionKeys, planPrePullDedup } = await import("@/lib/lead-pipeline/pre-pull-dedup")
+      const candidates = ids.map((id) => ({ ref: id, source: "batchdata_smart_search", sourceRecordId: id }))
+      const known = await loadKnownAcquisitionKeys(svc as never, { brokerageId, marketIds: [] }, { candidates })
+      const plan = known ? planPrePullDedup(candidates, known, { lookupKind: "property" }) : null
+      const toHydrate = plan ? plan.buy.map((c) => c.ref) : ids
+      if (toHydrate.length === 0) return { ok: true, properties: [], cost: 0 }
+      const { lookupBatchDataPropertiesByIds } = await import("@/lib/external/batchdata-client")
+      return lookupBatchDataPropertiesByIds(toHydrate, { apiKey: key, brokerageId })
+    },
+    normalize: (raw, geo) => normalizeBatchDataRecord(raw, geo),
+    ingest: async (p) => (await import("@/lib/kernel/scraping")).ingestRawSourceBatch(p),
+    book: async (input) => (await import("@/lib/vendor-governance/meter-vendor")).meterVendorSpend(input),
+  }
+}
+
+/**
+ * Replay ONE parked tenant push delivery through the tenant door's own ingester, exactly once:
+ *   · the connection is re-read on the service client, pinned to `owner_type 'brokerage'`; its token is decrypted here;
+ *   · a connection that does not admit ingestion (revoked / refused key / disconnected / agreement incomplete) WAITS — nothing is
+ *     hydrated, so a broken key is never re-tried against the provider (no re-charge); the letter ages under the normal rule;
+ *   · a healthy (repaired) connection hydrates under the TENANT's key, behind pre-pull dedup, into THE producer — the provider's
+ *     event id anchors the m961 key, so a second replay is one observation, and the booking's idempotency key books once;
+ *   · a hydrate the provider refuses again writes the connection's health (counted) and keeps the letter pending.
+ */
+async function replayParkedTenantPush(svc: Svc, letter: DeadLetterRow, injected?: TenantPushReplayDeps): Promise<ReplayAttempt> {
+  const base: ReplayAttempt = { result: "unmatched", flow: "tenant_push_orphan", action: "replay_tenant_push" }
+  const connectionId = letter.external_ref.split(":")[1] ?? ""
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(connectionId) || !letter.payload) return base
+  const { data: row, error } = await svc
+    .from("platform_credentials")
+    .select("id, brokerage_id, platform, api_key, config, is_active, test_status, owner_type")
+    .eq("id", connectionId)
+    .eq("owner_type", "brokerage")
+    .maybeSingle()
+  // A refused read is not "the connection is gone": the letter waits (failed never ages it), nothing is said about the row.
+  if (error) return { ...base, result: "failed" }
+  if (!row || !row.brokerage_id) return base
+  const brokerageId = String(row.brokerage_id)
+  const { deriveTenantProviderConnectionState, ingestTenantWebhookDelivery } = await import("@/lib/providers/tenant-provider-connections")
+  const { decryptSecret } = await import("@/lib/security/secret-crypto")
+  let apiKey: string | null = null
+  try {
+    apiKey = decryptSecret((row.api_key as string | null) ?? null)
+  } catch {
+    return { ...base, result: "failed", brokerageId }
+  }
+  const config = (row.config ?? null) as TenantProviderConnectionRow["config"]
+  const connection: TenantProviderConnectionRow = {
+    id: String(row.id), brokerage_id: brokerageId, platform: String(row.platform), is_active: row.is_active === true,
+    test_status: (row.test_status as TenantProviderConnectionRow["test_status"]) ?? null, apiKey, config,
+  }
+  const verdict = deriveTenantProviderConnectionState(connection.platform, {
+    exists: true, isActive: connection.is_active, testStatus: connection.test_status, hasApiKey: !!apiKey, config,
+  })
+  if (!verdict.mayIngest || !apiKey) return { ...base, brokerageId }
+  const report = await ingestTenantWebhookDelivery(svc, connection, [letter.payload], injected ?? await defaultTenantPushReplayDeps(svc, brokerageId))
+  if (report.healthPatch) {
+    const { data: moved, error: healthErr } = await svc
+      .from("platform_credentials")
+      .update({ test_status: report.healthPatch.test_status, last_tested_at: report.healthPatch.last_health.at, config: { ...(config ?? {}), last_health: report.healthPatch.last_health }, updated_at: new Date().toISOString() })
+      .eq("id", connection.id)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
+    if (healthErr || (moved ?? []).length !== 1) console.error(`[ingress-reconciliation] tenant connection health NOT written on replay: ${healthErr?.message ?? "update matched no row"}`)
+  }
+  // Landed (inserted / replayed by the m961 key) or nothing left to buy (every id already held) → reconciled. A refusal, a held
+  // delivery (the connection's own daily cap) or a refused hydrate → the letter stays pending for the next tick.
+  return report.ok && !report.refused ? { ...base, result: "replayed", brokerageId } : { ...base, result: "failed", brokerageId }
 }
 
 /**
@@ -188,7 +278,12 @@ async function attemptReplay(svc: Svc, letter: DeadLetterRow): Promise<ReplayAtt
  * abandon + escalate what will never match. Every replay and abandonment is
  * ledgered on self_heal_events — the OS's repairs stay a visible fact.
  */
-export async function runIngressReconciliation(svc: Svc, now: Date = new Date()): Promise<IngressReconciliationResult> {
+export async function runIngressReconciliation(
+  svc: Svc,
+  now: Date = new Date(),
+  /** Provider seams for the tenant-push replay (a simulator injects them; production builds the tenant door's own). */
+  seams: { tenantPush?: TenantPushReplayDeps } = {},
+): Promise<IngressReconciliationResult> {
   const out: IngressReconciliationResult = { scanned: 0, replayed: 0, waiting: 0, abandoned: 0 }
   const { data: letters } = await svc.from("ingress_dead_letters")
     .select("id, provider, event_kind, external_ref, payload, attempts")
@@ -202,7 +297,7 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
   const abandonedRefs: string[] = []
 
   for (const letter of rows) {
-    const attempt = await attemptReplay(svc, letter)
+    const attempt = await attemptReplay(svc, letter, seams.tenantPush)
     const decision = attempt.result === "unmatched"
       ? decideIngressAction({ matched: false, attempts: letter.attempts ?? 0 })
       : "replay" // matched (replayed or failed-during-replay) — never ages toward abandonment

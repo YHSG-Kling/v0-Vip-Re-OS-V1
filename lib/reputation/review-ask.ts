@@ -65,10 +65,12 @@ const VERIFIED_CLOSING_STATUSES: readonly string[] = ["closed", "funded"]
 export type ReviewAskSkipReason =
   | "transaction_not_found" | "not_closed" | "no_close_date" | "not_due" | "aged_out" | "no_client_contact"
   | "already_asked" | "contact_not_found" | "no_channel" | "no_review_link" | "settings_unreadable"
+  // WAVE 152 (lane 152I — convergence row 73): the follow-up arbiter held the ask a bounded time (dueAt says until when).
+  | "arbiter_wait"
 
 export type ReviewAskResult =
   | { status: "sent"; contactId: string; reviewRequestId: string; channel: ReviewAskChannel; platform: AskableReviewPlatform; messageId?: string }
-  | { status: "staged"; contactId: string; reviewRequestId: string; why: "agent_approves" | "copy_flagged" | "send_refused"; detail: string }
+  | { status: "staged"; contactId: string; reviewRequestId: string; why: "agent_approves" | "copy_flagged" | "send_refused" | "arbiter_handoff"; detail: string }
   | { status: "skipped"; contactId?: string; reason: ReviewAskSkipReason; detail?: string; dueAt?: string }
   | { status: "error"; contactId?: string; error: string }
 
@@ -95,6 +97,21 @@ export interface ReviewAskDeps {
   /** Tell the agent (users.id resolved from agents.id by the caller of this dep). */
   notifyAgent?: (svc: Svc, a: { brokerageId: string; agentId: string; type: string; title: string; body: string; contactId: string }) => Promise<void>
   notifyBrokerageAdmins?: (svc: Svc, brokerageId: string, n: { type: string; title: string; body: string }) => Promise<unknown>
+  /** WAVE 152 (152I, row 73): the follow-up arbiter's planner door (lib/ai-isa/followup-arbiter.ts arbitratePlannedTouch). A
+   *  simulator injects a recorder; the default asks the model only inside the application server (NEXT_RUNTIME — the
+   *  lib/enrichment/inline-drain.ts precedent) and otherwise keeps the planner's verdict, still ledgered. */
+  arbitrate?: (svc: Svc, input: ReviewAskArbitration) => Promise<{ choice: string; decision: { waitHours: number | null; rationale: string; source: string } }>
+}
+
+/** What the review ask hands the arbiter: its CLOSED menu (ask now on the one permitted channel, or the agent asks personally) and
+ *  its own verdict (ask now). The arbiter may also hold a bounded wait — bounded by policy.arbiter.maxDeferDays and the lookback. */
+interface ReviewAskArbitration {
+  brokerageId: string
+  contactId: string
+  channel: ReviewAskChannel
+  platform: AskableReviewPlatform
+  daysSinceClose: number
+  now: Date
 }
 
 /** PURE. The agent's client contact(s) on a deal: seller side → seller, buyer side → buyer, dual → both. */
@@ -146,6 +163,20 @@ async function defaultDeps(deps: ReviewAskDeps): Promise<Required<ReviewAskDeps>
       if (error) console.error(`[review-ask] agent notification not written (${a.type}): ${error.message}`)
     }),
     notifyBrokerageAdmins: deps.notifyBrokerageAdmins ?? (async (svc, b, n) => (await import("@/lib/notifications/brokerage-admins")).notifyBrokerageAdmins(svc as never, b, n)),
+    arbitrate: deps.arbitrate ?? (async (svc, a) => {
+      const { arbitratePlannedTouch } = await import("@/lib/ai-isa/followup-arbiter")
+      const outsideApp = !process.env.NEXT_RUNTIME
+      return arbitratePlannedTouch(svc, {
+        brokerageId: a.brokerageId, planner: "review_ask", subject: { type: "contact", id: a.contactId }, now: a.now,
+        options: [
+          { id: "ask_now", kind: "communication", channels: [a.channel === "sms" ? "sms" : "email"], why: [`the closing is verified and the tenant's review delay has passed (${a.daysSinceClose} days since close)`, `the client's permitted channel is ${a.channel}`, `the review link points to ${a.platform}`] },
+          { id: "agent_asks", kind: "agent_intervention", channels: ["human_task"], why: ["the agent may ask personally — a past client often answers the person, not the system"] },
+        ],
+        planned: "ask_now",
+        moment: { key: "review_ask_at_close", intent: "A client's closing is verified and the review ask is due — ask now on their permitted channel, have the agent ask personally, or hold briefly if the evidence says now is the wrong moment. A review is always asked; waiting is bounded." },
+        relationship: { type: "contact", persona: "past_client", hasAssignedAgent: true },
+      }, outsideApp ? { decide: async () => { throw new Error("no model call outside the application server") } } : {})
+    }),
   }
 }
 
@@ -242,6 +273,21 @@ export async function askForReviewAtClose(
         continue
       }
 
+      // THE ARBITER DECIDES WHEN AND HOW (wave 152, lane 152I — convergence row 73; owner ruling 7: no fixed timetable). Every
+      // deterministic gate above already ran (verified closing, delay, duplicates, a permitted channel, a real link); the arbiter
+      // chooses among what is left — ask now, the agent asks personally, or a bounded wait — and its decision is ledgered
+      // (followup.decision.*). Its outage, a refusal or the arbiter switched off keeps the planner's verdict: ask now.
+      const arb = await deps.arbitrate(svc, {
+        brokerageId: args.brokerageId, contactId, channel, platform: target.platform, now,
+        daysSinceClose: Math.max(0, Math.floor((now.getTime() - new Date(closeIso).getTime()) / DAY_MS)),
+      })
+      if (arb.choice === "wait") {
+        const until = arb.decision.waitHours !== null ? new Date(now.getTime() + arb.decision.waitHours * 3_600_000).toISOString() : undefined
+        push({ status: "skipped", contactId, reason: "arbiter_wait", detail: arb.decision.rationale.slice(0, 300), ...(until ? { dueAt: until } : {}) })
+        continue
+      }
+      const handToAgent = arb.choice === "agent_asks"
+
       const drafted = await deps.draft(svc, {
         brokerageId: args.brokerageId, transactionId: args.transactionId, agentId, contactId,
         platform: target.platform, channel: channel === "sms" ? "text" : "email",
@@ -265,6 +311,11 @@ export async function askForReviewAtClose(
       if (profiles.approval === "agent_approves") {
         await deps.notifyAgent(svc, { brokerageId: args.brokerageId, agentId, contactId, type: "review_request_ready", title: "Review request ready to send", body: "Your brokerage asks you to approve each review request. The draft is ready in Reputation." })
         push({ status: "staged", contactId, reviewRequestId, why: "agent_approves", detail: "tenant policy reputation_profiles.approval = agent_approves" })
+        continue
+      }
+      if (handToAgent) {
+        await deps.notifyAgent(svc, { brokerageId: args.brokerageId, agentId, contactId, type: "review_request_ready", title: "Ask this client for a review personally", body: "A closed client is due for a review request, and a personal ask from you is the better fit here. A draft with the review link is ready in Reputation." })
+        push({ status: "staged", contactId, reviewRequestId, why: "arbiter_handoff", detail: arb.decision.rationale.slice(0, 300) })
         continue
       }
 

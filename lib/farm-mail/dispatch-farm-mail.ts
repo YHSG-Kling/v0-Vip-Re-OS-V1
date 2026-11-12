@@ -317,7 +317,9 @@ export async function dispatchFarmMail(
           campaign_name:   `Farm Mail - ${persona} - ${c.zip_code ?? ""}`,
           target_audience: "farm_mail",
           quantity:        1,
-          status:          result.success ? "sent" : "failed",
+          // ONE vocabulary (wave 152, 152K — convergence row 45 census): "mailed" is the CHECK's word; "sent" refused the
+          // whole insert, so a mailed farm piece left no campaign row (no cost, no delivery tracking, no idempotency record).
+          status:          result.success ? "mailed" : "failed",
           piece_type:      "postcard",
           lob_order_id:    result.messageId ?? null,
           mailing_date:    result.success ? new Date().toISOString().slice(0, 10) : null,

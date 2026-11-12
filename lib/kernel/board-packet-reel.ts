@@ -8,7 +8,7 @@
 // existed but nothing ever queued a render).
 //
 // The differentiator card is the ATTRIBUTION RECEIPT: marketing-attributed
-// closed volume from the marketing_attribution_credits engine — measured,
+// closed COMMISSION (GCI — never sale price; wave 152 152K relabel) from the marketing_attribution_credits engine — measured,
 // never re-modeled — spoken to the broker as "here's what the AI team's
 // marketing actually closed." Earned cards only; a thin month is a short
 // video, never a padded one.
@@ -49,7 +49,8 @@ export function buildBoardPacketReelProps(
   if (d.attributedGciCents > 0) {
     cards.push({
       value: money(d.attributedGciCents),
-      label: "MARKETING-ATTRIBUTED CLOSED VOLUME",
+      // COMMISSION (GCI), never sale price — this card said "CLOSED VOLUME" (wave 152, lane 152K).
+      label: "MARKETING-ATTRIBUTED CLOSED COMMISSION",
       sub: `across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} — the receipts, attribution-weighted`,
       kind: "finance",
     })
@@ -61,7 +62,7 @@ export function buildBoardPacketReelProps(
   const spoken: string[] = [`${d.monthLabel} at ${d.brokerageName}, presented by your AI team.`]
   if (d.closedCount > 0) spoken.push(`You closed ${d.closedCount} transaction${d.closedCount === 1 ? "" : "s"} for ${money(d.closedVolumeCents)} in volume.`)
   if (d.aiCallsAnswered > 0) spoken.push(`Your AI answered ${d.aiCallsAnswered} inbound call${d.aiCallsAnswered === 1 ? "" : "s"}${d.aiBookings > 0 ? ` and booked ${d.aiBookings} appointment${d.aiBookings === 1 ? "" : "s"} live` : ""}.`)
-  if (d.attributedGciCents > 0) spoken.push(`The marketing the team ran is attributed to ${money(d.attributedGciCents)} of that closed volume across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} — measured by the attribution engine, not claimed.`)
+  if (d.attributedGciCents > 0) spoken.push(`The marketing the team ran is credited with ${money(d.attributedGciCents)} in closed commission across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} — measured by the attribution engine, not claimed.`)
   if (d.optOutsHonored > 0) spoken.push(`${d.optOutsHonored} opt-out${d.optOutsHonored === 1 ? " was" : "s were"} honored the moment they were spoken.`)
   spoken.push(`The full packet is in your documents.`)
 

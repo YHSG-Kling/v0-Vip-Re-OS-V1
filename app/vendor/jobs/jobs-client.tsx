@@ -561,7 +561,7 @@ function InvoiceDialog({
       return
     }
     if (billedTo === "contact" && !booking.contact_id) {
-      setError("This booking has no contact attached. Bill the brokerage instead, or have the agent attach a contact first.")
+      setError("This booking has no contact attached. Bill the business that booked you instead, or have the agent attach a contact first.")
       return
     }
 
@@ -628,7 +628,7 @@ function InvoiceDialog({
             </Select>
             {billedTo === "contact" && !booking.contact_id && (
               <p className="text-xs text-amber-700 mt-1">
-                ⚠ This job has no contact attached. Ask the brokerage to attach a contact, or bill the brokerage.
+                ⚠ This job has no contact attached. Ask the business that booked you to attach a contact, or bill them directly.
               </p>
             )}
             {billedTo === "contact" && booking.contact_id && (

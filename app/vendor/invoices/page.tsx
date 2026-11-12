@@ -132,7 +132,7 @@ export default async function VendorInvoicesPage() {
             Invoices
           </h1>
           <p className="text-gray-500 text-sm">
-            Bill the brokerage or your buyer/seller clients, track payment, and sync to your books
+            Bill the agent, team or brokerage you work with — or your buyer/seller clients — track payment, and sync to your books
           </p>
         </div>
       </div>

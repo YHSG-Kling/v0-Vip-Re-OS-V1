@@ -220,7 +220,7 @@ export class IDXBrokerClient {
   } = {}): Promise<NormalizedIdxListing[]> {
     if (!this.apiKey) return []
 
-    let raw: any
+    let raw: unknown
     try {
       const response = await this.request<any>("/clients/featured")
       if (!response.ok) return []
@@ -230,35 +230,7 @@ export class IDXBrokerClient {
       return []
     }
 
-    // IDX returns either an array or an object keyed by listing id.
-    const rows: any[] = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw) : []
-
-    const num = (v: any): number | null => {
-      const n = Number(String(v ?? "").replace(/[^0-9.]/g, ""))
-      return Number.isFinite(n) && n > 0 ? n : null
-    }
-    const str = (v: any): string | null => (v == null || v === "" ? null : String(v))
-
-    let listings: NormalizedIdxListing[] = rows.map((r) => ({
-      externalId: String(r.listingID ?? r.idxID ?? r.mlsID ?? r.id ?? ""),
-      address:    str(r.address ?? r.streetName) ?? "",
-      city:       str(r.cityName ?? r.city),
-      state:      str(r.state ?? r.stateAbbr),
-      zip:        str(r.zipcode ?? r.zip),
-      price:      num(r.listingPrice ?? r.price ?? r.listPrice),
-      bedrooms:   num(r.bedrooms ?? r.beds),
-      bathrooms:  num(r.totalBaths ?? r.bathrooms ?? r.baths),
-      squareFeet: num(r.sqFt ?? r.sqft ?? r.acres),
-      yearBuilt:  num(r.yearBuilt),
-      // propStatus was in this fallback chain and is NOT a property type — a row
-      // with no idxPropType/propType reported "Active" as its property type. It
-      // has its own field now.
-      propertyType: str(r.idxPropType ?? r.propType),
-      daysOnMarket: num(r.daysOnMarket ?? r.dom),
-      photoUrl:   str(r.image?.["0"]?.url ?? r.image?.[0]?.url ?? r.thumbnail ?? r.photoURL),
-      mlsNumber:  str(r.mlsID ?? r.mlsNumber ?? r.listingID),
-      status:     str(r.propStatus ?? r.status)?.toLowerCase() ?? null,
-    }))
+    let listings: NormalizedIdxListing[] = idxRowsOf(raw).map(normalizeIdxRow)
 
     // Client-side narrowing.
     const cityLc = filters.city?.toLowerCase()
@@ -278,6 +250,59 @@ export class IDXBrokerClient {
     return listings.slice(0, filters.limit ?? 50)
   }
 
+  /**
+   * THE ACCOUNT'S OWN LISTINGS, KEYED BY THE SAME externalId THE SAVE PATH STORES (wave 152, lane 152J — convergence
+   * row 78). This is the ONLY listing-by-id read the provider documents, and it is a lookup inside two sets, not a
+   * per-listing call:
+   *
+   *   · IDX Broker documents NO listing-by-id endpoint for a client key: "Nor can you submit a listing ID and get property
+   *     details from the API. This is true for the Client, MLS, Partner and Leads components" (developers.idxbroker.com/
+   *     getting-mls-data/), and "The IDX Broker API does not provide … Property retrieval by MLS ID. The only listing data
+   *     available through the API is: Featured Listings; Listings belonging to the agent(s) on the IDX Broker account"
+   *     (support.idxbroker.com "Connecting to the API", 2026-05-11). The separate BulkData beta (data-services.idxbroker.com
+   *     `/beta/live/listings?idxID&listingID`, x-api-key + AccessToken) is a different licensed product this client does
+   *     not hold — it is NOT called here and is never faked.
+   *   · What a client key DOES reach: `/clients/featured` (the account agents' active set — exactly the set the buyer
+   *     search's IDX rows come from, lib/property/external-listings-search.ts) and `/clients/soldpending` (the same
+   *     agents' sold / pending set; the SoldPending return is documented beside Featured in API history v1.4.0). A saved
+   *     IDX home that went under contract or sold moves from the first set into the second — a REAL status read.
+   *   · Two GETs per call, no per-listing fan-out: the docs ask callers not to call per page load (500 requests / hour on
+   *     Platinum), so the saved-home watch reads this ONCE per tenant per daily sweep. Free at the provider ("available to
+   *     anyone with a valid API key at no extra charge"), so no spend gate applies.
+   *
+   * A home in NEITHER set is simply absent: absence is not a status (the caller holds it, never guesses "sold"). Photos
+   * ride on the rows because the feed carries them; this method stores nothing (convergence row 84: external photos are
+   * never copied). A sold/pending row wins over a featured row for the same id (the later lifecycle state).
+   */
+  async readAccountListingsById(): Promise<
+    | { ok: true; byId: Map<string, NormalizedIdxListing & { feedSet: "featured" | "sold_pending" }>; counts: { featured: number; soldPending: number } }
+    | { ok: false; error: string }
+  > {
+    if (!this.apiKey) return { ok: false, error: "not_configured" }
+    const byId = new Map<string, NormalizedIdxListing & { feedSet: "featured" | "sold_pending" }>()
+    const counts = { featured: 0, soldPending: 0 }
+    for (const [path, feedSet] of [["/clients/featured", "featured"], ["/clients/soldpending", "sold_pending"]] as const) {
+      let res: { ok: boolean; data: unknown }
+      try {
+        res = await this.request<unknown>(path)
+      } catch (error) {
+        return { ok: false, error: `${path} threw: ${error instanceof Error ? error.message : String(error)}` }
+      }
+      // A refused set is a refused READ — never "nothing in it" (a home missing from an unread set would read as absent).
+      if (!res.ok) return { ok: false, error: `${path} was refused` }
+      for (const r of idxRowsOf(res.data)) {
+        const l = normalizeIdxRow(r)
+        if (!l.externalId) continue
+        // The feed's own normalized status (idxStatus) stands in when propStatus is absent — still verbatim, lowercased.
+        const status = l.status ?? (r?.idxStatus == null || r.idxStatus === "" ? null : String(r.idxStatus).toLowerCase())
+        byId.set(l.externalId, { ...l, status, feedSet })
+        if (feedSet === "featured") counts.featured++
+        else counts.soldPending++
+      }
+    }
+    return { ok: true, byId, counts }
+  }
+
   async searchProperties(query: string) {
     if (!this.apiKey) {
       console.error("[IDXBroker] API key not configured — returning empty search results")
@@ -292,5 +317,41 @@ export class IDXBrokerClient {
       console.error("[IDXBroker] Search error:", error)
       return []
     }
+  }
+}
+
+// ─── THE ONE ROW NORMALIZER (module-private; searchActiveListings and readAccountListingsById share it) ───────────────
+
+/** IDX returns either an array or an object keyed by listing id (`"<idxID>!%<listingID>": {…}`). */
+function idxRowsOf(raw: unknown): any[] {
+  return Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw as Record<string, unknown>) : []
+}
+
+function normalizeIdxRow(r: any): NormalizedIdxListing {
+  const num = (v: any): number | null => {
+    const n = Number(String(v ?? "").replace(/[^0-9.]/g, ""))
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+  const str = (v: any): string | null => (v == null || v === "" ? null : String(v))
+  return {
+    // The SAME identity the buyer search hands the save path (lib/buyer-search/external-match.ts external_property_id).
+    externalId: String(r?.listingID ?? r?.idxID ?? r?.mlsID ?? r?.id ?? ""),
+    address:    str(r?.address ?? r?.streetName) ?? "",
+    city:       str(r?.cityName ?? r?.city),
+    state:      str(r?.state ?? r?.stateAbbr),
+    zip:        str(r?.zipcode ?? r?.zip),
+    price:      num(r?.listingPrice ?? r?.price ?? r?.listPrice),
+    bedrooms:   num(r?.bedrooms ?? r?.beds),
+    bathrooms:  num(r?.totalBaths ?? r?.bathrooms ?? r?.baths),
+    squareFeet: num(r?.sqFt ?? r?.sqft ?? r?.acres),
+    yearBuilt:  num(r?.yearBuilt),
+    // propStatus was in this fallback chain and is NOT a property type — a row
+    // with no idxPropType/propType reported "Active" as its property type. It
+    // has its own field now.
+    propertyType: str(r?.idxPropType ?? r?.propType),
+    daysOnMarket: num(r?.daysOnMarket ?? r?.dom),
+    photoUrl:   str(r?.image?.["0"]?.url ?? r?.image?.[0]?.url ?? r?.thumbnail ?? r?.photoURL),
+    mlsNumber:  str(r?.mlsID ?? r?.mlsNumber ?? r?.listingID),
+    status:     str(r?.propStatus ?? r?.status)?.toLowerCase() ?? null,
   }
 }

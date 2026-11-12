@@ -188,7 +188,11 @@ async function handleTenantDelivery(request: Request, connectionId: string): Pro
       .select("id")
     if (healthErr || (moved ?? []).length !== 1) console.error("[batchdata-smart-search] tenant connection health NOT written:", healthErr?.message ?? "update matched no row")
   }
-  if (report.notify === "tenant_admin" && report.refused) {
+  // Wave 152 (lane 152K — 152A outside-lane 1): a shape-drift / other-4xx hydrate refusal is classified
+  // `notify: "platform_staff"` (lib/providers/tenant-provider-connections.ts classifyTenantProviderFailure), but this
+  // branch reported only "tenant_admin", so platform staff were never told. Both now report; a platform-staff verdict is
+  // platform-visible, so the consumer's escalation opens the ticket in the platform lane as well as the account's.
+  if ((report.notify === "tenant_admin" || report.notify === "platform_staff") && report.refused) {
     // The right authorized user hears it now, without a secret (lib/kernel/immediate-operations.ts reportOperationOutcome).
     try {
       const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
@@ -197,6 +201,7 @@ async function handleTenantDelivery(request: Request, connectionId: string): Pro
         subjectType: "platform_credentials", subjectId: connectionId, actorUserId: null, source: "webhook",
         evidence: { provider: row.platform, connectionState: report.connectionState, held: report.held, parked: report.parked }, error: report.refused,
         tenantFacing: report.refused,
+        platformVisible: report.notify === "platform_staff",
       })
     } catch (e) {
       console.error("[batchdata-smart-search] tenant notification not sent:", (e as Error).message)

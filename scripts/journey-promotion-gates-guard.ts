@@ -74,12 +74,13 @@ function fnBody(src: string, name: string): string {
 }
 
 // ── recorder stubs (installed BEFORE the first import of the graph that reaches them) ───────────────────────────
-const G = globalThis as unknown as { __J144: { closingGate: { allowed: boolean; blockers: string[] }; gateCalls: Array<{ t: string }>; calc: Array<Record<string, unknown>>; audience: string[]; newsletter: string[] } }
-G.__J144 = { closingGate: { allowed: true, blockers: [] }, gateCalls: [], calc: [], audience: [], newsletter: [] }
+const G = globalThis as unknown as { __J144: { closingGate: { allowed: boolean; blockers: string[] }; gateCalls: Array<{ t: string }>; calc: Array<Record<string, unknown>>; audience: string[]; newsletter: string[]; settlementGate: { blockers: string[]; reconciliation: null; cdaMode: string }; settlementCalls: Array<{ transactionId: string }> } }
+G.__J144 = { closingGate: { allowed: true, blockers: [] }, gateCalls: [], calc: [], audience: [], newsletter: [], settlementGate: { blockers: [], reconciliation: null, cdaMode: "unknown" }, settlementCalls: [] }
 stubModule("@/app/actions/transaction-compliance", "export async function canProceedToClosingPrep(t, b) { const g = globalThis.__J144; g.gateCalls.push({ t, b }); return g.closingGate } export async function seedTransactionComplianceChecks() { return { success: true } }")
 stubModule("@/lib/commission/engine", "export async function calculateCommission(p) { globalThis.__J144.calc.push(p); return { success: true } }")
 stubModule("@/lib/commission/reconcile-tracking", "export async function finalizeCommissionAtClose() { return { ok: true } }")
-stubModule("@/lib/offers/closing-cost-accuracy", "export async function recordClosingCostAccuracy() { return { recorded: false } }")
+// WAVE 152 (lane 152G): the settlement hold at the close is a recorder too (its own proof is test:settlement-reconciliation)
+stubModule("@/lib/offers/closing-cost-accuracy", "export async function recordClosingCostAccuracy() { return { recorded: false } } export async function closingSettlementGate(svc, i) { const g = globalThis.__J144; g.settlementCalls.push(i); return g.settlementGate }")
 stubModule("@/lib/net-sheet/net-sheet-guard-runner", "export async function runNetSheetSurpriseGuard() { return { ran: false } }")
 stubModule("@/lib/analytics/ai-prediction-outcomes", "export async function gradeTransactionPredictionOutcomes() { return 0 } export async function markLeadConversionOutcomes() { return 0 }")
 stubModule("@/lib/audiences/audience-sync", "export async function onContactBecameLifetimeForAudience(p) { globalThis.__J144.audience.push(p.contactId); return { ok: true } }")
@@ -195,6 +196,14 @@ async function main(): Promise<void> {
   const intoPrep = G.__J144.gateCalls.length
   await canAdvanceStage(T_UC, "UNDER_CONTRACT", "INSPECTION", B_NOCDA)
   check("CONTROL: an ordinary advance (UNDER_CONTRACT → INSPECTION) does not consult the closing-compliance gate", G.__J144.gateCalls.length === intoPrep)
+  // WAVE 152 (lane 152G — owner: "that is not informational"): the close also holds on the settlement record (both CDA modes)
+  G.__J144.settlementGate = { blockers: ["Settlement (Awaiting a revised closing document): Seller credit to buyer: contract says $10,000.00; latest document says not shown."], reconciliation: null, cdaMode: "no_cda" }
+  const settleBlocked = await canAdvanceStage(T_NOCDA, "CLOSING_PREP", "CLOSED", B_NOCDA)
+  check("SETTLEMENT AT THE CLOSE: an unreconciled settlement record refuses CLOSED by name — in the NO-CDA brokerage too (the closing gate, not the CDA)", !settleBlocked.allowed && settleBlocked.blockers.some((b) => /Seller credit/.test(b)) && G.__J144.settlementCalls.some((c) => c.transactionId === T_NOCDA), settleBlocked.blockers.join("; "))
+  G.__J144.settlementGate = { blockers: [], reconciliation: null, cdaMode: "unknown" }
+  const settleCalls = G.__J144.settlementCalls.length
+  await canAdvanceStage(T_UC, "UNDER_CONTRACT", "INSPECTION", B_NOCDA)
+  check("CONTROL: an ordinary advance does not run the settlement hold", G.__J144.settlementCalls.length === settleCalls)
 
   const cont = await canAdvanceStage(T_CONT, "UNDER_CONTRACT", "INSPECTION", B_NOCDA)
   check("CONTINGENCY TYPES NO LONGER FREEZE A DEAL: an offer carrying [financing, inspection, appraisal] (the createOffer shape) advances to INSPECTION", cont.allowed && !cont.blockers.some((b) => /initialed/.test(b)), cont.blockers.join("; "))

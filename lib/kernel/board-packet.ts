@@ -89,7 +89,7 @@ export function composeBoardPacketMarkdown(d: BoardPacketData): string {
     `- Appointments booked live on calls: **${d.aiBookings}**`,
     `- AI reply drafts your agents sent: **${d.draftsUsed}**`,
     `- Opt-outs honored immediately: **${d.optOutsHonored}** (compliance is a feature)`,
-    `- Marketing-attributed closed volume: **${money(d.attributedGciCents)}** across **${d.attributedDeals}** deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`,
+    `- Marketing-attributed closed commission: **${money(d.attributedGciCents)}** across **${d.attributedDeals}** deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`,
     ...(d.intelligence && d.intelligence.length > 0
       ? [
           ``,
@@ -148,11 +148,13 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         cnt(svc.from("ai_message_drafts").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).in("status", ["accepted", "sent", "edited"]).gte("created_at", sISO).lt("created_at", eISO)),
         cnt(svc.from("voice_calls").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).eq("outcome", "opt_out").gte("started_at", sISO).lt("started_at", eISO)),
         svc.from("listings").select("sold_price").eq("brokerage_id", b.id).not("sold_date", "is", null).gte("sold_date", sISO.slice(0, 10)).lt("sold_date", eISO.slice(0, 10)).limit(1000),
-        svc.from("marketing_attribution_credits").select("credit_dollars, transaction_id")
-          .eq("brokerage_id", b.id).gte("created_at", sISO).lt("created_at", eISO).limit(2000),
+        // REALIZED commission, ONE model (wave 152, lane 152K — 152B outside-lane 2): this read summed every model's
+        // rows (4× per deal) and in-escrow deals credited at the estimate. THE read: roi-ledger loadRealizedAttributionCredits.
+        import("@/lib/intelligence/roi-ledger").then((m) => m.loadRealizedAttributionCredits(svc, b.id, { sinceIso: sISO, beforeIso: eISO })),
       ])
       const closed = ((closedRows as any)?.data ?? []) as Array<{ sold_price: number | null }>
-      const credits = ((creditRows as any)?.data ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
+      if (!creditRows.ok) console.error("[board-packet]", creditRows.error)
+      const credits = creditRows.ok ? creditRows.rows : []
       const packetData: BoardPacketData = {
         brokerageName: b.name ?? "Brokerage", monthLabel,
         newContacts, activeListings, showings, openHouses,

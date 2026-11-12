@@ -316,7 +316,10 @@ async function fanOutToChannel(
           slug,
           content:      mod.body ?? mod.summary ?? mod.title,
           excerpt:      mod.summary ?? null,
-          category:     channel === "blog" ? "blog" : "learning_module",
+          // knowledge_articles.category CHECK: compliance | general | integrations | leads | marketing | onboarding |
+          // transactions (wave 152, 152K — row 45 census): "blog" / "learning_module" refused the whole insert, so a module
+          // never published to the knowledge base. The channel stays in `tags` (unchanged), where readers filter it.
+          category:     channel === "blog" ? "marketing" : "general",
           tags:         channel === "blog" ? ["blog", "learning_module"] : ["learning_module"],
           status:       "published",
           published_at: new Date().toISOString(),

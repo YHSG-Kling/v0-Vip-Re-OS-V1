@@ -172,6 +172,28 @@ async function main() {
   check("the Command Center tile credits ONE model on CLOSED deals: $18,000, not $72,000 (4 models) and not the $9,000 pending estimate", tile.attributedGciCents === 1_800_000 && tile.attributedDeals === 2, `got ${tile.attributedGciCents} over ${tile.attributedDeals}`)
   check("the tile's headline says commission, never 'closed volume'", /closed commission/.test(tile.headline) && !/closed volume/.test(tile.headline))
 
+  // ── P1b · THE realized-credit read shared by every attribution reader (wave 152, lane 152K — 152B outside-lane 1–2) ──
+  section("P1b · ONE realized-credit read: the tile, the allocation recommender, the board packet, the monthly report, the autonomy report")
+  const shared = await quiet(() => roi.loadRealizedAttributionCredits(m1 as any, A, { sinceIso: "2000-01-01T00:00:00.000Z" }))
+  const sharedSum = shared.ok ? shared.rows.reduce((s, r) => s + Number(r.credit_dollars ?? 0), 0) : -1
+  check("loadRealizedAttributionCredits returns ONE model's rows on CLOSED / FUNDED deals only: $18,000 over T1 + T4 (never 4× $72,000, never the pending estimate)",
+    shared.ok && Math.round(sharedSum) === 18000 && new Set(shared.rows.map((r) => r.transaction_id)).size === 2 && shared.rows.every((r) => r.transaction_id === T1 || r.transaction_id === T4), shared.ok ? `sum=${sharedSum}` : shared.error)
+  check("…and every row it returns names its campaign (the allocation recommender groups by campaign)", shared.ok && shared.rows.every((r) => !!r.campaign_id))
+  const refusedTx = await quiet(() => roi.loadRealizedAttributionCredits(memSupabase({ ...(m1.tables as any) }, { refuse: { transactions: "permission denied for table transactions" } }) as any, A, { sinceIso: "2000-01-01T00:00:00.000Z" }))
+  check("ADVERSE · FAIL CLOSED: a refused deal read returns NO rows (ok:false) — never every credit shown as earned", !refusedTx.ok)
+  const refusedCr = await quiet(() => roi.loadRealizedAttributionCredits(memSupabase({ ...(m1.tables as any) }, { refuse: { marketing_attribution_credits: "permission denied" } }) as any, A, { sinceIso: "2000-01-01T00:00:00.000Z" }))
+  check("ADVERSE · FAIL CLOSED: a refused credit read is ok:false, not an empty 'nothing earned' success", !refusedCr.ok)
+  const otherTenant = await quiet(() => roi.loadRealizedAttributionCredits(m1 as any, "00000000-0000-4000-8000-00000000dead", { sinceIso: "2000-01-01T00:00:00.000Z" }))
+  check("ADVERSE · another tenant's id reads none of this tenant's credits", otherTenant.ok && otherTenant.rows.length === 0)
+  // Wired: the four readers that summed every model (152B outside-lane 1–2) read through it and never read the table themselves.
+  const readers = ["lib/kernel/resource-allocation.ts", "lib/kernel/board-packet.ts", "lib/kernel/intelligence-report.ts", "lib/kernel/reporting-autonomy.ts"]
+  const direct = /from\("marketing_attribution_credits"\)/
+  const unwired = readers.filter((f) => { const s = stripComments(readFileSync(join(process.cwd(), f), "utf8")); return direct.test(s) || !/loadRealizedAttributionCredits\(/.test(s) })
+  check(`the four attribution readers (${readers.length}) read credits ONLY through loadRealizedAttributionCredits`, unwired.length === 0, unwired.join(", "))
+  check("POSITIVE CONTROL: the finder flags the pre-fix every-model read", direct.test(`svc.from("marketing_attribution_credits").select("credit_dollars, transaction_id").eq("brokerage_id", b.id)`))
+  check("no attribution reader labels a COMMISSION figure 'closed volume' (board packet markdown + PDF, reel, monthly report, Command Center tile)",
+    ["lib/kernel/board-packet.ts", "lib/kernel/board-packet-pdf.ts", "lib/kernel/board-packet-reel.ts", "lib/kernel/intelligence-report.ts", "app/dashboard/admin/command-center/command-center-client.tsx"].every((f) => !/attributed[^`"\n]{0,40}closed volume|closed volume attributed|Attributed closed volume|of that closed volume/i.test(stripComments(readFileSync(join(process.cwd(), f), "utf8")))))
+
   // ── P2 ───────────────────────────────────────────────────────────────────
   section("P2 · a pending deal shows no realized revenue")
   if (brokerL.ok) {

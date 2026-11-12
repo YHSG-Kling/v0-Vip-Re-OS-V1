@@ -68,9 +68,10 @@ export function ClosingProofCard({ transactionId }: { transactionId: string }) {
             {p.missing.length > 0 && (
               <ul className="list-disc pl-5 text-xs text-muted-foreground">{p.missing.map((m) => <li key={m}>{m}</li>)}</ul>
             )}
-            {data?.attestation.status && (
-              <p className="text-xs text-muted-foreground">Closing question (informational): {data.attestation.status}{data.attestation.reason ? ` — ${data.attestation.reason}` : ""}</p>
-            )}
+            {/* WAVE 152 (lane 152G — owner: "that is not informational"): the closing question holds the close until it is answered "no". */}
+            <p className="text-xs text-muted-foreground">
+              Closing question — required before closing: {data?.attestation.status === "pass" ? "answered — no executed change is unrecorded" : data?.attestation.status === "fail" ? "an executed change was reported as not recorded yet; record it, then answer again" : "not answered yet — answer it below"}.
+            </p>
           </>
         )}
       </CardContent>

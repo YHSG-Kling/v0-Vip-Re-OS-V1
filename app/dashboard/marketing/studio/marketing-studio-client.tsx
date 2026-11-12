@@ -516,6 +516,10 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   }>({ label: "", targetUrl: "", purpose: "general", destinationType: "", campaignId: "", expiresAt: "" })
   const [isCreatingQr, setIsCreatingQr] = useState(false)
   const [qrError, setQrError] = useState<string | null>(null)
+  // WAVE 152 (152J): ONE request key per create form (the governed mint's idempotency key) — a double click or a retry
+  // returns the SAME code; a new key is drawn only after a code was created.
+  const newQrKey = () => `studio_create.${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`}`
+  const qrCreateKey = useRef<string>(newQrKey())
 
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
@@ -4642,8 +4646,10 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                       // ★ TRACKING LINKED TO CAMPAIGN ★ — stamps qr_codes.marketing_campaign_id.
                       campaignId: newQr.campaignId || undefined,
                       expiresAt: newQr.expiresAt ? new Date(newQr.expiresAt).toISOString() : undefined,
+                      idempotencyKey: qrCreateKey.current,
                     })
                     if (result.success) {
+                      qrCreateKey.current = newQrKey()
                       setIsCreateQrOpen(false)
                       setNewQr({ label: "", targetUrl: "", purpose: "general", destinationType: "", campaignId: "", expiresAt: "" })
                       setQrError(null)

@@ -20,6 +20,7 @@ import { resolveSourceKey, SOURCE_MAP, SOURCE_VENDOR, expandEnabledSources, type
 import { PEOPLEDATA_MATCH_COST_USD } from "@/lib/external/peopledata-client"
 import {
   planSourceDiscovery,
+  previewsFromObservedSearchCounts,
   approvePlanLines,
   type AcquisitionPlan,
   type PlanLine,
@@ -138,9 +139,21 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
       const h = history[key]
       if (h && h.rawRows > 0 && h.costUsd > 0) quotes[key] = { unitUsd: Math.round((h.costUsd / h.rawRows) * 10000) / 10000, basis: "history" }
       else if (SOURCE_VENDOR[key] === "batchdata") quotes[key] = { unitUsd: BATCHDATA_CATALOGUE_UNIT_USD, basis: "catalogue" }
-      // The only FREE preview this door can take without a provider call is the territory's own observed count.
+      // A FREE preview this door can take without a provider call: the territory's own observed count.
       if (h && h.rawRows > 0) previews[key] = { count: h.rawRows, at: nowIso, via: `own history (${HISTORY_DAYS} days)` }
     }
+    // CONVERGENCE ROW 23 (wave 152, lane 152K): the second free preview — the count BatchData itself returned on this
+    // territory's own PAID incremental pulls (batchdata_incremental_search_state.results_found, per lane; the territory
+    // id was tenant-pinned above). Read, never re-asked: a proposal never spends. It supersedes the own-history count for
+    // the motivated line (the vendor's count is the reachable list, not just what was bought), and its distress lanes
+    // answer hunting vs farming. A refused read is a published blind spot, never a silent "no count".
+    const extraBlindSpots: string[] = []
+    const { data: countRows, error: countErr } = await svc.from("batchdata_incremental_search_state")
+      .select("lane, results_found, updated_at, last_run_at").eq("market_id", terr.id).limit(100)
+    const observed = countErr ? null : previewsFromObservedSearchCounts((countRows ?? []) as Array<{ lane: string | null; results_found: number | null; updated_at: string | null; last_run_at: string | null }>, { now: new Date(), maxAgeDays: HISTORY_DAYS })
+    if (countErr) extraBlindSpots.push("BatchData's stored search counts could not be read — the motivated line falls back to the territory's own history")
+    else if (observed && observed.stale > 0 && observed.used === 0) extraBlindSpots.push(`BatchData's stored search counts are older than ${HISTORY_DAYS} days — not used as a preview`)
+    if (observed) Object.assign(previews, observed.previews)
     const enabled = [...expandEnabledSources((terr as any).enabled_sources ?? [])].map((s) => resolveSourceKey(s)).filter((k) => k in SOURCE_MAP)
     const label = (terr as any).name || [(terr as any).city, (terr as any).state].filter(Boolean).join(", ") || "Territory"
     // VERIFIED MARKET CONTEXT (wave 150, lane 150Z — lane 150KLMO Outside-lane 1 / lane 150EFG Still open 1): the Market
@@ -155,12 +168,13 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
       enabledSources: enabled.length > 0 ? [...new Set(enabled)] : null,
       history, previews, quotes,
       marketGap: twin.marketGap.monthsOfSupply === null ? null : { monthsOfSupply: twin.marketGap.monthsOfSupply, asOf: twin.marketGap.asOf, source: twin.marketGap.source },
-      distressPreviewCount: null,
+      distressPreviewCount: observed?.distressPreviewCount ?? null,
       // Wave 151 (lane 151C): the pre-pull value formula's downstream cost per USABLE record — the person-profile provider's
       // published match price (lib/external/peopledata-client.ts); AI cost per record is not metered per source yet (null = unknown).
       enrichmentUsdPerRecord: PEOPLEDATA_MATCH_COST_USD,
       aiUsdPerRecord: null,
     })
+    plan.blindSpots.push(...extraBlindSpots)
     const { data: inserted, error: insErr } = await svc.from("acquisition_plans").insert({
       brokerage_id: ctx.brokerageId,
       territory_id: terr.id,

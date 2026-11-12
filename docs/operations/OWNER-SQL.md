@@ -912,6 +912,161 @@ Negative tests (owner, in a browser session): a tenant-A agent → `listing-medi
 
 **Ordering:** apply m963–m966 (integrator, MCP) in any order; this owner SQL is independent of them. Until it is applied, the photographer's upload still SUCCEEDS at storage under the live permissive policy (as does anyone's), and only the RECORD is gated — the release-gate reading "overbroad storage access BLOCKED" stays true until the three RESTRICTIVE rows exist.
 
+## N. Wave 152 — owner SQL still unresolved, the owner's rulings recorded, and the decisions still open (lane 152K, 2026-11-12)
+
+**Nothing in this section has been run by a lane.** Project `hrvaqgvukzxfskkcrwbt`. The executable statements for O1 are NOT
+restated here: they live once, verbatim from their migrations, in §F (m854 + m855, `brokerage-forms`), §G (m874 + m875, the four
+document buckets + the offer row) and §M.1 (the `listing-media` AMEND) — guards hold those sections to the migration text, and a
+second copy here could drift from them. This section gives the order, the read-backs with expected values, and the decisions.
+
+### N.1 O1 — the five private document buckets (§F / §G) and `listing-media` (§M.1)
+
+Order: §K Q1–Q6 (read-only) → §F Before → §F route A or B → §F Verify → §G Before → §G route A or B → §G Verify → §M.1 →
+§J close-out. Expected read-backs (run with Supabase MCP `execute_sql` or the SQL editor; all SELECTs):
+
+```sql
+-- N.1a — before vs after the policies (the readiness function m854 / m874 installed)
+SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness() ORDER BY bucket_id;
+-- BEFORE (wave 151 live reading, unchanged in wave 152): agent-documents, brokerage-forms, client-documents, offer-documents,
+--   transaction-documents = open.   AFTER: agent-documents / brokerage-forms / client-documents / transaction-documents
+--   owner_scoped; documents / offer-documents service_only; both arrays empty.
+
+-- N.1b — the bucket-wide census (positive control: BEFORE it must read >= 19 while N.1a says open; 0 then means the regex is blind)
+SELECT count(*) FILTER (WHERE qual ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$'
+                           OR with_check ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$') AS bucket_wide_on_five,
+       count(*) FILTER (WHERE policyname ~ '^(brokerage-forms|client-documents|transaction-documents|agent-documents) owner ') AS owner_policies
+  FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects';
+-- BEFORE: bucket_wide_on_five >= 19, owner_policies 0.   AFTER: bucket_wide_on_five 0, owner_policies 11.
+
+-- N.1c — listing-media (§M.1): BEFORE four PERMISSIVE rows and no "listing-media tenant listing folder *" row;
+--   AFTER the three RESTRICTIVE rows exist beside the four permissive ones.
+SELECT policyname, permissive, cmd FROM pg_policies
+ WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') ILIKE '%listing-media%' OR coalesce(with_check,'') ILIKE '%listing-media%' OR policyname LIKE 'listing-media%')
+ ORDER BY policyname;
+
+-- N.1d — the private `receipts` bucket (wave 152, lane 152D: created on first write by ensureBucket; the app uploads and reads
+--   receipts through the SERVICE client only). Expected: the bucket is private and NO storage.objects policy names it
+--   (storage.objects is default-deny for browser sessions) — so it needs no owner policy. A row here means a session door exists.
+SELECT id, public FROM storage.buckets WHERE id = 'receipts';            -- expect public = false (or no row before the first receipt)
+SELECT policyname FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') LIKE '%receipts%' OR coalesce(with_check,'') LIKE '%receipts%');   -- expect 0 rows
+```
+
+Who acts: the owner (route B when Q1 reads `can_alter_storage_objects = false`). Then the integrator flips the four migration
+stamps exactly as §J step 6 says. `npm run test:release-blockers` keeps O1 open until those stamps say so — never this paragraph.
+
+### N.2 O2 — the four unlinked portal-contact seed accounts (§I)
+
+Run §K Q7, then Q8 ALONE, then Q9 (all read-only, no email selected). Expected today: Q7 = 4 rows (`a0…13` … `a0…16`); Q8
+`ok_pairs = 4`; Q9 `…14` last signed in 2026-04-02, the other three never, 0 invitations. If Q8 reads 4: run §I REMEDIATION A as
+one block (it returns exactly 4 rows or raises), keep §I ROLLBACK A beside it; afterwards Q7 must read 0 rows. If Q8 reads
+anything else: stop and re-decide (A or B) — never merge a live identity on a drifted pairing. Then flip §I's status line exactly
+as §J step 5 says (with the date and the census count) — `test:release-blockers` and `test:production-readiness` derive O2 from
+that line only.
+
+### N.3 The owner's wave-152 ruling on L6.2 — recorded (the decision row is retired)
+
+Owner, verbatim (2026-11-11): *"anytime there is a change at closing to transaction, the final closing desclosure has to be correct.
+evn though the brokerage doesnt support a cda, compliance still needs to accurate along with the closing disclosure. that is not
+informational."* This supersedes L6.2 option (b) (built wave 151: `lib/commission/closing-verification.ts:195`
+`ensureClosingAttestationAsked({ informational })`, hooked `informational: true` at `lib/transactions/stage-progression.ts:468`) and
+makes option (c) moot — not an opt-in setting any more, the rule for every brokerage that closes without a CDA:
+
+| Brokerage policy at the gated close | Governing terms vs the latest settlement statement / CD | Unrecorded-change attestation | Gated close |
+|---|---|---|---|
+| uses a CDA | the CDA path (agent fills, brokerage approves + signs, title delivery) plus every 152E compliance hold | asked | per the CDA flow — the holds still apply |
+| no CDA | reconciled, or every discrepancy resolved by authoritative evidence | answered: nothing unrecorded | proceeds to `CLOSED / PAYOUT PENDING`; the payout holds stay intact |
+| no CDA | a discrepancy open / awaiting the issuer's revised statement | any | **HOLD** |
+| no CDA | reconciled | not answered | **HOLD** |
+| no CDA | reconciled | "an executed change is not recorded" | **HOLD** + a task to record the change |
+
+Never cleared by a date, by "approve all", or by an agent editing an official disclosure (the issuer — lender / title / closing
+attorney — corrects it; the platform monitors, compares, requests and verifies). Implemented by lane 152G (batch 2, in parallel
+with this lane); the integrator verifies the blocking hook at integration with 152G's proof. No owner SQL.
+
+### N.4 Decisions still open — each with what the code does today (the safe default) and the exact question
+
+**L6.4 — what the AI split coach may repeat to the agent filling a CDA** (`lib/commission/cda-coach-rule.ts:63` `allowedFigureSet`):
+
+| Figure | The coach may say it (built default) |
+|---|---|
+| the contract's stated price and commission percentage | yes — already on the agent's CDA page |
+| the agent's OWN entered CDA figures | yes — the default awaiting your confirmation |
+| any engine-computed amount (a split, a net, a fee) | never — engine amounts never reach the model |
+| another agent's figures | never |
+
+*"Do you accept that the coach may repeat the agent's own entered CDA figures and the contract's price / commission percentage
+(and nothing computed by the engine)?"* If not, `allowedFigureSet` collapses to the contract terms alone. The coach never fills a
+CDA either way (`CDA_FILL_RULE`).
+
+**Addendum evidence — refuse or flag** (lane 152E built the safe default: record + HOLD; `lib/transactions/closing-compliance.ts:943`
+`evidenceHoldSpecs`, the source vocabulary at `lib/offers/governing-terms-rule.ts:109`):
+
+| Executed addendum / amendment term | Recorder | Closing | Clears by |
+|---|---|---|---|
+| a verified / high-confidence reading of the signed document agrees | records | no hold | — |
+| a verified / high-confidence reading disagrees at record time | REFUSES (wave 151) | — | record the correct term |
+| the person states page / field / quote | records | no hold | — |
+| no reading and no stated location (`person_reading_unlocated`) | records + flags | **HOLD** (blocking `closing_terms.evidence.<term>` + a corrective task) | a verified agreeing reading (next run) or an authorized override with a written reason |
+| a low / medium reading disagrees | records | **HOLD** (same row) | same |
+| a confident reading arrives LATER and disagrees | — | **FAIL** (blocking contradiction) | record the corrected instrument, or override |
+
+*"Should the recorder REFUSE an executed addendum term with no located evidence (the door collecting page / field before it saves)
+instead of recording it and holding the closing?"* Safe default kept: record + hold — history is never refused; the closing cannot
+pass while the term is unconfirmed. The code is ready to take "refuse" (the `person_reading_unlocated` branch of `termEvidenceFor`).
+
+Also from lane 152E: **D2** — a settlement closing date LATER than the contractual date with no recorded executed extension: today a
+non-blocking `fail` + a corrective task. *"Should it HOLD the closing?"* **D3** — *"May a team lead override a closing hold on their
+own team's deal?"* Default: no (the override roster is the tenant-admin roster minus team_lead).
+
+**L6.5–L6.12 — carried truthfully (no code was changed on a guess):**
+
+| # | Decision | State in the tree at wave 152 |
+|---|---|---|
+| L6.1 | Office isolation enforced at the database | open — office scope is code-side (`resolveViewerHierarchy` → `resolveEgressScopeForViewer`) |
+| L6.5 | Do BatchData's / PeopleData's existing live doors close under R9? | open — `PROVIDER_ACTIVATION.survivorDoors` waits on you (`lib/providers/provider-scorecard.ts`) |
+| L6.6 | A no-cost sandbox run / a bounded paid pilot | NOT approved — the $1,000 cap is not approved; nothing activated, nothing bought (`PROVIDER_SELECTION_STATUS.selected = null`) |
+| L6.7 | A platform-pool (no-tenant) paid pull under a platform approval? | open — per-territory paid pulls already refuse without a tenant's approved plan line |
+| L6.8 | The 5 % movement-outreach holdout default | open |
+| L6.9 | `contacts.created_by_user_id` vs `contacts.source_agent_id` | open — no second column is written |
+| L6.10 | A platform-paid RentCast re-read door for saved homes | open — the tenant-approved door is built and re-reads stay HELD until a tenant line approves |
+| L6.11 | PostcardMania / PCM quotes | open — asking for a quote is outreach |
+| L6.12 | Meta lead-form `legal_content` as TCPA-grade consent | open — the verifying UPDATE in m978's header waits on a live Lead Ads Testing Tool check |
+
+**Decisions raised by wave-152 lanes (each built on the safe default shown; nothing waits on code):**
+
+| From | Question | Built default |
+|---|---|---|
+| 152A | What makes a tenant's payer wording "brokerage"? | its own `brokerages.plan_tier` is brokerage / multi-location (else actor-neutral); stronger option: an accepted agreement naming the brokerage |
+| 152A | How long a provider-side connection failure stays with the automatic re-check before a person is told | 6 hours |
+| 152B | Does a team lead on a brokerage-tier tenant see their own team's commission dollars in ROI? | yes, own team only (m473 team books) |
+| 152B | May an unfinalized agent-typed commission count as "earned"? | no — earned = the commission ledger or a finalized amount |
+| 152C | The external QR destination allow-list; who may retire a code; the repeat window; a bare 10-digit query value | keep the six hosts; any board seat; 30 minutes / one UTC day; refused as a phone number |
+| 152D | May a clean, high-confidence, unduplicated receipt under a ceiling post without review? | no auto-post; if approved, the exact grant shape `receipt_autopost:receipt:max_usd=75` |
+| 152D | Narrow receipt documents under RLS to the uploader or a finance admin? | not written — a policy change on a hot table; proposal in the 152D lane notes, applied only on your ruling with a read-back |
+| 152F | Which money terms need the broker before an addendum goes out for signature? / a brokerage setting for request expiry? | commission terms only / 14 days |
+| 152K | Row 23 — may a proposal spend one billed BatchData record per territory to read a FRESH count (BatchData documents the count only on a billed search)? | no — the proposal reads the count BatchData already returned on the territory's own paid pulls (`batchdata_incremental_search_state.results_found`), never a new call |
+| 152K | Row 91 — persist listing coordinates? | not built — the free canonical geocoder (`lib/external/nominatim-geocode.ts geocodeOne`) already resolves tour stops at read time; persisting them in `listings.metadata` needs no migration but adds a third-party call to every listing write (Nominatim's policy: 1 request / second) — your call |
+
+### N.5 Integrator read-only re-measurements written by this lane
+
+```sql
+-- N.5a — convergence row 85: the executed-contract reader's population (no content selected). Measured 2026-11-12:
+--   signed_contracts 0, with_readable_text 0, transactions_total 2 → the hit rate is 0/0 (undefined) until real executed
+--   contracts are on file; re-run after the first live closes.
+SELECT count(*) AS signed_contracts,
+       count(*) FILTER (WHERE length(coalesce(content,'')) >= 20) AS with_readable_text,
+       count(*) FILTER (WHERE content ~* '(on or before|no later than|not later than|on or prior to|prior to or on)\s+(the\s+)?(date\s+of\s+)?[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}'
+                           OR content ~* '(shall|will|must)\s+(close|occur|take place|be held|be completed)\s+(on\s+)?(the\s+)?[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}') AS approx_reader_hits
+  FROM public.documents WHERE classification = 'signed_contract';
+
+-- N.5b — convergence row 89: the C19 verification log (measured 2026-11-12: 0 rows — the ACRIS / Cambridge registry seeds of
+--   lib/external/socrata-market-registry.ts MARKET_DATASET_CANDIDATES were verified by id on 2026-11-01 in code, but no live row
+--   records them, and no reader adapter consumes them yet).
+SELECT count(*) AS rows FROM public.market_dataset_verifications;
+```
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

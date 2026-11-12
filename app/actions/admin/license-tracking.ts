@@ -287,7 +287,9 @@ export async function reviewLicenseManually(input: {
         : `Your ${lic.license_state ?? ""} license review needs attention${input.notes?.trim() ? `: ${input.notes.trim()}` : ". Please contact your admin."}`,
       entity_type: "agent_license",
       entity_id: lic.id,
-      priority: passed ? "normal" : "high",
+      // notifications.priority CHECK: critical | high | low | medium (wave 152, 152K — row 45 census): "normal" refused
+      // the whole insert, so a verified license never rang the agent's bell.
+      priority: passed ? "medium" : "high",
       channel: "in_app",
     }), { table: "notifications", flow: "license_tracking_notify", brokerageId: lic.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }

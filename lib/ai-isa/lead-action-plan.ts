@@ -790,6 +790,9 @@ export interface LeadTouchRelease {
   gate: LeadAutoSendCode
   /** Set only when the governor actually released it through the sender. */
   sendStatus?: "sent" | "skipped" | "failed"
+  /** WAVE 152 (152I, convergence row 86): set when the follow-up arbiter held an otherwise-releasable touch a bounded time —
+   *  the proposal stays `proposed` and the next sweep asks again (bounded by policy.arbiter.maxDeferDays). */
+  arbiterHeld?: { until: string | null; source: string; rationale: string }
   reason: string
 }
 
@@ -800,6 +803,8 @@ export interface ReleaseDueLeadTouchesResult {
   sent: number
   /** Left at status='proposed' for a human — the fail-closed outcome. */
   staged: number
+  /** WAVE 152 (152I, row 86): left at status='proposed' because the arbiter chose a bounded wait (not a human hold). */
+  held?: number
   /** Released but the sender itself refused (opt-out, no address, provider). */
   failed: number
   decisions: LeadTouchRelease[]
@@ -847,6 +852,8 @@ export async function releaseDueLeadTouches(input: {
   limit?: number
   now?: Date
   supabase?: any
+  /** WAVE 152 (152I, row 86): the arbiter's model seam (a simulator injects it; production asks the routed model). */
+  arbiterDecide?: (a: { brokerageId: string; system: string; prompt: string }) => Promise<Record<string, unknown>>
 }): Promise<ReleaseDueLeadTouchesResult> {
   const out: ReleaseDueLeadTouchesResult = {
     examined: 0, sent: 0, staged: 0, failed: 0, decisions: [], warnings: [],
@@ -928,6 +935,27 @@ export async function releaseDueLeadTouches(input: {
         reason: eligibility.reason,
       })
       continue
+    }
+
+    // ── THE ARBITER DECIDES THE MOMENT (wave 152, lane 152I — convergence row 86; owner ruling 7: no fixed timetable) ──
+    // touch_interval_days decided only that the plan MAY author this step (a floor); whether NOW is the moment to release it
+    // is the follow-up arbiter's — release now, or a bounded wait (the proposal stays `proposed`; the next sweep asks again,
+    // and policy.arbiter.maxDeferDays withdraws the wait). Every gate above already ran; the arbiter only chooses among what is
+    // lawful. Its outage, a refusal or the arbiter switched off keeps the planner's verdict: release. Ledgered (followup.decision.*).
+    {
+      const { arbitratePlannedTouch } = await import("./followup-arbiter")
+      const arb = await arbitratePlannedTouch(supabase, {
+        brokerageId: input.brokerageId, planner: "lead_touch_release", subject: { type: "lead", id: leadId }, now,
+        options: [{ id: "release_now", kind: "communication", channels: [wire === "direct_mail" ? "direct_mail" : "email"], why: [`the lead plan's step is due and the brokerage authorised auto-send (${verdict.code})`, `every gate re-checked just now: ${wire} is still sendable`] }],
+        planned: "release_now",
+        moment: { key: "lead_touch_release", intent: "A lead-plan touch is due and every gate passed — release it now, or hold it a bounded time if the evidence says now is the wrong moment for this person." },
+      }, process.env.NEXT_RUNTIME || input.arbiterDecide ? { decide: input.arbiterDecide as never } : { decide: async () => { throw new Error("no model call outside the application server") } })
+      if (arb.choice === "wait") {
+        const until = arb.decision.waitHours !== null ? new Date(now.getTime() + arb.decision.waitHours * 3_600_000).toISOString() : null
+        out.held = (out.held ?? 0) + 1
+        out.decisions.push({ messageId, leadId, channel: wire, mode: verdict.mode, code: verdict.code, gate: verdict.code, arbiterHeld: { until, source: arb.decision.source, rationale: arb.decision.rationale.slice(0, 300) }, reason: `the follow-up arbiter held this touch${until ? ` until ${until}` : ""} — ${arb.decision.rationale.slice(0, 200)}` })
+        continue
+      }
     }
 
     // ── RELEASE, THROUGH THE EXISTING SENDER ──────────────────────────────────

@@ -65,6 +65,7 @@ import {
   describePreliminaryDiscrepancies,
   cdaDeliveryRoute,
   deliveryIdempotency,
+  loadEffectiveCdaModes,
   type PreliminaryDiscrepancy,
   type StatementFigures,
 } from "@/lib/transactions/cda-closing-policy"
@@ -78,6 +79,67 @@ import { bestEffort } from "@/lib/db/best-effort"
 // 'superadmin', which is dead as a users.user_type (0 live rows; platform staff live in platform_role
 // and are never fallen back to it — wave 141 ruling, m780 live).
 const COMPLIANCE_ROLES = CDA_APPROVE_ROLES
+
+// WAVE 152 (lane 152H; owner: "if a brokerage changes their policy from a no cda to now using cda can turn the setting to opt in").
+// THE POLICY READ for one deal: the brokerage's CDA policy in force when the deal OPENED, or a finance admin's switch of that deal
+// (lib/transactions/cda-closing-policy.ts loadEffectiveCdaModes — the treatment matrix). A deal that opened before the brokerage
+// opted in keeps closing without a CDA; a deal that opened after needs the agent-filled CDA. Read on the service client AFTER the
+// door's own tenant gate (the history is tenant policy, not the agent's row). FAILS CLOSED: unreadable → the door refuses.
+async function dealCdaMode(brokerageId: string, transactionId: string): Promise<{ ok: true; mode: "cda" | "no_cda"; explanation: string } | { ok: false }> {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const eff = await loadEffectiveCdaModes(createServiceClient(), { brokerageId, transactionIds: [transactionId] })
+  const deal = eff.ok ? eff.deals[transactionId] : undefined
+  if (!deal) {
+    console.error(`[cda-portal] the CDA treatment of ${transactionId} could not be read: ${eff.ok ? "deal not in this brokerage" : eff.error}`)
+    return { ok: false }
+  }
+  return { ok: true, mode: deal.mode, explanation: deal.explanation }
+}
+const CDA_MODE_UNREADABLE = "This deal's CDA treatment couldn't be confirmed, so nothing was saved. Try again shortly; if it keeps happening, contact platform support."
+
+// WAVE 152 (lane 152H — integrator request from lane 152G): A STATEMENT THAT IS UPLOADED IS ALSO READ. The CDA doors file title's
+// preliminary / final statement on the transaction_documents rail, but 152E's term comparison and 152G's settlement reconciliation read
+// the `documents` rail (its scanner's classification + extraction ledger) — so a statement uploaded here was on file yet never compared,
+// and a no-CDA close held on "uploaded, not read". The bridge copies the row onto the documents rail through the ONE documents writer
+// (lib/documents/upload-document.ts uploadDocument, which fires the universal scanner lib/documents/scan-uploaded-document.ts), keyed by
+// the source row (metadata.transaction_document_id) so a retry never files it twice. Best-effort: a failure is logged and the close
+// keeps holding on the unread statement (152G's gate) — never reported as read.
+async function readStatementOnDocumentsRail(brokerageId: string, transactionDocumentId: string): Promise<{ ok: true; documentId: string | null } | { ok: false; error: string }> {
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data: src, error: srcErr } = await svc
+      .from("transaction_documents")
+      .select("id, transaction_id, brokerage_id, doc_type, doc_label, storage_url")
+      .eq("id", transactionDocumentId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (srcErr) return { ok: false, error: `statement_read_refused: ${srcErr.message}` }
+    const row = src as { id: string; transaction_id: string | null; doc_type: string | null; doc_label: string | null; storage_url: string | null } | null
+    if (!row || !row.storage_url) return { ok: true, documentId: null } // already a documents row, or no file to read
+    const { data: prior, error: priorErr } = await svc
+      .from("documents")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("metadata->>transaction_document_id", row.id)
+      .limit(1)
+    if (priorErr) return { ok: false, error: `documents_read_refused: ${priorErr.message}` }
+    const existingId = ((prior ?? [])[0] as { id?: string } | undefined)?.id
+    if (existingId) return { ok: true, documentId: existingId }
+    const { uploadDocument } = await import("@/lib/documents/upload-document")
+    const filed = await uploadDocument({
+      brokerageId,
+      storageUrl: row.storage_url,
+      fileName: row.doc_label ?? undefined,
+      documentType: row.doc_type ?? "settlement_statement",
+      transactionId: row.transaction_id ?? undefined,
+      metadata: { transaction_document_id: row.id, rail_doc_type: row.doc_type, upload_source: "cda_statement_bridge" },
+    })
+    return filed.success ? { ok: true, documentId: filed.documentId ?? null } : { ok: false, error: filed.error ?? "documents_insert_failed" }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
 
 type CdaAction =
   | "drafted"
@@ -291,6 +353,10 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     return { success: false as const, error: "transaction_not_found" }
   }
 
+  // WAVE 152 (152H): the statement is READ, not only filed — onto the documents rail the comparison and the reconciliation read.
+  const statementRead = await readStatementOnDocumentsRail(txn.brokerage_id, input.documentId)
+  if (!statementRead.ok) console.error(`[cda-portal] statement ${input.documentId} not put on the documents rail (the close holds on it until it is read): ${statementRead.error}`)
+
   const { data: agent } = await supabase
     .from("agents")
     .select("id, user_id")
@@ -498,6 +564,10 @@ export async function draftOrUpdateCdaAction(input: {
   if (auth.agentId !== txn.agent_id) {
     return { success: false as const, error: "only_assigned_agent_can_draft" }
   }
+  // WAVE 152 (152H): only a deal whose CDA policy is CDA gets a CDA — a deal that opened under the no-CDA policy keeps closing without one.
+  const policy = await dealCdaMode(txn.brokerage_id, input.transactionId)
+  if (!policy.ok) return { success: false as const, error: CDA_MODE_UNREADABLE }
+  if (policy.mode !== "cda") return { success: false as const, error: `deal_closes_without_cda: ${policy.explanation}` }
 
   const { data: existing } = await supabase
     .from("closing_disclosure_agreement")
@@ -593,6 +663,10 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   if (!["pending", "drafting", "changes_requested"].includes(cda.status)) {
     return { success: false as const, error: `cannot_submit_from_status:${cda.status}` }
   }
+  // WAVE 152 (152H): a deal switched away from a CDA (or opened under the no-CDA policy) is never submitted as one.
+  const submitPolicy = await dealCdaMode(cda.brokerage_id, cda.transaction_id)
+  if (!submitPolicy.ok) return { success: false as const, error: CDA_MODE_UNREADABLE }
+  if (submitPolicy.mode !== "cda") return { success: false as const, error: `deal_closes_without_cda: ${submitPolicy.explanation}` }
 
   // ── FULL DOCUMENT COMPLIANCE, BEFORE THE CDA CAN BE ACCEPTED ───────────────
   // The owner's process: the preliminary HUD arrives, the agent fills the CDA
@@ -863,6 +937,10 @@ export async function approveCdaAction(input: { cdaId: string }) {
   // Shared state-machine gate (compliance role + submitted status + agent e-signed).
   const approveVerdict = canApproveCda({ status: cda.status, agentSignedOff: !!cda.agent_signed_off_at, role: auth.userType })
   if (!approveVerdict.ok) return { success: false as const, error: approveVerdict.error }
+  // WAVE 152 (152H): compliance never approves a CDA on a deal whose CDA policy is no-CDA (opened before the opt-in, or switched off).
+  const approvePolicy = await dealCdaMode(cda.brokerage_id, cda.transaction_id)
+  if (!approvePolicy.ok) return { success: false as const, error: CDA_MODE_UNREADABLE }
+  if (approvePolicy.mode !== "cda") return { success: false as const, error: `deal_closes_without_cda: ${approvePolicy.explanation}` }
   // FIGURE GATE (wave 142, lane 142C; owner: "broker cannot approve a CDA on unresolved inaccurate
   // figures"): a correction request against the title company's preliminary statement is still open —
   // the revised official statement has not arrived — so the disbursement cannot be authorized against
@@ -1804,6 +1882,13 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
+  // WAVE 152 (152H): the payout PREFERENCE belongs to the no-CDA path only. On a deal whose CDA policy is CDA (opened after the
+  // brokerage opted in, or switched to a CDA by a finance admin) the agent's payout is authorized on the CDA — recording a preference
+  // there would also overwrite the deal's CDA row (uses_cda false).
+  const prefPolicy = await dealCdaMode(auth.brokerageId, input.transactionId)
+  if (!prefPolicy.ok) return { success: false as const, error: CDA_MODE_UNREADABLE }
+  if (prefPolicy.mode !== "no_cda") return { success: false as const, error: `deal_uses_cda: ${prefPolicy.explanation}` }
+
   // Get-or-create CDA row for this transaction in non-CDA path
   let cdaId: string
   const { data: existing } = await supabase
@@ -1946,6 +2031,10 @@ export async function uploadFinalCdAction(input: {
   // user the final CD is on file when nothing was written, and would skip the
   // commission finalization lock below.
   if (!cdaRow) return { success: false as const, error: "not_found" }
+
+  // WAVE 152 (152H): the final statement is READ, not only attached (documentId may already be a documents row — then nothing to do).
+  const finalRead = await readStatementOnDocumentsRail(auth.brokerageId, input.documentId)
+  if (!finalRead.ok) console.error(`[cda-portal] final statement ${input.documentId} not put on the documents rail (the close holds on it until it is read): ${finalRead.error}`)
 
   // FINALIZATION LOCK (owner rule): an uploaded final CD finalizes the transaction's
   // commission — immutable from here. First-writer-wins with the CDA-sign trigger;
@@ -2278,6 +2367,24 @@ export async function confirmPreliminaryCdReviewAction(input: { cdaId: string; n
   const priorValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
   const review = preliminaryReviewOf(priorValues)
   if (!review) return { success: false as const, error: "no_preliminary_statement_on_file" }
+  // WAVE 152 (152H — integrator request from lane 152G): a person's "reviewed" never stands against a settlement the reconciliation still
+  // holds. A later executed change re-opens the comparison (lib/offers/closing-cost-accuracy.ts snapshots it on the policy ledger,
+  // target_type "settlement_reconciliation", insert-only); the LATEST snapshot must be green. Read on the service client AFTER this door's
+  // gate (an RLS-hidden row must not read as "no snapshot"); a refused read refuses (§3).
+  {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { data: recon, error: reconErr } = await createServiceClient()
+      .from("policy_decisions")
+      .select("decision, evidence_json, created_at")
+      .eq("brokerage_id", auth.brokerageId)
+      .eq("transaction_id", cda.transaction_id)
+      .eq("target_type", "settlement_reconciliation")
+      .order("created_at", { ascending: false })
+      .limit(1)
+    if (reconErr) return { success: false as const, error: `settlement_reconciliation_unreadable:${reconErr.message}` }
+    const latest = ((recon ?? [])[0] ?? null) as { decision?: string | null; evidence_json?: { state?: string | null } | null } | null
+    if (latest && latest.decision !== "green") return { success: false as const, error: `settlement_reconciliation_${latest.evidence_json?.state ?? "open"}` }
+  }
   const now = new Date().toISOString()
   const nextReview = reviewOnConfirmed(review, auth.userId, now, input.note ?? null)
   const { data: saved, error: saveErr } = await supabase

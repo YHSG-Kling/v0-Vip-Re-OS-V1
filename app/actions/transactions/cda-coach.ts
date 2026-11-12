@@ -78,12 +78,17 @@ export async function explainCdaArithmeticAction(input: { cdaId: string; questio
   })
   const discrepancies: CoachDiscrepancyWords[] = verdict.discrepancies.map((d) => ({ field: d.field, severity: d.severity }))
 
+  // WAVE 152 (lane 152H): the CDA mode the coach describes is the one governing THIS deal (cda-closing-policy.ts §6).
+  const { loadEffectiveCdaModes } = await import("@/lib/transactions/cda-closing-policy")
+  const eff = await loadEffectiveCdaModes(svc, { brokerageId, transactionIds: [cda.transaction_id as string], live: { offersCda: b.offers_cda ?? null, nonCdaPayoutDefault: b.non_cda_payout_default ?? null } })
+  const governing = eff.ok ? eff.deals[cda.transaction_id as string]?.governing : undefined
+  if (!governing) return { success: false, error: `cda_policy_read_refused: ${eff.ok ? "deal not found" : eff.error}` }
   const structure: CoachStructure = {
     referralApplies: ((refs ?? []) as unknown[]).length > 0,
     capReached,
     teamSplitApplies: null, // not read here: the team agreement in force is the engine's reading (stage 08); the coach says "unknown"
     outstandingFeesExist: outstandingFees > 0,
-    cdaMode: resolveCdaMode({ offersCda: b.offers_cda ?? null, nonCdaPayoutDefault: b.non_cda_payout_default ?? null }).mode,
+    cdaMode: resolveCdaMode(governing).mode,
   }
   const figures = {
     agentEntered: { grossCommission: num(cda.gross_commission), agentNet: num(cda.agent_net), brokerageNet: num(cda.brokerage_net) },

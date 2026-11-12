@@ -2343,6 +2343,10 @@ export function formatWidgetValue(value: any, format?: string): string {
 // ─── Persona labels as an AUDIENCE vocabulary (owner ruling 1, wave 149) ─────────────────────────────────────────────────────
 import { LIFE_EVENT_TYPES, LIFE_EVENT_VOCAB } from "@/lib/enrichment/life-event-vocabulary"
 import { personaLabelSet } from "@/lib/compliance-rules/audience-compliance"
+// CONVERGENCE ROW 66 (wave 152, lane 152K): R7's three persona sources folded in HERE (both modules were already in the CRM
+// page's module graph — measured with $S/reach-set.ts — so the fold adds no module to the proxy-graph budget).
+import { CAMPAIGN_PERSONAS, rawSpellingsForPersona } from "@/lib/campaigns/contact-sources"
+import { MARKETING_NEEDS } from "@/lib/contacts/persona-layers"
 
 /**
  * Every persona label the OS speaks to — the kernel-portal personas above (ruling 2: "the kernel portal layout has the personas
@@ -2352,10 +2356,25 @@ import { personaLabelSet } from "@/lib/compliance-rules/audience-compliance"
  * lookalike narrowing) and words that are only a protected class ("women", "church goers"). Memoised: the sources are frozen.
  */
 let personaAudienceLabelsMemo: ReadonlySet<string> | null = null
+/**
+ * THE persona label set — every persona source the OS speaks from (owner R7, wave 150: "extend the label set to every persona
+ * source"). Since convergence row 66 (wave 152, lane 152K) it carries all five sources in ONE place:
+ *   · the kernel-portal personas (PERSONA_CONFIGS) and the C20 life-event situations with every alias (wave 149);
+ *   · the canonical Persona union (lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS — what contacts.contact_persona and every
+ *     persona audience are segmented on) and its drifted stored spellings (rawSpellingsForPersona);
+ *   · the marketing-persona NEEDS the persona study writes (lib/contacts/persona-layers.ts MARKETING_NEEDS — key and label).
+ * `other` is excluded: it names no situation. The last three lived in a second composition
+ * (lib/voice-admin/intent-interface.ts everyPersonaAudienceLabel — tombstoned there).
+ */
 export function personaAudienceLabels(): ReadonlySet<string> {
   if (personaAudienceLabelsMemo) return personaAudienceLabelsMemo
   const raw: string[] = [...Object.keys(PERSONA_CONFIGS), ...LIFE_EVENT_TYPES]
   for (const t of LIFE_EVENT_TYPES) raw.push(...LIFE_EVENT_VOCAB[t].aliases)
+  for (const p of CAMPAIGN_PERSONAS) {
+    if (p === "other") continue
+    raw.push(p, ...rawSpellingsForPersona(p))
+  }
+  for (const [key, spec] of Object.entries(MARKETING_NEEDS)) raw.push(key, spec.label)
   personaAudienceLabelsMemo = personaLabelSet(raw)
   return personaAudienceLabelsMemo
 }

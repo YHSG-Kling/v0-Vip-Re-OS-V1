@@ -187,6 +187,12 @@ export const TENANT_POLICY_COLUMN_KEYS: Record<string, TenantPolicyDefinition> =
   // { payout_timing, agent_concession_approval } — app/actions/commission-policy/commission-policy.ts
   // setCommissionPayoutPolicyAction is the only writer (finance admin, session tenant, ledgered) and the revert path.
   commission_payout_policy:       { label: "Commission payout policy (pay at closing per the CDA vs after receipt; agent concession approval)", store: "brokerages.column", defaultNote: "after the brokerage receives the commission; agent concessions need broker approval" },
+  // Wave 152 (152H; owner: "if a brokerage changes their policy from a no cda to now using cda can turn the setting to opt in"):
+  // brokerages.offers_cda + non_cda_payout_default as ONE value { offers_cda, non_cda_payout_default, effective_at, scope } —
+  // app/actions/brokerage-cda-setup.ts setBrokerageCdaSettingAction is the only writer (finance admin, brokerage-wide scope, reason,
+  // ledgered). The history is READ: lib/transactions/cda-closing-policy.ts loadEffectiveCdaModes decides which value governs a deal
+  // (the one in force when it opened), so a change never re-modes an in-progress or closed deal.
+  cda_policy:                     { label: "CDA policy (does the brokerage use a Commission Disbursement Authorization; the no-CDA payout default)", store: "brokerages.column", defaultNote: "not answered — deals close without a CDA (an unanswered setting never requires one)" },
 }
 
 /** 102D — policies that are ROWS in their own table, one version stream per row: `assignment_rule:<id>`,

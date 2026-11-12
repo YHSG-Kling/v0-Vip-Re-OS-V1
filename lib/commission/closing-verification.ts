@@ -17,7 +17,8 @@
 //   5 waterfall              the latest commission_calculations row (engine_inputs — which agreement version priced it, when)
 // THE ONE WRITE: the attestation is a row in transaction_compliance_log — THE verdict survivor the compliance tab,
 // canProceedToClosingPrep and runFinalComplianceCheck already read (check_type `closing_verification.unrecorded_changes`):
-//   · asked     → status 'pending', BLOCKING (ensureClosingAttestationAsked — the CDA submit door asks it);
+//   · asked     → status 'pending', BLOCKING (ensureClosingAttestationAsked — the CDA submit door asks it; wave 152: without a
+//                 CDA the gated close asks it BEFORE closing and holds on it — owner "that is not informational");
 //   · "no"      → 'pass' with who / when / the five-layer digest it was given on (resolution_notes);
 //   · "yes"     → 'fail', BLOCKING, the agent's description as the reason and the instruction: record the EXECUTED evidence
 //                 (the addendum door, the agent-agreement amendment, the client-fee amendment, the referral agreement), then
@@ -185,24 +186,31 @@ async function readAttestationRow(db: Db, brokerageId: string, transactionId: st
 }
 
 /**
- * ASK: the attestation row exists, pending, until the agent answers. Idempotent (an existing row is left alone).
- *   · the CDA path (default): BLOCKING — the CDA submit door asks it (app/actions/cda-portal.ts) and holds the CDA on it.
- *   · `informational: true` — WAVE 151 (lane 151K; OWNER-SQL §L L6.2 option (b)): a brokerage that does NOT use a CDA is asked the
- *     same question at its gated close, as a NON-blocking row — the close is never held on it (owner: "if the brokerage doesn't
- *     use CDAs … it can close without a CDA"; CDA completion is never an unconditional closing requirement). Option (c), a
- *     blocking ask for no-CDA brokerages that opt in by setting, is an OWNER DECISION and is not built.
+ * ASK: the attestation row exists, pending and BLOCKING, until the agent answers. Idempotent (an existing row is left alone — except
+ * that a row an earlier INFORMATIONAL ask left non-blocking and unanswered is made blocking, counted).
+ *   · the CDA path: the CDA submit door asks it (app/actions/cda-portal.ts) and holds the CDA on it;
+ *   · without a CDA (wave 152, lane 152G — owner: "that is not informational"): the gated close asks it BEFORE the close and holds the
+ *     close on it (lib/transactions/stage-progression.ts — on entering closing prep and in canAdvanceStage step 8b).
+ * TOMBSTONE (wave 152, lane 152G): the `informational: true` option (wave 151, lane 151K; OWNER-SQL §L L6.2 option (b)) wrote a
+ * NON-blocking row after the no-CDA close. Overruled by the owner; SURVIVOR: this blocking ask, called before the close by
+ * lib/transactions/stage-progression.ts canAdvanceStage. No caller passes the option any more.
  */
-export async function ensureClosingAttestationAsked(db: Db, input: { brokerageId: string; transactionId: string; informational?: boolean }): Promise<{ ok: true; status: string; asked: boolean } | { ok: false; error: string }> {
+export async function ensureClosingAttestationAsked(db: Db, input: { brokerageId: string; transactionId: string }): Promise<{ ok: true; status: string; asked: boolean } | { ok: false; error: string }> {
   const cur = await readAttestationRow(db, input.brokerageId, input.transactionId)
   if (!cur.ok) return cur
-  if (cur.row) return { ok: true, status: cur.row.status, asked: false }
-  const informational = input.informational === true
+  if (cur.row) {
+    if (cur.row.is_blocking === false && cur.row.status !== "pass" && cur.row.status !== "waived") {
+      const { data: up, error: upErr } = await db.from("transaction_compliance_log").update({ is_blocking: true, updated_at: new Date().toISOString() })
+        .eq("id", cur.row.id).eq("brokerage_id", input.brokerageId).eq("is_blocking", false).select("id")
+      if (upErr) return { ok: false, error: `attestation_upgrade_refused: ${upErr.message}` }
+      if (((up ?? []) as unknown[]).length !== 1) return { ok: false, error: "attestation_not_upgraded" }
+    }
+    return { ok: true, status: cur.row.status, asked: false }
+  }
   const { data, error } = await db.from("transaction_compliance_log").insert({
     brokerage_id: input.brokerageId, transaction_id: input.transactionId, check_type: CLOSING_ATTESTATION_CHECK_TYPE, check_label: ATTESTATION_LABEL,
-    status: "pending", is_blocking: !informational,
-    failure_reason: informational
-      ? "This brokerage closes without a CDA. At closing the agent confirms whether any executed change (an agreement amendment, a contract addendum, a fee change) has not been recorded yet — informational; the close is not held on it."
-      : "Before the CDA is submitted, the agent confirms whether any executed change (an agreement amendment, a contract addendum, a fee change) has not been recorded yet.",
+    status: "pending", is_blocking: true,
+    failure_reason: "Before closing (and before a CDA is submitted, where the brokerage uses one), the agent confirms whether any executed change (an agreement amendment, a contract addendum, a fee change) has not been recorded yet.",
   }).select("id")
   if (error) return { ok: false, error: `attestation_ask_refused: ${error.message}` }
   if (((data ?? []) as unknown[]).length !== 1) return { ok: false, error: "attestation_not_asked" }

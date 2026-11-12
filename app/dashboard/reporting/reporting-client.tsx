@@ -58,11 +58,18 @@ interface ReportingData {
     open: number
     atRisk: any[]
   }
+  // Wave 152 (lane 152K — 152B outside-lane 4): the route now builds this from the authorized ROI reader
+  // (app/api/dashboard/reporting/route.ts marketingTotals). Spend is NULL when nothing records it (never $0), revenue is
+  // NULL when commission is off this viewer's display or not established; the return is THE formula's value (net, over
+  // fully-recorded spend) or null with a plain `note`. Rendered as "Unknown" / "—", never as $0 or a client-side multiple.
   marketingPerformance: {
-    totalSpend: number
+    totalSpend: number | null
     totalLeads: number
     totalConversions: number
-    totalRevenue: number
+    totalRevenue: number | null
+    spendStatus: string
+    realizedReturn: number | null
+    note: string | null
   }
   stuckWork: {
     transactions: any[]
@@ -143,19 +150,21 @@ function composePipelineBriefing(data: ReportingData, periodLabel: string): Pipe
     }
   }
 
-  if (mkt.totalSpend > 0 && mkt.totalLeads === 0) {
+  if (mkt.totalSpend != null && mkt.totalSpend > 0 && mkt.totalLeads === 0) {
     out.push({
       severity: "warn",
-      text: `$${Math.round(mkt.totalSpend).toLocaleString()} of marketing spend produced zero leads ${periodLabel.toLowerCase()} — pause or retarget before it compounds.`,
+      text: `$${Math.round(mkt.totalSpend).toLocaleString()} of recorded marketing spend produced zero leads ${periodLabel.toLowerCase()} — pause or retarget before it compounds.`,
       cta: "Open campaigns",
       href: "/dashboard/marketing",
     })
-  } else if (mkt.totalSpend > 0 && mkt.totalRevenue > 0) {
+  } else if (mkt.realizedReturn != null && mkt.totalSpend != null && mkt.totalSpend > 0 && mkt.totalRevenue != null) {
+    // THE formula (lib/intelligence/roi-ledger.ts realizedReturnOnMarketingSpend): (earned − recorded spend) ÷ recorded
+    // spend, only over fully-recorded spend — the client no longer divides revenue by spend itself.
     out.push({
-      severity: "good",
-      text: `Marketing returned ${(mkt.totalRevenue / mkt.totalSpend).toFixed(1)}x — $${Math.round(mkt.totalSpend).toLocaleString()} in, $${Math.round(mkt.totalRevenue).toLocaleString()} attributed back.`,
+      severity: mkt.realizedReturn > 0 ? "good" : "warn",
+      text: `Marketing's realized return was ${Math.round(mkt.realizedReturn * 100)}% — $${Math.round(mkt.totalSpend).toLocaleString()} recorded spend, $${Math.round(mkt.totalRevenue).toLocaleString()} earned commission credited back.`,
       cta: "Campaign ROI",
-      href: "/dashboard/reports",
+      href: "/dashboard/campaigns/roi",
     })
   }
 
@@ -534,8 +543,8 @@ export function ReportingClient() {
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <MarketingTile
-                  label="Total Spend"
-                  value={`$${Math.round(data?.marketingPerformance.totalSpend ?? 0).toLocaleString()}`}
+                  label={data?.marketingPerformance.spendStatus === "partial" ? "Recorded Spend (partial)" : "Total Spend"}
+                  value={usdOr(data?.marketingPerformance.totalSpend, "Unknown")}
                 />
                 <MarketingTile
                   label="Leads Generated"
@@ -546,11 +555,14 @@ export function ReportingClient() {
                   value={(data?.marketingPerformance.totalConversions ?? 0).toString()}
                 />
                 <MarketingTile
-                  label="Revenue Attributed"
-                  value={`$${Math.round(data?.marketingPerformance.totalRevenue ?? 0).toLocaleString()}`}
+                  label="Earned Commission Attributed"
+                  value={usdOr(data?.marketingPerformance.totalRevenue, "—")}
                   highlight
                 />
               </div>
+            )}
+            {!loading && data?.marketingPerformance.note && (
+              <p className="mt-3 text-xs text-muted-foreground">{data.marketingPerformance.note}</p>
             )}
           </CardContent>
         </Card>
@@ -687,6 +699,11 @@ function IsaTile({
       <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
     </div>
   )
+}
+
+/** A recorded dollar figure, or the given word when nothing records it (never $0 for unknown — wave 152, 152K). */
+function usdOr(n: number | null | undefined, empty: string): string {
+  return n == null ? empty : `$${Math.round(n).toLocaleString()}`
 }
 
 function MarketingTile({

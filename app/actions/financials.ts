@@ -966,6 +966,7 @@ export async function logScopedExpense(input: {
         category: String(row.category),
         description: String(row.description),
         expenseDate: input.expenseDate,
+        expenseId: data.id as string,
       })
     } catch { /* egress is best-effort; the expense row is already committed */ }
   }

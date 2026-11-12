@@ -1099,7 +1099,10 @@ export async function updateVendorState(params: {
         vendor_name:    params.vendorName,
         vendor_email:   params.vendorEmail   ?? null,
         vendor_phone:   params.vendorPhone   ?? null,
-        status:         params.status        ?? "pending",
+        // transaction_vendor_services.status CHECK has no "pending" (the procurement ladder is quote_requested →
+        // pending_approval → approved → ordered → scheduled → in_progress → completed); the default refused the whole
+        // insert (wave 152, 152K — row 45 census). A recorded vendor with a date is scheduled, otherwise ordered.
+        status:         params.status        ?? (params.scheduledDate ? "scheduled" : "ordered"),
         scheduled_date: params.scheduledDate ?? null,
         cost:           params.cost          ?? null,
         notes:          params.notes         ?? null,

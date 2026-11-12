@@ -43,12 +43,16 @@ import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance
 // see the tombstone below getMarketingStudioDashboard's predecessor block.
 import { resolveWriteContext, decideClaimedTenant } from "@/lib/platform/acting-context"
 import {
-  mintTrackedQr,
+  renderQrPng,
   isQrDestinationType,
   isQrPurpose,
   type QrDestinationType,
   type QrPurpose,
 } from "@/lib/marketing/tracked-qr"
+// WAVE 152 (152J): the studio's two QR doors mint through lane 152C's GOVERNED mint — destination safety (https, the
+// tenant's verified hosts + the allow-list, no loop, no personal data), the session creator, a tenant check on the
+// campaign, an idempotency key and ledger evidence (marketing.qr.mint) — instead of the raw registry writer.
+import { mintGovernedQr, type QrActor } from "@/lib/marketing/qr-governance"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -499,7 +503,7 @@ export async function transitionCampaignStatus(
 
 export async function createAsset(params: CreateAssetParams) {
   try {
-    const { userId, agentId, brokerageId } = await getAgentContext()
+    const { userId, agentId, brokerageId, userType: ctxUserType } = await getAgentContext()
     const access = await assertMarketingStudioAccess(userId)
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
@@ -519,21 +523,24 @@ export async function createAsset(params: CreateAssetParams) {
     let mintedQrId: string | null = null
     if (params.assetType === "qr") {
       const target = (params.qrTargetUrl ?? "").trim()
-      if (!target) return { success: false, error: "A QR asset needs the destination URL it stands for." }
-      if (!/^https?:\/\//i.test(target)) return { success: false, error: "The QR destination must be an http(s) URL." }
-      if (!brokerageId) return { success: false, error: "No brokerage on your account — QR codes are registered to a brokerage." }
-      const minted = await mintTrackedQr({
-        brokerageId,
-        agentId: agentId ?? null,
-        label: `studio_asset:${params.assetName.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 120)}`,
+      if (!target) return { success: false, error: "A QR asset needs the page it should open. Paste the destination link, then create it again." }
+      if (!brokerageId || !userId) return { success: false, error: "QR codes are registered to an account, and yours couldn't be confirmed. Sign in again, then create the asset." }
+      const assetName = params.assetName.trim().replace(/\s+/g, " ").slice(0, 120)
+      // One asset name = one code in this account (the earlier per-name idempotency, now a ledger key — the person's
+      // label is the asset's name, never a `studio_asset:` system namespace, which the governed mint reserves).
+      const minted = await mintStudioQr({
+        idempotencyKey: `studio_asset.${studioKeyDigest(assetName.toLowerCase())}`,
+        label: assetName,
         targetUrl: target,
         destinationType: "other",
         purpose: "general",
         marketingCampaignId: params.campaignId ?? null,
-      })
-      if (!minted) return { success: false, error: "The QR code was not registered — the asset was not created." }
-      assetUrl = minted.qrCodeDataUrl
-      mintedQrId = minted.qrCodeId
+        channel: "marketing_studio",
+        source: "studio_asset",
+      }, { brokerageId, userId, agentId: agentId ?? null, userType: ctxUserType })
+      if (!minted.ok) return { success: false, error: minted.message }
+      assetUrl = minted.imageDataUrl
+      mintedQrId = minted.id
     }
 
     const { data: asset, error } = await supabase
@@ -1142,13 +1149,23 @@ export async function generateCampaignContent(params: {
  * handlers, kernel commands) must call mintTrackedQr directly with their own resolved tenant —
  * see lib/workflow/qr-modifier.ts for the pattern.
  *
+ * WAVE 152 (152J — QR across assets): THE GOVERNED MINT. This door used to write the person's typed URL
+ * through the raw writer: no destination check (http, a loop through another code, personal data in the
+ * link were all saved), no creator, no evidence, a BODY-supplied agentId written as the code's agent, and
+ * one code per LABEL (two different codes a person named alike collapsed into one). It now mints through
+ * lib/marketing/qr-governance.ts mintGovernedQr — the same door as the QR board (app/api/admin/qr-codes):
+ * the tenant, creator and agent from the SESSION; the destination validated; the campaign checked against
+ * the tenant; ONE code per request key (the studio form draws one; a double click returns the same code);
+ * ledgered as marketing.qr.mint. Refusals are the governed mint's own sentences (what to do, nothing saved).
+ *
  * Output contract (unchanged for existing callers, plus the tracked fields):
  *   { success: true, qrCode: { id, slug, label, target_url, purpose, destination_type,
- *                             scan_url, image_url } }
+ *                             scan_url, image_url }, replayed }
  *   { success: false, error: string }
  */
 export async function createQrCodeAction(params: {
   brokerageId?: string
+  /** IGNORED — the code's agent is the session's (a body-supplied agents.id is never trusted). Kept for callers. */
   agentId?: string
   label: string
   /** SEMANTIC destination. Omit → the code's own public /qr/<slug> landing. */
@@ -1160,81 +1177,85 @@ export async function createQrCodeAction(params: {
   campaignId?: string
   /** qr_codes.expires_at (ISO timestamptz). */
   expiresAt?: string
-  /** Deterministic idempotency key. Defaults to `studio:<label>` so repeat clicks reuse one code. */
-  idempotencyLabel?: string
+  /** The request's idempotency key: the studio form draws one per create; an automated installer passes a deterministic
+   *  one (same key → the same code, never a second). Required — a create without one is refused, nothing written. */
+  idempotencyKey?: string
 }) {
   try {
     if (!params.label?.trim()) {
-      return { success: false, error: "Label is required" }
+      return { success: false, error: "Give the code a name so you can find it later." }
     }
     if (params.purpose && !isQrPurpose(params.purpose)) {
-      return { success: false, error: `Invalid purpose. Must be one of: ${["business_card","campaign","event","general","lead_capture","lead_magnet","listing","listing_inquiry","open_house"].join(", ")}` }
+      return { success: false, error: "Choose what this code is for." }
     }
     if (params.destinationType && !isQrDestinationType(params.destinationType)) {
-      return { success: false, error: "Invalid destination type." }
+      return { success: false, error: "Choose where scanners should land." }
     }
 
     const ctx = await resolveWriteContext()
     if (!ctx.ok) return { success: false, error: ctx.error }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage on your account." }
+    if (!ctx.brokerageId) return { success: false, error: "QR codes are registered to an account, and yours couldn't be confirmed. Sign in again, then create the code." }
     if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
-      return { success: false, error: "That QR code belongs to another brokerage." }
+      return { success: false, error: "That QR code belongs to another account." }
     }
 
-    // qr_codes.agent_id FKs agents(id). ctx.agentId IS that PK; a users id in this column is a
-    // refused insert, so never fall back to userId.
-    const agentId = params.agentId ?? ctx.agentId ?? null
-
-    // The campaign must be one of OURS — an FK proves a campaign row exists, never that it is
-    // ours to attribute scans to.
-    let marketingCampaignId: string | null = null
-    if (params.campaignId) {
-      const gate = await createClient()
-      const { data: campaign, error: campaignError } = await gate
-        .from("marketing_campaigns")
-        .select("id")
-        .eq("id", params.campaignId)
-        .eq("brokerage_id", ctx.brokerageId)
-        .maybeSingle()
-      if (campaignError) return { success: false, error: campaignError.message }
-      if (!campaign) return { success: false, error: "That campaign is not on your brokerage." }
-      marketingCampaignId = campaign.id as string
-    }
-
-    const label = params.label.trim()
-    const minted = await mintTrackedQr({
-      brokerageId: ctx.brokerageId,
-      agentId,
-      label: params.idempotencyLabel?.trim() || label,
+    const minted = await mintStudioQr({
+      idempotencyKey: (params.idempotencyKey ?? "").trim(),
+      label: params.label.trim(),
+      purpose: params.purpose,
       destinationType: params.destinationType ?? null,
       targetUrl: params.targetUrl?.trim() || null,
       listingId: params.listingId ?? null,
-      marketingCampaignId,
+      marketingCampaignId: params.campaignId ?? null,
       expiresAt: params.expiresAt ?? null,
-      purpose: params.purpose,
-    })
-
-    if (!minted) {
-      return { success: false, error: "The QR code was not created — the write was refused." }
-    }
+      channel: "marketing_studio",
+      source: "studio_create",
+    }, { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType })
+    if (!minted.ok) return { success: false, error: minted.message }
 
     return {
       success: true,
+      replayed: minted.replayed,
       qrCode: {
-        id: minted.qrCodeId,
+        id: minted.id,
         slug: minted.slug,
-        label,
+        label: minted.label,
         target_url: minted.targetUrl,
         purpose: params.purpose,
         destination_type: minted.destinationType,
         scan_url: minted.scanUrl,
-        image_url: minted.qrCodeDataUrl,
+        image_url: minted.imageDataUrl,
       },
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to create QR code"
-    return { success: false, error: message }
+    console.error("[marketing-studio] createQrCodeAction failed:", err)
+    return { success: false, error: "The QR code wasn't created because of a problem on our side. Nothing was saved; try again, and contact support if it keeps happening." }
   }
+}
+
+/**
+ * Module-private (a "use server" file's exports are endpoints): the studio's ONE way to mint — lane 152C's governed
+ * mint, plus the print image on a REPLAY (the governed mint re-reads the record; the PNG of the same tracked link is
+ * rendered by the ONE image source, renderQrPng). The input is the governed mint's own instruction shape.
+ */
+async function mintStudioQr(
+  input: Parameters<typeof mintGovernedQr>[0],
+  actor: QrActor,
+): Promise<
+  | { ok: true; replayed: boolean; id: string; slug: string; label: string; scanUrl: string; targetUrl: string; destinationType: string | null; imageDataUrl: string | null }
+  | { ok: false; message: string }
+> {
+  const r = await mintGovernedQr(input, actor)
+  if (!r.ok) return { ok: false, message: r.message }
+  const imageDataUrl = r.code.imageDataUrl ?? (await renderQrPng(r.code.scanUrl).catch(() => null))
+  return { ok: true, replayed: r.replayed, id: r.code.id, slug: r.code.slug, label: r.code.label, scanUrl: r.code.scanUrl, targetUrl: r.code.targetUrl, destinationType: r.code.destinationType, imageDataUrl }
+}
+
+/** PURE, module-private — a short stable digest for a deterministic studio key (FNV-1a; a grouping key, not a secret). */
+function studioKeyDigest(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0
+  return `${h.toString(16).padStart(8, "0")}${text.length.toString(16)}`
 }
 
 // TOMBSTONE (§1.3, wave 81D, 2026-09-24): `renderQrImageAction(url, size)` lived here — a

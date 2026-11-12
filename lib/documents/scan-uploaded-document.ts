@@ -116,7 +116,7 @@ Per-classification extracted_fields shape:
   appraisal_report      → { appraiser_name, appraised_value, appraisal_date }
   title_report          → { title_company, report_date, key_exceptions[] }
   hoa_documents         → { hoa_name, dues_amount, dues_frequency }
-  closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close,
+  closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close, apr, loan_product, prepayment_penalty,
                             buyer_names[], seller_names[], property_address,
                             total_closing_costs, owner_title_premium, lender_title_premium,
                             settlement_fee, transfer_taxes, recording_fees,
@@ -173,6 +173,10 @@ Per-classification extracted_fields shape:
                            does not print — never fill a name or address from the contract or from memory. These are
                            compared against the contract's parties and property, so a guessed one would accuse a
                            correct statement or hide a wrong-party one.)
+                          (TRID FIELDS on closing_disclosure — apr is the Annual Percentage Rate as printed (page 5 "Loan
+                           Calculations"), loan_product as printed on page 1 "Product", prepayment_penalty "yes" / "no" from page 1
+                           "Loan Terms"; null when not printed. Never computed — the settlement reconciliation reads them to decide
+                           corrected-CD vs a new three-business-day wait, and escalates to the lender when they are null.)
                           (SETTLEMENT-COMPARISON FIELDS on closing_disclosure and preliminary_closing_statement —
                            sales_price, earnest_money_deposit, seller_credit_to_buyer, agent_credit_to_buyer /
                            broker_credit_to_buyer (a credit the buyer's or listing AGENT / BROKER gives the buyer — NOT the

@@ -1384,7 +1384,10 @@ async function main() {
       && seedStamp.safe === true && seedStamp.notify === false && seedStamp.tier === "seed_safe" && seedStamp.action === "stamp_offer_esign"
       && escStage.safe === false && escStage.action === null && escStage.tier === "escalate"
       && shl.EARNED_AUTONOMY_HEALS === 5
-      && Object.keys(shl.FLOW_CONTRACTS).length === 17
+      // the RULE, not the waypoint (CLAUDE.md §2): the catalogue only GROWS (17 ruled flows as of wave 151; wave 152 added
+      // tenant_push_orphan) and every contract is well formed — a pinned count read a correctly-added flow as a regression.
+      && Object.keys(shl.FLOW_CONTRACTS).length >= 17
+      && Object.values(shl.FLOW_CONTRACTS).every((c: any) => ["seed_safe", "probation", "escalate"].includes(c.tier) && typeof c.reason === "string" && c.reason.length > 20 && typeof c.describes === "string" && c.describes.length > 10 && (c.tier === "escalate" ? c.action == null || typeof c.action === "string" : typeof c.action === "string" && c.action.length > 0))
       && shl.composeRepairAutonomy({ complete_packet: { healed: 6, failed: 0 }, recreate_decision_task: { healed: 2, failed: 0 } })
            .some((r) => r.flow === "packet_completion" && r.earned === true)
       && shl.composeRepairAutonomy({ recreate_decision_task: { healed: 2, failed: 0 } })

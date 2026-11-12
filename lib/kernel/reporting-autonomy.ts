@@ -188,11 +188,14 @@ export async function generateAutonomyImpactReport(input: {
     }
     const provTotal = learned + norm + fallback
 
-    // Attribution — the measured marketing credit ledger
-    const { data: credits } = await svc.from("marketing_attribution_credits")
-      .select("credit_dollars, transaction_id")
-      .eq("brokerage_id", ctx.brokerageId).gte("created_at", from).lte("created_at", to).limit(2000)
-    const creditRows = (credits ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
+    // Attribution — the measured marketing credit ledger, REALIZED commission under ONE model (wave 152, lane 152K —
+    // 152B outside-lane 2): this read summed every model's rows (4× per deal) and in-escrow deals credited at the
+    // estimate. THE read: lib/intelligence/roi-ledger.ts loadRealizedAttributionCredits (a refused read counts nothing).
+    // Narrower tiers are pinned to their own deals below (scopeTxIds), the same scope the document-kernel counts use.
+    const { loadRealizedAttributionCredits } = await import("@/lib/intelligence/roi-ledger")
+    const realizedCredits = await loadRealizedAttributionCredits(svc, ctx.brokerageId, { sinceIso: from, throughIso: to })
+    if (!realizedCredits.ok) console.error("[reporting-autonomy]", realizedCredits.error)
+    const creditRows = realizedCredits.ok ? realizedCredits.rows : []
 
     // Document kernel — the deal-file trust ledgers. Tier-scoped through the
     // scope's transactions (documents carry no agent column; the transaction
@@ -270,8 +273,8 @@ export async function generateAutonomyImpactReport(input: {
           learnedShare: provTotal ? Math.round((learned / provTotal) * 100) / 100 : null,
         },
         attribution: {
-          creditDollars: Math.round(creditRows.reduce((s, r) => s + (Number(r.credit_dollars) || 0), 0)),
-          creditedTransactions: new Set(creditRows.map((r) => r.transaction_id).filter(Boolean)).size,
+          creditDollars: Math.round(creditRows.filter((r) => !scopeTxIds || scopeTxIds.includes(r.transaction_id)).reduce((s, r) => s + (Number(r.credit_dollars) || 0), 0)),
+          creditedTransactions: new Set(creditRows.filter((r) => !scopeTxIds || scopeTxIds.includes(r.transaction_id)).map((r) => r.transaction_id)).size,
         },
         docKernel: {
           documentsScanned: (scanned as any).count ?? 0,

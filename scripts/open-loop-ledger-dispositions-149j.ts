@@ -146,7 +146,9 @@ export const WAVE149J_DISPOSITIONS: Record<string, Disposition> = {
   // ── 143 · H (operations) ─────────────────────────────────────────────────────────────────────────────────────────────
   "143H-SO-01": ca("owner-decision", "owner", OWNERQ),
   "143H-SO-02": ca("owner-decision", "owner", "Node pin / maxDuration 600 routes / per-minute cron need the right Vercel plan — an owner build setting (release blocker O3 territory, lane 149K reports it)."),
-  "143H-SO-03": ca("missing-code", "lane149K", "F-3 (cron dispatcher reads a long job's timeout as failure), F-4 (no liveness route: app/api/health absent) and F-6/R-5 (no app/global-error.tsx, no onRequestError in instrumentation.ts) — all still absent at 08712fef; release-readiness, lane 149K reports them."),
+  // Wave 152 (lane 152K — convergence row 93): F-3 landed in wave 149Z (realFetcher's 202 branch); F-4 (app/api/health) and
+  // F-6/R-5 (instrumentation.ts onRequestError; app/global-error.tsx since 149Z) landed in 152K. Closed on code the generator re-derives.
+  "143H-SO-03": { s: "closed", e: ["lib/kernel/cron-dispatch.ts#=== \"TimeoutError\") return { ok: true, status: 202 }", "app/api/health/route.ts#export async function GET(", "instrumentation.ts#export async function onRequestError(", "app/global-error.tsx#export default function GlobalError("], by: "wave 152 lane 152K (convergence row 93) — F-3 since 149Z, F-4 and F-6 built 152K" },
   "143H-SO-04": ca("deferred", "owner", "13 webhook doors cannot see their own delivery failure; verified per provider console by the owner (checklist §4.9); a per-provider expected-event heartbeat is the durable fix."),
   "143H-SO-05": ca("owner-decision", "owner", OWNERQ),
   "143H-SO-06": ca("missing-credentials", "owner", "DOCUMENT_AUDIT_VISION_FALLBACK_MODEL still defaults to anthropic/claude-3-5-sonnet-20241022 (lib/kernel/document-compliance-audit.ts:282); unresolved until checked against the AI Gateway catalogue with the real key.", undefined, ["env:DOCUMENT_AUDIT_VISION_FALLBACK_MODEL"]),
@@ -157,9 +159,9 @@ export const WAVE149J_DISPOSITIONS: Record<string, Disposition> = {
   "143H-OL-03": ca("missing-code", "lane149Z", "scripts/dangling-link-sweep.ts is not visibly scoped to the redirects() block (no headers() distinction found); the operations-docs guard's 'no catch-all :path* header' assertion holds the risk meanwhile."),
   "143H-OL-04": ca("missing-code", "lane149Z", "app/actions/services-config.ts:50 still tests PDL_API_KEY (the client reads PEOPLEDATA_API_KEY) and Dotloop's env_key is still DOTLOOP_API_KEY; change together with scripts/operations-docs-data.ts:375 and the regenerated ENVIRONMENT-INVENTORY."),
   "143H-OL-05": ca("missing-code", "lane149Z", "app/api/admin/system/providers/test/route.ts:49 still reads APIFY_API_KEY instead of apifyToken() (lib/env/aliases.ts); change with operations-docs-data.ts:395."),
-  "143H-OL-06": ca("missing-code", "lane149K", "lib/kernel/cron-dispatch.ts realFetcher still maps a TimeoutError to a failure (no 202 branch; grep TimeoutError: 0)."),
-  "143H-OL-07": ca("missing-code", "lane149K", "app/api/health/route.ts does not exist; add it with app/constants/auth.ts public-by-name + proxy-sessionless-doors-guard + the operations-docs flip, together."),
-  "143H-OL-08": ca("missing-code", "lane149K", "instrumentation.ts onRequestError and app/global-error.tsx are absent (grep: 0)."),
+  "143H-OL-06": { s: "closed", e: ["lib/kernel/cron-dispatch.ts#=== \"TimeoutError\") return { ok: true, status: 202 }"], by: "wave 152 lane 152K re-read — the 202 branch landed in wave 149Z (Outside-lane K); this disposition was stale" },
+  "143H-OL-07": { s: "closed", e: ["app/api/health/route.ts#export async function GET(", "app/constants/auth.ts#'/api/health',", "key:test:proxy-sessionless-doors"], by: "wave 152 lane 152K (convergence row 93) — route + public-by-name + the sessionless-doors census §H, together" },
+  "143H-OL-08": { s: "closed", e: ["instrumentation.ts#export async function onRequestError(", "instrumentation.ts#await collectError({", "app/global-error.tsx#export default function GlobalError("], by: "wave 152 lane 152K (convergence row 93) — onRequestError → collectError; global-error.tsx since 149Z" },
   "143H-OL-09": ca("missing-code", "lane149Z", "Sender literals still ship: lib/email/orchestrate-email-preset-send.ts:88 'noreply@vipre.io', app/actions/ai-newsletter.ts:587 and app/api/cron/publish-newsletters/route.ts:478 'platform.com'. Refuse by name when OUTBOUND_EMAIL_FROM / NEWSLETTER_FROM_DOMAIN is unset, with scripts/operations-docs-data.ts:315–316 + the regenerated inventory.", true),
   "143H-OL-10": ca("missing-credentials", "owner", "Same as 143H-SO-06 — the fallback model slug needs the AI Gateway catalogue read with the real key.", undefined, ["env:DOCUMENT_AUDIT_VISION_FALLBACK_MODEL"]),
   "143H-OL-11": ca("missing-code", "lane149Z", "lib/forms/state-package-match.ts has no tie-break on extra tokens / Jaccard (grep: 0) — 'Purchase Agreement Addendum' can still out-rank 'Purchase Agreement'."),
@@ -588,7 +590,7 @@ export const WAVE149J_DISPOSITIONS: Record<string, Disposition> = {
   "146I-OL-43": ca("missing-code", "lane149Z", "Same as 145J-OL-01 — RulingOwner widening."),
   "146I-OL-44": ca("missing-code", "lane149Z", "Same as 143H-OL-04 / OL-05 — the PDL / Apify env spellings with operations-docs-data."),
   "146I-OL-45": ca("missing-wiring", "lane149Z", "Same as 145C-OL-02 / OL-03 — net-sheet fee readers and enterClientAgreementFee."),
-  "146I-OL-46": ca("missing-code", "lane149K", "Same as 143H-OL-07 — the liveness route."),
+  "146I-OL-46": { s: "closed", e: ["app/api/health/route.ts#export async function GET(", "app/constants/auth.ts#'/api/health',", "key:test:proxy-sessionless-doors"], by: "wave 152 lane 152K (convergence row 93) — same as 143H-OL-07" },
   "146J-SO-01": ca("inherent-limit", "inherent", SUPERSEDED),
   "146J-SO-02": cl(["scripts/ui-palette-contrast-guard.ts#bgAlpha: 0.6", "chain:test:ui-palette-contrast"], "the dark destructive pair is judged at the primitives' /60 composite, in the chain"),
   "146J-SO-03": cl(["lib/kernel/manager-registry.ts#lead_magnet_promises: \"campaign_orchestrator\"", "key:test:wave146-canaries"]),

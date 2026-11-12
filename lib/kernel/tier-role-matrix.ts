@@ -378,6 +378,16 @@ export function isCanonicalTier(tier: string | null | undefined): tier is Canoni
 }
 
 /**
+ * PURE — does this plan tier carry offices? Brokerage and above in TIER_ORDER; a solo agent and a team carry none (a
+ * team IS a mini brokerage, m473). THE one spelling (wave 152, lane 152K — 152A outside-lane 5): it was written twice,
+ * as `OFFICE_TIERS` in lib/kernel/tenant-creation.ts and as an index test in lib/errors/index.ts tenantPayerForTier;
+ * both now read this. An unknown / legacy / NULL tier carries none (fail closed — never the brokerage reading).
+ */
+export function tierCarriesOffices(tier: string | null | undefined): boolean {
+  return isCanonicalTier(tier) && TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf("brokerage")
+}
+
+/**
  * The invitable menu for an UNKNOWN / legacy / NULL tier.
  *
  * ── WHY THIS IS NOW THE SAME LIST, AND WHY THAT IS NOT A FAIL-OPEN ──────────

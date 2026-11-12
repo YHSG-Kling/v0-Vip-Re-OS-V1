@@ -65,9 +65,9 @@ export function ClosingVerificationCard({ transactionId }: { transactionId: stri
       <CardHeader>
         <CardTitle>Closing verification</CardTitle>
         <CardDescription>
-          Before the CDA is submitted: the signed agreements, the terms in force, the executed contract and its addenda, the
-          settlement statement and the commission calculation are compared — and you confirm whether any executed change is not
-          recorded yet.
+          Before closing (and before the CDA is submitted, where your brokerage uses one): the signed agreements, the terms in force,
+          the executed contract and its addenda, the settlement statement and the commission calculation are compared — and you
+          confirm whether any executed change is not recorded yet. The deal cannot close until this is answered.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

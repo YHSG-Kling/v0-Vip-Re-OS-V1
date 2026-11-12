@@ -268,7 +268,9 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       const { error: isaMailStampErr } = await supabase
         .from('direct_mail_campaigns')
         .update({
-          status:        result.success ? 'sent' : 'failed',
+          // ONE vocabulary (wave 152, 152K — convergence row 45 census): 'mailed' is the CHECK's word; 'sent' was refused,
+          // so this whole stamp was lost and the row sat in 'planning' (the very thing the comment above meant to prevent).
+          status:        result.success ? 'mailed' : 'failed',
           lob_order_id:  result.messageId ?? null,
           mailing_date:  result.success ? new Date().toISOString().slice(0, 10) : null,
           pieces_mailed: result.success ? 1 : 0,

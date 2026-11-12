@@ -122,6 +122,22 @@ export async function revertPolicy(
           })
           wrote = w.success ? { ok: true } : { ok: false, error: w.error }
         }
+      } else if (parsed.key === "cda_policy") {
+        // Wave 152 (152H) — through the survivor writer: its finance-admin + brokerage-wide gate, its reason rule, its ledger row and
+        // version append. A revert is a NEW version effective now: deals opened before it keep the policy they opened under.
+        // A version whose value is "not answered" cannot be re-applied — the setting is never un-declared.
+        const v = (value ?? null) as { offers_cda?: boolean | null; non_cda_payout_default?: string | null } | null
+        if (typeof v?.offers_cda !== "boolean") {
+          wrote = { ok: false, error: `Version ${version} of cda_policy is the unanswered setting — choose CDA or no CDA in CDA settings instead.` }
+        } else {
+          const { setBrokerageCdaSettingAction } = await import("@/app/actions/brokerage-cda-setup")
+          const w = await setBrokerageCdaSettingAction({
+            offersCda: v.offers_cda,
+            nonCdaPayoutDefault: v.non_cda_payout_default === "check" ? "check" : v.non_cda_payout_default === "direct_deposit" ? "direct_deposit" : null,
+            reason,
+          })
+          wrote = w.success ? { ok: true } : { ok: false, error: w.error }
+        }
       } else if (parsed.key === "review_request_delay_days" || parsed.key === "live_agent_face_provider_order") {
         const cols = await import("@/lib/settings/brokerage-settings-columns")
         const w = parsed.key === "review_request_delay_days"

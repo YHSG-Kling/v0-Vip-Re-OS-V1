@@ -823,6 +823,21 @@ async function batchDataPropertySearch(body: unknown, errorLabel: string, tenant
   return res.data
 }
 
+/**
+ * THE count of matching properties on a Property Search response (wave 152, lane 152K — convergence row 23).
+ * BatchData DOCUMENTS it at `results.meta.results.resultsFound` (its Property Search page and the v1 reference's results
+ * meta: "the total number of properties that match the search criteria", beside `resultCount`, the returned — billed —
+ * rows). Both readers here read `results.meta.totalResults`, which the documentation does not name, so the count fell
+ * back to the page length (fetchMotivatedSellers) or null (the incremental search, whose `results_found` the acquisition
+ * plan now reads as its free preview). The documented path is read first; the two earlier shapes stay as fallbacks so a
+ * response that does carry them still counts. A non-number is null — never a guess.
+ */
+function searchResultsFound(data: any): number | null {
+  const candidates = [data?.results?.meta?.results?.resultsFound, data?.results?.meta?.totalResults, data?.results?.resultsFound]
+  for (const c of candidates) if (typeof c === "number" && Number.isFinite(c) && c >= 0) return c
+  return null
+}
+
 export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions): Promise<{
   records: BatchDataRecord[]
   cost: number
@@ -863,7 +878,7 @@ export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions
 
   return {
     records,
-    recordsFound: data?.results?.meta?.totalResults ?? properties.length,
+    recordsFound: searchResultsFound(data) ?? properties.length,
     cost: records.length * BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD,
   }
 }
@@ -1865,7 +1880,7 @@ export async function lookupBatchDataPropertiesByIds(
 // `options.pageCursor` (opaque, signed, bound to the searchCriteria that produced it —
 // a cursor from one search cannot be replayed against a different one).
 // `results.nextPageCursor` on the response feeds the NEXT call's `pageCursor`;
-// `results.meta.totalResults` (`resultsFound`) is frozen from page 1 and must not be
+// `results.meta.results.resultsFound` (documented; read by searchResultsFound) is frozen from page 1 and must not be
 // re-read as if paging changed it; no random sort order is admitted while paging.
 // `options.searchSession` (a caller-named persistent context) additionally narrows
 // delivery to properties NEVER BEFORE returned under that session name — this is what
@@ -1963,7 +1978,7 @@ export async function fetchIncrementalPropertySearch(params: {
       ok: true,
       records,
       nextPageCursor: typeof data?.results?.nextPageCursor === "string" ? data.results.nextPageCursor : null,
-      resultsFound: typeof data?.results?.meta?.totalResults === "number" ? data.results.meta.totalResults : (typeof data?.results?.resultsFound === "number" ? data.results.resultsFound : null),
+      resultsFound: searchResultsFound(data),
       sessionUnsupported: false,
       cost: records.length * BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD,
     }

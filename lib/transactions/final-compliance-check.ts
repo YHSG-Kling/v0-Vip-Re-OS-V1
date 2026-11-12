@@ -95,6 +95,20 @@ export async function runFinalComplianceCheck(
     else {
       closingBlockingRows = closing.openBlocking
       closingFindings = closing.blockingSummary.slice(0, 12)
+      // WAVE 152 (lane 152G): the settlement reconciliation the same run produced. A money term the executed contract states that the
+      // statement does not show (a signed credit missing), or a difference resting on an unverified reading, holds the CDA too — the
+      // broker never approves a CDA on figures nobody reconciled. Not the final-record requirement (the CDA is submitted on the
+      // preliminary statement — the gated close requires the final one) and not the lines the 152E rows above already name.
+      const rec = closing.reconciliation?.reconciliation
+      if (rec) {
+        const blockingItems = rec.items.filter((i) => i.blocking)
+        rec.blockers.forEach((line, idx) => {
+          const item = blockingItems[idx]
+          if (item && item.key.startsWith("term.") && (item.status === "missing_on_document" || item.status === "unverified_reading")) closingFindings.push(`Settlement: ${line}`)
+        })
+      } else if (closing.reconciliation && !closing.reconciliation.ok) {
+        closingCheckError = `the settlement reconciliation did not run (${closing.reconciliation.error ?? "unknown"})`
+      }
     }
   } catch (err) {
     closingCheckError = err instanceof Error ? err.message : "unexpected failure"

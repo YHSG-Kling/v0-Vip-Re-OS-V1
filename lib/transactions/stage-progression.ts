@@ -85,12 +85,25 @@ export async function canAdvanceStage(
     if (brokerageErr || !brokerageRow) {
       blockers.push(`CDA requirement could not be read (${brokerageErr?.message ?? "brokerage not found"}) — the CDA milestone stays required`)
     } else {
-      const { resolveCdaMode } = await import("./cda-closing-policy")
-      const mode = resolveCdaMode({
-        offersCda: (brokerageRow as { offers_cda?: boolean | null }).offers_cda ?? null,
-        nonCdaPayoutDefault: (brokerageRow as { non_cda_payout_default?: string | null }).non_cda_payout_default ?? null,
+      // WAVE 152 (lane 152H): THE EFFECTIVE POLICY FOR THIS DEAL — the brokerage's CDA setting in force when the deal OPENED (or a
+      // finance admin's switch of this deal), never today's setting applied backwards: a deal opened before the brokerage opted in
+      // closes without a CDA; one opened after needs the delivered CDA (cda-closing-policy.ts §1c). Unreadable → the milestone stays.
+      const { resolveCdaMode, loadEffectiveCdaModes } = await import("./cda-closing-policy")
+      const effective = await loadEffectiveCdaModes(supabase, {
+        brokerageId,
+        transactionIds: [transactionId],
+        live: {
+          offersCda: (brokerageRow as { offers_cda?: boolean | null }).offers_cda ?? null,
+          nonCdaPayoutDefault: (brokerageRow as { non_cda_payout_default?: string | null }).non_cda_payout_default ?? null,
+        },
       })
-      if (!mode.cdaRequired) criticalForStage = criticalForStage.filter((m) => m !== CDA_MILESTONE)
+      const governing = effective.ok ? effective.deals[transactionId]?.governing : undefined
+      if (!governing) {
+        blockers.push(`CDA requirement could not be read (${effective.ok ? "deal not found" : effective.error}) — the CDA milestone stays required`)
+      } else {
+        const mode = resolveCdaMode(governing)
+        if (!mode.cdaRequired) criticalForStage = criticalForStage.filter((m) => m !== CDA_MILESTONE)
+      }
     }
   }
   if (criticalForStage.length > 0) {
@@ -152,6 +165,33 @@ export async function canAdvanceStage(
         blockers.push(`Deal-breaker compliance flag: ${flag.flag_type} (${flag.status})`)
       }
     }
+  }
+
+  // 8b. THE CLOSE HOLDS ON A CORRECT SETTLEMENT RECORD — IN BOTH CDA MODES — AND, WITHOUT A CDA, ON THE CLOSING QUESTION
+  //     (wave 152, lane 152G). Owner, verbatim (2026-11-11): "anytime there is a change at closing to transaction, the final closing
+  //     desclosure has to be correct. evn though the brokerage doesnt support a cda, compliance still needs to accurate along with
+  //     the closing disclosure. that is not informational." The ruling this records: the no-CDA close is no longer informational
+  //     (OWNER-SQL §L L6.2 option (b) is superseded for the settlement and the closing question). So, at the gated close:
+  //       (a) THE ONE closing check runs fresh (runClosingCompliance, trigger final_check — idempotent: it writes and tells only what
+  //           changed) and its tail RECONCILES the latest settlement record against the executed terms. The deal closes only when the
+  //           reconciliation is READY and the final settlement record / Closing Disclosure is on file. Each discrepancy clears by
+  //           AUTHORITATIVE evidence — a corrected statement read and compared, a person's verified reading, or one authorized waiver
+  //           with a written reason on its compliance row (152E's override door) — never by a date and never by "approve all".
+  //           A check that cannot run refuses (fail closed). Step 9 then reads the rows it just refreshed.
+  //       (b) WITHOUT A CDA the closing question ("is any executed change unrecorded?") is ASKED here as a BLOCKING row and must be
+  //           answered "no" (pass) — a CDA brokerage answers it at CDA submit (app/actions/cda-portal.ts). A CDA is still never a
+  //           closing requirement (resolveCdaMode.blocksClosing stays false); what holds is the record being unverified.
+  if (targetStage === CLOSED_STAGE) {
+    const { closingSettlementGate } = await import("@/lib/offers/closing-cost-accuracy")
+    const settlementGate = await closingSettlementGate(supabase, { transactionId, brokerageId }, {
+      // the closing question is ASKED here (the gate only reads its answer): the writer every closing gate reads, BLOCKING
+      askClosingQuestion: async () => {
+        const { ensureClosingAttestationAsked, closingAttestationState } = await import("@/lib/commission/closing-verification")
+        const asked = await ensureClosingAttestationAsked(supabase as never, { brokerageId, transactionId })
+        return asked.ok ? closingAttestationState(supabase as never, { brokerageId, transactionId }) : asked
+      },
+    })
+    blockers.push(...settlementGate.blockers)
   }
 
   // 9. Block CLOSING_PREP — AND the CLOSE itself — if any blocking transaction compliance check has failed or is
@@ -359,6 +399,26 @@ export async function advanceStage(params: {
       // Don't block stage advancement on commission calculation failure
     })
 
+    // ── THE CLOSING QUESTION, ASKED EARLY WITHOUT A CDA (wave 152, lane 152G — owner: "that is not informational") ──
+    // A CDA brokerage's agent answers "is any executed change unrecorded?" at CDA submit. Without a CDA it is asked HERE, on entering
+    // closing prep, as the same BLOCKING row (closing-verification.ts — the writer every closing gate reads), so the agent / TC sees
+    // it on the deal's closing page before anyone tries to close; canAdvanceStage step 8b holds the close until it is answered "no".
+    // A refused mode read asks it anyway (fail closed: the question is never skipped because a setting could not be read).
+    try {
+      // WAVE 152 (lane 152H): the CDA mode that governs THIS deal (cda-closing-policy.ts §1c); unreadable → asked anyway (fail closed).
+      const { resolveCdaMode, loadEffectiveCdaModes } = await import("./cda-closing-policy")
+      const eff = await loadEffectiveCdaModes(supabase, { brokerageId: params.brokerageId, transactionIds: [params.transactionId] })
+      const governing = eff.ok ? eff.deals[params.transactionId]?.governing : undefined
+      const cdaRequired = !!governing && resolveCdaMode(governing).cdaRequired
+      if (!cdaRequired) {
+        const { ensureClosingAttestationAsked } = await import("@/lib/commission/closing-verification")
+        const asked = await ensureClosingAttestationAsked(supabase as never, { brokerageId: params.brokerageId, transactionId: params.transactionId })
+        if (!asked.ok) console.error(`[stage-progression] closing question not asked for ${params.transactionId} (the close still holds on it): ${asked.error}`)
+      }
+    } catch (e) {
+      console.error("[stage-progression] closing question ask failed (the close still holds on it):", e instanceof Error ? e.message : String(e))
+    }
+
     // ── Buyer move-in concierge (Deal Coordinator) ────────────────────────────
     // Entering CLOSING_PREP is when the buyer's second job begins — turn on utilities, change address,
     // book movers. Stand up the dated move-in checklist now so the guided-DIY concierge (and the
@@ -441,36 +501,24 @@ export async function advanceStage(params: {
     // at DISBURSEMENT, not here). For a NON-CDA brokerage there is no CDA broker-sign, so closing the
     // deal auto-APPROVES the earnings record (pending → approved) to keep the later disbursement path
     // uniform; a CDA brokerage was already approved by the broker's CDA signature. Best-effort.
-    let closedWithoutCda = false
     try {
       const { finalizeCommissionAtClose } = await import("@/lib/commission/reconcile-tracking")
-      const finalized = await finalizeCommissionAtClose(supabase, {
+      await finalizeCommissionAtClose(supabase, {
         transactionId: params.transactionId,
         brokerageId:   params.brokerageId,
         actorUserId:   params.userId,
       })
-      closedWithoutCda = !finalized.offersCda
     } catch (e) {
       console.error("[stage-progression] commission finalize-on-close failed:", e)
     }
 
-    // ── CLOSING WITHOUT A CDA (wave 151, lane 151K; owner: "if the brokerage doesn't use CDAs … it can close without a CDA";
-    //    OWNER-SQL §L L6.2 option (b)). The deal just closed with NO CDA (the ONE switch, resolveCdaMode, read by
-    //    finalizeCommissionAtClose above). The closing question a CDA brokerage's agent answers at CDA submit — "is any executed
-    //    change (agreement amendment, addendum, fee change) unrecorded?" — is asked of this deal's agent / TC too, as an
-    //    INFORMATIONAL compliance row: the close already happened and is never held on it; the answer records who said what, and a
-    //    "yes" tells the admins and holds nothing else (lib/commission/closing-verification.ts). Nothing here creates a CDA, fills
-    //    one, asserts funds received or releases a payout — the funds-received gate and the CLOSED / PAYOUT PENDING hold stand.
-    //    Option (c) — a BLOCKING ask for no-CDA brokerages that opt in — is an owner decision and is not built.
-    if (closedWithoutCda) {
-      try {
-        const { ensureClosingAttestationAsked } = await import("@/lib/commission/closing-verification")
-        const asked = await ensureClosingAttestationAsked(supabase as never, { brokerageId: params.brokerageId, transactionId: params.transactionId, informational: true })
-        if (!asked.ok) console.error(`[stage-progression] no-CDA closing question not asked for ${params.transactionId}: ${asked.error}`)
-      } catch (e) {
-        console.error("[stage-progression] no-CDA closing question failed (non-blocking):", e instanceof Error ? e.message : String(e))
-      }
-    }
+    // TOMBSTONE (wave 152, lane 152G): "CLOSING WITHOUT A CDA — the closing question asked INFORMATIONALLY after the close" (wave 151,
+    //    lane 151K; OWNER-SQL §L L6.2 option (b)) stood here: the deal closed first, then a non-blocking row asked whether any executed
+    //    change was unrecorded (keyed on finalizeCommissionAtClose's `offersCda`). The owner ruled (2026-11-11) "that is not
+    //    informational". SURVIVOR: canAdvanceStage step 8b (lib/transactions/stage-progression.ts, this file) asks the same question
+    //    through the same writer (lib/commission/closing-verification.ts ensureClosingAttestationAsked) as a BLOCKING row BEFORE the
+    //    close and holds the close until it is answered "no"; the CLOSING_PREP entry below asks it early. Nothing here creates a CDA,
+    //    asserts funds received or releases a payout — the funds-received gate and CLOSED / PAYOUT PENDING stand.
 
     // ── CLOSING-COST ACCURACY FLYWHEEL (owner round 34, rec 5) ────────────────
     // The deal just CLOSED. If a scanned Closing Disclosure is on the document

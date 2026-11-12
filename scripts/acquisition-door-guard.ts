@@ -331,6 +331,50 @@ async function main() {
   check("the governance readers test the SAME word the pipeline now writes", /enrichment_status !== 'complete'/.test(stripped("lib/lead-governance/promotion-readiness.ts")) && /enrichment_status !== 'complete'/.test(stripped("lib/lead-governance/routing-evaluator.ts")) && (er.LEAD_ENRICHMENT_STATUSES as readonly string[]).includes("complete"))
   check("the pipeline writes the status through the one rule at both doors (insert + merge)", (proc.match(/leadEnrichmentStatusFor\(/g) ?? []).length >= 2)
 
+  // ── R23 · CONVERGENCE ROW 23 (wave 152, lane 152K): BatchData's count INTO the plan, with no new provider call ──
+  // BatchData documents the count at results.meta.results.resultsFound and bills per RETURNED record; it documents no free
+  // count-only endpoint. The proposal therefore reads the count BatchData already returned on the territory's own PAID
+  // incremental pulls (batchdata_incremental_search_state.results_found) — previewsFromObservedSearchCounts, pure.
+  console.log("\n[R23 · BatchData's own count from already-paid pulls → the plan's free preview + hunting / farming]")
+  {
+    const territory23 = { id: "00000000-0000-4000-8000-0000000000a1", brokerageId: "00000000-0000-4000-8000-0000000000b1", label: "R23" }
+    const fresh = pl.previewsFromObservedSearchCounts([
+      { lane: "high-equity", results_found: 1840, last_run_at: ago(2) },
+      { lane: "preforeclosure", results_found: 61, last_run_at: ago(3) },
+      { lane: "absentee-owner", results_found: 900, updated_at: ago(1) },
+    ], { now: NOW, maxAgeDays: 30 })
+    check("R23 the motivated line's preview is BatchData's LARGEST fresh lane count (lanes overlap — a lower bound, never a sum)", fresh.previews.batchdata_motivated?.count === 1840 && fresh.used === 3, JSON.stringify(fresh.previews))
+    check("R23 the preview says where the count came from and that no new call was made", /BatchData's own count on this territory's last paid pull \(high-equity, /.test(fresh.previews.batchdata_motivated?.via ?? "") && /no new call/.test(fresh.previews.batchdata_motivated?.via ?? ""))
+    check("R23 the distress count comes only from distress lanes (preforeclosure 61; high-equity / absentee are not distress)", fresh.distressPreviewCount === 61)
+    const planned = pl.planSourceDiscovery({ territory: territory23, budgetUsd: 500, enabledSources: ["batchdata_motivated"] as any, history: {}, previews: fresh.previews, quotes: { batchdata_motivated: { unitUsd: 0.05, basis: "catalogue" } }, distressPreviewCount: fresh.distressPreviewCount, now: NOW })
+    const line23 = planned.lines.find((l) => l.source === "batchdata_motivated")
+    check("R23 the plan line carries the count as its reach and prices it (1840 × $0.05 = $92)", line23?.previewCount === 1840 && line23?.estimatedReach === 1840 && line23?.quoteUsd === 92, JSON.stringify({ p: line23?.previewCount, r: line23?.estimatedReach, q: line23?.quoteUsd, s: line23?.status }))
+    check("R23 hunting vs farming is now KNOWN from the distress count (61 ≥ the farming floor → hunting)", planned.marketMode === "hunting" && !planned.blindSpots.some((b) => /no distress preview count/.test(b)))
+    // ADVERSE: stale, negative, null, unnamed lanes never become a preview; a thin distress count reads farming.
+    const adverse = pl.previewsFromObservedSearchCounts([
+      { lane: "high-equity", results_found: 5000, last_run_at: ago(45) },
+      { lane: "vacant", results_found: -3, last_run_at: ago(1) },
+      { lane: "tax-default", results_found: null, last_run_at: ago(1) },
+      { lane: null, results_found: 70, last_run_at: ago(1) },
+      { lane: "notice-of-default", results_found: 12, last_run_at: ago(1) },
+    ], { now: NOW, maxAgeDays: 30 })
+    check("ADVERSE R23: a 45-day-old count is STALE (not used); a negative / null / lane-less count is ignored", adverse.stale === 1 && adverse.used === 1 && adverse.previews.batchdata_motivated?.count === 12, JSON.stringify(adverse))
+    const thin23 = pl.planSourceDiscovery({ territory: territory23, budgetUsd: 500, enabledSources: ["batchdata_motivated"] as any, history: {}, previews: adverse.previews, quotes: { batchdata_motivated: { unitUsd: 0.05, basis: "catalogue" } }, distressPreviewCount: adverse.distressPreviewCount, now: NOW })
+    check("ADVERSE R23: a thin distress count (12) reads FARMING, never hunting", thin23.marketMode === "farming")
+    const none23 = pl.previewsFromObservedSearchCounts([], { now: NOW, maxAgeDays: 30 })
+    const nonePlan = pl.planSourceDiscovery({ territory: territory23, budgetUsd: 500, enabledSources: ["batchdata_motivated"] as any, history: {}, previews: none23.previews, quotes: { batchdata_motivated: { unitUsd: 0.05, basis: "catalogue" } }, distressPreviewCount: none23.distressPreviewCount, now: NOW })
+    check("ADVERSE R23: no stored count → no preview, the line still NEEDS a preview, and hunting / farming stays UNKNOWN (no invented count)", Object.keys(none23.previews).length === 0 && none23.distressPreviewCount === null && nonePlan.lines.find((l) => l.source === "batchdata_motivated")?.status === "needs_preview" && nonePlan.marketMode === "unknown")
+    const act23 = stripped("app/actions/acquisition-plan.ts")
+    check("R23 WIRED: the proposal reads batchdata_incremental_search_state for THIS (tenant-pinned) territory, folds it through the pure rule, and feeds the distress count to the planner",
+      /from\("batchdata_incremental_search_state"\)[\s\S]{0,160}\.eq\("market_id", terr\.id\)/.test(act23) && /previewsFromObservedSearchCounts\(/.test(act23) && /distressPreviewCount: observed\?\.distressPreviewCount \?\? null/.test(act23))
+    check("R23 the proposal still calls NO provider (no batchdata-client import, no fetch) — a proposal never spends", !/batchdata-client|fetchMotivatedSellers|fetchIncrementalPropertySearch|\bfetch\(/.test(act23))
+    check("R23 a refused count read is a published blind spot, never a silent 'no count'", /countErr\) extraBlindSpots\.push\(/.test(act23) && /plan\.blindSpots\.push\(\.\.\.extraBlindSpots\)/.test(act23))
+    const client23 = blankStrings(stripped("lib/external/batchdata-client.ts"))
+    const documentedFirst = /function searchResultsFound\([\s\S]{0,200}results\?\.meta\?\.results\?\.resultsFound,\s*data\?\.results\?\.meta\?\.totalResults/
+    check("R23 the client reads BatchData's DOCUMENTED count path (results.meta.results.resultsFound) first, in both search readers", documentedFirst.test(client23) && (client23.match(/searchResultsFound\(data\)/g) ?? []).length >= 2)
+    check("R23 POSITIVE CONTROL: the finder rejects the pre-fix reader (meta.totalResults only, no documented path)", !documentedFirst.test("resultsFound: typeof data?.results?.meta?.totalResults === 1 ? data.results.meta.totalResults : null"))
+  }
+
   console.log(`\nACQUISITION DOOR — ${passed} passed, ${failed} failed ${failed === 0 ? "✅ ACQUISITION_DOOR_PASS" : "❌ ACQUISITION_DOOR_FAIL"}`)
   console.log(`RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)

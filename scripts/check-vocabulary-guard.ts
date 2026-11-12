@@ -131,6 +131,134 @@ export function topLevelPairs(objText: string): Array<{ key: string; value: stri
   return out
 }
 
+// ── CONVERGENCE ROW 45 (wave 152, lane 152K): the WRITE literals topLevelPairs cannot see ─────────────
+// `key: "literal"` is the only shape topLevelPairs reads. A status written as a TERNARY
+// (`status: failed > 0 ? "completed_with_errors" : "completed"`), as a FALLBACK (`status: s ?? "queued"`) or through
+// a VARIABLE assigned earlier (`const status = …; .update({ status })`) reaches the database just the same — and the
+// first of those is exactly the shape app/api/accounting/sync/route.ts shipped: a value the live CHECK refuses, which
+// this guard reported as zero for as long as it existed. The census below widens the payload scan to every literal an
+// expression can EVALUATE TO, and never to a literal in a ternary's CONDITION or inside a call's arguments.
+
+/** PURE — index of the matching close for the open bracket at `i` (strings skipped), or -1. */
+function closeOf(s: string, i: number): number {
+  const open = s[i], close = open === "(" ? ")" : open === "[" ? "]" : "}"
+  let depth = 0
+  for (let k = i; k < s.length; k++) {
+    const c = s[k]
+    if (c === '"' || c === "'" || c === "`") { const end = skipString(s, k); if (end < 0) return -1; k = end; continue }
+    if (c === open) depth++
+    else if (c === close) { depth--; if (depth === 0) return k }
+  }
+  return -1
+}
+/** PURE — index of the closing quote of the string literal opening at `i` (escapes honored), or -1. */
+function skipString(s: string, i: number): number {
+  const q = s[i]
+  for (let k = i + 1; k < s.length; k++) { if (s[k] === "\\") { k++; continue } if (s[k] === q) return k }
+  return -1
+}
+/** PURE — the top-level (depth-0, outside strings) positions of `tokens` in `s`, in order. */
+function topLevelHits(s: string, test: (s: string, k: number) => number): Array<{ at: number; len: number }> {
+  const out: Array<{ at: number; len: number }> = []
+  let depth = 0
+  for (let k = 0; k < s.length; k++) {
+    const c = s[k]
+    if (c === '"' || c === "'" || c === "`") { const end = skipString(s, k); if (end < 0) break; k = end; continue }
+    if (c === "(" || c === "[" || c === "{") { depth++; continue }
+    if (c === ")" || c === "]" || c === "}") { depth--; continue }
+    if (depth !== 0) continue
+    const len = test(s, k)
+    if (len > 0) { out.push({ at: k, len }); k += len - 1 }
+  }
+  return out
+}
+
+/**
+ * PURE — every string literal `expr` can EVALUATE TO: a plain literal (or an interpolation-free template); each RESULT
+ * branch of a ternary (nested ternaries recurse); each operand of a top-level `??` / `||` fallback. A literal in a
+ * ternary's CONDITION (`s === "x" ? …`), inside a call / array / object, or behind `&&` is never a result and is never
+ * returned. Exported so the checks below drive it directly.
+ */
+export function resultLiterals(expr: string): string[] {
+  let e = expr.trim().replace(/\s+as\s+const$/, "").replace(/\s+as\s+[A-Za-z_$][\w$.<>[\]| "']*$/, "").trim()
+  while (e.startsWith("(") && closeOf(e, 0) === e.length - 1) e = e.slice(1, -1).trim()
+  const lit = /^(["'])([^"'\n\\]*)\1$/.exec(e) ?? /^(`)([^`$\n\\]*)`$/.exec(e)
+  if (lit) return [lit[2]]
+  // A ternary: the first top-level `?` that is neither `?.` nor `??`.
+  const q = topLevelHits(e, (s, k) => (s[k] === "?" && s[k + 1] !== "." && s[k + 1] !== "?" && s[k - 1] !== "?" ? 1 : 0))[0]
+  if (q) {
+    let pending = 0
+    const rest = e.slice(q.at + 1)
+    const colon = topLevelHits(rest, (s, k) => {
+      if (s[k] === "?" && s[k + 1] !== "." && s[k + 1] !== "?" && s[k - 1] !== "?") { pending++; return 0 }
+      if (s[k] === ":") { if (pending === 0) return 1; pending--; }
+      return 0
+    })[0]
+    if (!colon) return []
+    return [...resultLiterals(rest.slice(0, colon.at)), ...resultLiterals(rest.slice(colon.at + 1))]
+  }
+  const fallbacks = topLevelHits(e, (s, k) => ((s[k] === "?" && s[k + 1] === "?") || (s[k] === "|" && s[k + 1] === "|") ? 2 : 0))
+  if (fallbacks.length > 0) {
+    const parts: string[] = []
+    let from = 0
+    for (const h of fallbacks) { parts.push(e.slice(from, h.at)); from = h.at + h.len }
+    parts.push(e.slice(from))
+    return parts.flatMap((p) => resultLiterals(p))
+  }
+  return []
+}
+
+/**
+ * PURE — the TOP-LEVEL `key: <expression>` / shorthand `key` members of the object literal that opens `objText`
+ * (spreads and computed keys skipped). Nested objects / arrays stay inside their member (a `metadata` bag is a value,
+ * never a column — the same rule topLevelPairs states).
+ */
+export function topLevelMembers(objText: string): Array<{ key: string; expr: string; shorthand: boolean }> {
+  const start = objText.indexOf("{")
+  if (start < 0) return []
+  const end = closeOf(objText, start)
+  if (end < 0) return []
+  const body = objText.slice(start + 1, end)
+  const commas = topLevelHits(body, (s, k) => (s[k] === "," ? 1 : 0))
+  const segs: string[] = []
+  let from = 0
+  for (const c of commas) { segs.push(body.slice(from, c.at)); from = c.at + 1 }
+  segs.push(body.slice(from))
+  const out: Array<{ key: string; expr: string; shorthand: boolean }> = []
+  for (const raw of segs) {
+    const seg = raw.trim()
+    if (!seg || seg.startsWith("...")) continue
+    const m = /^(?:([A-Za-z_$][\w$]*)|(["'])([A-Za-z_$][\w$]*)\2)\s*:\s*([\s\S]+)$/.exec(seg)
+    if (m) { out.push({ key: m[1] ?? m[3], expr: m[4].trim(), shorthand: false }); continue }
+    if (/^[A-Za-z_$][\w$]*$/.test(seg)) out.push({ key: seg, expr: seg, shorthand: true })
+  }
+  return out
+}
+
+/**
+ * PURE — the literals a bare IDENTIFIER may hold where it is written: its nearest preceding `const|let|var <id> = …`
+ * in `before` (the file text above the chain) plus every later `<id> = …` reassignment, each through resultLiterals.
+ * Lookback is bounded (`span` chars) so an unrelated declaration of the same name far away is not attributed here.
+ */
+export function assignedLiterals(before: string, ident: string, span = 2500): string[] {
+  const text = before.slice(Math.max(0, before.length - span))
+  const id = ident.replace(/[$]/g, "\\$")
+  const decl = [...text.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${id}\\s*(?::\\s*[^=\\n]+)?=(?!=)`, "g"))].pop()
+  if (!decl || decl.index === undefined) return []
+  const tail = text.slice(decl.index)
+  const exprAt = (s: string, at: number): string => {
+    const after = s.slice(at)
+    const stop = topLevelHits(after, (x, k) => (x[k] === ";" || x[k] === "\n" ? 1 : 0))[0]
+    return stop ? after.slice(0, stop.at) : after
+  }
+  const out = resultLiterals(exprAt(tail, decl[0].length))
+  for (const re of tail.slice(decl[0].length).matchAll(new RegExp(`(?<![.\\w$])${id}\\s*=(?!=)`, "g"))) {
+    if (re.index === undefined) continue
+    out.push(...resultLiterals(exprAt(tail.slice(decl[0].length), re.index + re[0].length)))
+  }
+  return out
+}
+
 /**
  * The balanced argument text of every `.insert(` / `.upsert(` / `.update(` in a chain
  * window. Brace/paren matching, so a nested object stays inside its own payload and an
@@ -270,8 +398,13 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
   const src = stripComments(rawSrc)
   const out: VocabViolation[] = []
 
-  for (const { table, win } of chainWindows(src)) {
+  for (const { table, win, index } of chainWindows(src)) {
     const columns = CHECK_VOCABULARIES[table as keyof typeof CHECK_VOCABULARIES] as Record<string, readonly string[]>
+    // ROW 45 (wave 152, 152K): the payload members whose value is an EXPRESSION (ternary / fallback) or a VARIABLE —
+    // resolved once per chain, judged per column below. Object payloads only (an array payload or a variable payload is a
+    // published blind spot).
+    const exprMembers = mutationArgs(win).filter((a) => a.trim().startsWith("{")).flatMap((a) => topLevelMembers(a))
+      .filter((m) => !/^(["'])[^"'\n]*\1$/.test(m.expr.trim()))
 
     for (const [column, allowed] of Object.entries(columns)) {
           const ok = new Set(allowed)
@@ -295,6 +428,13 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
             for (const pair of topLevelPairs(arg)) {
               if (pair.key === column) flag(pair.value, "write")
             }
+          }
+          // ROW 45: every literal a ternary / fallback / assigned variable can WRITE to this column.
+          for (const mem of exprMembers) {
+            if (mem.key !== column) continue
+            const ident = /^[A-Za-z_$][\w$]*$/.test(mem.expr) ? mem.expr : null
+            const lits = ident ? assignedLiterals(src.slice(0, index), ident) : resultLiterals(mem.expr)
+            for (const v of new Set(lits)) flag(v, "write")
           }
 
           // Filters: .eq("column", "value") / .neq(...)
@@ -715,6 +855,30 @@ check("mutationArgs keeps a nested object inside its own payload",
 check("leaves a column with no CHECK alone",
   scanCheckVocabulary(`svc.from("agent_onboarding").update({ current_day: "12" })`, "t").length === 0)
 
+console.log("\n[pure — ROW 45: the literals an EXPRESSION or a VARIABLE writes (wave 152, 152K)]")
+// THE POSITIVE CONTROL for the shipped defect that proves the widening: app/api/accounting/sync/route.ts as it stood at
+// ceb5506c (verbatim shape). The live CHECK on accounting_sync_log.status is completed|failed|pending|running.
+const ACCOUNTING_SYNC_DEFECT =
+  `await bestEffort(supabase\n  .from("accounting_sync_log")\n  .update({\n    status: recordsFailed > 0 ? "completed_with_errors" : "completed",\n    records_synced: recordsSynced,\n  })\n  .eq("id", syncLog.id), "closes the log")`
+const accountingHits = scanCheckVocabulary(ACCOUNTING_SYNC_DEFECT, "t")
+check("POSITIVE CONTROL — the ternary branch the live CHECK refuses is FLAGGED (accounting sync 'completed_with_errors'), its admitted sibling is not",
+  accountingHits.length === 1 && accountingHits[0].value === "completed_with_errors" && accountingHits[0].column === "status", JSON.stringify(accountingHits))
+check("…and the same chain with the literal the CHECK admits is clean",
+  scanCheckVocabulary(ACCOUNTING_SYNC_DEFECT.replace("completed_with_errors", "failed"), "t").length === 0)
+check("resultLiterals: both ternary branches, nested ternaries, `??` / `||` fallbacks — never the CONDITION, never `&&`, never a call argument",
+  JSON.stringify(resultLiterals(`x === "cond" ? "a" : "b"`)) === JSON.stringify(["a", "b"])
+  && JSON.stringify(resultLiterals(`p ? "a" : q ? "b" : "c"`)) === JSON.stringify(["a", "b", "c"])
+  && JSON.stringify(resultLiterals(`s ?? "queued"`)) === JSON.stringify(["queued"])
+  && JSON.stringify(resultLiterals(`(s || 'pending') as Status`)) === JSON.stringify(["pending"])
+  && resultLiterals(`ok && "x"`).length === 0 && resultLiterals(`label("x")`).length === 0 && resultLiterals("`a-${b}`").length === 0
+  && JSON.stringify(resultLiterals(`r?.ok ? "completed" : "failed"`)) === JSON.stringify(["completed", "failed"]))
+check("an ASSIGNED variable written by shorthand is resolved to its literals (declaration + reassignment)",
+  scanCheckVocabulary(`let status = "running"\nif (bad) status = "exploded"\nawait svc.from("accounting_sync_log").update({ status }).eq("id", id)`, "t").map((v) => v.value).join(",") === "exploded")
+check("…a variable from a call / parameter carries no literal and is not judged (only literals are checkable)",
+  scanCheckVocabulary(`const status = decide(x)\nawait svc.from("accounting_sync_log").update({ status }).eq("id", id)`, "t").length === 0)
+check("…a metadata bag's nested ternary is still a value, never a column",
+  scanCheckVocabulary(`await svc.from("accounting_sync_log").update({ metadata: { status: x ? "bogus" : "other" } }).eq("id", id)`, "t").length === 0)
+
 console.log("\n[pure — the IN-MEMORY detector (the comparison the row will never satisfy)]")
 // THE POSITIVE CONTROL for the shipped defect this detector was written for. The
 // fixture is the health-scorer line verbatim; if it ever stops being flagged, the
@@ -906,6 +1070,8 @@ check(`the in-memory baseline only shrinks (${memFixed.length} retired this run)
 // The census is a DELIVERABLE, not just a pass/fail: a count with no way to read
 // what it counted cannot be burned down. CHECK_VOCAB_DUMP=1 prints every finding.
 if (process.env.CHECK_VOCAB_DUMP === "1") {
+  console.log("\n[write / filter census — every finding (row 45 widening included)]")
+  for (const v of [...found].sort((a, b) => key(a).localeCompare(key(b)))) console.log(`  ${v.file}\t${v.table}.${v.column}\t${v.kind}\t${v.value}`)
   console.log("\n[in-memory census — every finding]")
   for (const v of [...memFound].sort((a, b) => memKey(a).localeCompare(memKey(b)))) {
     console.log(`  ${v.file}\t${v.column}[${v.tables}]\t${v.kind}\t${v.value}`)

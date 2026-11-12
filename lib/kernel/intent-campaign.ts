@@ -126,7 +126,7 @@ export async function runIntentCampaign(
         persona: { audience: "seller", situation: "a motivated homeowner (equity / circumstances)" }, words: 55 },
       fb, { generator: opts.copyGenerator })
     const b = await stageBenchDrafts({ brokerageId, agentRowId, agentUserId, listingId: null }, [
-      { channel: "direct_mail", idemName: `Intent Sellers ${m.city} ${weekStamp}`, subject: copy.subject ?? fb.subject, body: copy.body, mailAudience: "motivated_sellers", brief: `INTENT CAMPAIGN — ${found.recordsFound} motivated sellers scraped in ${m.city}` },
+      { channel: "direct_mail", idemName: `Intent Sellers ${m.city} ${weekStamp}`, subject: copy.subject ?? fb.subject, body: copy.body, mailAudience: "motivated_sellers", brief: `INTENT CAMPAIGN — ${found.recordsFound} motivated sellers matched in ${m.city} (BatchData's count of matches)` },
       { channel: "email", idemName: `Intent Sellers Email ${m.city} ${weekStamp}`, subject: copy.subject ?? fb.subject, body: copy.body, brief: `INTENT CAMPAIGN — motivated sellers in ${m.city}` },
     ], supabase)
     result.sellerChannels += b.staged.length

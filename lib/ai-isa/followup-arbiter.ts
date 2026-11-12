@@ -1331,6 +1331,13 @@ export const ARBITER_PLANNER_ENTRY_POINTS = Object.freeze({
   // T-<n>d table. Lane 149F's producer asks the arbiter's own door (arbitrateFollowUp) with a closed two-option menu.
   event_reminder: { planner: "lib/open-house/event-touches.ts", door: "lib/open-house/event-touches.ts", via: "arbitrateFollowUp", what: "event_registrant_upcoming: remind the registrant now on their consented channel, or wait — waiting is the fallback" },
   event_no_show: { planner: "lib/open-house/event-touches.ts", door: "lib/open-house/event-touches.ts", via: "arbitrateFollowUp", what: "event_registrant_no_show: hand the registrant to the host (a person) or let it rest under the AI ISA's normal consented engagement — resting is the fallback" },
+  // WAVE 152 (lane 152I — convergence row 73): the review ask at a verified closing. Every deterministic gate (closing, the tenant's
+  // delay, duplicates, a permitted channel, a real link) runs first in askForReviewAtClose; the arbiter then chooses ask now, the
+  // agent asks personally, or a bounded wait — asking now is the fallback (owner: "a review is always asked at closing").
+  // WAVE 152 (lane 152I — convergence row 86): a lead-plan touch the brokerage authorised for auto-send is RELEASED on the arbiter's
+  // word — touch_interval_days only bounds when the plan may author the step (a floor); release now, or a bounded wait.
+  lead_touch_release: { planner: "lib/ai-isa/lead-action-plan.ts", door: "lib/ai-isa/lead-action-plan.ts", via: "arbitratePlannedTouch", what: "releaseDueLeadTouches: release the due, re-checked lead touch now or hold it a bounded time — releasing is the fallback" },
+  review_ask: { planner: "lib/reputation/review-ask.ts", door: "lib/reputation/review-ask.ts", via: "arbitratePlannedTouch", what: "askForReviewAtClose: ask the client now on the one permitted channel, have the agent ask personally (a ready draft + a bell), or a bounded wait — asking now is the fallback" },
 } as const)
 export type PlannerEntryPoint = keyof typeof ARBITER_PLANNER_ENTRY_POINTS
 

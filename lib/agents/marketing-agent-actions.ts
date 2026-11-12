@@ -515,7 +515,9 @@ async function runHandler(
 
       const { error: retryStampErr } = await svc.from("direct_mail_campaigns")
         .update({
-          status:        dispatch.success ? "sent" : "failed",
+          // ONE vocabulary (wave 152, 152K — convergence row 45 census): "mailed" is the CHECK's word; "sent" was refused,
+          // so the whole stamp was lost and the row stayed `planning` — the state lib/direct-mail/campaign-drain.ts drains.
+          status:        dispatch.success ? "mailed" : "failed",
           lob_order_id:  dispatch.messageId ?? null,
           mailing_date:  dispatch.success ? new Date().toISOString().slice(0, 10) : null,
         })

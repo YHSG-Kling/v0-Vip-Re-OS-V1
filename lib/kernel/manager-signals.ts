@@ -1845,7 +1845,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const play = (signal.payload?.play as string | undefined) ?? "Work the financing side and confirm the clear-to-close ETA."
     const cats = (signal.payload?.categories as string[] | undefined) ?? []
     const { resolveTransactionTeamUsers, notifyDealTeam } = await import("@/lib/kernel/deal-save-huddle")
-    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId, ctx.brokerageId)
     const priority = signal.payload?.risk_level === "critical" ? "high" : "medium"
     const title = `[Deal-Save Huddle · Finance] ${cats.join(", ") || "financing"}`
     const { data: dup } = await ctx.supabase.from("transaction_tasks").select("id")
@@ -1875,7 +1875,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const actionType = (signal.payload?.actionType as string | undefined) ?? "closing_action"
     const title = `[Closing · Finance] ${headline}`.slice(0, 180)
     const { resolveTransactionTeamUsers } = await import("@/lib/kernel/deal-save-huddle")
-    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId, ctx.brokerageId)
     const { data: dup } = await ctx.supabase.from("transaction_tasks").select("id")
       .eq("transaction_id", signal.entityId).eq("title", title).in("status", ["pending", "in_progress"]).limit(1).maybeSingle()
     if (dup) return "closing finance task already open (deduped)"
@@ -1894,7 +1894,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const headline = (signal.payload?.headline as string | undefined) ?? signal.message
     const detail = (signal.payload?.detail as string | undefined) ?? ""
     const { resolveTransactionTeamUsers, notifyDealTeam } = await import("@/lib/kernel/deal-save-huddle")
-    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId, ctx.brokerageId)
     const notified = await notifyDealTeam(ctx.supabase, {
       team, brokerageId: ctx.brokerageId, transactionId: signal.entityId,
       type: "transaction_action_pending", title: `Closing deadline exposure — ${headline}`.slice(0, 120),
@@ -1948,7 +1948,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (!signal.entityId) return null
     const play = (signal.payload?.play as string | undefined) ?? "Verify the contingency clock; flag any slipping deadline."
     const { resolveTransactionTeamUsers, notifyDealTeam } = await import("@/lib/kernel/deal-save-huddle")
-    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId, ctx.brokerageId)
     const notified = await notifyDealTeam(ctx.supabase, {
       team, brokerageId: ctx.brokerageId, transactionId: signal.entityId,
       type: "deal_save_huddle", title: "Deal at risk — deadline/contingency exposure", body: play, priority: "high",

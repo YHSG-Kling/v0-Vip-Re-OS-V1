@@ -31,8 +31,14 @@
  *     a scrape vendor, so the IF/THEN door table cannot open it; the plan line IS the owner's per-tenant approval) and
  *     decideSpendBackpressure under lane 151F's platform caps (null caps → refused). A re-read that is not approved is
  *     HELD and RECORDED — on every row (verification_hold) and once per tenant per day on the action ledger — never a
- *     silent poll. An IDX saved home has no by-id read in lib/idxbroker-client.ts (featured set + free-text search only),
- *     so it is held by name (EVALUATED — the blocker is a listing-by-id method on the client), never guessed off-board.
+ *     silent poll.
+ *   · IDX (wave 152, lane 152J — convergence row 78): IDX Broker documents NO listing-by-id read for a client key
+ *     (developers.idxbroker.com/getting-mls-data/; lib/idxbroker-client.ts readAccountListingsById cites both pages). What
+ *     it does document is the account agents' own listings — the featured set (where every buyer-search IDX row comes
+ *     from) and the sold / pending set. So an IDX saved home is verified against ONE read of those two sets per tenant
+ *     per sweep (free at the provider, two GETs), keyed by the externalId the save path stored. A home that is in
+ *     NEITHER set stays HELD by name (`idx_by_id_unavailable` — leaving the account's sets is not a status, and nothing is
+ *     guessed off-board); a feed status this watch cannot classify is held as unreadable, never mapped to "off market".
  *
  * DEDUP — "without duplicate notifications": one change = one state DIGEST (the new price for a drop; the MLS number +
  * status for a status change) and the alert's ledger key is `saved_home.alert:<savedId>:<digest>`. A price that falls,
@@ -242,6 +248,23 @@ function holdText(reason: SavedHomeHoldReason, detail: string): string {
   return `${reason}: ${detail}`.slice(0, 400)
 }
 
+/**
+ * PURE. An IDX feed row's status on OUR vocabulary — CONSERVATIVE. MLS boards spell statuses their own way ("Active Under
+ * Contract", "Pending Sale", "Contingent - Show"); normalizeVendorStatus maps anything unrecognized to off_market, which
+ * here would announce a home "no longer available" on a spelling. So: sold / closed → sold; pending / under contract /
+ * contingent → pending (checked BEFORE active, so "Active Under Contract" is pending); a FEATURED row reading active →
+ * active; coming soon → coming_soon; anything else → null (the caller holds the row as unreadable — nothing is claimed).
+ */
+function idxFeedStatus(status: string | null, feedSet: "featured" | "sold_pending"): string | null {
+  const s = String(status ?? "").toLowerCase().replace(/_/g, " ")
+  if (!s.trim()) return null
+  if (/\bsold\b|\bclosed\b/.test(s)) return "sold"
+  if (/pending|under contract|contingent/.test(s)) return "pending"
+  if (/coming soon/.test(s)) return "coming_soon"
+  if (feedSet === "featured" && /\bactive\b/.test(s)) return "active"
+  return null
+}
+
 /** PURE. The buyer's portal words for a change — the home, what happened, and the next step. Never an exact figure
  *  (the price is the agent's conversation; the portal card carries the current asking price itself). */
 function savedHomeAlertWords(row: Pick<SavedHomeWatchRow, "property_address" | "city">, change: SavedHomeChange): { title: string; body: string } {
@@ -320,6 +343,9 @@ export interface SavedHomeWatchDeps {
   readRentcastListing?: (row: SavedHomeWatchRow, now: Date) => Promise<SavedHomeVerification>
   /** A pasted-link home by its address through the capability rail (METERED). Default: lookupPropertyForConversation. */
   readByAddress?: (row: SavedHomeWatchRow, now: Date) => Promise<SavedHomeVerification>
+  /** The tenant's IDX account listings (featured ∪ sold/pending), keyed by externalId — read ONCE per tenant per sweep.
+   *  Default: IDXBrokerClient.forBrokerage(brokerageId).readAccountListingsById() (free; two GETs). */
+  readIdxAccountListings?: (brokerageId: string) => Promise<IdxAccountRead>
   /** The tenant's approved acquisition plans. Default: acquisition_plans. null = unreadable (refuses everyone). */
   loadPlans?: (db: Db, brokerageId: string) => Promise<PlanRowLike[] | null>
   /** Spend booked under SAVED_HOME_RECHECK_SOURCE since the approval. Default: vendor_usage_tracking. null = unreadable. */
@@ -366,6 +392,34 @@ const defaultReadByAddress: NonNullable<SavedHomeWatchDeps["readByAddress"]> = a
     return { kind: "held", reason: "status_unverifiable_by_address", detail: r.found ? "the property record carries no listing status (no active listing found at this address)" : "no property record found at this address" }
   }
   return { kind: "verified", state: { status: savedHomeStatusFrom(r.facts.listingStatus), price: num(r.facts.listPrice), mlsNumber: r.facts.mlsNumber ?? row.mls_number ?? null, source: "buyer_url", at: now.toISOString() } }
+}
+
+/** One read of a tenant's IDX account listings: the rows by externalId, no connection, or a refused read. Module-private:
+ *  it reaches a caller only through SavedHomeWatchDeps.readIdxAccountListings. */
+type IdxAccountRead =
+  | { kind: "read"; byId: ReadonlyMap<string, { status: string | null; price: number | null; mlsNumber: string | null; feedSet: "featured" | "sold_pending" }> }
+  | { kind: "not_connected" }
+  | { kind: "unreadable"; error: string }
+
+const defaultReadIdxAccountListings: NonNullable<SavedHomeWatchDeps["readIdxAccountListings"]> = async (brokerageId) => {
+  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
+  const client = await IDXBrokerClient.forBrokerage(brokerageId)
+  if (!client.isConfigured()) return { kind: "not_connected" }
+  const r = await client.readAccountListingsById()
+  if (!r.ok) return r.error === "not_configured" ? { kind: "not_connected" } : { kind: "unreadable", error: r.error }
+  return { kind: "read", byId: r.byId }
+}
+
+/** The IDX verdict for one saved home against the tenant's one account read (photos on the feed row are ignored). */
+function verifyIdxRow(row: SavedHomeWatchRow, read: IdxAccountRead, now: Date): SavedHomeVerification {
+  if (read.kind === "not_connected") return { kind: "held", reason: "idx_by_id_unavailable", detail: "no IDX Broker connection reaches this account's listings, so the saved IDX home cannot be re-read" }
+  if (read.kind === "unreadable") return { kind: "held", reason: "source_unreadable", detail: `the IDX account listings could not be read: ${read.error}` }
+  const id = row.external_property_id ?? null
+  const hit = id ? read.byId.get(id) : undefined
+  if (!hit) return { kind: "held", reason: "idx_by_id_unavailable", detail: "not in the account's featured or sold/pending IDX sets; IDX Broker documents no listing-by-id read, and leaving those sets is not a status" }
+  const status = idxFeedStatus(hit.status, hit.feedSet)
+  if (!status) return { kind: "held", reason: "source_unreadable", detail: `the IDX feed row carries a status this watch does not classify (${String(hit.status ?? "none").slice(0, 60)}) — nothing is claimed from it` }
+  return { kind: "verified", state: { status, price: num(hit.price), mlsNumber: hit.mlsNumber ?? row.mls_number ?? null, source: "idx_mls", at: now.toISOString() } }
 }
 
 const defaultLoadPlans: NonNullable<SavedHomeWatchDeps["loadPlans"]> = async (db, brokerageId) => {
@@ -490,6 +544,8 @@ export interface SavedHomeWatchStats {
   /** Changes already announced under the same digest (the ledger replayed). */
   replayed: number
   meteredRecheck: { brokerages: number; wantedRows: number; allowedRows: number; heldRows: number; usdPlanned: number; reasons: string[] }
+  /** IDX account reads made this sweep (at most one per tenant with an IDX saved home). */
+  idxAccountReads: number
   errors: string[]
 }
 
@@ -542,6 +598,7 @@ export async function watchSavedHomes(db: Db, scope: TenantScope, deps: SavedHom
     verified: { tenant_listing: 0, idx_mls: 0, rentcast_listing: 0, buyer_url: 0 }, verifiedTotal: 0,
     holds: {}, changes: {}, changesTotal: 0, delivered: 0, arbiterHeld: 0, replayed: 0,
     meteredRecheck: { brokerages: 0, wantedRows: 0, allowedRows: 0, heldRows: 0, usdPlanned: 0, reasons: [] },
+    idxAccountReads: 0,
     errors: [],
   }
   const query = db.from("saved_properties").select(SAVED_HOME_WATCH_COLUMNS).eq("dismissed", false).limit(SAVED_HOME_WATCH_MAX_ROWS)
@@ -562,6 +619,18 @@ export async function watchSavedHomes(db: Db, scope: TenantScope, deps: SavedHom
   const unitUsd = deps.unitUsd ?? (await import("@/lib/property/rentcast")).RENTCAST_USD_PER_REQUEST
   for (const [brokerageId, list] of byBrokerage) {
     const metered: SavedHomeWatchRow[] = []
+    // ONE IDX account read per tenant per sweep, made only when this tenant has an IDX saved home (lazy, then reused).
+    let idxRead: IdxAccountRead | null = null
+    const idxAccount = async (): Promise<IdxAccountRead> => {
+      if (idxRead) return idxRead
+      try {
+        idxRead = await (deps.readIdxAccountListings ?? defaultReadIdxAccountListings)(brokerageId)
+      } catch (e) {
+        idxRead = { kind: "unreadable", error: e instanceof Error ? e.message : String(e) }
+      }
+      stats.idxAccountReads += 1
+      return idxRead
+    }
     for (const row of list) {
       const origin = savedHomeOrigin(row)
       const source = verificationSourceFor(origin)
@@ -569,10 +638,9 @@ export async function watchSavedHomes(db: Db, scope: TenantScope, deps: SavedHom
         if (!source) { stats.skipped.manual += 1; continue }
         if (source === "tenant_listing") { await settleVerification(db, row, await (deps.readTenantListing ?? defaultReadTenantListing)(db, row, now), deps, stats); continue }
         if (source === "idx_mls") {
-          // EVALUATED — NOT IMPLEMENTED: lib/idxbroker-client.ts offers the FEATURED set (/clients/featured) and a free-text
-          // search only; a saved IDX home outside the featured set cannot be read by its id, and "not featured" is not a
-          // status. Held by name until the client gains a listing-by-id read. No spend, no guess.
-          await stampHold(db, row, "idx_by_id_unavailable", "the IDX client has no listing-by-id read; absence from the featured set is not a status change", stats)
+          // The account's own IDX listings (featured ∪ sold/pending) — the only by-id read the provider documents. A home
+          // outside both sets stays held by name; no spend (the read is free), no guess.
+          await settleVerification(db, row, verifyIdxRow(row, await idxAccount(), now), deps, stats)
           continue
         }
         metered.push(row)

@@ -617,6 +617,24 @@ function settleToolResult(r: unknown): Settlement {
   return { status: "executed", outcome: "tool_completed" }
 }
 
+/** A non-acting claim, said to the model as a refusal it can read — the tool never re-executes. */
+function toolReplay(claim: NonActingClaim): { success: boolean; error?: string } {
+  return {
+    success: claim.kind === "replay",
+    error: claim.kind === "replay" ? undefined : `This exact tool call was already ${claim.kind === "unknown" ? "attempted and its outcome is unknown" : claim.kind === "in_flight" ? "in progress" : "refused"} — not repeated.`,
+  }
+}
+
+/**
+ * WAVE 152 (lane 152I — LAW 5 at the voice tool boundary): ONE consequential tool call made OUTSIDE an AI SDK registry (the
+ * ElevenLabs tool webhook, app/api/agent-assistant/tool-call/route.ts) is claimed → run → settled on agent_action_ledger with the
+ * SAME settle / replay rules as ledgerToolExecutions below. The caller's `cycle` is its unit of once (the released hold id), so a
+ * replayed or racing confirm of one read-back executes at most once.
+ */
+export function ledgerToolCall<T>(ctx: ActionContext, run: () => Promise<T>, opts?: { client?: LedgerClient }): Promise<T | { success: boolean; error?: string }> {
+  return withActionLedger<T | { success: boolean; error?: string }>(ctx, run, { settle: settleToolResult, replay: toolReplay }, opts)
+}
+
 /**
  * Wrap every COMMUNICATION / FINANCIAL tool in `registry` so each call is claimed → run → settled
  * on agent_action_ledger (action `ai.tool.<name>`). Other tools are returned untouched. A replayed
@@ -658,10 +676,7 @@ export function ledgerToolExecutions<T extends Record<string, unknown>>(
         () => Promise.resolve((exec as (a: unknown, o?: unknown) => unknown)(args, options)),
         {
           settle: settleToolResult,
-          replay: (claim) => ({
-            success: claim.kind === "replay",
-            error: claim.kind === "replay" ? undefined : `This exact tool call was already ${claim.kind === "unknown" ? "attempted and its outcome is unknown" : claim.kind === "in_flight" ? "in progress" : "refused"} — not repeated.`,
-          }),
+          replay: toolReplay,
         },
         opts,
       ),

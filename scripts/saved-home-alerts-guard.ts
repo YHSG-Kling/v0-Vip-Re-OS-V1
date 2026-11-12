@@ -35,7 +35,20 @@
  *      consumer VERIFIES and closes on resolution; billing / compliance keep a human; a foreign-tenant ticket is not applied
  *   I. WIRING (stripped source) + m983 + rows 78 / 79 — the daily tick carries the watch; the ONE router still asks and
  *      delivers; the card reads the verification line, which never carries approval / cap / spend words; m983 names the
- *      columns and the ONE source constant; the by-id reader gates and meters; the IDX blocker is recorded, not guessed
+ *      columns and the ONE source constant; the by-id reader gates and meters; the IDX account read asks only the two
+ *      documented sets (row 78)
+ *   J. IDX ACCOUNT LISTINGS (wave 152, lane 152J) — the real client method reads /clients/featured + /clients/soldpending
+ *      once each, keys by the save path's id, lets sold/pending win, refuses as a read; the watch verifies a saved IDX home
+ *      from ONE read per tenant: baseline, under contract, sold, price cut; ADVERSE — an unclassifiable MLS spelling, a
+ *      home in neither set, no connection, a refused read and a throwing reader are each HELD, never announced
+ *   K. TENANT-SAFE PORTAL FEEDBACK (wave 152, lane 152J) — a Contact's failed upload reads in the presenter's words
+ *      (nothing saved, who helps, one action, a reference; no provider text); a failure on our side opens ONE ledgered
+ *      task for the assigned agent per Contact per day; ADVERSE — no agent, a refused task insert, another tenant's
+ *      Contact; self-service failures open no task; uploadDocument returns instead of throwing; the dialog shows no raw text
+ *   L. LOCAL INVENTORY FRICTION PLAY (wave 152, lane 152J) — five answered runs over ≥ 7 days with homes in the area and
+ *      none fitting, on a search that never matched → ONE ledgered sourcing task for the buyer's agent (nothing sent to the
+ *      buyer); replay in the window; the OUTCOME measured (a match after the task); NEGATIVE — matched before, a refused
+ *      run, no homes, one afternoon, too few runs, no agent, another tenant, a refused read
  *
  * POSITIVE CONTROLS: every absence claim is paired with a check that the finder sees the thing when it IS there.
  *
@@ -175,11 +188,13 @@ async function main() {
         { id: "sp-other", brokerage_id: OTHER_BRK, contact_id: OTHER_BUYER, listing_id: "L1", source: "brokerage_listing", property_address: "77 Other Tenant Way", dismissed: false, last_verified_at: DAY(-1).toISOString(), last_verified_status: "active", last_verified_price: 900000, last_verified_source: "tenant_listing" },
       ],
     })
-    const calls = { rentcast: 0, rail: 0 }
+    const calls = { rentcast: 0, rail: 0, idx: 0 }
     const deps: watch.SavedHomeWatchDeps = {
       ...baseDeps(),
       readRentcastListing: async () => { calls.rentcast++; return { kind: "held", reason: "source_unreadable", detail: "not expected" } },
       readByAddress: async () => { calls.rail++; return { kind: "held", reason: "source_unreadable", detail: "not expected" } },
+      // The tenant's IDX account sets answer, but the saved IDX home (idx-77) is in neither (wave 152 — §J drives the rest).
+      readIdxAccountListings: async () => { calls.idx++; return { kind: "read", byId: new Map([["idx-other", { status: "active", price: 1, mlsNumber: "X", feedSet: "featured" as const }]]) } },
     }
     const s1 = await watch.watchSavedHomes(db, tenantScope(BRK, "proof"), deps)
     check("the tenant scope reads only this tenant's non-dismissed rows (5 scanned; the other tenant's and the dismissed row untouched)", s1.scanned === 5 && saved(db, "sp-other").last_verified_price === 900000 && saved(db, "sp-dismissed").verification_hold === null, JSON.stringify({ scanned: s1.scanned, errors: s1.errors }))
@@ -191,7 +206,7 @@ async function main() {
     check("sp-deleted: the listing row is gone → no_longer_available announced once", s1.changes.no_longer_available === 1 && saved(db, "sp-deleted").last_verified_status === "off_market" && notes.some((n) => n.entity_id === "sp-deleted"))
     check("sp-first: a never-verified home gets its BASELINE and no alert", saved(db, "sp-first").last_verified_at === NOW.toISOString() && saved(db, "sp-first").last_verified_price === 350000 && !notes.some((n) => n.entity_id === "sp-first"))
     check("sp-manual: a staff-entered row has no source — skipped, not held", s1.skipped.manual === 1 && !saved(db, "sp-manual").verification_hold)
-    check("sp-idx: an IDX saved home is HELD by name — no spend, no guess, the hold on the row", s1.holds.idx_by_id_unavailable === 1 && String(saved(db, "sp-idx").verification_hold).startsWith("idx_by_id_unavailable:") && saved(db, "sp-idx").last_verified_at === null && calls.rentcast === 0 && calls.rail === 0)
+    check("sp-idx: an IDX saved home OUTSIDE the account's IDX sets is HELD by name — no spend, no guess, the hold on the row, ONE account read", s1.holds.idx_by_id_unavailable === 1 && String(saved(db, "sp-idx").verification_hold).startsWith("idx_by_id_unavailable:") && saved(db, "sp-idx").last_verified_at === null && calls.rentcast === 0 && calls.rail === 0 && calls.idx === 1 && s1.idxAccountReads === 1)
     const notesBefore = notes.length, ledgerBefore = rowsOf(db, "agent_action_ledger").length
     const s2 = await watch.watchSavedHomes(db, tenantScope(BRK, "proof"), { ...deps, now: DAY(1) })
     check("a SECOND sweep on the same state announces NOTHING (no change, no new note, no new ledger row)", s2.changesTotal === 0 && s2.delivered === 0 && alertNotes(db).length === notesBefore && rowsOf(db, "agent_action_ledger").length === ledgerBefore, JSON.stringify(s2.changes))
@@ -487,10 +502,13 @@ async function main() {
     const byId = rc.slice(rc.indexOf("export async function getRentcastSaleListingById("))
     check("getRentcastSaleListingById GATES (gateRentcast, property data) and METERS (meterCall at RENTCAST_USD_PER_REQUEST under the caller's systemSource); 404 is off-market, not sold", /gateRentcast\(params, "property_data"\)/.test(byId.slice(0, 1800)) && /meterCall\(\{/.test(byId.slice(0, 1800)) && /cost: RENTCAST_USD_PER_REQUEST/.test(byId.slice(0, 1800)) && /systemSource: params\.systemSource/.test(byId.slice(0, 1800)) && /res\.status === 404\) return \{ ok: true, listing: null, offMarket: true \}/.test(byId.slice(0, 1800)))
     check("the sale-listing mapper is ONE function used by both the search and the by-id reader (no second inline copy)", (rc.match(/saleListingFromRow\(/g) ?? []).length >= 3 && !/externalId: r\?\.id \?\? r\?\.formattedAddress \?\? "",\s*\n\s*address:[^\n]*\n[\s\S]{0,900}externalId: r\?\.id \?\? r\?\.formattedAddress/.test(rc))
-    // Row 78 — EVALUATED: the IDX client has no by-id read.
+    // Row 78 (wave 152, lane 152J): the provider documents NO per-listing by-id endpoint for a client key; the client reads
+    // the account's own two documented sets and looks the id up inside them. Never an undocumented path, never BulkData.
     const idx = code("lib/idxbroker-client.ts")
-    check("ROW 78 recorded honestly: the IDX client offers the featured set (/clients/featured) and a free-text search only — no listing-by-id read exists, so a display-time IDX photo fetch has no door (EVALUATED — NOT IMPLEMENTED)", /"\/clients\/featured"/.test(idx) && /"\/clients\/search"/.test(idx) && !/\/clients\/listing\/|getListingById|listingById/.test(idx))
-    check("POSITIVE CONTROL: the finder would see a by-id method if one existed", /listingById/.test("async getListingById(id: string) { return this.request(`/clients/listing/${id}`) } // listingById"))
+    const acct = idx.slice(idx.indexOf("async readAccountListingsById("), idx.indexOf("async searchProperties("))
+    check("ROW 78: the account read asks ONLY the two documented sets (/clients/featured, /clients/soldpending) — no per-listing path (/clients/listing/…), no BulkData host, no data-services call", /"\/clients\/featured"/.test(acct) && /"\/clients\/soldpending"/.test(acct) && !/\/clients\/listing|data-services|\/beta\/live|getListingById/.test(idx), acct.slice(0, 120))
+    check("POSITIVE CONTROL: the finder would see a per-listing path or the BulkData host if one were called", /\/clients\/listing|data-services|\/beta\/live/.test("this.request(`/clients/listing/${id}`); fetch('https://data-services.idxbroker.com/beta/live/listings')"))
+    check("the account read refuses as a READ (a refused set is never 'nothing in it') and keys rows by the SAME externalId the search hands the save path (one shared normalizer)", /if \(!res\.ok\) return \{ ok: false/.test(acct) && /idxRowsOf\(raw\)\.map\(normalizeIdxRow\)/.test(idx) && (idx.match(/function normalizeIdxRow\(/g) ?? []).length === 1)
     // Row 79 — the policy that admits a contact session is not narrowed by any migration in the tree.
     const migDir = join(root, "supabase/migrations")
     const touching = readdirSync(migDir).filter((f) => f.endsWith(".sql")).filter((f) => /listing_media_tenant_select/.test(readFileSync(join(migDir, f), "utf8")))
@@ -506,7 +524,168 @@ async function main() {
     check("the m983 file exists beside the lane's other migration number being UNUSED (m984 — no second alert table)", existsSync(join(root, "supabase/migrations/m983-saved-home-last-verified-state.sql")) && !readdirSync(migDir).some((f) => /^m984-/.test(f)))
   }
 
-  console.log("\n BLIND SPOTS (published): memSupabase runs no RLS / CHECK / DEFAULT; RentCast, the rail and the arbiter's model are injected; the daily tick is not fired here; row 79 is verified live in the notes, not here; pages are not rendered; vendor tools are censused and mounted, not executed.")
+  // ══ J ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  console.log("\n J. IDX ACCOUNT LISTINGS (wave 152, lane 152J — row 78): the documented sets, looked up by the saved id")
+  {
+    // 1. THE REAL CLIENT METHOD, its transport replaced on the instance (no network, no gateway, no key read).
+    const { IDXBrokerClient } = await import("../lib/idxbroker-client")
+    const asked: string[] = []
+    const answer = (sets: Record<string, { ok: boolean; data: unknown }>) => {
+      const c = new IDXBrokerClient("proof-key-not-real") as any
+      c.request = async (path: string) => { asked.push(path); return sets[path] ?? { ok: false, data: null } }
+      return c as InstanceType<typeof IDXBrokerClient>
+    }
+    const featured = { "a000!%5362657": { listingID: "5362657", idxID: "a000", address: "20 Ingram Street", listingPrice: "$1,151,000", propStatus: "Active", idxStatus: "active", image: { 0: { url: "https://cdn.example/photo.jpg" } } },
+      "a000!%900": { listingID: "900", idxID: "a000", address: "9 Moved St", listingPrice: "$400,000", propStatus: "Active" } }
+    const soldPending = [{ listingID: "900", idxID: "a000", address: "9 Moved St", listingPrice: "$395,000", propStatus: "Pending" }, { listingID: "777", idxStatus: "sold", listingPrice: "$300,000" }]
+    const ok = await answer({ "/clients/featured": { ok: true, data: featured }, "/clients/soldpending": { ok: true, data: soldPending } }).readAccountListingsById()
+    check("the client reads EXACTLY the two documented sets, once each", asked.join(",") === "/clients/featured,/clients/soldpending", asked.join(","))
+    check("rows are keyed by the save path's externalId (listingID) whether the feed answers an object or an array; prices and the feed's verbatim status ride along", ok.ok && ok.byId.get("5362657")?.price === 1151000 && ok.byId.get("5362657")?.status === "active" && ok.byId.get("5362657")?.feedSet === "featured" && ok.byId.has("777"), JSON.stringify(ok.ok ? [...ok.byId.keys()] : ok))
+    check("a sold/pending row WINS over a featured row for the same id (the later lifecycle state); idxStatus stands in when propStatus is absent", ok.ok && ok.byId.get("900")?.feedSet === "sold_pending" && ok.byId.get("900")?.status === "pending" && ok.byId.get("777")?.status === "sold")
+    const refusedSet = await answer({ "/clients/featured": { ok: true, data: featured }, "/clients/soldpending": { ok: false, data: null } }).readAccountListingsById()
+    check("ADVERSE: a refused set refuses the READ — never 'the home is not in it'", !refusedSet.ok && /soldpending was refused/.test(refusedSet.error))
+    const noKey = await new IDXBrokerClient("").readAccountListingsById()
+    check("ADVERSE: no key → not_configured, with no request made", !noKey.ok && noKey.error === "not_configured")
+
+    // 2. THE WATCH, end to end, against one injected account read.
+    const sweepIdx = async (prev: { status: string; price: number } | null, read: watch.SavedHomeWatchDeps["readIdxAccountListings"], extraRows: Row[] = []) => {
+      const db = seedDb({
+        saved_properties: [
+          { id: "sp-i", brokerage_id: BRK, contact_id: BUYER, listing_id: null, source: "idx", external_property_id: "5362657", mls_number: null, property_address: "20 Ingram Street", city: "Forest Hills", list_price: prev?.price ?? null, dismissed: false,
+            last_verified_at: prev ? DAY(-1).toISOString() : null, last_verified_status: prev?.status ?? null, last_verified_price: prev?.price ?? null, last_verified_mls_number: prev ? "5362657" : null, last_verified_source: prev ? "idx_mls" : null, verification_hold: null },
+          ...extraRows,
+        ],
+      })
+      let reads = 0
+      const stats = await watch.watchSavedHomes(db, tenantScope(BRK, "proof"), { ...baseDeps(), readIdxAccountListings: async (b) => { reads++; return read!(b) } })
+      return { db, stats, row: saved(db, "sp-i"), reads }
+    }
+    const one = (status: string | null, feedSet: "featured" | "sold_pending", price = 1151000) => async () => ({ kind: "read" as const, byId: new Map([["5362657", { status, price, mlsNumber: "5362657", feedSet }]]) })
+    const base = await sweepIdx(null, one("active", "featured"))
+    check("a FIRST IDX read is a BASELINE: verified from the featured row (source idx_mls), no alert", base.stats.verified.idx_mls === 1 && base.row.last_verified_status === "active" && base.row.last_verified_price === 1151000 && base.row.last_verified_source === "idx_mls" && base.stats.changesTotal === 0, JSON.stringify(base.stats.errors))
+    const uc = await sweepIdx({ status: "active", price: 1151000 }, one("Pending", "sold_pending"))
+    check("featured active → the sold/pending set reading Pending is ONE under_contract change, announced through the arbiter (note + ledger), verified state advanced", uc.stats.changes.under_contract === 1 && uc.row.last_verified_status === "pending" && alertNotes(uc.db).length === 1 && rowsOf(uc.db, "agent_action_ledger").some((l) => l.action === watch.SAVED_HOME_ALERT_ACTION && l.status === "executed"), JSON.stringify({ c: uc.stats.changes, e: uc.stats.errors }))
+    const sold = await sweepIdx({ status: "active", price: 1151000 }, one("Sold", "sold_pending"))
+    check("the sold/pending set reading Sold is no_longer_available, once", sold.stats.changes.no_longer_available === 1 && sold.row.last_verified_status === "sold")
+    const auc = await sweepIdx({ status: "active", price: 1151000 }, one("Active Under Contract", "featured"))
+    check("an MLS spelling 'Active Under Contract' is PENDING (under_contract) — never 'no longer available'", auc.stats.changes.under_contract === 1 && !auc.stats.changes.no_longer_available)
+    const drop = await sweepIdx({ status: "active", price: 1151000 }, one("Active", "featured", 1090000))
+    check("a featured price cut is a price_drop like any other source (the same digest rule)", drop.stats.changes.price_drop === 1 && alertEvents(drop.db)[0]?.metadata?.digest === "price_drop:1090000")
+    const odd = await sweepIdx({ status: "active", price: 1151000 }, one("Back on Mkt - Show", "featured"))
+    check("ADVERSE: a status this watch cannot classify is HELD as unreadable — nothing announced, the verified state untouched (normalizeVendorStatus would have said off_market)", odd.stats.changesTotal === 0 && odd.stats.holds.source_unreadable === 1 && odd.row.last_verified_status === "active" && String(odd.row.verification_hold).startsWith("source_unreadable:"))
+    const gone = await sweepIdx({ status: "active", price: 1151000 }, async () => ({ kind: "read", byId: new Map() }))
+    check("ADVERSE: a home in NEITHER set is held by name — never announced as no longer available (absence is not a status)", gone.stats.changesTotal === 0 && gone.stats.holds.idx_by_id_unavailable === 1 && gone.row.last_verified_status === "active" && alertNotes(gone.db).length === 0)
+    const nc = await sweepIdx({ status: "active", price: 1151000 }, async () => ({ kind: "not_connected" }))
+    check("ADVERSE: no IDX connection → held by name with a plain reason, nothing claimed", nc.stats.holds.idx_by_id_unavailable === 1 && /no IDX Broker connection/.test(String(nc.row.verification_hold)) && nc.stats.changesTotal === 0)
+    const unr = await sweepIdx({ status: "active", price: 1151000 }, async () => ({ kind: "unreadable", error: "/clients/featured was refused" }))
+    check("ADVERSE: a refused account read holds the row as unreadable (never 'gone')", unr.stats.holds.source_unreadable === 1 && unr.stats.changesTotal === 0)
+    const threw = await sweepIdx({ status: "active", price: 1151000 }, async () => { throw new Error("gateway down") })
+    check("ADVERSE: a reader that THROWS is held as unreadable; the sweep itself never throws", threw.stats.holds.source_unreadable === 1 && threw.stats.errors.length === 0)
+    const two = await sweepIdx(null, one("active", "featured"), [{ id: "sp-i2", brokerage_id: BRK, contact_id: BUYER, listing_id: null, source: "idx", external_property_id: "5362657", property_address: "20 Ingram Street", dismissed: false, last_verified_at: null }])
+    check("ONE account read per tenant per sweep, however many IDX saved homes it has (the docs: never per page load)", two.reads === 1 && two.stats.idxAccountReads === 1 && two.stats.verified.idx_mls === 2)
+    check("the IDX path writes no photo (the feed row's image is never copied — row 84)", !Object.keys(base.row).some((k) => /photo/i.test(k) && base.row[k]))
+  }
+
+  // ══ K ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  console.log("\n K. TENANT-SAFE PORTAL FEEDBACK (wave 152, lane 152J) — a Contact's failed upload: plain words, nothing saved, the agent told")
+  {
+    const { reportContactUploadFailure } = await import("../lib/portal/upload-feedback")
+    const { tenantCopyVerdict } = await import("../lib/errors")
+    const RAW = 'new row violates row-level security policy for table "objects" (bucket client-documents) at putAndSign (lib/storage/put-and-sign.ts:88)'
+    const mk = (extra: Record<string, Row[]> = {}) => seedDb(extra)
+    const db = mk()
+    const silence = console.error
+    console.error = () => {} // presentTenantError logs the raw text for staff under the reference — expected here, not noise
+    const r1 = await reportContactUploadFailure(db, { brokerageId: BRK, contactId: BUYER, fileName: "pre-approval.pdf", stage: "storage", raw: RAW, now: NOW })
+    const r2 = await reportContactUploadFailure(db, { brokerageId: BRK, contactId: BUYER, fileName: "pre-approval.pdf", stage: "storage", raw: RAW, now: new Date(NOW.getTime() + 3_600_000) })
+    const r3 = await reportContactUploadFailure(db, { brokerageId: BRK, contactId: BUYER, fileName: "w2.pdf", stage: "record", raw: "client_documents insert refused: PGRST204", now: DAY(1) })
+    console.error = silence
+    const tasks = rowsOf(db, "tasks").filter((t) => t.source === "portal_upload_failure")
+    check("a STORAGE failure tells the Contact what happened, that NOTHING was saved, that their agent was told, one action and a reference — no provider string, path or stack", !r1.message.includes("row-level") && !/bucket|putAndSign|lib\/|\.ts:\d/.test(r1.message) && /Nothing was saved/.test(r1.message) && /Your agent has been told/.test(r1.message) && /Next step: try again/i.test(r1.message) && !!r1.reference && r1.message.includes(r1.reference!) && r1.saved === false, r1.message)
+    check("the Contact's sentence passes the presenter's own gate (authored copy: no leak, no price, no payer claim)", tenantCopyVerdict(r1.message).ok && tenantCopyVerdict(r3.message).ok)
+    check("ONE recoverable task for the Contact's ASSIGNED agent: high priority, source portal_upload_failure, the file and the reference — the raw error is NOT in it", tasks.length === 2 && tasks[0].assigned_to_agent_id === AGENT && tasks[0].contact_id === BUYER && tasks[0].priority === "high" && /pre-approval\.pdf/.test(tasks[0].description) && tasks[0].description.includes(String(r1.reference)) && !tasks.some((t) => /row-level|PGRST|bucket/.test(`${t.title} ${t.description}`)), JSON.stringify(tasks.map((t) => t.description)))
+    check("a retry the SAME day makes no second task (ledger replay) and still truthfully says the agent knows; the next day's failure is a new task", r2.taskId === r1.taskId && !!r1.taskId && /Your agent has been told/.test(r2.message) && r3.taskId !== null && r3.taskId !== r1.taskId)
+    const ledger = rowsOf(db, "agent_action_ledger").filter((l) => l.action === "portal_upload.failure_task.open")
+    check("evidence: the task opening is ledgered (portal_upload.failure_task.open, executed), and the technical detail lives THERE (internal), not in the Contact's words", ledger.length === 2 && ledger.every((l) => l.status === "executed") && /row-level/.test(String(ledger[0].detail?.raw_error)) && ledger[0].detail?.reference === r1.reference)
+    const noAgent = mk({ contacts: [{ id: BUYER, brokerage_id: BRK, first_name: "Dana", agent_id: null }] })
+    console.error = () => {}
+    const r4 = await reportContactUploadFailure(noAgent, { brokerageId: BRK, contactId: BUYER, fileName: "a.pdf", stage: "storage", raw: RAW, now: NOW })
+    const refusedTasks = mk({ tasks: [] })
+    const refusingDb = memSupabase({ ...refusedTasks.tables }, { stampCreatedAt: true, uuidIds: true, unique: { agent_action_ledger: [["idempotency_key"]] }, refuse: { tasks: "permission denied for table tasks" } })
+    const r5 = await reportContactUploadFailure(refusingDb, { brokerageId: BRK, contactId: BUYER, fileName: "a.pdf", stage: "storage", raw: RAW, now: NOW })
+    const foreign = await reportContactUploadFailure(mk(), { brokerageId: OTHER_BRK, contactId: BUYER, fileName: "a.pdf", stage: "storage", raw: RAW, now: NOW })
+    console.error = silence
+    check("ADVERSE: no assigned agent → no task, and the Contact is NOT told an agent was told (only that their agent can help)", r4.taskId === null && !/has been told/.test(r4.message) && /Your agent can help with this/.test(r4.message) && /no assigned agent/.test(String(r4.taskNote)))
+    check("ADVERSE: a refused task insert → no claim the agent was told; the reason is kept internally", r5.taskId === null && !/has been told/.test(r5.message) && /task not written|not opened/.test(String(r5.taskNote)), JSON.stringify(r5))
+    check("ADVERSE: a Contact read under ANOTHER tenant finds nobody (tenant-pinned) — no cross-tenant task", foreign.taskId === null && /no assigned agent/.test(String(foreign.taskNote)))
+    const self = await Promise.all([
+      reportContactUploadFailure(mk(), { brokerageId: BRK, contactId: BUYER, fileName: "big.pdf", stage: "size", limitText: "3.4 MB" }),
+      reportContactUploadFailure(mk(), { brokerageId: BRK, contactId: BUYER, fileName: "x.heic", stage: "content_type" }),
+      reportContactUploadFailure(mk(), { brokerageId: BRK, contactId: BUYER, fileName: "x.pdf", stage: "not_permitted" }),
+    ])
+    check("a failure the Contact can FIX opens no task and says exactly what to do (too large → the real limit; a refused type; a folder that isn't theirs → their agent)", self.every((s) => s.taskId === null && /Nothing was saved/.test(s.message) && tenantCopyVerdict(s.message).ok) && /the limit is 3\.4 MB/.test(self[0].message) && /PDF or a photo/.test(self[1].message) && /Your agent can help/.test(self[2].message), JSON.stringify(self.map((s) => s.message)))
+    // Wiring (stripped source): the survivor door returns, never throws, and the dialog shows only these words.
+    const docs = code("app/actions/documents.ts")
+    const up = docs.slice(docs.indexOf("export async function uploadDocument("), docs.indexOf("async function processDocumentWithAI(") > 0 ? docs.indexOf("async function processDocumentWithAI(") : undefined)
+    check("uploadDocument RETURNS the storage / record failures through the feedback door (no throw left in it) and refuses a Contact's wrong folder in the Contact's words", !/throw new Error\(/.test(up) && /return systemFailure\("storage"/.test(up) && /return systemFailure\("record"/.test(up) && /contactRefusal\("not_permitted"\)/.test(up) && /reportContactUploadFailure\(svc,/.test(up))
+    check("POSITIVE CONTROL: the throw finder sees the old storage throw", /throw new Error\(/.test(stripComments("throw new Error(`Failed to store document: ${stored.error ?? stored.stage}. The file was not saved`)")))
+    const dialog = code("app/components/portal/DocumentUploadDialog.tsx")
+    check("the portal dialog no longer renders a raw message, 'Storage not configured', a guessed '10MB' or the staff-worded gate reason", !/Upload failed: \$\{/.test(dialog) && !/Storage not configured/.test(dialog) && !/10MB/.test(dialog) && !/setError\(gate\.reason\)/.test(dialog) && /Nothing was saved/.test(dialog))
+  }
+
+  // ══ L ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  console.log("\n L. LOCAL INVENTORY FRICTION PLAY (wave 152, lane 152J) — verified demand vs measured inventory → ONE agent sourcing task → a measured outcome")
+  {
+    const { detectInventoryFriction } = await import("../lib/property-alerts/inventory-friction")
+    const AGENTLESS = "77777777-7777-4777-8777-777777777777"
+    const runs = (alertId: string, n: number, opts: { spanDays?: number; checked?: number; matched?: number; errorAt?: number; brk?: string } = {}) =>
+      Array.from({ length: n }, (_, i) => ({ id: `${alertId}-run-${i}`, alert_id: alertId, brokerage_id: opts.brk ?? BRK, properties_checked: opts.checked ?? 12, properties_matched: opts.matched ?? 0, error_message: opts.errorAt === i ? "provider_failed: 503" : null,
+        created_at: new Date(NOW.getTime() - (n - 1 - i) * ((opts.spanDays ?? 10) / Math.max(1, n - 1)) * 86_400_000).toISOString() }))
+    const alert = (id: string, extra: Row = {}) => ({ id, brokerage_id: BRK, contact_id: BUYER, alert_name: "Frisco 4-bed under 600k", cities: ["Frisco"], zip_codes: [], min_price: null, max_price: 600000, bedrooms_min: 4, bathrooms_min: null, is_active: true, created_at: DAY(-30).toISOString(), ...extra })
+    const db = seedDb({
+      contacts: [
+        { id: BUYER, brokerage_id: BRK, first_name: "Dana", last_name: "Reyes", agent_id: AGENT },
+        { id: AGENTLESS, brokerage_id: BRK, first_name: "Sam", agent_id: null },
+        { id: OTHER_BUYER, brokerage_id: OTHER_BRK, first_name: "Other", agent_id: "agent-other" },
+      ],
+      property_alerts: [
+        alert("a-friction"), alert("a-matched-before"), alert("a-refused-run"), alert("a-no-homes"), alert("a-one-afternoon"), alert("a-too-few"),
+        alert("a-no-agent", { contact_id: AGENTLESS }), alert("a-other-tenant", { brokerage_id: OTHER_BRK, contact_id: OTHER_BUYER }), alert("a-inactive", { is_active: false }),
+      ],
+      property_alert_delivery_log: [
+        ...runs("a-friction", 5), ...runs("a-matched-before", 5), ...runs("a-refused-run", 5, { errorAt: 2 }), ...runs("a-no-homes", 5, { checked: 0 }),
+        ...runs("a-one-afternoon", 5, { spanDays: 0.2 }), ...runs("a-too-few", 4), ...runs("a-no-agent", 5), ...runs("a-other-tenant", 5, { brk: OTHER_BRK }), ...runs("a-inactive", 5),
+      ],
+      property_alert_results: [{ id: "res-old", alert_id: "a-matched-before", brokerage_id: BRK, mls_number: "M1", created_at: DAY(-20).toISOString() }],
+    })
+    const s1 = await detectInventoryFriction(db, tenantScope(BRK, "proof"), { now: NOW })
+    const tasks = () => rowsOf(db, "tasks").filter((t) => t.source === "inventory_friction")
+    check("SCOPE: only this tenant's ACTIVE saved searches are read (7 of 9 rows: the other tenant's and the inactive one untouched)", s1.scanned === 7, JSON.stringify(s1))
+    check("FRICTION (positive): five answered runs over 10 days, homes in the area each time (12), none fit, never a result → ONE task for the buyer's ASSIGNED agent", s1.frictionFound === 2 && s1.tasksOpened === 1 && tasks().length === 1 && tasks()[0].assigned_to_agent_id === AGENT && tasks()[0].contact_id === BUYER && tasks()[0].priority === "medium", JSON.stringify({ s1, t: tasks() }))
+    check("the task carries the buyer's criteria and the measured inventory in plain words (area, ceiling, bedrooms, runs, homes per run) and suggests the real options", /Frisco · up to \$600,000 · 4\+ bed/.test(tasks()[0].description) && /ran 5 times/.test(tasks()[0].description) && /up to 12 per run/.test(tasks()[0].description) && /nearby ZIP|off-market/.test(tasks()[0].description), tasks()[0].description)
+    check("evidence: ledgered property_alert.inventory_friction.open (executed, shopping_agent) with the runs and the criteria in the detail", rowsOf(db, "agent_action_ledger").filter((l) => l.action === "property_alert.inventory_friction.open" && l.status === "executed" && l.subject_id === "a-friction" && l.actor_manager_key === "shopping_agent" && l.detail?.runs === 5).length === 1)
+    check("SAFE ACTION: the play sends the buyer NOTHING (no notification, no signal, no message row)", rowsOf(db, "notifications").length === 0 && rowsOf(db, "manager_signals").length === 0)
+    check("NEGATIVE: an alert that EVER matched is not friction (only 'nothing new'); a refused run breaks the streak (a refusal is not a zero); no homes in the area is not friction; five runs in one afternoon are not a pattern; four runs are too few", s1.skipped.notFriction === 5)
+    check("NEGATIVE: friction on a Contact with no assigned agent opens no task (counted, never assigned to a guess)", s1.skipped.noAgent === 1 && !tasks().some((t) => t.contact_id === AGENTLESS))
+    const s2 = await detectInventoryFriction(db, tenantScope(BRK, "proof"), { now: DAY(1) })
+    check("IDEMPOTENT: the next day's sweep in the same window REPLAYS — no second task", s2.tasksOpened === 0 && s2.replayed === 1 && tasks().length === 1)
+    check("OUTCOME (before): the task is TRACKED and not yet resolved", s2.outcomes.tracked === 1 && s2.outcomes.resolvedAfterTask === 0)
+    db.tables.property_alert_results.push({ id: "res-new", alert_id: "a-friction", brokerage_id: BRK, mls_number: "M9", created_at: new Date(Date.now() + 3_600_000).toISOString() })
+    const s3 = await detectInventoryFriction(db, tenantScope(BRK, "proof"), { now: DAY(2) })
+    check("OUTCOME (measured): a home matched AFTER the task was opened → resolvedAfterTask 1/1, and the alert stops reading as friction", s3.outcomes.tracked === 1 && s3.outcomes.resolvedAfterTask === 1 && s3.frictionFound === 1 && tasks().length === 1, JSON.stringify(s3.outcomes))
+    const refused = memSupabase({ property_alerts: [] }, { refuse: { property_alerts: "permission denied for table property_alerts" } })
+    const sr = await detectInventoryFriction(refused as never, tenantScope(BRK, "proof"), { now: NOW })
+    check("ADVERSE: a refused saved-search read evaluates nothing and says so (never 'no friction')", sr.scanned === 0 && sr.errors.some((e) => /refused/.test(e)))
+    const route = code("app/api/property-alerts/run/route.ts")
+    const daily = route.slice(route.indexOf("let inventoryFriction"))
+    check("WIRING: the alert cron's DAILY tick runs the play with the declared scope, and a play failure never fails the sweep (try / catch, reported beside the stats)", /if \(frequency === "daily"\) \{\s*try \{\s*inventoryFriction = await detectInventoryFriction\(createServiceClient\(\), scope\)/.test(daily) && /inventoryFriction = \{ error: `inventory_friction: /.test(daily) && !/inventory-friction/.test(code("lib/property-alerts/alert-engine.ts")))
+    const play = code("lib/property-alerts/inventory-friction.ts")
+    const SEND_RE = /from\(["']notifications["']\)|dispatchEmail|dispatchSms|publishManagerSignal|sendSms|sendEmail/
+    check("the play holds NO send path (stripped source)", !SEND_RE.test(play))
+    check("POSITIVE CONTROL: the send finder sees a send when one is there", SEND_RE.test(`await db.from("notifications").insert({})`) && SEND_RE.test("await publishManagerSignal({})"))
+  }
+
+  console.log("\n BLIND SPOTS (published): memSupabase runs no RLS / CHECK / DEFAULT; RentCast, the rail and the arbiter's model are injected; the daily tick is not fired here; row 79 is verified live in the notes, not here; pages are not rendered; vendor tools are censused and mounted, not executed; the inventory-friction outcome is measured as 'a result row after the task' (it does not prove the task CAUSED the match, and it is not yet attributed to a closing in the ROI ledger); the IDX client's transport is replaced on the instance (the connector gateway, its health gate and the live feed's exact status spellings are not exercised); uploadDocument's session gate and storage are not executed (the feedback door is driven; the action's wiring is read from stripped source).")
   console.log("\n──────────────────────────────────────────────────")
   if (failures.length) { console.log("FAILURES:"); failures.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

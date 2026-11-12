@@ -338,7 +338,9 @@ export interface ClassifiedSite extends HonestSite { cls: SurfaceClass | null; d
  */
 export const CLASSIFIED_SURFACES: ReadonlyArray<{ file: string; match?: string; cls: SurfaceClass; why: string; action: string }> = [
   { file: "app/components/settings/BenefitOfferingsCard.tsx", cls: "implemented-missing-owner-config", why: "the brokerage has not described its benefit distribution — a tenant-owner setting on the same card", action: "kept: honest owner-setting copy (the toggle pays nothing until the distribution is described)" },
-  { file: "app/components/portal/DocumentUploadDialog.tsx", cls: "implemented-missing-owner-config", why: "the storage upload refused for a missing bucket configuration — a platform storage setting, not code", action: "kept: honest refusal, the client is told to contact support" },
+  // TOMBSTONE (wave 152, lane 152J — C3: a row whose sentence is gone is deleted): the portal dialog's "Storage not
+  // configured. Please contact support." is gone. A storage refusal is now told to the Contact in the presenter's words
+  // and opens a task for their agent — survivor: lib/portal/upload-feedback.ts reportContactUploadFailure.
   { file: "app/dashboard/admin/onboarding/components/os/setup-blockers-panel.tsx", cls: "implemented-missing-owner-config", why: "the tenant setup board lists each setup item the owner has not configured yet", action: "kept: the setup board IS the configuration surface" },
   { file: "app/dashboard/admin/phone-settings/phone-settings-client.tsx", match: "Voice cloning", cls: "implemented-missing-owner-config", why: "the platform voice provider key (ELEVENLABS_API_KEY) is unset; the 503 says so — a TENANT is told the capability status and who switches it on, never the variable (readiness V6: platform configuration never reaches a tenant screen)", action: "copy corrected (was \"isn't available yet\")" },
   { file: "app/dashboard/admin/phone-settings/page.tsx", cls: "implemented-missing-owner-config", why: "phone number / A2P registration not configured for the tenant — a tenant connection (Twilio) set on this page", action: "kept: status label on the page that configures it" },

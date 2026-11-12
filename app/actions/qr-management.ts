@@ -35,6 +35,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { resolveActingContext, resolveWriteContext } from '@/lib/platform/acting-context'
 import { resolveAgentIdInBrokerage } from '@/lib/kernel/agent-identity'
 import { resolveLedTeamId } from '@/lib/kernel/resolve-user-team'
+import { presentTenantError } from '@/lib/errors'
 // WAVE 152 (lane 152C): the governed lifecycle / duplicate / activity doors and the one lifecycle classifier. This file
 // stays the board's SESSION gate (tenant from the session, read-only impersonation refused) in front of them.
 import { changeQrLifecycle, duplicateQrDesign, loadQrActivity, type QrActor, type QrLifecycleAction, type QrActivity } from '@/lib/marketing/qr-governance'
@@ -189,7 +190,10 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
     const led = await resolveLedTeamId(svc, ctx.userId)
     // DESTRUCTURE THE REFUSAL: "the read was refused" must never be reported as
     // "you lead nothing", which would silently narrow a lead to their own codes.
-    if (!led.ok) return { ok: false, error: led.error }
+    // PRESENTER WIRING (wave 152, lane 152K): both refusals relayed the raw database sentence to the board
+    // ("Could not resolve your team: <error.message>"). Now THE presenter logs it with a reference and the person reads
+    // what did not happen + one action (lib/errors/index.ts presentTenantError).
+    if (!led.ok) return { ok: false, error: presentTenantError({ what: "Your team's QR codes could not be loaded right now", raw: led.error, next: 'platform_support', action: { label: 'Try again in a moment' }, context: 'qr-management' }).sentence }
 
     if (led.teamId) {
       const { data: teamAgents, error: teamAgentsError } = await svc
@@ -198,7 +202,7 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
         .eq('brokerage_id', brokerageId)
         .eq('team_id', led.teamId)
       if (teamAgentsError) {
-        return { ok: false, error: `Could not resolve your team's agents: ${teamAgentsError.message}` }
+        return { ok: false, error: presentTenantError({ what: "Your team's QR codes could not be loaded right now", raw: `team agents: ${teamAgentsError.message}`, next: 'platform_support', action: { label: 'Try again in a moment' }, context: 'qr-management' }).sentence }
       }
       scope = 'team'
       scopeLabel = "Your team's QR codes"

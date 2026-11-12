@@ -228,8 +228,11 @@ async function main() {
 
   // ── 6 ────────────────────────────────────────────────────────────────────────────────────────────────────────────
   console.log("\n[6 — R7: every persona source is in the label set]")
-  const ii = await import("../lib/voice-admin/intent-interface")
-  const labels = ii.everyPersonaAudienceLabel()
+  // Wave 152 (lane 152K — row 66): the five persona sources are ONE set, lib/portal/persona-config.ts personaAudienceLabels
+  // (intent-interface's second composition, everyPersonaAudienceLabel, is tombstoned).
+  const labels = (await import("../lib/portal/persona-config")).personaAudienceLabels()
+  check("row 66 — ONE persona label set: intent-interface reads personaAudienceLabels and no second composition remains",
+    !/function everyPersonaAudienceLabel\(/.test(src("lib/voice-admin/intent-interface.ts")) && /audienceProxyHits\(audience, personaAudienceLabels\(\)\)/.test(src("lib/voice-admin/intent-interface.ts")))
   const cs = await import("../lib/campaigns/contact-sources")
   const pl = await import("../lib/contacts/persona-layers")
   const aud2 = await import("../lib/compliance-rules/audience-compliance")

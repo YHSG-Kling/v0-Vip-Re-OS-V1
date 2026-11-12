@@ -83,7 +83,7 @@ export function lastMonthKeys(n: number, now: Date = new Date()): string[] {
 // ─── Facts (what the loader reads; what the composer folds) ─────────────────
 
 export interface AttributionMonth {
-  /** Attribution-weighted closed volume credited to AI marketing (cents). */
+  /** Attribution-weighted COMMISSION (GCI, never sale price) on closed / funded deals credited to AI marketing (cents). */
   attributedGciCents: number
   /** Distinct closed transactions carrying credits. */
   attributedDeals: number
@@ -278,10 +278,10 @@ function composeAttributionSection(f: IntelligenceFacts): IntelligenceSection | 
   const { current, prior } = f.attribution
   if (current.attributedGciCents <= 0 && current.attributedDeals <= 0) return null
 
-  const headline = `${compactCentsMoney(current.attributedGciCents)} closed volume attributed to AI marketing across ${current.attributedDeals} ${plural(current.attributedDeals, "deal")} — measured by the attribution engine, not claimed.`
+  const headline = `${compactCentsMoney(current.attributedGciCents)} closed commission attributed to AI marketing across ${current.attributedDeals} ${plural(current.attributedDeals, "deal")} — measured by the attribution engine, not claimed.`
   const lines: ReportMetricLine[] = [
     {
-      label: "Attributed closed volume",
+      label: "Attributed closed commission",
       value: compactCentsMoney(current.attributedGciCents),
       delta: prior.attributedGciCents > 0
         ? `${current.attributedGciCents >= prior.attributedGciCents ? "↑" : "↓"} from ${compactCentsMoney(prior.attributedGciCents)} last month`
@@ -406,10 +406,13 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     .select("status, edit_delta, channel")
     .eq("brokerage_id", brokerageId)
     .gte("created_at", w.startIso).lt("created_at", w.endIso).limit(2000)
-  const creditsIn = (w: MonthWindow) => svc.from("marketing_attribution_credits")
-    .select("credit_dollars, transaction_id")
-    .eq("brokerage_id", brokerageId)
-    .gte("created_at", w.startIso).lt("created_at", w.endIso).limit(2000)
+  // REALIZED commission only, ONE model (wave 152, lane 152K — 152B outside-lane 2): this read summed every model's
+  // credit rows (4× per deal) and counted in-escrow deals credited at the estimate. THE realized-credit read is
+  // lib/intelligence/roi-ledger.ts loadRealizedAttributionCredits (fails closed: a refused read shows nothing earned).
+  const creditsIn = async (w: MonthWindow) => {
+    const { loadRealizedAttributionCredits } = await import("@/lib/intelligence/roi-ledger")
+    return loadRealizedAttributionCredits(svc, brokerageId, { sinceIso: w.startIso, beforeIso: w.endIso })
+  }
   const callsIn = (w: MonthWindow) => cnt(svc.from("voice_calls").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId).eq("direction", "inbound")
     .gte("started_at", w.startIso).lt("started_at", w.endIso))
@@ -481,8 +484,9 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     const rows = ((res as any)?.data ?? []) as Array<{ showing_requested: boolean | null }>
     return { visits: rows.length, leads: rows.filter((r) => r.showing_requested === true).length }
   }
-  const toCredits = (res: any): AttributionMonth => {
-    const rows = ((res as any)?.data ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
+  const toCredits = (res: Awaited<ReturnType<typeof creditsIn>>): AttributionMonth => {
+    if (!res.ok) console.error("[intelligence-report]", res.error)
+    const rows = res.ok ? res.rows : []
     return {
       attributedGciCents: rows.reduce((a, c) => a + Math.round(Number(c.credit_dollars ?? 0) * 100), 0),
       attributedDeals: new Set(rows.map((c) => c.transaction_id).filter(Boolean)).size,

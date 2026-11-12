@@ -397,6 +397,25 @@ async function attachFinalStatementFromTitle(
       const { finalizeTransactionCommission } = await import("@/lib/commission/finalization")
       await finalizeTransactionCommission(supabase, args.transactionId, "cd_uploaded")
     } catch { /* the finalization lock is best-effort; the document is on the transaction either way */ }
+    // WAVE 152 (lane 152H for 152G): a no-CDA deal's final statement must also be READ — onto the documents rail through the ONE
+    // documents writer (lib/documents/upload-document.ts uploadDocument fires the universal scanner), keyed by the source row so a
+    // retry files it once. (A CDA deal's final takes uploadFinalCdAction, which does this in app/actions/cda-portal.ts.)
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: src, error: srcErr } = await svc.from("transaction_documents").select("id, transaction_id, doc_type, doc_label, storage_url").eq("id", args.documentId).eq("brokerage_id", args.brokerageId).maybeSingle()
+      if (srcErr) console.error(`[title-portal] final statement ${args.documentId} unreadable for the documents rail: ${srcErr.message}`)
+      const row = src as { id: string; transaction_id: string | null; doc_type: string | null; doc_label: string | null; storage_url: string | null } | null
+      if (row?.storage_url) {
+        const { data: prior, error: priorErr } = await svc.from("documents").select("id").eq("brokerage_id", args.brokerageId).eq("metadata->>transaction_document_id", row.id).limit(1)
+        if (priorErr) console.error(`[title-portal] documents rail unreadable: ${priorErr.message}`)
+        else if (!(prior ?? []).length) {
+          const { uploadDocument } = await import("@/lib/documents/upload-document")
+          const filed = await uploadDocument({ brokerageId: args.brokerageId, storageUrl: row.storage_url, fileName: row.doc_label ?? undefined, documentType: row.doc_type ?? "final_closing_disclosure", transactionId: row.transaction_id ?? args.transactionId, metadata: { transaction_document_id: row.id, rail_doc_type: row.doc_type, upload_source: "title_statement_bridge" } })
+          if (!filed.success) console.error(`[title-portal] final statement not put on the documents rail (the close holds on it): ${filed.error}`)
+        }
+      }
+    } catch (e) { console.error("[title-portal] documents-rail bridge threw (the close holds on the unread statement):", e instanceof Error ? e.message : String(e)) }
   }
   const { data: txn } = await supabase
     .from("transactions")

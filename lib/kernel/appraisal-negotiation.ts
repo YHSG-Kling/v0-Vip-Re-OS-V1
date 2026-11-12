@@ -649,7 +649,7 @@ export async function runAppraisalNegotiationCopilot(
   let assignedUserId: string | null = null
   try {
     const { resolveTransactionTeamUsers } = await import("@/lib/kernel/deal-save-huddle")
-    const team = await resolveTransactionTeamUsers(supabase, args.transactionId)
+    const team = await resolveTransactionTeamUsers(supabase, args.transactionId, args.brokerageId)
     assignedUserId = team.agentUserId ?? team.coordinatorUserId ?? null
   } catch { /* best-effort — task still lands unassigned for the queue to pick up */ }
 

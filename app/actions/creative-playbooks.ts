@@ -305,6 +305,8 @@ export async function installCreativePlaybook(
       // purpose is a CHECK-constrained vocabulary — the step BRIEF is prose,
       // never a purpose value (live-fire catch: it made every insert fail).
       purpose: "lead_capture",
+      // WAVE 152 (152J): the governed mint's request key — one code per (playbook, magnet); a reinstall returns it.
+      idempotencyKey: `playbook_qr.${playbook.key}.${magnetId ?? "no_magnet"}`.slice(0, 128),
     })
     if ((qr as any)?.success) {
       qrImageUrl = (qr as any).qrCode?.image_url ?? (qr as any).imageUrl ?? null

@@ -91,8 +91,13 @@ async function main() {
     && !mod.includes("interface ReportScope {"))
   check("provenance reads the RECORDED decision fields (generated_from learned:%, content_kit.built_by) — never inferred",
     mod.includes('startsWith("learned:")') && mod.includes("content_kit?.built_by"))
-  check("attribution reads the credit ledger; drafts adoption = sent_message_id set ÷ written",
-    mod.includes("marketing_attribution_credits") && mod.includes('not("sent_message_id", "is", null)'))
+  // Wave 152 (lane 152K): the credit ledger is read through THE realized-credit read (one model, closed / funded deals)
+  // in lib/intelligence/roi-ledger.ts — never a direct every-model read here (that counted each deal 4× plus estimates).
+  const roiSrc = src("lib/intelligence/roi-ledger.ts")
+  check("attribution reads the credit ledger through the realized-credit read; drafts adoption = sent_message_id set ÷ written",
+    mod.includes("loadRealizedAttributionCredits") && !mod.includes('from("marketing_attribution_credits")')
+    && /export async function loadRealizedAttributionCredits[\s\S]{0,1600}from\("marketing_attribution_credits"\)[\s\S]{0,200}\.eq\("attribution_model", ROI_SOURCED_MODEL\)/.test(roiSrc)
+    && mod.includes('not("sent_message_id", "is", null)'))
   check("coaching signals compute from ledgers: first activity per contact, 14-day gap sweep, deadline states",
     mod.includes("firstByContact") && mod.includes("gapCutoff") && mod.includes('["at_risk", "missed"]'))
   const page = src("app/dashboard/reports/page.tsx")

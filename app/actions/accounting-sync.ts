@@ -228,51 +228,102 @@ export async function getSyncErrors(data: {
 }
 
 // ─── RETRY SYNC ERROR ────────────────────────────────────────────────────────
+// WAVE 152 (integrator). This used to DELETE the error row and toast "re-queued for sync" while nothing re-sent anything
+// (the kernel event it emitted only hands a manager signal to Finance Manager). It was unreachable while the fake bulk
+// route was the only sync_errors writer; once lib/finance/accounting-egress.ts began filing REAL failures (logSync), the
+// fake retry became reachable — so it now re-sends for real, through the SAME egress the automatic push used:
+//   · the record is RE-READ from its source table under the session tenant (business_expenses / agent_commissions) —
+//     the amount posted is the record's own, never a figure from the error row or the browser;
+//   · the account / customer refs come from the tenant's mapping inside the egress (unchanged honest refusal);
+//   · QuickBooks not connected → nothing attempted, the error row is KEPT and the caller is told;
+//   · attempted → the old row is removed (the new attempt either landed, or filed its own fresh sync_errors row).
+// Pushing into the brokerage's books is brokerage-wide MONEY: the finance roster only (isBrokerageFinanceAdmin), the
+// tenant from the SESSION (the argument is only asserted — requireCallerTenant).
 export async function retrySyncError(data: {
   errorId: string
   brokerageId: string
-}) {
-  const supabase = await createClient()
+}): Promise<{ success: true; resent: boolean; landed: boolean; message: string } | { success: false; error: string }> {
+  const caller = await requireCallerTenant(data.brokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (!isBrokerageFinanceAdmin({ user_type: caller.userType })) return { success: false, error: "Only a broker or brokerage admin can re-send items to your accounting books." }
+  const brokerageId = caller.brokerageId
+  const svc = createServiceClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  // Get the error details
-  const { data: errorRecord, error: fetchError } = await supabase
+  const { data: errorRecord, error: fetchError } = await svc
     .from("sync_errors")
-    .select("*")
+    .select("id, brokerage_id, record_type, record_id")
     .eq("id", data.errorId)
-    .eq("brokerage_id", data.brokerageId)
-    .single()
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (fetchError) return { success: false, error: `We couldn't read that sync error (${fetchError.message}).` }
+  if (!errorRecord) return { success: false, error: "That sync error is no longer listed." }
+  const recordType = String(errorRecord.record_type ?? "")
+  const recordId = (errorRecord.record_id as string | null) ?? null
+  if (!recordId || (recordType !== "expense" && recordType !== "commission")) {
+    return { success: false, error: "This item can't be re-sent automatically. Post it with Manual entry instead." }
+  }
 
-  if (fetchError || !errorRecord) throw new Error("Error record not found")
+  const egress = await import("@/lib/finance/accounting-egress")
+  let outcome: { attempted: boolean; success: boolean; error?: string }
+  if (recordType === "expense") {
+    const { data: exp, error: expErr } = await svc
+      .from("business_expenses")
+      .select("id, amount, category, description, expense_date, agent_id, team_id")
+      .eq("id", recordId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (expErr) return { success: false, error: `We couldn't read the expense (${expErr.message}).` }
+    if (!exp) return { success: false, error: "The expense this error refers to no longer exists." }
+    if (exp.agent_id || exp.team_id) return { success: false, error: "Agent and team expenses stay off the brokerage books, so this one is not re-sent." }
+    const amount = Number(exp.amount)
+    if (!(amount > 0)) return { success: false, error: "A refund or zero-amount expense is not sent to QuickBooks; reconcile it in your books." }
+    outcome = await egress.pushExpenseToAccounting(svc, {
+      brokerageId, amount, category: String(exp.category ?? ""), description: (exp.description as string | null) ?? null,
+      expenseDate: (exp.expense_date as string | null) ?? null, expenseId: exp.id as string,
+    })
+  } else {
+    const { data: com, error: comErr } = await svc
+      .from("agent_commissions")
+      .select("id, gross_commission")
+      .eq("id", recordId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (comErr) return { success: false, error: `We couldn't read the commission (${comErr.message}).` }
+    if (!com) return { success: false, error: "The commission this error refers to no longer exists." }
+    outcome = await egress.pushCommissionToAccounting(svc, {
+      brokerageId, grossCommission: Number(com.gross_commission) || 0, description: `Commission ${com.id as string}`,
+      qbCustomerRef: null, commissionId: com.id as string,
+    })
+  }
 
-  // Delete the error (mark as retried by removing from table)
-  const { error: deleteError } = await supabase
+  if (!outcome.attempted) {
+    return { success: false, error: "QuickBooks isn't connected, so nothing was sent. Connect it, then try again." }
+  }
+  // The new attempt either landed or filed its own sync_errors row — remove the one being retried. A delete that
+  // matches nothing also resolves (CLAUDE.md §3): count what came back.
+  const { data: removed, error: deleteError } = await svc
     .from("sync_errors")
     .delete()
     .eq("id", data.errorId)
+    .eq("brokerage_id", brokerageId)
+    .select("id")
+  if (deleteError) console.error("[accounting-sync] retried sync error row not removed:", deleteError.message)
+  else if ((removed ?? []).length === 0) console.error("[accounting-sync] retried sync error row was already gone:", data.errorId)
 
-  if (deleteError) throw deleteError
-
-  // Log that we're re-queuing this record — audit row + reactor. The tenant is the
-  // ROW's (read above under RLS), never the body's (lane 91D2).
   await emitKernelEvent({
-    brokerageId: errorRecord.brokerage_id,
+    brokerageId,
     event: KernelEvent.SYSTEM_SYNC_TRIGGERED,
     entityType: "sync_errors",
     entityId: data.errorId,
-    actorUserId: user.id,
-    metadata: {
-      record_type: errorRecord.record_type,
-      record_id: errorRecord.record_id,
-      retried_by: user.id,
-    },
+    actorUserId: caller.userId,
+    metadata: { record_type: recordType, record_id: recordId, retried_by: caller.userId, landed: outcome.success },
   })
 
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/settings/accounting")
-  return { success: true }
+  return outcome.success
+    ? { success: true, resent: true, landed: true, message: "Sent to QuickBooks." }
+    : { success: true, resent: true, landed: false, message: `QuickBooks still didn't accept it: ${outcome.error ?? "no reason given"}. It is listed again under Sync errors.` }
 }
 
 // ─── PUSH AN ENTRY TO QUICKBOOKS (the real write) ────────────────────────────
@@ -310,8 +361,14 @@ async function buildQuickBooks(
  * the session's value is not an input, and leaving it accepted-but-checked
  * invites the next caller to pass one.
  *
+ * WAVE 152 UPDATE: the blocker recorded below is gone. The fake bulk route was retired (lane 152K) and the ONE egress
+ * (lib/finance/accounting-egress.ts logSync) now files every REAL failed push into sync_errors with record_id and a
+ * payload_snapshot; the per-error re-send is retrySyncError above, which re-reads the SOURCE record (no figure is taken
+ * from the error row) and re-sends through the same egress. The history below is kept as the record of why this
+ * function was not used for that job — it still is not: the re-send keeps the egress's honest unmapped refusal.
+ *
  * WAS UNCALLED (wave 26); WIRED THIS LANE — orphan doctrine §1.2, category A.
- * The obvious wire is still blocked exactly as wave 26 recorded: the proposed
+ * The obvious wire was blocked as wave 26 recorded: the proposed
  * home was a "push this record" control on the sync-error row
  * (app/settings/accounting/error-log-table.tsx), and it still cannot be built
  * honestly from there — `sync_errors` carries only record_type / record_id /

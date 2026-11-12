@@ -616,6 +616,7 @@ async function syncCommissionToQuickBooks(commission: any) {
     grossCommission: Number(commission.gross_commission) || 0,
     description: `Commission ${commission.id ?? ""}`.trim(),
     qbCustomerRef: null, // mapped per-tenant on the connection; unmapped fails honestly into the sync-errors UI
+    commissionId: typeof commission.id === "string" ? commission.id : null,
   })
   return { synced: outcome.success, error: outcome.error }
 }

@@ -34,7 +34,10 @@ export async function recordClosingCostActualAction(input: {
     .from("cost_breakdown_tracking")
     .update({
       actual_amount: input.actualAmount,
-      status: input.actualAmount === null ? "estimated" : "actual",
+      // cost_breakdown_tracking.status CHECK: confirmed | estimated | paid (wave 152, 152K — row 45 census): "actual"
+      // refused the whole UPDATE, so an actual closing cost was never saved (actual_amount included). An entered actual
+      // is CONFIRMED; "paid" stays the payment fact's word.
+      status: input.actualAmount === null ? "estimated" : "confirmed",
     })
     .eq("id", input.itemId)
     .eq("brokerage_id", brokerageId)

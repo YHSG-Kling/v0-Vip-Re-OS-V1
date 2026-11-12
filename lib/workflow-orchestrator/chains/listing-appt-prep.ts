@@ -797,7 +797,8 @@ export const listingApptPrepChain: WorkflowChain = {
             campaign_name:   `Pre-Listing Kit (${piece}) - ${recipientName}`,
             target_audience: "pre_listing_kit",
             quantity:        1,
-            status:          result.success ? "sent" : "failed",
+            // ONE vocabulary (wave 152, 152K — row 45 census): "mailed" is the CHECK's word; "sent" refused the whole insert.
+            status:          result.success ? "mailed" : "failed",
             piece_type:      piece,
             lob_order_id:    result.messageId ?? null,
             mailing_date:    result.success ? new Date().toISOString().slice(0, 10) : null,

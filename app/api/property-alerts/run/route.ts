@@ -5,6 +5,8 @@ import { runAllActiveAlerts } from "@/lib/property-alerts/alert-engine"
 // route is reached by the cron alone, never by a page graph, so the watch's approval / caps / rail subtree lands on no
 // page (app/crm/page.tsx measured 1300 → 1300); the engine itself does not import the watch.
 import { watchSavedHomes, type SavedHomeWatchStats } from "@/lib/property-alerts/saved-home-watch"
+// WAVE 152 (152J): the local inventory friction play rides the same daily tick (a cron-only route — no page graph).
+import { detectInventoryFriction, type InventoryFrictionStats } from "@/lib/property-alerts/inventory-friction"
 import { createServiceClient } from "@/lib/supabase/service"
 import { platformScope, tenantScope, isTenantScopeRefusal } from "@/lib/kernel/tenant-scope"
 
@@ -87,7 +89,18 @@ export async function POST(req: NextRequest) {
   // means every buyer on the platform was told, silently, that nothing is for
   // sale. `ok` is the transport result, not a verdict on the sweep — a run with
   // `unevaluated > 0` did NOT cover those alerts.
-  return NextResponse.json({ ok: true, frequency, ...stats, ...(savedHomes ? { savedHomes } : {}) })
+  let inventoryFriction: InventoryFrictionStats | { error: string } | undefined
+  if (frequency === "daily") {
+    try {
+      inventoryFriction = await detectInventoryFriction(createServiceClient(), scope)
+      console.log(`[property-alerts] daily: inventory friction scanned ${inventoryFriction.scanned}, found ${inventoryFriction.frictionFound}, tasks opened ${inventoryFriction.tasksOpened}, resolved after task ${inventoryFriction.outcomes.resolvedAfterTask}/${inventoryFriction.outcomes.tracked}`)
+    } catch (e) {
+      inventoryFriction = { error: `inventory_friction: ${e instanceof Error ? e.message : String(e)}` }
+      console.error("[property-alerts] daily: inventory friction failed —", inventoryFriction.error)
+    }
+  }
+
+  return NextResponse.json({ ok: true, frequency, ...stats, ...(savedHomes ? { savedHomes } : {}), ...(inventoryFriction ? { inventoryFriction } : {}) })
 }
 
 // Vercel cron invokes via GET

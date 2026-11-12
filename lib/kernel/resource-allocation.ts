@@ -711,18 +711,25 @@ export async function gatherMarketingAllocationFacts(svc: Svc, input: { brokerag
   if (!(twin && twin.economic.closedCount90d > 0)) blindSpots.push(`no closed GCI in the twin — territory conversions valued at the default $${MARKETING_DEFAULT_VALUE_PER_CONVERSION_USD}`)
 
   // campaigns + attribution credits (the ROI ledger's rows)
-  const { data: camps, error: cErr } = await svc.from("marketing_campaigns").select("id, campaign_name, campaign_type, budget_spent, budget_total, attributed_gci_total, conversions, engagements, completed_at").eq("brokerage_id", brokerageId).limit(200)
+  const { data: camps, error: cErr } = await svc.from("marketing_campaigns").select("id, campaign_name, campaign_type, budget_spent, budget_total, conversions, engagements, completed_at").eq("brokerage_id", brokerageId).limit(200)
   if (cErr) blindSpots.push(`campaigns unreadable: ${cErr.message}`)
   else {
+    // RETURN = REALIZED commission only (wave 152, lane 152K — 152B outside-lane 1): this read summed EVERY model's
+    // credit rows (four per deal, each summing to the deal's GCI → 4×) and counted in-escrow deals credited at the
+    // estimate, and a campaign with no credit in the window fell back to `attributed_gci_total` — the LIFETIME linear
+    // rollup that also carries in-escrow estimates. Both now go through THE realized-credit read
+    // (lib/intelligence/roi-ledger.ts loadRealizedAttributionCredits — one model, closed / funded, not deleted). No
+    // fallback to the rollup: a campaign with no realized credit in the window earned nothing measured in it.
     const credits = new Map<string, number>()
-    const { data: cr, error: crErr } = await svc.from("marketing_attribution_credits").select("campaign_id, credit_dollars").eq("brokerage_id", brokerageId).gte("created_at", since).limit(5000)
-    if (crErr) blindSpots.push(`attribution credits unreadable: ${crErr.message}`)
-    for (const r of (cr ?? []) as Array<{ campaign_id: string | null; credit_dollars: number | null }>) if (r.campaign_id) credits.set(r.campaign_id, (credits.get(r.campaign_id) ?? 0) + Number(r.credit_dollars ?? 0))
+    const { loadRealizedAttributionCredits } = await import("@/lib/intelligence/roi-ledger")
+    const cr = await loadRealizedAttributionCredits(svc, brokerageId, { sinceIso: since }, 5000)
+    if (!cr.ok) blindSpots.push(`${cr.error} — campaign returns read as $0 (unknown, not measured)`)
+    else for (const r of cr.rows) if (r.campaign_id) credits.set(r.campaign_id, (credits.get(r.campaign_id) ?? 0) + Number(r.credit_dollars ?? 0))
     const rosterHeadroom = headroomOf(null)
-    for (const c of (camps ?? []) as Array<{ id: string; campaign_name: string | null; campaign_type: string | null; budget_spent: number | null; budget_total: number | null; attributed_gci_total: number | null; conversions: number | null; engagements: number | null; completed_at: string | null }>) {
+    for (const c of (camps ?? []) as Array<{ id: string; campaign_name: string | null; campaign_type: string | null; budget_spent: number | null; budget_total: number | null; conversions: number | null; engagements: number | null; completed_at: string | null }>) {
       if (c.completed_at) continue
       const spend = Number(c.budget_spent ?? 0)
-      const ret = credits.has(c.id) ? (credits.get(c.id) as number) : Number(c.attributed_gci_total ?? 0)
+      const ret = credits.get(c.id) ?? 0
       candidates.push({ kind: "campaign", id: c.id, name: c.campaign_name ?? `campaign ${c.id.slice(0, 8)}`, spendUsd: spend, returnUsd: ret, leads: Number(c.engagements ?? 0), conversions: Number(c.conversions ?? 0), capacityHeadroom: rosterHeadroom, pipelineNeed, saturationUsd: Math.max(MARKETING_DEFAULT_SATURATION_USD, spend, Number(c.budget_total ?? 0)), reader: "marketing_campaigns + marketing_attribution_credits" })
     }
   }

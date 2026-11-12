@@ -1,5 +1,5 @@
 import { runApifyTask } from './apify-actors'
-import { runActorSyncGetDatasetItems } from "@/lib/providers/apify/client"
+import { runActorSyncGetDatasetItems, type ApifyRunCursor } from "@/lib/providers/apify/client"
 import { apifyToken } from "@/lib/env/aliases"
 
 // ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
@@ -36,6 +36,10 @@ export async function runApifyActor(
 ): Promise<{
   data: any[]
   cost: number
+  /** The started run's dataset cursor (row 55) — lib/external/apify-actors.ts runApifyTask persists an unfinished one. */
+  run?: ApifyRunCursor
+  /** Set when the run started but its dataset could not be read to the end (the cursor says where it stopped). */
+  readError?: string
 }> {
   // Official Apify SDK adapter (lib/providers/apify/client.ts) — same
   // run-sync-get-dataset-items semantics (starts the actor, waits for it to
@@ -44,8 +48,13 @@ export async function runApifyActor(
   // "owner/actor" vs "owner~actor" spelling itself.
   const runResponse = await runActorSyncGetDatasetItems(apifyToken() ?? "", actorId, input, { timeoutSecs: 60 })
 
-  // 200/201 = finished with dataset items; 408 = run timed out (actor too slow).
   if (!runResponse.ok) {
+    // WAVE 152 (152J — row 55): a run that STARTED is billed. Throwing here sent runApifyTask to the NEXT candidate actor,
+    // so one dataset hiccup bought a second run of the same scrape and abandoned the first one's items. A started run
+    // returns what it read plus its cursor; only a run that never started throws (and may fall to another candidate).
+    if (runResponse.run) {
+      return { data: Array.isArray(runResponse.data) ? runResponse.data : [], cost: 0.50, run: runResponse.run, readError: runResponse.error ?? "dataset read incomplete" }
+    }
     throw new Error(`Apify actor run error: ${runResponse.status} ${runResponse.error ?? ""}`)
   }
 
@@ -54,6 +63,7 @@ export async function runApifyActor(
   return {
     data: Array.isArray(results) ? results : [],
     cost: 0.50,
+    run: runResponse.run,
   }
 }
 

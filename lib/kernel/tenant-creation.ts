@@ -102,6 +102,7 @@ import type { TenantOwnerParams, TenantOwnerResult, UserProvisioningParams, Prov
 import type { ActivationCheckoutInput, ActivationCheckoutResult } from "@/lib/billing/subscription-activation"
 import type { DeclaredAffiliationInput } from "@/lib/kernel/brokerage-identity"
 import { invitationLandingUrl } from "@/lib/platform/site-url"
+import { tierCarriesOffices } from "@/lib/kernel/tier-role-matrix"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 export const CANONICAL_TIERS: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
@@ -1124,8 +1125,9 @@ export type MembershipAccessLevel = (typeof MEMBERSHIP_ACCESS_LEVELS)[number]
 const MEMBERSHIP_SOURCES = ["provisioning", "invite", "transfer", "admin_grant"] as const
 type MembershipSource = (typeof MEMBERSHIP_SOURCES)[number]
 
-/** The tiers that carry offices. A solo agent and a team carry none (a team IS a mini brokerage, m473). */
-const OFFICE_TIERS = new Set(["brokerage", "multi_location"])
+// TOMBSTONE (wave 152, lane 152K — 152A outside-lane 5, §6): `const OFFICE_TIERS = new Set(["brokerage",
+// "multi_location"])` stood here — a second spelling of the office-tier set lib/errors/index.ts derived from TIER_ORDER.
+// Survivor: lib/kernel/tier-role-matrix.ts tierCarriesOffices (planTenantOffices below reads it).
 
 export interface OfficeInput {
   /** The office's idempotency key inside the tenant. Default `office-<n>` by position — never the name. */
@@ -1233,7 +1235,7 @@ function officeCodeFor(o: OfficeInput, i: number): string {
 /** Consumers: createTenantCore (via provisionTenantStructure) and app/actions/auth/signup-brokerage.ts (validates the head office before any write). */
 export function planTenantOffices(tier: string, brokerageName: string, offices: OfficeInput[] | null | undefined): { ok: true; offices: Array<OfficeInput & { code: string }>; note: string | null } | { ok: false; error: string } {
   const given = (offices ?? []).filter((o) => o && trimOrNull(o.name))
-  if (!OFFICE_TIERS.has(tier)) {
+  if (!tierCarriesOffices(tier)) {
     if (given.length) return { ok: false, error: `A ${tier.replace(/_/g, " ")} workspace has no offices — choose Brokerage or Multi-Location to add one.` }
     return { ok: true, offices: [], note: null }
   }

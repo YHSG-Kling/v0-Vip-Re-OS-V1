@@ -11,6 +11,7 @@ import { classifyUndeliveredCda } from "./cda-delivery-policy"
 import {
   CDA_DEADLINE_NOTIFICATION,
   cdaDeadlineVerdict,
+  loadEffectiveCdaModes,
   resolveCdaMode,
   resolveClosingDeadline,
   resolveTenantTimeZone,
@@ -137,7 +138,22 @@ export async function reapCdaDeadlines(
   if (brkErr) { console.error(`[cda-deadline-reaper] brokerages read refused for ${brokerageId}: ${brkErr.message}`); return result }
   const b = brokerage as { offers_cda?: boolean | null; non_cda_payout_default?: string | null; state?: string | null } | null
   const mode = resolveCdaMode({ offersCda: b?.offers_cda, nonCdaPayoutDefault: b?.non_cda_payout_default })
-  if (mode.mode !== "cda") { result.notApplicable = true; return result }
+  // WAVE 152 (lane 152H): the brokerage's CURRENT setting no longer decides alone. A deal opened before an opt-out keeps its CDA (and
+  // its deadline), and a deal opened before an opt-in has none — so the open CDA rows are swept by the policy that governs EACH deal
+  // (cda-closing-policy.ts loadEffectiveCdaModes). With no recorded policy change, a no-CDA brokerage stays not applicable, unchanged.
+  const { data: openRows, error: openErr } = await svc
+    .from("closing_disclosure_agreement")
+    .select("id, status, sent_to_title_at, uses_cda, transaction_id, agent_id")
+    .eq("brokerage_id", brokerageId)
+    .in("status", [...OPEN_CDA_STATUSES])
+    .is("sent_to_title_at", null)
+    .limit(opts?.limit ?? 200)
+  if (openErr) { console.error(`[cda-deadline-reaper] CDA read refused: ${openErr.message}`); return result }
+  const openTxnIds = Array.from(new Set(((openRows ?? []) as Array<{ transaction_id: string | null }>).map((c) => c.transaction_id).filter((id): id is string => !!id)))
+  const effective = await loadEffectiveCdaModes(svc, { brokerageId, transactionIds: openTxnIds, live: { offersCda: b?.offers_cda ?? null, nonCdaPayoutDefault: b?.non_cda_payout_default ?? null } })
+  if (!effective.ok) { console.error(`[cda-deadline-reaper] the CDA policy could not be read for ${brokerageId} (nothing swept): ${effective.error}`); return result }
+  const governedByCda = new Set(openTxnIds.filter((id) => effective.deals[id] && resolveCdaMode(effective.deals[id].governing).mode === "cda"))
+  if (mode.mode !== "cda" && governedByCda.size === 0) { result.notApplicable = true; return result }
   // WAVE 148 (148Z — lane 148K hand-off 143H-OL-02, m841's coupled code): the tenant's OWN chosen zone wins
   // (global_settings.timezone; m841 made NULL mean "not chosen — derive from the brokerage state"), then the state, then the
   // fallback — and `zoneSource` says which answered. A refused read is said and falls through to the state (never silently UTC).
@@ -147,15 +163,8 @@ export async function reapCdaDeadlines(
   result.zone = tz.zone
   result.zoneSource = tz.source
 
-  const { data: rows, error: rowsErr } = await svc
-    .from("closing_disclosure_agreement")
-    .select("id, status, sent_to_title_at, uses_cda, transaction_id, agent_id")
-    .eq("brokerage_id", brokerageId)
-    .in("status", [...OPEN_CDA_STATUSES])
-    .is("sent_to_title_at", null)
-    .limit(opts?.limit ?? 200)
-  if (rowsErr) { console.error(`[cda-deadline-reaper] CDA read refused: ${rowsErr.message}`); return result }
-  const cdas = (rows ?? []) as Array<{ id: string; status: string | null; sent_to_title_at: string | null; uses_cda: boolean | null; transaction_id: string | null; agent_id: string | null }>
+  const cdas = ((openRows ?? []) as Array<{ id: string; status: string | null; sent_to_title_at: string | null; uses_cda: boolean | null; transaction_id: string | null; agent_id: string | null }>)
+    .filter((c) => !!c.transaction_id && governedByCda.has(c.transaction_id))
   const txnIds = Array.from(new Set(cdas.map((c) => c.transaction_id).filter((id): id is string => !!id)))
   if (txnIds.length === 0) return result
 

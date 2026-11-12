@@ -26,6 +26,10 @@ interface DocumentUploadDialogProps {
   buttonVariant?: "default" | "outline" | "ghost" | "destructive" | "secondary" | "link"
 }
 
+// WAVE 152 (152J): the limit a client is shown is the gate's own ceiling for this transport (lib/storage/file-limits.ts),
+// never a guessed figure — the old "up to 10MB" promised more than the server-action body can carry.
+const UPLOAD_LIMIT_TEXT = `${Math.max(0.1, Math.floor((checkUpload({ bucket: "client-documents", transport: "server_action_base64", bytes: 0, contentType: "application/pdf" }).ceilingBytes / 1_048_576) * 10) / 10)} MB`
+
 export function DocumentUploadDialog({
   contactId,
   transactionId,
@@ -86,7 +90,14 @@ export function DocumentUploadDialog({
       contentType: file.type,
     })
     if (!gate.ok) {
-      setError(gate.reason)
+      // WAVE 152 (152J): the gate's reason is written for staff (it names the bucket and the transport cap); a client
+      // reads the same words the server door returns (lib/portal/upload-feedback.ts).
+      const limit = `${Math.max(0.1, Math.floor((gate.ceilingBytes / 1_048_576) * 10) / 10)} MB`
+      setError(gate.refusedBy === "size"
+        ? `This file is too large to upload here (the limit is ${limit}). Nothing was saved. Next step: upload a smaller copy, such as a PDF or a photo of each page.`
+        : gate.refusedBy === "content_type"
+          ? "This kind of file can't be uploaded here. Nothing was saved. Next step: save it as a PDF or a photo and upload that."
+          : "We couldn't check this file before uploading it. Nothing was saved. Next step: choose the file again and upload it.")
       return
     }
 
@@ -129,18 +140,14 @@ export function DocumentUploadDialog({
         setProgress(0)
         router.refresh()
       }, 1500)
-    } catch (err: any) {
-      console.error("[v0] Upload error:", err)
-      const errorMessage = err?.message || "Failed to upload document"
-      if (errorMessage.includes("storage") || errorMessage.includes("bucket")) {
-        setError("Storage not configured. Please contact support.")
-      } else if (errorMessage.includes("size")) {
-        setError("File is too large. Maximum size is 10MB.")
-      } else if (errorMessage.includes("type")) {
-        setError("Invalid file type. Please upload PDF, JPG, or PNG.")
-      } else {
-        setError(`Upload failed: ${errorMessage}. Please try again.`)
-      }
+    } catch (err: unknown) {
+      // WAVE 152 (152J): the upload action reports every failure BY RETURN in the presenter's words
+      // (lib/portal/upload-feedback.ts), so this catch is only the request itself failing (the connection dropped, the
+      // page went offline). The raw text stays in the console; the person reads what happened, that nothing was saved,
+      // and what to do — never "Storage not configured", a guessed limit, or a provider string.
+      console.error("[portal] Upload request failed:", err)
+      setError("Your document didn't upload because the connection dropped before it finished. Nothing was saved. Next step: try again. If it keeps happening, your agent can help.")
+      setProgress(0)
     } finally {
       setUploading(false)
     }
@@ -216,7 +223,7 @@ export function DocumentUploadDialog({
                 <FileText className="h-12 w-12 text-muted-foreground mb-3" />
                 <p className="font-medium">Drop your document here</p>
                 <p className="text-sm text-muted-foreground mt-1">or click to browse</p>
-                <p className="text-xs text-muted-foreground mt-3">PDF, JPG, or PNG up to 10MB</p>
+                <p className="text-xs text-muted-foreground mt-3">PDF, JPG, or PNG up to {UPLOAD_LIMIT_TEXT}</p>
               </div>
             )}
           </div>

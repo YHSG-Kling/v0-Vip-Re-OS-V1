@@ -90,7 +90,16 @@ async function runTridClockForTimeline(
 
   let escalated = false
   try {
-    const agentUserId = tl.transactions?.agent_id ?? null
+    // WAVE 152 (lane 152G) — CORRECTED: transactions.agent_id is an AGENTS id and notifications.user_id a USERS id (disjoint —
+    // CLAUDE.md §3, 23503). The bell used the agents id as the user, so every TRID alert was refused by the FK (or reached nobody).
+    // Cross via agents.user_id, tenant-pinned; a refused read rings no bell and says so (the bus signal below still carries it).
+    const agentRecordId = (tl.transactions?.agent_id as string | null | undefined) ?? null
+    let agentUserId: string | null = null
+    if (agentRecordId) {
+      const { data: agentRow, error: agentErr } = await svc.from("agents").select("user_id").eq("id", agentRecordId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (agentErr) console.error(`[trid-clock] the deal's agent could not be resolved to a user (${agentErr.message}) — no bell; the deal coordinator signal still goes`)
+      agentUserId = ((agentRow as { user_id?: string | null } | null)?.user_id as string | null) ?? null
+    }
     if (agentUserId) {
       await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: input.brokerageId, type: "trid_disclosure_clock",

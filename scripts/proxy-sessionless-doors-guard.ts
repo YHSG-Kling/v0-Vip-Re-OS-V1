@@ -222,6 +222,45 @@ console.log("\n[P5 · no route under a PROTECTED prefix is public by accident]")
   check("no page or route is public by accident under a protected prefix", accidents.length === 0, accidents.join(", "))
 }
 
+// ── H · CONVERGENCE ROW 93 (wave 152, lane 152K): the liveness route and the request-error hook ─────────────────────
+// The public-route list, this census and the route land TOGETHER (spec 143H-OL-07): /api/health is public BY NAME,
+// anonymous by design, and may reveal nothing — no database call, no secret, no tenant data, never cached.
+console.log("\n[H · the liveness route (public by name, reveals nothing) + instrumentation.ts onRequestError]")
+{
+  const healthPath = join(root, "app/api/health/route.ts")
+  const health = existsSync(healthPath) ? stripComments(readFileSync(healthPath, "utf8")) : ""
+  check("H1 app/api/health/route.ts exists and answers GET (and HEAD)", /export async function GET\(/.test(health) && /export async function HEAD\(/.test(health))
+  check("H2 /api/health is PUBLIC BY NAME in PUBLIC_ROUTES (not merely 'open') — a sessionless monitor is never 307'd", PUBLIC_ROUTES.includes("/api/health") && classifyProxyPath("/api/health") === "public")
+  // What the route may NOT do: read the database, build a client, or read any env var but the public build identifier.
+  const leaks = (src: string): string[] => {
+    const out: string[] = []
+    if (/\.from\(|createServiceClient|createClient|\.rpc\(/.test(src)) out.push("database")
+    for (const m of src.matchAll(/process\.env\.([A-Z0-9_]+)/g)) if (m[1] !== "VERCEL_GIT_COMMIT_SHA") out.push(`env ${m[1]}`)
+    if (/cookies\(|headers\(\)|getUser\(/.test(src)) out.push("session / request identity")
+    return out
+  }
+  check("H3 the liveness route reveals nothing: no database call, no client, no env read but the public commit prefix, no session", health.length > 0 && leaks(health).length === 0, leaks(health).join(", "))
+  check("H3 POSITIVE CONTROL — the leak finder flags a DB read and a secret", leaks(`await svc.from("users").select("id"); const k = process.env.SUPABASE_SERVICE_ROLE_KEY`).length === 2)
+  check("H4 never cached and always dynamic (Cache-Control: no-store; dynamic = force-dynamic)", /"Cache-Control":\s*"no-store"/.test(health) && /export const dynamic = "force-dynamic"/.test(health))
+  const route = await import("../app/api/health/route") as { GET: () => Promise<Response> }
+  const res = await route.GET()
+  const json = await res.json() as { ok?: unknown; commit?: unknown }
+  check("H5 driven: GET → 200 { ok: true, commit: <7-char prefix | null> }, no-store", res.status === 200 && json.ok === true && (json.commit === null || (typeof json.commit === "string" && json.commit.length <= 7)) && res.headers.get("cache-control") === "no-store", JSON.stringify(json))
+  const instPath = join(root, "instrumentation.ts")
+  const inst = existsSync(instPath) ? stripComments(readFileSync(instPath, "utf8")) : ""
+  check("H6 instrumentation.ts exports onRequestError and hands the error to THE writer (collectError) — Node runtime only, gate BEFORE the import",
+    /export async function onRequestError\(/.test(inst) && /NEXT_RUNTIME !== "nodejs"\) return/.test(inst) && inst.indexOf('NEXT_RUNTIME !== "nodejs"') < inst.indexOf('import("./lib/errors/collect-error")') && /collectError\(\{/.test(inst))
+  check("H7 the hook never logs a header, a cookie or a query string (path is cut at '?'; the request type carries no headers)",
+    !/request\.headers|cookies|\.headers\[/.test(inst) && /split\("\?"\)\[0\]/.test(inst) && !/headers:/.test(inst))
+  const prevRuntime = process.env.NEXT_RUNTIME
+  process.env.NEXT_RUNTIME = "edge"
+  const { onRequestError } = await import("../instrumentation") as { onRequestError: (e: unknown, r: { path: string; method: string }, c: { routerKind: string; routePath: string; routeType: string }) => Promise<void> }
+  let threw = false
+  try { await onRequestError(new Error("boom"), { path: "/x?email=a@b.c", method: "GET" }, { routerKind: "App Router", routePath: "/x", routeType: "route" }) } catch { threw = true }
+  if (prevRuntime === undefined) delete process.env.NEXT_RUNTIME; else process.env.NEXT_RUNTIME = prevRuntime
+  check("H8 driven (adverse): on the edge runtime the hook returns without reporting and never throws", !threw)
+}
+
 console.log("\n[R · proxy.ts invoked for real, no cookie]")
 {
   const _require = createRequire(import.meta.url)
@@ -241,6 +280,8 @@ console.log("\n[R · proxy.ts invoked for real, no cookie]")
   check("Twilio inbound POST passes through (no redirect)", !twilio.location && twilio.status === 200, JSON.stringify(twilio))
   const form = await hit("/api/forms/submit", "POST")
   check("public form submit passes through (no redirect)", !form.location && form.status === 200, JSON.stringify(form))
+  const live = await hit("/api/health")
+  check("the liveness route passes through with no session (no redirect) — row 93", !live.location && live.status === 200, JSON.stringify(live))
   const llm = await hit("/api/did/custom-llm", "POST")
   check("D-ID custom-LLM callback passes through (no redirect)", !llm.location && llm.status === 200, JSON.stringify(llm))
   let dash: { status: number; location: string } | null = null

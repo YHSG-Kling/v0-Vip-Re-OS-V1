@@ -38,13 +38,17 @@ import {
 } from "@/lib/support/ticket-constants"
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import { presentTenantError } from "@/lib/errors"
 
 /** WAVE 150 (lane 150DAC — "tenant-safe errors"): a refused database read / write is LOGGED in full for staff and the
  *  person is told, in words, what did not happen — never the raw database sentence (a constraint name, a table, a
- *  permission code). Not exported (a "use server" export is a public endpoint). */
+ *  permission code). Not exported (a "use server" export is a public endpoint).
+ *  TOMBSTONE (wave 152, lane 152K — 152A outside-lane 3, §1.1): the body composed its own sentence ("raise it with your
+ *  office administrator" — wrong for a solo agent, who has no office); survivor lib/errors/index.ts presentTenantError
+ *  (logs the raw refusal with a quotable reference; actor-neutral "an admin on your account"). The name stays — the
+ *  a2p-and-invites guard holds this file's refusals to it. */
 function tenantSafeError(what: string, raw: string | null | undefined): string {
-  console.error(`[support] ${what} — refused: ${raw ?? "no detail"}`)
-  return `${what}. Please try again in a moment; if it keeps happening, raise it with your office administrator.`
+  return presentTenantError({ what, raw: raw ?? null, next: "account_admin", action: { label: "Try again in a moment" }, context: "support" }).sentence
 }
 import { decideStatusOverride, statusOverrideDetail } from "@/lib/kernel/status-override"
 import {

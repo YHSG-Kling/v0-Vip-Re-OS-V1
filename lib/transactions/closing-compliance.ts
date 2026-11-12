@@ -45,6 +45,8 @@ import type { AgentConcessionApprovalStatus, ConcessionSettlementTreatment } fro
 // WAVE 152 (lane 152E): + the term ledger's row shape and the ONE per-term evidence rule (re-asked of the document's current readings).
 import { termEvidenceFor, type UnresolvedTermConflict, type TermLedgerRow } from "@/lib/offers/governing-terms-rule"
 import { isValidUUID } from "@/lib/validations"
+// WAVE 152 (lane 152G): the reconciliation's result shape — TYPE only (the reconciler is loaded at the run's tail, below).
+import type { SettlementReconciliationRun } from "@/lib/offers/closing-cost-accuracy"
 import { auditTransactionDocuments } from "@/lib/compliance/required-documents"
 import { documentClassificationLabel } from "@/lib/compliance/required-documents"
 import { financingKindFor } from "@/lib/compliance/checklist-dimensions"
@@ -165,12 +167,14 @@ export interface ClosingComplianceOutcome {
   evidenceHolds: number
   /** WAVE 152 (lane 152E): the corrective requests opened / refreshed / settled by this run. */
   corrections: { opened: number; refreshed: number; completed: number; errors: string[] }
+  /** WAVE 152 (lane 152G): the contract-to-settlement reconciliation this run produced (null when the run did not reach it). */
+  reconciliation: SettlementReconciliationRun | null
 }
 
 const empty = (reason: string): ClosingComplianceOutcome => ({
   ran: false, reason, governingOnFile: false, settlementOnFile: false, comparison: null,
   rows: { inserted: 0, updated: 0, unchanged: 0, reopened: 0 }, openBlocking: 0, openReview: 0, notified: 0, summary: [], blockingSummary: [], stateQuestion: null,
-  recordComparison: [], evidenceHolds: 0, corrections: { opened: 0, refreshed: 0, completed: 0, errors: [] },
+  recordComparison: [], evidenceHolds: 0, corrections: { opened: 0, refreshed: 0, completed: 0, errors: [] }, reconciliation: null,
 })
 
 // ── Facts out of extraction rows ───────────────────────────────────────────────
@@ -590,7 +594,14 @@ async function loadSettlement(svc: Svc, tx: TransactionRow): Promise<{ ok: true;
   const ledger = await readLedger(svc, tx.brokerage_id, docs.map((d) => String(d.id)))
   if (!ledger.ok) return ledger
   const terms: TermMap = {}
+  // WAVE 152 (lane 152G) — CORRECTED: a term the newest statement does not show was filled from an OLDER VERSION of the same document,
+  // so a revised Closing Disclosure that DROPPED a credit still "agreed" through the version it superseded (owner: "the final closing
+  // desclosure has to be correct"). An older version of the SAME classification is superseded and contributes nothing; a DIFFERENT
+  // classification still complements (a buyer's CD rarely prints the commissions the seller's statement does).
+  const classesRead = new Set<string>()
   for (const d of docs) {
+    if (classesRead.has(d.classification)) continue
+    classesRead.add(d.classification)
     const label = `${d.stage === "final" ? "final" : d.stage === "preliminary" ? "preliminary" : "settlement"} ${documentClassificationLabel(d.classification).toLowerCase()}`
     const facts = documentFacts({ id: String(d.id), extracted_fields: d.extracted_fields, classification_confidence: d.classification_confidence ?? null }, ledger.rows, SETTLEMENT_FIELD_TO_TERM, label, null)
     for (const [k, f] of Object.entries(facts) as Array<[ClosingTermKey, TermFact]>) if (!terms[k]) terms[k] = f
@@ -1083,6 +1094,17 @@ const requestCorrections: CorrectionRequester = async (svc, tx, open, cleared, t
   return out
 }
 
+// WAVE 152 (lane 152G): the reconciliation seam — the default door loads the reconciler at call time (a proof injects its own).
+type SettlementReconciler = (
+  svc: Svc,
+  ctx: { transactionId: string; brokerageId: string; trigger: string; actorUserId: string | null; comparison: ClosingComparison | null; readFault: string | null },
+  deps: { correct: never },
+) => Promise<SettlementReconciliationRun>
+const defaultReconciler: SettlementReconciler = async (svc, ctx, deps) => {
+  const { reconcileClosingSettlement } = await import("@/lib/offers/closing-cost-accuracy")
+  return reconcileClosingSettlement(svc, ctx, deps)
+}
+
 // ── The runner ──────────────────────────────────────────────────────────────────
 
 export async function runClosingCompliance(
@@ -1092,6 +1114,8 @@ export async function runClosingCompliance(
     governingTerms?: GoverningTermsReader; notify?: ClosingNotifier; audit?: ClosingAuditor; closingEntity?: (brokerageId: string) => Promise<string | null>
     /** WAVE 152 (lane 152E): the term ledger (default: THE ONE READER's contractTermLedger) and the corrective-request door. */
     termLedger?: TermLedgerReader; correct?: CorrectionRequester
+    /** WAVE 152 (lane 152G): the settlement reconciliation (default: lib/offers/closing-cost-accuracy.ts reconcileClosingSettlement). */
+    reconcile?: SettlementReconciler
   } = {},
 ): Promise<ClosingComplianceOutcome> {
   if (!isValidUUID(input.transactionId)) return empty("invalid transaction id")
@@ -1229,6 +1253,21 @@ export async function runClosingCompliance(
   // follow-up owner; a row that now agrees settles exactly its own request. Unchanged rows open nothing (replay-safe).
   const corrections = await (deps.correct ?? requestCorrections)(svc, tx, written.changed.filter((c) => c.status === "fail" || c.is_blocking), written.cleared, input.trigger)
 
+  // WAVE 152 (lane 152G) — 152E COMPARE → RECONCILE THE CURRENT SETTLEMENT SNAPSHOT (directive 152G workflow). Every trigger of this
+  // check (a statement / CD scanned, an executed addendum, the pre-CDA final check, the gated close) now reconciles the latest
+  // statement against the executed terms: each item labelled exact / extracted estimate / authoritative, the TRID re-wait decided,
+  // a versioned snapshot on the policy ledger when what was seen changed, and the corrective requests through THIS file's ONE
+  // requester. A reconciler that throws is a reconciliation that did not run (null + the reason) — never "reconciled".
+  let reconciliation: SettlementReconciliationRun | null = null
+  try {
+    reconciliation = await (deps.reconcile ?? defaultReconciler)(svc, {
+      transactionId: tx.id, brokerageId: tx.brokerage_id, trigger: input.trigger, actorUserId: input.actorUserId ?? null,
+      comparison, readFault,
+    }, { correct: (deps.correct ?? requestCorrections) as never })
+  } catch (e) {
+    reconciliation = { ok: false, error: e instanceof Error ? e.message : String(e), reconciliation: null, snapshot: { recorded: false, replay: false, version: null, supersedes: null, error: null }, corrections: { opened: 0, refreshed: 0, completed: 0, errors: [] } }
+  }
+
   // LAW 5 evidence. Not allowed to fail the check (the auditor swallows and logs its own fault).
   await (deps.audit ?? auditClosingRun)(tx, {
     trigger: input.trigger, actorUserId: input.actorUserId ?? null,
@@ -1241,6 +1280,7 @@ export async function runClosingCompliance(
       classes: comparison ? comparison.findings.map((f) => `${f.term}:${f.classification}`) : [],
       deal_record: recordComparison.map((f) => `${f.term}:${f.classification}`), evidence_holds: evidenceHolds,
       corrections: { opened: corrections.opened, refreshed: corrections.refreshed, completed: corrections.completed, errors: corrections.errors.length },
+      reconciliation: reconciliation?.reconciliation ? { state: reconciliation.reconciliation.state, final_on_file: reconciliation.reconciliation.record.finalOnFile, version: reconciliation.snapshot.version, trid: reconciliation.reconciliation.trid.path } : { error: reconciliation?.error ?? "not run" },
     },
   })
 
@@ -1260,5 +1300,6 @@ export async function runClosingCompliance(
     recordComparison,
     evidenceHolds,
     corrections,
+    reconciliation,
   }
 }

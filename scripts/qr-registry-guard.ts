@@ -87,7 +87,9 @@ const PROSE = new Set(["lib/kernel/manager-registry.ts"])
 // blind spot of this sweep; it now counts as an emission and must be registered like every other.
 const EMIT_RE = /QRCode\.toDataURL\(|QRCode\.toCanvas\(|QRCode\.toString\(|renderQrPng\(|qrserver\.com|create-qr-code/
 const THIRD_PARTY_RE = /qrserver\.com|create-qr-code/
-const MINTS_RE = /mintTrackedQr\(/
+// WAVE 152 (152J): + mintGovernedQr( — lane 152C's governed door wraps the ONE writer (asserted in §15: it calls
+// mintTrackedQr), so a file that mints through it mints through the registry (the studio's two doors do since 152J).
+const MINTS_RE = /mintTrackedQr\(|mintGovernedQr\(/
 const TRACKED_RESOLVER_RE = /\/api\/qr\/scan\?slug=/
 const CONSUMES_SCAN_URL_RE = /\bqrScanUrl\b/
 /** Files that emit a QR image outside the registry ON PURPOSE, each with its reason. */
@@ -165,7 +167,9 @@ async function main() {
   console.log("\n[2 · the studio's QR asset is a REGISTERED code]")
   const studio = stripped("app/actions/marketing-studio.ts")
   const studioClient = stripped("app/dashboard/marketing/studio/marketing-studio-client.tsx")
-  check("createAsset(assetType=qr) mints through mintTrackedQr, stores the tracked PNG, and links the code to the asset", /params\.assetType === "qr"[\s\S]{0,900}mintTrackedQr\(\{[\s\S]{0,600}assetUrl = minted\.qrCodeDataUrl[\s\S]{0,1600}from\("marketing_asset_qr_links"\)[\s\S]{0,200}\.insert\(/.test(studio))
+  // WAVE 152 (152J): the same rule on its governed path — the asset's code is minted through the governed mint
+  // (mintStudioQr → mintGovernedQr; §15 drives it), the tracked PNG is stored, and the code is linked to the asset.
+  check("createAsset(assetType=qr) mints a REGISTERED code (the governed mint), stores the tracked PNG, and links the code to the asset", /params\.assetType === "qr"[\s\S]{0,1400}mintStudioQr\(\{[\s\S]{0,800}assetUrl = minted\.imageDataUrl[\s\S]{0,1600}from\("marketing_asset_qr_links"\)[\s\S]{0,200}\.insert\(/.test(studio) && /async function mintStudioQr\([\s\S]{0,400}mintGovernedQr\(input, actor\)/.test(studio))
   check("the asset link uses a LIVE placement_type (CHECK'd), never qr-asset-linker's stale 'other'", (() => { const m = studio.match(/qr_code_id: mintedQrId, placement_type: "([a-z_]+)"/); return !!m && CHECK_VOCABULARIES.marketing_asset_qr_links.placement_type.includes(m[1]) })())
   check("the studio client no longer pre-renders a raw-URL QR (no renderQrImageAction import; qrTargetUrl rides to the action)", !/renderQrImageAction/.test(studioClient) && /qrTargetUrl: newAsset\.assetType === "qr"/.test(studioClient))
   check("renderQrImageAction (an unregistered raw-URL emitter) is retired with a tombstone naming the survivor", !/export async function renderQrImageAction/.test(studio) && /TOMBSTONE[\s\S]{0,400}renderQrImageAction[\s\S]{0,1200}Survivor: createAsset/.test(src("app/actions/marketing-studio.ts")))
@@ -492,6 +496,45 @@ async function wave152Sections() {
     check("every governed write is ledgered under a literal domain.entity.action name (mint · destination_edit · lifecycle)", ["marketing.qr.mint", "marketing.qr.destination_edit", "marketing.qr.lifecycle"].every((a) => new RegExp(`withActionLedger<\\w+>\\(\\s*\\{\\s*brokerageId: actor\\.brokerageId,\\s*action: "${a.replace(/\./g, "\\.")}"`).test(gov)))
     const outside = files.filter((f) => !["lib/marketing/qr-governance.ts", REGISTRY].includes(rel(f))).filter((f) => /from\(['"]qr_codes['"]\)[\s\S]{0,240}\.update\(\{[^}]*\b(target_url|retired_at|destination_history)\b/.test(blankStrings(stripped(f))))
     check("only the governed doors and the minter write target_url / retirement / history (no other live file)", outside.length === 0, outside.map(rel).join(", "))
+  }
+
+  // ─── WAVE 152 (lane 152J) — QR ACROSS ASSETS: the studio's two create doors are governed too ───────────────────────
+  console.log("\n[15 · QR ACROSS ASSETS (152J) — a person's typed destination never reaches the raw writer]")
+  {
+    const studio = stripped("app/actions/marketing-studio.ts")
+    const studioClient = stripped("app/dashboard/marketing/studio/marketing-studio-client.tsx")
+    const playbooks = stripped("app/actions/creative-playbooks.ts")
+    const govSrc = stripped("lib/marketing/qr-governance.ts")
+    check("GROUNDING for the sweep: the governed mint writes ONLY through the one registry writer (so a mintGovernedQr caller mints through the registry)", /export async function mintGovernedQr\([\s\S]*?mintTrackedQr\(\{/.test(govSrc) && !/from\(['"]qr_codes['"]\)[\s\S]{0,200}\.insert\(/.test(blankStrings(govSrc)))
+    const door = studio.slice(studio.indexOf("export async function createQrCodeAction("), studio.indexOf("async function mintStudioQr("))
+    check("createQrCodeAction mints through the governed mint (mintStudioQr → mintGovernedQr), with the session's tenant, user, agent and type, and the request's key", /mintStudioQr\(\{/.test(door) && /idempotencyKey: \(params\.idempotencyKey \?\? ""\)\.trim\(\)/.test(door) && /\{ brokerageId: ctx\.brokerageId, userId: ctx\.userId, agentId: ctx\.agentId \?\? null, userType: ctx\.userType \}/.test(door), door.slice(0, 200))
+    check("the studio file calls the raw writer NOWHERE, and never writes a BODY-supplied agent id", !/mintTrackedQr\(/.test(studio) && !/params\.agentId \?\?/.test(studio))
+    check("the asset door keys one code per asset name and labels it with the person's name (never the reserved `studio_asset:` system namespace)", /idempotencyKey: `studio_asset\.\$\{studioKeyDigest\(/.test(studio) && !/label: `studio_asset:/.test(studio))
+    check("the studio form draws ONE key per create form, sends it, and draws a new one only after a code was created", /const qrCreateKey = useRef<string>\(newQrKey\(\)\)/.test(studioClient) && /idempotencyKey: qrCreateKey\.current/.test(studioClient) && /if \(result\.success\) \{\s*qrCreateKey\.current = newQrKey\(\)/.test(studioClient))
+    check("the playbook installer passes a deterministic key (a reinstall returns the same code)", /idempotencyKey: `playbook_qr\.\$\{playbook\.key\}\./.test(playbooks))
+    // The RULE, census-wide: no live action hands a person-typed destination (params.targetUrl / params.qrTargetUrl) to the
+    // raw writer — the governed mint is the only door that validates a destination.
+    const RAW_TYPED_RE = /mintTrackedQr\(\{[\s\S]{0,700}targetUrl:\s*(params\.(targetUrl|qrTargetUrl)|target\b)/
+    const typedRaw = files.filter((f) => rel(f).startsWith("app/")).filter((f) => RAW_TYPED_RE.test(stripped(f)))
+    check("no live app file passes a person-typed destination to the raw writer (the governed mint is the only validating door)", typedRaw.length === 0, typedRaw.map(rel).join(", "))
+    check("CONTROL: the finder catches the studio's OLD shapes (both doors)", RAW_TYPED_RE.test(stripComments("const minted = await mintTrackedQr({ brokerageId, agentId, label, targetUrl: params.targetUrl?.trim() || null })")) && RAW_TYPED_RE.test(stripComments("const minted = await mintTrackedQr({ brokerageId, label: x, targetUrl: target, destinationType: 'other' })")))
+
+    // DRIVEN: the exact instruction the studio now sends, on the REAL governed mint.
+    const db = registryDb()
+    const studioMint = (over: Record<string, unknown>) => mintGovernedQr({ idempotencyKey: "studio_create.k-0001", label: "Spring flyer", purpose: "general", destinationType: null, targetUrl: "https://alderrealty.example/spring", channel: "marketing_studio", source: "studio_create", ...over } as never, A, deps(db))
+    const okA = await studioMint({})
+    const again = await studioMint({})
+    const other = await studioMint({ idempotencyKey: "studio_create.k-0002" })
+    check("the studio's instruction mints ONE code per request key: a double click replays the SAME code; a new form's key mints a new one", okA.ok && again.ok && again.replayed && again.code.id === okA.code.id && other.ok && other.code.id !== okA.code.id, JSON.stringify([okA, again].map((r) => (r.ok ? { id: r.code.id, rep: r.replayed } : r))))
+    const httpRefused = await studioMint({ idempotencyKey: "studio_create.k-0003", targetUrl: "http://alderrealty.example/spring" })
+    const loopRefused = await studioMint({ idempotencyKey: "studio_create.k-0004", targetUrl: `${ORIGIN}/api/qr/scan?slug=abc` })
+    const strangerHost = await studioMint({ idempotencyKey: "studio_create.k-0005", targetUrl: "https://some-other-site.example/page" })
+    check("ADVERSE: what the studio used to SAVE is now refused with a sentence — http, a loop through another code, a host the account doesn't own", !httpRefused.ok && httpRefused.code === "unsafe_destination" && !loopRefused.ok && !strangerHost.ok && strangerHost.code === "unsafe_destination", JSON.stringify([httpRefused, loopRefused, strangerHost]))
+    const foreignCampaign = await studioMint({ idempotencyKey: "studio_create.k-0006", marketingCampaignId: "cB-not-ours" })
+    check("ADVERSE: a campaign that is not this account's is refused (the FK proves existence, never tenancy)", !foreignCampaign.ok && foreignCampaign.code === "not_permitted")
+    const missingKey = await studioMint({ idempotencyKey: "" })
+    check("ADVERSE: a create with no request key writes nothing", !missingKey.ok && missingKey.code === "invalid")
+    check("evidence: each studio mint is ledgered marketing.qr.mint with the studio channel and the session creator on the code", ledgerRows(db, "marketing.qr.mint").length === 2 && ledgerRows(db, "marketing.qr.mint").every((l: any) => l.channel === "marketing_studio") && db.tables.qr_codes.every((q: any) => q.created_by_user_id === "uA"))
   }
 }
 

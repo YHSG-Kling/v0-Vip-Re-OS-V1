@@ -101,11 +101,18 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
   // Persist: the resolved values (for rendering/audit) + the raw agent inputs (re-editable).
   const valuesByKey: Record<string, string> = {}
   for (const f of resolution.fields) valuesByKey[f.field_key] = f.formatted
-  const { error: fieldSaveErr } = await supabase
+  // MERGE, never replace (wave 152, lane 152H): field_values also carries the deal's CDA-policy switch (cda_mode_switch), the preliminary
+  // statement review, the e-sign and title-delivery evidence. Writing only { resolved, agent_inputs } erased all of them each time the
+  // agent saved the form — a switched deal silently reverted to the policy it opened under. Tenant-pinned and COUNTED (§3).
+  const priorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
+  const { data: savedRows, error: fieldSaveErr } = await supabase
     .from("closing_disclosure_agreement")
-    .update({ field_values: { resolved: valuesByKey, agent_inputs: ctx.agentInputs }, updated_at: new Date().toISOString() })
+    .update({ field_values: { ...priorFieldValues, resolved: valuesByKey, agent_inputs: ctx.agentInputs }, updated_at: new Date().toISOString() })
     .eq("id", cda.id)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
   if (fieldSaveErr) return { success: false, error: `Could not save the CDA field values: ${fieldSaveErr.message}` }
+  if (!savedRows || savedRows.length === 0) return { success: false, error: "Could not save the CDA field values: the CDA was not found in your brokerage." }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, resolution }

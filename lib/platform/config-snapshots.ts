@@ -240,6 +240,14 @@ export async function applySnapshotPayload(
       if (siteReadErr) refused.push(`brokerage_site (read): ${siteReadErr.message}`)
       else {
         const absent = absentKeys((liveSite ?? null) as Record<string, unknown> | null, site)
+        // WAVE 152 (lane 152H): a snapshot never FLIPS a tenant's DECLARED CDA policy. That change is the brokerage's own — finance
+        // admin, reason, ledgered and versioned with its effective time (app/actions/brokerage-cda-setup.ts), because deals already in
+        // progress keep the policy they opened under. An unanswered policy may still be seeded, as on a new tenant.
+        const liveCda = (liveSite as { offers_cda?: boolean | null } | null)?.offers_cda
+        if ("offers_cda" in site && (liveCda === true || liveCda === false)) {
+          site = Object.fromEntries(Object.entries(site).filter(([k]) => k !== "offers_cda"))
+          if (!fillAbsent) preserved.push("brokerages.offers_cda")
+        }
         if (fillAbsent) {
           for (const k of siteCols) if (!(k in absent)) preserved.push(`brokerages.${k}`)
           site = absent

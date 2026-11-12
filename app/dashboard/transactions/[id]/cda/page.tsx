@@ -10,6 +10,8 @@ import { ReferralAgreementCard } from "./referral-agreement-card"
 // WAVE 151 (lane 151K): the no-CDA closing proof, and the AI split coach (explains the arithmetic, never a number, never fills).
 import { ClosingProofCard } from "./closing-proof-card"
 import { CdaCoachCard } from "./cda-coach-card"
+// WAVE 152 (lane 152G): the contract-to-settlement reconciliation — both CDA modes (the record must be correct either way).
+import { SettlementReconciliationCard } from "./settlement-reconciliation-card"
 import { resolveCdaMode } from "@/lib/transactions/cda-closing-policy"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -236,10 +238,23 @@ export default async function CDAPage({ params }: PageProps) {
     .limit(15)
 
   // ONE answer (wave 142, lane 142C): resolveCdaMode — read once here for the workflow client, the coach and the closing proof.
-  const cdaMode = resolveCdaMode({ offersCda: (brokerage as { offers_cda?: boolean | null } | null)?.offers_cda })
+  // WAVE 152 (lane 152H): asked of the policy that governs THIS deal — the brokerage's setting when the deal opened, or a finance
+  // admin's switch of the deal (cda-closing-policy.ts §1c). An unreadable history falls back to the brokerage's current setting for the
+  // DISPLAY only; the doors and the closing gate read it themselves and refuse when it is unreadable.
+  const brokerageOffersCda = (brokerage as { offers_cda?: boolean | null } | null)?.offers_cda
+  const { loadEffectiveCdaModes } = await import("@/lib/transactions/cda-closing-policy")
+  const effectivePolicy = await loadEffectiveCdaModes(supabase, { brokerageId, transactionIds: [id], live: { offersCda: brokerageOffersCda ?? null } })
+  const dealPolicy = effectivePolicy.ok ? effectivePolicy.deals[id] : undefined
+  const cdaMode = resolveCdaMode(dealPolicy?.governing ?? { offersCda: brokerageOffersCda })
 
   return (
     <>
+    {/* WAVE 152 (lane 152H): why this deal's CDA treatment differs from the brokerage's current policy (opened before a change, or switched). */}
+    {dealPolicy && (dealPolicy.differsFromCurrent || dealPolicy.basis === "deal_switch") ? (
+      <div className="mx-auto max-w-5xl px-4 pt-4">
+        <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">{dealPolicy.explanation}</p>
+      </div>
+    ) : null}
     <CDAWorkflowClient
       transaction={transaction}
       brokerageId={brokerageId}
@@ -261,6 +276,7 @@ export default async function CDAPage({ params }: PageProps) {
     <div className="mx-auto max-w-5xl space-y-6 px-4 pb-8">
       {/* WAVE 151 (lane 151K): CDA enabled → the coach beside the form the agent fills; CDA disabled → the honest closing proof. */}
       {cdaMode.mode === "cda" && cda?.id ? <CdaCoachCard cdaId={String(cda.id)} /> : null}
+      <SettlementReconciliationCard transactionId={id} />
       {cdaMode.mode === "no_cda" ? <ClosingProofCard transactionId={id} /> : null}
       <AgentConcessionsCard transactionId={id} />
       {/* WAVE 145 (lane 145C, owner rulings 5/6/7/9): client-agreement fees, the referral agreement a payout needs, and the
