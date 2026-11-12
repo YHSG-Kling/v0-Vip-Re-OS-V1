@@ -87,6 +87,12 @@ export function grantTargetForShape(shape: string): { agentKind: string; configK
   if (shape.startsWith("social_post:") || shape.startsWith("newsletter:") || shape.startsWith("blog:")) {
     return { agentKind: "campaign_orchestrator", configKey: "marketing_grants" }
   }
+  // Wave 152 (lane 152D): a receipt auto-post grant (`receipt_autopost:<kind>:max_usd=<n>`) belongs to the books'
+  // manager. NOT ratchetable — the sweep below proposes deadline shapes only; a person grants this one explicitly.
+  // Read fail-closed by lib/documents/receipt-intake.ts; no grant → every receipt is reviewed by a person.
+  if (shape.startsWith("receipt_autopost:")) {
+    return { agentKind: "finance_manager", configKey: "expense_grants" }
+  }
   return { agentKind: "deal_coordinator", configKey: "doc_kernel_grants" }
 }
 
@@ -161,8 +167,15 @@ export async function writeAutonomyGrant(
   return { ok: !error, error: error?.message }
 }
 
-/** @deprecated compatibility alias — routes through writeAutonomyGrant. */
-export const writeDocKernelGrant = writeAutonomyGrant
+// TOMBSTONE (§1.3, 2026-08-29): `writeDocKernelGrant` — a `@deprecated`
+// compatibility alias kept for callers that never existed — is DELETED.
+// SURVIVOR: `writeAutonomyGrant` immediately above, which the alias was a bare
+// re-binding of. Checked before deleting, comment-stripped over the whole tree
+// (app/, lib/, scripts/, supabase/): the ONLY occurrence of the name anywhere
+// was its own declaration line, plus its entry in the opposite-missing baseline.
+// A compatibility alias exists to spare importers a rename; with no importer it
+// only ever offered a second name for one function, which is the §6 defect the
+// alias was meant to prevent.
 
 export interface RatchetSweepResult {
   shapesQualified: number

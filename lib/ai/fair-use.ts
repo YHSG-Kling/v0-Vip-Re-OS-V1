@@ -3,9 +3,17 @@
  *
  * AI fair-use quota enforcement (subscription-included AI).
  *
- * Brokerages do NOT pay per-token — AI is bundled in the plan. To protect
- * platform margin we enforce a per-tenant monthly token ceiling tied to the
- * brokerage's plan_tier (solo_agent / team / brokerage / multi_location).
+ * Brokerages do NOT pay per-token — AI is bundled in the plan. The plan tier
+ * sets the INCLUDED monthly token quota tied to the brokerage's plan_tier
+ * (solo_agent / team / brokerage / multi_location).
+ *
+ * OVER the included quota, the owner ruling (m479) is SERVED AND BILLED, not
+ * refused: when the tier's overage terms (plan_limits.overage_allowed) permit
+ * it, the call proceeds with overageActive set and the excess is billed at
+ * period close (lib/billing/ai-overage.ts derives it from usage_counters —
+ * there is no second accrual). A tier with no overage terms keeps today's
+ * hard block. An approved ai_quota_overrides grant extends the INCLUDED
+ * quota; overage starts only after included + override.
  *
  * Wraps lib/usage/check-cap.ts for the 'ai_tokens_monthly' metric and adds
  * (a) superadmin pass-through and (b) active override lookup.
@@ -36,6 +44,12 @@ export interface FairUseResult {
   overrideActive: boolean
   /** Extra tokens granted by the active override (added to limit). */
   overrideTokens: number
+  /** True when the tenant is past the included quota (limit + override) and is
+   *  being SERVED under the tier's overage terms — billed at period close. */
+  overageActive: boolean
+  /** Tokens past the included total (including this call's addTokens estimate).
+   *  0 unless overageActive. */
+  overageTokens: number
 }
 
 /** Returns true if there is an active override row that hasn't expired. */
@@ -60,6 +74,37 @@ async function readActiveOverrideTokens(brokerageId: string): Promise<number> {
 }
 
 /**
+ * The tier's overage terms for ai_tokens_monthly (m479). Any refusal or
+ * missing row reads as terms-off — the fail-safe direction: a tenant is
+ * hard-blocked (today's behaviour), never billed overage nobody agreed to.
+ */
+async function readOverageTerms(brokerageId: string): Promise<{ allowed: boolean; rateCentsPer1k: number }> {
+  const OFF = { allowed: false, rateCentsPer1k: 0 }
+  try {
+    const svc = createServiceClient()
+    const { data: brokerage, error: brokerageError } = await svc
+      .from("brokerages")
+      .select("plan_tier")
+      .eq("id", brokerageId)
+      .maybeSingle()
+    if (brokerageError || !brokerage) return OFF
+    const { data: terms, error: termsError } = await svc
+      .from("plan_limits")
+      .select("overage_allowed, overage_rate_cents_per_1k")
+      .eq("plan_tier", brokerage.plan_tier ?? "solo_agent")
+      .eq("metric", "ai_tokens_monthly")
+      .maybeSingle()
+    if (termsError || !terms) return OFF
+    return {
+      allowed: !!terms.overage_allowed,
+      rateCentsPer1k: Number(terms.overage_rate_cents_per_1k ?? 0),
+    }
+  } catch {
+    return OFF
+  }
+}
+
+/**
  * Pre-flight fair-use check. Add the estimated token cost of the call
  * via addTokens so we can short-circuit on "this one extra call would
  * cross the cap" rather than waiting for the counter to actually exceed.
@@ -79,6 +124,7 @@ export async function checkAIFairUse(params: {
     return {
       allowed: true, softWarning: false, tokensUsed: 0, tokensLimit: -1,
       percentUsed: 0, overrideActive: false, overrideTokens: 0,
+      overageActive: false, overageTokens: 0,
     }
   }
 
@@ -103,6 +149,30 @@ export async function checkAIFairUse(params: {
     ? effectiveUsed >= Math.floor(effectiveLimit * 0.80) && reAllowed
     : false
 
+  // Past included + override: SERVED AND BILLED when the tier's terms allow it
+  // (m479 owner ruling) — the excess is derived from usage_counters at period
+  // close and invoiced; no second accrual happens here. Terms off / missing /
+  // refused → today's hard block, unchanged. The terms read only happens on
+  // the over-quota path, so under-quota calls pay no extra round-trip.
+  if (!reAllowed && effectiveLimit >= 0) {
+    const terms = await readOverageTerms(params.brokerageId)
+    if (terms.allowed) {
+      const overageTokens = Math.max(0, effectiveUsed - effectiveLimit)
+      return {
+        allowed:        true,
+        softWarning:    false,
+        tokensUsed:     effectiveUsed,
+        tokensLimit:    effectiveLimit,
+        percentUsed:    effectivePct,
+        message:        `You've used your plan's included AI allowance for this billing period — additional usage is billed as overage at your plan's rate.`,
+        overrideActive: overrideTokens > 0,
+        overrideTokens,
+        overageActive:  true,
+        overageTokens,
+      }
+    }
+  }
+
   return {
     allowed:        reAllowed,
     softWarning:    reSoftWarn,
@@ -116,6 +186,8 @@ export async function checkAIFairUse(params: {
       : undefined,
     overrideActive: overrideTokens > 0,
     overrideTokens,
+    overageActive:  false,
+    overageTokens:  0,
   }
 }
 

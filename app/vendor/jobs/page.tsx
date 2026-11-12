@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAllVendorBookings } from "@/app/actions/vendor-marketplace"
+import { getMyProcurementRequestsAction } from "@/app/actions/vendor-portal"
 import { Button } from "@/components/ui/button"
 import { Briefcase, ArrowLeft } from "lucide-react"
 import Link from "next/link"
@@ -18,6 +19,14 @@ export default async function VendorJobsPage() {
     bookings = (await getAllVendorBookings()) || []
   } catch {
     bookings = []
+  }
+  // Wave 107B — open procurement requests this vendor seat may quote on (own quote only).
+  let quoteRequests: Awaited<ReturnType<typeof getMyProcurementRequestsAction>> = []
+  let quoteError: string | null = null
+  try {
+    quoteRequests = await getMyProcurementRequestsAction()
+  } catch (e) {
+    quoteError = e instanceof Error ? e.message : "Could not load quote requests"
   }
 
   return (
@@ -38,7 +47,7 @@ export default async function VendorJobsPage() {
           </p>
         </div>
       </div>
-      <JobsClient bookings={bookings} />
+      <JobsClient bookings={bookings} quoteRequests={quoteRequests} quoteError={quoteError} />
     </div>
   )
 }

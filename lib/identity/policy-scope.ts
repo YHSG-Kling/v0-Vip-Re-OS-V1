@@ -44,7 +44,27 @@ export interface PolicyScopeAccess {
   effectiveRole:    "broker_admin" | "team_lead" | "solo_agent"
 }
 
-const BROKER_ROLES = new Set(["broker", "admin", "compliance_officer", "owner"])
+/**
+ * BROKERAGE-TIER policy editors. DELIBERATELY NOT the canonical tenant-admin
+ * roster (lib/auth/resolve-user-role.ts#isAdminOrBroker), in BOTH directions:
+ *
+ *   WIDER  by `compliance_officer` — policy is a compliance surface, and the
+ *          compliance officer edits it at brokerage tier without being an admin.
+ *   NARROWER by omitting `team_lead` — and that omission is the whole design of
+ *          this module. Leading a team is a FACT here, not a role: the team tier
+ *          is resolved from teams.team_lead_id (a users.id) at line ~86, not from
+ *          user_type. Adding team_lead to this set would make canEditBrokerage
+ *          true for every team lead and short-circuit the team-tier branch that
+ *          exists to scope them to their OWN team.
+ *
+ * `owner` REMOVED — it was in no vocabulary. users_user_type_check admits
+ * fourteen values and `owner` is not one of them; MEASURED on the live database,
+ * zero rows carry it in users.user_type, users.role or user_role_assignments.role.
+ * It matched nothing, so removing it changes no behaviour. `broker_owner` is the
+ * real spelling of what it was reaching for, and it is added here — the person who
+ * OWNS the brokerage was being refused brokerage-tier policy editing.
+ */
+const BROKER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "compliance_officer"])
 
 export async function resolvePolicyScopeAccess(): Promise<PolicyScopeAccess> {
   const ctx = await getAgentContext()
@@ -121,4 +141,26 @@ export async function resolvePolicyScopeAccess(): Promise<PolicyScopeAccess> {
     brokerageScopeId: canEditBrokerage ? ctx.brokerageId : null,
     effectiveRole,
   }
+}
+
+/**
+ * Build the `or(...)` PostgREST clause for every (scope_type, scope_id) tuple
+ * a caller with this {@link PolicyScopeAccess} can read. Survivor for two
+ * byte-identical private copies (SAME BODY census round 3, 2026-09-09):
+ * app/actions/campaign-bundles.ts:103 and app/actions/channel-presets.ts:88 —
+ * both callers of resolvePolicyScopeAccess above, so the filter it builds
+ * belongs next to the access it reads.
+ */
+export function buildScopeFilters(access: PolicyScopeAccess): string[] {
+  const filters: string[] = []
+  if (access.canEditAgent && access.agentScopeId) {
+    filters.push(`and(scope_type.eq.agent,scope_id.eq.${access.agentScopeId})`)
+  }
+  for (const teamId of access.teamScopeIds) {
+    filters.push(`and(scope_type.eq.team,scope_id.eq.${teamId})`)
+  }
+  if (access.canEditBrokerage && access.brokerageScopeId) {
+    filters.push(`and(scope_type.eq.brokerage,scope_id.eq.${access.brokerageScopeId})`)
+  }
+  return filters
 }

@@ -1,7 +1,12 @@
 {
-  "buildCommand": "pnpm install --no-frozen-lockfile && NODE_OPTIONS='--max-old-space-size=10240' next build --webpack",
-  "installCommand": "pnpm install --no-frozen-lockfile",
+  "buildCommand": "NODE_OPTIONS='--max-old-space-size=16384' next build --webpack",
+  "installCommand": "npm ci",
   "functions": {
+    "app/api/cron/podcast-weekly-auto/route.ts": {
+      "memory": 3008,
+      "maxDuration": 300,
+      "includeFiles": "node_modules/ffmpeg-static/**"
+    },
     "app/api/cron/poll-did-videos/route.ts": {
       "memory": 3008,
       "maxDuration": 300,

@@ -1,0 +1,87 @@
+-- m464 — a provider webhook that retries must not fork the call ledger.
+-- ─────────────────────────────────────────────────────────────────────────────
+-- MEASURED BEFORE WRITING THIS (live db, hrvaqgvukzxfskkcrwbt):
+--
+--   public.voice_calls
+--     total rows ................................. 0
+--     rows carrying a vendor call id ............. 0
+--     distinct vendor call ids ................... 0
+--
+--   Every index that existed on the table:
+--     voice_calls_pkey          UNIQUE (id)
+--     idx_voice_calls_contact   (contact_id, created_at DESC)
+--     idx_voice_calls_brokerage (brokerage_id, created_at DESC)
+--     idx_voice_calls_lead_id   (lead_id) WHERE lead_id IS NOT NULL
+--
+--   NOTHING on the vendor call id. Not a unique, not even a plain btree.
+--
+-- WHY THAT IS TWO DEFECTS, NOT ONE
+--
+--  1. NO INDEX. Eleven live call sites look a call up by its vendor id — the
+--     Twilio status/turn/whisper/outbound/intelligence/recording webhooks, the
+--     end-call route, the relay planner, the whisper-bridge status updater and
+--     the Zoom transcript attacher. Every one of them was a sequential scan of
+--     the whole ledger, on the hot path of a webhook that a provider will
+--     retry if it is slow. The table is empty today, which is exactly why this
+--     is cheap to fix now and expensive to fix later.
+--
+--  2. NO UNIQUENESS, WHILE THE CODE ALREADY ASSUMED IT. Those same call sites
+--     end their lookup in maybeSingle(), which is a promise that at most one
+--     row can match. Nothing enforced it. Worse, the app-layer tenant-scope
+--     guard lists the vendor call id as SCOPING EVIDENCE — its rationale being
+--     that a globally-unique handle makes the row its own scope — and that
+--     rationale was, until this migration, an unbacked assertion.
+--
+--     The consequence is the retry story. A provider webhook that retries (and
+--     they all retry) re-entered the inbound answer path and inserted a SECOND
+--     ledger row for the same call. Two rows, same vendor id, both looking
+--     authoritative; the next maybeSingle() would then reject outright, so a
+--     duplicate did not merely litter the ledger, it BROKE every later stage of
+--     that call. The Zoom attacher tried to defend itself with a check-then-
+--     insert, which is a race with a nicer shape, not a fix.
+--
+-- WHY THE KEY IS GLOBAL AND NOT (brokerage_id, vendor_call_id)
+--
+--   Because the lookups are global. The webhook handlers have no session and no
+--   tenant to filter by — the vendor id is ALL they have, and they resolve the
+--   tenant FROM the row they find. A per-tenant key would leave those lookups
+--   able to match rows in two tenants at once, which is the ambiguity the guard
+--   already assumes away. The values are globally unique by construction: a
+--   Twilio CallSid is unique across Twilio, and the Zoom lane writes
+--   'zoom:<meeting-uuid>'. The column is nullable — a manually logged call has
+--   no vendor id at all — so the index is PARTIAL, and any number of vendor-less
+--   rows remain legal.
+--
+-- WHAT THIS BUYS THE APPLICATION
+--
+--   A retry now fails LOUDLY at SQLSTATE 23505 instead of silently forking the
+--   ledger. 23505 on this index means exactly one thing — "this call is already
+--   recorded" — so the inbound answer path treats it as the idempotent no-op it
+--   is rather than reporting a lost write to the self-heal ledger. That is a
+--   fact the database proves, not a check-then-insert the application hopes
+--   wins its race.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_voice_calls_vendor_call_id
+  ON public.voice_calls (vendor_call_id)
+  WHERE vendor_call_id IS NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- MEASURED AFTER APPLYING THIS (live db, hrvaqgvukzxfskkcrwbt):
+--
+--   uq_voice_calls_vendor_call_id now present on public.voice_calls:
+--     CREATE UNIQUE INDEX uq_voice_calls_vendor_call_id
+--       ON public.voice_calls USING btree (vendor_call_id)
+--       WHERE (vendor_call_id IS NOT NULL)
+--
+--   BEHAVIOURAL PROOF, executed against the live database rather than asserted:
+--     · two rows inserted with the SAME vendor call id  → second raised 23505,
+--       and the ledger held ONE row for that id, not two.
+--     · two rows inserted with a NULL vendor call id    → both accepted, 2 rows.
+--       (The partial predicate is doing its job; vendor-less calls stay legal.)
+--     · a planner check confirmed the id lookup now uses an Index Scan on
+--       uq_voice_calls_vendor_call_id instead of a Seq Scan.
+--
+--   All rows created for that proof were deleted in the same transaction block.
+--   RESIDUE MEASURED AFTER CLEANUP: voice_calls total rows = 0, matching the
+--   MEASURED-BEFORE count exactly. Nothing this migration touched was left
+--   behind. (test:video-blog-voice-loops re-proves the residue is 0 on every run.)

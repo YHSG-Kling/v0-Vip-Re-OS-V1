@@ -23,32 +23,33 @@ import {
 } from "@/app/actions/ai-property-matching"
 import { searchAndPushToBuyer } from "@/app/actions/ai-buyer-search-push"
 import { sendFirstLookText } from "@/app/actions/instant-property-alerts"
-import { requestShowing } from "@/app/actions/smart-insights"
+// THE canonical showing door (app/actions/showings.ts requestShowing), not the smart-insights wrapper that forwards to it with a
+// buyer_portal source: an agent scheduling from the CRM is agent_input, and the wrapper edge put the whole smart-insights module on this
+// page's graph (scripts/proxy-graph-budget-guard.ts).
+import { requestShowing } from "@/app/actions/showings"
 import { updateContact } from "@/app/actions/contacts"
 import { toast } from "sonner"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { draftSmartEmail } from "@/app/actions/ai-insights"
 import { sendEmail } from "@/app/actions/communications"
 import { PropertyAlertsPanel } from "./property-alerts-panel"
+import { BUYER_STAGES, BUYER_STAGE_LABELS, isBuyerStage } from "@/lib/contacts/buyer-stage"
+import { escapeHtmlFull as escapeHtml } from "@/lib/format/html"
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlFull
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
-const BUYER_STAGES = [
-  { value: "new", label: "New Lead" },
-  { value: "nurturing", label: "Nurturing" },
-  { value: "active", label: "Active Buyer" },
-  { value: "qualified", label: "Qualified" },
-  { value: "under_contract", label: "Under Contract" },
-  { value: "closed", label: "Closed" },
-  { value: "lost", label: "Lost" },
-]
+// TOMBSTONE (§6) — a local seven-value stage list (new / nurturing / active /
+// qualified / under_contract / closed / lost) stood here and fed the Select
+// below, which writes contacts.buyer_stage. The live CHECK on that column
+// admits ONLY the thirteen BUYER_* ladder tokens (scripts/check-vocabularies.ts,
+// contacts.buyer_stage), so Postgres refused EVERY value this dropdown ever
+// offered (23514) — the toast said "Failed to update stage" on each attempt,
+// and this control has likely never saved once. SURVIVOR:
+// lib/contacts/buyer-stage.ts — BUYER_STAGES (the CHECK-matched ladder) and
+// BUYER_STAGE_LABELS (the wording), the same module whose header records two
+// server-side consumers failing the identical silent way on invented spellings.
 
 interface BuyerMatchPanelProps {
   contactId: string
@@ -77,7 +78,9 @@ export function BuyerMatchPanel({
   buyerStage,
   contactName,
 }: BuyerMatchPanelProps) {
-  const [stage, setStage] = useState(buyerStage ?? "")
+  // A stored value outside the ladder (legacy spelling, or null) renders the
+  // placeholder rather than a phantom selection the CHECK would refuse to save.
+  const [stage, setStage] = useState(isBuyerStage(buyerStage) ? buyerStage : "")
   // Generation counter to handle rapid stage changes — only apply result from latest request
   const stageGenRef = useRef(0)
   const [query, setQuery] = useState("")
@@ -196,19 +199,33 @@ export function BuyerMatchPanel({
     if (!showingDate) return
     setShowingLoading(true)
     try {
-      await requestShowing(
+      // requestShowing (the legacy positional wrapper over the canonical action) hands a
+      // refusal back as { error } — it does not throw. The result was dropped, so the form
+      // closed and cleared as if the showing were booked when the request had been refused
+      // (the buyer-agreement gate, an unreadable contact, a refused insert) and the agent
+      // never saw why (wave 143J).
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      const requested = await requestShowing({
         contactId,
-        match.listing_id,
-        match.address || "Property",
-        { price: match.price, bedrooms: match.bedrooms },
-        [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
-        showingNotes
-      )
+        listingId: uuidRe.test(String(match.listing_id)) ? match.listing_id : undefined,
+        mlsNumber: uuidRe.test(String(match.listing_id)) ? undefined : String(match.listing_id),
+        propertyAddress: match.address || "Property",
+        listPrice: typeof match.price === "number" ? match.price : undefined,
+        source: "agent_input",
+        preferredDates: [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
+        clientNotes: showingNotes,
+      })
+      if (!requested.success) {
+        toast.error(requested.error ?? "The showing request was refused.")
+        return
+      }
+      toast.success("Showing request created")
       setShowingForm(null)
       setShowingDate("")
       setShowingNotes("")
     } catch (err) {
       console.error("Schedule showing failed:", err)
+      toast.error("Could not schedule the showing.")
     } finally {
       setShowingLoading(false)
     }
@@ -332,7 +349,7 @@ export function BuyerMatchPanel({
             </SelectTrigger>
             <SelectContent>
               {BUYER_STAGES.map((s) => (
-                <SelectItem key={s.value} value={s.value} className="text-xs">{s.label}</SelectItem>
+                <SelectItem key={s} value={s} className="text-xs">{BUYER_STAGE_LABELS[s]}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -358,7 +375,7 @@ export function BuyerMatchPanel({
               {notifyLoading ? (
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
               ) : notifyResult ? (
-                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-500" />
+                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-600" />
               ) : (
                 <Bell className="h-4 w-4 mr-1" />
               )}
@@ -414,7 +431,7 @@ export function BuyerMatchPanel({
               {pushLoading ? (
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
               ) : pushResult ? (
-                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-500" />
+                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-600" />
               ) : (
                 <Send className="h-4 w-4 mr-1" />
               )}
@@ -586,11 +603,21 @@ export function BuyerMatchPanel({
                   const matchSummary = matches.slice(0, 5).map(m =>
                     `${m.address || "Property"} – $${m.price?.toLocaleString() ?? "N/A"}`
                   ).join("\n")
-                  const draft = await draftSmartEmail(
+                  const result = await draftSmartEmail(
                     contactId,
                     `Found ${matches.length} properties that match ${firstName}'s search criteria:\n${matchSummary}\nDraft a personalized email introducing these properties and inviting them to schedule showings.`
                   )
-                  setEmailDraft(draft)
+                  // A REFUSAL NO LONGER OPENS AN EMPTY COMPOSE BOX (wave 27).
+                  // draftSmartEmail used to answer "" for a refused seat, an
+                  // unreadable contact and an empty model reply alike, and this
+                  // handler put that "" straight into the dialog — so "you may
+                  // not do this" and "the AI had nothing to say" looked the
+                  // same, on a screen that invites you to hit Send.
+                  if (!result.ok) {
+                    toast.error(result.reason)
+                    return
+                  }
+                  setEmailDraft(result.body)
                   setEmailDialogOpen(true)
                 } catch {
                   toast.error("Could not generate email draft")
@@ -710,7 +737,7 @@ export function BuyerMatchPanel({
                   <ul className="space-y-1">
                     {analysisSheetData.deep.strengths.map((s: string, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-sm">
-                        <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-500" />
+                        <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-600" />
                         <span className="[&_p]:inline"><ReactMarkdown>{s}</ReactMarkdown></span>
                       </li>
                     ))}
@@ -725,7 +752,7 @@ export function BuyerMatchPanel({
                   <ul className="space-y-1">
                     {analysisSheetData.deep.concerns.map((c: string, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-sm">
-                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
+                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600" />
                         <span className="[&_p]:inline"><ReactMarkdown>{c}</ReactMarkdown></span>
                       </li>
                     ))}

@@ -36,7 +36,7 @@ export function BrokerFinancialPulse({
     }).format(val)
 
   const TrendIcon = trend === "up" ? TrendingUp : trend === "down" ? TrendingDown : TrendingUp
-  const trendColor = trend === "up" ? "text-green-600" : trend === "down" ? "text-red-600" : "text-muted-foreground"
+  const trendColor = trend === "up" ? "text-green-700" : trend === "down" ? "text-red-600" : "text-muted-foreground"
 
   const marginStatus =
     marginPercent >= 20 ? "healthy" : marginPercent >= 10 ? "watch" : "warning"

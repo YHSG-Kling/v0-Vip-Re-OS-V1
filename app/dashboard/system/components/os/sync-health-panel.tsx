@@ -117,7 +117,7 @@ export function SyncHealthPanel({ brokerageId }: SyncHealthPanelProps) {
             <p className="text-xs text-red-700 dark:text-red-400">Failed</p>
           </div>
           <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/20 p-3 text-center">
-            <p className="text-2xl font-bold text-yellow-600">{staleSyncCount}</p>
+            <p className="text-2xl font-bold text-yellow-700">{staleSyncCount}</p>
             <p className="text-xs text-yellow-700 dark:text-yellow-400">Stale</p>
           </div>
         </div>
@@ -125,7 +125,7 @@ export function SyncHealthPanel({ brokerageId }: SyncHealthPanelProps) {
         {/* Stale Sync Warning */}
         {staleSyncCount > 0 && (
           <div className="flex items-center gap-2 rounded-lg bg-yellow-50 dark:bg-yellow-950/20 border border-yellow-200 dark:border-yellow-900 p-3">
-            <AlertTriangle className="h-4 w-4 text-yellow-600 flex-shrink-0" />
+            <AlertTriangle className="h-4 w-4 text-yellow-700 flex-shrink-0" />
             <span className="text-sm text-yellow-700 dark:text-yellow-400">
               {staleSyncCount} calendar account(s) haven't synced in 24+ hours
             </span>
@@ -149,7 +149,7 @@ export function SyncHealthPanel({ brokerageId }: SyncHealthPanelProps) {
                 >
                   <div className="flex items-center gap-2">
                     {sync.status === 'success' ? (
-                      <CheckCircle className="h-3 w-3 text-green-500" />
+                      <CheckCircle className="h-3 w-3 text-green-600" />
                     ) : sync.status === 'failed' || sync.status === 'error' ? (
                       <XCircle className="h-3 w-3 text-red-500" />
                     ) : (
@@ -187,7 +187,7 @@ export function SyncHealthPanel({ brokerageId }: SyncHealthPanelProps) {
                 >
                   <div className="flex items-center gap-2">
                     {sync.status === 'success' || sync.status === 'completed' ? (
-                      <CheckCircle className="h-3 w-3 text-green-500" />
+                      <CheckCircle className="h-3 w-3 text-green-600" />
                     ) : (
                       <XCircle className="h-3 w-3 text-red-500" />
                     )}

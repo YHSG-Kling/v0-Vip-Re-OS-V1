@@ -40,7 +40,7 @@ export async function resolveLeadPresenterUserId(
   }
   // Team / brokerage / multi → the broker / owner (the brokerage's public face).
   const { data: broker } = await svc.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker_owner", "broker", "broker_admin"])
+    .eq("brokerage_id", brokerageId).in("user_type", ["broker_owner", "broker"])
     .order("created_at", { ascending: true }).limit(1).maybeSingle()
   if ((broker as { id: string } | null)?.id) return (broker as { id: string }).id
   // Last resort — any active agent, so a reel always has a real human face (never fabricated).

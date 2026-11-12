@@ -32,8 +32,8 @@ export function EmbeddedLeaderboardWidget({ agentId }: EmbeddedLeaderboardWidget
   }
 
   const getRankIcon = (rank: number) => {
-    if (rank === 1) return <Crown className="h-4 w-4 text-yellow-500" />
-    if (rank === 2) return <Medal className="h-4 w-4 text-gray-400" />
+    if (rank === 1) return <Crown className="h-4 w-4 text-yellow-700" />
+    if (rank === 2) return <Medal className="h-4 w-4 text-gray-500" />
     if (rank === 3) return <Medal className="h-4 w-4 text-amber-600" />
     return <span className="text-xs font-medium text-muted-foreground">#{rank}</span>
   }
@@ -42,7 +42,7 @@ export function EmbeddedLeaderboardWidget({ agentId }: EmbeddedLeaderboardWidget
     <Card className="max-h-[280px] overflow-hidden">
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
-          <Trophy className="h-5 w-5 text-amber-500" />
+          <Trophy className="h-5 w-5 text-amber-600" />
           Your Ranking
         </CardTitle>
       </CardHeader>

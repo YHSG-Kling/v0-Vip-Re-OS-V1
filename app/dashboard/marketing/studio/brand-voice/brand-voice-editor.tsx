@@ -23,7 +23,9 @@ const TONE_OPTIONS = [
   { value: "authoritative", label: "Authoritative" },
   { value: "conversational",label: "Conversational" },
   { value: "luxury",        label: "Luxury / Aspirational" },
-  { value: "educational",   label: "Educational" },
+  { value: "friendly",      label: "Friendly" },
+  // "educational" was offered here and the column has never accepted it, so
+  // picking it silently failed the save. friendly is the value that exists.
 ]
 
 const FORMALITY_OPTIONS = [
@@ -307,7 +309,7 @@ export function BrandVoiceEditor({ initialProfile }: BrandVoiceEditorProps) {
 
       <div className="flex items-center justify-end gap-3">
         {saved && (
-          <span className="flex items-center gap-1.5 text-sm text-green-600">
+          <span className="flex items-center gap-1.5 text-sm text-green-700">
             <Check className="h-4 w-4" />
             Saved
           </span>

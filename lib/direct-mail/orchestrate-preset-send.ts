@@ -23,8 +23,14 @@
  *     not N drafts
  */
 import "server-only"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media`, the bucket
+// lib/storage/document-buckets.ts designates for assets a delivery vendor
+// fetches unauthenticated (lib/providers/dispatch.ts hands Lob these URLs).
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import QRCode from "qrcode"
+// ONE encoding contract (wave 141F): a printed postcard gets the spec's 4-module quiet zone.
+import { qrEncodeOptions } from "@/lib/marketing/qr-contract"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { dispatchDirectMail } from "@/lib/providers/dispatch"
@@ -132,10 +138,7 @@ export async function orchestratePresetSend(
 
       let qrCodeDataUrl: string | null = null
       if (args.qrScanUrl) {
-        qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, {
-          width: 720, margin: 1, errorCorrectionLevel: "M",
-          color: { dark: "#000000", light: "#ffffff" },
-        })
+        qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, qrEncodeOptions(720))
       }
 
       const entry = path.join(process.cwd(), "remotion", "Root.tsx")
@@ -210,16 +213,12 @@ export async function orchestratePresetSend(
       ])
       await Promise.all([fs.unlink(frontPath).catch(() => {}), fs.unlink(backPath).catch(() => {})])
       const stamp = Date.now()
-      const [frontUp, backUp] = await Promise.all([
-        put(`direct-mail/preset-${preset.id}/${stamp}-front.png`, frontBuf, {
-          access: "public", contentType: "image/png",
-        }),
-        put(`direct-mail/preset-${preset.id}/${stamp}-back.png`, backBuf, {
-          access: "public", contentType: "image/png",
-        }),
+      const [frontUrl, backUrl] = await Promise.all([
+        hostRenderedMedia(svc, `direct-mail/preset-${preset.id}/${stamp}-front.png`, frontBuf, "image/png", "media"),
+        hostRenderedMedia(svc, `direct-mail/preset-${preset.id}/${stamp}-back.png`, backBuf, "image/png", "media"),
       ])
-      templateForLob     = frontUp.url
-      backTemplateForLob = backUp.url
+      templateForLob     = frontUrl
+      backTemplateForLob = backUrl
       rendered = true
 
     } else if (preset.piece_type === "letter") {
@@ -251,6 +250,9 @@ export async function orchestratePresetSend(
         recipientZip:       args.zip,
         agentName:          brand.agentName ?? null,
         agentTitle:         null,
+        // Wave 152 (152C): the preset's registered code prints in the letter's optional QR region (it sits outside the
+        // body block, so the locked-copy swap below keeps it).
+        qrScanUrl:          args.qrScanUrl ?? null,
       })
       if (r.ok && r.html) {
         // Replace AI-drafted body with the preset's locked text.
@@ -271,17 +273,36 @@ export async function orchestratePresetSend(
     fellBackReason = (e as Error).message
   }
 
+  // WAVE 150 (lane 150R, R5): the fallback is the GLOBAL format template (+ brand merge variables); the
+  // preset's own template id is a measured legacy fallback, and a postcard front with no distinct back
+  // is refused, never mailed as front-on-both-sides (piece-type.ts fallbackLobTemplates).
+  // WAVE 151 (lane 151H): the brand facts — and with them THE TENANT's sender address — are read for EVERY preset piece, not
+  // only the fallback. TOMBSTONE: this dispatch passed no `fromAddress` at all, so every preset piece mailed under the platform's
+  // saved Lob address. The ONE gate (mailing-cass-gate.ts decideSenderAddress) refuses a missing / unverified / platform sender by
+  // name before any spend.
+  const { readMailBrandFacts, buildMailMergeVariables, fallbackLobTemplates } = await import("@/lib/direct-mail/piece-type")
+  const { decideSenderAddress } = await import("@/lib/providers/mailing-cass-gate")
+  const brandRead = await readMailBrandFacts({ brokerageId: args.brokerageId, teamId: args.teamId ?? null, agentUserId: args.userId ?? null })
+  const senderGate = decideSenderAddress(brandRead.facts.returnAddress ?? null, { platformLobAddressId: process.env.LOB_RETURN_ADDRESS_ID })
+  if (!senderGate.ok) {
+    return { success: false, rendered: false, fellBackReason: fellBackReason ?? "sender_address_refused", presetName: preset.name, error: `Not mailed — sender address refused (${senderGate.code}): ${senderGate.reason}` }
+  }
+  let fallbackMergeVars: Record<string, string> | undefined
   if (!templateForLob) {
-    templateForLob = preset.fallback_template_id ?? undefined
-    if (!templateForLob) {
+    const fb = fallbackLobTemplates(preset.piece_type, preset.fallback_template_id)
+    if (!fb.ok) {
       return {
         success: false,
         rendered: false,
         fellBackReason: fellBackReason ?? "no_render_and_no_fallback",
         presetName: preset.name,
-        error: "no_template_for_lob",
+        error: `no_template_for_lob: ${fb.reason}`,
       }
     }
+    templateForLob = fb.templateId
+    backTemplateForLob = fb.backTemplateId
+    const fbBrand = buildMailMergeVariables(brandRead.facts, { recipientName: args.recipientName })
+    fallbackMergeVars = fbBrand.oversize ? undefined : fbBrand.mergeVars
   }
 
   // 3. Lob dispatch. Same egress gates apply (lead verification +
@@ -301,6 +322,9 @@ export async function orchestratePresetSend(
     backTemplateId: backTemplateForLob,
     pieceType:      preset.piece_type,
     size:           preset.piece_type === "postcard" ? (preset.postcard_size ?? "4x6") : undefined,
+    ...(fallbackMergeVars ? { mergeVars: fallbackMergeVars } : {}),
+    // THE TENANT's sender address (wave 151, 151H) — never the platform's.
+    fromAddress:    brandRead.facts.returnAddress ?? null,
     systemSource:   args.systemSource ?? "preset",
     metadata: {
       preset_id:   preset.id,

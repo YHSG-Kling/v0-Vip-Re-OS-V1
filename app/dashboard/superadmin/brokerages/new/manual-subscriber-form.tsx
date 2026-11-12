@@ -7,12 +7,25 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Loader2, CheckCircle2, Camera } from "lucide-react"
+import { Loader2, CheckCircle2, Camera, Mail } from "lucide-react"
 import { manualProvisionSubscriberAction } from "@/app/actions/superadmin/manual-subscriber"
+import { retrySubscriberInvite } from "@/app/actions/admin/create-subscriber"
 import { listSnapshotsAction, type SnapshotRow } from "@/app/actions/superadmin/config-snapshots"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 const CANONICAL_TIERS: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
+
+/** C34 (wave 150, lane 150Z): one office per line — "Office name | office code | license state". The server validates
+ *  (planTenantOffices: codes unique, two-letter state, one office for a Brokerage) and provisions; nothing is decided here. */
+function parseOffices(text: string) {
+  return text.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p[0])
+    .map(([name, officeCode, licenseState]) => ({ name, officeCode: officeCode || null, licenseState: licenseState ? licenseState.toUpperCase() : null }))
+}
+/** One initial member per line — "email | first | last | role | office code" (role defaults to agent). */
+function parseMembers(text: string) {
+  return text.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p[0])
+    .map(([email, firstName, lastName, role, officeCode]) => ({ email, firstName: firstName || null, lastName: lastName || null, userType: role || "agent", officeCode: officeCode || null }))
+}
 
 export function ManualSubscriberForm() {
   const router = useRouter()
@@ -27,9 +40,21 @@ export function ManualSubscriberForm() {
   const [lastName, setLastName] = useState("")
   const [adminEmail, setAdminEmail] = useState("")
   const [notes, setNotes] = useState("")
+  const [officesText, setOfficesText] = useState("")
+  const [membersText, setMembersText] = useState("")
+  const carriesOffices = tier === "brokerage" || tier === "multi_location"
 
-  const [feedback, setFeedback] = useState<{ kind: "error" | "success"; message: string; brokerageId?: string } | null>(null)
+  const [feedback, setFeedback] = useState<{
+    kind: "error" | "success"
+    message: string
+    brokerageId?: string
+    /** Set only when the tenant WAS provisioned but the owner's magic link did
+     *  not go out. Carries what retrySubscriberInvite needs to resend it. */
+    retryInvite?: { adminEmail: string; brokerageId: string }
+  } | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [resending, setResending] = useState(false)
+  const [resendNote, setResendNote] = useState<string | null>(null)
 
   // Optional config snapshot — day-one branding for the new tenant's website.
   const [snapshots, setSnapshots] = useState<SnapshotRow[]>([])
@@ -63,6 +88,9 @@ export function ManualSubscriberForm() {
         adminFirstName: firstName, adminLastName: lastName, adminEmail,
         tier, billingCycle, notes: notes || undefined,
         snapshotId: snapshotId ?? undefined,
+        structure: carriesOffices || membersText.trim()
+          ? { offices: carriesOffices ? parseOffices(officesText) : [], members: parseMembers(membersText) }
+          : undefined,
       })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
       const snapshotNote = snapshotId
@@ -70,12 +98,38 @@ export function ManualSubscriberForm() {
           ? ` Snapshot apply FAILED: ${r.snapshotError}.`
           : ` Snapshot applied: ${(r.snapshotApplied ?? []).join(", ") || "nothing to apply"}.`
         : ""
+      const structureNote = r.structureComplete === false
+        ? ` Offices/members still being set up: ${(r.structureErrors ?? []).slice(0, 3).join("; ")} — the recruiting manager was told.`
+        : ""
+      setResendNote(null)
       setFeedback({
         kind: "success",
-        message: `Provisioned ${brokerageName} on ${tier}. ${r.inviteSent ? "Invite email sent" : `Invite email ${r.inviteError ? "FAILED: " + r.inviteError : "skipped"}`}.${snapshotNote}`,
+        message: `Provisioned ${brokerageName} on ${tier}. ${r.inviteSent ? "Invite email sent" : `Invite email ${r.inviteError ? "FAILED: " + r.inviteError : "skipped"}`}.${snapshotNote}${structureNote}`,
         brokerageId: r.brokerageId,
+        // The tenant exists either way; only the magic link is missing. Until
+        // now this state was reported and then abandoned — there was no way to
+        // resend, so the owner simply never got in.
+        retryInvite:
+          !r.inviteSent && r.brokerageId
+            ? { adminEmail, brokerageId: r.brokerageId }
+            : undefined,
       })
     })
+  }
+
+  async function onResendInvite(target: { adminEmail: string; brokerageId: string }) {
+    setResending(true)
+    setResendNote(null)
+    try {
+      const res = await retrySubscriberInvite(target)
+      // The action now reads the provider's { error } instead of assuming the
+      // send happened, so this message reflects the real outcome.
+      setResendNote(res.success ? `Invite re-sent to ${target.adminEmail}.` : `Resend failed: ${res.error ?? "unknown error"}`)
+    } catch (e: any) {
+      setResendNote(`Resend failed: ${e?.message ?? "unknown error"}`)
+    } finally {
+      setResending(false)
+    }
   }
 
   return (
@@ -200,6 +254,30 @@ export function ManualSubscriberForm() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader className="pb-3"><CardTitle className="text-sm">Offices and initial members <span className="font-normal text-muted-foreground">(optional)</span></CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {carriesOffices ? (
+            <div>
+              <Label htmlFor="offices">Offices — one per line: name | office code | license state</Label>
+              <textarea id="offices" rows={3} value={officesText} onChange={e => setOfficesText(e.target.value)}
+                placeholder={tier === "brokerage" ? "Leave empty for one head office named after the brokerage" : "Beaches Office | beaches | FL"}
+                className="w-full text-sm border rounded p-2" />
+              <p className="text-[11px] text-muted-foreground">Offices may share a name; the office code tells them apart.</p>
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">A {tier === "team" ? "team" : "solo"} workspace has no offices.</p>
+          )}
+          <div>
+            <Label htmlFor="members">Initial members — one per line: email | first | last | role | office code</Label>
+            <textarea id="members" rows={3} value={membersText} onChange={e => setMembersText(e.target.value)}
+              placeholder="jane@example.com | Jane | Doe | agent | beaches"
+              className="w-full text-sm border rounded p-2" />
+            <p className="text-[11px] text-muted-foreground">Each person is invited right away; anything that cannot finish is retried and reported.</p>
+          </div>
+        </CardContent>
+      </Card>
+
       {feedback && (
         <div className={`rounded-md border p-4 text-sm ${
           feedback.kind === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"
@@ -208,6 +286,17 @@ export function ManualSubscriberForm() {
             {feedback.kind === "success" && <CheckCircle2 className="h-4 w-4" />}
             <span>{feedback.message}</span>
           </div>
+          {feedback.retryInvite && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <Button type="button" size="sm" variant="outline" disabled={resending}
+                onClick={() => onResendInvite(feedback.retryInvite!)}>
+                {resending
+                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Resending…</>
+                  : <><Mail className="h-4 w-4 mr-2" />Resend owner invite</>}
+              </Button>
+              {resendNote && <span className="text-xs">{resendNote}</span>}
+            </div>
+          )}
           {feedback.brokerageId && (
             <div className="mt-2">
               <Button type="button" size="sm" variant="outline"

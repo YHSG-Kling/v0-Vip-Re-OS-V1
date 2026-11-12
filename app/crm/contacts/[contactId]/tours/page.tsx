@@ -38,23 +38,28 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
 
   const supabase = createServiceClient()
 
-  // Load contact
+  // TENANT FROM THE SESSION, FAIL CLOSED (wave 147, lane 147H production audit — CLAUDE.md §4). This page read the
+  // contact through the SERVICE client by the URL's id alone and then fell back to the CONTACT's brokerage when the
+  // caller's was unknown (`agentUser?.brokerage_id ?? contact.brokerage_id`), so any signed-in user could open another
+  // tenant's buyer — name, phone, stage, saved homes — by pasting an id. The caller's brokerage is read FIRST and the
+  // contact is pinned to it; no session tenant → no page.
+  const { data: agentUser, error: userErr } = await supabase
+    .from('users')
+    .select('brokerage_id')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (userErr || !agentUser?.brokerage_id) redirect('/crm?contact_type=buyer')
+  const brokerageId: string = agentUser.brokerage_id
+
+  // Load contact — pinned to the caller's tenant (a foreign id reads as not found)
   const { data: contact } = await supabase
     .from('contacts')
     .select('id, first_name, last_name, phone, buyer_stage, brokerage_id, agent_id')
     .eq('id', contactId)
-    .single()
+    .eq('brokerage_id', brokerageId)
+    .maybeSingle()
 
   if (!contact) redirect('/crm?contact_type=buyer')
-
-  // Load agent's brokerage_id
-  const { data: agentUser } = await supabase
-    .from('users')
-    .select('brokerage_id')
-    .eq('id', user.id)
-    .single()
-
-  const brokerageId = agentUser?.brokerage_id ?? contact.brokerage_id
 
   // Gate: buyer must be BUYER_TOUR_ELIGIBLE or later (legacy stage check)
   const isTourEligible = TOUR_ELIGIBLE_STAGES.includes(contact.buyer_stage ?? '')
@@ -64,7 +69,9 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
       <div className="p-6 max-w-lg mx-auto mt-12">
         <Card>
           <CardContent className="pt-6 pb-6 text-center space-y-3">
-            <p className="text-base font-semibold">Tour Planning Not Yet Available</p>
+            {/* Wave 147 (lane 147H): a buyer-stage GATE, not a missing capability — it read "Tour Planning Not Yet
+                Available", which the capability audit counted as an unbuilt feature. Tour planning is built (below). */}
+            <p className="text-base font-semibold">Tours open after search setup</p>
             <p className="text-sm text-muted-foreground">
               Buyer must complete search setup before tours can be planned.
             </p>

@@ -6,6 +6,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scoreLeadWarmth, type LeadWarmth } from "./lead-warmth"
+import { NOT_CONVERTED_FILTER } from "@/lib/lead-pipeline/lead-lifecycle"
 
 type Svc = ReturnType<typeof createServiceClient>
 const DAY = 86_400_000
@@ -19,7 +20,7 @@ export async function getWarmthPrioritizedLeads(
   let q = svc.from("leads")
     .select("id, last_contacted_at, last_enriched_at, lead_temperature")
     .eq("brokerage_id", brokerageId)
-    .neq("lifecycle_state", "converted")
+    .or(NOT_CONVERTED_FILTER)
     .not("status", "in", '("archived","inactive","dead")')
     .limit(opts?.limit ?? 300)
   if (opts?.agentId) q = q.eq("agent_id", opts.agentId)

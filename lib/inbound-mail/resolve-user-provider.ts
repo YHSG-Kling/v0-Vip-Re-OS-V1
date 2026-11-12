@@ -29,6 +29,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 export type InboundEmailProvider =
   | "gmail" | "outlook"            // per-user OAuth-based inboxes
@@ -130,8 +131,13 @@ export async function resolveUserByInboundIdentifier(params: {
   outlookClientState?: string | null
   /** For transactional providers: the "To:" address from the inbound payload. */
   toAddress?:  string | null
+  /** Blind-spot burn-down (lane 75D) — injectable client so a fixture-driven
+   *  proof (scripts/lead-email-conversion-simulator.ts) can exercise this
+   *  lookup with an in-memory `platform_credentials` fixture, zero network,
+   *  no service key. Production callers omit it (real createServiceClient()). */
+  svc?: ReturnType<typeof createServiceClient>
 }): Promise<ResolvedInboundProvider | null> {
-  const supabase = createServiceClient()
+  const supabase = params.svc ?? createServiceClient()
 
   if ((params.platform === "gmail" || params.platform === "outlook")) {
     if (params.platform === "outlook" && params.outlookClientState) {
@@ -178,8 +184,9 @@ function toResolved(row: any, scope: "agent" | "team" | "brokerage"): ResolvedIn
     credential_id: row.id as string,
     brokerage_id:  row.brokerage_id as string,
     agent_user_id: (row.agent_user_id as string | null) ?? null,
-    access_token:  (row.access_token  as string | null) ?? null,
-    refresh_token: (row.refresh_token as string | null) ?? null,
+    // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt at THE resolver.
+    access_token:  decryptSecret((row.access_token  as string | null) ?? null),
+    refresh_token: decryptSecret((row.refresh_token as string | null) ?? null),
     account_id:    (row.account_id    as string | null) ?? null,
     config:        (row.config as Record<string, unknown>) ?? {},
   }

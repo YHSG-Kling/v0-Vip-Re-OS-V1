@@ -1,8 +1,10 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
@@ -11,6 +13,10 @@ import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
 import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
+import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_communication_hub")
 
 /**
  * AI Communication Hub
@@ -28,26 +34,9 @@ import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
  * AI inference.
  */
 
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  const { data: a } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:185
+// requireCallerWithAgent (imported above as `requireCaller`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.
 
 const SentimentSchema = z.object({
   sentiment: z.enum(["very_positive", "positive", "neutral", "negative", "very_negative", "urgent"]),
@@ -130,14 +119,14 @@ export async function sendMessage(params: {
       .eq("id", params.conversationId)
       .single()
 
-    await supabase
+    await bestEffort(supabase
       .from("conversations")
       .update({
         last_message_at: now,
         updated_at:      now,
         message_count:   (convRow?.message_count ?? 0) + 1,
       })
-      .eq("id", params.conversationId)
+      .eq("id", params.conversationId), "thread counters on a message that already landed")
 
     // Step 3: Dispatch via provider layer
     let dispatchResult: { success: boolean; messageId?: string; error?: string; providerKey: string } = {
@@ -171,7 +160,10 @@ export async function sendMessage(params: {
           html:           `<p>${params.body}</p>`,
           channelPurpose: "conversation",
           systemSource:   "inbox",
-          leadId:         params.contactId,
+          // contactId, NOT leadId. The recipient was read out of `contacts`;
+          // routing that id through leadId made dispatchEmail look for it in
+          // `leads`, miss, and skip evaluateOutboundCompliance.
+          contactId:      params.contactId,
         })
       }
     } else if (params.channel === "sms") {
@@ -232,7 +224,7 @@ export async function sendMessage(params: {
     // Fire-and-forget: log message provider activity without blocking response
     ;(async () => {
       try {
-        await serviceClient.from("message_provider_logs").insert({
+        await sentinelWrite(serviceClient, serviceClient.from("message_provider_logs").insert({
           brokerage_id:        agentForLog?.brokerage_id ?? null,
           message_id:          message.id,
           provider_key:        dispatchResult.providerKey,
@@ -242,7 +234,7 @@ export async function sendMessage(params: {
           provider_status:     dispatchResult.success ? "sent" : "failed",
           error_message:       dispatchResult.error ?? null,
           // message_provider_logs timestamp column is sent_at (defaults now()) — no created_at.
-        })
+        }), { table: "message_provider_logs", flow: "comm_hub_provider_log", reason: "fire-and-forget provider log of a dispatch whose result is already returned" })
       } catch (err) {
         // Silent fail for logging - don't block message send on log failure
       }
@@ -275,7 +267,7 @@ export async function getConversations(params: {
         *,
         contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score, tcpa_consent, preferred_channel, call_stop_flag),
         agents(id, user_id, users(first_name, last_name)),
-        messages!messages_conversation_id_fkey(body, content, created_at, direction)
+        messages!messages_conversation_id_fkey(body, created_at, direction)
       `)
       .eq("brokerage_id", auth.brokerageId)
       .order("last_message_at", { ascending: false })
@@ -303,7 +295,7 @@ export async function getConversations(params: {
       const sorted = [...msgs].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       )
-      const preview = sorted[0]?.body ?? sorted[0]?.content ?? null
+      const preview = sorted[0]?.body ?? null
       return { ...c, last_message_preview: preview, messages: undefined }
     })
 
@@ -328,7 +320,7 @@ export async function getMessageThread(conversationId: string) {
     // Verify conversation belongs to caller's brokerage
     const { data: convo } = await supabase
       .from("conversations")
-      .select("brokerage_id")
+      .select("brokerage_id, contact_id")
       .eq("id", conversationId)
       .maybeSingle()
     if (!convo) return { success: false, error: "Conversation not found", messages: [] }
@@ -342,7 +334,51 @@ export async function getMessageThread(conversationId: string) {
 
     if (error) throw error
 
-    return { success: true, messages: messages ?? [] }
+    // Unified inbox: fold this contact's CALL TRANSCRIPTS into the thread so the
+    // agent sees calls inline alongside email/sms/chat ("see call transcripts"),
+    // instead of leaving the inbox to find them. Read-only, brokerage-scoped; only
+    // calls that actually have a transcript or summary are shown.
+    let callRows: any[] = []
+    if (convo.contact_id) {
+      const { data: calls } = await supabase
+        .from("voice_calls")
+        .select("id, direction, status, duration_seconds, transcription, summary, sentiment, started_at, ended_at, created_at")
+        .eq("contact_id", convo.contact_id)
+        .eq("brokerage_id", auth.brokerageId)
+      callRows = (calls ?? [])
+        .filter((c: any) => (c.transcription && c.transcription.trim()) || (c.summary && c.summary.trim()))
+        .map((c: any) => {
+          const mins = c.duration_seconds ? ` · ${Math.max(1, Math.round(c.duration_seconds / 60))} min` : ""
+          const dir = c.direction === "outbound" ? "Outbound call" : "Inbound call"
+          const body = [
+            `📞 ${dir}${c.status ? ` · ${c.status}` : ""}${mins}`,
+            c.summary ? `\nSummary: ${c.summary.trim()}` : null,
+            c.transcription ? `\n\nTranscript:\n${c.transcription.trim()}` : null,
+          ].filter(Boolean).join("")
+          return {
+            id: `call-${c.id}`,
+            conversation_id: conversationId,
+            contact_id: convo.contact_id,
+            type: "voice",
+            direction: c.direction ?? "inbound",
+            sender_type: "ai_assistant",
+            subject: "Call transcript",
+            body,
+            content: body,
+            sentiment: c.sentiment ?? null,
+            status: "read",
+            is_call_transcript: true,
+            created_at: c.ended_at ?? c.started_at ?? c.created_at,
+          }
+        })
+    }
+
+    const merged = [...(messages ?? []), ...callRows].sort(
+      (a: any, b: any) =>
+        new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime(),
+    )
+
+    return { success: true, messages: merged }
   } catch (error) {
     return handleError(error, "getMessageThread")
   }
@@ -432,7 +468,11 @@ export async function generateSmartResponse(params: {
   // Auth gate — paid AI inference + contact PII access
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
-  const effAgentId = auth.agentId ?? auth.userId
+  // NOT `?? auth.userId` (m360) — brand_voice_profile and messages are both
+  // agents-class, so the substitution read an empty voice profile and an empty
+  // message history and presented both as the agent's real state.
+  const effAgentId = auth.agentId
+  if (!effAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
   const effBrokerageId = auth.brokerageId
 
   if (!isValidUUID(params.contactId)) {
@@ -471,6 +511,9 @@ export async function generateSmartResponse(params: {
     const charLimit = params.channel === "sms" ? 160 : params.channel === "chat" ? 500 : 2000
 
     const { text: response } = await generateText({
+      brokerageId: effBrokerageId,
+      userId: auth.userId,
+      agentId: effAgentId,
       feature: "smart_reply_generation",
       prompt: `Generate a ${params.tone || "professional"} response for this ${params.channel} message.
 
@@ -489,7 +532,7 @@ ${agentProfile ? `
 ` : "Use professional, friendly tone"}
 
 RECENT CONVERSATION:
-${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${(m.body ?? m.content ?? "").substring(0, 100)}`).join("\n") || "No history"}
+${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${(m.body ?? "").substring(0, 100)}`).join("\n") || "No history"}
 
 REQUIREMENTS:
 - Channel: ${params.channel} (max ${charLimit} characters)
@@ -515,7 +558,7 @@ Generate ONLY the response message, no explanations.`,
     ;(async () => {
       try {
         // audit_log has no brokerage_id column; user_id is the auth user id
-        await supabase
+        await bestEffort(supabase
           .from("audit_log")
           .insert({
             action: "ai_response_generated",
@@ -529,7 +572,7 @@ Generate ONLY the response message, no explanations.`,
               sentiment: sentimentAnalysis,
               brokerage_id: effBrokerageId,
             },
-          })
+          }), "fire-and-forget audit of an AI response already returned to the caller")
       } catch (err) {
         // Silent fail - audit logging should not block response generation
       }
@@ -613,7 +656,7 @@ CONVERSATION STATS:
 - Conversation span: ${getConversationSpan(messages)} days
 
 RECENT MESSAGES (last 10):
-${messages.slice(-10).map(m => `[${m.direction}] ${m.content?.substring(0, 100)}`).join("\n")}
+${messages.slice(-10).map(m => `[${m.direction}] ${m.body?.substring(0, 100)}`).join("\n")}
 
 Assess:
 1. Overall relationship health
@@ -663,7 +706,7 @@ export async function prioritizeInbox(params: {
     const prioritized = await Promise.all(
       messages.map(async (msg) => {
         const sentiment = await analyzeMessageSentiment({
-          message: msg.content || "",
+          message: msg.body || "",
           contactId: msg.contact_id,
           agentId: effAgentId,
         })
@@ -745,11 +788,14 @@ export async function generateCommunicationSummary(params: {
     }
 
     const { text: summary } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId: auth.agentId,
       feature: "communication_summary_generation",
       prompt: `Summarize this client communication history for an agent's quick reference:
 
 MESSAGES (${messages.length} total):
-${messages.map(m => `[${new Date(m.created_at).toLocaleDateString()}] ${m.direction === "inbound" ? "CLIENT" : "AGENT"}: ${m.content?.substring(0, 200)}`).join("\n\n")}
+${messages.map(m => `[${new Date(m.created_at).toLocaleDateString()}] ${m.direction === "inbound" ? "CLIENT" : "AGENT"}: ${m.body?.substring(0, 200)}`).join("\n\n")}
 
 Provide:
 1. Brief summary of key discussion points

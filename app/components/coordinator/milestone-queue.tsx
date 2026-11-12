@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { CheckCircle2, Circle, ArrowRight, MapPin, AlertTriangle, Calendar } from "lucide-react"
+import { CheckCircle2, Circle, ArrowRight, MapPin, Calendar } from "lucide-react"
 import { bulkUpdateMilestones } from "@/app/actions/multi-persona"
 import { useState, useTransition, useMemo } from "react"
 
@@ -181,7 +181,7 @@ export function MilestoneQueue({ milestones }: { milestones: Milestone[] }) {
                             </Button>
                           )}
                           {completedIds.has(milestone.id) && (
-                            <Badge variant="outline" className="text-emerald-600 border-emerald-300 text-xs">
+                            <Badge variant="outline" className="text-emerald-700 border-emerald-300 text-xs">
                               Done
                             </Badge>
                           )}

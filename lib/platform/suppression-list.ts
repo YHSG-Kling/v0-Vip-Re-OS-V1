@@ -37,34 +37,41 @@ function normalizeEmail(email: string | null | undefined): string | null {
   return String(email).trim().toLowerCase()
 }
 
-export async function isPhoneOnSuppressionList(phoneDigits: string): Promise<boolean> {
-  const supabase = createServiceClient()
-  const normalized = normalizePhoneDigits(phoneDigits)
-  if (!normalized) return false
+/** The client a read rides — the service client by default; an in-memory client in a proof (wave 150). */
+type PlatformSuppressionClient = { from: (table: string) => any }
 
-  const { data } = await supabase
+/**
+ * WAVE 150 (lane 150U — FAIL CLOSED, CLAUDE.md §3/§4). Both readers below were `const { data } = await …`: a REFUSED read
+ * resolved to `data: null`, which read as "not on the list", so the distribution engine handed out — and the prospect
+ * follow-up and the predictive auto-send contacted — a person the platform had suppressed, on exactly the day the list
+ * could not be read. "Nobody checked" must never render as "checked and fine": a refusal answers SUPPRESSED, and says so.
+ * (The per-send gate every sender rides is lib/kernel/compliance/check-suppression.ts checkSuppression, which reads this
+ * same table with the same normalisation; these two are the tenant-less questions asked BEFORE a tenant is chosen.)
+ */
+async function platformListHas(column: "phone_digits" | "email", value: string, client?: PlatformSuppressionClient): Promise<boolean> {
+  const supabase = client ?? createServiceClient()
+  const { data, error } = await supabase
     .from("platform_suppression_list")
     .select("id")
-    .eq("phone_digits", normalized)
+    .eq(column, value)
     .limit(1)
-    .maybeSingle()
-
-  return !!data
+  if (error) {
+    console.error(`[platform-suppression] ${column} read refused — answering SUPPRESSED (fail closed): ${error.message}`)
+    return true
+  }
+  return Array.isArray(data) && data.length > 0
 }
 
-export async function isEmailOnSuppressionList(email: string): Promise<boolean> {
-  const supabase = createServiceClient()
+export async function isPhoneOnSuppressionList(phoneDigits: string, client?: PlatformSuppressionClient): Promise<boolean> {
+  const normalized = normalizePhoneDigits(phoneDigits)
+  if (!normalized) return false
+  return platformListHas("phone_digits", normalized, client)
+}
+
+export async function isEmailOnSuppressionList(email: string, client?: PlatformSuppressionClient): Promise<boolean> {
   const normalized = normalizeEmail(email)
   if (!normalized) return false
-
-  const { data } = await supabase
-    .from("platform_suppression_list")
-    .select("id")
-    .eq("email", normalized)
-    .limit(1)
-    .maybeSingle()
-
-  return !!data
+  return platformListHas("email", normalized, client)
 }
 
 /**
@@ -116,8 +123,12 @@ export async function addToSuppressionList(params: {
   }
 
   for (const row of inserts) {
-    await supabase.from("platform_suppression_list").insert(row).select().single()
-    // Ignore unique violation errors — already on list = success
+    const { error: suppressErr } = await supabase.from("platform_suppression_list").insert(row).select().single()
+    // A unique violation means already on the list = success. Anything else is a
+    // DNC that did NOT take — never report it as suppressed.
+    if (suppressErr && (suppressErr as { code?: string }).code !== "23505") {
+      return { added: false, reason: `suppression_refused: ${suppressErr.message}` }
+    }
   }
 
   return { added: true, reason: `suppressed_${params.reason}` }
@@ -130,10 +141,10 @@ export async function addToSuppressionList(params: {
 export async function isSuppressedAny(params: {
   phone?: string | null
   email?: string | null
-}): Promise<boolean> {
+}, client?: PlatformSuppressionClient): Promise<boolean> {
   const phoneDigits = normalizePhoneDigits(params.phone)
   const email = normalizeEmail(params.email)
-  if (phoneDigits && (await isPhoneOnSuppressionList(phoneDigits))) return true
-  if (email && (await isEmailOnSuppressionList(email))) return true
+  if (phoneDigits && (await isPhoneOnSuppressionList(phoneDigits, client))) return true
+  if (email && (await isEmailOnSuppressionList(email, client))) return true
   return false
 }

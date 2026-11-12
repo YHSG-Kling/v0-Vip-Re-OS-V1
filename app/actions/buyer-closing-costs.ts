@@ -19,14 +19,15 @@
  *   labels every regionally-derived line "regional estimate — {state}
  *   conventions"; the lender's Loan Estimate stays the named authority.
  *
- * OPTIONAL AI REFINEMENT (owner: "or if there is a better way AI can determine
- * the most accurate buyer closing costs"): refineWithAi runs ONE routed model
- * call grounded ONLY in the deterministic regional model + this deal's real
- * facts. The model proposes per-line adjustments WITH a reason each;
- * applyAiRefinements (pure) clamps them within [0.5×, 1.5×] of the regional
- * band, refuses lender-fact and pending lines, and relabels adjusted lines
- * "AI-refined". The deterministic estimate is the floor — any AI failure
- * returns it untouched.
+ * OPTIONAL AI EXPLANATION (owner: "or if there is a better way AI can determine
+ * the most accurate buyer closing costs"; wave 144 ruling 9: "AI explains,
+ * deterministic engine calculates — remove any LLM-computed money"):
+ * refineWithAi runs ONE routed model call grounded ONLY in the deterministic
+ * regional model + this deal's real facts. The model EXPLAINS lines in a
+ * buyer's words (a reason each); applyAiRefinements (pure) attaches the reason
+ * to the deterministic line and applies NO figure — it used to clamp and apply
+ * the model's own low/high. Lender-fact and pending lines are not annotated.
+ * Any AI failure returns the deterministic estimate untouched.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -190,37 +191,37 @@ async function refineClosingCostsWithAI(args: {
   const adjustable = args.estimate.lines.filter((l) => !l.pending && l.source !== "lender_fact")
   if (adjustable.length === 0) return args.estimate
 
+  // WAVE 144 (ruling 9 — AI explains, the deterministic engine calculates): the model EXPLAINS the regional model's lines in a
+  // buyer's words; it proposes no figures and none it returns is applied (lib/offers/regional-closing-costs.ts applyAiRefinements).
   const schema = z.object({
-    adjustments: z.array(z.object({
+    explanations: z.array(z.object({
       label: z.string(),
-      low: z.number(),
-      high: z.number(),
       reason: z.string(),
     })),
     summary: z.string(),
   })
 
-  const prompt = `You are refining a buyer closing-cost estimate for accuracy. You are grounded ONLY in the deterministic regional model and the deal facts below — do not invent market data.
+  const prompt = `You are explaining a buyer closing-cost estimate in plain language. The FIGURES are calculated by a deterministic regional model and are final for this estimate — you do NOT change, propose or restate any dollar amount. You are grounded ONLY in the regional model and the deal facts below — do not invent market data.
 
 DEAL FACTS (real):
 - Purchase price: $${args.purchasePrice.toLocaleString()}
 - State: ${conv.stateName} (${conv.state})${args.city ? `\n- City: ${args.city}` : ""}
 - Loan amount: ${args.loanAmount != null ? (args.loanAmount === 0 ? "cash purchase" : `$${args.loanAmount.toLocaleString()}`) : "unknown (pending lender)"}${args.interestRatePct ? `\n- Locked rate on file: ${args.interestRatePct}%` : ""}${args.lenderName ? `\n- Lender: ${args.lenderName}` : ""}
 
-REGIONAL MODEL (${conv.stateName} published conventions — the floor for every adjustment):
+REGIONAL MODEL (${conv.stateName} published conventions — what the figures come from):
 ${JSON.stringify(conv, null, 2)}
 
-CURRENT ESTIMATE LINES you may adjust (label · current low–high · source):
+ESTIMATE LINES you may explain (label · range · source):
 ${adjustable.map((l) => `- ${l.label} · $${l.low}–$${l.high} · ${l.source}${l.note ? ` · ${l.note}` : ""}`).join("\n")}
 
 Rules (violations are discarded):
-1. Only adjust a line when a stated DEAL FACT or a stated regional-model detail (e.g., a city-level tax the model's note names, the price's position on a graduated tier) justifies it.
-2. Stay within 0.5x–1.5x of each line's current band — anything outside is clamped.
-3. Every adjustment MUST include a one-sentence reason a buyer can read.
-4. Never touch lender-fact or pending lines (they are not listed above).
-5. If nothing warrants adjustment, return an empty adjustments array and say so in the summary.
+1. Explain a line only when a stated DEAL FACT or a stated regional-model detail (who customarily pays, a city-level tax the model names, a graduated tier) explains its range.
+2. Each explanation is ONE sentence a buyer can read, with NO dollar figures and NO new numbers.
+3. Never explain lender-fact or pending lines (they are not listed above).
+4. Your Loan Estimate from the lender remains the authority — say so in the summary.
+5. If nothing needs explaining, return an empty explanations array and say so in the summary.
 
-Return: { adjustments: [{ label, low, high, reason }], summary }`
+Return: { explanations: [{ label, reason }], summary }`
 
   const { object } = await generateObjectRouted({
     feature: "smart_suggestions",
@@ -231,13 +232,14 @@ Return: { adjustments: [{ label, low, high, reason }], summary }`
     schema,
   })
 
-  const adjustments = (object?.adjustments ?? []) as AiLineAdjustment[]
-  if (adjustments.length === 0) {
+  const explanations = (object?.explanations ?? []) as AiLineAdjustment[]
+  if (explanations.length === 0) {
     return { ...args.estimate, aiRefined: false, aiRefineSummary: object?.summary ?? null }
   }
-  const outcome = applyAiRefinements(args.estimate.lines, adjustments, conv)
+  const outcome = applyAiRefinements(args.estimate.lines, explanations, conv)
   if (outcome.applied.length === 0) {
     return { ...args.estimate, aiRefined: false, aiRefineSummary: object?.summary ?? null }
   }
+  // The totals are RE-SUMMED from the unchanged deterministic lines (retotalEstimate is arithmetic only): the figures cannot move.
   return retotalEstimate(args.estimate, outcome.lines, args.purchasePrice, object?.summary ?? null)
 }

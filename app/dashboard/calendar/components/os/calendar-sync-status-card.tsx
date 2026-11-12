@@ -127,9 +127,9 @@ export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps)
           </div>
           <div className="flex items-center gap-1.5">
             {googleAccount?.is_active ? (
-              <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+              <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
             ) : googleAccount ? (
-              <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+              <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
             ) : null}
             <Button
               size="icon"
@@ -164,9 +164,9 @@ export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps)
           </div>
           <div className="flex items-center gap-1.5">
             {outlookAccount?.is_active ? (
-              <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+              <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
             ) : outlookAccount ? (
-              <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+              <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
             ) : null}
             <Button
               size="icon"

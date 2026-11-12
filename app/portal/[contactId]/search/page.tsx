@@ -2,26 +2,24 @@ import { PortalNlSearch } from "./PortalNlSearch"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, portalShowsLayout } from "@/lib/kernel/portal"
 import { CollaborativeSearchDashboard } from "@/components/portal/CollaborativeSearchDashboard"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
-import { Switch } from "@/app/components/ui/switch"
-import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Settings, Filter, DollarSign, Bed, Bath, MapPin } from "lucide-react"
+import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Filter, DollarSign, Bed, Bath, MapPin } from "lucide-react"
 import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
 import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
 import { FitBadge } from "@/app/components/portal/FitBadge"
 import { SavedSearchControls } from "./SavedSearchControls"
-
-// Personas that support family/collaborative search
-const FAMILY_SEARCH_PERSONAS = [
-  "first_time_buyer",
-  "military_buyer",
-  "upsizing",
-  "relocating",
-  "repeat_buyer",
-]
+import { ShareWithFamilyCard } from "./ShareWithFamilyCard"
+import { SaveHomeFromLinkCard } from "./SaveHomeFromLinkCard"
+// Wave 150 (lane 150W, owner R9 + ruling 2026-11-06): every saved home shows WHERE it came from, and a photo only from a
+// lawful source (the tenant's own listing media or its IDX/MLS feed) — never RentCast, never a pasted link.
+import { licensedPhotoFor, ownerUploadMediaIds, savedHomeSourceLine, savedHomeVerificationLine } from "@/lib/portal/saved-homes"
+// Personas that support family/collaborative search: ONE list, lib/portal/persona-config.ts offersFamilySearch
+// (wave 148, lane 148K — the local const that lived here merged onto it; the settings page asks the same predicate).
+import { DEFAULT_PORTAL_PERSONA, offersFamilySearch } from "@/lib/portal/persona-config"
 
 export default async function SearchPage({
   params,
@@ -32,8 +30,9 @@ export default async function SearchPage({
   const supabase = await createClient()
 
   // Verify buyer portal view
-  const portalView = await determinePortalView(supabase, { contactId })
-  if (portalView.view !== "buyer") {
+  // The KERNEL's layouts (wave 94) — a dual client's portal shows every layout it carries.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  if (!portalShowsLayout(portalLayouts, "buyer")) {
     redirect(`/portal/${contactId}`)
   }
 
@@ -66,7 +65,9 @@ export default async function SearchPage({
     // `property_interests` which holds search criteria).
     supabase
       .from("saved_properties")
-      .select("id, listing_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons")
+      // Wave 151 (lane 151J, m983): the last verified state rides along so the card can say when the source was last
+      // checked and what it reported (savedHomeVerificationLine) — never the hold's internal reason.
+      .select("id, listing_id, external_property_id, source, source_url, mls_number, mls_name, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons, last_verified_at, last_verified_status, verification_hold, listings(photos)")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
@@ -77,12 +78,25 @@ export default async function SearchPage({
   const preferences = preferencesResult.data
   const alerts = alertsResult.data ?? []
   const savedRows = savedResult.data ?? []
+  // supabase-js RESOLVES a refusal: an unreadable list must not read as "No saved properties yet" (CLAUDE.md §3).
+  if (savedResult.error) console.error("[portal-search] saved homes read refused:", savedResult.error.message)
+  const savedUnreadable = !!savedResult.error
+
+  // 150XY's display rule: an owner-uploaded photo reaches a buyer-facing surface only once its listing_media row is
+  // APPROVED. Unreadable approvals → an empty set → no owner photo (fail closed), never an unapproved one.
+  const uploadIds = [...new Set(savedRows.flatMap((s: any) => ownerUploadMediaIds(s.listings?.photos)))]
+  const approvedMediaIds = new Set<string>()
+  if (uploadIds.length > 0) {
+    const { data: approved, error: approvedError } = await supabase.from("listing_media").select("id").in("id", uploadIds).eq("is_approved", true)
+    if (approvedError) console.error("[portal-search] listing photo approvals read refused:", approvedError.message)
+    for (const m of (approved ?? []) as Array<{ id: string }>) approvedMediaIds.add(m.id)
+  }
 
   const savedProperties     = savedRows.filter((s: any) => !s.dismissed)
   const dismissedProperties = savedRows.filter((s: any) => s.dismissed)
 
-  const persona = contact.contact_persona || "first_time_buyer"
-  const showCollaborativeSearch = FAMILY_SEARCH_PERSONAS.includes(persona)
+  const persona = contact.contact_persona || DEFAULT_PORTAL_PERSONA
+  const showCollaborativeSearch = offersFamilySearch(persona)
 
   return (
     <div className="space-y-6">
@@ -288,6 +302,47 @@ export default async function SearchPage({
         preferences={preferences ?? undefined}
       />
 
+      {/* ── ORPHAN-ROUTE SWEEP (lane G) ───────────────────────────────────────
+          /properties/search is the FILTER-GRID half of buyer search: explicit
+          price / beds / baths / property-type / city / MLS-status controls, a
+          grid-or-list toggle, and a showing-request dialog that works for
+          OUTSIDE (non-brokerage) IDX results. It is not a duplicate of the smart
+          search above — that one asks a question in English against this buyer's
+          own preferences; this one is browsing the board by hand.
+
+          IT BECAME AN ORPHAN IN THIS LANE AND IS RESOLVED IN THIS LANE, said
+          plainly: its only inbound link in the whole tree lived on
+          /properties/saved, which this lane deleted as a duplicate of the portal
+          Properties tab. Deleting a page and letting its neighbour go dark is
+          moving an orphan, not closing one — so the link moves here, to the
+          buyer surface that owns search.
+
+          The contactId query param is required by that page (it refuses to run
+          without one — a "demo-contact-id" fallback was removed from it in an
+          earlier wave precisely because a placeholder id makes every action fail
+          a uuid parse). It is a convenience, not a grant: `saveProperty`,
+          `smartSearch` and `requestShowing` all re-establish access server-side. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Filter className="h-5 w-5" />
+            Browse the whole MLS
+          </CardTitle>
+          <CardDescription>
+            Prefer to set the filters yourself? Search every active listing by price, beds,
+            baths, type and city — and request a showing on anything you find.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild variant="outline">
+            <Link href={`/properties/search?contactId=${contactId}`}>
+              <Search className="h-4 w-4 mr-2" />
+              Open property search
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Saved/Dismissed Properties */}
       <div className="grid gap-6 md:grid-cols-2">
         {/* Saved Properties */}
@@ -301,21 +356,25 @@ export default async function SearchPage({
           <CardContent>
             {savedProperties.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">
-                No saved properties yet
+                {savedUnreadable ? "Your saved homes couldn't be loaded just now — please refresh in a moment." : "No saved properties yet"}
               </p>
             ) : (
               <div className="space-y-2">
-                {savedProperties.slice(0, 5).map((item: any) => (
+                {savedProperties.slice(0, 5).map((item: any) => {
+                  const photo = licensedPhotoFor(item, item.listings?.photos, approvedMediaIds)
+                  return (
                   <Link
                     key={item.id}
-                    href={`/portal/${contactId}/properties/${item.listing_id}`}
+                    // A market / linked save has no listings row to open — its card stays on this page (no /properties/null).
+                    href={item.listing_id ? `/portal/${contactId}/properties/${item.listing_id}` : `/portal/${contactId}/search`}
                     className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors"
                   >
                     <div className="h-10 w-10 rounded bg-muted flex items-center justify-center shrink-0">
-                      {item.primary_photo_url ? (
+                      {photo ? (
                         <img
-                          src={item.primary_photo_url}
+                          src={photo.url}
                           alt=""
+                          title={photo.attribution}
                           className="h-full w-full object-cover rounded"
                         />
                       ) : (
@@ -335,9 +394,13 @@ export default async function SearchPage({
                       {Array.isArray(item.match_reasons) && item.match_reasons[0] && (
                         <p className="text-[11px] text-teal-700 italic truncate">✨ {item.match_reasons[0]}</p>
                       )}
+                      <p className="text-[11px] text-muted-foreground truncate">{savedHomeSourceLine(item)}</p>
+                      {/* Wave 151 (151J): when the source was last checked and what it reported — the saved-home watch's line. */}
+                      <p className="text-[11px] text-muted-foreground truncate">{savedHomeVerificationLine(item)}</p>
                     </div>
                   </Link>
-                ))}
+                  )
+                })}
                 {savedProperties.length > 5 && (
                   <Button variant="ghost" className="w-full" asChild>
                     <Link href={`/portal/${contactId}/properties`}>
@@ -389,11 +452,36 @@ export default async function SearchPage({
         </Card>
       </div>
 
+      {/* Wave 150 (lane 150W): save a home found anywhere by pasting its link (origin buyer_url). */}
+      <SaveHomeFromLinkCard contactId={contactId} />
+
+      {/* C28 (wave 149, lane 149B — owner ruling 6): EVERY buyer can share the homes they saved with a family member for
+          their opinion. Not persona-gated: the persona decides the layout (the fuller family-consensus board below), never
+          whether a buyer may ask someone they trust. */}
+      <ShareWithFamilyCard
+        contactId={contactId}
+        homes={savedProperties
+          .map((s: any) => ({ ref: String(s.listing_id ?? s.external_property_id ?? ""), label: [s.property_address, s.city].filter(Boolean).join(", ") || "A saved home" }))
+          .filter((h: { ref: string }) => h.ref)}
+      />
+
       {/* Collaborative Search (for applicable personas) */}
       {showCollaborativeSearch && (
         <div className="pt-4">
           <h2 className="text-xl font-semibold mb-4">Family Search</h2>
-          <CollaborativeSearchDashboard contactId={contactId} contactEmail={contact.email || ""} />
+          <CollaborativeSearchDashboard
+            contactId={contactId}
+            contactEmail={contact.email || ""}
+            savedProperties={savedProperties.map((s: any) => ({
+              listing_id: s.listing_id,
+              property_address: s.property_address ?? null,
+              city: s.city ?? null,
+              state: s.state ?? null,
+              list_price: s.list_price ?? null,
+              bedrooms: s.bedrooms ?? null,
+              bathrooms: s.bathrooms ?? null,
+            }))}
+          />
         </div>
       )}
     </div>

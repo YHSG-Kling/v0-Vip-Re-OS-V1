@@ -13,6 +13,7 @@ import {
   Download,
 } from "lucide-react"
 import Link from "next/link"
+import { usd } from "@/lib/format/money"
 
 interface EarningRecord {
   id: string
@@ -44,14 +45,11 @@ export function ExternalBillingEarningsPanel({
   earnings,
   totals,
 }: ExternalBillingEarningsPanelProps) {
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  }
+  // `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical (in effect — an explicit
+  // `minimumFractionDigits: 0` is Intl's own default for this format) to
+  // lib/format/money.ts `usd` (imported above).
+  const formatCurrency = usd
 
   const handleDownloadStatement = async () => {
     try {
@@ -142,7 +140,7 @@ export function ExternalBillingEarningsPanel({
           </div>
           <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-100">
             <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-yellow-600" />
+              <Clock className="h-4 w-4 text-yellow-700" />
               <span className="text-xs text-yellow-700">Pending</span>
             </div>
             <p className="text-lg font-bold text-yellow-700 mt-1">{formatCurrency(totals.pending)}</p>

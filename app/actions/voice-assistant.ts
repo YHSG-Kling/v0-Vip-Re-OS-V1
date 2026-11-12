@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
@@ -43,17 +44,20 @@ async function resolveCallerAgentId(): Promise<{
   agentId: string | null
   brokerageId: string | null
   userId: string
+  /** users.user_type from the session — the C17 authority check reads the role from here, never a body. */
+  userType: string | null
   isAuthenticated: boolean
 }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) {
-    return { agentId: null, brokerageId: null, userId: "", isAuthenticated: false }
+    return { agentId: null, brokerageId: null, userId: "", userType: null, isAuthenticated: false }
   }
   if (ctx.agentId) {
     return {
       agentId: ctx.agentId,
       brokerageId: ctx.brokerageId,
       userId: ctx.userId,
+      userType: ctx.userType || null,
       isAuthenticated: true,
     }
   }
@@ -68,6 +72,7 @@ async function resolveCallerAgentId(): Promise<{
     agentId: agentRow?.id ?? null,
     brokerageId: ctx.brokerageId ?? agentRow?.brokerage_id ?? null,
     userId: ctx.userId,
+    userType: ctx.userType || null,
     isAuthenticated: true,
   }
 }
@@ -111,8 +116,30 @@ export async function processVoiceCommand(params: {
   const supabase = await createClient()
 
   try {
-    // Parse intent using AI
-    const intent = await parseVoiceIntent(commandText, agentId, context)
+    // ── WHICH INTENT — THE ONE INTENT INTERFACE (C17, wave 148 lane 148D) ──
+    // TOMBSTONE (§1.1, Law 2): parseVoiceIntent (a 12-intent prompt POSTed to /api/ai/analyze — booked to
+    // no tenant, a wrong invoice by CLAUDE.md §5) and its keyword fallback simpleIntentParsing were one of
+    // FOUR classifiers. Their intents moved into the ONE catalogue (lib/voice-admin/intent-interface.ts
+    // FIELD_SEEDS + the merged hot_leads / deals_at_risk / lookup_contact / create_task executors), the
+    // entities they extracted are the routes' params (rules first; the one expert prompt, booked to this
+    // session's tenant, fills only words the agent actually said). Every executor below is unchanged.
+    const { interpretIntentLive } = await import("@/lib/voice-admin/intent-interface-live")
+    const interpretation = await interpretIntentLive({
+      utterance: commandText,
+      modality: "voice",
+      actor: { userId: caller.userId, userType: caller.userType, platformRole: null, agentId },
+      tenant: { brokerageId: caller.brokerageId ?? "" },
+      screen: "mobile",
+      context: { contactId: contactId ?? null },
+    })
+    const fieldExecutor = interpretation.executors.field_assistant
+    const intent: VoiceIntent = {
+      // A route another desk executes (an ad, a blog, an open house, the kernel lane) → the one affordance;
+      // a field intent still missing what it needs → ask; otherwise this file's own executor.
+      type: !fieldExecutor ? (interpretation.capability ? "intent_interface" : "unknown") : interpretation.missing.length > 0 ? "needs_info" : fieldExecutor,
+      entities: { ...interpretation.params, ...(context ? { context } : {}) },
+      confidence: interpretation.confidence === "high" ? 0.9 : interpretation.confidence === "medium" ? 0.6 : 0.3,
+    }
 
     let response = ""
     let actionTaken = ""
@@ -360,6 +387,22 @@ export async function processVoiceCommand(params: {
         break
       }
 
+      case "intent_interface":
+        // Understood, and owned by another desk — said honestly, finished where the rails are visible.
+        response = interpretation.authority_check.allowed
+          ? `${interpretation.plan.summary} Finish it on the assistant bar — it asks for anything missing and waits for your yes.`
+          : (interpretation.authority_check.reasons[0] ?? interpretation.plan.summary)
+        actionTaken = "intent_interface"
+        success = interpretation.authority_check.allowed
+        break
+
+      case "needs_info":
+        // Asked, never guessed (C17): the first thing this command still needs.
+        response = interpretation.missing[0]?.ask ?? "What else should I know?"
+        actionTaken = "needs_info"
+        success = false
+        break
+
       default:
         response = "I didn't understand that command. Try 'What's my schedule' or 'Who are my hot leads?'"
         success = false
@@ -370,7 +413,7 @@ export async function processVoiceCommand(params: {
     // (command_type left NULL — its CHECK doesn't cover these free-form intents);
     // contact_id/session_id have no columns here, folded into entities jsonb;
     // response → action_result jsonb.
-    await supabase.from("voice_commands").insert({
+    await bestEffort(supabase.from("voice_commands").insert({
       user_id: caller.userId,
       brokerage_id: caller.brokerageId,
       raw_transcript: commandText,
@@ -381,14 +424,21 @@ export async function processVoiceCommand(params: {
       success,
       confidence_score: intent.confidence,
       source: "web",
-    })
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
-    // Update session command count
+    // Update session command count. §3 — supabase-js RESOLVES a refusal, so a
+    // bare `await supabase.rpc(...)` here reported success whether the counter
+    // moved or not. It was never noticed because nothing supplied a sessionId
+    // until this function was wired to the mobile mic (lane G5 2026-08-28);
+    // now that the counter is live, a refusal is read and logged.
     if (sessionId) {
-      await supabase.rpc("increment_voice_session_commands", {
+      const { error: counterError } = await supabase.rpc("increment_voice_session_commands", {
         p_session_id: sessionId,
         p_success: success,
       })
+      if (counterError) {
+        console.error(`[voice-assistant] session command counter refused: ${counterError.message}`)
+      }
     }
 
     return { success, response, actionTaken, intent: intent.type }
@@ -550,138 +600,23 @@ export async function updateVoiceConfig(_agentId: string | undefined, updates: a
   return { success: true, config: data }
 }
 
-// Get recent voice commands for agent
-export async function getVoiceCommandHistory(_agentId?: string, limit = 50) {
-  // _agentId ignored — derived from session
-  const caller = await resolveCallerAgentId()
-  if (!caller.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
-  }
-  if (!caller.agentId) {
-    return { success: false, error: "No agent profile for current user" }
-  }
-  const supabase = await createClient()
-
-  // voice_commands is owned by user_id (FK→users); there is no contact_id FK to embed.
-  const { data, error } = await supabase
-    .from("voice_commands")
-    .select("*")
-    .eq("user_id", caller.userId)
-    .order("created_at", { ascending: false })
-    .limit(limit)
-
-  if (error) {
-    console.error("[voice-assistant] Error fetching history:", error)
-    return { success: false, error: error.message }
-  }
-
-  return { success: true, commands: data || [] }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getVoiceCommandHistory`
+// deleted. SURVIVORS: the direct, session-scoped voice_commands reads at
+// app/dashboard/voice/page.tsx:53-68/136 (RecentCommandsFeed) and
+// app/mobile/voice/page.tsx (Recent Commands section) — the live command
+// history surfaces. This twin duplicated the same read behind an action
+// nothing called; a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers.
 
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
-async function parseVoiceIntent(commandText: string, agentId: string, context: any): Promise<VoiceIntent> {
-  // Use OpenAI to parse natural language intent
-  const prompt = `
-Parse this voice command for a real estate agent:
-
-Command: "${commandText}"
-
-Context:
-- Agent ID: ${agentId}
-- Current Location: ${context?.location || "unknown"}
-- Current Time: ${new Date().toLocaleTimeString()}
-- Active Transaction: ${context?.active_transaction || "none"}
-
-Detect Intent (one of):
-- lookup_contact: Find info about a contact
-- get_schedule: Calendar queries
-- add_note: Add note to contact
-- send_property: Send listing to contact
-- hot_leads: Get hot leads list
-- deals_at_risk: Check deal health
-- create_task: Create a task
-- call_contact: Initiate call
-- request_document: Ask a client for a document ("request the pre-approval letter from Jane")
-- assign_vendor: Introduce/link a vendor to a contact ("assign my stager to the Hendersons")
-- log_upgrade: Record a property upgrade/renovation on a listing ("they added a new roof at 12 Oak St")
-- set_portal_milestones: Show/hide a milestone on a client's portal ("hide the inspection milestone from Jane's portal")
-
-Extract Entities:
-- contact_name: Person's name mentioned
-- property_address: Address mentioned
-- note_text: Note content
-- task_title: Task title
-- task_description: Task description
-- due_date: Any time/date mentioned
-- document_name: Document being requested
-- vendor_name: Vendor/business name mentioned
-- vendor_role: The vendor's role (stager, inspector, lender, …)
-- amount: Any dollar amount mentioned (number only)
-- milestone_name: Portal milestone mentioned (inspection, appraisal, …)
-
-Return JSON:
-{
-  "type": "intent_type",
-  "entities": {},
-  "confidence": 0.95
-}
-`
-
-  try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/ai/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, temperature: 0.2 }),
-    })
-
-    const result = await response.json()
-    return result as VoiceIntent
-  } catch (error) {
-    // Fallback to simple keyword matching
-    return simpleIntentParsing(commandText)
-  }
-}
-
-function simpleIntentParsing(text: string): VoiceIntent {
-  const lower = text.toLowerCase()
-
-  if (lower.includes("schedule") || lower.includes("appointment") || lower.includes("calendar")) {
-    return { type: "get_schedule", entities: {}, confidence: 0.8 }
-  }
-  if (lower.includes("hot lead") || lower.includes("top lead")) {
-    return { type: "hot_leads", entities: {}, confidence: 0.8 }
-  }
-  if (lower.includes("risk") || lower.includes("problem") || lower.includes("concern")) {
-    return { type: "deals_at_risk", entities: {}, confidence: 0.8 }
-  }
-  if (lower.includes("add note") || lower.includes("make note")) {
-    return { type: "add_note", entities: { note_text: text }, confidence: 0.7 }
-  }
-  if (lower.includes("request") && (lower.includes("document") || lower.includes("letter") || lower.includes("pre-approval") || lower.includes("preapproval"))) {
-    return { type: "request_document", entities: { document_name: text }, confidence: 0.6 }
-  }
-  if ((lower.includes("assign") || lower.includes("introduce") || lower.includes("connect")) && (lower.includes("vendor") || lower.includes("stager") || lower.includes("inspector") || lower.includes("photographer"))) {
-    return { type: "assign_vendor", entities: {}, confidence: 0.6 }
-  }
-  if (lower.includes("upgrade") || lower.includes("renovation") || lower.includes("remodel")) {
-    return { type: "log_upgrade", entities: { note_text: text }, confidence: 0.6 }
-  }
-  // The spoken action receipt — "what did you (all) do", "daily receipt",
-  // "while I was out/asleep", "AI report".
-  if (
-    lower.includes("what did you do") || lower.includes("what did the team do") ||
-    lower.includes("daily receipt") || lower.includes("ai report") ||
-    lower.includes("while i was")
-  ) {
-    return { type: "ai_work_receipt", entities: {}, confidence: 0.85 }
-  }
-
-  return { type: "unknown", entities: {}, confidence: 0.5 }
-}
-
+// TOMBSTONE (§1.1, Law 2 — wave 148, lane 148D): parseVoiceIntent + simpleIntentParsing deleted. They
+// were the field mic's private classifier (a prompt POSTed to /api/ai/analyze, booked to no tenant, and a
+// keyword fallback). SURVIVOR: lib/voice-admin/intent-interface.ts interpretIntent (FIELD_SEEDS carry the
+// intents and their keyword phrases) + lib/voice-admin/intent-interface-live.ts interpretIntentLive (the
+// one expert prompt, booked to the session tenant), called from processVoiceCommand above.
 async function lookupContact(name: string, agentId: string) {
   const supabase = await createClient()
   const { data } = await supabase
@@ -712,27 +647,29 @@ async function getTodayAppointments(agentUserId: string) {
 }
 
 async function addContactNote(contactId: string, _noteText: string, _agentId: string) {
-  const supabase = await createClient()
-  // contact_notes uses body (not content), author_user_id (not agent_id), is_private.
-  // The voice-assistant flow doesn't carry the auth user id directly, so derive it.
-  const { data: { user } } = await supabase.auth.getUser()
-  return await supabase.from("contact_notes").insert({
-    contact_id: contactId,
-    author_user_id: user?.id ?? null,
-    body: _noteText,
-    is_private: false,
-  })
+  // Delegates to the canonical writer in app/actions/contacts.ts. The local
+  // insert this replaced never set brokerage_id, and contact_notes_select gates
+  // on has_brokerage_access(brokerage_id) — which is FALSE for NULL. Every
+  // voice-dictated note was therefore invisible to the whole brokerage,
+  // including the agent who dictated it.
+  const { addContactNote: recordNote } = await import("./contacts")
+  return await recordNote(contactId, _noteText)
 }
 
 async function sendPropertyToContact(address: string, contactId: string, agentId: string, brokerageId: string | null) {
   const supabase = await createClient()
-  // Find property by address
+  // Find property by address WITHIN the caller's brokerage. brokerageId was already a
+  // parameter here and simply never used in the query — a spoken address could resolve
+  // to another tenant's listing, and the activities row below then joined THEIR
+  // listing_id to this caller's brokerage and contact.
+  if (!brokerageId) return null
   const { data: property } = await supabase
     .from("listings")
     .select("id")
+    .eq("brokerage_id", brokerageId)
     .ilike("address", `%${address}%`)
     .limit(1)
-    .single()
+    .maybeSingle()
 
   if (property) {
     // pass 14: property_shares was a PHANTOM table — the share rides the

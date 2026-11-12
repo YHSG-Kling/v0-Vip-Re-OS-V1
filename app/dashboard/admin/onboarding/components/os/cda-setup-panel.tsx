@@ -25,14 +25,27 @@ import { ShieldCheck, FileText, Upload, ExternalLink, AlertTriangle, Loader2 } f
 import {
   setBrokerageCdaSettingAction,
   getBrokerageCdaSettingAction,
+  switchDealCdaModeAction,
   uploadCdaTemplateAction,
   listCdaTemplatesAction,
   deactivateCdaTemplateAction,
+  updateCdaTemplateAction,
 } from "@/app/actions/brokerage-cda-setup"
+import { getLifetimeConversionPolicyAction, saveLifetimeConversionPolicyAction } from "@/app/actions/settings/brokerage-column-settings"
 import { ALL_US_STATES } from "@/lib/state-forms/registry"
-import { upload } from "@vercel/blob/client"
+import { uploadCdaTemplateFile } from "@/app/actions/cda-storage"
 import { toast } from "sonner"
 import { CdaFieldMappingEditor } from "./cda-field-mapping-editor"
+
+// Read a File as base64 (no data: prefix) for the server upload action.
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "")
+    reader.onerror = () => reject(new Error("Could not read file"))
+    reader.readAsDataURL(file)
+  })
+}
 
 type Template = {
   id: string
@@ -43,6 +56,19 @@ type Template = {
   pdf_url: string | null
   is_active: boolean
 }
+
+/** Wave 152 (152H): the setting's recorded history and the in-progress deals whose CDA treatment differs (finance admins only). */
+type CdaPolicyDetail =
+  | { readable: false }
+  | {
+      readable: true
+      current: "cda" | "no_cda"
+      version: number
+      unrecordedChange: boolean
+      openDeals: number
+      history: Array<{ version: number; usesCda: boolean | null; effectiveAt: string | null; changedBy: string | null; reason: string | null }>
+      deals: Array<{ transactionId: string; address: string | null; stage: string | null; mode: "cda" | "no_cda"; basis: string; explanation: string }>
+    }
 
 const TX_TYPES = [
   { value: "sale_buy",  label: "Buy-side sale" },
@@ -56,8 +82,16 @@ export function CdaSetupPanel() {
   const [loading, setLoading] = useState(true)
   const [offersCda, setOffersCda] = useState<boolean | null>(null)
   const [payoutDefault, setPayoutDefault] = useState<"direct_deposit" | "check">("direct_deposit")
+  /** wave 142C: null until read; true = hold the lifetime conversion until the agent's payout is recorded. */
+  const [requirePayoutVerified, setRequirePayoutVerified] = useState<boolean | null>(null)
   const [templates, setTemplates] = useState<Template[]>([])
   const [pending, startTransition] = useTransition()
+  // Wave 152 (152H): changing a declared policy (or one with deals in progress) asks for a reason and states what happens to them.
+  const [policy, setPolicy] = useState<CdaPolicyDetail | null>(null)
+  const [canEdit, setCanEdit] = useState(false)
+  const [confirmMode, setConfirmMode] = useState<boolean | null>(null)
+  const [changeReason, setChangeReason] = useState("")
+  const [dealReason, setDealReason] = useState<Record<string, string>>({})
 
   // Upload form state
   const [tplName, setTplName] = useState("")
@@ -66,53 +100,108 @@ export function CdaSetupPanel() {
   const [tplType, setTplType] = useState<string>("")
   const [uploading, setUploading] = useState(false)
   const [mappingTemplate, setMappingTemplate] = useState<Template | null>(null)
+  // Deactivation used to be one-way: the list asked for active rows only, so a
+  // deactivated template disappeared from the only surface that could act on it
+  // and no reactivate path existed. `updateCdaTemplateAction` had always
+  // supported both edits; only the deactivate wrapper was ever wired.
+  const [showInactive, setShowInactive] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState("")
 
-  useEffect(() => { void reload() }, [])
+  useEffect(() => { void reload() }, [showInactive])
 
   async function reload() {
     setLoading(true)
     const settings = await getBrokerageCdaSettingAction()
+    const lifetime = await getLifetimeConversionPolicyAction()
+    if (lifetime.ok) setRequirePayoutVerified(lifetime.requirePayoutVerified)
     if (settings.success) {
       setOffersCda(settings.offersCda)
       if (settings.payoutDefault === "direct_deposit" || settings.payoutDefault === "check") {
         setPayoutDefault(settings.payoutDefault)
       }
+      setCanEdit(settings.canEdit === true)
+      setPolicy((settings.policy ?? null) as CdaPolicyDetail | null)
     }
-    const tpls = await listCdaTemplatesAction({ includeInactive: false })
+    const tpls = await listCdaTemplatesAction({ includeInactive: showInactive })
     if (tpls.success) setTemplates(tpls.templates as Template[])
     setLoading(false)
   }
 
-  async function saveSetting(nextOffers: boolean, nextPayout: typeof payoutDefault) {
+  function saveLifetimePolicy(next: boolean) {
+    startTransition(async () => {
+      const res = await saveLifetimeConversionPolicyAction(next)
+      if (res.ok) {
+        setRequirePayoutVerified(res.requirePayoutVerified)
+        toast.success("Lifetime conversion policy saved")
+      } else {
+        toast.error(res.error)
+      }
+    })
+  }
+
+  async function saveSetting(nextOffers: boolean, nextPayout: typeof payoutDefault, reason?: string) {
     startTransition(async () => {
       const res = await setBrokerageCdaSettingAction({
         offersCda: nextOffers,
         nonCdaPayoutDefault: nextOffers ? null : nextPayout,
+        reason: reason ?? null,
       })
       if (res.success) {
         setOffersCda(nextOffers)
         setPayoutDefault(nextPayout)
-        toast.success("CDA setting saved")
+        setConfirmMode(null)
+        setChangeReason("")
+        const kept = "dealsKeepingPriorPolicy" in res ? res.dealsKeepingPriorPolicy : 0
+        toast.success(kept > 0 ? `CDA policy saved. ${kept} deal${kept === 1 ? "" : "s"} in progress keep the policy they opened under.` : "CDA setting saved")
+        if ("note" in res && res.note) toast.message(res.note)
+        void reload()
       } else {
+        // The reason rule: open the confirm step instead of failing silently.
+        if ("code" in res && res.code === "reason_required") setConfirmMode(nextOffers)
         toast.error("error" in res ? res.error : "Save failed")
+      }
+    })
+  }
+
+  /** A change that moves deals between CDA and no CDA goes through the confirm step (impact + reason); a first answer with no deals saves. */
+  function requestModeChange(nextOffers: boolean) {
+    const currentMode = offersCda === true
+    if (offersCda !== null && currentMode === nextOffers) return
+    const firstAnswerNoDeals = offersCda === null && (!policy || !policy.readable || policy.openDeals === 0)
+    if (firstAnswerNoDeals || (offersCda === null && nextOffers === false)) { void saveSetting(nextOffers, payoutDefault); return }
+    setConfirmMode(nextOffers)
+  }
+
+  function switchDeal(transactionId: string, mode: "cda" | "no_cda") {
+    startTransition(async () => {
+      const res = await switchDealCdaModeAction({ transactionId, mode, reason: dealReason[transactionId] ?? "" })
+      if (res.success) {
+        toast.success(mode === "cda" ? "This deal now uses a CDA — its agent has been told to fill it." : "This deal now closes without a CDA.")
+        setDealReason((r) => ({ ...r, [transactionId]: "" }))
+        void reload()
+      } else {
+        toast.error(res.error)
       }
     })
   }
 
   async function handleUpload(file: File) {
     if (!tplName.trim()) { toast.error("Template name required"); return }
+    if (file.type !== "application/pdf") { toast.error("CDA templates must be PDF files."); return }
     setUploading(true)
     try {
-      const blob = await upload(`cda-templates/${file.name}`, file, {
-        access: "public",
-        handleUploadUrl: "/api/blob/upload",
-      })
+      // Supabase Storage (platform buckets), not Vercel Blob. Read the PDF as
+      // base64 and upload through the role-gated server action.
+      const base64 = await fileToBase64(file)
+      const up = await uploadCdaTemplateFile({ base64, mimeType: file.type, fileName: file.name })
+      if (!up.ok) { toast.error(up.error); return }
       const res = await uploadCdaTemplateAction({
         name:            tplName.trim(),
         description:     tplDescription.trim() || undefined,
         state:           tplState || undefined,
         transactionType: (tplType || undefined) as any,
-        pdfUrl:          blob.url,
+        pdfUrl:          up.url,
       })
       if (res.success) {
         toast.success("Template uploaded")
@@ -136,6 +225,30 @@ export function CdaSetupPanel() {
       void reload()
     } else {
       toast.error("error" in res ? res.error : "Deactivate failed")
+    }
+  }
+
+  async function handleReactivate(id: string) {
+    const res = await updateCdaTemplateAction({ id, isActive: true })
+    if (res.success) {
+      toast.success("Template reactivated")
+      void reload()
+    } else {
+      toast.error("error" in res ? res.error : "Reactivate failed")
+    }
+  }
+
+  async function handleRename(id: string) {
+    const name = renameValue.trim()
+    if (!name) { toast.error("Name is required"); return }
+    const res = await updateCdaTemplateAction({ id, name })
+    if (res.success) {
+      toast.success("Template renamed")
+      setRenamingId(null)
+      setRenameValue("")
+      void reload()
+    } else {
+      toast.error("error" in res ? res.error : "Rename failed")
     }
   }
 
@@ -170,18 +283,105 @@ export function CdaSetupPanel() {
           <Button
             variant={offersCda === true ? "default" : "outline"}
             disabled={pending}
-            onClick={() => saveSetting(true, payoutDefault)}
+            onClick={() => requestModeChange(true)}
           >
             We offer CDAs
           </Button>
           <Button
             variant={offersCda === false ? "default" : "outline"}
             disabled={pending}
-            onClick={() => saveSetting(false, payoutDefault)}
+            onClick={() => requestModeChange(false)}
           >
             We don't offer CDAs
           </Button>
         </div>
+
+        {/* Wave 152 (152H): changing the policy — what happens to deals, and why it is changing (saved with the change). */}
+        {confirmMode !== null && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2 dark:bg-amber-950/30">
+            <p className="text-sm font-medium">
+              {confirmMode ? "Start using CDAs for new deals?" : "Stop using CDAs for new deals?"}
+            </p>
+            <ul className="list-disc pl-5 text-xs text-muted-foreground space-y-1">
+              <li>
+                {confirmMode
+                  ? "Deals opened from now on need a CDA: the agent fills it, compliance approves it, the broker signs it and it goes to the title company."
+                  : "Deals opened from now on close without a CDA: agents are paid after the commission is received. Compliance and the closing statement are still checked before closing."}
+              </li>
+              <li>
+                {policy && policy.readable && policy.openDeals > 0
+                  ? `${policy.openDeals} deal${policy.openDeals === 1 ? "" : "s"} already in progress keep the policy they opened under. You can switch a single deal below.`
+                  : "Deals already in progress keep the policy they opened under. You can switch a single deal below."}
+              </li>
+              <li>A closed deal never gets a CDA afterward.</li>
+            </ul>
+            <Label htmlFor="cda-change-reason" className="text-xs font-semibold">Why is the policy changing?</Label>
+            <Input
+              id="cda-change-reason"
+              placeholder="For example: our brokerage now pays agents at closing through title"
+              value={changeReason}
+              onChange={(e) => setChangeReason(e.target.value)}
+            />
+            <div className="flex gap-2">
+              <Button size="sm" disabled={pending || changeReason.trim().length < 5} onClick={() => saveSetting(confirmMode, payoutDefault, changeReason)}>
+                {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save the change"}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={pending} onClick={() => { setConfirmMode(null); setChangeReason("") }}>Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        {/* Wave 152 (152H): who changed the policy, when it took effect and why (finance admins only). */}
+        {policy && policy.readable === false && (
+          <p className="text-xs text-muted-foreground">The policy history couldn&apos;t be loaded right now. Your setting above is current.</p>
+        )}
+        {policy && policy.readable && policy.history.length > 0 && (
+          <div className="rounded-lg border p-3 space-y-1">
+            <Label className="text-xs font-semibold">Policy history</Label>
+            {policy.history.slice(0, 5).map((h) => (
+              <p key={h.version} className="text-xs text-muted-foreground">
+                {h.effectiveAt ? new Date(h.effectiveAt).toLocaleDateString() : "—"} · {h.usesCda === true ? "Uses CDAs" : h.usesCda === false ? "No CDAs" : "Not answered"}
+                {h.changedBy ? ` · ${h.changedBy}` : ""}{h.reason ? ` — “${h.reason}”` : ""}
+              </p>
+            ))}
+            {policy.unrecordedChange && (
+              <p className="text-xs text-amber-700">The current setting was changed outside this page, so when it took effect isn&apos;t on record.</p>
+            )}
+          </div>
+        )}
+
+        {/* Wave 152 (152H): in-progress deals whose CDA treatment differs from the current policy — each can be switched, with a reason. */}
+        {canEdit && policy && policy.readable && policy.deals.length > 0 && (
+          <div className="rounded-lg border p-3 space-y-3">
+            <Label className="text-xs font-semibold">Deals in progress on a different CDA treatment</Label>
+            {policy.deals.map((d) => (
+              <div key={d.transactionId} className="space-y-2 border-t pt-2 first:border-t-0 first:pt-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">{d.address ?? "Deal"}</span>
+                  {d.stage && <Badge variant="outline" className="text-[10px]">{d.stage}</Badge>}
+                  <Badge variant="secondary" className="text-[10px]">{d.mode === "cda" ? "Uses a CDA" : "No CDA"}</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">{d.explanation}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    className="h-8 max-w-sm text-xs"
+                    placeholder="Why this deal should change"
+                    value={dealReason[d.transactionId] ?? ""}
+                    onChange={(e) => setDealReason((r) => ({ ...r, [d.transactionId]: e.target.value }))}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending || (dealReason[d.transactionId] ?? "").trim().length < 5}
+                    onClick={() => switchDeal(d.transactionId, d.mode === "cda" ? "no_cda" : "cda")}
+                  >
+                    {d.mode === "cda" ? "Close this deal without a CDA" : "Use a CDA on this deal"}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Non-CDA payout default */}
         {offersCda === false && (
@@ -203,12 +403,39 @@ export function CdaSetupPanel() {
           </div>
         )}
 
+        {/* Lifetime conversion policy (wave 142C; lib/kernel/lifetime-conversion.ts reads it) */}
+        {offersCda !== null && (
+          <div className="rounded-lg bg-muted p-3 space-y-2">
+            <Label className="text-xs font-semibold">When does a closed customer become a lifetime customer?</Label>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant={requirePayoutVerified === false ? "default" : "outline"} disabled={pending || requirePayoutVerified === null} onClick={() => saveLifetimePolicy(false)}>
+                At closing
+              </Button>
+              <Button size="sm" variant={requirePayoutVerified === true ? "default" : "outline"} disabled={pending || requirePayoutVerified === null} onClick={() => saveLifetimePolicy(true)}>
+                Once the agent&apos;s payout is recorded
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Until then the transaction reads CLOSED / PAYOUT PENDING; records and the ledger are untouched.</p>
+          </div>
+        )}
+
         {/* Template library — only visible when CDAs are offered */}
         {offersCda === true && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label className="text-sm font-semibold">CDA template library</Label>
-              <Badge variant="outline">{templates.length} active</Badge>
+              <div className="flex items-center gap-2">
+                {/* The count names what is actually on screen — with inactive rows
+                    shown, "N active" would be a false label. */}
+                <Badge variant="outline">
+                  {showInactive
+                    ? `${templates.filter(t => t.is_active).length} active · ${templates.filter(t => !t.is_active).length} inactive`
+                    : `${templates.length} active`}
+                </Badge>
+                <Button variant="ghost" size="sm" onClick={() => setShowInactive(v => !v)}>
+                  {showInactive ? "Hide inactive" : "Show inactive"}
+                </Button>
+              </div>
             </div>
 
             {templates.length === 0 ? (
@@ -224,9 +451,27 @@ export function CdaSetupPanel() {
                       <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium text-sm">{t.name}</span>
+                          {renamingId === t.id ? (
+                            <>
+                              <Input
+                                className="h-7 max-w-[16rem] text-sm"
+                                value={renameValue}
+                                autoFocus
+                                onChange={e => setRenameValue(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === "Enter") void handleRename(t.id)
+                                  if (e.key === "Escape") { setRenamingId(null); setRenameValue("") }
+                                }}
+                              />
+                              <Button size="sm" onClick={() => void handleRename(t.id)}>Save</Button>
+                              <Button variant="ghost" size="sm" onClick={() => { setRenamingId(null); setRenameValue("") }}>Cancel</Button>
+                            </>
+                          ) : (
+                            <span className="font-medium text-sm">{t.name}</span>
+                          )}
                           {t.state && <Badge variant="outline" className="text-[10px]">{t.state}</Badge>}
                           {t.transaction_type && <Badge variant="outline" className="text-[10px]">{t.transaction_type}</Badge>}
+                          {!t.is_active && <Badge variant="secondary" className="text-[10px]">Inactive</Badge>}
                         </div>
                         {t.description && <p className="text-xs text-muted-foreground truncate">{t.description}</p>}
                       </div>
@@ -235,6 +480,15 @@ export function CdaSetupPanel() {
                           <ExternalLink className="h-4 w-4" />
                         </a>
                       )}
+                      {renamingId !== t.id && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => { setRenamingId(t.id); setRenameValue(t.name) }}
+                        >
+                          Rename
+                        </Button>
+                      )}
                       <Button
                         variant={mappingTemplate?.id === t.id ? "default" : "outline"}
                         size="sm"
@@ -242,7 +496,11 @@ export function CdaSetupPanel() {
                       >
                         Map fields
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => void handleDeactivate(t.id)}>Deactivate</Button>
+                      {t.is_active ? (
+                        <Button variant="ghost" size="sm" onClick={() => void handleDeactivate(t.id)}>Deactivate</Button>
+                      ) : (
+                        <Button variant="outline" size="sm" onClick={() => void handleReactivate(t.id)}>Reactivate</Button>
+                      )}
                     </div>
                     {mappingTemplate?.id === t.id && (
                       <CdaFieldMappingEditor
@@ -262,17 +520,23 @@ export function CdaSetupPanel() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Input placeholder="Template name (required)" value={tplName} onChange={e => setTplName(e.target.value)} />
                 <Input placeholder="Description (optional)" value={tplDescription} onChange={e => setTplDescription(e.target.value)} />
-                <Select value={tplState} onValueChange={setTplState}>
+                <Select
+                  value={tplState || "__universal__"}
+                  onValueChange={(v) => setTplState(v === "__universal__" ? "" : v)}
+                >
                   <SelectTrigger><SelectValue placeholder="State (optional — universal if blank)" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Universal (any state)</SelectItem>
+                    <SelectItem value="__universal__">Universal (any state)</SelectItem>
                     {ALL_US_STATES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <Select value={tplType} onValueChange={setTplType}>
+                <Select
+                  value={tplType || "__any__"}
+                  onValueChange={(v) => setTplType(v === "__any__" ? "" : v)}
+                >
                   <SelectTrigger><SelectValue placeholder="Transaction type (optional)" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Any type</SelectItem>
+                    <SelectItem value="__any__">Any type</SelectItem>
                     {TX_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                   </SelectContent>
                 </Select>

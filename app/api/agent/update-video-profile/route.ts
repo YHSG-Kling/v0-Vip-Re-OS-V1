@@ -10,6 +10,7 @@
  *   preferred_avatar_provider?: "did" | "upload"  (HeyGen is NOT accepted — coerced to "did")
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
@@ -70,10 +71,10 @@ export async function POST(request: NextRequest) {
 
     // Mirror elevenlabs_voice_id to users table — podcast-generation.ts reads it from there.
     if (elevenlabs_voice_id !== undefined && auth.userId) {
-      await supabase
+      await bestEffort(supabase
         .from("users")
         .update({ elevenlabs_voice_id })
-        .eq("id", auth.userId)
+        .eq("id", auth.userId), "users.elevenlabs_voice_id mirrors the agent video profile already saved above (podcast reads the mirror)")
     }
 
     return NextResponse.json({ success: true })

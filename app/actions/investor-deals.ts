@@ -6,7 +6,9 @@
  *                                                 scraped OFF-MARKET / motivated-seller inventory
  *   - getInvestorDealMatchAction({ contactId }) — read the persisted match for display
  *
- * Only for contact_type='investor' (regular buyers are matched to MLS inventory by the retail matchers).
+ * Only for contact_persona='investor' (regular buyers are matched to MLS inventory by the retail
+ * matchers). Repointed from contact_type on the owner ruling: "investor is a persona and not a
+ * contact type" (m589).
  * Nothing auto-sends — the ranked off-market deals are intelligence the agent reviews before acting.
  */
 
@@ -15,23 +17,74 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 import { runInvestorOffMarketMatch, getInvestorDealMatch } from "@/lib/buyer-search/investor-offmarket-runner"
+import { readRoleGrants, selectTenantBrokerageId } from "@/lib/auth/role-grants"
+import { isAgentOrTenantAdmin } from "@/lib/auth/resolve-user-role"
+
+/**
+ * BROKERAGE-SIDE READER GATE (wave 68 owner ruling: "these investors should not get the
+ * owners information"). getInvestorDealMatchAction backs app/components/contact/
+ * investor-deals-panel.tsx, which mounts under app/crm/contacts/[contactId]/page.tsx — the
+ * AGENT-facing CRM dashboard (assertCanActOnContact there requires getAgentContext, i.e.
+ * tenant staff). Because a `"use server"` export is a public HTTP endpoint regardless of
+ * which page currently calls it (CLAUDE.md §4), this action resolves the CALLER'S OWN role
+ * — via the SAME predicate isAgentOrTenantAdmin used everywhere else in this repo (§6, one
+ * vocabulary) — and only passes audience:"brokerage" (owner_name visible) to a resolved
+ * agent/tenant-admin. Anyone else gets the safe default from getInvestorDealMatch
+ * ("investor" — owner fields stripped), even if some future caller reuses this action.
+ */
+async function resolveActorAudience(authUserId: string): Promise<"investor" | "brokerage"> {
+  const svc = createServiceClient()
+  const { data: userRow } = await svc.from("users").select("user_type").eq("id", authUserId).maybeSingle()
+  return isAgentOrTenantAdmin({ user_type: (userRow as { user_type?: string | null } | null)?.user_type ?? null })
+    ? "brokerage"
+    : "investor"
+}
 
 async function resolveBrokerageId(authUserId: string): Promise<string> {
   const svc = createServiceClient()
-  const { data: userRow } = await svc.from("users").select("brokerage_id").eq("id", authUserId).maybeSingle()
+  const { data: userRow, error: userError } = await svc
+    .from("users").select("brokerage_id").eq("id", authUserId).maybeSingle()
+  // supabase-js RESOLVES a failed query, so unchecked this reports a REFUSED users
+  // read as "no brokerage on the profile" — indistinguishable from the legitimate
+  // case that the grant path below exists to serve. It is recorded rather than
+  // returned on: the grant path is a real second source for this answer, and
+  // failing the whole action on the first read would refuse users the fallback was
+  // built for. If both reads fail, the caller gets "" and the log says which.
+  if (userError) {
+    console.error("[investor-deals] users.brokerage_id read failed:", userError.message)
+  }
   if (userRow?.brokerage_id) return userRow.brokerage_id as string
-  const { data: uraRow } = await svc.from("user_role_assignments").select("brokerage_id").eq("user_id", authUserId).limit(1).maybeSingle()
-  return (uraRow?.brokerage_id as string) ?? ""
+
+  // WAS: `.select("brokerage_id").eq("user_id", …).limit(1).maybeSingle()`.
+  //
+  // That could not throw, and that is what made it dangerous rather than safe:
+  // user_role_assignments is UNIQUE on (user_id, role), NOT on user_id, so a user
+  // may hold several grants — one live user holds three (agent + admin + isa) and
+  // another holds two, one of them a `contact` grant whose brokerage_id is NULL.
+  // With no `.order()`, `.limit(1)` took whichever row the query plan produced
+  // first, so THE TENANT FOR THIS WHOLE ACTION WAS DECIDED BY ROW ORDER and could
+  // land on the untenanted grant. Every off-market deal read below is scoped by
+  // the value returned here.
+  //
+  // Now: read ALL the grants, drop the ones with no brokerage (a `contact` grant
+  // is not a tenancy), and choose by explicit precedence — same rule, one module,
+  // as lib/auth/require-brokerage-admin.ts. Do not reintroduce `.limit(1)`.
+  const grantsResult = await readRoleGrants(svc, authUserId)
+  if (!grantsResult.ok) {
+    console.error("[investor-deals] role grant read failed:", grantsResult.error)
+    return ""
+  }
+  return selectTenantBrokerageId(grantsResult.grants) ?? ""
 }
 
 async function authAndScope(contactId: string) {
-  if (!isValidUUID(contactId)) return { brokerageId: "", error: "Invalid contact id" as const }
+  if (!isValidUUID(contactId)) return { brokerageId: "", userId: "", error: "Invalid contact id" as const }
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { brokerageId: "", error: "Unauthorized" as const }
+  if (!user) return { brokerageId: "", userId: "", error: "Unauthorized" as const }
   const brokerageId = await resolveBrokerageId(user.id)
-  if (!brokerageId) return { brokerageId: "", error: "No brokerage for user" as const }
-  return { brokerageId, error: null }
+  if (!brokerageId) return { brokerageId: "", userId: user.id, error: "No brokerage for user" as const }
+  return { brokerageId, userId: user.id, error: null }
 }
 
 export async function findInvestorDealsAction(params: {
@@ -45,7 +98,7 @@ export async function findInvestorDealsAction(params: {
 
   if (!result.ok) {
     const why: Record<string, string> = {
-      not_investor: "Off-market deal matching is for investor buyers. Set this contact's type to Investor to use it.",
+      not_investor: "Off-market deal matching is for investor buyers. Set this contact's persona to Investor to use it.",
       no_box: "This investor has no saved buy-box yet. Capture their criteria (target markets, price) first.",
       no_geography: "The investor's buy-box has no target markets — add cities or ZIP codes to match on.",
       no_inventory: "No off-market properties in the investor's markets yet. New matches appear as we scrape more.",
@@ -59,8 +112,36 @@ export async function findInvestorDealsAction(params: {
 export async function getInvestorDealMatchAction(params: {
   contactId: string
 }): Promise<{ success: boolean; match?: any; error?: string }> {
+  const { brokerageId, userId, error } = await authAndScope(params.contactId)
+  if (!brokerageId) return { success: false, error: error ?? undefined }
+  const audience = await resolveActorAudience(userId)
+  const match = await getInvestorDealMatch(createServiceClient(), { contactId: params.contactId, brokerageId }, audience)
+  return { success: true, match }
+}
+
+/**
+ * dismissInvestorOffMarketCandidateAction — the WRITER of
+ * investor_offmarket_candidates.dismissed_at (wave 67 integration; the column
+ * was read by getInvestorOffMarketCandidates' `.is("dismissed_at", null)` and
+ * written by nothing). Gate first (session → brokerage), then the service
+ * client bounded to (id, contact_id, brokerage_id); the update is `.select()`ed
+ * and COUNTED because a zero-row update resolves without an error.
+ */
+export async function dismissInvestorOffMarketCandidateAction(params: {
+  contactId: string
+  candidateId: string
+}): Promise<{ success: boolean; error?: string }> {
   const { brokerageId, error } = await authAndScope(params.contactId)
   if (!brokerageId) return { success: false, error: error ?? undefined }
-  const match = await getInvestorDealMatch(createServiceClient(), { contactId: params.contactId, brokerageId })
-  return { success: true, match }
+  if (!isValidUUID(params.candidateId)) return { success: false, error: "Invalid candidate id" }
+  const { data, error: updateError } = await createServiceClient()
+    .from("investor_offmarket_candidates")
+    .update({ dismissed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq("id", params.candidateId)
+    .eq("contact_id", params.contactId)
+    .eq("brokerage_id", brokerageId)
+    .select("id")
+  if (updateError) return { success: false, error: updateError.message }
+  if (!data || data.length === 0) return { success: false, error: "Candidate not found for this contact" }
+  return { success: true }
 }

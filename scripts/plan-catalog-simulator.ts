@@ -21,7 +21,7 @@
  *
  * Run: npx tsx scripts/plan-catalog-simulator.ts   (npm run test:plan-catalog)
  */
-import { validatePlanTierInput, CANONICAL_TIERS } from "../lib/billing/plan-catalog"
+import { validatePlanTierInput, CANONICAL_TIERS, TIER_SEAT_BANDS, tierForSeatCount } from "../lib/billing/plan-catalog"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
@@ -56,6 +56,18 @@ async function main() {
   check("empty display_name → error", !validatePlanTierInput({ tierName: "team", displayName: "", monthlyPriceCents: 1 }).ok)
   check("negative price → error", !validatePlanTierInput({ tierName: "team", displayName: "X", monthlyPriceCents: -5 }).ok)
   check("CANONICAL_TIERS is the 4 plan keys", CANONICAL_TIERS.length === 4 && CANONICAL_TIERS.includes("solo_agent"))
+  // Wave 78A — the catalogue module is also the ONE home of the seat bands.
+  check("TIER_SEAT_BANDS lives here: solo_agent 2 · team 10 · brokerage 30 · multi_location custom (wave 79A)",
+    TIER_SEAT_BANDS.solo_agent === 2 && TIER_SEAT_BANDS.team === 10 && TIER_SEAT_BANDS.brokerage === 30 && TIER_SEAT_BANDS.multi_location === null)
+  check("tierForSeatCount fits by the bands; above every band lands on the custom tier",
+    tierForSeatCount(TIER_SEAT_BANDS.solo_agent as number) === "solo_agent" && tierForSeatCount((TIER_SEAT_BANDS.solo_agent as number) + 1) === "team"
+    && tierForSeatCount((TIER_SEAT_BANDS.team as number) + 1) === "brokerage" && tierForSeatCount((TIER_SEAT_BANDS.brokerage as number) + 1) === "multi_location" && tierForSeatCount(9999) === "multi_location")
+  check("POSITIVE CONTROL — a seat count one past a band moves the tier", tierForSeatCount(TIER_SEAT_BANDS.team as number) === "team" && tierForSeatCount((TIER_SEAT_BANDS.team as number) + 1) !== "team")
+  check("a tier's maxAgents may be blank (unlimited) or a non-negative integer — the validator keeps both", (() => {
+    const a = validatePlanTierInput({ tierName: "brokerage", displayName: "B", monthlyPriceCents: 1, maxAgents: null })
+    const b = validatePlanTierInput({ tierName: "team", displayName: "T", monthlyPriceCents: 1, maxAgents: 5 })
+    return a.ok && a.value.maxAgents === null && b.ok && b.value.maxAgents === 5
+  })())
 
   console.log("\n[Layer 2 · CRUD wiring + DB-driven signup]")
   const actionSrc = readFileSync(join(process.cwd(), "app/actions/superadmin/plan-catalog.ts"), "utf8")
@@ -65,10 +77,14 @@ async function main() {
     /from\("subscriptions"\)[\s\S]*?eq\("tier_id"/.test(actionSrc) && /is_active: false/.test(actionSrc))
   check("Stripe sync pulls unit_amount from the tier's stripe_price_id",
     /stripe\.prices\.retrieve/.test(actionSrc) && /unit_amount/.test(actionSrc))
-  const pageSrc = readFileSync(join(process.cwd(), "app/signup/page.tsx"), "utf8")
+  const pageSrc = readFileSync(join(process.cwd(), "app/get-started/page.tsx"), "utf8")
+  // Same refactor as the price assertion in billing-access-simulator: the tier
+  // columns are selected in lib/platform/public-tiers.ts now, not inline here.
+  const tiersSrc = readFileSync(join(process.cwd(), "lib/platform/public-tiers.ts"), "utf8")
   check("signup page loads blurb/bullets/highlight from subscription_tiers",
-    /description/.test(pageSrc) && /marketing_bullets/.test(pageSrc) && /is_featured/.test(pageSrc))
-  const formSrc = readFileSync(join(process.cwd(), "app/signup/signup-form.tsx"), "utf8")
+    /loadPublicTiers/.test(pageSrc) && /description/.test(tiersSrc)
+    && /marketing_bullets/.test(tiersSrc) && /is_featured/.test(tiersSrc))
+  const formSrc = readFileSync(join(process.cwd(), "app/get-started/trial-funnel-form.tsx"), "utf8")
   check("signup form is DB-driven — NO hardcoded blurb/features/highlight arrays",
     /tiers\.map/.test(formSrc) && !/blurb:\s*"/.test(formSrc) && !/features:\s*\[/.test(formSrc) && !/highlight:\s*(true|false)/.test(formSrc))
 

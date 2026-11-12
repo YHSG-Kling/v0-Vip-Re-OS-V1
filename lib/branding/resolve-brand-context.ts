@@ -89,6 +89,9 @@ export interface BrandContext {
     shortDisclosure: string
     longDisclosure:  string
   }
+  /** Wave 145 (lane 145G, CLAUDE.md §3): every brand read that was REFUSED, by table — a refused read falls through to the
+   *  next tier / the default (the piece still renders) but is SAID, never read as "no brand". Empty = every read answered. */
+  readErrors?: string[]
   /** Audit trail — which tier supplied which field. Useful for the
    *  admin "why does this piece look like this?" diagnostic. */
   source: {
@@ -118,6 +121,15 @@ export interface ResolveBrandArgs {
   agentUserId?: string | null
 }
 
+// TOMBSTONE (orphan doctrine §1.1, 2026-09-03, wave 26 lane L3):
+// `lib/branding/resolve-brokerage-brand.ts` — `resolveBrokerageBrandContext(brokerageId)`
+// and the re-exported type alias `BrokerageBrandContext` — is DELETED. It was a
+// self-declared deprecated shim over THIS function (`resolveBrandContext({ brokerageId })`)
+// kept "so we don't churn the 7 existing call sites"; all seven had migrated here
+// (zero importers left in app/ or lib/; the direct-mail producers call this
+// function directly, lib/direct-mail/render-postcard.ts). Nothing merged: the
+// alias added no behaviour, only the brokerage-tier-only default this function
+// already gives when teamId/agentUserId are omitted.
 export async function resolveBrandContext(args: ResolveBrandArgs): Promise<BrandContext> {
   const svc = createServiceClient()
 
@@ -154,12 +166,21 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
 
   // A SOLO/personal agent MOTTO lives on brand_voice_profile.tagline (agent-scoped, agent-writable).
   // It is the top of the tagline cascade so a solo agent's own motto ships on their pieces.
+  // Wave 145 (lane 145G): READ the refusals — each falls through to the next tier, and is reported (readErrors).
+  const readErrors: string[] = []
+  const READ_TABLES = ["brokerages", "global_settings", "brokerage_brand_settings", "teams", "agents"] as const
+  ;[brokerageR, globalR, brandSettingsR, teamR, agentR].forEach((r, i) => {
+    const err = (r as { error?: { message?: string } | null }).error
+    if (err) readErrors.push(`${READ_TABLES[i]}: ${err.message ?? "refused"}`)
+  })
   let agentMotto: string | null = null
   const agentId = (agentR.data as { id?: string } | null)?.id ?? null
   if (agentId) {
-    const { data: vp } = await svc.from("brand_voice_profile").select("tagline").eq("agent_id", agentId).maybeSingle()
+    const { data: vp, error: vpErr } = await svc.from("brand_voice_profile").select("tagline").eq("agent_id", agentId).eq("brokerage_id", args.brokerageId).maybeSingle()
+    if (vpErr) readErrors.push(`brand_voice_profile: ${vpErr.message}`)
     agentMotto = ((vp as { tagline?: string | null } | null)?.tagline ?? "").trim() || null
   }
+  if (readErrors.length) console.error(`[brand-context] ${args.brokerageId}: brand read(s) refused — tiers fell through: ${readErrors.join("; ")}`)
 
   const b = (brokerageR.data ?? {}) as {
     name?: string | null
@@ -270,6 +291,7 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
         "gender identity. All information is deemed reliable but not guaranteed and is provided " +
         "for informational purposes only.",
     },
+    readErrors,
     source: {
       logo:    logoSrc,
       color:   colorSrc,

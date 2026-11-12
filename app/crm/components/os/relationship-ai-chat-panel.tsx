@@ -148,7 +148,14 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
   const handleAcceptSuggestion = async (suggestion: any) => {
     setDraft(suggestion.text)
     setMode("draft")
-    await acceptAiSuggestion(suggestion.id)
+    // acceptAiSuggestion THROWS on a failed update (it re-raises the postgrest
+    // error), so an unawaited failure here used to surface as an unhandled
+    // rejection and the suggestion silently stayed un-accepted.
+    try {
+      await acceptAiSuggestion(suggestion.id)
+    } catch (e: any) {
+      toast.error(e?.message ?? "The draft was loaded, but marking the suggestion accepted failed.")
+    }
   }
 
   const handleCopyDraft = () => {
@@ -250,7 +257,7 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
                   <p className="text-xs font-semibold text-amber-700">
                     Message Draft — review and edit before sending
                   </p>
-                  <p className="text-[11px] text-amber-600">
+                  <p className="text-[11px] text-amber-700">
                     This draft was written for you to review. Edit it before sending.
                   </p>
                 </div>
@@ -351,7 +358,19 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
                     onClick={() => handleAcceptSuggestion(s)}
                   >
                     <p className="text-sm">{s.text}</p>
-                    <Button variant="ghost" size="sm" className="mt-2">
+                    {/* The wrapping div carries the same handler, so this
+                        relied on the click bubbling — invisible wiring that
+                        breaks the moment anyone adds a stopPropagation above
+                        it. The control now calls the capability itself. */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void handleAcceptSuggestion(s)
+                      }}
+                    >
                       Use This
                     </Button>
                   </div>
@@ -391,7 +410,7 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
                   <p className="text-sm">Recommended: {temperature.recommendedStyle}</p>
                 )}
                 {temperature.riskSignals && temperature.riskSignals.length > 0 && (
-                  <div className="text-sm text-amber-600">
+                  <div className="text-sm text-amber-700">
                     Risks: {temperature.riskSignals.join(", ")}
                   </div>
                 )}

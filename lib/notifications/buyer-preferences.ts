@@ -46,6 +46,19 @@ export function resolveBuyerNotificationPreferences(raw: any): BuyerNotification
   return out
 }
 
+/**
+ * PURE — the whole channels a person WITHDREW on their own portal Communication Preferences card (wave 149, lane 149J):
+ * an explicit `false` for `email` or `sms` in the submitted `notification_preferences` (never a missing key, never a
+ * default — a muted channel is recorded only when the person said it). app/actions/portal-settings.ts
+ * updateContactProfile records each one through the ONE opt-out writer (lib/ai-isa/opt-out-writer.ts writeOptOut,
+ * source 'portal'). Push is in-app delivery, not a regulated channel, so it is not an opt-out.
+ */
+export function portalChannelWithdrawals(submittedMetadata: unknown): Array<"email" | "sms"> {
+  const prefs = (readMetadata(submittedMetadata)?.notification_preferences ?? null) as Record<string, unknown> | null
+  if (!prefs || typeof prefs !== "object") return []
+  return (["email", "sms"] as const).filter((ch) => prefs[ch] === false)
+}
+
 /** PURE — would the buyer welcome an automated touch of this category on this channel? */
 export function buyerWantsNotification(
   prefs: BuyerNotificationPreferences,

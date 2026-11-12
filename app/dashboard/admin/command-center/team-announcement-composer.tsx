@@ -178,7 +178,7 @@ export function TeamAnnouncementComposer({ canChooseScope }: { canChooseScope: b
           </div>
         </div>
         {result && (
-          <p className={result.ok ? "text-xs text-emerald-600" : "text-xs text-red-600"}>{result.message}</p>
+          <p className={result.ok ? "text-xs text-emerald-700" : "text-xs text-red-600"}>{result.message}</p>
         )}
       </CardContent>
     </Card>

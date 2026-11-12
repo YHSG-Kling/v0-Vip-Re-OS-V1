@@ -131,7 +131,7 @@ export function PlatformStaffManager({ initialStaff, initialProfiles, currentUse
 
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">Staff ({staff.length})</CardTitle></CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="p-0 overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b bg-muted/10 text-left text-xs text-muted-foreground">
               <th className="px-4 py-2">Name</th><th className="px-4 py-2">Email</th><th className="px-4 py-2">Role</th><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Actions</th>
@@ -156,7 +156,7 @@ export function PlatformStaffManager({ initialStaff, initialProfiles, currentUse
                           <Badge variant="outline" className="text-[10px]">{activeRole || '—'}</Badge>
                         </span>
                       </td>
-                      <td className="px-4 py-2"><span className={'rounded px-1.5 py-0.5 text-[11px] ' + (s.status === 'inactive' ? 'bg-slate-100 text-slate-500' : 'bg-emerald-100 text-emerald-800')}>{s.status ?? 'active'}</span></td>
+                      <td className="px-4 py-2"><span className={'rounded px-1.5 py-0.5 text-[11px] ' + (s.status === 'inactive' ? 'bg-slate-100 text-slate-600' : 'bg-emerald-100 text-emerald-800')}>{s.status ?? 'active'}</span></td>
                       <td className="px-4 py-2 text-right">
                         <div className="inline-flex items-center gap-2">
                           <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setExpanded(isExpanded ? null : s.id)} title="HR record">

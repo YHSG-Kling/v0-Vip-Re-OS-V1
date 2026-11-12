@@ -70,11 +70,12 @@ export function SetupTab({
         </TabsContent>
 
         <TabsContent value="distribution" className="mt-0">
+          {/* onUpdate/isAdmin are no longer accepted here — see the tombstone in
+              distribution-channels-tab.tsx: this view is read-only, editing
+              lives at /dashboard/settings/podcast-channels. */}
           <DistributionChannelsTab
             channels={channels}
             loading={loading}
-            onUpdate={onChannelsUpdate}
-            isAdmin={isAdmin}
           />
         </TabsContent>
       </Tabs>

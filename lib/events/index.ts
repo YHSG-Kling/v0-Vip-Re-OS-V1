@@ -8,6 +8,6 @@ export {
   logEventAndTrigger,
   logMilestoneOverdue,
   logCreditStatusUpdated,
-  logVideoGenerated,
+  logScriptGenerated,
   handleWebhookEvent,
 } from "./event-helpers"

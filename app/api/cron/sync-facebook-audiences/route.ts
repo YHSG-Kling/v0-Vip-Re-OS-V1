@@ -3,8 +3,27 @@
 // Runs every 24 hours to keep audiences up to date
 
 import { type NextRequest, NextResponse } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
-import { syncAudience } from "@/lib/ads/facebook-audience-sync"
+// THE UNATTENDED DOOR. This used to import the `"use server"` action
+// `lib/ads/facebook-audience-sync.ts:syncAudience` and call it as
+// `syncAudience("system", { brokerageId, agentId: "system", audienceId })` —
+// i.e. it asserted its own identity with the literal string "system".
+//
+// That action now resolves the tenant from the SESSION (it was a public endpoint
+// where a caller-supplied brokerage uuid was enough to upload another tenant's
+// consented contacts to Meta — orphan burn-down w2s2 closed that). A cron has no
+// session, so routing through the action would fail every audience, every night,
+// with "Not authenticated".
+//
+// The action is a session-gated door onto the kernel command; this is the
+// unattended door onto the SAME command. The cron does not need to assert an
+// identity because it never takes a tenant from a caller: `brokerage_id` is read
+// off the `facebook_custom_audiences` row it is already syncing, and the kernel
+// re-scopes its own reads to that same brokerage. (Same shape as
+// app/actions/ai-listing-presentation.ts:generateListingPresentation, whose work
+// lives in a library so the unattended prep chain has its own entry point.)
+import { syncAudience as kernelSyncAudience } from "@/lib/kernel/ads"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -17,18 +36,9 @@ export const maxDuration = 300 // 5 minutes
 
 export async function GET(request: NextRequest) {
   // ── 1. Verify CRON_SECRET ───────────────────────────────────────────────────
-  const authHeader = request.headers.get("authorization")
-  const cronSecret = process.env.CRON_SECRET
-
-  if (!cronSecret) {
-    console.error("[sync-facebook-audiences] CRON_SECRET not configured")
-    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 })
-  }
-
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    console.error("[sync-facebook-audiences] Unauthorized request")
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // The ONE cron gate (lib/cron-auth.ts) — unset secret → 500, bad credential → 401.
+  const denied = verifyCronAuth(request)
+  if (denied) return denied
 
   const contextResult = await createCronRunContextAction({
     cron_name: "sync-facebook-audiences",
@@ -54,24 +64,25 @@ export async function GET(request: NextRequest) {
 
   try {
     // ── 2. Get audiences that need syncing ────────────────────────────────────
-    // Criteria: status = 'approved' AND (last_synced_at IS NULL OR last_synced_at < now() - 24 hours)
-    const twentyFourHoursAgo = new Date()
-    twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24)
-
-    const { data: audiences, error: fetchError } = await supabase
-      .from("facebook_custom_audiences")
-      .select("id, brokerage_id, audience_name, status, last_synced_at")
-      .eq("status", "approved")
-      .or(`last_synced_at.is.null,last_synced_at.lt.${twentyFourHoursAgo.toISOString()}`)
-      .limit(50) // Process up to 50 per run
-
-    if (fetchError) {
-      console.error("[sync-facebook-audiences] Failed to fetch audiences:", fetchError)
-      return NextResponse.json({ error: fetchError.message }, { status: 500 })
+    // WAVE 150 (lane 150QTV — owner ruling R4, 2026-11-06): "sync AUTOMATICALLY after approval / eligibility … revocations sync
+    // the same way". This used to select status 'approved' only — and the upload writes 'synced', so a live audience was never
+    // re-uploaded and a person who opted out stayed in it on the platform. The audiences are now chosen by EVIDENCE
+    // (lib/ads/persona-audience.ts audiencesNeedingResync: first upload after approval, a failed upload, or a tenant whose
+    // contacts / suppression list changed after the last upload — unreadable evidence re-syncs, toward the revocation). Every
+    // upload is a full replace on the platform, so a re-sync is how a revocation leaves. Same tick, no new timer.
+    const { audiencesNeedingResync } = await import("@/lib/ads/persona-audience")
+    const picked = await audiencesNeedingResync(supabase, { limit: 50 })
+    if (!picked.ok) {
+      console.error("[sync-facebook-audiences] Failed to select audiences:", picked.error)
+      await recordCronFailureAction({ context_id: contextId, error: new Error(picked.error), stage: "select-audiences" })
+      return NextResponse.json({ error: picked.error }, { status: 500 })
     }
+    for (const n of picked.notes) console.warn(`[sync-facebook-audiences] ${n}`)
+    const audiences = picked.audiences
 
-    if (!audiences || audiences.length === 0) {
+    if (audiences.length === 0) {
       console.log("[sync-facebook-audiences] No audiences need syncing")
+      await recordCronSuccessAction({ context_id: contextId, records_processed: 0, output_count: 0, metadata: { synced: 0, skipped: 0, failed: 0 } })
       return NextResponse.json({
         success: true,
         message: "No audiences need syncing",
@@ -104,26 +115,33 @@ export async function GET(request: NextRequest) {
 
       // ── 4. Sync the audience ────────────────────────────────────────────────
       try {
-        console.log(`[sync-facebook-audiences] Syncing audience: ${audience.audience_name}`)
+        console.log(`[sync-facebook-audiences] Syncing audience: ${audience.audience_name} (${audience.reason})`)
 
-        const syncResult = await syncAudience(
-          "system", // CRON uses system user
-          {
-            brokerageId: audience.brokerage_id,
-            agentId: "system",
-            audienceId: audience.id,
-          }
-        )
+        // The tenant comes from the row being synced, never from a caller.
+        // `agentId` / `userId` are carried as empty strings because the kernel
+        // command reads NEITHER — it scopes every query on ctx.brokerageId
+        // alone. They are deliberately not filled with "system": that is not a
+        // uuid, and writing it into an id column would raise 22P02 the moment
+        // the kernel ever started persisting the actor.
+        const syncResult = await kernelSyncAudience({
+          ctx: { brokerageId: audience.brokerage_id, agentId: "", userId: "" },
+          audienceId: audience.id,
+        })
+
+        // The kernel returns the raw `audience_sync_runs` row; the server action
+        // used to flatten it for its own callers. Read the same field here.
+        const recordsSynced = (syncResult.syncRun as { records_synced?: number } | undefined)
+          ?.records_synced ?? 0
 
         if (syncResult.success) {
           console.log(
-            `[sync-facebook-audiences] Successfully synced ${audience.audience_name}: ${syncResult.recordsSynced} records`
+            `[sync-facebook-audiences] Successfully synced ${audience.audience_name}: ${recordsSynced} records`
           )
           results.push({
             audienceId: audience.id,
             audienceName: audience.audience_name,
             status: "synced",
-            recordsSynced: syncResult.recordsSynced,
+            recordsSynced,
           })
         } else {
           console.error(

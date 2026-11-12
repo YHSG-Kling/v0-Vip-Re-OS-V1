@@ -30,6 +30,7 @@ interface DailyTrendPoint {
 interface PerEpisode {
   id: string
   title: string
+  status: string | null
   plays: number
   audioUrl: string | null
   publishedChannels: string[]
@@ -55,7 +56,9 @@ export function AnalyticsTab() {
 
   const [totalPlays, setTotalPlays] = useState(0)
   const [totalListenMinutes, setTotalListenMinutes] = useState(0)
-  const [avgCompletionRate, setAvgCompletionRate] = useState(0)
+  // null = not measured. podcast_analytics_events carries no completion column
+  // (live-verified), so a percentage here would be a number nobody computed.
+  const [avgCompletionRate, setAvgCompletionRate] = useState<number | null>(null)
   const [subscribersLast30, setSubscribersLast30] = useState(0)
   const [subscriberGrowthPct, setSubscriberGrowthPct] = useState<number | null>(null)
   const [channelBreakdown, setChannelBreakdown] = useState<ChannelBreakdown[]>([])
@@ -73,7 +76,7 @@ export function AnalyticsTab() {
         if (res.success) {
           setTotalPlays(res.totalPlays ?? 0)
           setTotalListenMinutes(res.totalListenMinutes ?? 0)
-          setAvgCompletionRate(res.avgCompletionRate ?? 0)
+          setAvgCompletionRate(res.avgCompletionRate ?? null)
           setSubscribersLast30(res.subscribersLast30 ?? 0)
           setSubscriberGrowthPct(res.subscriberGrowthPct ?? null)
           setChannelBreakdown((res.channelBreakdown ?? []) as ChannelBreakdown[])
@@ -107,7 +110,7 @@ export function AnalyticsTab() {
             </div>
             <div>
               <p className="text-2xl font-semibold">
-                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : totalPlays.toLocaleString()}
+                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-500" /> : totalPlays.toLocaleString()}
               </p>
               <p className="text-xs text-gray-500">Total Plays</p>
             </div>
@@ -121,7 +124,7 @@ export function AnalyticsTab() {
             </div>
             <div>
               <p className="text-2xl font-semibold">
-                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : totalListenMinutes.toLocaleString()}
+                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-500" /> : totalListenMinutes.toLocaleString()}
               </p>
               <p className="text-xs text-gray-500">Total Listen Minutes</p>
             </div>
@@ -135,7 +138,13 @@ export function AnalyticsTab() {
             </div>
             <div>
               <p className="text-2xl font-semibold">
-                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : `${avgCompletionRate}%`}
+                {loading ? (
+                  <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
+                ) : avgCompletionRate == null ? (
+                  <span className="text-gray-500" title="Listen-completion is not captured on podcast events yet">—</span>
+                ) : (
+                  `${avgCompletionRate}%`
+                )}
               </p>
               <p className="text-xs text-gray-500">Avg Completion Rate</p>
             </div>
@@ -150,7 +159,7 @@ export function AnalyticsTab() {
             <div>
               <p className="text-2xl font-semibold">
                 {loading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                  <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
                 ) : (
                   subscribersLast30.toLocaleString()
                 )}
@@ -158,7 +167,7 @@ export function AnalyticsTab() {
               <p className="text-xs text-gray-500">
                 New Subscribers (30d)
                 {subscriberGrowthPct != null && (
-                  <span className={`ml-1 ${subscriberGrowthPct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                  <span className={`ml-1 ${subscriberGrowthPct >= 0 ? "text-emerald-700" : "text-red-600"}`}>
                     {subscriberGrowthPct >= 0 ? "+" : ""}
                     {subscriberGrowthPct}%
                   </span>
@@ -193,7 +202,7 @@ export function AnalyticsTab() {
           {error && <p className="text-sm text-red-600">{error}</p>}
           {!error && loading && (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
             </div>
           )}
           {!error && !loading && dailyTrend.length > 0 && (
@@ -257,7 +266,7 @@ export function AnalyticsTab() {
         </CardHeader>
         <CardContent>
           {!error && !loading && perEpisode.length === 0 && (
-            <p className="text-sm text-gray-500 text-center py-6">No published episodes yet.</p>
+            <p className="text-sm text-gray-500 text-center py-6">No episodes yet.</p>
           )}
           {!error && !loading && perEpisode.length > 0 && (
             <ul className="divide-y">
@@ -267,6 +276,13 @@ export function AnalyticsTab() {
                     <p className="text-sm font-medium truncate">{ep.title}</p>
                     <p className="text-xs text-muted-foreground">
                       {ep.plays.toLocaleString()} {ep.plays === 1 ? "play" : "plays"}
+                      {/* The list is every episode, not only published ones — the
+                          status says which, so a draft is never read as live. */}
+                      {ep.status && ep.status !== "published" && (
+                        <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-600">
+                          {ep.status.replace(/_/g, " ")}
+                        </span>
+                      )}
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">

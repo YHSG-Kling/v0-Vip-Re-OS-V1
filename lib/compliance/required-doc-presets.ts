@@ -40,6 +40,29 @@ const US_BASELINE: RequiredDocPreset[] = [
   { classification: "id_document",          block_on_missing: false, description: "Buyer ID for compliance file (warning)." },
 ]
 
+// ── SELLER baseline (m356) ─────────────────────────────────────────────────
+//
+// The preset library was buyer-only, but the seeder has always accepted
+// dealType: "seller" — so seeding a seller scope installed the BUYER stack
+// (pre-approval letter, proof of funds, buyer-broker agreement) under a seller
+// deal_type. A seller has no pre-approval letter, so those rules could never be
+// satisfied and every seller file would sit permanently blocked.
+//
+// Owner's ruling drives the two anchors here: the LISTING AGREEMENT must be
+// signed to take on a listing, and the SELLER BROKER AGREEMENT is a DIFFERENT
+// document — both are separately requirable.
+const SELLER_BASELINE: RequiredDocPreset[] = [
+  { classification: "listing_agreement",             block_on_missing: true,  description: "Signed listing agreement — the listing cannot be taken on without it." },
+  { classification: "seller_broker_agreement",       block_on_missing: false, description: "Seller broker agreement. DISTINCT from the listing agreement; required by some brokerages in addition to it." },
+  { classification: "agency_disclosure",             block_on_missing: true,  description: "Seller-side agency disclosure (state-form specific)." },
+  { classification: "disclosure",                    block_on_missing: true,  description: "Seller's property condition disclosure." },
+  { classification: "commission_agreement",          block_on_missing: true,  description: "Listing-side commission terms on file." },
+  { classification: "title_report",                  block_on_missing: false, description: "Preliminary title / ownership report (warning until ordered)." },
+  { classification: "hoa_documents",                 block_on_missing: false, description: "HOA docs where the property is in an association." },
+  { classification: "id_document",                   block_on_missing: false, description: "Seller ID for the compliance file (warning)." },
+  { classification: "preliminary_closing_statement", block_on_missing: false, description: "Preliminary HUD / settlement statement from title or the closing attorney — the trigger to prepare the CDA." },
+]
+
 // ── State-specific additions on top of the baseline ───────────────────────
 // Each state's "Additional" rows are STACKED with the baseline by the seeder.
 
@@ -119,17 +142,61 @@ const STATE_ADDITIONS: Record<string, RequiredDocPreset[]> = {
  * REPLACE baseline rows for the same classification when both exist
  * (state-specific descriptions are more useful for the broker).
  */
-export function getRequiredDocPresetsForState(stateCode: string | null | undefined): RequiredDocPreset[] {
+export function getRequiredDocPresetsForState(
+  stateCode: string | null | undefined,
+  /** WHICH SIDE of the deal. The seeder has always taken a dealType, but this
+   *  resolver ignored it and returned the buyer stack regardless — so seeding a
+   *  seller scope installed pre_approval_letter and proof_of_funds as BLOCKING
+   *  requirements a seller can never satisfy. Defaulted to "buyer" so existing
+   *  callers are unchanged. */
+  dealType: "buyer" | "seller" | "dual" = "buyer",
+): RequiredDocPreset[] {
   const upperState = (stateCode ?? "").toUpperCase()
   const stateRows  = STATE_ADDITIONS[upperState] ?? []
-  // Per-classification merge: state row overrides baseline for the same key
+  // Per-classification merge: state row overrides baseline for the same key.
+  // A "dual" scope legitimately wants both sides' paperwork on file.
   const merged = new Map<string, RequiredDocPreset>()
-  for (const p of US_BASELINE) merged.set(p.classification, p)
-  for (const p of stateRows)   merged.set(p.classification, p)
+  if (dealType === "buyer" || dealType === "dual") {
+    for (const p of US_BASELINE) merged.set(p.classification, p)
+  }
+  if (dealType === "seller" || dealType === "dual") {
+    for (const p of SELLER_BASELINE) merged.set(p.classification, p)
+  }
+  // State additions are written against the buyer stack today; they still apply
+  // to a dual scope, and to a seller scope only where the classification is one
+  // the seller side actually carries (agency_disclosure, disclosure, title…).
+  for (const p of stateRows) {
+    if (dealType === "seller" && !SELLER_BASELINE.some((s) => s.classification === p.classification)) continue
+    merged.set(p.classification, p)
+  }
   return Array.from(merged.values())
 }
 
 /** List all states with state-specific presets (for the onboarding picker). */
 export function getSupportedPresetStates(): string[] {
   return Object.keys(STATE_ADDITIONS).sort()
+}
+
+// ── THE HUMAN COMPLIANCE TASK FOR AN UNCITED LEGAL CLAIM (wave 145, lane 145H) ──────────────────────────────────
+//
+// The presets above are COMMON PRACTICE, not citations: several descriptions name a statute, a state form or "required
+// by state" without an official source URL (lane 144A counted them: IL:addendum, TX:disclosure, TX:addendum,
+// WA:agency_disclosure). Owner ruling (wave 144, ruling 1): "state-specific regulatory document rules need human
+// compliance approval and verified official sources — AI never invents binding legal requirements." So they STAY
+// seeded as brokerage policy (legal_basis NULL — app/actions/compliance/seed-required-docs.ts never writes one) and the
+// open item is SURFACED to a person instead of being silently resolved: the settings page lists every rule in the
+// brokerage whose text claims a legal source it does not cite, with what to do. A compliance approver verifies the
+// official (.gov / .us) page and re-saves the rule as a cited state requirement (manage-required-docs.ts ruleLegalBasis).
+// Nothing here invents a URL. THE ONE matcher — scripts/adaptive-vocabulary-guard.ts E5 reads it from here.
+
+/** A description that asserts a legal source: a statute marker, a state form body, or "required by state". */
+export const LEGAL_SOURCE_CLAIM = /required by state|state law|\bRCW\b|\bTREC\b|§|statute|\bAct\b|Civil Code|\bILCS\b|Public Act/i
+
+/**
+ * PURE. The rules (any shape carrying description / legal_basis / source_url) that claim a legal source WITHOUT a
+ * citation — each one a human compliance task. A rule already saved as a cited state requirement is not a task.
+ */
+export function uncitedLegalClaims<R extends { description?: string | null; legal_basis?: string | null; source_url?: string | null }>(rules: readonly R[]): R[] {
+  return rules.filter((r) => !!r.description && LEGAL_SOURCE_CLAIM.test(r.description)
+    && !(r.legal_basis === "state_requirement" && !!r.source_url))
 }

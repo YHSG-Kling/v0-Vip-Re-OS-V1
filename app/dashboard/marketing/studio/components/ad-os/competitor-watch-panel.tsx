@@ -185,7 +185,7 @@ export function CompetitorWatchPanel({ listings, agentId }: Props) {
           </Button>
 
           {liveIntelError && (
-            <p className="text-xs text-red-600 bg-red-50 rounded-md p-2">{liveIntelError}</p>
+            <p className="text-xs text-red-700 bg-red-50 rounded-md p-2">{liveIntelError}</p>
           )}
 
           {liveIntelResult && (
@@ -225,7 +225,7 @@ export function CompetitorWatchPanel({ listings, agentId }: Props) {
         </div>
 
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+          <p className="text-sm text-red-700 bg-red-50 rounded-md p-2">{error}</p>
         )}
 
         {/* Results */}

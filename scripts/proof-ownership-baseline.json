@@ -1,0 +1,4 @@
+{
+  "note": "Shrink-only baseline of test:* proofs with no MAINTENANCE_DOMAINS owner. A NEW unowned proof FAILS test:proof-ownership. Remove entries as domains are declared; never add. Regenerate deliberately with --write-baseline.",
+  "unowned": []
+}

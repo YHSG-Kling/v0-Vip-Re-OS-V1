@@ -4,7 +4,8 @@ import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgentId, requireAgentId } from "@/lib/kernel/agent-identity"
+import { recordLifetimeTouchpointSent } from "@/lib/sphere/lifetime-touchpoint-ledger"
 
 // System callers (e.g. the daily lifetime-touchpoints cron) have no user session,
 // so they pass the owning agentId + a service-role client; UI callers pass neither
@@ -28,6 +29,18 @@ async function resolveTouchpointActor(opts: TouchpointActorOpts | undefined) {
     .eq("id", agentId)
     .maybeSingle()
   return { supabase, agentId, brokerageId: agentRow?.brokerage_id ?? null }
+}
+
+/**
+ * ACTION LEDGER context for a lifetime touch (wave 98, lane 98B). A SYSTEM caller (the daily
+ * lifetime-touchpoints cron passes a service client) sends for reason LIFETIME_TOUCH with a
+ * deterministic cycle — one anniversary per anniversary year, one birthday per calendar year, one
+ * referral ask per day — so a re-run cron replays instead of texting twice. A UI caller (no
+ * client) is a human decision: HUMAN_REQUESTED, no cycle. Not exported — a "use server" export is
+ * a public endpoint (CLAUDE.md §4).
+ */
+function touchLedger(opts: TouchpointActorOpts | undefined, cycle: string): { reasonCode: "LIFETIME_TOUCH" | "HUMAN_REQUESTED"; cycle?: string } {
+  return opts?.client ? { reasonCode: "LIFETIME_TOUCH", cycle } : { reasonCode: "HUMAN_REQUESTED" }
 }
 
 // (REMOVED) scheduleLifetimeCustomerTouchpoints — the dead fixed-calendar scheduler. It had no callers
@@ -79,24 +92,18 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
     systemSource: "lifetime_touchpoints",
     contactId,
     metadata: { touchpoint: "home_anniversary", yearsAgo },
+    ledger: touchLedger(opts, `home_anniversary:year_${yearsAgo}`),
   })
   if (!result.success) {
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }
   }
 
-  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
-    brokerage_id: brokerageId,
-    contact_id: contactId,
-    agent_id: agentId,
-    touchpoint_type: "home_anniversary",
-    channel: "email",
-    scheduled_date: new Date().toISOString().split("T")[0],
-    sent_date: new Date().toISOString().split("T")[0],
-    engagement_data: { message },
-    status: "sent",
+  // THE ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E).
+  const recorded = await recordLifetimeTouchpointSent(supabase, {
+    brokerageId: brokerageId!, contactId, agentId, touchpointType: "home_anniversary", channel: "email",
+    engagementData: { message }, source: opts?.client ? "cron" : "ui",
   })
-
-  if (error) throw error
+  if (!recorded.ok) throw new Error(recorded.error)
 
   // Fire the personalized anniversary D-ID + cloned-voice video alongside the
   // email. Gated on contacts.video_opt_out + agent voice profile, idempotent
@@ -105,12 +112,21 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   if (agentId) {
     try {
       const { dispatchAnniversaryVideo } = await import("@/lib/video/intro-video-reactor")
+      // CONTACT-FACING LANGUAGE (owner ruling, wave 51/52 — task item 3): the
+      // ONE resolver (§6) — never throws, but a defensive catch still leaves
+      // `language` undefined so the reactor degrades to DEFAULT_LANGUAGE.
+      let language: string | undefined
+      try {
+        const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+        language = await resolveContactLanguageFromDb(supabase, contactId)
+      } catch { /* falls through to the reactor's own DEFAULT_LANGUAGE */ }
       void dispatchAnniversaryVideo({
         brokerageId,
         contactId,
         agentId,   // agents.id from resolveAgentId — the reactor resolves to users.id internally
         yearsAgo,
         delivery: "portal",
+        language,
       })
     } catch (err) {
       console.error("[anniversary] video dispatch failed:", err)
@@ -151,163 +167,94 @@ export async function sendBirthdayMessage(contactId: string, opts?: TouchpointAc
     systemSource: "lifetime_touchpoints",
     contactId,
     metadata: { touchpoint: "birthday" },
+    ledger: touchLedger(opts, `birthday:${new Date().toISOString().slice(0, 4)}`),
   })
   if (!result.success) {
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }
   }
 
-  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
-    brokerage_id: brokerageId,
-    contact_id: contactId,
-    agent_id: agentId,
-    touchpoint_type: "birthday",
-    channel: "sms",
-    scheduled_date: new Date().toISOString().split("T")[0],
-    sent_date: new Date().toISOString().split("T")[0],
-    engagement_data: { message },
-    status: "sent",
+  // THE ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E).
+  const recorded = await recordLifetimeTouchpointSent(supabase, {
+    brokerageId: brokerageId!, contactId, agentId, touchpointType: "birthday", channel: "sms",
+    engagementData: { message }, source: opts?.client ? "cron" : "ui",
   })
-
-  if (error) throw error
+  if (!recorded.ok) throw new Error(recorded.error)
 
   revalidatePath("/lifetime-customers")
   return { success: true }
 }
 
-// Send referral request
-export async function sendReferralRequest(contactId: string, opts?: TouchpointActorOpts) {
-  const { supabase, agentId, brokerageId } = await resolveTouchpointActor(opts)
+// ── DELETED (wave 143, lane 143E): sendReferralRequest ──────────────────────────────────────
+//
+// DUPLICATE of the referral-ask the follow-up arbiter now owns, and a hard-coded timetable besides. Its ONE caller was
+// the daily lifetime cron's "referral request opportunities (3 days and 30 days after close)" block, which texted every closed
+// client at exactly day 3 and day 30 whatever their intent, history or fatigue — and this function shipped a CANNED fallback body
+// ("Hi X! I've been thinking about you…") when the gateway was down. That block is retired (tombstone in
+// app/api/cron/lifetime-customer-touchpoints/route.ts) and with it this function had no caller anywhere in the tree.
+//
+// SURVIVOR: lib/sphere/followup-moments.ts conductDueFollowUpMoments — the `referral_request` moment of the tenant's versioned
+// followup_policy (lib/ai-isa/followup-policy.ts postClose; opens at policy.afterClosingDays) is reviewed by the arbiter, which
+// decides WHETHER, WHEN and HOW to ask (a brand-voiced message, a video, a task for the agent, or wait). What THIS function had
+// that the survivor needed was carried over first: the SMS-through-THE-gate send (dispatchSms with consent / DNC / quiet hours),
+// the ledger at-most-once cycle (now `followup_moment:<touchpoint id>`), the "sent only on a real dispatch" rule (the row is
+// settled `sent` only after the gate accepted), and the LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit. What it had that the survivor
+// deliberately does NOT carry: the canned fallback — generation failure means "retry tomorrow", never an unreviewed script.
 
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("first_name, last_name, email, phone")
-    .eq("id", contactId)
-    .single()
+// ── DELETED: getLifetimeCustomerContacts ────────────────────────────────────
+//
+// DUPLICATE. The survivor is app/actions/lifetime-customers.ts:143
+// `getLifetimeCustomers` — the same query (this agent's contacts ∩ closed
+// transactions), and it is the LIVE one: app/lifetime-customers/page.tsx has
+// always read the whole Lifetime Customers screen from it. This copy had no
+// caller anywhere in the tree.
+//
+// The survivor does strictly more (search filter, client_engagement_scores
+// join, property_address + actual_close_date on the transaction rows). The two
+// things THIS copy had and the survivor lacked were carried over first, before
+// it was removed:
+//   · the missing-identity guard. getLifetimeCustomers used agentId/brokerageId
+//     from getAgentContext() without checking either, so a caller with no agents
+//     row issued `.eq("agent_id", null)` and got an empty list that read as
+//     "you have no lifetime customers" rather than "we could not identify you".
+//   · the most-recent-closing-first sort. The survivor returned contacts in
+//     whatever order PostgREST handed them back.
+// Both now live on app/actions/lifetime-customers.ts:getLifetimeCustomers.
+//
+// Nothing else moved: the return key differs (`contacts` here, `clients` there)
+// and the survivor's key is the one every consumer already reads.
 
-  if (!contact) throw new Error("Contact not found")
-
-  const { data: agent } = await supabase.from("agents").select("users(first_name, last_name)").eq("id", agentId).single()
-
-  const agentFullName = [(agent?.users as any)?.first_name, (agent?.users as any)?.last_name].filter(Boolean).join(" ")
-
-  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
-  const referralCopy = await generateClientMessage({
-    brokerageId, audience: "buyer", recipientFirstName: contact.first_name,
-    purpose: "Gentle referral ask to a happy past client — appreciative and warm, invite them to refer friends or family thinking of buying or selling, with zero pressure.",
-    fallback: {
-      subject: "A quick favor",
-      body: `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agentFullName || "Your Agent"}`,
-    },
-  })
-  const message = referralCopy.body
-
-  // INFORMED-AUDIT FIX: previously stamped "sent" with no send behind it.
-  // Dispatch through THE gate first; record "sent" only on a real dispatch.
-  if (!contact.phone) {
-    return { success: false, error: "Contact has no phone number for a referral text" }
-  }
-  const { dispatchSms } = await import("@/lib/providers/dispatch")
-  const result = await dispatchSms({
-    brokerageId: brokerageId!,
-    to: contact.phone,
-    message,
-    systemSource: "lifetime_touchpoints",
-    contactId,
-    metadata: { touchpoint: "referral_request" },
-  })
-  if (!result.success) {
-    return { success: false, error: result.error ?? "Send blocked by compliance gate" }
-  }
-
-  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
-    brokerage_id: brokerageId,
-    contact_id: contactId,
-    agent_id: agentId,
-    touchpoint_type: "referral_request",
-    channel: "sms",
-    scheduled_date: new Date().toISOString().split("T")[0],
-    sent_date: new Date().toISOString().split("T")[0],
-    engagement_data: { message },
-    status: "sent",
-  })
-
-  if (error) throw error
-
-  revalidatePath("/lifetime-customers")
-  return { success: true }
-}
-
-// Get past client contacts for agent
-export async function getLifetimeCustomerContacts() {
-  const context = await getAgentContext()
-  if (!context?.agentId) {
-    return { success: false, error: "Agent context not available", contacts: [] }
-  }
-
-  const { agentId, brokerageId } = context
-  const supabase = await createClient()
-
-  // Get contacts for this agent
-  const { data: contacts, error: contactError } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-
-  if (contactError || !contacts) {
-    console.error("Error fetching contacts:", contactError)
-    return { success: false, error: contactError?.message, contacts: [] }
-  }
-
-  if (contacts.length === 0) {
-    return { success: true, contacts: [] }
-  }
-
-  // Get closed transactions for these contacts
-  const contactIds = contacts.map(c => c.id)
-  const { data: transactions, error: transError } = await supabase
-    .from("transactions")
-    .select("id, contact_id, status, close_date, sale_price:purchase_price")
-    .in("contact_id", contactIds)
-    .in("status", ["closed", "sold"])
-
-  if (transError) {
-    console.error("Error fetching transactions:", transError)
-    return { success: false, error: transError.message, contacts: [] }
-  }
-
-  if (!transactions || transactions.length === 0) {
-    return { success: true, contacts: [] }
-  }
-
-  // Build map of transactions by contact_id
-  const transactionMap = new Map()
-  transactions.forEach(t => {
-    if (!transactionMap.has(t.contact_id)) {
-      transactionMap.set(t.contact_id, [])
-    }
-    transactionMap.get(t.contact_id).push(t)
-  })
-
-  // Merge contacts with their transactions
-  const pastClients = contacts
-    .filter(c => transactionMap.has(c.id))
-    .map(c => ({
-      ...c,
-      transactions: transactionMap.get(c.id) || []
-    }))
-    .sort((a, b) => {
-      const aLatest = Math.max(...(a.transactions?.map((t: any) => new Date(t.close_date).getTime()) || [0]))
-      const bLatest = Math.max(...(b.transactions?.map((t: any) => new Date(t.close_date).getTime()) || [0]))
-      return bLatest - aLatest
-    })
-
-  return { success: true, contacts: pastClients }
-}
-
-// Get touchpoint calendar for agent
-export async function getTouchpointCalendar(month: number, year: number) {
+/**
+ * Scheduled + sent touchpoints for one calendar month, for the signed-in agent.
+ *
+ * `month` is 0-indexed (January = 0) to match `Date`, which is what the
+ * range below is built from.
+ *
+ * Hardened while being wired to its first caller (the Lifetime Customers
+ * milestones tab):
+ *   · IDENTITY GUARD. This used agentId/brokerageId straight out of
+ *     getAgentContext() without checking either. A caller with no agents row
+ *     produced `.eq("agent_id", null)`, i.e. `agent_id=eq.null` on the wire —
+ *     which matches nothing — so an unidentifiable caller was shown an empty
+ *     calendar that reads as "nothing scheduled this month".
+ *   · IT THREW. A `"use server"` export that throws surfaces to the browser as
+ *     an opaque server-action error, so a refused read took the whole tab down
+ *     instead of saying what happened. It reports the refusal now.
+ * `lifetime_customer_touchpoints.scheduled_date` is a DATE column, so both
+ * bounds are date-only strings, and endDate is day 0 of the following month =
+ * the last day of `month`.
+ */
+export async function getTouchpointCalendar(
+  month: number,
+  year: number,
+): Promise<{
+  success: boolean
+  error?: string
+  touchpoints: Array<Record<string, unknown>>
+}> {
   const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) {
+    return { success: false, error: "Agent context not available", touchpoints: [] }
+  }
   const supabase = await createClient()
 
   const startDate = new Date(year, month, 1)
@@ -322,8 +269,11 @@ export async function getTouchpointCalendar(month: number, year: number) {
     .lte("scheduled_date", endDate.toISOString().split("T")[0])
     .order("scheduled_date")
 
-  if (error) throw error
-  return data
+  if (error) {
+    console.error("[lifetime-touchpoints] calendar read failed:", error.message)
+    return { success: false, error: error.message, touchpoints: [] }
+  }
+  return { success: true, touchpoints: (data ?? []) as Array<Record<string, unknown>> }
 }
 
 // Calculate engagement score
@@ -334,8 +284,11 @@ export async function calculateEngagementScore(contactId: string) {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+  // ONE VOCABULARY (§6) — the second verbatim copy of requireAgentId
+  // (lib/kernel/agent-identity.ts:113). Merged onto the survivor; the message it
+  // throws also tells the caller what to do about it ("Please complete
+  // onboarding") instead of only naming the absence.
+  const agentId = await requireAgentId(supabase, user.id)
   // client_engagement_scores.brokerage_id is NOT NULL — resolve from the agent.
   const { data: agentRow } = await supabase
     .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()

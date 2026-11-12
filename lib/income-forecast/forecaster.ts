@@ -9,6 +9,7 @@
  */
 
 import "server-only"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
 import { projectAgentSphereReferralValue } from "@/lib/lifetime-customer-npv/scorer"
 
@@ -40,6 +41,8 @@ function probabilityForStage(stage: string | null): number {
 // ─── Types ────────────────────────────────────────────────────────────────
 
 export interface IncomeForecastSnapshot {
+  /** The USERS id the caller passed (transport only). The persisted row's
+   *  agent_id is the resolved agents(id) — see computeIncomeForecastForAgent. */
   agentId:                 string
   brokerageId:             string
   computedAt:              string
@@ -71,14 +74,46 @@ export async function computeIncomeForecastForAgent(input: {
   const supabase = createServiceClient()
   const now = new Date()
 
+  // IDENTITY CLASS. input.agentId is a USERS id — the rollup cron
+  // (app/api/cron/lifetime-npv-forecast-rollup/route.ts) reads it from `users`.
+  // EVERY agent_id this function touches FKs agents(id): transactions, listings,
+  // lifetime_customer_npv_scores (read through projectAgentSphereReferralValue)
+  // AND income_forecast_snapshots (scripts/schema-fk-map.ts:408 — m366). So the
+  // users id is resolved ONCE here and is never used as an identity below; it
+  // survives only as the transport field `result.agentId`.
+  //
+  // The previous comment at this spot claimed income_forecast_snapshots was
+  // users-class and the NPV ledger too, and scripts/identity-class-guard.ts
+  // pinned that as "still writes income_forecast_snapshots with the users id".
+  // Both were false after m366: the snapshot insert was a 23503 nobody read
+  // (0 rows, cron counting forecast_snapshots all the while), the previous-
+  // snapshot delta lookup matched nothing, and the sphere-referral term read an
+  // empty set — so the "plausible" forecast was zero on BOTH halves.
+  const agentRecordId = input.agentId
+    ? await resolveUserIdToAgentRecord(input.agentId, input.brokerageId)
+    : null
+  // REFUSE rather than write a broken row: a per-agent snapshot with no agents
+  // row can carry neither the users id (FK refusal) nor NULL (a row no reader
+  // keyed on agent_id would ever find). The cron's per-agent try/catch counts
+  // this as an error instead of a snapshot.
+  if (!agentRecordId) {
+    throw new Error(
+      `[income-forecast] no agent record for users id ${input.agentId} in brokerage ${input.brokerageId}; refusing to forecast`,
+    )
+  }
+
   // Pull open transactions for this agent (mirrors revenue-pipeline.ts
   // but service-role here so the cron can roll for everyone).
-  const { data: transactions } = await supabase
+  const { data: transactions, error: transactionsError } = await supabase
     .from("transactions")
     .select("id, agent_id, stage, status, close_date, contract_date, purchase_price, commission_amount, estimated_commission, listing_id")
-    .eq("agent_id", input.agentId)
+    .eq("agent_id", agentRecordId)
     .eq("brokerage_id", input.brokerageId)
     .not("status", "in", "(closed,cancelled,failed,withdrawn,expired)")
+  // A refused pipeline read must not forecast as "no deals".
+  if (transactionsError) {
+    throw new Error(`[income-forecast] transactions read refused for agent ${agentRecordId}: ${transactionsError.message}`)
+  }
 
   let weighted30 = 0, weighted60 = 0, weighted90 = 0
   let raw30 = 0, raw60 = 0, raw90 = 0
@@ -118,28 +153,38 @@ export async function computeIncomeForecastForAgent(input: {
   }
 
   // Active listings count
-  const { count: activeListingCount } = await supabase
+  const { count: activeListingCount, error: listingsError } = await supabase
     .from("listings")
     .select("id", { count: "exact", head: true })
-    .eq("agent_id", input.agentId)
+    .eq("agent_id", agentRecordId)
     .eq("brokerage_id", input.brokerageId)
     .in("status", ["active", "coming_soon"])
+  if (listingsError) {
+    throw new Error(`[income-forecast] listings count refused for agent ${agentRecordId}: ${listingsError.message}`)
+  }
 
-  // Sphere referral expected value over 90-day horizon
+  // Sphere referral expected value over 90-day horizon.
+  // lifetime_customer_npv_scores.agent_id FKs agents(id) (schema-fk-map.ts:455),
+  // and projectAgentSphereReferralValue filters on it — so it takes the AGENTS
+  // id. Passing the users id here matched nothing and read as $0 of sphere value.
   const sphereReferralExpected = await projectAgentSphereReferralValue({
-    agentId:     input.agentId,
+    agentId:     agentRecordId,
     brokerageId: input.brokerageId,
     horizonDays: 90,
   })
 
-  // Previous snapshot for delta
-  const { data: prev } = await supabase
+  // Previous snapshot for delta — same agents-class key the insert below writes.
+  const { data: prev, error: prevError } = await supabase
     .from("income_forecast_snapshots")
     .select("id, weighted_90")
-    .eq("agent_id", input.agentId)
+    .eq("agent_id", agentRecordId)
     .order("computed_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+  // A refused read is not "no previous snapshot". Say so; the delta stays null.
+  if (prevError) {
+    console.error(`[income-forecast] previous-snapshot lookup refused for agent ${agentRecordId}:`, prevError.message)
+  }
   const weighted90Delta = prev?.weighted_90 != null ? Math.round(weighted90 - Number(prev.weighted_90)) : null
   const previousSnapshotId = (prev?.id as string | null) ?? null
 
@@ -168,8 +213,11 @@ export async function computeIncomeForecastForAgent(input: {
   }
 
   if (input.persist !== false) {
-    await supabase.from("income_forecast_snapshots").insert({
-      agent_id:                 result.agentId,
+    // income_forecast_snapshots.agent_id FKs agents(id): the RESOLVED id, not
+    // `result.agentId` (the users id kept on the result as transport). The error
+    // is READ — a swallowed 23503 here is why this table held 0 rows.
+    const { error: insertError } = await supabase.from("income_forecast_snapshots").insert({
+      agent_id:                 agentRecordId,
       brokerage_id:             result.brokerageId,
       weighted_30:              result.weighted30,
       weighted_60:              result.weighted60,
@@ -186,6 +234,11 @@ export async function computeIncomeForecastForAgent(input: {
       previous_snapshot_id:     previousSnapshotId,
       weighted_90_delta:        result.weighted90Delta,
     })
+    if (insertError) {
+      throw new Error(
+        `[income-forecast] snapshot insert refused for brokerage ${input.brokerageId}, agent ${agentRecordId}: ${insertError.message}`,
+      )
+    }
   }
 
   return result

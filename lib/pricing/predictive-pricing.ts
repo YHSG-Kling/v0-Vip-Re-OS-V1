@@ -1,6 +1,6 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateAIResponse } from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 
 export interface PricePredictionResult {
@@ -167,14 +167,23 @@ Respond ONLY with valid JSON (no markdown):
     return { success: false, error: "Failed to save prediction" }
   }
 
+  // A fresh prediction can change the pricing rail's graded pairs (the rail takes the
+  // model's LAST pre-sale call per listing) — drop the accuracy-gate's cached verdicts
+  // so the gate reads current evidence without waiting out the TTL. Best-effort.
+  try {
+    const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+    __clearAccuracyGateCache()
+  } catch { /* cache invalidation is never load-bearing */ }
+
   // Record in pricing_history
-  await supabase.from("pricing_history").insert({
+  await sentinelWrite(supabase, supabase.from("pricing_history").insert({
     listing_id: listingId,
     brokerage_id: brokerageId,
     price: predictedPrice,
-    price_type: "ai_prediction",
+    // pricing_history.price_type says 'prediction'.
+    price_type: "prediction",
     notes: `Confidence: ${confidenceScore}% | Trend: ${trendDirection} ${trendPercentage}%`,
-  })
+  }), { table: "pricing_history", flow: "pricing_history_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Check thresholds — insert price_trend_alert if needed
   const currentListPrice = Number(listing.list_price) || 0
@@ -183,25 +192,31 @@ Respond ONLY with valid JSON (no markdown):
     if (priceDeltaPct >= 5) {
       const severity = priceDeltaPct >= 10 ? "high" : "medium"
       const direction = predictedPrice < currentListPrice ? "below" : "above"
-      await supabase.from("price_trend_alerts").insert({
+      await sentinelWrite(supabase, supabase.from("price_trend_alerts").insert({
         listing_id: listingId,
         brokerage_id: brokerageId,
-        alert_type: "price_gap",
+        // price_trend_alerts has no 'price_gap'. A prediction BELOW the list
+        // price means the listing is priced too high; a prediction ABOVE it is
+        // the market having moved, and there is no "underpriced" value.
+        alert_type: direction === "below" ? "price_too_high" : "market_shift",
         severity,
         message: `AI prediction ($${predictedPrice.toLocaleString()}) is ${priceDeltaPct.toFixed(1)}% ${direction} current list price ($${currentListPrice.toLocaleString()}).`,
         recommended_action:
           direction === "below"
             ? "Consider a price reduction to align with market prediction."
             : "Market may support a higher list price — review comps.",
-      })
+      }), { table: "price_trend_alerts", flow: "price_trend_alerts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // Fire PRICE_ALERT_TRIGGERED kernel event
-      await supabase.from("lifecycle_events").insert({
-        brokerage_id: brokerageId,
-        entity_type: "listing",
-        entity_id: listingId,
-        event_type: KernelEvent.PRICE_ALERT_TRIGGERED,
-        actor_user_id: actorUserId,
+      // LINEAGE (wave 98, lane 98B): insert + separate processKernelEvent → THE emitter
+      // (lib/kernel/emit.ts), which does both and hands the reactor this row's id as the cause.
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const alertEvent = await emitKernelEvent({
+        brokerageId,
+        entityType: "listing",
+        entityId: listingId,
+        event: KernelEvent.PRICE_ALERT_TRIGGERED,
+        actorUserId,
         metadata: {
           prediction_id: inserted.id,
           predicted_price: predictedPrice,
@@ -210,12 +225,7 @@ Respond ONLY with valid JSON (no markdown):
           severity,
         },
       })
-      await processKernelEvent({
-        event: KernelEvent.PRICE_ALERT_TRIGGERED,
-        brokerageId,
-        entityType: "listing",
-        entityId: listingId,
-      }).catch(() => {})
+      if (alertEvent.error) console.error("[predictive-pricing] PRICE_ALERT_TRIGGERED event refused:", alertEvent.error)
     }
   }
 

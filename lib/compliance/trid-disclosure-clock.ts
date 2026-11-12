@@ -51,7 +51,11 @@ export interface TridClockResult {
 }
 
 // Within this many business days of an undelivered disclosure's deadline → at_risk.
-export const WARN_BUSINESS_DAYS = 2
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): its only reader is the verdict
+// function below; the behavior it tunes is proven by
+// scripts/trid-disclosure-clock-simulator.ts through scenario dates, which
+// never needed the raw number.
+const WARN_BUSINESS_DAYS = 2
 // TRID hard rules.
 const LE_MAX_BUSINESS_DAYS = 3 // LE delivered within 3 business days of application
 const CD_MIN_BUSINESS_DAYS = 3 // CD delivered at least 3 business days before close
@@ -120,7 +124,7 @@ export function closingDisclosureDueBy(closeIso: string): string {
 }
 
 /** The latest date the Loan Estimate can be delivered: application + (3 business days). */
-export function loanEstimateDueBy(applicationIso: string): string {
+function loanEstimateDueBy(applicationIso: string): string {
   const start = parse(applicationIso)
   const cur = new Date(start)
   // Advance until the inclusive window application..cur reaches the max allowed.

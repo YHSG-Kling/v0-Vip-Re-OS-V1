@@ -32,14 +32,10 @@
  * competitor codifies into their content engine.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
+import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
@@ -53,6 +49,17 @@ export interface AffordabilityExample {
   bathrooms: string
   /** Hero photo URL (exterior preferred). */
   photoUrl:  string | null
+  /** Per-card legal attribution line ("Listing data provided by RentCast" /
+   *  "Listing courtesy of the local MLS via IDX") — lib/listings/attribution.ts
+   *  ::listingAttributionLine. "" (or absent) for the brokerage's own listing,
+   *  which needs no third-party credit. The only producer today
+   *  (lib/agents/buyer-match-reel-producer.ts::buildBuyerMatchReelProps) has
+   *  set this on every example since wave 70; rendered here (lane 71C) —
+   *  previously declared on the payload and dropped on the floor by
+   *  ExampleCard, a writerless-read shape the other direction (a field
+   *  written into the render props with nothing on the composition side to
+   *  read it back out onto the frame). */
+  attribution?: string
 }
 
 export interface AffordabilitySnapshotReelProps {
@@ -80,6 +87,20 @@ export interface AffordabilitySnapshotReelProps {
   qrCaption?:     string
   mlsClean?:      boolean
   contextCues?: string[]
+  // NO CAPTIONS (wave 62 — decided with the code, not invented here).
+  // captionsCues/captionScript were declared and mounted here since wave 61
+  // but NEVER fed by the only live producer: lib/agents/buyer-match-reel-
+  // producer.ts builds this reel's props and its own comment says so
+  // explicitly — "the reel speaks on-screen copy, not a generated script"
+  // (also the NO_PRODUCER_NOTE scripts/remotion-setup-guard.ts already
+  // carries for this composition). A declared-but-never-read caption prop is
+  // exactly the "declared-only prop is a promise the render does not keep"
+  // shape that guard refuses (test:remotion-setup), so the props are removed
+  // rather than left idle — genuinely silent data reel, finish-spec.ts now
+  // says captions:false. CaptionLayer itself is untouched
+  // (remotion/components/CaptionLayer.tsx) — every other narrated reel still
+  // mounts it; this file simply stops being one of them until a producer
+  // sizes a real gated script for the buyer-match narration.
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -103,11 +124,14 @@ const ExampleCard: React.FC<{
   primaryColor:  string
 }> = ({ ex, index, accentColor, primaryColor }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   return (
     <AbsoluteFill style={{ display: "flex", padding: 56, alignItems: "center" }}>
       {/* Index chip — pinned top */}
+      {/* Wave 89 — inside the safe insets (it was a typed 32 px corner). */}
       <div style={{
-        position: "absolute", top: 32, left: 32,
+        position: "absolute", top: safe.top, left: safe.left,
         padding: "6px 14px", borderRadius: 4,
         backgroundColor: accentColor, color: primaryColor,
         fontSize: 14, fontWeight: 900, letterSpacing: 4,
@@ -121,10 +145,10 @@ const ExampleCard: React.FC<{
           width: "55%", borderRadius: 16, overflow: "hidden",
           backgroundColor: "#E5E7EB",
           boxShadow: `0 16px 32px rgba(0,0,0,0.4)`,
-          opacity: interpolate(frame, [0, 14], [0, 1]),
+          opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}>
           {ex.photoUrl ? (
-            <Img src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <div style={{
               width: "100%", height: 540, display: "flex",
@@ -138,7 +162,7 @@ const ExampleCard: React.FC<{
         <div style={{
           width: "45%", display: "flex", flexDirection: "column",
           justifyContent: "center", color: "#fff",
-          opacity: interpolate(frame, [10, 28], [0, 1]),
+          opacity: interpolate(frame, [10, 28], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}>
           <div style={{
             fontSize: 80, fontWeight: 900, color: accentColor, lineHeight: 0.95, marginBottom: 12,
@@ -154,6 +178,11 @@ const ExampleCard: React.FC<{
           <div style={{ fontSize: 22, opacity: 0.65, marginTop: 8 }}>
             {ex.cityState}
           </div>
+          {ex.attribution && (
+            <div style={{ fontSize: 14, opacity: 0.5, marginTop: 16, letterSpacing: 0.3 }}>
+              {ex.attribution}
+            </div>
+          )}
         </div>
       </div>
     </AbsoluteFill>
@@ -167,6 +196,8 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
 }) => {
   const frame     = useCurrentFrame()
   const showEho   = brand.showEhoMark ?? true
+  const { width, height } = useVideoConfig()
+  const disclosure = cinemaDisclosureStyle(width, height)
   const finalCta  = ctaLabel ?? "Want a real list?"
   const cues      = contextCues ?? []
 
@@ -184,28 +215,28 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             What your budget actually buys
           </div>
           <div style={{
             fontSize: 88, fontWeight: 900, color: "#fff", lineHeight: 1.0,
-            opacity: interpolate(frame, [12, 30], [0, 1]),
+            opacity: interpolate(frame, [12, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             maxWidth: 940,
           }}>
             {monthlyHeadline}
           </div>
           <div style={{
-            fontSize: 28, color: "#fff", opacity: interpolate(frame, [22, 42], [0, 0.7]),
+            fontSize: 28, color: "#fff", opacity: interpolate(frame, [22, 42], [0, 0.7], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16, letterSpacing: 3,
           }}>
             {areaName} · {period}
@@ -236,18 +267,17 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
             <div style={{ fontSize: 22, color: "#fff", opacity: 0.85, marginTop: 10 }}>{agentPhone}</div>
           )}
           <ContextCueRow cues={cues} accentColor={brand.accentColor} position="bottom" />
-          {ratesAssumption && (
-            <div style={{
-              position: "absolute", bottom: 64, left: 0, right: 0,
-              fontSize: 12, color: "#fff", opacity: 0.55, letterSpacing: 1,
-            }}>
-              {ratesAssumption}
-            </div>
-          )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type.
+              WAVE 91 (lane 91E — the real render, after2-AffordabilitySnapshotReel-outro.png):
+              the rate assumption stood a FIXED two lines above this block, and a real-length
+              brokerage line wraps to three, so the assumption printed across the brokerage
+              name. It is now the block's first line — one bottom-anchored stack that grows
+              upward with whatever the disclosure wraps to. */}
+          <div style={{ position: "absolute", ...disclosure }}>
+            {ratesAssumption && (
+              <div style={{ letterSpacing: 1, marginBottom: Math.round(disclosure.fontSize * 0.5) }}>{ratesAssumption}</div>
+            )}
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>
@@ -264,6 +294,10 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION LAYER (wave 62) — see the AffordabilitySnapshotReelProps
+          note above: genuinely silent data reel, no narration script exists
+          upstream. */}
     </AbsoluteFill>
   )
 }

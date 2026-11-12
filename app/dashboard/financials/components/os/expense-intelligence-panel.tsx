@@ -168,7 +168,7 @@ export function ExpenseIntelligencePanel({
                             cat.changeFromPrior > 0
                               ? "border-red-200 text-red-600"
                               : cat.changeFromPrior < 0
-                                ? "border-green-200 text-green-600"
+                                ? "border-green-200 text-green-700"
                                 : ""
                           }`}
                         >

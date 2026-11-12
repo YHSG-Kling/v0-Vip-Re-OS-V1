@@ -21,7 +21,10 @@ export async function getStrategySessionAction(input: { contactId: string }): Pr
   | { ok: true; session: StrategySession | null; listingId?: string | null }
   | { ok: false; error: string }
 > {
-  const gate = await assertCanActOnContact(input.contactId)
+  // Read intent: composing the agenda mutates nothing. Scheduling (below) keeps
+  // the fail-closed write default, so a read_only act-as grant can inspect the
+  // session but never create the task.
+  const gate = await assertCanActOnContact(input.contactId, { intent: "read" })
   if (!gate.ok) return { ok: false, error: gate.error }
   const svc = createServiceClient()
 

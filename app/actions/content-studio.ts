@@ -3,9 +3,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 
 // Most actions in this file used to trust caller-supplied userId/userRole.
 // Now: every action derives identity from the session via getAgentContext.
@@ -20,20 +19,16 @@ async function requireCaller(): Promise<
   return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, userType: ctx.userType ?? "agent" }
 }
 
-function parseAIJsonResponse(text: string) {
-  // Strip markdown code blocks if present
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all content
-  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "superadmin", "super_admin", "compliance_officer"]
+  // SCOPE LADDER (kept inline — admits compliance tier; legacy uppercase
+  // spellings retained for old rows): 'superadmin'/'super_admin' removed — dead
+  // as users.user_type (0 live rows store either spelling).
+  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "compliance_officer"]
   return !adminRoles.includes(role)
 }
 
@@ -45,18 +40,40 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
   const supabase = createServiceClient()
 
   try {
+    // THE TOPIC BANK FEEDS THE STUDIO (owner ruling 22 — wave 145, lane 145Z; lane 145I open loop): the tenant's live topics (its
+    // own + platform rows, fresh, unexpired) are offered to the model by id; an idea drawn from one names it (content_ideas.topic_id,
+    // m872) so topic → idea → creative attribution joins through the studio board. A refused read is said and the ideas are still
+    // made (from the persona alone, with no lineage) — never a guessed topic.
+    const nowIso = new Date().toISOString()
+    const { data: topicRows, error: topicErr } = await supabase
+      .from("content_topic_bank")
+      .select("id, topic_title, value_angle")
+      .or(`brokerage_id.is.null,brokerage_id.eq.${auth.brokerageId}`)
+      .eq("status", "fresh")
+      .gte("expires_at", nowIso)
+      .order("engagement_score", { ascending: false })
+      .limit(8)
+    if (topicErr) console.error(`[content-studio] topic bank NOT read — ideas made without topic lineage: ${topicErr.message}`)
+    const topics = ((topicRows ?? []) as Array<{ id: string; topic_title: string | null; value_angle: string | null }>).filter((t) => t.id && t.topic_title)
+    const topicIds = new Set(topics.map((t) => t.id))
+    const topicBlock = topics.length
+      ? `\n      Draw each idea from ONE of these topics where it fits, and return that topic's id as "topic_id" (null when the idea is not from a topic — never invent an id):\n${topics.map((t) => `      - ${t.id}: ${t.topic_title}${t.value_angle ? ` (${t.value_angle})` : ""}`).join("\n")}\n`
+      : ""
+
     // Use AI to generate fresh content ideas
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate 5 fresh, engaging content ideas for a real estate agent targeting ${persona || "general audience"}. 
       Focus on educational, empathy-driven content that follows the "Them First" philosophy.
-      
+      ${topicBlock}
       IMPORTANT: You must respond with ONLY valid JSON, no explanatory text.
       
       Return exactly this format:
       [
-        {"title": "Content Title", "description": "Brief description", "type": "video"},
-        {"title": "Another Title", "description": "Description text", "type": "social_post"}
+        {"title": "Content Title", "description": "Brief description", "type": "video", "topic_id": null},
+        {"title": "Another Title", "description": "Description text", "type": "social_post", "topic_id": null}
       ]
       
       Types must be one of: video, social_post, blog, tool`,
@@ -65,7 +82,7 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
     const ideas = parseAIJsonResponse(text)
 
     // Save to database — stamp brokerage_id + created_by from session
-    const { data } = await supabase
+    const { data, error: ideasSaveErr } = await supabase
       .from("content_ideas")
       .insert(
         ideas.map((idea: any) => ({
@@ -78,6 +95,23 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
         })),
       )
       .select()
+    if (ideasSaveErr) console.error(`[content-studio] content ideas NOT saved: ${ideasSaveErr.message}`)
+
+    // LINEAGE — each saved idea's topic (only an id the bank OFFERED; anything else is null), in its own tenant-pinned UPDATE so a
+    // database without m872 keeps the ideas (42703 / PGRST204 = not applied, said once).
+    const saved = (data ?? []) as Array<{ id: string }>
+    for (let i = 0; i < saved.length; i++) {
+      const raw = (ideas[i] as { topic_id?: unknown } | undefined)?.topic_id
+      const topicId = typeof raw === "string" && topicIds.has(raw) ? raw : null
+      if (!topicId) continue
+      const { data: stamped, error: lineageErr } = await supabase.from("content_ideas").update({ topic_id: topicId })
+        .eq("id", saved[i].id).eq("brokerage_id", auth.brokerageId).select("id")
+      if (lineageErr) {
+        const code = String((lineageErr as { code?: string }).code ?? "")
+        console.error(`[content-studio] idea ${saved[i].id}: topic lineage NOT recorded${code === "42703" || code === "PGRST204" ? " (m872 not applied)" : ""}: ${lineageErr.message}`)
+        if (code === "42703" || code === "PGRST204") break
+      } else if ((stamped ?? []).length !== 1) console.error(`[content-studio] idea ${saved[i].id}: topic lineage matched no row`)
+    }
 
     revalidatePath("/content-studio")
     return { success: true, ideas: data }
@@ -138,9 +172,12 @@ export async function getContentIdeas(_userId?: string, _userRole?: string) {
   const supabase = createServiceClient()
 
   try {
+    // The topic behind an idea (m872, owner ruling 22) rides along: the board shows which topic-bank theme an idea
+    // came from, so topic → idea → creative attribution can be read where ideas are chosen. One FK links the two
+    // tables, so the bare embed is unambiguous (PGRST201 needs two).
     let query = supabase
       .from("content_ideas")
-      .select("*")
+      .select("id, brokerage_id, created_by, title, description, content_type, status, created_at, topic_id, topic:content_topic_bank(id, topic_title)")
       .eq("brokerage_id", auth.brokerageId)
       .order("created_at", { ascending: false })
       .limit(50)
@@ -183,6 +220,8 @@ export async function getCompetitorContent(_userId?: string, _userRole?: string)
 
   try {
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Analyze the high-performing content strategy for these local real estate competitors: ${competitorList}.
 

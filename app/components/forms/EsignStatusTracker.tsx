@@ -30,10 +30,18 @@ import { cn } from "@/lib/utils"
 interface EsignStatusTrackerProps {
   /** The external transaction ID from the forms provider (e.g. Dotloop loop ID). */
   transactionId: string | null | undefined
-  /** Deprecated alias — use transactionId */
+  /** optional by design: a deprecated back-compat alias for transactionId
+   *  (still read as a fallback below) kept for any caller from before the
+   *  rename; the one live caller (app/portal/[contactId]/offers/page.tsx,
+   *  out of scope this wave) already passes transactionId directly. */
   externalTransactionId?: string | null | undefined
+  /** optional by design: falls back to the generic "Signature Status" title;
+   *  the one live caller (app/portal/[contactId]/offers/page.tsx, out of
+   *  scope this wave) doesn't need a per-form label. */
   formName?: string
   compact?: boolean
+  /** optional by design: style-override passthrough onto the root Card; no
+   *  current caller needs a non-default look. */
   className?: string
 }
 
@@ -198,14 +206,14 @@ export function EsignStatusTracker({
           {/* Count breakdown */}
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
-              <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+              <CheckCircle className="h-3.5 w-3.5 text-green-600" />
               <span className="text-sm">
                 <span className="font-semibold">{signed}</span>
                 <span className="text-muted-foreground"> signed</span>
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <Clock className="h-3.5 w-3.5 text-amber-500" />
+              <Clock className="h-3.5 w-3.5 text-amber-600" />
               <span className="text-sm">
                 <span className="font-semibold">{pending}</span>
                 <span className="text-muted-foreground"> pending</span>
@@ -228,7 +236,7 @@ export function EsignStatusTracker({
               All signatures complete
             </Badge>
           ) : pending > 0 ? (
-            <Badge variant="outline" className="text-amber-600 border-amber-300">
+            <Badge variant="outline" className="text-amber-700 border-amber-300">
               <Clock className="h-3 w-3 mr-1" />
               Awaiting {pending} signature{pending !== 1 ? "s" : ""}
             </Badge>

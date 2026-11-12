@@ -1,29 +1,72 @@
 "use server"
 
 import { isValidUUID } from "@/lib/validations"
-import * as TransactionKernel from "@/lib/kernel/transactions"
+import { DEADLINE_STATUSES, isDeadlineStatus } from "@/lib/transactions/coordination-status"
 import * as TransactionService from "@/lib/application/transactions"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createContactManually } from "@/lib/kernel/crm"
+import { revalidatePath } from "next/cache"
 
 // ============================================
 // TRANSACTION CRUD
 // ============================================
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `transactions` branch:
+ * the SESSION-DERIVED tenant scope and the session-pinned agent scope.
+ *
+ * Both used to be optional caller-supplied arguments and neither was applied by
+ * default, so `getTransactions()` read every deal on the platform and
+ * `getTransactions({ agent_id })` read any agent's book by id. A caller-supplied
+ * agent id may now only NARROW, only inside the caller's own tenant, and only
+ * for a broker/admin; everyone else is pinned to their own agents.id.
+ *
+ * It also returned a bare `[]` for a rejected argument, which the caller could
+ * not tell from an empty pipeline. Every exit is now the discriminated shape.
+ */
 export async function getTransactions(filters?: {
   status?: string
   agent_id?: string
   agentId?: string
-  brokerage_id?: string
 }) {
-  const agentIdValue = filters?.agent_id || filters?.agentId
-  if (agentIdValue && !isValidUUID(agentIdValue)) {
-    console.warn("[transactions.ts] getTransactions called with invalid UUID:", agentIdValue)
-    return []
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { success: false as const, error: "Not authenticated", data: [] as unknown[] }
   }
+  if (!ctx.brokerageId) {
+    return {
+      success: false as const,
+      error: "Your account is not linked to a brokerage yet.",
+      data: [] as unknown[],
+    }
+  }
+
+  const requestedAgentId = filters?.agent_id || filters?.agentId
+  if (requestedAgentId && !isValidUUID(requestedAgentId)) {
+    return { success: false as const, error: "Invalid agent ID", data: [] as unknown[] }
+  }
+
+  // agents.id — resolved from the session, never a users.id substituted with `??`.
+  let agentFilter: string | undefined
+  if (isAdminOrBroker({ user_type: ctx.userType })) {
+    // A broker/admin may narrow to one agent; the tenant filter below is what
+    // keeps that id inside their own brokerage.
+    agentFilter = requestedAgentId
+  } else {
+    if (!ctx.agentId) {
+      return { success: false as const, error: "Agent profile not found", data: [] as unknown[] }
+    }
+    agentFilter = ctx.agentId
+  }
+
   // Use application service for now - kernel doesn't have direct list function
   // TODO: Migrate to kernel when loadTransactionWorkspace is refactored for listing
-  return TransactionService.getTransactions(filters)
+  return TransactionService.getTransactions({
+    status: filters?.status,
+    agent_id: agentFilter,
+    brokerage_id: ctx.brokerageId,
+  })
 }
 
 export async function getTransactionById(transactionId: string) {
@@ -108,6 +151,14 @@ export async function updateTransaction(
   }>,
 ) {
   if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
+  // C23 + the closing-date model (wave 148, lane 148I — owner rulings 13 + 21). This public endpoint wrote `status` and
+  // `close_date` as free text: a deal could be marked closed with no reason, no proof and none of its gates (compliance,
+  // TRID, CDA), and the closing date — the CONTRACT's deadline — could be overwritten as if an amendment had been executed.
+  // Both now have their one door each:
+  //   status     → app/actions/transaction-stage-machine.ts advanceTransactionStage (the gate, or the C23 override);
+  //   close_date → recordClosingDateChange below (anticipated vs an EXECUTED amendment, with proof).
+  if (updates.status !== undefined) return { success: false, error: "A deal's status moves through its stage (advanceTransactionStage) — with the gate, or an override that carries its reason." }
+  if (updates.close_date !== undefined) return { success: false, error: "The closing date is the contract's term — record an anticipated date or an executed amendment through recordClosingDateChange." }
   return TransactionService.updateTransaction(transactionId, updates)
 }
 
@@ -160,6 +211,125 @@ export async function getClosingChecklist(transactionId: string) {
 // ============================================
 
 /**
+ * THE SESSION GATE for the lifecycle commands below (lane 91D, CLAUDE.md §4).
+ *
+ * closeTransaction / reopenTransactionIfAuthorized / recalculateCommissionState /
+ * emitClientFriendlyUpdate are exports of a "use server" file — public HTTP
+ * endpoints — and each handed a BODY-SUPPLIED brokerageId (and, for reopen, a
+ * body-supplied ROLE) straight to a kernel command that runs on the service
+ * client. Anyone holding a transaction id could close it (firing commission and
+ * lifetime-touch writes), reopen it by claiming role "broker", or send the client
+ * a portal update. The tenant now comes from the session; the transaction must
+ * be in it; and the caller must be a tenant admin (the one roster,
+ * isAdminOrBroker) or the agent on the deal. `requireFinance` narrows to the
+ * brokerage's books tier (isBrokerageFinanceAdmin) for reopening a closed deal.
+ * Fail closed: an unreadable transaction refuses. Not exported (a "use server"
+ * export would itself be a public endpoint).
+ */
+async function requireTransactionActor(
+  transactionId: string,
+  opts: { requireFinance?: boolean } = {},
+): Promise<{ ok: true; brokerageId: string; userId: string; userType: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { ok: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: tx, error } = await svc
+    .from("transactions")
+    .select("id, agent_id, buyer_agent_id, seller_agent_id")
+    .eq("id", transactionId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (error) return { ok: false, error: `Could not verify the transaction: ${error.message}` }
+  if (!tx) return { ok: false, error: "Transaction not found" }
+  if (opts.requireFinance) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+      return { ok: false, error: "Only the brokerage's broker or admin can do this." }
+    }
+  } else {
+    const onDeal = !!ctx.agentId && [tx.agent_id, tx.buyer_agent_id, tx.seller_agent_id].includes(ctx.agentId)
+    if (!onDeal && !isAdminOrBroker({ user_type: ctx.userType })) {
+      return { ok: false, error: "Only the agent on this transaction or a brokerage admin can do this." }
+    }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
+}
+
+// ============================================
+// CLOSING DATES — contractual (on / on or before) vs anticipated vs actual (wave 148, lane 148I — owner ruling 21)
+// ============================================
+
+/**
+ * The deal's three closing facts (lib/transactions/closing-dates.ts resolveClosingDates) with the state note — the
+ * agent on the deal or a tenant admin (requireTransactionActor). Read on the service client after the session gate.
+ */
+export async function getClosingDates(transactionId: string): Promise<
+  { ok: true; dates: import("@/lib/transactions/closing-dates").ClosingDates } | { ok: false; error: string }
+> {
+  if (!isValidUUID(transactionId)) return { ok: false, error: "Invalid transaction ID" }
+  const gate = await requireTransactionActor(transactionId)
+  if (!gate.ok) return gate
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { resolveClosingDates } = await import("@/lib/transactions/closing-dates")
+  // m927 columns may not be applied yet: read them, and on a refusal fall back to the survivors' columns (said, not hidden).
+  const svc = createServiceClient()
+  const full = await svc.from("transactions")
+    .select("status, close_date, estimated_close_date, property_state, financing_type, contract_closing_date, contract_closing_terms, contract_closing_source, contract_closing_amendment_ref, actual_close_date")
+    .eq("id", transactionId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+  let row = full.data as Record<string, string | null> | null
+  if (full.error) {
+    const base = await svc.from("transactions").select("status, close_date, estimated_close_date, property_state, financing_type").eq("id", transactionId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+    if (base.error) return { ok: false, error: base.error.message }
+    row = base.data as Record<string, string | null> | null
+  }
+  if (!row) return { ok: false, error: "Transaction not found" }
+  // The title / escrow appointment is the ANTICIPATED day's best basis (resolveClosingDates' `title_schedule`) — wave 148
+  // modelled it but this door never read it (wave 149, lane 149G). Tenant-pinned; a refused read is said, not hidden.
+  const sched = await svc.from("transaction_title_escrow").select("closing_scheduled_date")
+    .eq("transaction_id", transactionId).eq("brokerage_id", gate.brokerageId).not("closing_scheduled_date", "is", null)
+    .order("closing_scheduled_date", { ascending: true }).limit(1)
+  const scheduled = !sched.error ? ((sched.data ?? []) as Array<{ closing_scheduled_date: string | null }>)[0]?.closing_scheduled_date ?? null : null
+  const dates = resolveClosingDates({ ...row, scheduled_closing_date: scheduled })
+  if (full.error) dates.notes.push(`The closing-date model columns are not readable yet (${full.error.message}) — showing the dates the deal already carries.`)
+  if (sched.error) dates.notes.push(`The title / escrow appointment could not be read (${sched.error.message}) — the expected day shown does not include it.`)
+  return { ok: true, dates }
+}
+
+/**
+ * Record a closing-date change under its rule (lib/transactions/closing-dates.ts applyClosingDateChange): a PROPOSED day
+ * moves the anticipated date only — never the contract; an EXECUTED amendment changes the contractual deadline and needs
+ * its reference; the contract's wording (on / on or before) is read off the executed contract with its reference; on a
+ * closed deal the actual day is confirmed from the settlement statement (wave 149, lane 149G — C33). An earlier day under
+ * "on or before" needs NO amendment (owner ruling 17) — the assessment says so. Reason always. Tenant and actor from the
+ * session (requireTransactionActor) — never the body.
+ */
+export async function recordClosingDateChange(params: {
+  transactionId: string
+  kind: import("@/lib/transactions/closing-dates").ClosingDateChangeKind
+  date?: string | null
+  terms?: "on" | "on_or_before" | null
+  reason: string
+  evidenceRef?: string | null
+}): Promise<
+  | { ok: true; assessment: import("@/lib/transactions/closing-dates").ClosingDateChangeAssessment | null; dates: import("@/lib/transactions/closing-dates").ClosingDates }
+  | { ok: false; error: string; assessment?: import("@/lib/transactions/closing-dates").ClosingDateChangeAssessment }
+> {
+  if (!isValidUUID(params.transactionId)) return { ok: false, error: "Invalid transaction ID" }
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return gate
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { applyClosingDateChange } = await import("@/lib/transactions/closing-dates")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const r = await applyClosingDateChange(createServiceClient(), {
+    brokerageId: gate.brokerageId, transactionId: params.transactionId, actorUserId: gate.userId,
+    kind: params.kind, date: params.date ?? null, terms: params.terms ?? null, reason: params.reason, evidenceRef: params.evidenceRef ?? null,
+  }, { ledger: withActionLedger })
+  if (r.ok) revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+  return r
+}
+
+/**
  * Close a transaction. Sets status=closed, stage=CLOSED, close_date to today if not set.
  * Writes a timeline entry and emits lifecycle_events record.
  */
@@ -170,10 +340,12 @@ export async function closeTransaction(params: {
   reason?: string
 }): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
-  if (!isValidUUID(params.brokerageId)) return { success: false, error: "Invalid brokerage ID" }
+  // brokerageId / agentId are IGNORED on input — the session supplies both (see requireTransactionActor).
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return { success: false, error: gate.error }
 
   const { closeTransactionCommand } = await import("@/lib/kernel/transactions")
-  return closeTransactionCommand(params)
+  return closeTransactionCommand({ transactionId: params.transactionId, brokerageId: gate.brokerageId, agentId: gate.userId, reason: params.reason })
 }
 
 /**
@@ -188,12 +360,16 @@ export async function reopenTransactionIfAuthorized(params: {
   reason: string
 }): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
-  if (!["broker", "admin"].includes(params.requestingUserRole)) {
-    return { success: false, error: "Only brokers and admins can reopen transactions." }
-  }
+  // The role used to be read from the BODY (requestingUserRole) — a self-asserted
+  // "broker" passed. Tenant, user and role now all come from the session.
+  const gate = await requireTransactionActor(params.transactionId, { requireFinance: true })
+  if (!gate.ok) return { success: false, error: gate.error }
 
   const { reopenTransactionCommand } = await import("@/lib/kernel/transactions")
-  return reopenTransactionCommand(params)
+  return reopenTransactionCommand({
+    transactionId: params.transactionId, brokerageId: gate.brokerageId,
+    requestingUserId: gate.userId, requestingUserRole: gate.userType, reason: params.reason,
+  })
 }
 
 // ============================================
@@ -210,9 +386,11 @@ export async function recalculateCommissionState(params: {
   agentId: string
 }): Promise<{ success: boolean; error?: string; data?: unknown }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return { success: false, error: gate.error }
 
   const { recalculateCommissionStateCommand } = await import("@/lib/kernel/transactions")
-  return recalculateCommissionStateCommand(params)
+  return recalculateCommissionStateCommand({ ...params, brokerageId: gate.brokerageId })
 }
 
 // ============================================
@@ -235,9 +413,20 @@ export async function emitClientFriendlyUpdate(params: {
 }): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
   if (!isValidUUID(params.contactId)) return { success: false, error: "Invalid contact ID" }
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  // The recipient must be a contact of the SAME tenant — a body-supplied contact id
+  // from another brokerage would otherwise receive this brokerage's client update.
+  {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { data: c, error: cErr } = await createServiceClient()
+      .from("contacts").select("id").eq("id", params.contactId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+    if (cErr) return { success: false, error: `Could not verify the contact: ${cErr.message}` }
+    if (!c) return { success: false, error: "Contact not found" }
+  }
 
   const { emitClientFriendlyUpdateCommand } = await import("@/lib/kernel/transactions")
-  return emitClientFriendlyUpdateCommand(params)
+  return emitClientFriendlyUpdateCommand({ ...params, brokerageId: gate.brokerageId })
 }
 
 export async function updateChecklistItem(itemId: string, completed: boolean) {
@@ -442,6 +631,12 @@ export async function updateDocumentStatus(documentId: string, status: string, s
   return TransactionService.updateDocumentStatus(documentId, status, signedAt)
 }
 
+/** Staff toggle: show / hide a deal document in the client's portal (wave 98, m690). */
+export async function setDocumentClientVisibility(documentId: string, visible: boolean) {
+  if (!isValidUUID(documentId)) return { success: false, error: "Invalid document ID" }
+  return TransactionService.setDocumentClientVisibility(documentId, visible === true)
+}
+
 // ============================================
 // TIMELINE
 // ============================================
@@ -481,6 +676,24 @@ export async function updateDeadline(
   updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
   if (!isValidUUID(deadlineId)) return { success: false, error: "Invalid deadline ID" }
+
+  // VOCABULARY GATE (wave 26). `status` arrives here as free text on a
+  // "use server" export — a public HTTP endpoint — and
+  // lib/application/transactions.ts:1101 passes it straight into
+  // transaction_deadlines.status, which is CHECK-constrained. An unadmitted
+  // value therefore reached the database and came back as a raw constraint
+  // error naming none of the valid states. Validated against the ONE canonical
+  // list (lib/transactions/coordination-status.ts:49), the same shape
+  // updateListingStatus already uses for listings.status, so the two cannot
+  // drift. `completeDeadline` below writes 'completed' as a literal and is
+  // unaffected.
+  if (updates.status !== undefined && !isDeadlineStatus(updates.status)) {
+    return {
+      success: false,
+      error: `'${String(updates.status)}' is not a deadline status. Valid: ${DEADLINE_STATUSES.join(", ")}`,
+    }
+  }
+
   return TransactionService.updateDeadline(deadlineId, updates)
 }
 
@@ -589,8 +802,25 @@ export async function generateStatusUpdate(transactionId: string) {
 }
 
 export async function generateSmartChecklist(transactionId: string, stage: string) {
-  if (!isValidUUID(transactionId)) return { success: false }
+  if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
   return TransactionService.generateSmartChecklist(transactionId, stage)
+}
+
+// ── Smart checklist card (transaction detail page) ─────────────────────────
+// The reader + completion writer for smart_checklists / task_items. The
+// generator above wrote per-deal compliance checklists that no surface could
+// show; these are the two halves the card in
+// app/dashboard/transactions/[id]/smart-checklist-panel.tsx stands on.
+
+export async function getSmartChecklists(transactionId: string) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.getSmartChecklists(transactionId)
+}
+
+export async function setTaskItemCompleted(taskItemId: string, transactionId: string, completed: boolean) {
+  if (!isValidUUID(taskItemId)) return { success: false as const, error: "Invalid task ID" }
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.setTaskItemCompleted(taskItemId, transactionId, completed)
 }
 
 export async function detectTransactionIssues(transactionId: string) {

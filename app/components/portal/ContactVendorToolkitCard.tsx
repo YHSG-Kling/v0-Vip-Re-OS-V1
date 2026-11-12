@@ -65,7 +65,7 @@ const HEADLINES: Record<Props["portalView"], Headline> = {
     title:       "Homeowner Toolkit",
     description: "Vetted pros your agent personally recommends — handyman, refi, insurance, more.",
     icon:        Wrench,
-    color:       "text-amber-600",
+    color:       "text-amber-700",
   },
 }
 
@@ -159,7 +159,7 @@ export async function ContactVendorToolkitCard({ contactId, portalView, compact,
                   <p className="text-[11px] text-muted-foreground truncate">{v.category ?? "Service"}</p>
                   {v.rating && (
                     <p className="text-[10px] flex items-center gap-0.5 mt-0.5">
-                      <Star className="h-2.5 w-2.5 fill-yellow-400 text-yellow-500" />
+                      <Star className="h-2.5 w-2.5 fill-yellow-400 text-yellow-700" />
                       {Number(v.rating).toFixed(1)}
                     </p>
                   )}

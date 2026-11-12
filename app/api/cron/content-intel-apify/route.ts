@@ -16,8 +16,11 @@
  *
  * Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
+import { apifyToken } from "@/lib/env/aliases"
 import { runApifyScrape } from "@/lib/content-intel/apify-scraper"
 
 export const dynamic = "force-dynamic"
@@ -44,12 +47,11 @@ interface SourceRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs   = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  if (!process.env.APIFY_TOKEN) return NextResponse.json({ skipped: "APIFY_TOKEN not configured" })
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  // ONE SPELLING (§6): APIFY_API_TOKEN is the survivor; APIFY_TOKEN accepted for
+  // one release through lib/env/aliases.ts.
+  if (!apifyToken()) return NextResponse.json({ skipped: "APIFY_API_TOKEN not configured" })
 
   const svc = createServiceClient()
   const { data: sources, error } = await svc.from("content_topic_sources")
@@ -60,7 +62,14 @@ export async function GET(req: NextRequest) {
 
   const results: Array<{ source_id: string; actor: string; fetched: number; inserted: number; updated: number }> = []
 
+  // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+  // A tenant's own topic source runs only for a live tenant; a PLATFORM source (brokerage_id null)
+  // is not tenant-bound and always runs.
+  const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+  const pullGate = await resolveActivePullGate(svc)
   for (const s of (sources ?? []) as SourceRow[]) {
+    if (s.brokerage_id && !pullGate.check({ brokerageId: s.brokerage_id }).allowed) continue
     const cfg = s.source_config ?? {}
     const actor      = cfg.actor
     const input      = cfg.input
@@ -104,7 +113,7 @@ export async function GET(req: NextRequest) {
           geo_relevance:    cfg.geo_relevance ?? null,
         }
         if (existing.data) {
-          await svc.from("content_topic_bank")
+          await sentinelWrite(svc, svc.from("content_topic_bank")
             .update({
               engagement_score: row.engagement_score,
               raw_data:         row.raw_data,
@@ -113,7 +122,7 @@ export async function GET(req: NextRequest) {
               value_angle:      row.value_angle,
               geo_relevance:    row.geo_relevance,
             })
-            .eq("id", (existing.data as { id: string }).id)
+            .eq("id", (existing.data as { id: string }).id), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           updated++
         } else {
           const ins = await svc.from("content_topic_bank").insert(row)
@@ -128,6 +137,7 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
+    territory_gate: pullGate.tally,
     ran_at: new Date().toISOString(),
     sources_processed: results.length,
     results,

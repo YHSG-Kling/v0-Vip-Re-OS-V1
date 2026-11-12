@@ -8,6 +8,7 @@ import {
 NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { refreshMarketData } from "@/lib/intelligence/market-insight-generator"
+import { resolveActivePullGate } from "@/lib/lead-pipeline/scrape-territories"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -40,6 +41,7 @@ export async function GET(request: Request) {
   const supabase = createServiceClient()
   let refreshed = 0
   let errors = 0
+  let territoryTally: unknown = null
 
   try {
     // Get all active market data sources
@@ -66,12 +68,26 @@ export async function GET(request: Request) {
     }
 
     // Process each source
+    // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+    // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+    // AREA-level: a RentCast MARKET sweep runs only for a live tenant's area inside one of that
+    // tenant's active territories.
+    const pullGate = await resolveActivePullGate(supabase)
+    territoryTally = pullGate.tally
     for (const source of sources) {
+      // market_data_sources carries `zip_codes` (an array — scripts/schema-snapshot.ts); the
+      // singular `zip_code` this loop read does not exist, so RentCast's zip-level tier was never
+      // asked. Read the first configured ZIP (the singular kept for any legacy row shape).
+      const zip: string | undefined = source.zip_code ?? source.zip_codes?.[0] ?? undefined
+      if (!pullGate.check(
+        { brokerageId: source.brokerage_id, city: source.city, state: source.state, zip: zip ?? null },
+        { requireArea: true },
+      ).allowed) continue
       try {
         const result = await refreshMarketData(
           source.brokerage_id,
           source.market_area,
-          source.zip_code,
+          zip,
           source.city,
           source.state
         )
@@ -101,7 +117,7 @@ export async function GET(request: Request) {
       context_id: contextId,
       records_processed: sources.length,
       output_count: refreshed,
-      metadata: { refreshed, errors, total: sources.length },
+      metadata: { refreshed, errors, total: sources.length, territory_gate: territoryTally },
     })
 
     return NextResponse.json({

@@ -27,6 +27,7 @@
  * Run: npx tsx scripts/isa-reengagement-simulator.ts  (npm run test:isa-reengagement)
  */
 import {
+  NON_ENGAGEABLE_CONTACT_STATUSES,
   shouldSendGhostOutreach,
   ghostReengagementStopReason,
   ghostReengagementPhase,
@@ -225,7 +226,17 @@ async function main() {
   check("dnc_status=true → ineligible (dnc)", staleContactEligibility({ ...eligibleBase, dnc_status: true }, { now }).reason === "dnc")
   check("ai_outreach_paused=true → ineligible", staleContactEligibility({ ...eligibleBase, ai_outreach_paused: true }, { now }).reason === "outreach_paused")
   check("isa_reengage_allowed=false → ineligible", staleContactEligibility({ ...eligibleBase, isa_reengage_allowed: false }, { now }).reason === "reengage_disallowed")
-  check("status=do_not_contact → ineligible", staleContactEligibility({ ...eligibleBase, status: "do_not_contact" }, { now }).reason === "do_not_contact_status")
+  // 2026-08-31: was `status=do_not_contact → ineligible` — a §2 waypoint pinned
+  // to a spelling m587's CHECK made unstorable and the policy retired (the DNC
+  // fact lives on dnc_status, asserted above with its own precedence check).
+  // The RULE: every member of the non-engageable set is a hard stop, and the
+  // retired spelling is GONE from the policy so the merge cannot quietly undo.
+  for (const s of NON_ENGAGEABLE_CONTACT_STATUSES) {
+    check(`status=${s} → ineligible (non_engageable_status)`,
+      staleContactEligibility({ ...eligibleBase, status: s }, { now }).reason === "non_engageable_status")
+  }
+  check("the retired do_not_contact spelling is no longer a policy status",
+    !(NON_ENGAGEABLE_CONTACT_STATUSES as readonly string[]).includes("do_not_contact"))
   check("deleted_at set → ineligible", staleContactEligibility({ ...eligibleBase, deleted_at: now.toISOString() }, { now }).reason === "deleted")
   check("active transaction → ineligible", staleContactEligibility({ ...eligibleBase, hasActiveTransaction: true }, { now }).reason === "active_transaction")
   check("contacted 5 days ago (< 14) → not yet stale", staleContactEligibility({ ...eligibleBase, last_contacted_at: daysAgo(5, now).toISOString() }, { now }).reason === "not_yet_stale")

@@ -3,9 +3,13 @@
 // THE BROKER BOARD PACKET — the owner's monthly one-pager, composed from the
 // SAME ledgers the command center reads (no parallel metrics): production,
 // pipeline, the AI team's measurable work, and where attention is needed.
-// Markdown (renders in-app + attaches to email + prints clean); stored to the
+// Delivered as PDF (owner rule — see board-packet-pdf.ts); stored to the
 // documents bucket; broker admins notified with the link. Honest numbers only
 // — every figure traces to rows in the month window; thin months say so.
+// The markdown composer below is the pure, testable spec for that same data —
+// see its own header for why it stays exported.
+
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 
 export interface BoardPacketData {
   brokerageName: string
@@ -45,7 +49,28 @@ export interface BoardPacketData {
 
 const money = (cents: number) => `$${Math.round(cents / 100).toLocaleString("en-US")}`
 
-/** PURE: the packet — plain markdown, honest with zeros. */
+/**
+ * PURE: the packet — plain markdown, honest with zeros.
+ *
+ * SUPERSEDED FOR PRODUCTION DELIVERY (owner rule: brokers get a PDF, not
+ * markdown — see lib/kernel/board-packet-pdf.ts header). runBoardPackets below
+ * builds BoardPacketData and hands it ONLY to renderBoardPacketPdf; this
+ * function is never called on that path. It renders the identical section set
+ * (Production, Pipeline, AI team month, AI Team Intelligence, QB
+ * reconciliation, footer) — the survivor is missing nothing this composes.
+ *
+ * KEPT, NOT DELETED: scripts/intelligence-report-simulator.ts and
+ * scripts/session-rails-simulator.ts assert the packet-composition RULES
+ * (intelligence fusion, QB-reconciliation fields, honest-zero sections)
+ * against this function's TEXT output — a markdown string is inspectable by
+ * substring; a PDF is bytes from pdf-lib with no live text-extraction path
+ * here. Deleting this and repointing those proofs at renderBoardPacketPdf
+ * would trade an exact content assertion for a byte-length guess, which is a
+ * proof getting blinder, not smaller (CLAUDE.md §2). So the pure composer
+ * stays as the testable specification; the PDF renderer stays the sole
+ * production consumer of the data it both describe.
+ * @proofSeam pure spec kept for scripts/intelligence-report-simulator.ts and scripts/session-rails-simulator.ts; production path is renderBoardPacketPdf (lib/kernel/board-packet-pdf.ts)
+ */
 export function composeBoardPacketMarkdown(d: BoardPacketData): string {
   return [
     `# ${d.brokerageName} — Board Packet, ${d.monthLabel}`,
@@ -64,7 +89,7 @@ export function composeBoardPacketMarkdown(d: BoardPacketData): string {
     `- Appointments booked live on calls: **${d.aiBookings}**`,
     `- AI reply drafts your agents sent: **${d.draftsUsed}**`,
     `- Opt-outs honored immediately: **${d.optOutsHonored}** (compliance is a feature)`,
-    `- Marketing-attributed closed volume: **${money(d.attributedGciCents)}** across **${d.attributedDeals}** deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`,
+    `- Marketing-attributed closed commission: **${money(d.attributedGciCents)}** across **${d.attributedDeals}** deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`,
     ...(d.intelligence && d.intelligence.length > 0
       ? [
           ``,
@@ -123,11 +148,13 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         cnt(svc.from("ai_message_drafts").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).in("status", ["accepted", "sent", "edited"]).gte("created_at", sISO).lt("created_at", eISO)),
         cnt(svc.from("voice_calls").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).eq("outcome", "opt_out").gte("started_at", sISO).lt("started_at", eISO)),
         svc.from("listings").select("sold_price").eq("brokerage_id", b.id).not("sold_date", "is", null).gte("sold_date", sISO.slice(0, 10)).lt("sold_date", eISO.slice(0, 10)).limit(1000),
-        svc.from("marketing_attribution_credits").select("credit_dollars, transaction_id")
-          .eq("brokerage_id", b.id).gte("created_at", sISO).lt("created_at", eISO).limit(2000),
+        // REALIZED commission, ONE model (wave 152, lane 152K — 152B outside-lane 2): this read summed every model's
+        // rows (4× per deal) and in-escrow deals credited at the estimate. THE read: roi-ledger loadRealizedAttributionCredits.
+        import("@/lib/intelligence/roi-ledger").then((m) => m.loadRealizedAttributionCredits(svc, b.id, { sinceIso: sISO, beforeIso: eISO })),
       ])
       const closed = ((closedRows as any)?.data ?? []) as Array<{ sold_price: number | null }>
-      const credits = ((creditRows as any)?.data ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
+      if (!creditRows.ok) console.error("[board-packet]", creditRows.error)
+      const credits = creditRows.ok ? creditRows.rows : []
       const packetData: BoardPacketData = {
         brokerageName: b.name ?? "Brokerage", monthLabel,
         newContacts, activeListings, showings, openHouses,
@@ -170,17 +197,29 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
       const { error: upErr } = await svc.storage.from("documents")
         .upload(path, Buffer.from(pdf), { contentType: "application/pdf", upsert: false })
       if (upErr) { r.errors += 1; continue }
-      const { data: pub } = svc.storage.from("documents").getPublicUrl(path)
+      // THE PACKET IS BROKERAGE FINANCIALS — production, pipeline, attributed GCI
+      // and a QuickBooks reconciliation — and this URL is MAILED into an admin
+      // notification. getPublicUrl would put a permanent, unauthenticated,
+      // never-expiring link to that in a notification body. One issuer, and it
+      // FAILS CLOSED: no signed URL → the packet is an error, not a public link.
+      const issued = await issueBucketObjectUrl(svc as any, { bucket: "documents", objectPath: path })
+      if (!issued.ok) {
+        console.error(`[board-packet] ${b.id}: ${issued.reason}`)
+        r.errors += 1
+        continue
+      }
+      const packetUrl = issued.url
 
       const { data: admins } = await svc.from("users").select("id")
-        .eq("brokerage_id", b.id).in("user_type", ["broker", "broker_admin", "admin"]).limit(5)
+        .eq("brokerage_id", b.id).in("user_type", ["broker", "admin"]).limit(5)
       for (const u of (admins ?? []) as any[]) {
-        await svc.from("notifications").insert({
+        const { error: notifyError } = await svc.from("notifications").insert({
           user_id: u.id, brokerage_id: b.id, type: "board_packet_ready",
           title: `Your ${monthLabel} board packet is ready`,
-          body: `Production, pipeline, and the AI team's measurable month — ${pub?.publicUrl ?? path}`,
+          body: `Production, pipeline, and the AI team's measurable month — ${packetUrl}`,
           priority: "medium", channel: "in_app", is_read: false,
         }).then(undefined, () => {})
+        if (notifyError) console.warn("[board-packet.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       }
       // The packet as a VIDEO — the AI team presents the month (PartnersMeetingReel
       // composition reused; earned cards + attribution receipts). Best-effort:

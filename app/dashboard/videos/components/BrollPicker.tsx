@@ -14,7 +14,7 @@
  *   - Currently-selected clip gets a prominent ring + checkmark.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -24,9 +24,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Check, Sparkles, X, Play, Film, ArrowRight, Loader2, Upload, User as UserIcon, Users, Building2 } from "lucide-react"
+import { Check, Sparkles, X, Play, Film, ArrowRight, Loader2, Upload, User as UserIcon, Users, Building2, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { uploadStockClip } from "@/app/actions/stock-video-upload"
+import { uploadStockClip, deleteStockClip } from "@/app/actions/stock-video-upload"
+import { checkUpload } from "@/lib/storage/file-limits"
 import { toast } from "sonner"
 
 export interface BrollSelection {
@@ -43,6 +44,8 @@ interface StockClip {
   category:         string | null
   duration_seconds: number | null
   tags:             string[] | null
+  /** auth user id of the uploader — drives whether the remove affordance is shown */
+  created_by:       string | null
   /** scope label derived from agent_id / team_id presence */
   scope:            "agent" | "team" | "brokerage"
 }
@@ -85,6 +88,12 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
   const [uploadOpen, setUploadOpen] = useState(false)
   const [uploadCategory, setUploadCategory] = useState<"intro" | "outro" | "b_roll">("intro")
   const previewRef = useRef<HTMLVideoElement | null>(null)
+  // The signed-in user, so the grid can offer "remove" only on clips this person
+  // uploaded. deleteStockClip also allows a broker/admin in the same brokerage, but
+  // the UI never offers an affordance wider than what it can prove here — the
+  // server is the authority either way.
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   // Load stock library: any video_assets row in this brokerage matching one
   // of our categories. The scope label is derived client-side from agent_id
@@ -95,7 +104,7 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
     setLoading(true)
     const { data, error } = await supabase
       .from("video_assets")
-      .select("id, title, video_url, thumbnail_url, category, duration_seconds, tags, agent_id, team_id")
+      .select("id, title, video_url, thumbnail_url, category, duration_seconds, tags, agent_id, team_id, created_by")
       .eq("brokerage_id", brokerageId)
       .in("category", ["intro", "outro", "b_roll"])
       .order("created_at", { ascending: false })
@@ -123,6 +132,39 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brokerageId])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { data } = await createClient().auth.getUser()
+      if (!cancelled) setCurrentUserId(data.user?.id ?? null)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Remove a clip from the library. The clip may be the one currently selected in
+  // the wizard, so the selection is cleared first — otherwise the render would be
+  // submitted pointing at a URL whose row no longer exists.
+  async function removeClip(clip: StockClip) {
+    setDeletingId(clip.id)
+    try {
+      const res = await deleteStockClip(clip.id)
+      if (!res.success) {
+        toast.error(res.error ?? "Could not remove this clip")
+        return
+      }
+      onChange({
+        introVideoUrl: value.introVideoUrl === clip.video_url ? null : value.introVideoUrl,
+        outroVideoUrl: value.outroVideoUrl === clip.video_url ? null : value.outroVideoUrl,
+        bRollUrls:     value.bRollUrls.filter(u => u !== clip.video_url),
+      })
+      if (previewing === clip.id) setPreviewing(null)
+      toast.success(`${clip.title} removed from the library`)
+      await loadLibrary()
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   // ── Selection helpers ─────────────────────────────────────────────────────
   function selectIntro(url: string | null) {
@@ -257,6 +299,9 @@ export function BrollPicker({ brokerageId, videoType, value, onChange }: Props) 
                 previewing={previewing}
                 setPreviewing={setPreviewing}
                 previewRef={previewRef}
+                currentUserId={currentUserId}
+                deletingId={deletingId}
+                onRemove={removeClip}
               />
             )}
           </TabsContent>
@@ -310,7 +355,18 @@ function UploadStockClipDialog({ open, onOpenChange, defaultCategory, onUploaded
     if (!file) { setErrorMessage("Pick a video file first"); return }
     if (!title.trim()) { setErrorMessage("Give your clip a title so you can find it later"); return }
     if (!file.type.startsWith("video/")) { setErrorMessage("File must be a video (mp4, mov, webm)"); return }
-    if (file.size > 100 * 1024 * 1024) { setErrorMessage("Keep clips under 100 MB so renders stay fast"); return }
+    // COURTESY ONLY — the gate is the bucket. This said "under 100 MB", and
+    // listing-media enforces 52,428,800: every clip between 50 and 100 MB was
+    // waved past this line and refused by Storage after the whole upload. The
+    // browser PUTs straight to Supabase here, so no Vercel function cap applies
+    // and the bucket limit is the whole ceiling.
+    const brollGate = checkUpload({
+      bucket: "listing-media",
+      transport: "direct_to_storage",
+      bytes: file.size,
+      contentType: file.type || "video/mp4",
+    })
+    if (!brollGate.ok) { setErrorMessage(brollGate.reason); return }
 
     setBusy(true)
     try {
@@ -468,10 +524,17 @@ interface GridProps {
   previewing:    string | null
   setPreviewing: (id: string | null) => void
   previewRef:    React.MutableRefObject<HTMLVideoElement | null>
+  /** signed-in user; the remove affordance only appears on their own uploads */
+  currentUserId: string | null
+  deletingId:    string | null
+  onRemove:      (clip: StockClip) => void | Promise<void>
 }
 
 function CategoryGrid(props: GridProps) {
-  const { category, clips, value, onPickIntro, onPickOutro, onToggleBRoll, previewing, setPreviewing, previewRef } = props
+  const {
+    category, clips, value, onPickIntro, onPickOutro, onToggleBRoll,
+    previewing, setPreviewing, previewRef, currentUserId, deletingId, onRemove,
+  } = props
 
   if (clips.length === 0) {
     return (
@@ -548,6 +611,28 @@ function CategoryGrid(props: GridProps) {
                   <div className="absolute top-2 right-2 bg-indigo-500 rounded-full p-1">
                     <Check className="h-3 w-3 text-white" />
                   </div>
+                )}
+                {/* Remove — own uploads only. A broker/admin can also remove a
+                    brokerage clip (the server allows it), but this surface will not
+                    show a control it cannot prove the caller is entitled to. */}
+                {!!currentUserId && clip.created_by === currentUserId && (
+                  <button
+                    type="button"
+                    disabled={deletingId === clip.id}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void onRemove(clip)
+                    }}
+                    className="absolute bottom-2 right-2 bg-black/60 rounded-full p-1 hover:bg-red-600/90 disabled:opacity-50"
+                    aria-label={`Remove ${clip.title} from the library`}
+                    title="Remove from library"
+                  >
+                    {deletingId === clip.id ? (
+                      <Loader2 className="h-3 w-3 text-white animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3 w-3 text-white" />
+                    )}
+                  </button>
                 )}
                 <button
                   type="button"

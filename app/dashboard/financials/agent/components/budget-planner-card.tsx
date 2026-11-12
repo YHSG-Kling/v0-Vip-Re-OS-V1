@@ -229,13 +229,13 @@ export function BudgetPlannerCard({ agentId, initialBudget, ytdGCI }: BudgetPlan
                     <p className="text-xs text-muted-foreground">Income Goal</p>
                   </div>
                   <div>
-                    <p className="text-lg font-bold text-green-600">
+                    <p className="text-lg font-bold text-green-700">
                       {fmt(budget.annualBudget.targetProfit)}
                     </p>
                     <p className="text-xs text-muted-foreground">Target Profit</p>
                   </div>
                   <div>
-                    <p className="text-lg font-bold text-amber-600">
+                    <p className="text-lg font-bold text-amber-700">
                       {budget.taxSetAside ? fmt(budget.taxSetAside.monthlyAmount) : "—"}
                     </p>
                     <p className="text-xs text-muted-foreground">Tax Set-Aside/mo</p>

@@ -60,10 +60,11 @@ export const BOOK_TOPICS: OnboardingTopic[] = [
   },
 ]
 
-export interface BookProgramResult { topics: number; authored: number }
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface BookProgramResult { topics: number; authored: number }
 
 /** Author the program for one brokerage — idempotent per program tag. */
-export async function runBookAuthorityProgram(svc: Svc, brokerageId: string): Promise<BookProgramResult> {
+async function runBookAuthorityProgram(svc: Svc, brokerageId: string): Promise<BookProgramResult> {
   const out: BookProgramResult = { topics: BOOK_TOPICS.length, authored: 0 }
   const { data: b } = await svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
   const tier = (((b as any)?.plan_tier ?? "solo_agent") as any)

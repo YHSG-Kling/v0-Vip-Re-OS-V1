@@ -5,6 +5,8 @@
 // for enrichment, sales research, and AI chats (see lib/ai/web-search.ts).
 // Real REST API; no stubs.  Docs: https://docs.tavily.com (POST /search)
 
+import { TAVILY_CREDITS_PER_SEARCH, TAVILY_CREDIT_USD } from "@/lib/vendor-governance/cost-normalizer"
+
 const TAVILY_BASE = "https://api.tavily.com"
 
 export interface TavilyResult {
@@ -35,6 +37,9 @@ export async function tavilySearch(params: {
   searchDepth?: "basic" | "advanced"
   includeAnswer?: boolean
   days?: number
+  /** Tavily's search category — "news" for dated news results (wave 139, 139B: merged from the
+   *  platform-brand harvest's duplicate raw call). Omitted = Tavily's default ("general"). */
+  topic?: "general" | "news"
 }): Promise<TavilyResponse> {
   const apiKey = process.env.TAVILY_API_KEY
   if (!apiKey) return { answer: null, results: [], images: [], cost: 0 }
@@ -57,6 +62,7 @@ export async function tavilySearch(params: {
       include_raw_content: true,
       include_images: true,
       ...(params.days ? { days: params.days } : {}),
+      ...(params.topic ? { topic: params.topic } : {}),
     },
   })
   if (!res.ok || !res.data) return { answer: null, results: [], images: [], cost: 0 }
@@ -68,8 +74,9 @@ export async function tavilySearch(params: {
     answer: typeof res.data.answer === "string" ? res.data.answer : null,
     results: rows.map((r) => normalizeTavilyRow(r)),
     images,
-    // Tavily basic ≈ 1 credit; advanced ≈ 2. Approximate $ for cost tracking.
-    cost: params.searchDepth === "advanced" ? 0.01 : 0.005,
+    // Wave 139 (139C): credits × the ONE per-credit price (cost-normalizer — VARIABLE by plan; the
+    // pay-as-you-go list rate is booked). Was 0.005 / 0.01, the Growth-plan rate, written here.
+    cost: TAVILY_CREDITS_PER_SEARCH[params.searchDepth === "advanced" ? "advanced" : "basic"] * TAVILY_CREDIT_USD,
   }
 }
 

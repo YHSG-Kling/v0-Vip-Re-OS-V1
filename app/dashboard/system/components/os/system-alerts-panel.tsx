@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Bell, AlertTriangle, CheckCircle, Clock, ExternalLink } from 'lucide-react'
+import { Bell, AlertTriangle, CheckCircle, Clock } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 interface SystemAlertsPanelProps {
@@ -113,7 +113,7 @@ export function SystemAlertsPanel({ brokerageId }: SystemAlertsPanelProps) {
             <p className="text-xs text-red-700 dark:text-red-400">Critical</p>
           </div>
           <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/20 p-3 text-center">
-            <p className="text-2xl font-bold text-yellow-600">{openAlerts.length}</p>
+            <p className="text-2xl font-bold text-yellow-700">{openAlerts.length}</p>
             <p className="text-xs text-yellow-700 dark:text-yellow-400">Open</p>
           </div>
           <div className="rounded-lg bg-green-50 dark:bg-green-950/20 p-3 text-center">
@@ -126,7 +126,7 @@ export function SystemAlertsPanel({ brokerageId }: SystemAlertsPanelProps) {
         <div className="space-y-2">
           <p className="text-sm font-medium text-muted-foreground">Recent Alerts</p>
           {openAlerts.length === 0 ? (
-            <div className="flex items-center gap-2 text-green-600 rounded-lg bg-green-50 dark:bg-green-950/20 p-3">
+            <div className="flex items-center gap-2 text-green-700 rounded-lg bg-green-50 dark:bg-green-950/20 p-3">
               <CheckCircle className="h-4 w-4" />
               <span className="text-sm">No active alerts</span>
             </div>
@@ -141,8 +141,8 @@ export function SystemAlertsPanel({ brokerageId }: SystemAlertsPanelProps) {
                     <div className="flex items-start gap-2 min-w-0">
                       <AlertTriangle className={`h-4 w-4 mt-0.5 flex-shrink-0 ${
                         alert.severity === 'critical' ? 'text-red-500' :
-                        alert.severity === 'high' ? 'text-orange-500' :
-                        'text-yellow-500'
+                        alert.severity === 'high' ? 'text-orange-600' :
+                        'text-yellow-700'
                       }`} />
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{alert.alert_message}</p>
@@ -175,7 +175,7 @@ export function SystemAlertsPanel({ brokerageId }: SystemAlertsPanelProps) {
                 <p className="text-sm font-medium text-orange-800 dark:text-orange-200">
                   {intervention.issue_detected}
                 </p>
-                <p className="text-xs text-orange-600 dark:text-orange-400 mt-1">
+                <p className="text-xs text-orange-700 dark:text-orange-400 mt-1">
                   {intervention.ai_recommendation}
                 </p>
                 {intervention.client_impacted && (

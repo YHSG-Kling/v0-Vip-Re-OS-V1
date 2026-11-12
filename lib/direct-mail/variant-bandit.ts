@@ -33,8 +33,22 @@
  * No randomness in production sampling? We use crypto.randomBytes
  * so a deterministic seed isn't required and the bandit produces
  * different picks across requests (the whole point of Thompson).
+ *
+ * KILL SWITCH (wave 102, lane 102C — owner answer 4): per tenant, in
+ * POLICY — brokerage_settings.settings.direct_mail_exploration
+ * { frozen: boolean }, a registered tenant operating-policy key
+ * (lib/kernel/tenant-policy.ts TENANT_POLICY_SETTINGS_KEYS), so every
+ * change is a version with an actor (appendTenantPolicyVersion; writer:
+ * app/actions/flight-recorder.ts setDirectMailExplorationFrozen). Frozen
+ * = EXPLOIT the current best arm (highest posterior mean among the arms
+ * that have evidence), never sample, never pick a cold arm while a
+ * mailed one exists. FAIL CLOSED: an unreadable policy freezes (no
+ * exploration spend on an unknown instruction) — the pick says why
+ * (`policy`). Not an experiment (lib/kernel/experiments.ts): the bandit
+ * keeps its own sampler; only the on/off lives beside `experiments`.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { randomBytes } from "node:crypto"
 import type { Persona } from "@/lib/kernel/types"
@@ -52,11 +66,51 @@ export interface BanditPick {
    *  for the admin dashboard's "% of mail used to explore vs
    *  exploit" metric. */
   isExploration: boolean
+  /** Wave 26 (columns) — COLD vs STALE vs WARM. `isExploration` only
+   *  ever said "never sent"; an arm whose evidence is months old looked
+   *  identical to one scanned yesterday. See `classifyArmState`. */
+  armState:      VariantArmState
   /** Wave 37 — which Beta the sampler used. "scans" is the engagement
    *  proxy (Beta(scans+1, sends-scans+1)); "leads" is the conversion
    *  target (Beta(leads+1, sends-leads+1)). The math switches per-
    *  cohort when aggregate leads >= LEADS_COHORT_THRESHOLD. */
   samplingMode:  "scans" | "leads"
+  /** Wave 102C — how the exploration policy was applied to this pick. */
+  policy:        DirectMailExplorationPolicy
+  /** Wave 102.1 (102F, ruling R4) — WHY this arm: a Thompson sample (exploring), the best-evidenced
+   *  arm (frozen), or — frozen with EVERY arm cold — the bandit was SKIPPED and the catalog DEFAULT
+   *  variant (first platform arm of the cohort) was sent. Ledgered beside the arm by orchestrate-send. */
+  pickReason:    BanditPickReason
+}
+
+export type BanditPickReason = "thompson_sample" | "frozen_exploit" | "frozen_all_cold_catalog_default"
+
+export interface DirectMailExplorationPolicy {
+  /** false = the policy read was refused → frozen (fail closed). */
+  readable: boolean
+  /** true = exploit only: the best-evidenced arm wins, no Thompson sample, no cold arm. */
+  frozen:   boolean
+}
+
+/** PURE. The tenant's exploration policy from brokerage_settings.settings (any shape; unknown → exploring). */
+function explorationPolicyFromSettings(settings: unknown): DirectMailExplorationPolicy {
+  const p = (settings && typeof settings === "object" ? (settings as Record<string, unknown>).direct_mail_exploration : null) as Record<string, unknown> | null | undefined
+  return { readable: true, frozen: !!p && typeof p === "object" && p.frozen === true }
+}
+
+/**
+ * The ONE read of the tenant's direct-mail exploration policy. FAIL CLOSED: a refused read returns
+ * readable:false + frozen:true — an unknown instruction never spends mail on exploration.
+ */
+export async function loadDirectMailExplorationPolicy(svc: { from: (t: string) => any }, brokerageId: string): Promise<DirectMailExplorationPolicy> {
+  if (!brokerageId) return { readable: false, frozen: true }
+  try {
+    const { data, error } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+    if (error) return { readable: false, frozen: true }
+    return explorationPolicyFromSettings((data as { settings?: unknown } | null)?.settings ?? null)
+  } catch {
+    return { readable: false, frozen: true }
+  }
 }
 
 /** Wave 37 — switch the Thompson Beta from scan-rate to lead-rate
@@ -66,6 +120,64 @@ export interface BanditPick {
  *  → meaningful-N inflection from bandit literature; below this the
  *  Beta(leads+1, ...) posterior is too flat to discriminate arms. */
 const LEADS_COHORT_THRESHOLD = 30
+
+// ── Cold vs stale (wave 26 columns, direct_mail_variant_outcomes.last_scan_at) ──
+//
+// last_scan_at is written by app/api/cron/variant-outcomes-aggregator/route.ts
+// on every scan roll-up and last_send_at by recordVariantSend below, and until
+// this block NOTHING read either. The sampler saw only the three counters, so
+// an arm that scanned well in March and has not been scanned since carried the
+// same tight posterior as one scanned yesterday — a formerly-hot arm kept
+// winning the cohort on evidence the world may have moved past, and a dormant
+// arm nobody had mailed in a quarter kept its old, confident Beta.
+//
+// The counters are AGGREGATES; they cannot be time-split, so the honest remedy
+// is not to re-weight history (that would need per-window counts) but to
+// TEMPER it: a stale arm's evidence is discounted toward the Beta(1,1) prior,
+// which widens its posterior and lets the cohort re-explore around it. This is
+// deliberately a partial remedy and is named as such — a truly time-decayed
+// bandit needs bucketed outcomes, which is a migration this lane does not write.
+//
+//   cold  — sends_count = 0 (never mailed; the flat prior IS the exploration)
+//   stale — mailed before, but the newest observation of any kind
+//           (send or scan) is older than STALE_AFTER_DAYS (dormant arm), OR the
+//           arm has scanned before and is still being mailed but has not
+//           scanned within STALE_AFTER_DAYS (the response dried up)
+//   warm  — everything else: live evidence, sampled as-is
+export type VariantArmState = "cold" | "stale" | "warm"
+const STALE_AFTER_DAYS = 45
+/** Fraction of a stale arm's observed successes/failures kept. 0.5 halves the
+ *  evidence — enough to reopen exploration without erasing a real signal. */
+const STALE_EVIDENCE_DISCOUNT = 0.5
+
+export interface VariantArmEvidence {
+  sends_count:  number
+  scans_count:  number
+  leads_count:  number
+  last_send_at: string | null
+  last_scan_at: string | null
+}
+
+/** PURE. Classifies an arm's evidence as cold / stale / warm relative to `now`.
+ *  Exported so the classification can be proven without a database. */
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function classifyArmState(o: VariantArmEvidence, now: Date = new Date()): VariantArmState {
+  if ((o.sends_count ?? 0) === 0) return "cold"
+  const cutoff = now.getTime() - STALE_AFTER_DAYS * 86_400_000
+  const sendMs = o.last_send_at ? new Date(o.last_send_at).getTime() : Number.NaN
+  const scanMs = o.last_scan_at ? new Date(o.last_scan_at).getTime() : Number.NaN
+  const newest = Math.max(Number.isFinite(sendMs) ? sendMs : -Infinity, Number.isFinite(scanMs) ? scanMs : -Infinity)
+  // Dormant: nothing observed on this arm inside the window (or the timestamps
+  // were never stamped — pre-column rows — which is the same absence of
+  // recency evidence and is treated the same way rather than as "fresh").
+  if (!Number.isFinite(newest) || newest < cutoff) return "stale"
+  // Dried up: it used to scan, it is still being mailed, and the last scan is
+  // outside the window while the last send is inside it.
+  if ((o.scans_count ?? 0) > 0 && (!Number.isFinite(scanMs) || scanMs < cutoff) && Number.isFinite(sendMs) && sendMs >= cutoff) {
+    return "stale"
+  }
+  return "warm"
+}
 
 /** Platform-default arm catalog. Each (use_kind, postcard_size)
  *  ships with N (composition × copy_style) combinations. The bandit
@@ -105,7 +217,7 @@ const PLATFORM_CATALOG: Array<{
 const ALL_PERSONAS: Persona[] = [
   "first_time", "relocated", "luxury", "fsbo", "probate",
   "upsize", "downsize", "military", "divorce", "senior",
-  "expired", "foreclosure", "other",
+  "expired", "foreclosure", "investor", "other",
 ]
 
 /** Sample one number from Beta(α, β) using the gamma-ratio trick.
@@ -165,8 +277,7 @@ async function ensureArmsForCohort(args: {
   persona:     Persona
   useKind:     DirectMailUseKind | "lifecycle" | "pre_listing_kit"
   size:        PostcardSize
-}): Promise<void> {
-  const svc = createServiceClient()
+}, svc: { from: (t: string) => any }): Promise<void> {
   const catalog = PLATFORM_CATALOG.filter(
     (c) => c.use_kind === args.useKind && c.postcard_size === args.size,
   )
@@ -220,17 +331,24 @@ export async function pickVariantArm(args: {
   persona:     Persona
   useKind:     DirectMailUseKind | "lifecycle" | "pre_listing_kit"
   size:        PostcardSize
-}): Promise<BanditPick | null> {
-  await ensureArmsForCohort(args)
+}, opts: {
+  /** Wave 102C — the client the arms, outcomes and policy are read through (a proof's fake; the
+   *  service client by default). Never a request-body-derived client. */
+  client?: { from: (t: string) => any }
+  now?: Date
+} = {}): Promise<BanditPick | null> {
+  const svc = opts.client ?? createServiceClient()
+  // Wave 102C: the tenant's exploration policy FIRST — frozen or unreadable means no sampling below.
+  const policy = await loadDirectMailExplorationPolicy(svc, args.brokerageId)
+  await ensureArmsForCohort(args, svc)
 
-  const svc = createServiceClient()
   // Pull every active arm for the cohort + its outcomes (LEFT JOIN
   // because cold arms have no outcomes row yet). One round-trip.
   const { data: arms } = await svc
     .from("direct_mail_variants")
     .select(`
       id, composition_id, copy_style, layout_variant,
-      outcomes:direct_mail_variant_outcomes!direct_mail_variant_outcomes_variant_id_fkey(sends_count, scans_count, leads_count)
+      outcomes:direct_mail_variant_outcomes!direct_mail_variant_outcomes_variant_id_fkey(sends_count, scans_count, leads_count, last_send_at, last_scan_at)
     `)
     .eq("brokerage_id", args.brokerageId)
     .eq("persona", args.persona)
@@ -243,9 +361,10 @@ export async function pickVariantArm(args: {
     composition_id: string
     copy_style: string
     layout_variant: string
-    outcomes: Array<{ sends_count: number; scans_count: number; leads_count: number }> | null
+    outcomes: VariantArmEvidence[] | null
   }
   const armRows = (arms ?? []) as unknown as ArmRow[]
+  const now = opts.now ?? new Date()
   if (armRows.length === 0) return null
 
   // Wave 37 — sampling mode decision PER COHORT (not per-arm). Sum
@@ -262,21 +381,44 @@ export async function pickVariantArm(args: {
   }
   const samplingMode: "scans" | "leads" = cohortLeads >= LEADS_COHORT_THRESHOLD ? "leads" : "scans"
 
+  // R4 (wave 102.1, owner ruling): FROZEN with EVERY arm cold — there is no evidence to exploit, so
+  // the bandit is SKIPPED: the catalog DEFAULT variant (the cohort's first platform arm) is sent and
+  // the reason rides the pick (the orchestrator ledgers it). Deterministic — never a sample, never
+  // "the first row the database happened to return".
+  if (policy.frozen && armRows.every((a) => ((a.outcomes?.[0]?.sends_count ?? 0) === 0))) {
+    const def = catalogDefaultArm(args.useKind, args.size)
+    const row = (def && armRows.find((a) => a.composition_id === def.composition_id && a.copy_style === def.copy_style && a.layout_variant === def.layout_variant)) ?? armRows[0]
+    return {
+      variantId: row.id, compositionId: row.composition_id, copyStyle: row.copy_style, layoutVariant: row.layout_variant,
+      sampledProb: 0, isExploration: true, armState: "cold", samplingMode, policy,
+      pickReason: "frozen_all_cold_catalog_default",
+    }
+  }
+
   // Thompson sample per arm.
-  let best: { row: ArmRow; sample: number; isExploration: boolean } | null = null
+  let best: { row: ArmRow; sample: number; isExploration: boolean; armState: VariantArmState } | null = null
   for (const arm of armRows) {
-    const outcome = arm.outcomes?.[0] ?? { sends_count: 0, scans_count: 0, leads_count: 0 }
+    const outcome: VariantArmEvidence = arm.outcomes?.[0]
+      ?? { sends_count: 0, scans_count: 0, leads_count: 0, last_send_at: null, last_scan_at: null }
     // Mode-conditional Beta. In "leads" mode the positive
     // observation is a LEAD (the action we actually want); in
     // "scans" mode it's a SCAN (the high-volume proxy).
-    const positive = samplingMode === "leads" ? outcome.leads_count : outcome.scans_count
-    const negative = Math.max(0, outcome.sends_count - positive)
-    const alpha = positive + 1
-    const beta  = negative + 1
-    const sample = sampleBeta(alpha, beta)
-    const isExploration = outcome.sends_count === 0
-    if (!best || sample > best.sample) {
-      best = { row: arm, sample, isExploration }
+    const rawPositive = samplingMode === "leads" ? outcome.leads_count : outcome.scans_count
+    const rawNegative = Math.max(0, outcome.sends_count - rawPositive)
+    // Stale evidence is TEMPERED, not trusted at face value — see the block
+    // above STALE_AFTER_DAYS. Cold and warm arms sample on their full counts.
+    const armState = classifyArmState(outcome, now)
+    const keep = armState === "stale" ? STALE_EVIDENCE_DISCOUNT : 1
+    const alpha = rawPositive * keep + 1
+    const beta  = rawNegative * keep + 1
+    // FROZEN (wave 102C): no sample — the posterior MEAN decides, and a cold arm never wins while
+    // any mailed arm exists (a cold Beta(1,1) mean of 0.5 would otherwise outrank every real rate).
+    // Exploring: the Thompson sample, as before. Ties keep the first arm (catalog order) — deterministic.
+    const sample = policy.frozen ? alpha / (alpha + beta) : sampleBeta(alpha, beta)
+    const isExploration = armState === "cold"
+    if (policy.frozen && isExploration && best && !best.isExploration) continue
+    if (!best || sample > best.sample || (policy.frozen && best.isExploration && !isExploration)) {
+      best = { row: arm, sample, isExploration, armState }
     }
   }
   if (!best) return null
@@ -288,8 +430,19 @@ export async function pickVariantArm(args: {
     layoutVariant: best.row.layout_variant,
     sampledProb:   best.sample,
     isExploration: best.isExploration,
+    armState:      best.armState,
     samplingMode,
+    policy,
+    pickReason:    policy.frozen ? "frozen_exploit" : "thompson_sample",
   }
+}
+
+/** PURE — the catalog DEFAULT variant of a cohort: its first platform arm (catalog order is the
+ *  platform's stated preference; every arm carries layout_variant "default"). Null for an unknown cohort.
+ *  @proofSeam scripts/tenant-policy-versions-guard.ts §10 asserts the default per cohort directly (R4). */
+export function catalogDefaultArm(useKind: DirectMailUseKind | "lifecycle" | "pre_listing_kit", size: PostcardSize): { composition_id: string; copy_style: string; layout_variant: string } | null {
+  const c = PLATFORM_CATALOG.find((a) => a.use_kind === useKind && a.postcard_size === size)
+  return c ? { composition_id: c.composition_id, copy_style: c.copy_style, layout_variant: c.layout_variant } : null
 }
 
 /** Stamp a send on the variant's outcomes row. Called by the
@@ -313,22 +466,22 @@ export async function recordVariantSend(args: {
     .eq("brokerage_id", args.brokerageId)
     .maybeSingle()
   if (existing) {
-    await svc.from("direct_mail_variant_outcomes")
+    await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes")
       .update({
         sends_count:      (existing.sends_count as number) + 1,
         cost_spent_cents: (existing.cost_spent_cents as number) + args.costCents,
         last_send_at:     new Date().toISOString(),
         updated_at:       new Date().toISOString(),
       })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "direct_mail_variant_outcomes", flow: "variant_send_count", reason: "bandit statistics; a lost increment only weakens the next pick" })
   } else {
-    await svc.from("direct_mail_variant_outcomes").insert({
+    await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes").insert({
       variant_id:       args.variantId,
       brokerage_id:     args.brokerageId,
       sends_count:      1,
       scans_count:      0,
       cost_spent_cents: args.costCents,
       last_send_at:     new Date().toISOString(),
-    })
+    }), { table: "direct_mail_variant_outcomes", flow: "variant_send_count", reason: "bandit statistics; a lost increment only weakens the next pick" })
   }
 }

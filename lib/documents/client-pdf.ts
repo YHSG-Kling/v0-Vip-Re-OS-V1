@@ -15,7 +15,11 @@
  * (brokerage attribution + license + EHO + document disclaimer).
  *
  * No DB and no network in here — callers assemble data, then host the bytes
- * via hostRenderedMedia (Supabase storage first — we host the delivery URL).
+ * via hostRenderedMedia into lib/storage/document-buckets.ts
+ * #GENERATED_DOCUMENT_BUCKET, a DOCUMENT-class bucket, so the delivery URL is
+ * SIGNED and expiring. What this engine composes is a document — a client's
+ * valuation, a seller's proceeds, a brokerage's terms — and a permanent
+ * unauthenticated URL is never correct for one.
  */
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb, type RGB } from "pdf-lib"
 
@@ -41,6 +45,20 @@ export interface ClientPdfBrand {
   /** "Lic #01234567 (FL)" — state ad rules want it on client-facing pieces. */
   licenseLine?: string | null
   showEhoMark?: boolean
+  /**
+   * Wave 144 (lane 144H Outside-lane 4 — owner ruling 15: books carry logos, brand colours and APPROVED taglines). All
+   * optional and additive: a producer that omits them renders exactly as before.
+   *   · accentColor — the brand's second colour (#rrggbb): the cover's rule.
+   *   · tagline     — the brand's APPROVED tagline, already vetted by the caller (the claim guard + the public-copy
+   *                   fair-housing gate, lib/lead-magnets/book-publishing-produce.ts approvedBookBrandAssets); printed on
+   *                   the full-page cover.
+   *   · logo        — the brand's OWN logo file as bytes (PNG or JPEG). The caller resolves the brand's logoUrl to bytes
+   *                   (fetched only from the platform's own storage host); THIS ENGINE STAYS NETWORK-FREE. An undecodable
+   *                   file is left off — the document is never held for it.
+   */
+  accentColor?: string | null
+  tagline?: string | null
+  logo?: Uint8Array | null
 }
 
 export interface ClientPdfTable {
@@ -85,6 +103,13 @@ export interface ClientPdfSpec {
   sections: ClientPdfSection[]
   /** Small-print block on the last page (USPAP / estimate disclaimers). */
   disclaimer?: string
+  /**
+   * Wave 142 (the BOOK): a dedicated full-page COVER (title / subtitle / author line) instead of the cover
+   * band, followed by a table of contents listing every section heading. Additive — every existing
+   * producer omits it and renders byte-for-byte as before.
+   */
+  coverPage?: { authorLine?: string | null; tagline?: string | null }
+  tableOfContents?: boolean
 }
 
 export function hexToRgb(hex: string | null | undefined, fallback: RGB = rgb(0.19, 0.23, 0.9)): RGB {
@@ -260,22 +285,88 @@ export async function renderClientPdf(spec: ClientPdfSpec): Promise<Uint8Array> 
 
   const c: Cursor = { doc, page: doc.addPage([PAGE_W, PAGE_H]), y: 0, font, bold, accent, brand: spec.brand, pageIndex: 0 }
 
-  // ── COVER BAND ──
-  c.page.drawRectangle({ x: 0, y: PAGE_H - 170, width: PAGE_W, height: 170, color: accent })
-  const titleLines = wrapText(spec.title, bold, 27, BODY_W)
-  let ty = PAGE_H - 78
-  for (const ln of titleLines.slice(0, 2)) {
-    c.page.drawText(ln, { x: MARGIN_X, y: ty, size: 27, font: bold, color: rgb(1, 1, 1) })
-    ty -= 33
+  if (spec.coverPage) {
+    // ── FULL-PAGE COVER (wave 142 — the book) ──
+    c.page.drawRectangle({ x: 0, y: 0, width: PAGE_W, height: PAGE_H, color: accent })
+    c.page.drawRectangle({ x: MARGIN_X, y: PAGE_H - 300, width: 48, height: 4, color: hexToRgb(spec.brand.accentColor, rgb(1, 1, 1)) })
+    // THE BRAND'S OWN LOGO (wave 144): on a white card so a dark mark stays legible on the brand colour. PNG / JPEG by
+    // magic bytes; anything else, or a file that will not decode, is left off.
+    const logoBytes = spec.brand.logo
+    if (logoBytes && logoBytes.length > 4) {
+      try {
+        const isPng = logoBytes[0] === 0x89 && logoBytes[1] === 0x50 && logoBytes[2] === 0x4e && logoBytes[3] === 0x47
+        const isJpg = logoBytes[0] === 0xff && logoBytes[1] === 0xd8
+        const img = isPng ? await doc.embedPng(logoBytes) : isJpg ? await doc.embedJpg(logoBytes) : null
+        if (img && img.width > 0 && img.height > 0) {
+          const scale = Math.min(160 / img.width, 64 / img.height, 1)
+          const w = img.width * scale, h = img.height * scale
+          c.page.drawRectangle({ x: MARGIN_X - 8, y: PAGE_H - 72 - h - 8, width: w + 16, height: h + 16, color: rgb(1, 1, 1) })
+          c.page.drawImage(img, { x: MARGIN_X, y: PAGE_H - 72 - h, width: w, height: h })
+        }
+      } catch {
+        // an undecodable logo is left off; the cover still renders
+      }
+    }
+    const coverTitle = wrapText(spec.title, bold, 34, BODY_W)
+    let cy = PAGE_H - 360
+    for (const ln of coverTitle.slice(0, 3)) {
+      c.page.drawText(ln, { x: MARGIN_X, y: cy, size: 34, font: bold, color: rgb(1, 1, 1) })
+      cy -= 42
+    }
+    if (spec.subtitle) {
+      for (const ln of wrapText(spec.subtitle, font, 15, BODY_W).slice(0, 3)) {
+        c.page.drawText(ln, { x: MARGIN_X, y: cy, size: 15, font, color: rgb(1, 1, 1) })
+        cy -= 21
+      }
+    }
+    if (spec.coverPage.tagline) {
+      cy -= 10
+      for (const ln of wrapText(spec.coverPage.tagline, font, 11, BODY_W).slice(0, 2)) {
+        c.page.drawText(ln, { x: MARGIN_X, y: cy, size: 11, font, color: rgb(1, 1, 1) })
+        cy -= 15
+      }
+    }
+    // The brand's APPROVED tagline (wave 144), above the author line. A character the standard font cannot encode drops
+    // the line rather than the cover.
+    if (spec.brand.tagline) {
+      try {
+        c.page.drawText(spec.brand.tagline.slice(0, 110), { x: MARGIN_X, y: 142, size: 10, font, color: rgb(1, 1, 1) })
+      } catch {
+        // left off
+      }
+    }
+    const authorLine = spec.coverPage.authorLine ?? [spec.brand.agentName, spec.brand.brokerageName].filter(Boolean).join(" · ")
+    if (authorLine) c.page.drawText(authorLine.slice(0, 110), { x: MARGIN_X, y: 120, size: 12, font: bold, color: rgb(1, 1, 1) })
+    if (spec.preparedLine) c.page.drawText(spec.preparedLine, { x: MARGIN_X, y: 100, size: 9.5, font, color: rgb(1, 1, 1) })
+    addPage(c)
+  } else {
+    // ── COVER BAND ──
+    c.page.drawRectangle({ x: 0, y: PAGE_H - 170, width: PAGE_W, height: 170, color: accent })
+    const titleLines = wrapText(spec.title, bold, 27, BODY_W)
+    let ty = PAGE_H - 78
+    for (const ln of titleLines.slice(0, 2)) {
+      c.page.drawText(ln, { x: MARGIN_X, y: ty, size: 27, font: bold, color: rgb(1, 1, 1) })
+      ty -= 33
+    }
+    if (spec.subtitle) {
+      c.page.drawText(spec.subtitle, { x: MARGIN_X, y: ty, size: 13, font, color: rgb(1, 1, 1) })
+      ty -= 20
+    }
+    if (spec.preparedLine) {
+      c.page.drawText(spec.preparedLine, { x: MARGIN_X, y: PAGE_H - 158, size: 9.5, font, color: rgb(1, 1, 1) })
+    }
+    c.y = PAGE_H - 200
   }
-  if (spec.subtitle) {
-    c.page.drawText(spec.subtitle, { x: MARGIN_X, y: ty, size: 13, font, color: rgb(1, 1, 1) })
-    ty -= 20
+
+  // ── TABLE OF CONTENTS (wave 142 — the book) ──
+  if (spec.tableOfContents) {
+    const headings = spec.sections.map((s) => s.heading).filter((h): h is string => !!h)
+    if (headings.length > 0) {
+      drawSectionHeading(c, "Contents")
+      headings.forEach((h, i) => drawParagraph(c, `${i + 1}.  ${h}`, { size: 10.5, gapAfter: 2 }))
+      addPage(c)
+    }
   }
-  if (spec.preparedLine) {
-    c.page.drawText(spec.preparedLine, { x: MARGIN_X, y: PAGE_H - 158, size: 9.5, font, color: rgb(1, 1, 1) })
-  }
-  c.y = PAGE_H - 200
 
   // ── SECTIONS ──
   for (const section of spec.sections) {
@@ -437,6 +528,46 @@ export interface GuideBookletData {
   /** Chaptered content — each becomes a heading + paragraphs (booklet flow). */
   chapters: Array<{ heading: string; body: string }>
   areaLabel?: string | null
+}
+
+/** The AI-written BOOK (wave 142, lane 142E — lib/lead-magnets/book-creator.ts): cover page + contents +
+ *  one chapter per page, on the SAME engine, brand block and compliance footer as the booklet. */
+export interface BookPdfData {
+  title: string
+  subtitle?: string | null
+  tagline?: string | null
+  introduction?: string | null
+  chapters: Array<{ heading: string; body: string }>
+  closing?: string | null
+  areaLabel?: string | null
+}
+
+export function bookPdfSpec(data: BookPdfData, brand: ClientPdfBrand, dateLabel: string): ClientPdfSpec {
+  const sections: ClientPdfSection[] = []
+  if (data.introduction) sections.push({ heading: "Introduction", paragraphs: data.introduction.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean) })
+  data.chapters.forEach((ch) => {
+    sections.push({ heading: ch.heading, paragraphs: ch.body.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean), pageBreak: true })
+  })
+  sections.push({
+    heading: "Your next step",
+    pageBreak: true,
+    paragraphs: [
+      data.closing?.trim() ||
+        `Every market and every move is different. When you're ready, ${brand.agentName ?? "your agent"} at ${brand.brokerageName} can walk you through exactly how this applies to you.`,
+    ],
+  })
+  return {
+    title: data.title,
+    subtitle: data.subtitle ?? data.areaLabel ?? undefined,
+    preparedLine: dateLabel,
+    brand,
+    sections,
+    coverPage: { tagline: data.tagline ?? null },
+    tableOfContents: true,
+    disclaimer:
+      "This book is general information, not legal, tax, or lending advice. Programs, rates, and " +
+      "requirements change — verify details with licensed professionals for your situation.",
+  }
 }
 
 export function guideBookletSpec(data: GuideBookletData, brand: ClientPdfBrand, dateLabel: string): ClientPdfSpec {

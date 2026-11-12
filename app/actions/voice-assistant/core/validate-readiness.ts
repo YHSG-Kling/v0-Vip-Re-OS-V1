@@ -7,7 +7,9 @@
  */
 
 import { createClient } from '@/lib/supabase/server'
-import { READINESS_RULES } from '../helpers/readiness-rules'
+// ReadinessRuleKey is the rules' own key type — imported so the cast below cannot
+// respell it inline (`keyof typeof READINESS_RULES` was a second spelling, §6).
+import { READINESS_RULES, type ReadinessRuleKey } from '../helpers/readiness-rules'
 
 export interface ReadinessValidationResult {
   ready: boolean
@@ -29,7 +31,7 @@ export async function validateReadiness(request: ValidateReadinessRequest): Prom
 
   try {
     // Get readiness rules for action
-    const rules = READINESS_RULES[target_action as keyof typeof READINESS_RULES]
+    const rules = READINESS_RULES[target_action as ReadinessRuleKey]
 
     if (!rules) {
       // No readiness rules - allow by default

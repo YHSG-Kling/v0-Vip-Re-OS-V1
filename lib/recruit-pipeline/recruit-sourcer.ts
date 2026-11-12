@@ -37,6 +37,24 @@ export interface RecruitSourceParams {
   subreddits?: string[]
   /** Public brokerage-review URLs to scan for "leaving" signals. */
   reviewUrls?: string[]
+  /**
+   * Wave 106E — the APPROVED recruiting missions' targeting (lib/kernel/missions.ts
+   * recruitingTargetingFor: territory + specialization of every ACTIVE recruiting mission). Widens
+   * the intent terms with "<specialization> listing agent <territory>" and stamps the match on the
+   * preview so the promotion carries which need it serves. Absent / empty = the base terms only.
+   */
+  targeting?: Array<{ missionId: string; territory: string; specialization: string }>
+}
+
+/** PURE: the search terms a targeting set adds to the base switch-intent terms. */
+export function targetingSearchTerms(targeting: RecruitSourceParams["targeting"]): string[] {
+  const out: string[] = []
+  for (const t of targeting ?? []) {
+    const terr = t.territory.trim().toLowerCase(), spec = t.specialization.trim().toLowerCase()
+    if (!terr || terr === "unassigned") { if (spec) out.push(`${spec} listing agent`); continue }
+    out.push(`${spec} listing agent ${terr}`, `listing agent ${terr}`)
+  }
+  return [...new Set(out)]
 }
 
 export interface RecruitSourceResult {
@@ -78,19 +96,27 @@ export async function sourceRecruitProspects(params: RecruitSourceParams): Promi
 
   // ── 1. Social/forum agent-switch intent (Reddit agent communities) ─────────
   const subreddits = params.subreddits?.length ? params.subreddits : ["realtors", "RealEstate"]
+  // 106E: an approved recruiting mission's targeting is a search criterion, not a second scraper.
+  const targetingTerms = targetingSearchTerms(params.targeting)
+  const terms = [...SWITCH_INTENT_TERMS, ...targetingTerms]
+  const targetingMatch = (text: string) => (params.targeting ?? []).find((t) => {
+    const terr = t.territory.trim().toLowerCase()
+    return (terr && terr !== "unassigned" && text.includes(terr)) || text.includes(`${t.specialization.trim().toLowerCase()} listing agent`)
+  }) ?? null
   try {
     const { scrapeRedditPosts } = await import("@/lib/external/apify-client")
     const reddit = await scrapeRedditPosts({
       subreddits,
-      keywords: SWITCH_INTENT_TERMS,
+      keywords: terms,
       limit: 50,
     }).catch(() => ({ posts: [] as Array<Record<string, any>> }))
 
     for (const post of reddit.posts ?? []) {
       result.scanned++
       const text = `${post.title ?? ""} ${post.body ?? ""}`.toLowerCase()
-      const matched = SWITCH_INTENT_TERMS.find((t) => text.includes(t))
+      const matched = terms.find((t) => text.includes(t))
       if (!matched) continue
+      const targeted = targetingMatch(text)
       const author = (post.author ?? post.username ?? "").toString().trim()
       const ok = await insertRawRecruit(params.supabase, {
         marketId: params.marketId,
@@ -107,6 +133,8 @@ export async function sourceRecruitProspects(params: RecruitSourceParams): Promi
           switchSignal: matched,
           handle: author || null,
           sourceUrl: post.url ?? null,
+          // 106E: which approved recruiting mission (territory + specialization) this signal serves.
+          targeting: targeted ? { missionId: targeted.missionId, territory: targeted.territory, specialization: targeted.specialization } : null,
         },
       })
       if (ok) result.inserted++

@@ -126,7 +126,7 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
                   {f.label}
                   {prefilled && !edited && <span className="text-[10px] text-muted-foreground">pre-filled</span>}
                   {agentFilledMoney && <span className="text-[10px] text-indigo-600">you fill in</span>}
-                  {edited && <span className="text-[10px] text-amber-600">edited</span>}
+                  {edited && <span className="text-[10px] text-amber-700">edited</span>}
                   {missing.includes(f.field_key) && <span className="text-destructive">*</span>}
                 </Label>
                 <Input
@@ -149,7 +149,7 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save form fields"}
             </Button>
             {missing.length > 0 && <span className="text-xs text-destructive">{missing.length} required field{missing.length === 1 ? "" : "s"} still empty</span>}
-            {saved && missing.length === 0 && <span className="text-xs text-emerald-600">Saved</span>}
+            {saved && missing.length === 0 && <span className="text-xs text-emerald-700">Saved</span>}
           </div>
         )}
 

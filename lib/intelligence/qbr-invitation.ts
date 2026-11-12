@@ -25,7 +25,7 @@ export const QBR_INVITATION_TYPE = "qbr_invitation"
 /** Where the invitation points: the Command Center, whose QBR card is the
  *  principal's review surface (URL carried in the body — the exact
  *  board_packet_ready idiom; the bell has no route for this entity type). */
-export const QBR_DEEP_LINK = "/dashboard/admin/command-center"
+const QBR_DEEP_LINK = "/dashboard/admin/command-center"
 
 /** "2026-Q3" for any date inside Q3 2026 (UTC) — the dedupe tag. */
 export function quarterTag(now: Date): string {

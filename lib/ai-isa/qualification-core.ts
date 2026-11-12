@@ -46,7 +46,13 @@ export function deriveQualificationSignals(input: {
   /** Recent messages joined to one lowercase string. */
   messageText: string
   conversationCount: number
-  /** leads.timeline (e.g. 'immediate') — secondary urgency signal. */
+  /**
+   * `leads.timeline` — secondary urgency signal. The vocabulary is
+   * constants/crm-standards.ts:STANDARD_TIMELINES, and the column now carries
+   * the matching live CHECK (m487). Typed `string | null` rather than
+   * `StandardTimeline | null` on purpose: this is the raw column value and rows
+   * written before that CHECK existed may still be free text.
+   */
   timeline?: string | null
   /** Rolling leads.lead_score — the conversation tool keeps this current. */
   leadScore?: number | null
@@ -102,12 +108,56 @@ export function voiceSignalFor(input: {
   return 'cold'
 }
 
+// ─── REMOVED — `engine2GatePasses` ──────────────────────────────────────────
+//
+// SURVIVOR: lib/lead-assignment/rule-matcher.ts evaluateAssignmentEligibility,
+// which BOTH assignment doors now call — the automatic path
+// (lib/lead-assignment/tier-routing.ts) and the admin-manual path
+// (app/actions/lead-assignment/assign-lead.ts manualAssignLead).
+//
+// This was a third copy of the gate, and it did not merely duplicate the rule —
+// it CONTRADICTED it. The owner ruled that a lead may be assigned when it has
+// been qualified **OR** carries positive intent; this copy was the pre-ruling
+// AND (`qualified` AND consented), so a lead the ruling makes assignable was
+// refused by it. It also admitted a `lifecycleState` of 'qualified', which the
+// live leads_lifecycle_state_check has never permitted — that branch could
+// never fire against a real row.
+//
+// It was safe only by accident: it had zero production callers, and the two
+// simulators that named it were the only reason it survived earlier sweeps. A
+// dormant gate that disagrees with the live one is a trap for the next person
+// who wires it, which is why this is a deletion and not a second edit.
+//
+// Nothing is lost. Everything this expressed, the survivor expresses more
+// completely and in one place, with each of the eight legal lifecycle_state
+// values classified explicitly rather than by an inclusion list.
+
+// ─── THE OUTCOME VOCABULARY + PRECEDENCE (wave 91 lane 91A) ─────────────────
+//
+// ai_isa_qualifications.qualification_result — the live CHECK vocabulary
+// (scripts/check-vocabularies.ts), ONE spelling (§6). Two of the five had NO writer:
+// `no_response` (the ISA radar's "stalled" tile) and `appointment_set` (the analytics
+// "appointment set" row, the newly-converted panel's "Confirm appointment" action,
+// the managers' qualified count). Their writer is lib/ai-isa/qualification-outcome-stamp.ts;
+// this is the pure rule it applies to the latest row for the person.
+export const QUALIFICATION_RESULTS = ['qualified', 'not_qualified', 'needs_follow_up', 'appointment_set', 'no_response'] as const
+export type QualificationResult = (typeof QUALIFICATION_RESULTS)[number]
+
 /**
- * Engine 2's assignment gate (assignment-engine Step 2): leads are ONLY assigned
- * after the AI ISA qualified them AND consent exists. Assignment then converts the
- * lead to a contact (handleLeadAssigned) per the canonical business process.
+ * What the latest row should say after an OUTCOME lands, or null = leave it.
+ *   · appointment_set — the strongest outcome: it overwrites anything but itself;
+ *   · no_response     — a ghosted person: only over "still being worked" (null /
+ *     needs_follow_up). It never downgrades a verdict (qualified, appointment_set,
+ *     not_qualified) — silence after a booking is not "no response".
+ * Any other incoming result is written by its own writer (the evaluator / the
+ * eligibility gate), not by this stamp → null.
  */
-export function engine2GatePasses(leadStage: string | null, lifecycleState: string | null): boolean {
-  return leadStage === 'qualified' &&
-    ['consented', 'qualified', 'assigned'].includes(lifecycleState ?? '')
+export function nextQualificationResult(
+  current: string | null | undefined,
+  incoming: QualificationResult,
+): QualificationResult | null {
+  const cur = current ?? null
+  if (incoming === 'appointment_set') return cur === 'appointment_set' ? null : 'appointment_set'
+  if (incoming === 'no_response') return cur === null || cur === 'needs_follow_up' ? 'no_response' : null
+  return null
 }

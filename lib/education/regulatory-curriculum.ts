@@ -30,7 +30,7 @@ export function regulationTag(signature: string): string {
 }
 
 /** Author a training module for a regulatory change with the model. Throws if the model is unavailable. */
-export async function authorRegulatoryModule(change: RegChangeInput): Promise<Curriculum> {
+async function authorRegulatoryModule(change: RegChangeInput): Promise<Curriculum> {
   const { generateObjectRouted } = await import("@/lib/ai/models")
   const effective = change.effectiveDate ? ` It takes effect ${change.effectiveDate}.` : ""
   const surfaces = change.surfaceLabels.length ? ` It touches: ${change.surfaceLabels.join("; ")}.` : ""

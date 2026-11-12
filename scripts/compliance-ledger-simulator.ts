@@ -8,6 +8,7 @@
  * flagging the number a broker must defend (approved-despite-advisory); summarizeComplianceLedger rolls a
  * window into the disposition report. Layer 2 (live, creds-gated): a real insert → read-back → cleanup.
  */
+import { tenantScope } from "../lib/kernel/tenant-scope"
 import { buildComplianceEvent, summarizeComplianceLedger, recordEgressComplianceDecision, mapLedgerRow, loadComplianceLedger, PREFLIGHT_GATE, type EgressDecision } from "../lib/kernel/compliance-ledger"
 import { createServiceClient } from "../lib/supabase/service"
 
@@ -91,7 +92,7 @@ async function main() {
   const { data: row } = await svc.from("compliance_events").select("severity, allowed, violations, gate_name").eq("entity_id", tag).maybeSingle()
   check("live: read-back matches (advisory, allowed, on the pre-flight gate)",
     (row as any)?.severity === "advisory" && (row as any)?.allowed === true && (row as any)?.gate_name === PREFLIGHT_GATE)
-  const view = await loadComplianceLedger((bk as any).id, { sinceDays: 1 }, svc)
+  const view = await loadComplianceLedger(tenantScope((bk as any).id, "compliance-ledger simulator"), { sinceDays: 1 }, svc)
   check("live: loadComplianceLedger surfaces the event + counts it in the disposition summary",
     view.rows.some((r) => r.id) && view.summary.total >= 1 && view.summary.advisory >= 1)
   await svc.from("compliance_events").delete().eq("entity_id", tag)

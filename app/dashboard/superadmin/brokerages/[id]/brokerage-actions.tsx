@@ -29,12 +29,29 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
   const [feedback, setFeedback] = useState<{ kind: "error" | "success"; message: string } | null>(null)
   const [isPending, startTransition] = useTransition()
 
+  // ── ONE SENTENCE FOR "DID THE MONEY MOVE?" (§6) ────────────────────────────
+  //
+  // Every lifecycle action here writes local Postgres FIRST and pushes to Stripe
+  // second (lib/billing/stripe-subscription-ops.ts: the local write is the
+  // INTENT, Stripe is the money). Two of them said so; tier-change, reactivate
+  // and CANCEL returned a bare ok and reported flat success — so an operator
+  // cancelling a tenant read "Billing will stop" and then "Brokerage cancelled"
+  // while the customer's card was never touched. All five now say the same
+  // thing, from the same function, and it distinguishes a SKIP (no Stripe key /
+  // no Stripe-linked subscription) from an ERROR, because those are different
+  // problems for whoever has to fix them.
+  function stripeSuffix(r: { stripeApplied?: boolean; stripeError?: string }): string {
+    if (r.stripeApplied) return " · pushed to Stripe"
+    if (r.stripeError) return ` · NOT pushed to Stripe: ${r.stripeError}`
+    return " · LOCAL ONLY — Stripe was not called (no key, or this subscription is not Stripe-linked). Nothing changed at the payment provider."
+  }
+
   function applyExtendTrial() {
     setFeedback(null)
     startTransition(async () => {
       const r = await extendTrialAction({ brokerageId: brokerage.id, days: Number(trialDays), reason: reason.trim() || undefined })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
-      setFeedback({ kind: "success", message: `Trial extended to ${r.newTrialEnd ? new Date(r.newTrialEnd).toLocaleDateString() : "—"}${r.stripeApplied ? " (pushed to Stripe)" : " (local — Stripe not configured)"}` })
+      setFeedback({ kind: "success", message: `Trial extended to ${r.newTrialEnd ? new Date(r.newTrialEnd).toLocaleDateString() : "—"}${stripeSuffix(r)}` })
     })
   }
 
@@ -43,7 +60,7 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
     startTransition(async () => {
       const r = await pauseSubscriptionAction({ brokerageId: brokerage.id, pause, reason: reason.trim() || undefined })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
-      setFeedback({ kind: "success", message: `${pause ? "Paused" : "Resumed"}${r.stripeApplied ? " (pushed to Stripe)" : " (local — Stripe not configured)"}` })
+      setFeedback({ kind: "success", message: `${pause ? "Paused" : "Resumed"}${stripeSuffix(r)}` })
     })
   }
 
@@ -74,10 +91,18 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
       setFeedback({ kind: "error", message: "Already on that tier" })
       return
     }
+    // The reason is now MANDATORY on a tier change (10+ chars) — it is the audit
+    // record for changing what this tenant is charged. Checked here so the
+    // operator is told before the round trip; the action re-checks and is the
+    // authority. Suspend and cancel below already worked this way.
+    if (reason.trim().length < 10) {
+      setFeedback({ kind: "error", message: "A reason (10+ chars) is required — it is the audit record for a price change" })
+      return
+    }
     startTransition(async () => {
-      const r = await changeBrokerageTierAction({ brokerageId: brokerage.id, newTier: tier, reason: reason.trim() || undefined })
+      const r = await changeBrokerageTierAction({ brokerageId: brokerage.id, newTier: tier, reason: reason.trim() })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
-      setFeedback({ kind: "success", message: `Tier changed from ${r.previousTier} → ${tier}` })
+      setFeedback({ kind: "success", message: `Tier changed from ${r.previousTier} → ${tier}${stripeSuffix(r)}` })
     })
   }
 
@@ -95,17 +120,17 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
     startTransition(async () => {
       const r = await reactivateBrokerageAction(brokerage.id)
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
-      setFeedback({ kind: "success", message: "Brokerage reactivated" })
+      setFeedback({ kind: "success", message: `Brokerage reactivated${stripeSuffix(r)}` })
     })
   }
 
   function applyCancel() {
     if (reason.trim().length < 5) { setFeedback({ kind: "error", message: "Reason must be 5+ chars" }); return }
-    if (!confirm("Cancel this brokerage? Billing will stop. Data retained 90 days before archive.")) return
+    if (!confirm("Cancel this brokerage? Access ends and the local subscription is marked cancelled; the charge is stopped at Stripe only if this subscription is Stripe-linked and a key is configured — the result says which. Data retained 90 days before archive.")) return
     startTransition(async () => {
       const r = await cancelBrokerageAction({ brokerageId: brokerage.id, reason: reason.trim() })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
-      setFeedback({ kind: "success", message: "Brokerage cancelled. 90-day archive window started." })
+      setFeedback({ kind: "success", message: `Brokerage cancelled. 90-day archive window started.${stripeSuffix(r)}` })
       setMode("idle"); setReason("")
     })
   }

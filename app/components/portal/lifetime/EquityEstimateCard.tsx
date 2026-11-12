@@ -118,7 +118,7 @@ export function EquityEstimateCard({
       : ""
   const lastPoint = points[points.length - 1]
 
-  const gainColor = story.isGain ? "text-green-600" : "text-red-600"
+  const gainColor = story.isGain ? "text-green-700" : "text-red-600"
   const gainSign = story.isGain ? "+" : ""
 
   return (

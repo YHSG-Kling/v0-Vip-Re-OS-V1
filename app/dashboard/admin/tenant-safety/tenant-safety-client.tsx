@@ -18,9 +18,9 @@ interface Props {
 }
 
 const SEVERITY_STYLE: Record<string, string> = {
-  critical: "bg-red-500 text-white",
-  high:     "bg-orange-500 text-white",
-  medium:   "bg-amber-500 text-white",
+  critical: "bg-red-600 text-white",
+  high:     "bg-orange-700 text-white",
+  medium:   "bg-amber-700 text-white",
   low:      "bg-gray-300 text-gray-800",
 }
 
@@ -95,17 +95,17 @@ export function TenantSafetyClient({ unresolved, resolved }: Props) {
           </div>
           <div className="flex items-center gap-2 text-xs">
             {counts.critical > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full bg-red-500 text-white font-medium">
+              <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white font-medium">
                 {counts.critical} critical
               </span>
             )}
             {counts.high > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full bg-orange-500 text-white font-medium">
+              <span className="px-1.5 py-0.5 rounded-full bg-orange-700 text-white font-medium">
                 {counts.high} high
               </span>
             )}
             {counts.medium > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-medium">
+              <span className="px-1.5 py-0.5 rounded-full bg-amber-700 text-white font-medium">
                 {counts.medium} medium
               </span>
             )}
@@ -131,7 +131,7 @@ export function TenantSafetyClient({ unresolved, resolved }: Props) {
       <div className="rounded-lg border bg-card">
         <div className="p-3 border-b">
           <p className="text-sm font-semibold flex items-center gap-1.5">
-            <ShieldAlert className="h-4 w-4 text-orange-500" />
+            <ShieldAlert className="h-4 w-4 text-orange-600" />
             Open findings
           </p>
         </div>

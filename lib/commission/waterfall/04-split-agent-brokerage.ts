@@ -2,15 +2,17 @@ import type { WaterfallContext } from '../types'
 
 /**
  * STEP 4: Split Agent/Brokerage
- * agentPortionCents = adjustedGrossCents * (agentSplitPercent / 100)
- * brokeragePortionCents = adjustedGrossCents - agentPortionCents
+ * splittable = adjustedGrossCents - referralDeductionCents   (wave 143: the referral fee comes off the top, step 03b)
+ * agentPortionCents = splittable * (agentSplitPercent / 100)
+ * brokeragePortionCents = splittable - agentPortionCents
  */
 export function splitAgentBrokerage(
   context: WaterfallContext
 ): WaterfallContext {
   const agentSplitDecimal = context.agentSplitPercent / 100
-  const agentPortionCents = Math.round(context.adjustedGrossCents * agentSplitDecimal)
-  const brokeragePortionCents = context.adjustedGrossCents - agentPortionCents
+  const splittableCents = context.adjustedGrossCents - (context.referralDeductionCents ?? 0)
+  const agentPortionCents = Math.round(splittableCents * agentSplitDecimal)
+  const brokeragePortionCents = splittableCents - agentPortionCents
 
   return {
     ...context,

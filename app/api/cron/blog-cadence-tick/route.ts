@@ -4,7 +4,7 @@
  * Wave 29 — daily cadence tick for auto-blog generation. Walks the
  * blog_cadence_policy table; for each (scope_type, scope_id, cadence)
  * row where the cadence's fire_day matches today, dispatches
- * generateBlogPost() with pullFromTopicBank=true.
+ * writeBlogPost() (lib/kernel/content-creators.ts) with pullFromTopicBank=true.
  *
  * Schedule (vercel.json): "0 7 * * *" — 07:00 UTC daily. The per-scope
  * fire_day filter ensures each subscriber fires on at most their
@@ -20,15 +20,16 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateBlogPost } from "@/app/actions/blog"
+// 86C: the cron has NO session, so it calls the kernel writer with the policy row's tenant, not the
+// cookie-session door app/actions/blog.ts generateBlogPost (which refused it: anon feature gate, and
+// brok_blog_posts refused the anon insert on every run).
+import { writeBlogPost } from "@/lib/kernel/content-creators"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface PolicyRow {
   scope_type:           "agent" | "team" | "brokerage"
@@ -41,11 +42,8 @@ interface PolicyRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs       = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
   const now      = new Date()
@@ -164,14 +162,15 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-      const r = await generateBlogPost(agentUserId, {
-        brokerageId,
+      const r = await writeBlogPost({
+        ctx:                { userId: agentUserId, brokerageId },
+        client:             svc,
         agentUserId,
         keywords:           p.preferred_categories ?? [],
         pullFromTopicBank:  true,
         recipientPersona:   p.preferred_persona ?? undefined,
         // Wave 30 — auto-spawn posts always include a DALL-E cover image.
-        // generateBlogPost honors the existing brand injection (logo
+        // writeBlogPost honors the existing brand injection (logo
         // composite via Sharp, brokerage primary color in the prompt) so
         // every cadence-generated post lands with a properly-branded
         // 1792×1024 hero image that doubles as the Open Graph card.
@@ -182,8 +181,8 @@ export async function GET(req: NextRequest) {
       results.push({
         scope_type: p.scope_type,
         scope_id:   p.scope_id,
-        outcome:    r.success ? `drafted:${r.postId ?? ""}` : "failed",
-        reason:     r.error,
+        outcome:    r.success ? `drafted:${r.postId}` : "failed",
+        reason:     r.success ? undefined : r.error,
       })
     } catch (e) {
       results.push({ scope_type: p.scope_type, scope_id: p.scope_id, outcome: "exception", reason: (e as Error).message })

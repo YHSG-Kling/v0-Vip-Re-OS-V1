@@ -127,31 +127,62 @@ export async function spawnListingConciergeForSeller(params: {
   contactId:      string
   environmentId?: string
   kickoff?:       string
+  /** Wave 105C: the mission this concierge serves (else the seller's active mission is looked up). */
+  missionId?:     string
 }): Promise<SpawnResult> {
   const svc = createServiceClient()
 
+  // SHARED WORKING CONTEXT (wave 105, lane 105C): with a mission in play for this seller, ONE
+  // compile (lib/kernel/mission-context.ts) supplies the contact row and the listing row this
+  // function read itself (both tombstoned below — the compiler's readContactRow / readListing are
+  // the one read each), and its compact section rides the kickoff. No mission → the same reads.
+  const { missionInPlayFor, compileManagerContext } = await import("@/lib/kernel/mission-context")
+  const missionId = await missionInPlayFor({ brokerageId: params.brokerageId, subject: { type: "contact", id: params.contactId }, missionId: params.missionId ?? null, client: svc })
+  const compiledRes = missionId ? await compileManagerContext({ brokerageId: params.brokerageId, missionId, manager: "deal_coordinator", tokenBudget: 1200, client: svc }) : null
+  if (compiledRes && !compiledRes.ok) console.error(`[listing-concierge] mission context not compiled for ${missionId} (${compiledRes.reason}) — running the per-call reads`)
+  const compiled = compiledRes?.ok ? compiledRes : null
+
   // Tenant-scoped seller-side contact lookup. Accept contact_type 'seller' or 'both'.
-  const { data: contact } = await svc
-    .from("contacts")
-    .select("id, first_name, last_name, contact_type, contact_persona, brokerage_id")
-    .eq("id", params.contactId)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
+  // TOMBSTONE (105C): the private contacts read here survives only for the no-mission path; with
+  // a mission in play the row is compiled.context.person (lib/kernel/mission-context.ts readContactRow).
+  type ConciergeContact = { id: string; first_name: string | null; last_name: string | null; contact_type: string | null; contact_persona: string | null }
+  let contact: ConciergeContact | null = null
+  if (compiled) {
+    contact = (compiled.context.person.data?.row as ConciergeContact | undefined) ?? null
+  } else {
+    const { data } = await svc
+      .from("contacts")
+      .select("id, first_name, last_name, contact_type, contact_persona, brokerage_id")
+      .eq("id", params.contactId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+    contact = (data as ConciergeContact | null) ?? null
+  }
   if (!contact) return { ok: false, error: "contact not found in this brokerage" }
   if (contact.contact_type !== "seller" && contact.contact_type !== "both") {
     return { ok: false, error: `contact contact_type=${contact.contact_type ?? "null"} — Listing Concierge only operates on seller-type contacts (or 'both')` }
   }
 
   // Phase detection.
-  // (i) listing row associated with this seller-contact
-  const { data: listingRow } = await svc
-    .from("listings")
-    .select("id, address, city, state, list_price, status, lifecycle_stage")
-    .eq("seller_contact_id", params.contactId)
-    .eq("brokerage_id", params.brokerageId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  // (i) listing row associated with this seller-contact.
+  // TOMBSTONE (105C): with a mission in play the listing is compiled.context.property
+  // (lib/kernel/mission-context.ts readListing — listings by seller_contact_id, newest first).
+  type ListingRow = { id: string; address: string | null; city: string | null; state: string | null; list_price: number | null; status: string | null; lifecycle_stage: string | null }
+  let listingRow: ListingRow | null = null
+  if (compiled) {
+    const p = compiled.context.property.data
+    listingRow = p ? { id: p.listingId, address: p.address || null, city: null, state: null, list_price: p.listPrice, status: p.status, lifecycle_stage: p.lifecycleStage } : null
+  } else {
+    const { data } = await svc
+      .from("listings")
+      .select("id, address, city, state, list_price, status, lifecycle_stage")
+      .eq("seller_contact_id", params.contactId)
+      .eq("brokerage_id", params.brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    listingRow = (data as ListingRow | null) ?? null
+  }
 
   // (ii) fully-signed listing_agreement on that listing
   let hasSignedAgreement = false
@@ -223,6 +254,7 @@ export async function spawnListingConciergeForSeller(params: {
     `PERSONA VOICE GUIDANCE (mirror this in the seller_update): ${persona.aiContext}`,
     persona.sensitive ? "⚠️  SENSITIVE CONTEXT — use extra care; respect privacy and timing." : "",
     "",
+    ...(compiled ? ["──── MISSION CONTEXT (compiled, token-budgeted) ────", compiled.section, ""] : []),
     `Produce your initial seller update + agent briefing per your response format. Match the`,
     `phase rules above and the brokerage compliance/voice gates. Output JSON only.`,
   ].filter(Boolean).join("\n")

@@ -13,17 +13,17 @@
  * lands regen_status='failed' (NOT retried automatically — the manager
  * decides). Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateImage, type ImagePurpose, type ImageSize } from "@/lib/ai/image-generation"
+import { enqueueStaleScreenshotStills, recaptureScreenshotAsset, seedMissingDemoStill, SCREENSHOT_ASSET_KIND, type ScreenshotAssetRow } from "@/lib/assets/screenshot-capture"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 120
 export const runtime = "nodejs"
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface AssetRow {
   id:            string
@@ -34,13 +34,17 @@ interface AssetRow {
 }
 
 export async function GET(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
+
+  // Lane 78B — DEMO STILL REFRESH rides THIS loop (no new cron): screenshot
+  // rows (metadata.asset_kind='screenshot') older than STILL_MAX_AGE_DAYS are
+  // flagged 'requested' here and re-captured below when claimed, one per tick
+  // like every other regen. lib/assets/screenshot-capture.ts is the seam.
+  const stale = await enqueueStaleScreenshotStills(svc)
+  if (stale.error) console.warn("[marketing-image-regen] stale demo-still sweep refused:", stale.error)
 
   // Claim one requested row atomically (requested → processing).
   const { data: candidate } = await svc.from("marketing_assets")
@@ -50,10 +54,21 @@ export async function GET(req: NextRequest) {
     .limit(1)
     .maybeSingle()
   const cand = candidate as { id: string } | null
-  if (!cand) return NextResponse.json({ ran_at: new Date().toISOString(), processed: 0 })
+  if (!cand) {
+    // An idle tick SEEDS one missing demo still (the registry fills itself
+    // over the ticks; a refusal is reported here, not swallowed).
+    const seeded = await seedMissingDemoStill(svc)
+    return NextResponse.json({
+      ran_at: new Date().toISOString(), processed: 0,
+      demo_still_seeded: seeded.surfaceId,
+      demo_still_result: seeded.result ? (seeded.result.ok ? { ok: true, url: seeded.result.url, cached: seeded.result.cached } : { ok: false, reason: seeded.result.reason }) : null,
+    })
+  }
 
+  // The claim's timestamp is this regen's identity — the image spend books once per claim (wave 139).
+  const claimedAt = new Date().toISOString()
   const claim = await svc.from("marketing_assets")
-    .update({ regen_status: "processing", updated_at: new Date().toISOString() })
+    .update({ regen_status: "processing", updated_at: claimedAt })
     .eq("id", cand.id)
     .eq("regen_status", "requested")
     .select("id, brokerage_id, agent_user_id, asset_name, metadata")
@@ -62,9 +77,29 @@ export async function GET(req: NextRequest) {
   if (!asset) return NextResponse.json({ ran_at: new Date().toISOString(), processed: 0, note: "lost claim race" })
 
   const meta = asset.metadata ?? {}
+
+  // A screenshot row is RE-CAPTURED (same id, new asset_url), never re-generated.
+  if (meta.asset_kind === SCREENSHOT_ASSET_KIND) {
+    const { data: full, error: fullErr } = await svc.from("marketing_assets")
+      // brokerage_id / created_by / tags: a TENANT-owned still (wave 80D)
+      // re-captures into the same tenant with its uses — recaptureScreenshotAsset
+      // reads the owner off the row.
+      .select("id, brokerage_id, created_by, tags, asset_name, asset_url, thumbnail_url, approval_status, updated_at, metadata").eq("id", asset.id).maybeSingle()
+    if (fullErr || !full) {
+      await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
+      return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: `screenshot row read refused: ${fullErr?.message ?? "no row"}` }, { status: 200 })
+    }
+    const shot = await recaptureScreenshotAsset(svc, full as ScreenshotAssetRow)
+    if (!shot.ok) {
+      await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+      return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: shot.reason }, { status: 200 })
+    }
+    return NextResponse.json({ ran_at: new Date().toISOString(), processed: 1, asset_id: asset.id, ok: true, image_url: shot.url, kind: "screenshot" })
+  }
+
   const prompt = String(meta.original_prompt ?? "")
   if (!prompt) {
-    await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+    await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: "no original_prompt in metadata" }, { status: 200 })
   }
 
@@ -94,14 +129,15 @@ export async function GET(req: NextRequest) {
       listingContext: meta.listing_address
         ? { address: String(meta.listing_address) }
         : undefined,
+      spend: { brokerageId: asset.brokerage_id, userId: asset.agent_user_id, feature: "marketing_image_regen", manager: "asset_manager", idempotencyKey: `marketing_image_regen:${asset.id}:${claimedAt}` },
     })
 
     if (!result.success || !result.imageUrl) {
-      await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+      await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: result.error ?? "generateImage failed" }, { status: 200 })
     }
 
-    await svc.from("marketing_assets").update({
+    await sentinelWrite(svc, svc.from("marketing_assets").update({
       asset_url:     result.imageUrl,
       thumbnail_url: result.thumbnailUrl ?? result.imageUrl,
       regen_status:  null,
@@ -112,11 +148,11 @@ export async function GET(req: NextRequest) {
         regen_count:    (typeof meta.regen_count === "number" ? meta.regen_count : 0) + 1,
         last_regen_at:  new Date().toISOString(),
       },
-    }).eq("id", asset.id)
+    }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     return NextResponse.json({ ran_at: new Date().toISOString(), processed: 1, asset_id: asset.id, ok: true, image_url: result.imageUrl })
   } catch (e) {
-    await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+    await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: (e as Error).message }, { status: 500 })
   }
 }

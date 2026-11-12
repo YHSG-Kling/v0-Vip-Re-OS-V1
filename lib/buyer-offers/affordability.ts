@@ -27,7 +27,14 @@ export interface MonthlyPaymentInput {
   annualInsuranceRatePct?: number
   pmiAnnualRatePct?: number
   hoaMonthly?: number
+  /** Lane 82A — the property's own ANNUAL tax bill (public record, from the rail's
+   *  `public_facts` purpose). When present it REPLACES the rate estimate: the owner's ruling is
+   *  that the calculators compute "the correct property taxes" for a property page, not a flat %. */
+  annualPropertyTax?: number | null
 }
+
+/** Where the tax line came from — a county bill, or the labelled rate default. */
+export type PropertyTaxBasis = "county_tax_bill" | "rate_estimate"
 
 export interface MonthlyPaymentBreakdown {
   loanAmount: number
@@ -38,6 +45,7 @@ export interface MonthlyPaymentBreakdown {
   pmi: number
   hoa: number
   total: number
+  taxBasis: PropertyTaxBasis
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -66,7 +74,8 @@ export function estimateMonthlyPayment(input: MonthlyPaymentInput): MonthlyPayme
   const principalInterest =
     loanAmount === 0 ? 0 : r === 0 ? loanAmount / n : (loanAmount * (r * Math.pow(1 + r, n))) / (Math.pow(1 + r, n) - 1)
 
-  const propertyTax = (price * (taxPct / 100)) / 12
+  const billedTax = typeof input.annualPropertyTax === "number" && input.annualPropertyTax > 0 ? input.annualPropertyTax : null
+  const propertyTax = billedTax != null ? billedTax / 12 : (price * (taxPct / 100)) / 12
   const insurance = (price * (insPct / 100)) / 12
   const pmi = downPct < 20 ? (loanAmount * (pmiPct / 100)) / 12 : 0
 
@@ -80,6 +89,7 @@ export function estimateMonthlyPayment(input: MonthlyPaymentInput): MonthlyPayme
     pmi: round2(pmi),
     hoa: round2(hoa),
     total: round2(total),
+    taxBasis: billedTax != null ? "county_tax_bill" : "rate_estimate",
   }
 }
 

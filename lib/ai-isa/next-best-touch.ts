@@ -2,14 +2,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // THE NEXT-BEST-TOUCH DECISION — the manager (AI ISA) autonomously DECIDES which channel a
 // contact's next follow-up should use, instead of always firing the one stored preference.
-// The decision blends three signals, in priority:
+// The decision blends, in priority:
 //
-//   1. LEARNED ENGAGEMENT — the channels this person (or the brokerage) actually REPLIES to
+//   1. THE STATED PREFERENCE — the channel the person TOLD us they prefer (owner ruling 18, wave 145:
+//      explicit, user-controllable fields, never inferred from age / demographics).
+//   2. LEARNED ENGAGEMENT — the channels this person (or the brokerage) actually REPLIES to
 //      (rankChannelsByReplyRate). What works beats what we guessed.
-//   2. AGE-GROUP PSYCHOLOGY — how each generation prefers to be reached (gen-z is text/video-
-//      first and screens calls; boomers answer the phone; the silent gen wants a call or mail).
-//      This is the them-first, relationship-science layer that converts.
-//   3. ROTATION — never hammer the same channel twice in a row when alternatives exist; a
+//   3. THE ONE NEUTRAL DEFAULT ORDER (NEUTRAL_TOUCH_CHANNEL_ORDER) — the same for everyone. The
+//      age-group ordering that stood here is tombstoned at NEUTRAL_TOUCH_CHANNEL_ORDER (ruling 18).
+//   4. ROTATION — never hammer the same channel twice in a row when alternatives exist; a
 //      multi-touch sequence that varies channels out-converts a monotonous one.
 //
 // Always within the CONSENT-permitted set (voice/SMS need TCPA). PURE — no I/O, exhaustively
@@ -19,12 +20,10 @@
 // only; never SMS/phone/voicedrop) via permittedLeadChannels — one decision brain, two policies.
 //
 // NEWSLETTER is a first-class channel for BOTH leads and contacts: a low-pressure, recurring,
-// value-first touch. It sits LATE in every cohort's affinity so the engine reaches for it as the
+// value-first touch. It sits LAST in the default order so the engine reaches for it as the
 // rotation/nurture move (after the 1:1 channels were recently used) — the "stop pestering, let
 // value keep flowing" downshift. Choosing it is a HANDOFF to the Campaign Orchestrator (the
 // newsletter owner), so it's a managers-working-together play, not a flat single-manager enroll.
-
-import type { GenerationalCohort } from "@/lib/kernel/education"
 
 /** The dispatchable channels the managers choose between (portal always rides along separately).
  *  newsletter is the recurring nurture channel; the rest are 1:1. */
@@ -61,7 +60,7 @@ export function permittedContactChannels(c: ContactConsentState): TouchChannel[]
 
 /** PURE. The channels a LEAD may be reached on — NO TCPA, so email + direct mail + newsletter
  *  only (never sms/phone/voicedrop). The same compliance floor as lead-channel-policy, exposed
- *  to the next-best-touch engine so a lead gets cohort-aware rotation across its permitted set. */
+ *  to the next-best-touch engine so a lead gets the same stated → learned → default rotation across its permitted set. */
 export function permittedLeadChannels(input: {
   emailUsable: boolean
   mailingVerified: boolean
@@ -72,19 +71,13 @@ export function permittedLeadChannels(input: {
   return out
 }
 
-/** PURE. How each generation prefers to be reached — the relationship-science channel order.
- *  newsletter sits LATE in every order: the engine reaches for it as the nurture/rotation move,
- *  not the first pick (a recurring value-touch, not a 1:1 ask). */
-export function ageGroupChannelAffinity(cohort: GenerationalCohort): TouchChannel[] {
-  switch (cohort) {
-    case "gen_z":      return ["sms", "voicedrop", "email", "direct_mail", "phone", "newsletter"]   // text/video-first, screens live calls
-    case "millennial": return ["email", "sms", "voicedrop", "phone", "direct_mail", "newsletter"]   // email + text
-    case "gen_x":      return ["email", "phone", "sms", "direct_mail", "voicedrop", "newsletter"]    // email, will pick up
-    case "boomer":     return ["phone", "email", "voicedrop", "direct_mail", "newsletter", "sms"]    // phone + email + mail
-    case "silent":     return ["phone", "direct_mail", "email", "newsletter", "voicedrop", "sms"]    // phone + mail
-    case "unknown":    return ["email", "sms", "phone", "voicedrop", "direct_mail", "newsletter"]
-  }
-}
+/** THE ONE NEUTRAL DEFAULT ORDER (owner ruling 18, wave 145 — lane 145H Outside-lane 2, wired by lane 145Z): when the person
+ *  has stated no channel and has no reply history, every person gets the SAME order — never one chosen by their age. newsletter
+ *  sits LAST: the engine reaches for it as the nurture/rotation move, not the first pick (a recurring value-touch, not a 1:1 ask).
+ *  TOMBSTONE (§1, ruling 18): `ageGroupChannelAffinity(cohort)` — a per-generation channel order (gen-z text-first, boomer
+ *  phone-first, …) — lived here and ordered the fallback channel by age band. Ruling 18: "never inferred from age/demographics".
+ *  SURVIVOR: this constant (its order is the old `unknown` row) behind the person's STATED preferred channel. */
+export const NEUTRAL_TOUCH_CHANNEL_ORDER: readonly TouchChannel[] = Object.freeze(["email", "sms", "phone", "voicedrop", "direct_mail", "newsletter"])
 
 export interface NextChannelDecision {
   channel: TouchChannel | "no_channel"
@@ -92,13 +85,15 @@ export interface NextChannelDecision {
 }
 
 /**
- * decideNextChannel — PURE. Pick the contact's next-touch channel: the best-engaged permitted
- * channel, then age-group affinity, ROTATED off the last channel used when an alternative
- * exists. Returns "no_channel" only when consent permits nothing.
+ * decideNextChannel — PURE. Pick the contact's next-touch channel: the channel the person STATED they prefer (ruling 18 —
+ * an explicit, person-controlled field), then the best-engaged permitted channel (what they actually reply to), then the
+ * ONE neutral default order — ROTATED off the last channel used when an alternative exists. Never ordered by age group.
+ * Returns "no_channel" only when consent permits nothing.
  */
 export function decideNextChannel(args: {
   permitted: TouchChannel[]
-  cohort: GenerationalCohort
+  /** The person's STATED preferred channel (contacts.preferred_channel / the lead's own stated channel). Optional. */
+  statedChannel?: string | null
   /** Channels ranked by this contact's / brokerage's real reply rate (best first). Optional. */
   learnedRanked?: string[]
   /** The channel used on the PREVIOUS touch — rotated away from when possible. */
@@ -107,11 +102,13 @@ export function decideNextChannel(args: {
   const permitted = new Set(args.permitted)
   if (permitted.size === 0) return { channel: "no_channel", reason: "consent permits no channel" }
 
-  // Candidate order: learned engagement first, then age-group affinity; dedup; keep permitted.
+  // Candidate order: the STATED preference, then learned engagement, then the one neutral default; dedup; keep permitted.
   const ordered: TouchChannel[] = []
   const push = (ch: string) => { if (permitted.has(ch as TouchChannel) && !ordered.includes(ch as TouchChannel)) ordered.push(ch as TouchChannel) }
+  const stated = typeof args.statedChannel === "string" ? args.statedChannel.trim().toLowerCase() : ""
+  if (stated) push(stated)
   for (const ch of args.learnedRanked ?? []) push(ch)
-  for (const ch of ageGroupChannelAffinity(args.cohort)) push(ch)
+  for (const ch of NEUTRAL_TOUCH_CHANNEL_ORDER) push(ch)
 
   if (ordered.length === 0) {
     // Permitted set didn't intersect the ranked/affinity lists — fall to any permitted.
@@ -127,8 +124,10 @@ export function decideNextChannel(args: {
     rotated = true
   }
 
-  const why = (args.learnedRanked ?? []).includes(chosen)
-    ? "best-engaged"
-    : `${args.cohort.replace("_", "-")} affinity`
+  const why = stated && chosen === stated
+    ? "stated preference"
+    : (args.learnedRanked ?? []).includes(chosen)
+      ? "best-engaged"
+      : "default order"
   return { channel: chosen, reason: `${chosen} (${why}${rotated ? `, rotated off ${args.lastChannel}` : ""})` }
 }

@@ -8,6 +8,7 @@
 // evaluator (no drift with the gate) + the gated client-message rail (nothing auto-sends). Idempotent
 // per (agent, standing-issue-set) so a new issue re-notifies but the same set never spams.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateLicenseReadiness, readinessIssueKey, type LicenseReadiness, type ReadinessIssue } from "@/lib/compliance/license-readiness"
 
@@ -112,18 +113,18 @@ export async function sweepLicenseReadiness(
       } catch { /* best-effort — the broker notification below still fires */ }
       try {
         const { data: mgrs } = await svc.from("users").select("id")
-          .eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+          .eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
         for (const m of (mgrs ?? []) as Array<{ id: string }>) {
           const { data: seen } = await svc.from("notifications").select("id")
             .eq("user_id", m.id).eq("entity_type", "agent").eq("entity_id", a.id).eq("type", "license_readiness_blocker")
             .gte("created_at", new Date(now.getTime() - 7 * 86_400_000).toISOString()).limit(1).maybeSingle()
           if (seen) continue
-          await svc.from("notifications").insert({
+          await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: m.id, brokerage_id: params.brokerageId, type: "license_readiness_blocker",
             title: `${agentName}'s license/CE is blocking — compliance exposure`,
             body: readiness.blockers.map((b) => b.title).join("; "),
             entity_type: "agent", entity_id: a.id, priority: "high", is_read: false,
-          })
+          }), { table: "notifications", flow: "license_readiness_sweep_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
       } catch { /* best-effort */ }
     }

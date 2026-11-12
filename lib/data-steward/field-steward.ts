@@ -22,7 +22,10 @@ export const CANONICAL_CONTACT_FIELDS = [
   'mailing_address', 'mailing_city', 'mailing_state', 'mailing_zip',
 ] as const
 
-export type CanonicalContactField = (typeof CANONICAL_CONTACT_FIELDS)[number]
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `CanonicalContactField`
+// deleted — never named by any consumer; the steward iterates
+// CANONICAL_CONTACT_FIELDS (the live const) directly. Re-derive when a typed
+// consumer arrives.
 
 function isEmpty(v: unknown): boolean {
   return v === null || v === undefined || (typeof v === 'string' && v.trim() === '')

@@ -4,6 +4,7 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commi
 import { resolveGrossRate } from "./waterfall/01-resolve-rate"
 import { calculateGrossCommission } from "./waterfall/02-calculate-gross"
 import { applyGrossAdjustments } from "./waterfall/03-apply-gross-adjustments"
+import { applyReferralDeduction } from "./waterfall/03b-referral-deduction"
 import { splitAgentBrokerage } from "./waterfall/04-split-agent-brokerage"
 import { applyAgentAdjustments } from "./waterfall/05-apply-agent-adjustments"
 import { applyBrokerageAdjustments } from "./waterfall/06-apply-brokerage-adjustments"
@@ -28,11 +29,47 @@ export async function calculateCommission(
     // Step 1: Resolve gross rate
     let context = await resolveGrossRate(transactionId, brokerageId)
 
+    // FAIL CLOSED (wave 143, lane 143C; CLAUDE.md §4 "nobody checked must never render as checked and fine"): a FINAL
+    // calculation posts a ledger and a payable. With no agreement terms in force on the deal's date the split resolves
+    // to 0 % — the agent would be posted $0 and the brokerage 100 % — which is a silent wrong number, not a calculation.
+    // Refuse by name so the broker sets the agent's terms; a PREVIEW still runs (it shows the finding, posts nothing).
+    if (calculationMode === 'final' && context.agreement && context.agreement.terms === null) {
+      throw new Error(
+        `[commission-engine] No commission agreement terms are in force for agent ${context.agentId} on ${context.agreement.asOf} ` +
+        `(${context.agreement.findings.join('; ') || 'none recorded'}). Set the agent's commission terms, then recalculate.`
+      )
+    }
+
+    // WAVE 145 (lane 145C; owner ruling 4, 2026-10-27: "the agreement dictates the money structure"): when the EXECUTED
+    // agreement in force states a term (under its canonical key) that DISAGREES with the stored term in force, a FINAL refuses
+    // by name — a stated contradiction is never posted as money, in either direction (never the stored number over the signed
+    // one, never the document's number over a human's verification). A finance admin verifies the terms against the executed
+    // agreement (lib/commission/agreement-onboarding.ts verifyAgreementTerms), then recalculates. A PREVIEW still prices the
+    // stored terms and carries the mismatch in its evidence.
+    if (calculationMode === 'final' && context.agreement && context.agreement.signedFieldMismatches.length > 0) {
+      const m = context.agreement.signedFieldMismatches
+      throw new Error(
+        `[commission-engine] The executed agreement ${context.agreement.signedAgreement?.id ?? ''} states ${m.map((x) => `${x.key} ${x.signed}`).join(', ')} ` +
+        `but the terms in force say ${m.map((x) => `${x.key} ${x.applied}`).join(', ')} (${context.agreement.asOf}). ` +
+        `Verify the agent's terms against the executed agreement, then recalculate.`
+      )
+    }
+
+    // WAVE 145 (owner ruling 4): the brokerage default rate never prices a FINAL over an executed client agreement that states
+    // the commission (or when that agreement could not be read — unprovable is not "none").
+    if (calculationMode === 'final' && context.grossRateEvidence?.from === 'brokerage_default' && context.grossRateEvidence.findings.length > 0) {
+      throw new Error(`[commission-engine] ${context.grossRateEvidence.findings.join('; ')}`)
+    }
+
     // Step 2: Calculate gross commission
     context = calculateGrossCommission(context)
 
-    // Step 3: Apply gross adjustments
-    context = await applyGrossAdjustments(context)
+    // Step 3: Apply gross adjustments — the AGENT concessions (wave 144, lane 144D: a held concession refuses a FINAL)
+    context = await applyGrossAdjustments(context, calculationMode)
+
+    // Step 3b: Referral deduction (wave 143) — the agreed referral fee (inside agent, or outside partner — wave 144) comes
+    // off the top, before the split; an owed partner fee with no authorizable payee holds a FINAL
+    context = await applyReferralDeduction(context, calculationMode)
 
     // Step 4: Split agent/brokerage
     context = splitAgentBrokerage(context)
@@ -53,7 +90,11 @@ export async function calculateCommission(
     context = await applyRevenueShare(context)
 
     // Step 10: Apply fees
-    const commissionStructure = await getDefaultCommissionStructure(brokerageId, context.agentId)
+    // The fee schedule comes from the SAME agreement stage 01 resolved for the deal's period (wave 143, lane
+    // 143C) — a second live read here would price fees on today's profile while the split used the period's.
+    const commissionStructure = await getDefaultCommissionStructure(
+      brokerageId, context.agentId, undefined, context.agreement ? context.agreement.terms : undefined,
+    )
     context = await applyFees(context, commissionStructure)
 
     // Step 11: Validate and persist

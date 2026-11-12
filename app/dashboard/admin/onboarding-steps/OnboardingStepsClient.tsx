@@ -322,7 +322,7 @@ export function OnboardingStepsClient({ initialSteps }: Props) {
                       </td>
                       <td className="px-4 py-3 flex gap-2">
                         <button onClick={() => handleEditSave(step.id)} disabled={isPending}
-                          className="rounded bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50">
+                          className="rounded bg-green-700 px-3 py-1 text-xs font-medium text-white hover:bg-green-800 disabled:opacity-50">
                           Save
                         </button>
                         <button onClick={() => { setEditingId(null); setEditForm({}) }}
@@ -341,7 +341,7 @@ export function OnboardingStepsClient({ initialSteps }: Props) {
                         {step.required ? (
                           <span className="text-green-700 font-medium">Yes</span>
                         ) : (
-                          <span className="text-gray-400">No</span>
+                          <span className="text-gray-500">No</span>
                         )}
                       </td>
                       <td className="px-4 py-3 flex gap-2">
@@ -369,7 +369,7 @@ export function OnboardingStepsClient({ initialSteps }: Props) {
             })}
             {steps.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">
+                <td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-sm">
                   No onboarding steps found.
                 </td>
               </tr>

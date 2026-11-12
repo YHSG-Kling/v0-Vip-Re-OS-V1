@@ -28,14 +28,13 @@
  * composition registry (m168 + lib/remotion/registry.ts).
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { AvatarPIP } from "./components/AvatarPIP"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack, SLIDE_PRESENTER_PIP, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export type BuyerSlideKind =
   | "title"
@@ -89,6 +88,13 @@ export interface BuyerConsultationSlideProps {
   qrCodeDataUrl?: string | null
   qrCaption?:     string
   mlsClean?:      boolean
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL narration alignment — preferred. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw narration script text (the same text
+   *  the avatar speaks); CaptionLayer estimates timing in-composition when no
+   *  cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 const SURFACE_DEFAULT = "#FFFFFF"
@@ -97,10 +103,19 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
   kind, slideNumber, totalSlides, title, body, searchExamples,
   timelineLabels, heroImageUrl, bodyContent, avatarVideoUrl,
   avatarStartFrame, avatarEndFrame, agentPhotoUrl, agentName, brand,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
 }) => {
   const surface = brand.surfaceColor ?? SURFACE_DEFAULT
-  const showEho = brand.showEhoMark ?? true
+  // WAVE 90 (lane 90E — the lane's real render): the ONE slide stack
+  // (lib/video/cinema-finish.ts cinemaSlideFooterStack) — see
+  // ListingPresentationSlide.tsx. Here the search cards and the closing copy
+  // ran UNDER the burned-in captions and the nameplate, and the footer was a
+  // 40 px bar at the bottom edge in 12 px type. The stack is laid out for THIS
+  // disclosure text (a real-length line wraps beside the presenter ring).
+  const { width, height } = useVideoConfig()
+  const disclosure = slideDisclosureText(brand)
+  const stack = cinemaSlideFooterStack(width, height, disclosure)
+  const { safe } = cinemaFrame(width, height)
 
   return (
     <AbsoluteFill style={{
@@ -113,10 +128,10 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         position: "absolute", top: 0, left: 0, right: 0, height: 80,
         backgroundColor: brand.primaryColor, color: "#fff",
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 48px",
+        padding: `0 ${safe.left}px`,
       }}>
         {brand.logoUrl ? (
-          <Img src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
+          <SafeImg src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
         ) : (
           <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 2 }}>{brand.brokerageName}</div>
         )}
@@ -136,10 +151,10 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         </div>
       </div>
 
-      {/* Body region — varies by slide kind */}
+      {/* Body region — varies by slide kind; its bottom edge clears the footer stack. */}
       <div style={{
-        position: "absolute", top: 80, left: 0, right: 0, bottom: 120,
-        padding: "48px 56px",
+        position: "absolute", top: safe.top, left: 0, right: 0, bottom: stack.bodyBottom,
+        padding: `24px ${safe.left}px 16px`,
       }}>
         {kind === "title" && <TitleSlideBody title={title} body={body} accentColor={brand.accentColor} />}
         {kind === "loan" && <LoanSlideBody title={title} body={body} heroImageUrl={heroImageUrl ?? null} accentColor={brand.accentColor} />}
@@ -165,29 +180,40 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         endFrame={avatarEndFrame}
         accentColor={brand.accentColor}
         primaryColor={brand.primaryColor}
+        position="bottom-right"
+        size={SLIDE_PRESENTER_PIP.size}
+        ringWidth={SLIDE_PRESENTER_PIP.ringWidth}
       />
 
+      {/* Nameplate one line above the disclosure, on the safe side inset. */}
       <div style={{
-        position: "absolute", bottom: 32, left: 56,
+        position: "absolute", bottom: stack.nameplateBottom, left: safe.left,
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <div style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: brand.accentColor }} />
-        <div style={{ fontSize: 18, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
+        <div style={{ fontSize: 22, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
       </div>
 
+      {/* Footer: the decorative brand bar fills the unsafe band (no text in it); the
+          disclosure line sits ON the safe inset at the caption type step, centred in
+          the width LEFT of the presenter ring (stack.presenterRight) — never under it. */}
       <div style={{
-        position: "absolute", bottom: 0, left: 0, right: 0, height: 40,
-        backgroundColor: brand.primaryColor, color: "#fff", opacity: 0.85,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 12, letterSpacing: 1,
-      }}>
-        {brand.brokerageName}
-        {showEho && " · Equal Housing Opportunity"}
-        {brand.licenseLine && ` · ${brand.licenseLine}`}
+        position: "absolute", bottom: 0, left: 0, right: 0, height: stack.footerBarHeight,
+        backgroundColor: brand.primaryColor, opacity: 0.9,
+      }} />
+      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, right: stack.presenterRight, color: brand.primaryColor, opacity: 0.9 }}>
+        {disclosure}
       </div>
       {kind === "closing" && (
         <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to get started"}
           primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
+      )}
+
+      {/* NO CAPTION OVER THE CLOSING SLIDE'S QR (wave 61, mirrors JustListedReel.tsx) —
+          every other slide kind speaks for its full duration with no late branding
+          reveal, so the caption runs the whole slide there. */}
+      {kind !== "closing" && (
+        <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} bandBottom={stack.captionBandBottom} bandRight={stack.presenterRight} />
       )}
     </AbsoluteFill>
   )
@@ -206,17 +232,17 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
     }}>
       <div style={{
         width: 64, height: 4, backgroundColor: accentColor, marginBottom: 32,
-        opacity: interpolate(frame, [0, 12], [0, 1]),
+        opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }} />
       <div style={{
         fontSize: 84, fontWeight: 800, lineHeight: 1.05, marginBottom: 24,
-        opacity: interpolate(frame, [6, 24], [0, 1]),
+        opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }}>
         {title}
       </div>
       {body.map((p, i) => (
         <div key={i} style={{
-          fontSize: 26, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8]),
+          fontSize: 26, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           maxWidth: 1200, lineHeight: 1.45,
         }}>{p}</div>
       ))}
@@ -224,11 +250,16 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
   )
 }
 
+// WAVE 91 (lane 91E — the first real render of the hero-image kind): with no hero
+// image the 58 % photo box printed the words "Photo placeholder" on a grey panel —
+// shipped to a client — and the text column kept its 42 % beside an empty box.
+// No photo → no box: the copy takes the whole body width (the title kind's
+// reading measure). The photo box, when there is a photo, is unchanged.
 const LoanSlideBody: React.FC<{
   title: string; body: string[]; heroImageUrl: string | null; accentColor: string
 }> = ({ title, body, heroImageUrl, accentColor }) => (
   <div style={{ height: "100%", display: "flex", gap: 48 }}>
-    <div style={{ width: "42%", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+    <div style={{ width: heroImageUrl ? "42%" : "100%", maxWidth: heroImageUrl ? undefined : 1200, display: "flex", flexDirection: "column", justifyContent: "center" }}>
       <div style={{ width: 48, height: 4, backgroundColor: accentColor, marginBottom: 20 }} />
       <div style={{ fontSize: 48, fontWeight: 800, lineHeight: 1.1, marginBottom: 24 }}>
         {title}
@@ -237,17 +268,11 @@ const LoanSlideBody: React.FC<{
         <div key={i} style={{ fontSize: 22, lineHeight: 1.5, marginBottom: 16, opacity: 0.85 }}>{p}</div>
       ))}
     </div>
-    <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
-      {heroImageUrl ? (
-        <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      ) : (
-        <div style={{
-          width: "100%", height: "100%", display: "flex",
-          alignItems: "center", justifyContent: "center",
-          color: "#9CA3AF", fontSize: 24,
-        }}>Photo placeholder</div>
-      )}
-    </div>
+    {heroImageUrl && (
+      <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
+        <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      </div>
+    )}
   </div>
 )
 
@@ -266,7 +291,14 @@ const SearchSlideBody: React.FC<{
           <div key={i} style={{ fontSize: 18, lineHeight: 1.4, marginTop: 8, opacity: 0.8 }}>{p}</div>
         ))}
       </div>
-      <div style={{ flex: 1, display: "flex", gap: 20 }}>
+      {/* WAVE 90 (lane 90E — the lane's AFTER render, after-BuyerConsultationSlide-
+          bodyEnd.png): the card row is a flex item whose min-height was `auto`, so
+          the cards grew to their content (a 1600×1200 listing photo) — 554 px in a
+          349 px row — and ran 200 px past the body region, under the caption band
+          and the nameplate. `minHeight: 0` down the chain and a photo box that is
+          a flex-basis with the image ABSOLUTE inside it: the row can only be as
+          tall as the region the stack leaves it. */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 20 }}>
         {three.length === 0 ? (
           <div style={{
             width: "100%", display: "flex", alignItems: "center", justifyContent: "center",
@@ -276,14 +308,14 @@ const SearchSlideBody: React.FC<{
           </div>
         ) : three.map((ex, i) => (
           <div key={i} style={{
-            flex: 1, borderRadius: 12, overflow: "hidden",
+            flex: 1, minHeight: 0, borderRadius: 12, overflow: "hidden",
             boxShadow: `0 4px 16px rgba(0,0,0,0.12)`,
             display: "flex", flexDirection: "column",
             border: `1px solid ${primaryColor}22`,
           }}>
-            <div style={{ height: "55%", backgroundColor: "#E5E7EB" }}>
+            <div style={{ flex: "0 0 55%", minHeight: 0, position: "relative", overflow: "hidden", backgroundColor: "#E5E7EB" }}>
               {ex.photoUrl ? (
-                <Img src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <SafeImg src={ex.photoUrl} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
                 <div style={{
                   width: "100%", height: "100%", display: "flex",
@@ -292,7 +324,7 @@ const SearchSlideBody: React.FC<{
                 }}>Photo</div>
               )}
             </div>
-            <div style={{ padding: "16px 20px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+            <div style={{ padding: "16px 20px", flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
               <div>
                 <div style={{ fontSize: 28, fontWeight: 800, color: accentColor, marginBottom: 4 }}>
                   {ex.price}
@@ -332,11 +364,13 @@ const OfferStrategyBody: React.FC<{
       ))}
     </div>
     <div style={{ width: "60%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      {children ?? (
-        <div style={{ color: "#9CA3AF", fontSize: 22, fontStyle: "italic" }}>
-          Strategy diagram loaded by the composer
-        </div>
-      )}
+      {/* No placeholder fallback: `bodyContent` is a ReactNode and cannot travel
+          through input_props JSON, so the live producer
+          (lib/buyer-consultation/consultation-render.ts) can never supply it —
+          a "loaded by the composer" placeholder here would ship in every
+          client-facing render. Absent children, the left column carries the
+          slide (title + body) and this panel stays clean. */}
+      {children ?? null}
     </div>
   </div>
 )
@@ -412,45 +446,12 @@ const ClosingSlideBody: React.FC<{
   </div>
 )
 
-/* ─────────── avatar PIP (shared shape) ─────────── */
-
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  startFrame:     number
-  endFrame:       number
-  accentColor:    string
-  primaryColor:   string
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", bottom: 64, right: 56,
-    width: 280, height: 280, borderRadius: 140,
-    boxShadow: `0 0 0 5px ${accentColor}, 0 24px 48px rgba(0,0,0,0.18)`,
-    overflow: "hidden", backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video src={avatarVideoUrl} startFrom={startFrame} endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring, backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 100, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// TOMBSTONE (§1 orphan doctrine — duplicate exists, merge onto survivor
+// first): the private `AvatarPIP` that stood here (bottom-right, 280×280,
+// `trimBefore={startFrame} trimAfter={endFrame}` with NO freeze/fade guard)
+// was byte-identical to ListingPresentationSlide.tsx's own private duplicate
+// and a `position`-less subset of the shared survivor. Wave 61 re-audit:
+// merged its "bottom-right" geometry onto remotion/components/AvatarPIP.tsx
+// (position="bottom-right" | size=280 | ringWidth=5), which also gives this
+// slide the avatarPipWindowFade freeze guard the private copy never had.
+// Survivor: remotion/components/AvatarPIP.tsx:52.

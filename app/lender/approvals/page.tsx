@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
@@ -16,7 +15,7 @@ export default async function LenderApprovalsPage() {
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, client_name, close_date, contract_price:purchase_price')
-    .in('status', ['pending', 'under_contract'])
+    .in('status', ['under_contract'])
     .order('close_date', { ascending: true })
     .limit(30)
 
@@ -42,12 +41,12 @@ export default async function LenderApprovalsPage() {
                 <div>
                   <p className="font-medium">{t.property_address || 'Address TBD'}</p>
                   <p className="text-sm text-gray-500">{t.client_name}</p>
-                  {t.close_date && <p className="text-xs text-gray-400">Close: {new Date(t.close_date).toLocaleDateString()}</p>}
+                  {t.close_date && <p className="text-xs text-gray-500">Close: {new Date(t.close_date).toLocaleDateString()}</p>}
                 </div>
                 <div className="flex items-center gap-2">
                   {t.contract_price && <span className="font-semibold text-green-700 text-sm">${t.contract_price.toLocaleString()}</span>}
                   {/* Approvals execute on the loan file (authorized lender actions live there) */}
-                  <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" asChild>
+                  <Button size="sm" className="bg-green-700 hover:bg-green-800 text-white" asChild>
                     <Link href={`/portal/lender/${t.id}`}>Open loan file</Link>
                   </Button>
                 </div>

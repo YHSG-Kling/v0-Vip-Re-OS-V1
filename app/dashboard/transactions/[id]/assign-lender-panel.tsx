@@ -51,7 +51,10 @@ export function AssignLenderPanel({
   const { toast } = useToast()
   const router = useRouter()
 
-  const canAssign = ["broker", "broker_admin", "admin", "superadmin", "tc", "agent", "team_lead"].includes(userType)
+  // SCOPE LADDER (kept inline — mirrors the assignLender action in
+  // app/actions/multi-persona.ts): 'superadmin' removed — dead as
+  // users.user_type (0 live rows); broker_owner added.
+  const canAssign = ["broker", "broker_owner", "broker_admin", "admin", "tc", "agent", "team_lead"].includes(userType)
   if (!canAssign) return null
 
   const currentLender = availableLenderUsers.find((l) => l.userId === currentLenderUserId)

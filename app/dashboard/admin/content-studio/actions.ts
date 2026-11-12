@@ -1,16 +1,11 @@
 "use server"
-import { createClient } from "@/lib/supabase/server"
 import { approveContentItem } from "@/lib/kernel/content-studio"
 import { revalidatePath } from "next/cache"
+import { authTenantAdminBrokerage as authBrokerage } from "@/lib/auth/require-caller"
 
-async function authBrokerage(): Promise<{ brokerageId: string; userId: string } | null> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return null
-  const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id || !["admin", "broker", "broker_admin", "superadmin", "team_lead"].includes(u.user_type ?? "")) return null
-  return { brokerageId: u.brokerage_id, userId: user.id }
-}
+// TOMBSTONE: local authBrokerage merged onto lib/auth/require-caller.ts
+// authTenantAdminBrokerage (imported above as `authBrokerage`) — §1/§6 SAME
+// BODY census round 3, 2026-09-09.
 
 export async function approveContentItemAction(id: string): Promise<{ ok: boolean; note?: string }> {
   const ctx = await authBrokerage()

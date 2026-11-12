@@ -9,11 +9,23 @@ import { generateTextRouted } from "@/lib/ai/models"
 
 export type SourceFamily = "raw" | "lead" | "contact_direct"
 
+// The wording-vs-quality discriminator (pure).
+import { diagnoseSource } from "@/lib/lead-pipeline/source-wording-diagnostic"
+// Lane 82B — lead cost by source: SOURCE_VENDOR's runtime reader + the ledger reconcile.
+import { ALL_SOURCE_KEYS, vendorForSource, type ScrapeVendor } from "@/lib/lead-pipeline/source-intent-map"
+import { leadCostBySource, type LeadCostLedger } from "@/lib/lead-pipeline/source-cost-ledger"
+// Lane 88B — the ONE tenant-paid spend rule (never the platform-paid cost_per_record).
+import { tenantPaidLeadSpend } from "@/lib/lead-pipeline/source-conversion-learning"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+
 export interface SourceMetrics {
   source: string
   source_family: SourceFamily
   source_channel: string | null
   source_subtype: string | null
+  /** Lane 82B — the scraping vendor SOURCE_VENDOR names for this source (null = not a scraped
+   *  source, e.g. a website form or a manual entry). Platform-paid; shown for lead-cost tracking. */
+  vendor: ScrapeVendor | null
 
   // Stage counts — populated per source family
   raw_record_count: number    // raw only
@@ -35,6 +47,10 @@ export interface SourceMetrics {
   roi_multiple: number
   cost_per_record: number
   cost_per_contact: number
+  /** spend / closed_count — the brokerage lead-cost report's headline number: what a CLOSED
+   *  deal from this source actually cost, not just what a raw record or a contact cost.
+   *  0 when nothing has closed yet (never divides by zero, never fabricates a figure). */
+  cost_per_conversion: number
 
   // Agent performance
   agent_count: number
@@ -47,6 +63,12 @@ export interface SourceMetrics {
 
   created_at_oldest: string | null
   created_at_newest: string | null
+
+  /**
+   * Is a weak source actually BAD, or is our copy not landing? Downranking a good
+   * source over a fixable opener throws away real leads. Null below min volume.
+   */
+  diagnostic: { verdict: string; recommendation: string; why: string } | null
 }
 
 export interface SourcePerformanceResult {
@@ -63,6 +85,12 @@ export interface SourcePerformanceResult {
     top_volume_source: string | null
     top_direct_source: string | null
   }
+  /** Lane 82B — per-source recorded lead cost reconciled to the platform vendor ledger
+   *  (vendor_usage_tracking rows booked per SourceKey by source-cost-ledger.ts::bookSourceSpend).
+   *  Lane 88B: PLATFORM-paid economics — returned ONLY to a platform-staff session (superadmin
+   *  view); a tenant caller never receives it (owner: raw lead acquisition + enrichment "are
+   *  platform paid", so they are not the tenant's lead cost). */
+  lead_cost_ledger?: LeadCostLedger
   error?: string
 }
 
@@ -111,11 +139,10 @@ export interface SourceDrilldownResult {
   error?: string
 }
 
-export interface SourceComparisonResult {
-  success: boolean
-  sources: SourceMetrics[]
-  error?: string
-}
+// TOMBSTONE: SourceComparisonResult went with getSourceComparison — see the
+// tombstone at the former call site below. Its only referent was that
+// function's return type; the surviving path types the same rows as
+// SourceMetrics[], which is what CompareDialog already accepts.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Filters
@@ -123,13 +150,53 @@ export interface SourceComparisonResult {
 
 export interface SourceAnalyticsFilter {
   brokerageId: string
+  /** ONE agent (agents.id — contacts/leads/transactions.agent_id all FK to agents, never users.id). */
   agentId?: string
+  /**
+   * Lane 90A: a team (teams.id) — declared here since the page shipped and READ
+   * BY NOTHING until now (the opposite-missing shape). Resolves to the team's
+   * agents.id set; "teams see only their own board" (CLAUDE.md §4).
+   */
   teamId?: string
+  /**
+   * Lane 90A: the RESOLVED scope from lib/kernel/reporting-scope.ts
+   * (resolveReportScope → agentIds): null = the whole brokerage, [] = a real
+   * scope with no agents (legitimately empty), [...] = exactly these agents.
+   * Wins over agentId / teamId when present.
+   */
+  agentIds?: string[] | null
   sourceFamilies?: SourceFamily[]
   dateFrom?: string
   dateTo?: string
   sortBy?: "roi" | "volume" | "revenue" | "appt_rate" | "close_rate" | "cost_efficiency"
   sortDir?: "asc" | "desc"
+}
+
+/**
+ * Lane 90A — ONE narrowing for every agent-keyed read in this module. Every
+ * `agent_id` filtered here is an agents.id (schema-fk-map: contacts / leads /
+ * transactions.agent_id → agents), so the ids handed in must be too. The pages
+ * used to pass `ctx.userId` (a users.id) for the agent view — a filter that
+ * matched nothing (CLAUDE.md §3, the disjoint-id trap) — while a broker OWNER
+ * got that empty agent view because the scope literal named only broker/admin.
+ * null = no narrowing (the whole brokerage).
+ */
+async function resolveScopeAgentIds(
+  supabase: { from: (t: string) => any },
+  f: Pick<SourceAnalyticsFilter, "brokerageId" | "agentId" | "agentIds" | "teamId">,
+): Promise<string[] | null> {
+  if (f.agentIds !== undefined) return f.agentIds
+  if (f.agentId) return [f.agentId]
+  if (f.teamId) {
+    const { data, error } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("brokerage_id", f.brokerageId)
+      .eq("team_id", f.teamId)
+    if (error) throw error
+    return (data ?? []).map((a: { id: string }) => a.id)
+  }
+  return null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,7 +208,8 @@ export async function getSourcePerformance(
 ): Promise<SourcePerformanceResult> {
   try {
     const supabase = await createClient()
-    const { brokerageId, agentId, dateFrom, dateTo, sourceFamilies, sortBy = "volume", sortDir = "desc" } = filter
+    const { brokerageId, agentId, agentIds, teamId, dateFrom, dateTo, sourceFamilies, sortBy = "volume", sortDir = "desc" } = filter
+    const scopeIds = await resolveScopeAgentIds(supabase, { brokerageId, agentId, agentIds, teamId })
 
     // Build date constraints
     const fromDate = dateFrom ?? new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
@@ -150,27 +218,30 @@ export async function getSourcePerformance(
     // ── 1. Contacts grouped by source + source_family ──────────────────────────
     let contactsQuery = supabase
       .from("contacts")
-      .select("id, source, source_family, source_channel, source_subtype, agent_id, cost_per_record, campaign_attribution_id, created_at")
+      .select("id, source, source_family, source_channel, source_subtype, agent_id, cost_per_record, acquisition_cost, campaign_attribution_id, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
       .is("deleted_at", null)
 
-    if (agentId) contactsQuery = contactsQuery.eq("agent_id", agentId)
+    if (scopeIds) contactsQuery = contactsQuery.in("agent_id", scopeIds)
     if (sourceFamilies?.length) contactsQuery = contactsQuery.in("source_family", sourceFamilies)
 
     const { data: contacts, error: cErr } = await contactsQuery
     if (cErr) throw cErr
 
     // ── 2. Leads grouped by source ─────────────────────────────────────────────
+    // acquisition_cost (m634, applied live 2026-09-15) is the TENANT-paid lead cost (lane 88B: the
+    // tenant's campaign cost share — lib/contact-promotion/acquisition-cost.ts). cost_per_record is
+    // still selected: it is the PLATFORM-paid raw cost the platform-only ledger reconcile reads.
     let leadsQuery = supabase
       .from("leads")
-      .select("id, source, source_family, source_channel, agent_id, cost_per_record, campaign_attribution_id, lifecycle_state, created_at, contact_id")
+      .select("id, source, source_family, source_channel, agent_id, cost_per_record, acquisition_cost, campaign_attribution_id, lifecycle_state, created_at, contact_id")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
 
-    if (agentId) leadsQuery = leadsQuery.eq("agent_id", agentId)
+    if (scopeIds) leadsQuery = leadsQuery.in("agent_id", scopeIds)
     if (sourceFamilies?.length && !sourceFamilies.includes("contact_direct")) {
       leadsQuery = leadsQuery.in("source_family", sourceFamilies)
     }
@@ -206,7 +277,7 @@ export async function getSourcePerformance(
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
 
-    if (agentId) txQuery = txQuery.eq("agent_id", agentId)
+    if (scopeIds) txQuery = txQuery.in("agent_id", scopeIds)
 
     const { data: transactions } = await txQuery
 
@@ -264,6 +335,7 @@ export async function getSourcePerformance(
           source_family: family,
           source_channel: channel ?? null,
           source_subtype: subtype ?? null,
+          vendor: vendorForSource(source || "unknown"),
           raw_record_count: 0,
           lead_count: 0,
           contact_count: 0,
@@ -274,11 +346,13 @@ export async function getSourcePerformance(
           contact_to_appt_rate: 0,
           appt_to_transaction_rate: 0,
           close_rate: 0,
+          diagnostic: null,
           total_spend: 0,
           revenue_attributed: 0,
           roi_multiple: 0,
           cost_per_record: 0,
           cost_per_contact: 0,
+          cost_per_conversion: 0,
           agent_count: 0,
           top_agent_id: null,
           top_agent_name: null,
@@ -304,7 +378,10 @@ export async function getSourcePerformance(
       const family = (l.source_family as SourceFamily) ?? "lead"
       const m = getOrCreate(l.source ?? "manual_entry", family, l.source_channel)
       m.lead_count++
-      m.total_spend += l.cost_per_record ?? 0
+      // Lane 88B — TENANT-paid spend only (acquisition_cost); the old cost_per_record fallback put
+      // the platform's scrape cost on the tenant's source report. Same rule as
+      // source-conversion-runner.ts::loadSourceConversions (tenantPaidLeadSpend).
+      m.total_spend += tenantPaidLeadSpend(l as { acquisition_cost?: number | null })
       if (l.contact_id) m.contact_count++
       if (l.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = l.campaign_attribution_id
@@ -323,11 +400,15 @@ export async function getSourcePerformance(
 
     // Process contacts
     const contactAgentCounts: Record<string, Record<string, number>> = {}
+    // contact_id → the sourceMap key, so engagement can be attributed per source.
+    const contactSourceKey = new Map<string, string>()
     contacts?.forEach(c => {
       const family = (c.source_family as SourceFamily) ?? "contact_direct"
       const m = getOrCreate(c.source ?? "website", family, c.source_channel, c.source_subtype)
+      contactSourceKey.set(c.id, `${m.source}::${m.source_family}`)
       m.contact_count++
-      m.total_spend += c.cost_per_record ?? 0
+      // Lane 88B — TENANT-paid spend only (acquisition_cost), same rule as the lead rows above.
+      m.total_spend += tenantPaidLeadSpend(c as { acquisition_cost?: number | null })
       if (c.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = c.campaign_attribution_id
         m.campaign_name = campaignNames[c.campaign_attribution_id] ?? null
@@ -406,10 +487,69 @@ export async function getSourcePerformance(
         m.roi_multiple = parseFloat((m.revenue_attributed / m.total_spend).toFixed(2))
         m.cost_per_record = parseFloat((m.total_spend / Math.max(upstream, 1)).toFixed(2))
         m.cost_per_contact = parseFloat((m.total_spend / Math.max(m.contact_count, 1)).toFixed(2))
+        // Cost-per-CONVERSION — the brokerage lead-cost report's headline: what a closed deal
+        // from this source/channel actually cost. Denominator is closed_count, not contact_count
+        // or upstream — a source can be cheap per-contact and still be a money pit if nothing
+        // it produces ever closes. Stays 0 (never divides, never fabricates) with no closes yet.
+        if (m.closed_count > 0) {
+          m.cost_per_conversion = parseFloat((m.total_spend / m.closed_count).toFixed(2))
+        }
+      }
+    }
+
+    // ── Engagement per source: replies to our outbound touches ────────────────
+    // The discriminator is ENGAGEMENT vs DOWNSTREAM CONVERSION. Open tracking does
+    // not exist on messages, so reply rate carries it (the stronger signal anyway).
+    const sentBySource = new Map<string, number>()
+    const repliedBySource = new Map<string, number>()
+    const allContactIds = [...contactSourceKey.keys()]
+    if (allContactIds.length > 0) {
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("contact_id, direction")
+        .eq("brokerage_id", brokerageId)
+        .in("contact_id", allContactIds.slice(0, 1000))
+        .gte("created_at", fromDate)
+      for (const m of (msgs ?? []) as Array<{ contact_id: string; direction: string | null }>) {
+        const src = contactSourceKey.get(m.contact_id)
+        if (!src) continue
+        const bucket = m.direction === "inbound" ? repliedBySource : sentBySource
+        bucket.set(src, (bucket.get(src) ?? 0) + 1)
       }
     }
 
     let sources = Array.from(sourceMap.values())
+
+    // Brokerage medians — "low" must be relative to this brokerage, not absolute.
+    const median = (xs: number[]) => {
+      const v = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b)
+      return v.length === 0 ? 0 : v[Math.floor(v.length / 2)]
+    }
+    const benchmarks = {
+      leadToContactRate: median(sources.map((x) => x.lead_to_contact_rate)),
+      contactToApptRate: median(sources.map((x) => x.contact_to_appt_rate)),
+      earlyStepReplyRate: median(
+        sources.map((x) => {
+          const k = `${x.source}::${x.source_family}`
+          const sent = sentBySource.get(k) ?? 0
+          return sent > 0 ? (repliedBySource.get(k) ?? 0) / sent : 0
+        }),
+      ),
+    }
+    for (const m of sources) {
+      const key = `${m.source}::${m.source_family}`
+      const sent = sentBySource.get(key) ?? 0
+      m.diagnostic = diagnoseSource({
+        leadToContactRate: m.lead_to_contact_rate,
+        contactToApptRate: m.contact_to_appt_rate,
+        closeRate: m.close_rate,
+        earlyStepOpenRate: null,
+        earlyStepReplyRate: sent > 0 ? (repliedBySource.get(key) ?? 0) / sent : null,
+        sentVolume: sent,
+        benchmarks,
+      })
+    }
+
 
     // Sort
     const sortFn: Record<string, (a: SourceMetrics, b: SourceMetrics) => number> = {
@@ -440,7 +580,42 @@ export async function getSourcePerformance(
         .sort((a, b) => b.close_rate - a.close_rate)[0]?.source ?? null,
     }
 
-    return { success: true, sources, summary }
+    // ── Lead cost by source, reconciled to the platform vendor ledger (lane 82B) ──
+    // Lane 88B: this is the PLATFORM's economics (raw acquisition is platform-paid — owner: "not what
+    // was included in their subscription like raw lead acquisition, enrichment which are platform
+    // paid"), so it is computed and returned ONLY for a platform-staff session. Identity from the
+    // SESSION (CLAUDE.md §4), platform staff from platform_role (isPlatformStaffIdentity); a refused
+    // profile read is NOT platform (fail closed — the tenant simply gets no ledger).
+    let lead_cost_ledger: LeadCostLedger | undefined
+    const { data: { user: viewer } } = await supabase.auth.getUser()
+    let platformViewer = false
+    if (viewer) {
+      const { data: viewerRow, error: viewerErr } = await supabase.from("users")
+        .select("user_type, platform_role").eq("id", viewer.id).maybeSingle()
+      if (viewerErr) console.warn("[source-analytics] viewer profile read refused — platform ledger withheld:", viewerErr.message)
+      const v = (viewerRow ?? null) as { user_type?: string | null; platform_role?: string | null } | null
+      platformViewer = !viewerErr && isPlatformStaffIdentity(v?.user_type ?? null, v?.platform_role ?? null)
+    }
+    if (platformViewer) {
+      // Rows booked by bookSourceSpend carry usage_type = the SourceKey, so the ledger read is
+      // scoped to scraping spend only (skip-trace/AI/etc. never enter this reconcile).
+      const { data: ledgerRows, error: ledgerErr } = await supabase
+        .from("vendor_usage_tracking")
+        .select("vendor_name, total_cost")
+        .eq("brokerage_id", brokerageId)
+        .in("usage_type", ALL_SOURCE_KEYS as string[])
+        .gte("created_at", fromDate)
+        .lte("created_at", toDate)
+      if (ledgerErr) console.warn("[source-analytics] vendor ledger read refused — lead cost shows recorded cost only:", ledgerErr.message)
+      lead_cost_ledger = leadCostBySource(
+        [
+          ...((leads ?? []) as Array<{ source: string | null; source_channel: string | null; cost_per_record: number | null; acquisition_cost?: number | null }>),
+        ],
+        (ledgerRows ?? []) as Array<{ vendor_name: string | null; total_cost: number | null }>,
+      )
+    }
+
+    return { success: true, sources, summary, lead_cost_ledger }
   } catch (err) {
     console.error("[source-analytics] getSourcePerformance error:", err)
     return {
@@ -463,7 +638,8 @@ export async function getSourcePerformance(
 export async function getSourceDrilldown(
   brokerageId: string,
   sourceKey: string, // format: "source_name::source_family"
-  agentId?: string,
+  /** Lane 90A: the resolved scope (see SourceAnalyticsFilter.agentIds) — was a single users.id that matched nothing. */
+  scopeAgentIds?: string[] | null,
   dateFrom?: string,
   dateTo?: string
 ): Promise<SourceDrilldownResult> {
@@ -472,11 +648,12 @@ export async function getSourceDrilldown(
     const [sourceName, sourceFamily] = sourceKey.split("::")
     const fromDate = dateFrom ?? new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
     const toDate = dateTo ?? new Date().toISOString()
+    const scopeIds: string[] | null = scopeAgentIds ?? null
 
     // Build base metrics via getSourcePerformance filtered to this source
     const perfResult = await getSourcePerformance({
       brokerageId,
-      agentId,
+      agentIds: scopeIds,
       dateFrom: fromDate,
       dateTo: toDate,
     })
@@ -494,7 +671,7 @@ export async function getSourceDrilldown(
       .gte("created_at", fromDate)
       .order("created_at", { ascending: false })
       .limit(20)
-    if (agentId) contactsQuery = contactsQuery.eq("agent_id", agentId)
+    if (scopeIds) contactsQuery = contactsQuery.in("agent_id", scopeIds)
     const { data: recentContacts } = await contactsQuery
 
     // Recent leads (for raw/lead families)
@@ -508,7 +685,7 @@ export async function getSourceDrilldown(
         .gte("created_at", fromDate)
         .order("created_at", { ascending: false })
         .limit(15)
-      if (agentId) leadsQuery = leadsQuery.eq("agent_id", agentId)
+      if (scopeIds) leadsQuery = leadsQuery.in("agent_id", scopeIds)
       const { data: leadsData } = await leadsQuery
       recentLeadsData = leadsData?.map(l => ({
         id: l.id,
@@ -528,7 +705,7 @@ export async function getSourceDrilldown(
       .gte("created_at", fromDate)
       .order("created_at", { ascending: false })
       .limit(10)
-    if (agentId) txQuery = txQuery.eq("agent_id", agentId)
+    if (scopeIds) txQuery = txQuery.in("agent_id", scopeIds)
     const { data: txData } = await txQuery
 
     // Agent name lookup
@@ -538,11 +715,21 @@ export async function getSourceDrilldown(
     ])]
     let agentNames: Record<string, string> = {}
     if (agentIds.length > 0) {
-      const { data: agentRows } = await supabase
-        .from("users")
-        .select("id, first_name, last_name")
+      // Lane 90A: these are agents.id values (contacts / transactions.agent_id
+      // → agents), so the name lives one hop away on the agents → users join.
+      // Looking them up in `users` by id matched nothing (CLAUDE.md §3) and
+      // every recent contact rendered without an agent name.
+      const { data: agentRows, error: agentRowsError } = await supabase
+        .from("agents")
+        .select("id, users(first_name, last_name)")
         .in("id", agentIds.slice(0, 50))
-      agentRows?.forEach(a => { agentNames[a.id] = `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() })
+      if (agentRowsError) console.error("[source-analytics] agent name read refused:", agentRowsError.message)
+      // The generated types read the to-one `users` embed as an array; it is one
+      // row (agents.user_id → users.id) — same handling as the pipeline page.
+      ;(agentRows ?? []).forEach((a: any) => {
+        const u = (Array.isArray(a.users) ? a.users[0] : a.users) as { first_name?: string | null; last_name?: string | null } | null
+        agentNames[a.id] = `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim()
+      })
     }
 
     // Monthly timeline
@@ -758,18 +945,18 @@ export async function exportSourceCSV(
     if (!result.success) return { success: false, csv: "", error: result.error }
 
     const headers = [
-      "Source", "Source Family", "Channel", "Subtype",
+      "Source", "Source Family", "Channel", "Subtype", "Vendor",
       "Raw Records", "Leads", "Contacts", "Appointments", "Transactions", "Closed",
       "Lead→Contact Rate", "Contact→Appt Rate", "Close Rate",
-      "Total Spend", "Revenue Attributed", "ROI Multiple", "Cost Per Contact",
+      "Total Spend", "Revenue Attributed", "ROI Multiple", "Cost Per Contact", "Cost Per Conversion",
       "Top Agent", "Campaign",
     ]
 
     const rows = result.sources.map(s => [
-      s.source, s.source_family, s.source_channel ?? "", s.source_subtype ?? "",
+      s.source, s.source_family, s.source_channel ?? "", s.source_subtype ?? "", s.vendor ?? "",
       s.raw_record_count, s.lead_count, s.contact_count, s.appointment_count, s.transaction_count, s.closed_count,
       `${s.lead_to_contact_rate}%`, `${s.contact_to_appt_rate}%`, `${s.close_rate}%`,
-      `$${s.total_spend.toFixed(2)}`, `$${s.revenue_attributed.toFixed(2)}`, `${s.roi_multiple}x`, `$${s.cost_per_contact.toFixed(2)}`,
+      `$${s.total_spend.toFixed(2)}`, `$${s.revenue_attributed.toFixed(2)}`, `${s.roi_multiple}x`, `$${s.cost_per_contact.toFixed(2)}`, `$${s.cost_per_conversion.toFixed(2)}`,
       s.top_agent_name ?? "", s.campaign_name ?? "",
     ])
 
@@ -827,7 +1014,7 @@ export async function emailSourceReport(
 </table>
 `
 
-    await supabase.from("email_queue").insert({
+    const { error: notifyError } = await supabase.from("email_queue").insert({
       brokerage_id: brokerageId,
       to_email: toEmail,
       to_name: toName,
@@ -836,6 +1023,7 @@ export async function emailSourceReport(
       status: "pending",
       attempts: 0,
     })
+    if (notifyError) console.warn("[source-analytics.ts] email_queue insert refused — the bell will not ring:", notifyError.message)
 
     return { success: true }
   } catch (err) {
@@ -844,19 +1032,33 @@ export async function emailSourceReport(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getSourceComparison — compare 2-4 sources side by side
-// ─────────────────────────────────────────────────────────────────────────────
-
-export async function getSourceComparison(
-  brokerageId: string,
-  sourceKeys: string[], // ["source_name::family", ...]
-  filter: SourceAnalyticsFilter
-): Promise<SourceComparisonResult> {
-  try {
-    const result = await getSourcePerformance({ ...filter, brokerageId })
-    const sources = result.sources.filter(s => sourceKeys.includes(`${s.source}::${s.source_family}`))
-    return { success: true, sources }
-  } catch (err) {
-    return { success: false, sources: [], error: err instanceof Error ? err.message : "Comparison failed" }
-  }
-}
+// TOMBSTONE: getSourceComparison + SourceComparisonResult were removed here.
+// SURVIVOR: app/dashboard/analytics/source/source-analytics-client.tsx:501
+//
+//     const selectedSources = sources.filter(
+//       s => selectedKeys.has(`${s.source}::${s.source_family}`))
+//
+// which is handed straight to <CompareDialog sources={selectedSources} />.
+//
+// This action was IMPORTED by that client and never called — the compare
+// feature was fully built (row checkboxes, a Compare button gated on
+// `selectedKeys.size >= 2`, and CompareDialog) and wired to the client-side
+// filter instead. The two produced the same rows by construction: the user can
+// only tick sources that are already rendered, and both filter on the identical
+// `${source}::${source_family}` key.
+//
+// So the survivor is not merely equivalent, it is better on two counts. It
+// needs no round-trip for data the page already holds; and it does not take
+// `brokerageId: string` FROM THE CALLER, which this action did — a
+// caller-supplied tenant handed to a server action is the IDOR shape CLAUDE.md
+// §4 rules out, and it was live on this export.
+//
+// Nothing was merged onto the survivor because nothing was missing from it: the
+// deleted function's whole body was `getSourcePerformance(...)` followed by the
+// same key filter, and getSourcePerformance remains exported and reached.
+//
+// (This was first mistaken for a plain "dead import" and removed from the
+// client alone. That left the action orphaned — capability deleted rather than
+// resolved — and scripts/wired-surface-guard.ts caught it by name. A dead
+// import whose target is a server action is never just a dead import: it is one
+// half of an unwired pair, and it has to be decided, not swept.)

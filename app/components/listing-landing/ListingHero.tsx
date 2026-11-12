@@ -3,16 +3,17 @@
 import { useState } from "react"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { ChevronLeft, ChevronRight, Play, Calendar, Home } from "lucide-react"
 import { trackCtaClick } from "@/app/actions/listing-landing"
 import { cn } from "@/lib/utils"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
 
 interface ListingHeroProps {
   photos: Array<{
     id: string
     photo_url: string
-    order_index: number
+    sort_order: number
   }>
   media: Array<{
     id: string
@@ -76,6 +77,7 @@ export function ListingHero({
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label="Previous photo"
                   className="absolute left-4 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background"
                   onClick={handlePrevious}
                 >
@@ -84,6 +86,7 @@ export function ListingHero({
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label="Next photo"
                   className="absolute right-4 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background"
                   onClick={handleNext}
                 >
@@ -92,10 +95,14 @@ export function ListingHero({
               </>
             )}
 
-            {/* Photo count */}
-            <div className="absolute top-4 right-4 bg-background/80 px-3 py-1 rounded-full text-sm">
-              {currentIndex + 1} / {photos.length}
-            </div>
+            {/* Photo count — opens the full gallery */}
+            <button
+              type="button"
+              onClick={() => setIsGalleryOpen(true)}
+              className="absolute top-4 right-4 bg-background/80 hover:bg-background px-3 py-1 rounded-full text-sm"
+            >
+              {currentIndex + 1} / {photos.length} · View all
+            </button>
           </>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -121,10 +128,15 @@ export function ListingHero({
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-4xl p-0">
+              {/* Radix requires a title (screen readers announce it); visually the video is the content. */}
+              <DialogTitle className="sr-only">Video tour of {address}</DialogTitle>
               <div className="aspect-video">
-                <video
+                {/* ONE video slot (wave 142, lane 142F): the visitor pressed Play, so autoplay is
+                    theirs; the first photo is the poster and a dead source falls back to it. */}
+                <LandingVideo
                   src={videoMedia[0].media_url}
-                  controls
+                  poster={primaryPhoto ?? null}
+                  title={`${address} video tour`}
                   autoPlay
                   className="w-full h-full"
                 />
@@ -160,6 +172,63 @@ export function ListingHero({
           </div>
         </div>
       )}
+
+      {/* Full-photo gallery — opened from the "X / N" counter above */}
+      <Dialog open={isGalleryOpen} onOpenChange={setIsGalleryOpen}>
+        <DialogContent className="max-w-5xl p-0">
+          <DialogTitle className="sr-only">Photo gallery for {address}</DialogTitle>
+          <div className="relative aspect-[16/9] bg-black">
+            {photos[currentIndex]?.photo_url && (
+              <Image
+                src={photos[currentIndex].photo_url}
+                alt={`${address} - Photo ${currentIndex + 1}`}
+                fill
+                className="object-contain"
+              />
+            )}
+            {photos.length > 1 && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Previous photo"
+                  className="absolute left-4 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background"
+                  onClick={handlePrevious}
+                >
+                  <ChevronLeft className="h-6 w-6" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Next photo"
+                  className="absolute right-4 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background"
+                  onClick={handleNext}
+                >
+                  <ChevronRight className="h-6 w-6" />
+                </Button>
+              </>
+            )}
+          </div>
+          <div className="bg-muted/50 py-3 px-4 overflow-x-auto">
+            <div className="flex gap-2">
+              {photos.map((photo, index) => (
+                <button
+                  key={photo.id}
+                  onClick={() => setCurrentIndex(index)}
+                  className={cn(
+                    "relative flex-shrink-0 w-16 h-12 rounded-md overflow-hidden border-2 transition-all",
+                    currentIndex === index
+                      ? "border-primary ring-2 ring-primary/30"
+                      : "border-transparent hover:border-muted-foreground/30"
+                  )}
+                >
+                  <Image src={photo.photo_url} alt={`Thumbnail ${index + 1}`} fill className="object-cover" />
+                </button>
+              ))}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Sticky Schedule Button */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 md:hidden">

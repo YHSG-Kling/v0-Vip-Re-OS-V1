@@ -1,5 +1,5 @@
 export { AcademyCommandStrip } from "./academy-command-strip"
-export { LearningPathPanel } from "./learning-path-panel"
+export { LearningPathPanel, FOCUS_AREAS } from "./learning-path-panel"
 export { ReadinessRadar } from "./readiness-radar"
 export { TrainingProgressPanel } from "./training-progress-panel"
 export { AiTutorPanel } from "./ai-tutor-panel"

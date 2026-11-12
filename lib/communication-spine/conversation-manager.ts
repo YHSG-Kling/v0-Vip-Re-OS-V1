@@ -86,19 +86,42 @@ export async function getOrCreateConversation(
       }
     }
 
+    // THE CONTACT IS THE CONVERSATION'S TENANT. conversations.contact_id FKs
+    // contacts, so the owning brokerage of the thread is the owning brokerage of
+    // the contact — never the caller's ambient context, which for an inbound
+    // webhook is nobody's. This row is read back through `.eq("brokerage_id", …)`
+    // by every consumer (contact-details, ai-chat, ai-communication-hub,
+    // conversation-memory, the communications dashboard), so a conversation
+    // created without the stamp is a row that exists and can never be opened —
+    // exactly the failure app/actions/ai-chat.ts already documents at its own
+    // insert. Every message later written into it inherits that invisibility.
+    //
+    // One read now serves both NOT NULL-ish anchors (agent_id is NOT NULL, and
+    // brokerage_id is what makes the row reachable), and its `error` is
+    // destructured: supabase-js RESOLVES a refused read, so `data`-only would
+    // turn "permission denied" into "this contact has no brokerage" and write
+    // the unanchored row anyway.
+    const { data: contactRow, error: contactError } = await supabase
+      .from('contacts')
+      .select('agent_id, brokerage_id')
+      .eq('id', context.contactId)
+      .maybeSingle()
+
+    if (contactError) {
+      console.error('[v0] [COMMUNICATION SPINE] Error loading contact for conversation:', contactError)
+      return { success: false, error: `Could not read contact ${context.contactId}: ${contactError.message}` }
+    }
+
     // conversations.agent_id is NOT NULL — resolve the owning agent from the
     // contact when the caller didn't supply one (e.g. inbound messages).
-    let resolvedAgentId = context.agentId
-    if (!resolvedAgentId) {
-      const { data: contactRow } = await supabase
-        .from('contacts')
-        .select('agent_id')
-        .eq('id', context.contactId)
-        .maybeSingle()
-      resolvedAgentId = contactRow?.agent_id ?? undefined
-    }
+    const resolvedAgentId = context.agentId ?? contactRow?.agent_id ?? undefined
     if (!resolvedAgentId) {
       return { success: false, error: 'No agent associated with contact — cannot create conversation' }
+    }
+
+    const resolvedBrokerageId = contactRow?.brokerage_id ?? null
+    if (!resolvedBrokerageId) {
+      return { success: false, error: 'No brokerage associated with contact — cannot create conversation' }
     }
 
     // Create new conversation
@@ -107,6 +130,7 @@ export async function getOrCreateConversation(
       .insert({
         contact_id: context.contactId,
         agent_id: resolvedAgentId,
+        brokerage_id: resolvedBrokerageId,
         type: context.initialChannel || 'email',
         status: 'active',
         message_count: 0,

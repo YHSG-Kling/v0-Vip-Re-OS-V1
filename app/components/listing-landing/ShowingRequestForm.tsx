@@ -1,13 +1,14 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { submitShowingRequest } from "@/app/actions/listing-landing"
-import { Checkbox } from "@/components/ui/checkbox"
+import { getListingConsentBrand, submitShowingRequest } from "@/app/actions/listing-landing"
+// C15 (wave 148, lane 148B): the ONE consent component — this form no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 import { Calendar, CheckCircle2, Loader2 } from "lucide-react"
 
 type RepresentationStatus = "unrepresented" | "represented" | "prefer_not_to_say"
@@ -27,7 +28,10 @@ export function ShowingRequestForm({
   const [isSuccess, setIsSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirmedAgentName, setConfirmedAgentName] = useState<string>("")
-  const [tcpaConsent, setTcpaConsent] = useState(false)
+  const [consentBrand, setConsentBrand] = useState("our brokerage")
+  const consent = useConsentBoxes("showing_request", consentBrand)
+  // The consent names exactly what the door re-renders (THE one brand rule — the listing's agent, else its brokerage).
+  useEffect(() => { getListingConsentBrand(listingId).then((b) => setConsentBrand(b.brandName)).catch(() => null) }, [listingId])
   // NAR Code of Ethics Article 16 — if the buyer already has an agent, our agent
   // can't take them on. We capture the disclosure here so the conversion gate
   // (app/actions/convert-outside-inquiry.ts) can refuse promotion later.
@@ -37,6 +41,10 @@ export function ShowingRequestForm({
     e.preventDefault()
     if (!representation) {
       setError("Please tell us whether you're currently working with another real estate agent.")
+      return
+    }
+    if (!consent.serviceGiven) {
+      setError("Please tick the first consent box (the service follow-up) so the agent can confirm your showing.")
       return
     }
     setIsSubmitting(true)
@@ -53,7 +61,7 @@ export function ShowingRequestForm({
       preferredDateTime: formData.get("preferredDateTime") as string,
       notes: formData.get("notes") as string,
       sessionToken,
-      tcpaConsent,
+      consent: consent.submission,
       representationStatus: representation,
     })
 
@@ -201,25 +209,8 @@ export function ShowingRequestForm({
             )}
           </fieldset>
 
-          {/* TCPA consent — governs channel permission, not lead creation */}
-          <label className="flex items-start gap-2 cursor-pointer">
-            <Checkbox
-              id="tcpa-showing"
-              checked={tcpaConsent}
-              onCheckedChange={(v) => setTcpaConsent(!!v)}
-              className="mt-0.5 shrink-0"
-            />
-            <span className="text-xs text-muted-foreground leading-relaxed">
-              I agree to receive calls, texts, and emails from {agentName} and this brokerage regarding
-              real estate services. Consent is not required for purchase. Message and data rates may apply.
-            </span>
-          </label>
-
-          {!tcpaConsent && (
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-              Without consent, we can only follow up by email.
-            </p>
-          )}
+          {/* C15 — the ONE consent component (service delivery required; marketing optional, per channel). */}
+          <ConsentBoxes {...consent.boxProps} idPrefix="showing-consent" />
 
           {error && (
             <p className="text-sm text-destructive">{error}</p>

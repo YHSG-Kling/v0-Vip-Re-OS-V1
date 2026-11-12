@@ -25,7 +25,15 @@ export const VOICE_AUTHORITY_MATRIX = {
   // Buyer Commands
   configure_buyer_search: ['agent'],
   lender_confirm_financials: ['vendor'], // Lender only
-  admin_override_financial_gate: ['admin', 'broker'],
+  // OWNER RULING (wave 5): "admin or agent can override the finiancing gate".
+  // 'agent' is admitted HERE at the coarse role tier only. The fine-grained rule —
+  // an agent may override ONLY for a contact they are the agent of record on, while
+  // the admin/broker family keeps brokerage-wide reach — is enforced downstream in
+  // lib/buyer-execution/multi-party-updates.ts:resolveFinancialGateOverrideAuthority,
+  // which both the server action and the lib function consult. Widening this list
+  // without that downstream rule would hand every agent in a brokerage the power to
+  // lift any buyer's financing gate.
+  admin_override_financial_gate: ['admin', 'broker', 'agent'],
   query_buyer_stage: ['agent', 'team_lead', 'admin', 'broker'],
 
   // Showing Commands

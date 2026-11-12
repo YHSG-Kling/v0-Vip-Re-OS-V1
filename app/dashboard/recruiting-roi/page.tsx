@@ -1,15 +1,16 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AlertCircle, TrendingUp, Clock, Users, DollarSign, Target } from "lucide-react"
+import { TrendingUp, Clock, Users, DollarSign, Target } from "lucide-react"
 import {
   getRecruitingROISummary,
   getRecruitROIByRecruit,
   getRecruitingCostBreakdown,
   getBreakEvenAnalysis,
   getRecruitingAnalyticsByYear,
+  listRecruitableAgents,
+  getRecruitingNeeds,
 } from "@/app/actions/recruiting-roi"
 import { YearlyRevenueChart } from "./yearly-revenue-chart"
 import { BreakEvenChart } from "./breakeven-chart"
@@ -17,6 +18,10 @@ import { LTVScatterChart } from "./ltv-scatter-chart"
 import { RecruitROITable } from "./recruit-roi-table"
 import { CostEntryPanel } from "./cost-entry-panel"
 import { RecruitingPipelineClient } from "./recruiting-pipeline-client"
+import { RecruitingPitchPanel } from "./recruiting-pitch-panel"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -26,6 +31,13 @@ export default async function RecruitingROIPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users")
     .select("id, user_type, role, brokerage_id")
@@ -36,8 +48,8 @@ export default async function RecruitingROIPage() {
 
   // Check RBAC — user_type is canonical; role is legacy fallback
   const resolvedType = profile?.user_type ?? profile?.role ?? ""
-  if (!["broker", "admin", "superadmin"].includes(resolvedType)) {
-    redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: resolvedType })) {
+    return <RoleGateNotice surface="Recruiting ROI" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // Fetch all data in parallel
@@ -46,14 +58,84 @@ export default async function RecruitingROIPage() {
     recruitROIs,
     costBreakdown,
     breakEvenAnalysis,
-    yearlyAnalytics,
+    recruitableAgents,
   ] = await Promise.all([
-    getRecruitingROISummary(profile.brokerage_id),
-    getRecruitROIByRecruit(profile.brokerage_id),
-    getRecruitingCostBreakdown(profile.brokerage_id),
-    getBreakEvenAnalysis(profile.brokerage_id),
-    getRecruitingAnalyticsByYear(profile.brokerage_id, "").catch(() => []),
+    // Tenant comes from the SESSION inside each action (§4) — no id is passed.
+    getRecruitingROISummary(),
+    getRecruitROIByRecruit(),
+    getRecruitingCostBreakdown(),
+    getBreakEvenAnalysis(),
+    // The cost-entry picker's agent list (agents.id + name). A refused read
+    // leaves the picker empty and SAYS so — it does not become a free-text box.
+    listRecruitableAgents().catch(() => [] as Awaited<ReturnType<typeof listRecruitableAgents>>),
   ])
+
+  // ── "Revenue by Agent — Year 1-3": ONE SERIES PER RECRUIT ───────────────────
+  //
+  // UNTIL 2026-09-03 this called getRecruitingAnalyticsByYear("") — an EMPTY
+  // recruit id against a uuid column — so the query threw, the .catch() turned it
+  // into [], and the chart rendered "No revenue data available yet" for every
+  // tenant forever. The chart (yearly-revenue-chart.tsx) wants one row PER RECRUIT
+  // carrying the recruit's name and year1/2/3 revenue; the action returns one row
+  // per (recruit, year_number). So: iterate this tenant's RECRUITED agents and
+  // pivot. The recruited set is recruitROIs (recruiting_roi has one row per
+  // recruited agent, and the writer creates it from the same recruiting_analytics
+  // rows this reads) rather than the full roster from listRecruitableAgents — the
+  // roster is every agent the brokerage has, most of whom were never recruited
+  // through this funnel, and each extra id is a gated round trip for a row that
+  // cannot exist. Per-recruit refusals degrade to an empty series for THAT
+  // recruit; a bar that cannot be read is absent, never zero.
+  type RecruitRoiRow = {
+    recruited_agent_id: string | null
+    agents?: { users?: { first_name?: string | null; last_name?: string | null } | null } | null
+  }
+  const recruitedIds = Array.from(
+    new Set(
+      ((recruitROIs ?? []) as unknown as RecruitRoiRow[])
+        .map((r) => r.recruited_agent_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  )
+  const namesByAgentId = new Map<string, { first_name: string | null; last_name: string | null }>()
+  for (const r of (recruitROIs ?? []) as unknown as RecruitRoiRow[]) {
+    if (r.recruited_agent_id && !namesByAgentId.has(r.recruited_agent_id)) {
+      namesByAgentId.set(r.recruited_agent_id, {
+        first_name: r.agents?.users?.first_name ?? null,
+        last_name: r.agents?.users?.last_name ?? null,
+      })
+    }
+  }
+  const perRecruitSeries = await Promise.all(
+    recruitedIds.map(async (agentId) => {
+      const rows = await getRecruitingAnalyticsByYear(agentId).catch(() => [])
+      const byYear = new Map<number, number>()
+      // recruiting_analytics.computed_at — the newest yearly rollup behind this series.
+      let seriesComputedAt: string | null = null
+      for (const row of rows as Array<{ year_number: number | null; gross_commission_generated: number | null; computed_at: string | null }>) {
+        if (typeof row.year_number === "number") {
+          byYear.set(row.year_number, (byYear.get(row.year_number) ?? 0) + Number(row.gross_commission_generated ?? 0))
+        }
+        const at = row.computed_at
+        if (typeof at === "string" && at && (!seriesComputedAt || at > seriesComputedAt)) seriesComputedAt = at
+      }
+      return {
+        computedAt: seriesComputedAt,
+        recruited_agent_id: agentId,
+        agents: namesByAgentId.get(agentId) ?? { first_name: null, last_name: null },
+        year1_revenue: byYear.get(1) ?? 0,
+        year2_revenue: byYear.get(2) ?? 0,
+        year3_revenue: byYear.get(3) ?? 0,
+        hasData: byYear.size > 0,
+      }
+    }),
+  )
+  const yearlyAnalytics = perRecruitSeries.filter((s) => s.hasData)
+  // The newest recruiting_analytics.computed_at across every series actually drawn.
+  const analyticsComputedAt = yearlyAnalytics
+    .map((s) => s.computedAt)
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .sort()
+    .pop() ?? null
 
   const totalInvested = roiSummary?.totalInvested || 0
   const totalGenerated = roiSummary?.totalGenerated || 0
@@ -71,12 +153,34 @@ export default async function RecruitingROIPage() {
     .order("created_at", { ascending: false })
     .limit(100)
 
+  // Wave 106E — the twin's recruiting NEEDS and the missions they became (app/actions/recruiting-roi.ts
+  // getRecruitingNeeds). A refusal renders as a blind spot on the block, never as "no needs".
+  const recruitingNeeds = await getRecruitingNeeds().catch((e) => ({
+    needs: [], missions: [], workforceLine: null, twinAt: null,
+    blindSpots: [`recruiting needs unavailable: ${e instanceof Error ? e.message : String(e)}`],
+  }))
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Recruiting ROI</h1>
         <p className="text-muted-foreground mt-1">
           Track recruiting costs, monitor agent profitability, and optimize hiring strategy
+        </p>
+        {/* FRESHNESS — recruiting_roi.computed_at (and, below the chart,
+            recruiting_analytics.computed_at). Every figure on this page is a stored
+            rollup, and a recompute can fail silently after a cost entry
+            (app/actions/recruiting-roi.ts:addRecruitingCost catches and logs). A money
+            number that will not say when it was computed is the defect; the OLDEST
+            stamp is shown too, because a sum is only as current as its stalest row. */}
+        <p className="text-xs text-muted-foreground mt-1">
+          {roiSummary?.computedAt
+            ? `ROI recomputed ${new Date(roiSummary.computedAt).toLocaleString()}${
+                roiSummary.oldestComputedAt && roiSummary.oldestComputedAt !== roiSummary.computedAt
+                  ? ` · oldest recruit rollup ${new Date(roiSummary.oldestComputedAt).toLocaleDateString()}`
+                  : ""
+              }`
+            : "No recompute timestamp on record — these figures cannot be dated."}
         </p>
       </div>
 
@@ -174,6 +278,55 @@ export default async function RecruitingROIPage() {
 
         {/* Tab 1: Analysis */}
         <TabsContent value="pipeline" className="space-y-4">
+          {/* The pitch is the top of this funnel: it is what the public careers page
+              says and what the Recruiting Manager's outreach one-pager is built from.
+              It had no editor anywhere in the app until now — see
+              app/actions/settings/recruiting-pitch.ts. */}
+          <RecruitingPitchPanel />
+          {/* Wave 106E — NEEDS: what the brokerage twin says the roster lacks (territory demand ↑ vs
+              capacity vs specialist coverage) and the recruiting missions holding those needs for
+              your approval. Approve on the Command Center's Missions card; an approved (ACTIVE)
+              mission's territory + specialization becomes the sourcer's search criteria. */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Target className="h-5 w-5" />Recruiting needs</CardTitle>
+              <CardDescription>
+                {recruitingNeeds.workforceLine ?? "No workforce profile yet"}{recruitingNeeds.twinAt ? ` · twin as of ${recruitingNeeds.twinAt.slice(0, 16).replace("T", " ")}` : ""}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {recruitingNeeds.needs.length === 0 && recruitingNeeds.missions.length === 0 && (
+                <p className="text-sm text-muted-foreground">No territory shows rising seller demand the roster cannot absorb.</p>
+              )}
+              {recruitingNeeds.needs.map((n) => (
+                <div key={`${n.territory}-${n.specialization}`} className="rounded-md border p-3">
+                  <div className="text-sm font-medium">{n.count} {n.specialization} listing agent{n.count === 1 ? "" : "s"} needed in {n.territory}</div>
+                  <ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">{n.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+                </div>
+              ))}
+              {recruitingNeeds.missions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-muted-foreground">Recruiting missions</div>
+                  {recruitingNeeds.missions.map((m) => (
+                    <div key={m.id} className="flex items-center justify-between text-sm">
+                      <span>{m.objective}</span>
+                      <span className={`text-xs rounded px-2 py-0.5 ${m.state === "ACTIVE" ? "bg-green-50 text-green-700" : m.state === "APPROVAL_REQUIRED" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-700"}`}>
+                        {m.state === "APPROVAL_REQUIRED" ? "awaiting your approval" : m.state === "ACTIVE" ? "approved — feeding the sourcer" : m.state.toLowerCase().replace("_", " ")}
+                      </span>
+                    </div>
+                  ))}
+                  <p className="text-xs text-muted-foreground">Approve or cancel a mission on the Command Center&apos;s Missions card. Nothing reaches a prospect until a mission is approved.</p>
+                </div>
+              )}
+              {recruitingNeeds.blindSpots.length > 0 && (
+                <p className="text-xs text-muted-foreground">Blind spots: {recruitingNeeds.blindSpots.join(" · ")}</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                What counts as rising demand, an agent&apos;s capacity or a luxury territory is brokerage policy —{" "}
+                <a className="underline" href="/dashboard/admin/manager-trust#workforce-thresholds">tune the workforce thresholds</a>.
+              </p>
+            </CardContent>
+          </Card>
           <RecruitingPipelineClient recruits={(recruitRows as any[]) ?? []} brokerageId={profile.brokerage_id} />
         </TabsContent>
 
@@ -182,7 +335,14 @@ export default async function RecruitingROIPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Revenue by Agent - Year 1-3</CardTitle>
-                <CardDescription>Gross commission generated in each year post-hire</CardDescription>
+                <CardDescription>
+                  Gross commission generated in each year post-hire
+                  {/* recruiting_analytics.computed_at — when the yearly rollups behind
+                      these bars were last recomputed. Absent rather than guessed. */}
+                  {analyticsComputedAt
+                    ? ` · rollups computed ${new Date(analyticsComputedAt).toLocaleDateString()}`
+                    : " · rollup date not recorded"}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <YearlyRevenueChart data={yearlyAnalytics} />
@@ -248,7 +408,7 @@ export default async function RecruitingROIPage() {
               </Card>
             </div>
 
-            <CostEntryPanel brokerageId={profile.brokerage_id} />
+            <CostEntryPanel agents={recruitableAgents} />
           </div>
         </TabsContent>
       </Tabs>

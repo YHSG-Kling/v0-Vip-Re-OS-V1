@@ -13,6 +13,22 @@
  *
  * All props are exactly what the ISA page passes — no stubs, no placeholders.
  * UI uses shadcn/ui primitives + Tailwind. No extra deps required.
+ *
+ * TOMBSTONE (orphan doctrine §1.1, hidden-wire census category c, 2026-09-10
+ * wave 50): app/dashboard/isa/components/qualification-os/ (a same-named
+ * SIBLING directory: conversation-intelligence-panel.tsx, hard-stops-panel.tsx,
+ * positive-responders-panel.tsx, ghost-recovery-panel.tsx,
+ * retraining-signals-panel.tsx, qualification-radar.tsx, index.ts) was a
+ * byte-for-byte duplicate of these same 6 exports, unreachable by construction
+ * — `import ... from "./components/qualification-os"` in
+ * app/dashboard/isa/page.tsx:44 resolves to THIS file (Node/webpack try the
+ * exact-file match before the directory-as-package match), so nothing anywhere
+ * ever imported the directory. It carried three optional callbacks this file's
+ * own components didn't (onViewConversation, onRequestReview,
+ * onScheduleCallback) — real product meaning per the owner's 2026-09-10
+ * ruling — merged onto this survivor as self-contained behavior (a real Link
+ * and two createTask() calls) rather than as unwired caller props, consistent
+ * with the "no stubs" rule stated above. The directory was then deleted.
  */
 
 import { Badge } from "@/components/ui/badge"
@@ -22,12 +38,17 @@ import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   AlertTriangle,
+  ArrowRight,
   Brain,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
+  Eye,
   Ghost,
   MessageSquare,
   Pause,
+  PhoneCall,
   RefreshCw,
   ShieldAlert,
   Sparkles,
@@ -36,8 +57,15 @@ import {
   Users,
   Zap,
 } from "lucide-react"
+import Link from "next/link"
 import { useState } from "react"
 import { resumeAIISA } from "@/app/actions/leads"
+// retryGhostContact / suppressGhostContact: the ghost-recovery controls that lived ONLY in the
+// unreachable qualification-os/ sibling (deleted wave 50, lane IC) — merged onto this survivor
+// per §1 so the capability is not lost (owner: "just because something isn't wired ... doesn't
+// mean it shouldn't exist").
+import { retryGhostContact, suppressGhostContact } from "@/app/actions/ai-isa"
+import { createTask } from "@/app/actions/tasks"
 import { toast } from "sonner"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -151,9 +179,9 @@ export function QualificationRadar(props: RadarMetrics) {
   const metrics = [
     { label: "New Under AI", value: props.newLeadsUnderAI, icon: Sparkles, color: "text-indigo-600", bg: "bg-indigo-50" },
     { label: "Actively Nurturing", value: props.activelyNurturing, icon: Brain, color: "text-blue-600", bg: "bg-blue-50" },
-    { label: "Positive Responders", value: props.positiveResponders, icon: MessageSquare, color: "text-green-600", bg: "bg-green-50" },
-    { label: "Handoff Ready", value: props.qualifiedHandoffReady, icon: UserCheck, color: "text-emerald-600", bg: "bg-emerald-50" },
-    { label: "Stalled / No Response", value: props.stalled, icon: Pause, color: "text-amber-600", bg: "bg-amber-50" },
+    { label: "Positive Responders", value: props.positiveResponders, icon: MessageSquare, color: "text-green-700", bg: "bg-green-50" },
+    { label: "Handoff Ready", value: props.qualifiedHandoffReady, icon: UserCheck, color: "text-emerald-700", bg: "bg-emerald-50" },
+    { label: "Stalled / No Response", value: props.stalled, icon: Pause, color: "text-amber-700", bg: "bg-amber-50" },
     { label: "Hard Stops", value: props.blockedByHardStop, icon: ShieldAlert, color: "text-red-600", bg: "bg-red-50" },
     { label: "Waiting Retry", value: props.waitingRetry, icon: Clock, color: "text-slate-500", bg: "bg-slate-50" },
   ]
@@ -234,32 +262,44 @@ export function ConversationIntelligencePanel({
     <div className="space-y-3">
       {conversations.map((conv) => (
         <Card key={conv.id} className="overflow-hidden">
-          <CardHeader className="pb-2 px-4 pt-3">
-            <div className="flex items-start justify-between gap-2 flex-wrap">
-              <div>
-                <p className="font-semibold text-sm">{conv.contactName}</p>
-                <p className="text-xs text-muted-foreground">{relativeTime(conv.createdAt)}</p>
+          <button
+            type="button"
+            onClick={() => setExpanded(expanded === conv.id ? null : conv.id)}
+            className="w-full text-left"
+          >
+            <CardHeader className="pb-2 px-4 pt-3 hover:bg-muted/30">
+              <div className="flex items-start justify-between gap-2 flex-wrap">
+                <div>
+                  <p className="font-semibold text-sm">{conv.contactName}</p>
+                  <p className="text-xs text-muted-foreground">{relativeTime(conv.createdAt)}</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge
+                    variant="outline"
+                    className={`text-xs capitalize ${sentimentColor(conv.sentiment)}`}
+                  >
+                    {conv.sentiment}
+                  </Badge>
+                  <Badge variant="outline" className="text-xs bg-indigo-50 text-indigo-700 border-indigo-200">
+                    {conv.confidenceScore}% confidence
+                  </Badge>
+                  {expanded === conv.id ? (
+                    <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge
-                  variant="outline"
-                  className={`text-xs capitalize ${sentimentColor(conv.sentiment)}`}
-                >
-                  {conv.sentiment}
-                </Badge>
-                <Badge variant="outline" className="text-xs bg-indigo-50 text-indigo-700 border-indigo-200">
-                  {conv.confidenceScore}% confidence
-                </Badge>
-              </div>
-            </div>
-          </CardHeader>
+            </CardHeader>
+          </button>
+          {expanded === conv.id && (
           <CardContent className="px-4 pb-4 space-y-3">
             <p className="text-sm text-muted-foreground leading-relaxed">{conv.transcriptSummary}</p>
 
             <div className="grid sm:grid-cols-2 gap-3">
               {conv.topObjections.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-red-500 mb-1">Objections</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-red-600 mb-1">Objections</p>
                   <ul className="space-y-1">
                     {conv.topObjections.map((o, i) => (
                       <li key={i} className="text-xs bg-red-50 text-red-800 rounded px-2 py-0.5">{o}</li>
@@ -269,7 +309,7 @@ export function ConversationIntelligencePanel({
               )}
               {conv.motivationSignals.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-green-500 mb-1">Motivations</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-green-700 mb-1">Motivations</p>
                   <ul className="space-y-1">
                     {conv.motivationSignals.map((s, i) => (
                       <li key={i} className="text-xs bg-green-50 text-green-800 rounded px-2 py-0.5">{s}</li>
@@ -279,7 +319,7 @@ export function ConversationIntelligencePanel({
               )}
               {conv.urgencyClues.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-500 mb-1">Urgency Signals</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 mb-1">Urgency Signals</p>
                   <ul className="space-y-1">
                     {conv.urgencyClues.map((u, i) => (
                       <li key={i} className="text-xs bg-amber-50 text-amber-800 rounded px-2 py-0.5">{u}</li>
@@ -289,7 +329,7 @@ export function ConversationIntelligencePanel({
               )}
               {conv.financingClues.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-500 mb-1">Financing Clues</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 mb-1">Financing Clues</p>
                   <ul className="space-y-1">
                     {conv.financingClues.map((f, i) => (
                       <li key={i} className="text-xs bg-blue-50 text-blue-800 rounded px-2 py-0.5">{f}</li>
@@ -303,7 +343,24 @@ export function ConversationIntelligencePanel({
               <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500 mb-0.5">Recommended Next Action</p>
               <p className="text-sm font-medium text-indigo-900">{conv.recommendedNextAction}</p>
             </div>
+
+            <div className="flex justify-end pt-1 border-t">
+              {/* Full transcript lives on the contact record, not a second
+                  standalone conversation view — see the CRM contact detail's
+                  communication tab. Hidden-wire census category (c), wave 50:
+                  a same-named duplicate of this panel elsewhere in this
+                  directory declared onViewConversation and never got a
+                  caller; this file's stated rule is no props the ISA page
+                  doesn't pass, so the capability is a real Link instead. */}
+              <Link href={`/crm/contacts/${conv.contactId}`}>
+                <Button variant="ghost" size="sm" className="text-xs h-7">
+                  View Full
+                  <ArrowRight className="h-3 w-3 ml-1" />
+                </Button>
+              </Link>
+            </div>
           </CardContent>
+          )}
         </Card>
       ))}
     </div>
@@ -317,6 +374,33 @@ export function PositiveRespondersPanel({
 }: {
   responders: PositiveResponder[]
 }) {
+  const [schedulingId, setSchedulingId] = useState<string | null>(null)
+
+  // Schedule Callback — creates a real, assigned tasks row (self-assigned by
+  // default; createTask's own fallback) rather than a caller-supplied
+  // callback prop nothing on this page provides. Hidden-wire census category
+  // (c), wave 50 — merged onto this survivor from the duplicate module's
+  // unwired onScheduleCallback (tombstone at the top of this file).
+  const handleScheduleCallback = async (r: PositiveResponder) => {
+    setSchedulingId(r.id)
+    try {
+      const result = await createTask({
+        title: `Callback: ${r.contactName}`,
+        description: `Positive engagement signal — ${r.engagementReason}`,
+        contactId: r.contactId,
+        priority: "high",
+      })
+      if (result.success) {
+        toast.success("Callback task created")
+      } else {
+        toast.error(result.error ?? "Failed to create callback task")
+      }
+    } catch {
+      toast.error("Unexpected error creating callback task")
+    } finally {
+      setSchedulingId(null)
+    }
+  }
   if (responders.length === 0) {
     return (
       <Card>
@@ -364,6 +448,16 @@ export function PositiveRespondersPanel({
                 )}
               </Badge>
               <p className="text-[10px] text-muted-foreground shrink-0">{relativeTime(r.lastEngagedAt)}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-xs shrink-0"
+                disabled={schedulingId === r.id}
+                onClick={() => handleScheduleCallback(r)}
+              >
+                <PhoneCall className="w-3 h-3 mr-1" />
+                {schedulingId === r.id ? "Scheduling…" : "Schedule Callback"}
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -382,6 +476,33 @@ export function GhostRecoveryPanel({
   brokerageId: string
 }) {
   const [resumingId, setResumingId] = useState<string | null>(null)
+  const [busyContactId, setBusyContactId] = useState<string | null>(null)
+
+  const handleRetry = async (contactId: string, channel: "email" | "sms" | "phone") => {
+    setBusyContactId(contactId)
+    try {
+      const result = await retryGhostContact({ contactId, channel })
+      if (result.success) toast.success(`Retry via ${channel} queued`)
+      else toast.error(result.error ?? "Failed to queue the retry")
+    } catch {
+      toast.error("Unexpected error queuing the retry")
+    } finally {
+      setBusyContactId(null)
+    }
+  }
+
+  const handleSuppress = async (contactId: string) => {
+    setBusyContactId(contactId)
+    try {
+      const result = await suppressGhostContact({ contactId })
+      if (result.success) toast.success("Contact suppressed from ghost recovery")
+      else toast.error(result.error ?? "Failed to suppress")
+    } catch {
+      toast.error("Unexpected error suppressing the contact")
+    } finally {
+      setBusyContactId(null)
+    }
+  }
 
   const handleResume = async (leadId: string) => {
     setResumingId(leadId)
@@ -428,7 +549,7 @@ export function GhostRecoveryPanel({
         return (
           <Card key={ghost.id} className="overflow-hidden">
             <CardContent className="p-3 flex items-center gap-3 flex-wrap">
-              <Ghost className="w-5 h-5 text-slate-400 shrink-0" />
+              <Ghost className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-sm truncate">{name}</p>
                 {ghost.phone && <p className="text-xs text-muted-foreground">{ghost.phone}</p>}
@@ -464,6 +585,28 @@ export function GhostRecoveryPanel({
                 )}
                 Re-engage
               </Button>
+              {ghost.contactId && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 text-xs"
+                    disabled={busyContactId === ghost.contactId}
+                    onClick={() => handleRetry(ghost.contactId as string, ghost.phone ? "sms" : "email")}
+                  >
+                    Retry {ghost.phone ? "SMS" : "email"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 text-xs text-muted-foreground"
+                    disabled={busyContactId === ghost.contactId}
+                    onClick={() => handleSuppress(ghost.contactId as string)}
+                  >
+                    Suppress
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
         )
@@ -474,7 +617,40 @@ export function GhostRecoveryPanel({
 
 // ─── HardStopsPanel ───────────────────────────────────────────────────────────
 
+// Reasons that need a human JUDGMENT call, not just a timer — "cooldown" clears
+// itself and "insufficient_qualification" is already a clean AI verdict.
+const REVIEWABLE_HARD_STOP_REASONS: HardStop["reason"][] = ["dnc", "compliance", "duplicate", "blocked"]
+
 export function HardStopsPanel({ hardStops }: { hardStops: HardStop[] }) {
+  const [reviewingId, setReviewingId] = useState<string | null>(null)
+
+  // Request Review — a real, assigned tasks row (createTask's own
+  // self-assign fallback puts it on the requester's own board) rather than a
+  // caller-supplied onRequestReview prop nothing on this page provides.
+  // Hidden-wire census category (c), wave 50 — merged onto this survivor from
+  // the duplicate module's unwired onRequestReview (tombstone at the top of
+  // this file).
+  const handleRequestReview = async (stop: HardStop) => {
+    setReviewingId(stop.id)
+    try {
+      const result = await createTask({
+        title: `Review hard stop: ${stop.contactName}`,
+        description: `${hardStopLabel(stop.reason)} — ${stop.reasonDetail || "no detail recorded"}`,
+        contactId: stop.contactId,
+        priority: "high",
+      })
+      if (result.success) {
+        toast.success("Review task created")
+      } else {
+        toast.error(result.error ?? "Failed to create review task")
+      }
+    } catch {
+      toast.error("Unexpected error creating review task")
+    } finally {
+      setReviewingId(null)
+    }
+  }
+
   if (hardStops.length === 0) {
     return (
       <Card>
@@ -511,7 +687,7 @@ export function HardStopsPanel({ hardStops }: { hardStops: HardStop[] }) {
                   Since {relativeTime(stop.blockedSince)}
                 </span>
                 {stop.canRetryAt && (
-                  <span className="text-[10px] text-amber-600">
+                  <span className="text-[10px] text-amber-700">
                     Retry: {new Date(stop.canRetryAt).toLocaleDateString()}
                   </span>
                 )}
@@ -530,6 +706,18 @@ export function HardStopsPanel({ hardStops }: { hardStops: HardStop[] }) {
               <Badge variant="outline" className="text-[10px] bg-slate-50 text-slate-600 shrink-0 self-center">
                 Not Qualified
               </Badge>
+            )}
+            {REVIEWABLE_HARD_STOP_REASONS.includes(stop.reason) && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-xs shrink-0 self-center"
+                disabled={reviewingId === stop.id}
+                onClick={() => handleRequestReview(stop)}
+              >
+                <Eye className="w-3 h-3 mr-1" />
+                {reviewingId === stop.id ? "Requesting…" : "Request Review"}
+              </Button>
             )}
           </CardContent>
         </Card>
@@ -563,7 +751,7 @@ export function RetrainingSignalsPanel({ signals }: { signals: RetrainingSignal[
   const typeLabel: Record<string, { label: string; color: string; icon: typeof Brain }> = {
     failed_objection:  { label: "Failed Objections", color: "text-red-600",    icon: AlertTriangle },
     coaching_insight:  { label: "Coaching Insights", color: "text-blue-600",   icon: Brain },
-    tone_mismatch:     { label: "Tone Mismatches",   color: "text-amber-600",  icon: Sparkles },
+    tone_mismatch:     { label: "Tone Mismatches",   color: "text-amber-700",  icon: Sparkles },
     timing_error:      { label: "Timing Errors",     color: "text-purple-600", icon: Clock },
   }
 
@@ -601,7 +789,7 @@ export function RetrainingSignalsPanel({ signals }: { signals: RetrainingSignal[
                       <p className="text-xs text-muted-foreground leading-relaxed">{signal.description}</p>
                       {signal.suggestedImprovement && (
                         <div className="mt-2 rounded bg-green-50 border border-green-200 px-2 py-1.5">
-                          <p className="text-[10px] font-semibold text-green-600 uppercase tracking-wide mb-0.5">
+                          <p className="text-[10px] font-semibold text-green-700 uppercase tracking-wide mb-0.5">
                             <CheckCircle2 className="w-3 h-3 inline mr-1" />
                             Suggested Improvement
                           </p>

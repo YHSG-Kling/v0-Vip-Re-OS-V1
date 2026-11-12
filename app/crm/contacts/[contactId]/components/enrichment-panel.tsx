@@ -1,0 +1,349 @@
+"use client"
+
+/**
+ * CONTACT ENRICHMENT PANEL — the contact-card surface app/actions/contact-enrichment.ts
+ * was written for and never had.
+ *
+ * Everything the enrichment lane learns about a person — household income, home
+ * ownership, occupation, social profiles, public/court/property records, and the
+ * life events that are the whole point of the feature (divorce, relocation, new
+ * baby, retirement, foreclosure) — was written to `contacts` and then displayed
+ * NOWHERE. `getContactInsights` and `markLifeChangeNotified` had no caller at
+ * all, so a detected life change re-surfaced forever with no way to acknowledge
+ * it, and an agent had no way to say "enrich this person now".
+ *
+ * Wires the session-door actions:
+ *   getContactInsights      → the panel body
+ *   enrichContact           → "Enrich now"
+ *   checkContactLifeChanges → "Check for changes"
+ *   markLifeChangeNotified  → "Mark reviewed" on a detected event
+ *
+ * THE OWNER'S RULE IS VISIBLE HERE, NOT HIDDEN. Enrichment is suppressed while
+ * the contact has an active listing or an active transaction, so the buttons
+ * would otherwise look broken during a deal. Both actions report a skip in their
+ * result and this panel says so in words ("Paused — this contact has a live deal
+ * right now"), because a control that silently does nothing is worse than one
+ * that explains why.
+ *
+ * MODELED HOUSEHOLD FINANCIALS (wave 86, owner verbatim: "add because most audience or info will be
+ * used from the contact card"). Net worth and the credit band sit beside household income and
+ * marital status, each labelled "modeled estimate" — they are modeled marketing ranges from the
+ * enrichment providers (BatchData's demographic dataset, Versium's financial append), never a credit
+ * report. The panel says so in words: an agent must not use them to decide who qualifies, what to
+ * charge, or what to show someone (FCRA / fair lending). Nothing outbound reads them —
+ * scripts/enrichment-one-rail-guard.ts Layer 8d holds that with a positive control.
+ */
+
+import { useCallback, useEffect, useState, useTransition } from "react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Loader2, Sparkles, RefreshCw, ShieldCheck, Check } from "lucide-react"
+import {
+  getContactInsights,
+  enrichContact,
+  checkContactLifeChanges,
+  markLifeChangeNotified,
+} from "@/app/actions/contact-enrichment"
+
+interface LifeEvent {
+  type?: string
+  details?: string
+  detected_at?: string
+  confidence?: number
+  notified_at?: string
+}
+
+interface Props {
+  contactId: string
+}
+
+const FIELD_LABELS: Array<[string, string]> = [
+  ["age_range", "Age range"],
+  ["gender", "Gender"],
+  ["marital_status", "Marital status"],
+  ["household_income", "Household income"],
+  ["net_worth_range", "Net worth (modeled estimate)"],
+  ["credit_score_range", "Credit band (modeled estimate)"],
+  ["home_owner_status", "Home ownership"],
+  ["home_value_estimate", "Home value estimate"],
+  ["length_of_residence", "Length of residence"],
+  ["occupation", "Occupation"],
+  ["education_level", "Education"],
+]
+
+/** The fields that are MODELED estimates — the disclaimer renders whenever one is on screen. */
+const MODELED_FIELDS = new Set(["net_worth_range", "credit_score_range"])
+
+/** Fields a Versium DEMOGRAPHIC append fills (field_provenance.demographics covers them as a block). */
+const DEMOGRAPHIC_FIELDS = new Set(["age_range", "gender", "home_owner_status", "length_of_residence", "occupation", "education_level", "home_value_estimate"])
+
+/** One provenance line as the ONE reader returns it (lib/lead-pipeline/enrichment-column-map.ts
+ *  FieldProvenanceLine — wave 100 adds capability / purpose / actor). */
+type ProvenanceLine = {
+  source: string; retrievedAt: string | null; matchConfidence: string | null
+  capability?: string | null; purpose?: string | null; actor?: string | null
+}
+
+/** "via versium · Oct 1, 2026" — source + retrieved date beside an enriched value; a human edit reads
+ *  "via staff · … · staff edit" so a typed value is never mistaken for a provider's. */
+function provenanceLabel(p: ProvenanceLine | undefined): string | null {
+  if (!p) return null
+  const when = p.retrievedAt ? new Date(p.retrievedAt).toLocaleDateString() : "date unknown"
+  return `via ${p.source} · ${when}${p.matchConfidence ? ` · ${p.matchConfidence} match` : ""}${p.purpose ? ` · ${p.purpose.replace(/_/g, " ")}` : ""}`
+}
+
+/** Provenance keys the card already shows inline beside a value — the rest list under "Field sources". */
+const INLINE_PROVENANCE_KEYS = new Set(["email", "phone", "demographics"])
+
+const SOCIAL_FIELDS: Array<[string, string]> = [
+  ["linkedin_url", "LinkedIn"],
+  ["facebook_url", "Facebook"],
+  ["twitter_url", "X / Twitter"],
+  ["instagram_url", "Instagram"],
+]
+
+export function EnrichmentPanel({ contactId }: Props) {
+  const [enrichment, setEnrichment] = useState<Record<string, any> | null>(null)
+  const [lifeChanges, setLifeChanges] = useState<LifeEvent[]>([])
+  const [lastEnriched, setLastEnriched] = useState<string | null>(null)
+  // Wave 97 (lane 97C): where each enriched value came from and when (staff only — the action
+  // returns an empty map to anyone else).
+  const [provenance, setProvenance] = useState<Record<string, ProvenanceLine>>({})
+  const [loading, setLoading] = useState(true)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    // The action returns `error` on a refusal — show it rather than rendering an
+    // empty panel that looks like "we know nothing about this person".
+    const res = await getContactInsights(contactId)
+    if (res.error) {
+      setNotice(res.error)
+    } else {
+      setEnrichment(res.enrichment)
+      setLifeChanges(Array.isArray(res.lifeChanges) ? res.lifeChanges : [])
+      setLastEnriched(res.lastEnriched)
+      setProvenance(res.provenance ?? {})
+    }
+    setLoading(false)
+  }, [contactId])
+
+  useEffect(() => { void load() }, [load])
+
+  const runEnrich = () => {
+    setNotice(null)
+    startTransition(async () => {
+      const res = await enrichContact(contactId, { forceRefresh: Boolean(lastEnriched) })
+      if (!res.success) {
+        setNotice(res.error ?? "Enrichment failed")
+      } else if (!res.enriched) {
+        // The suppression rule, the vendor budget, or a missing identifier. The
+        // action collapses those to enriched:false — say the most likely thing
+        // plainly rather than claiming success.
+        setNotice(
+          "Nothing was enriched. Enrichment is paused while a contact has an active listing or " +
+          "an active transaction, and is skipped when there is no email, phone or full name to look up.",
+        )
+      } else {
+        setNotice("Enriched.")
+      }
+      await load()
+    })
+  }
+
+  const runLifeCheck = () => {
+    setNotice(null)
+    startTransition(async () => {
+      const res = await checkContactLifeChanges(contactId)
+      if (!res.success) {
+        setNotice(res.error ?? "Life-change check failed")
+      } else {
+        setNotice(
+          res.changesFound > 0
+            ? `${res.changesFound} new change detected.`
+            : "No new changes found. (Checks are paused during a live deal.)",
+        )
+      }
+      await load()
+    })
+  }
+
+  const markReviewed = (eventType: string) => {
+    setNotice(null)
+    startTransition(async () => {
+      const res = await markLifeChangeNotified(contactId, eventType)
+      if (!res.success) setNotice(res.error ?? "Could not mark that change reviewed")
+      await load()
+    })
+  }
+
+  const populated = enrichment
+    ? FIELD_LABELS.filter(([k]) => enrichment[k] !== null && enrichment[k] !== undefined && enrichment[k] !== "")
+    : []
+  const socials = enrichment ? SOCIAL_FIELDS.filter(([k]) => Boolean(enrichment[k])) : []
+  const showsModeled = populated.some(([k]) => MODELED_FIELDS.has(k))
+  const fieldProvenance = (key: string) =>
+    provenanceLabel(provenance[key] ?? (DEMOGRAPHIC_FIELDS.has(key) ? provenance.demographics : undefined))
+  // Every OTHER stamped field (name, address, property value, social links, life events, records …) —
+  // wave 100: every enriched field shows where it came from, not only the ones with an inline slot.
+  const shownInline = new Set([...INLINE_PROVENANCE_KEYS, ...populated.map(([k]) => k)])
+  const otherSources = Object.entries(provenance).filter(([k]) => !shownInline.has(k))
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              Enrichment & life changes
+            </CardTitle>
+            <CardDescription className="text-xs">
+              {lastEnriched
+                ? `Last enriched ${new Date(lastEnriched).toLocaleString()}`
+                : "Never enriched"}
+              {enrichment?.confidence_score != null && ` · confidence ${enrichment.confidence_score}`}
+              {enrichment?.data_source && ` · ${enrichment.data_source}`}
+            </CardDescription>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button size="sm" variant="outline" onClick={runLifeCheck} disabled={isPending}>
+              {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <span className="ml-1">Check for changes</span>
+            </Button>
+            <Button size="sm" onClick={runEnrich} disabled={isPending}>
+              {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+              <span className="ml-1">{lastEnriched ? "Re-enrich" : "Enrich now"}</span>
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {notice && (
+          <p className="text-xs rounded border bg-muted/40 px-2 py-1.5 text-muted-foreground">{notice}</p>
+        )}
+
+        {loading ? (
+          <p className="text-xs text-muted-foreground flex items-center gap-2">
+            <Loader2 className="h-3 w-3 animate-spin" /> Loading enrichment…
+          </p>
+        ) : (
+          <>
+            {populated.length === 0 && socials.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No enrichment data on this contact yet.
+              </p>
+            )}
+
+            {populated.length > 0 && (
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                {populated.map(([key, label]) => (
+                  <div key={key} className="contents">
+                    <dt className="text-xs text-muted-foreground">{label}</dt>
+                    <dd className="text-xs font-medium">
+                      {String(enrichment?.[key])}
+                      {fieldProvenance(key) && (
+                        <span className="ml-1 font-normal text-[10px] text-muted-foreground">{fieldProvenance(key)}</span>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+
+            {(provenance.email || provenance.phone) && (
+              <p className="text-[11px] text-muted-foreground">
+                {provenance.email && `Email ${provenanceLabel(provenance.email)}`}
+                {provenance.email && provenance.phone && " · "}
+                {provenance.phone && `Phone ${provenanceLabel(provenance.phone)}`}
+              </p>
+            )}
+
+            {showsModeled && (
+              <p className="text-[11px] text-muted-foreground">
+                Net worth and credit band are modeled marketing estimates, not a credit report. Use them
+                to understand the household — never to decide eligibility, pricing, or which homes to show.
+              </p>
+            )}
+
+            {socials.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {socials.map(([key, label]) => (
+                  <a
+                    key={key}
+                    href={String(enrichment?.[key])}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs underline underline-offset-2"
+                  >
+                    {label}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            {otherSources.length > 0 && (
+              <div>
+                <p className="text-xs font-medium mb-1">Field sources</p>
+                <ul className="space-y-0.5">
+                  {otherSources.map(([key, p]) => (
+                    <li key={key} className="text-[11px] text-muted-foreground">
+                      <span className="font-medium">{key.replace(/_/g, " ")}</span> {provenanceLabel(p)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div>
+              <p className="text-xs font-medium mb-1.5 flex items-center gap-1.5">
+                <ShieldCheck className="h-3 w-3" />
+                Detected life changes
+              </p>
+              {lifeChanges.length === 0 ? (
+                <p className="text-xs text-muted-foreground">None detected.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {lifeChanges.map((e, i) => (
+                    <li
+                      key={`${e.type ?? "event"}-${i}`}
+                      className="flex items-center justify-between gap-2 rounded border px-2 py-1.5"
+                    >
+                      <span className="text-xs">
+                        <span className="font-medium">{e.type ?? "unknown"}</span>
+                        {e.detected_at && (
+                          <span className="text-muted-foreground">
+                            {" "}· {new Date(e.detected_at).toLocaleDateString()}
+                          </span>
+                        )}
+                        {e.details && <span className="text-muted-foreground"> · {e.details}</span>}
+                      </span>
+                      {e.notified_at ? (
+                        <Badge variant="secondary" className="text-[10px] shrink-0">
+                          <Check className="h-3 w-3 mr-0.5" /> reviewed
+                        </Badge>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 text-[11px] shrink-0"
+                          disabled={isPending || !e.type}
+                          onClick={() => e.type && markReviewed(e.type)}
+                        >
+                          Mark reviewed
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}

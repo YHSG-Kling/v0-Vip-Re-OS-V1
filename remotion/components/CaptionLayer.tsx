@@ -34,10 +34,15 @@ import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } fr
 import {
   buildCaptionPlan,
   activeCueIndex,
+  activeWordIndex,
+  clipCaptionCuesBeforeFrame,
+  clipCaptionCuesFromFrame,
+  shiftCaptionCues,
   type CaptionCue,
   type CaptionSource,
   type BuildCaptionPlanOptions,
 } from "../../lib/video/caption-plan"
+import { cinemaCaptionStyle } from "../../lib/video/cinema-finish"
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 
@@ -47,29 +52,95 @@ export interface CaptionLayerProps {
   /** Raw VO script text — the layer estimates timing from the composition's own
    *  duration when no precomputed cues are supplied. Even-distribution ESTIMATE. */
   script?: CaptionSource
-  /** Vertical position of the caption band (% from top). Default 78 (lower-third). */
+  /** Vertical position of the caption band's TOP (% from top) — an explicit override.
+   *  Absent (the default), the band's BOTTOM sits on the frame's safe-area bottom inset
+   *  (lib/video/cinema-finish.ts cinemaCaptionStyle), above the platform UI. */
   bottomPercent?: number
   /** Accent color for the underline tick. Defaults to a warm amber. */
   accentColor?: string
   /** Tuning forwarded to buildCaptionPlan when planning from `script`. */
   planOptions?: BuildCaptionPlanOptions
+  /**
+   * NO CAPTION OVER BRANDING (wave 57 realism audit). The composition-absolute
+   * frame its own branding/CTA tile starts — brokerage name, the Equal Housing
+   * Opportunity mark, a QR code. When set, no caption cue is shown at or after
+   * this frame (a cue straddling the boundary is shortened, never cut mid-cue
+   * into the tile). See lib/video/caption-plan.ts clipCaptionCuesBeforeFrame
+   * for why this exists. Optional — absent renders EXACTLY as before (additive/
+   * opt-in, same posture as every other prop here).
+   */
+  hiddenFromFrame?: number
+  /**
+   * NO CAPTION OVER SILENCE (wave 59 realism audit) — the START-side twin of
+   * `hiddenFromFrame`. The composition-absolute frame the REAL narration
+   * audio actually starts at — e.g. `COVER`/`INTRO` on the avatar-fronted
+   * reels that open on a silent title card before the avatar clip (with its
+   * own baked-in audio) mounts. When set:
+   *   · a `script`-planned (Path B / even-distribution) estimate is planned
+   *     against the NARRATION WINDOW's own length, not the whole composition,
+   *     then re-anchored onto absolute frames (see caption-plan.ts
+   *     `shiftCaptionCues`) — so its first cue lands at/after this frame,
+   *     never over the silent cover tile.
+   *   · precomputed `cues` (Path A) are defensively clipped the same way
+   *     (`clipCaptionCuesFromFrame`) in case they were built against frame 0.
+   * Optional — absent renders EXACTLY as before (additive/opt-in, same
+   * posture as `hiddenFromFrame`).
+   */
+  visibleFromFrame?: number
+  /**
+   * WAVE 90 (lane 90E) — the band's BOTTOM edge, px from the frame's bottom,
+   * when a composition stacks something under the captions for the WHOLE
+   * timeline (the presentation slides' disclosure footer + nameplate —
+   * lib/video/cinema-finish.ts cinemaSlideFooterStack). Absent, the band sits
+   * on the safe inset exactly as before (cinemaCaptionStyle.bandBottom).
+   */
+  bandBottom?: number
+  /**
+   * WAVE 90 (lane 90E — the AFTER renders): the band's RIGHT inset, px from the
+   * frame's right edge, when a presenter ring stands in the bottom-right corner
+   * for the whole timeline (the presentation slides — cinemaSlideFooterStack
+   * `presenterRight`). The band centres in what is left of the width, so a wide
+   * cue never runs under the agent's face. Absent, the band spans the frame
+   * exactly as before.
+   */
+  bandRight?: number
 }
 
 /**
- * Resolve the cue list: explicit cues win; else plan from the script using THIS
- * composition's duration + fps. Returns [] when there is nothing to show.
+ * Resolve the cue list: explicit cues win; else plan from the script using
+ * the REAL NARRATION WINDOW (`visibleFromFrame`..`hiddenFromFrame`, defaulting
+ * to the whole composition when unset) rather than always the whole
+ * composition. Returns [] when there is nothing to show. `hiddenFromFrame`
+ * clips the tail (no cue reaches into the branding/CTA tile —
+ * clipCaptionCuesBeforeFrame); `visibleFromFrame` clips/re-anchors the head
+ * (no cue reaches BACK into a silent cover tile — see the prop doc above).
  */
 function useResolvedCues(props: CaptionLayerProps): CaptionCue[] {
   const { durationInFrames, fps } = useVideoConfig()
-  if (props.cues && props.cues.length > 0) return props.cues
+  const visibleFrom = typeof props.visibleFromFrame === "number" && Number.isFinite(props.visibleFromFrame)
+    ? Math.max(0, Math.floor(props.visibleFromFrame))
+    : 0
+  const hiddenFrom = typeof props.hiddenFromFrame === "number" && Number.isFinite(props.hiddenFromFrame)
+    ? Math.max(visibleFrom, Math.floor(props.hiddenFromFrame))
+    : durationInFrames
+
+  if (props.cues && props.cues.length > 0) {
+    return clipCaptionCuesBeforeFrame(clipCaptionCuesFromFrame(props.cues, visibleFrom), props.hiddenFromFrame)
+  }
   if (props.script != null && props.script !== "") {
-    return buildCaptionPlan(props.script, durationInFrames, fps, props.planOptions).cues
+    const windowFrames = Math.max(0, hiddenFrom - visibleFrom)
+    const planned = buildCaptionPlan(props.script, windowFrames, fps, props.planOptions).cues
+    return shiftCaptionCues(planned, visibleFrom)
   }
   return []
 }
 
 export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
+  // THE CINEMA TYPE SCALE (wave 86, lane 86B): size, padding, stroke, tick and the
+  // band's place all derive from this frame's short side + safe insets — no literal.
+  const cs = cinemaCaptionStyle(width, height)
   const cues = useResolvedCues(props)
   if (cues.length === 0) return null
 
@@ -78,7 +149,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
 
   const cue = cues[idx]
   const accent = props.accentColor ?? "#F59E0B"
-  const topPercent = props.bottomPercent ?? 78
+  const explicitTop = typeof props.bottomPercent === "number" ? props.bottomPercent : null
 
   // Local frame within the active cue's window drives the pop/fade.
   const localFrame = frame - cue.fromFrame
@@ -89,6 +160,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
     easing: Easing.bezier(0.34, 1.56, 0.64, 1),
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
+    output: "perceptual-scale",
   })
   const fadeIn = interpolate(localFrame, [0, 6], [0, 1], {
     extrapolateLeft: "clamp",
@@ -101,27 +173,38 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
   })
   const opacity = Math.min(fadeIn, fadeOut)
 
+  // KINETIC WORD HIGHLIGHT (lane 77D — the skill's display-captions.md "Word
+  // highlighting", on this repo's phrase cues): the word being spoken NOW is
+  // drawn in the brand accent, the rest stay white. `cue.words` carries the
+  // REAL per-word frame on the alignment path and the same honest estimate
+  // the cue itself is on the even path (caption-plan.ts). A cue with no word
+  // track (a row staged before this shipped) renders the plain phrase, so the
+  // change is additive. Whitespace is a single space between tokens — the
+  // same spelling spokenWords splits on — so the join reads as the phrase.
+  const activeWord = activeWordIndex(cue, frame)
+  const tokens = cue.words && cue.words.length > 0 ? cue.words.map((w) => w.text) : null
+
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       <div
         style={{
           position: "absolute",
-          top: `${topPercent}%`,
+          ...(explicitTop !== null ? { top: `${explicitTop}%` } : { bottom: props.bandBottom ?? cs.bandBottom }),
           left: 0,
-          right: 0,
+          right: props.bandRight ?? 0,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          padding: "0 8%",
+          padding: `0 ${cs.sidePad}px`,
           opacity,
-          transform: `scale(${enterScale})`,
+          scale: enterScale,
         }}
       >
         <div
           style={{
             backgroundColor: "rgba(0,0,0,0.62)",
-            borderRadius: 16,
-            padding: "18px 30px",
+            borderRadius: cs.radius,
+            padding: `${cs.padY}px ${cs.padX}px`,
             maxWidth: "92%",
             textAlign: "center",
           }}
@@ -129,26 +212,32 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
           <span
             style={{
               color: "#FFFFFF",
-              fontSize: 56,
-              lineHeight: 1.12,
+              fontSize: cs.fontSize,
+              lineHeight: cs.lineHeight,
               fontWeight: 800,
               letterSpacing: -0.5,
               fontFamily: FONT,
               // High-contrast stroke so the text survives over ANY frame muted.
-              WebkitTextStroke: "2px rgba(0,0,0,0.85)",
+              WebkitTextStroke: `${cs.strokePx}px rgba(0,0,0,0.85)`,
               paintOrder: "stroke fill",
               textShadow: "0 3px 14px rgba(0,0,0,0.55)",
             }}
           >
-            {cue.text}
+            {tokens
+              ? tokens.map((t, i) => (
+                  <span key={`${cue.fromFrame}-${i}`} style={{ color: i === activeWord ? accent : "#FFFFFF" }}>
+                    {i > 0 ? " " : ""}{t}
+                  </span>
+                ))
+              : cue.text}
           </span>
         </div>
         <div
           style={{
-            marginTop: 12,
-            width: 64,
-            height: 6,
-            borderRadius: 3,
+            marginTop: cs.tickGap,
+            width: cs.tickWidth,
+            height: cs.tickHeight,
+            borderRadius: cs.tickHeight / 2,
             backgroundColor: accent,
           }}
         />

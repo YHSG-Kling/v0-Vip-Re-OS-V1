@@ -3,7 +3,7 @@
 // Writes compliance evaluations to compliance_events table (NOT activities)
 
 import { createClient } from "@/lib/supabase/server"
-import { ComplianceVerdict } from "./compliance-engine"
+import type { ComplianceVerdict } from "./compliance-engine"
 
 const GATE_NAME_MAP: Record<string, string> = {
   brand_voice:  "brand_voice",

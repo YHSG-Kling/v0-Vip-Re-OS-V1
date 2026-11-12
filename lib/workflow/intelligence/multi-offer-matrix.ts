@@ -19,6 +19,14 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { scoreBuyerStrength, labelStrength } from "@/lib/offers/offer-strength"
+// Share the ONE net-proceeds engine. This card renders next to the interactive
+// net sheet and (since b27bde3) the deterministic recommendation — three numbers
+// on one screen must not disagree about which offer nets more.
+import {
+  computeNetProceeds, defaultSellerCosts, resolveAgreedCommission,
+  type AgreementCommissionFields,
+} from "@/lib/offers/net-sheet-calc"
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 // ───────────────────────────────────────────────────────────────────────────
 // Multi-offer comparison matrix
@@ -49,6 +57,29 @@ export interface MultiOfferMatrix {
   aiSummary:    string                       // 3-paragraph plain-English rec for the seller
 }
 
+/**
+ * TENANCY — AUDITED 2026-08-26, NOT A DEFECT. Recorded so it is not re-flagged.
+ *
+ * The shape ("tenant read off a row on the SERVICE client, keyed by a caller-
+ * supplied id") was raised as a possible IDOR for both exports in this file. Every
+ * entry point gates on the SESSION first, and the tenant here is only ever used to
+ * scope this listing's/offer's own reads and to attribute the AI spend:
+ *
+ *   · buildMultiOfferMatrix ← app/dashboard/listings/[id]/offers/components/
+ *     multi-offer-matrix-card.tsx, a server component rendered by
+ *     app/dashboard/listings/[id]/offers/page.tsx — which reads the listing on the
+ *     COOKIE (RLS) client and redirects when it resolves to nothing, so a foreign
+ *     listingId never reaches here. Also ← app/actions/negotiation-copilot.ts,
+ *     which loads the offer and its listing on the cookie client first and passes
+ *     `listing.id` from that row.
+ *   · buildCounterOfferDiff ← app/actions/counter-offer-diff.ts, which requires a
+ *     session and compares `users.brokerage_id` to `offers.brokerage_id`, refusing
+ *     "Forbidden" on a mismatch — gate-then-service, §4.
+ *
+ * Do not add a `brokerageId` parameter to either export: a caller-supplied tenant
+ * would be a second, weaker source of truth for the one the listing/offer row
+ * already carries. A NEW caller that takes an id from a request must gate there.
+ */
 export async function buildMultiOfferMatrix(input: {
   listingId: string
 }): Promise<MultiOfferMatrix> {
@@ -56,7 +87,7 @@ export async function buildMultiOfferMatrix(input: {
 
   const { data: listing } = await svc
     .from("listings")
-    .select("id, address, list_price")
+    .select("id, address, list_price, state, hoa_dues, commission_rate, brokerage_id")
     .eq("id", input.listingId)
     .maybeSingle()
 
@@ -66,6 +97,33 @@ export async function buildMultiOfferMatrix(input: {
     .select("id, contact_id, offer_price, earnest_money, down_payment_percent, financing_type, closing_date, contingencies, escalation_cap, closing_cost_contribution, status, created_at")
     .eq("listing_id", input.listingId)
     .in("status", ["pending", "submitted", "countered"])
+
+  // Agreed terms + regional closing costs — the same inputs the net sheet uses.
+  const { data: agreementRow } = await svc
+    .from("listing_agreements")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
+    .eq("listing_id", input.listingId)
+    .eq("brokerage_id", (listing as any)?.brokerage_id ?? "")
+    .order("fully_executed_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+
+  const agreed = resolveAgreedCommission({
+    agreement: agreementRow as AgreementCommissionFields | null,
+    listingCommissionRatePercent: (listing as any)?.commission_rate ?? null,
+    referencePrice: (listing as any)?.list_price != null ? Number((listing as any).list_price) : null,
+  })
+  const sellerCosts = defaultSellerCosts({
+    listPrice: (listing as any)?.list_price != null ? Number((listing as any).list_price) : null,
+    commissionRateDecimal: agreed.rate,
+    hoaDuesMonthly: (listing as any)?.hoa_dues != null ? Number((listing as any).hoa_dues) : null,
+    transactionFee: (agreementRow as any)?.seller_transaction_fee ?? null,
+  })
+  const closingSection = deriveNetSheetClosingCostSection(
+    (listing as any)?.list_price != null ? Number((listing as any).list_price) : null,
+    (listing as any)?.state ?? null,
+  )
+  if (closingSection) sellerCosts.otherProratedFees = closingSection.midpoint
 
   const rows: OfferRow[] = []
   for (const off of (offers ?? [])) {
@@ -78,8 +136,14 @@ export async function buildMultiOfferMatrix(input: {
 
     const offerPrice = (off as any).offer_price ?? 0
     const concessions = (off as any).closing_cost_contribution ?? 0
-    const estimatedSellerCosts = offerPrice * 0.06   // realistic conservative est. (commission + closing)
-    const netToSeller = offerPrice - concessions - estimatedSellerCosts
+    // Was a blanket offerPrice * 0.06 standing in for commission AND closing — it
+    // ignored the agreed rate, the regional closing lines, the transaction fee and
+    // the mortgage payoff, so this column could name a different winner than the
+    // net sheet on the same screen.
+    const netToSeller = computeNetProceeds(
+      { offerPrice, buyerClosingCredit: concessions },
+      sellerCosts,
+    )
 
     const closeDate = (off as any).closing_date
     const closeDateDays = closeDate
@@ -133,6 +197,7 @@ In 3 short paragraphs, written directly to the seller, explain:
 Don't use jargon. Be direct and balanced.`
 
       const result = await generateTextRouted({
+        brokerageId: (listing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
         feature: "multi_offer_summary",
         messages: [{ role: "user", content: prompt }],
       })
@@ -179,9 +244,14 @@ export async function buildCounterOfferDiff(input: {
 }): Promise<CounterOfferDiff> {
   const svc = createServiceClient()
 
+  // brokerage_id is selected because THIS FUNCTION SPENDS: the counter-offer
+  // take below is a model call, and lib/ai/models.ts books the ai_tool_usage
+  // row only under `if (request.brokerageId)`. The offer row is the tenant
+  // (offers.brokerage_id), which is what the matrix builder above already
+  // keys on — nothing here comes from a caller argument (§4).
   const { data: offer } = await svc
     .from("offers")
-    .select("id, offer_price, earnest_money, closing_date, contingencies, financing_type, down_payment_percent, closing_cost_contribution, escalation_cap")
+    .select("id, brokerage_id, offer_price, earnest_money, closing_date, contingencies, financing_type, down_payment_percent, closing_cost_contribution, escalation_cap")
     .eq("id", input.offerId)
     .maybeSingle()
 
@@ -231,6 +301,7 @@ ${changedRows.map(r => `- ${r.labelForSeller}: ${JSON.stringify(r.original)} →
 
 In 1-2 sentences, write the bottom-line take for the agent: should the buyer accept, counter back, or walk? Be specific about why.`
       const r = await generateTextRouted({
+        brokerageId: (offer as { brokerage_id?: string | null }).brokerage_id ?? null,
         feature: "counter_offer_take",
         messages: [{ role: "user", content: prompt }],
       })

@@ -73,8 +73,12 @@ async function main(): Promise<void> {
     console.log("  ✓ seeded brokerage + agent")
 
     // ── Raise a ticket (exactly as createSupportTicket) ──
+    // `lane` is stated, not defaulted: support_tickets.lane is NOT NULL with no
+    // default (m468) precisely so a writer that forgets which conversation it is
+    // opening fails at the insert instead of routing to the wrong audience.
     const { data: ticket, error: tErr } = await svc.from("support_tickets").insert({
-      brokerage_id: brokerageId, agent_id: agentRowId, subject: `${tag} cannot sync MLS`,
+      brokerage_id: brokerageId, agent_id: agentRowId, lane: "user_to_brokerage",
+      subject: `${tag} cannot sync MLS`,
       description: "Listings not importing.", category: "technical", priority: "high", status: "open",
     }).select("id, status").single()
     cleanup.push(() => svc.from("support_tickets").delete().eq("brokerage_id", brokerageId))

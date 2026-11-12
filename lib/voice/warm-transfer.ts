@@ -14,6 +14,7 @@
 // the tenant's own creds; the whisper endpoints are gated by a shared token
 // (we set these URLs ourselves at dial time — nothing else may drive them).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { InboundCallContext } from "./twilio-voice"
 
 const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
@@ -74,32 +75,25 @@ export async function startWarmBridge(svc: any, ctx: InboundCallContext, input: 
     const q = `token=${encodeURIComponent(token)}&conf=${encodeURIComponent(conf)}&caller=${encodeURIComponent(input.callerCallSid)}&vc=${encodeURIComponent(input.voiceCallId ?? "")}&label=${encodeURIComponent(input.callerLabel.slice(0, 60))}&topic=${encodeURIComponent((input.topic ?? "").slice(0, 90))}&b=${encodeURIComponent(ctx.brokerageId)}`
 
     // Our number rings the agent — recognizable caller ID, tenant creds.
-    const from = ctx.identity.forwardNumber === ctx.forwardNumber ? undefined : undefined
-    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-    const { data: numRow } = await svc.from("vapi_phone_numbers").select("phone_number")
+    // Official Twilio SDK adapter (lib/providers/twilio/client.ts) — same
+    // POST /Calls.json endpoint, same price.
+    const { placeCall } = await import("@/lib/providers/twilio/client")
+    const { data: numRow } = await svc.from("tenant_phone_numbers").select("phone_number")
       .eq("id", ctx.numberRowId).maybeSingle()
-    const res = await callConnector<{ sid?: string }>({
-      connector: "twilio",
-      baseUrl: "https://api.twilio.com",
-      path: `/2010-04-01/Accounts/${creds.accountSid}/Calls.json`,
+    const res = await placeCall(creds, {
+      to: ctx.forwardNumber,
+      from: (numRow as any)?.phone_number ?? ctx.forwardNumber,
+      url: `${base}/api/voice/twilio/whisper?step=whisper&${q}`,
       method: "POST",
-      bodyType: "form",
-      body: {
-        To: ctx.forwardNumber,
-        From: (numRow as any)?.phone_number ?? ctx.forwardNumber,
-        Url: `${base}/api/voice/twilio/whisper?step=whisper&${q}`,
-        Method: "POST",
-        Timeout: 20,
-        StatusCallback: `${base}/api/voice/twilio/whisper?step=fallback&${q}`,
-        StatusCallbackMethod: "POST",
-      },
-      auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+      timeout: 20,
+      statusCallback: `${base}/api/voice/twilio/whisper?step=fallback&${q}`,
+      statusCallbackMethod: "POST",
     })
     if (!res.ok || !res.data?.sid) return false
 
     if (input.voiceCallId) {
-      await svc.from("voice_calls").update({ call_type: "warm_transfer", outcome: "warm_bridge_ringing" })
-        .eq("id", input.voiceCallId).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("voice_calls").update({ call_type: "warm_transfer", outcome: "warm_bridge_ringing" })
+        .eq("id", input.voiceCallId), { table: "voice_calls", flow: "warm_transfer_ringing", reason: "the bridge is already ringing; a lost outcome stamp is ledgered" })
     }
     return true
   } catch { return false }

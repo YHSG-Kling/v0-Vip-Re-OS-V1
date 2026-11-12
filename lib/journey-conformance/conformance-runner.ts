@@ -40,16 +40,30 @@ export async function auditJourneyConformance(
 ): Promise<ConformanceAuditResult> {
   const svc = client ?? createServiceClient()
 
+  // ENTITY_TYPE MISMATCH (CLAUDE.md §1, lane BC 2026-09-08 hunt 1): the only
+  // transitionLifecycle caller in the buyer journey — lib/buyer-lifecycle/lifecycle-logger.ts
+  // emitLifecycleTransition — writes entity_type='buyer_lifecycle' (lib/kernel/lifecycle.ts
+  // ENTITY_MAP key), never 'contact'. Every other 'contact'-typed write to lifecycle_events
+  // in this codebase is a manager-signal / escalation payload on a DIFFERENT table, not a
+  // buyer-lifecycle transition. This filter matched zero rows for every contact, so
+  // auditJourneyConformance never saw a real transition and journey-conformance-audit
+  // (app/api/cron/journey-conformance-audit/route.ts) has been auditing nothing.
   const { data: events } = await svc.from("lifecycle_events")
     .select("event_type, metadata, created_at")
-    .eq("entity_type", "contact").eq("entity_id", contactId)
+    .eq("entity_type", "buyer_lifecycle").eq("entity_id", contactId)
     .order("created_at", { ascending: true }).limit(500)
 
+  // METADATA KEY MISMATCH (same hunt): transitionLifecycle's own insert (lib/kernel/
+  // lifecycle.ts) always writes `metadata: { from_state, to_state, ...callerMetadata }` —
+  // buyer-lifecycle-logger's caller-supplied metadata carries triggered_by/source_system/
+  // override_reason, never a from_stage/to_stage pair. Filtering on from_stage/to_stage
+  // discarded every real row even after the entity_type fix above. from_state/to_state is
+  // what is actually on the row for every transitionLifecycle-backed entity type.
   const transitions: JourneyTransition[] = ((events ?? []) as Record<string, any>[])
-    .filter((e) => e.metadata?.from_stage && e.metadata?.to_stage)
+    .filter((e) => e.metadata?.from_state && e.metadata?.to_state)
     .map((e) => ({
-      from: String(e.metadata.from_stage),
-      to: String(e.metadata.to_stage),
+      from: String(e.metadata.from_state),
+      to: String(e.metadata.to_state),
       at: e.created_at,
       override: typeof e.event_type === "string" && e.event_type.includes("overridden"),
     }))

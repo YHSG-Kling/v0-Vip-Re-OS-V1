@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Brain, RefreshCw, Heart, Bookmark, X } from "lucide-react"
 import { getBuyerInsights, refreshBuyerInsights, type BuyerInsights } from "@/app/actions/buyer-insights"

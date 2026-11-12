@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { BUYER_CRITERIA_SELECT } from "@/lib/buyer-search/buyer-criteria"
 import { generateBuyerPredictions } from "@/lib/behavior-learning/prediction-engine"
 import { updateBuyerPreferences }   from "@/lib/behavior-learning/preference-updater"
+import { readRoleGrants, selectTenantBrokerageId } from "@/lib/auth/role-grants"
 
 export interface BuyerInsights {
   preferences: {
@@ -59,14 +60,20 @@ async function getBrokerageId(authUserId: string): Promise<string> {
     .maybeSingle()
   if (userRow?.brokerage_id) return userRow.brokerage_id
 
-  // Fallback: try user_role_assignments
-  const { data: uraRow } = await svc
-    .from("user_role_assignments")
-    .select("brokerage_id")
-    .eq("user_id", authUserId)
-    .limit(1)
-    .maybeSingle()
-  return uraRow?.brokerage_id ?? ""
+  // Fallback: try user_role_assignments.
+  //
+  // WAS `.limit(1).maybeSingle()` with no ORDER BY — the fail-ARBITRARY shape. It
+  // never errors, which is what made it dangerous: PostgREST returns rows in
+  // whatever order the plan produced, so the TENANT this whole insights surface is
+  // scoped to could differ between two runs of the same code, and the row that won
+  // might be an untenanted `contact` grant whose brokerage_id is NULL. Row order
+  // must never decide a tenant. Read every grant and choose by explicit precedence.
+  const grantsResult = await readRoleGrants(svc, authUserId)
+  if (!grantsResult.ok) {
+    console.error("[buyer-insights] role grant read failed:", grantsResult.error)
+    return ""
+  }
+  return selectTenantBrokerageId(grantsResult.grants) ?? ""
 }
 
 export async function getBuyerInsights(
@@ -104,20 +111,26 @@ export async function getBuyerInsights(
       .order("generated_at", { ascending: false })
       .maybeSingle(),
 
-    // Signal counts for the bottom row
+    // Signal counts for the bottom row. §6: buyer_behavior_log.signal_type
+    // carries TWO spelling families for the same three ideas — the learner
+    // vocabulary (saved / love_it / dismissed, written by
+    // lib/behavior-learning/preference-updater.ts) and the portal/CRM
+    // telemetry spellings (property_saved / property_dismissed, written by
+    // app/crm/contacts/[contactId]/search/search-client.tsx). Filtering only
+    // the learner family under-reported every portal-side signal.
     svc
       .from("buyer_behavior_log")
       .select("signal_type")
       .eq("contact_id", contactId)
       .eq("brokerage_id", brokerageId)
-      .in("signal_type", ["saved", "love_it", "dismissed"]),
+      .in("signal_type", ["saved", "property_saved", "love_it", "dismissed", "property_dismissed"]),
   ])
 
   const rawSignals = signalRes.data ?? []
   const signalCounts: SignalCounts = {
-    saves:      rawSignals.filter(s => s.signal_type === "saved").length,
+    saves:      rawSignals.filter(s => s.signal_type === "saved" || s.signal_type === "property_saved").length,
     loves:      rawSignals.filter(s => s.signal_type === "love_it").length,
-    dismissals: rawSignals.filter(s => s.signal_type === "dismissed").length,
+    dismissals: rawSignals.filter(s => s.signal_type === "dismissed" || s.signal_type === "property_dismissed").length,
   }
 
   return {

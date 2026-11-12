@@ -134,7 +134,7 @@ export default function PortalSocialHub({ contact, contactId, listing, socialPos
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-2">
-              <MessageCircle className="w-5 h-5 text-green-500" />
+              <MessageCircle className="w-5 h-5 text-green-600" />
               <div>
                 <p className="text-2xl font-bold">{totalEngagement.comments.toLocaleString()}</p>
                 <p className="text-sm text-muted-foreground">Comments</p>

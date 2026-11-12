@@ -12,12 +12,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Sparkles, TrendingUp, Shield, DollarSign } from "lucide-react"
 import { buildMultiOfferMatrix } from "@/lib/workflow/intelligence/multi-offer-matrix"
+import type { SellerDecisionRoom } from "@/lib/kernel/seller-decision-room"
 
 interface Props {
   listingId: string
   /** Number of active (pending|submitted|countered) offers on the listing.
    *  When < 2, the card renders null (matrix only useful with multiples). */
   activeOfferCount: number
+  /** Deterministic seller recommendation computed on the page from the net-sheet
+   *  cost lines. Rule-based and reproducible — the auditable counterpart to the
+   *  LLM-written aiSummary below. Null when fewer than 2 offers. */
+  decision?: SellerDecisionRoom | null
 }
 
 const STRENGTH_BADGE_CLASS = {
@@ -27,7 +32,7 @@ const STRENGTH_BADGE_CLASS = {
   very_strong: "bg-emerald-200 text-emerald-800",
 }
 
-export default async function MultiOfferMatrixCard({ listingId, activeOfferCount }: Props) {
+export default async function MultiOfferMatrixCard({ listingId, activeOfferCount, decision }: Props) {
   if (activeOfferCount < 2) return null
 
   let matrix
@@ -49,6 +54,26 @@ export default async function MultiOfferMatrixCard({ listingId, activeOfferCount
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Deterministic recommendation — rule-based, reproducible, and stated as a
+            recommendation the seller decides on, never an instruction. */}
+        {decision?.recommendedOfferId && (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50/70 dark:bg-emerald-950/20 p-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Shield className="h-4 w-4 text-emerald-700" />
+              <span className="font-semibold text-emerald-900 dark:text-emerald-200">
+                Recommended: {decision.cards.find((c) => c.offerId === decision.recommendedOfferId)?.buyerName ?? "—"}
+              </span>
+              <Badge className="bg-emerald-100 text-emerald-800">rule-based</Badge>
+            </div>
+            <p className="text-sm mt-1 text-emerald-900/90 dark:text-emerald-200/90">{decision.recommendationReason}</p>
+            {decision.netBeatsPrice && (
+              <p className="text-sm mt-2 font-medium text-amber-800 dark:text-amber-300">
+                Note: the offer that nets the most is not the one with the highest sticker price.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Top offer callouts */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <TopOfferCallout

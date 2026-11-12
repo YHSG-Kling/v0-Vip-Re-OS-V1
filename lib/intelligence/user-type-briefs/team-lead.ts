@@ -1,4 +1,20 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published generateTeamLeadBrief({ userId, brokerageId }) and
+// isTeamLead(userId, brokerageId) as public HTTP doors with no gate: a service
+// client over a caller-supplied brokerageId — section 4's named IDOR shape.
+// Every caller is in-process server code (re-verified 2026-09-03):
+//   · lib/intelligence/user-type-briefs/index.ts:16 and :25 (the barrel), whose
+//     value importers are app/actions/briefing-actions.ts:12 ("use server") and
+//     the server pages app/dashboard/{coordinator,brokerage,compliance}/page.tsx,
+//     app/vendor/dashboard/page.tsx, app/lender/dashboard/page.tsx; the two
+//     "use client" importers of the barrel take TYPES only (erased)
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId / userId are now an IN-PROCESS CONTRACT: with the door closed,
+// the server caller that supplies them is the gate.
+import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /**
  * Team Lead brief — agents who lead a team get the agent brief PLUS
@@ -11,6 +27,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import type { UserTypeBrief, BriefPriority, BriefMetric } from "./types"
+import { parseMarketPulseMetrics as parseMarketPulse } from "./types"
 
 export async function generateTeamLeadBrief(params: {
   userId: string
@@ -82,7 +99,10 @@ export async function generateTeamLeadBrief(params: {
         .from("contacts")
         .select("id", { count: "exact", head: true })
         .in("agent_id", teamAgentIds)
-        .eq("status", "hot"),
+        // 'hot' is a TEMPERATURE, not a status — nothing ever wrote it to
+        // contacts.status, so this team count was permanently 0; the flag lives
+        // on contacts.lead_temperature (live CHECK: cold/hot/warm).
+        .eq("lead_temperature", "hot"),
       // AI ISA manager: overnight qualified handoffs INTO this team (tier-scoped).
       supabase
         .from("assignment_log")
@@ -111,6 +131,127 @@ export async function generateTeamLeadBrief(params: {
 
   const priorities: BriefPriority[] = []
 
+  // WAVE 103 (lane 103B) — EXCEPTIONS FIRST: team members over / at capacity (the ONE kernel
+  // answer, capacityFor) and the guardian's open reassignment suggestions lead the brief, ahead
+  // of handoffs and deal risk — a lead handed to an agent with no headroom is the next stale
+  // contact. Best-effort: a refused read leaves the brief without the row, never "all clear".
+  if (teamAgentIds.length > 0) {
+    try {
+      const { capacityFor, resolveBrokerageMaxLoad } = await import("@/lib/lead-assignment/capacity-pick")
+      const { hasHeadroom, AGENT_REASSIGNMENT_SUGGESTED_SIGNAL } = await import("@/lib/kernel/capacity-guardian")
+      // Lane 104F: the team's LAST PERSISTED twin (the Command Center's team-scoped build, no older
+      // than TWIN_SNAPSHOT_MAX_AGE_HOURS — lib/kernel/brokerage-twin.ts readBrokerageTwin, snapshot
+      // mode) already carries every scored member's capacity line (twinCapacityForAgent); a member
+      // the twin does not carry, or no fresh twin at all, falls back to capacityFor — never "fine".
+      const { readBrokerageTwin, twinCapacityForAgent } = await import("@/lib/kernel/brokerage-twin")
+      const teamTwin = teamIds.length === 1 ? await readBrokerageTwin(params.brokerageId, { svc: supabase as any, teamId: teamIds[0], snapshot: {} }) : null
+      const maxLoad = teamTwin?.capacity.maxLoad ?? await resolveBrokerageMaxLoad(supabase, params.brokerageId)
+      const exceptions: Array<{ agentId: string; band: string; load: number; reasons: string[] }> = []
+      for (const agentId of teamAgentIds.slice(0, 50)) {
+        const line = twinCapacityForAgent(teamTwin, agentId)
+        const cap = line ?? await capacityFor(supabase, params.brokerageId, agentId, { maxLoad })
+        if (!hasHeadroom(cap.band)) exceptions.push({ agentId, band: cap.band, load: cap.load, reasons: cap.reasons })
+      }
+      const { data: suggested, error: suggestedErr } = await supabase
+        .from("manager_signals").select("entity_id, payload")
+        .eq("brokerage_id", params.brokerageId).eq("signal_type", AGENT_REASSIGNMENT_SUGGESTED_SIGNAL)
+        .eq("status", "open").in("entity_id", teamAgentIds).limit(20)
+      if (suggestedErr) console.error(`[team-lead-brief] reassignment suggestions read refused: ${suggestedErr.message}`)
+      const suggestions = (suggested ?? []) as Array<{ entity_id: string | null; payload: { daysOver?: number } | null }>
+      if (exceptions.length > 0 || suggestions.length > 0) {
+        const over = exceptions.filter((e) => e.band === "over")
+        const top = over[0] ?? exceptions[0]
+        priorities.push({
+          id: "team-capacity-exceptions",
+          title: exceptions.length > 0
+            ? `${exceptions.length} team member${exceptions.length === 1 ? "" : "s"} ${over.length > 0 ? "over" : "at"} capacity`
+            : `${suggestions.length} books reassignment${suggestions.length === 1 ? "" : "s"} awaiting your approval`,
+          body: [
+            top ? `Heaviest: ${top.load} active items (${top.band.replace("_", " ")})${top.reasons.length ? ` — ${top.reasons.slice(0, 2).join("; ")}` : ""}` : null,
+            suggestions.length > 0 ? `${suggestions.length} temporary cover suggestion${suggestions.length === 1 ? "" : "s"} proposed (over ${suggestions[0].payload?.daysOver ?? "several"} days running) — approve to rebalance the book` : null,
+          ].filter(Boolean).join(". "),
+          severity: over.length > 0 || suggestions.length > 0 ? "high" : "medium",
+          manager: "recruiting_manager",
+          ctas: [{ label: "Rebalance books", href: "/dashboard/team" }],
+        })
+      }
+      // WAVE 106 (lane 106E): the team's WORKFORCE line from the same persisted team twin — who on
+      // this board is overwhelmed / underutilized / in development (evidence + policy threshold on
+      // each, lib/kernel/brokerage-twin.ts workforce). Only the team's own members (the twin was
+      // built under teamId); a twin without the section (older snapshot) leaves the brief without it.
+      const w = teamTwin?.workforce
+      if (w && w.agents.length > 0) {
+        const { workforceLine, WORKFORCE_CLASSIFICATIONS } = await import("@/lib/kernel/brokerage-twin")
+        const members = w.agents.filter((a) => teamAgentIds.includes(a.agentId))
+        const count = (k: (typeof WORKFORCE_CLASSIFICATIONS)[number]) => members.filter((a) => a.classifications.some((c) => c.kind === k)).length
+        const dev = count("in_development"), under = count("underutilized"), over = count("overwhelmed")
+        if (members.length > 0 && (dev > 0 || under > 0 || over > 0)) {
+          const firstDev = members.find((a) => a.classifications.some((c) => c.kind === "in_development"))?.classifications.find((c) => c.kind === "in_development")
+          const totals = Object.fromEntries(WORKFORCE_CLASSIFICATIONS.map((k) => [k, count(k)])) as Record<(typeof WORKFORCE_CLASSIFICATIONS)[number], number>
+          priorities.push({
+            id: "team-workforce",
+            title: workforceLine({ totals, agents: members }) ?? "Team workforce",
+            body: [
+              under > 0 ? `${under} underutilized — room for the next lead or a transfer from an overwhelmed teammate` : null,
+              dev > 0 ? `${dev} in development${firstDev ? ` (${firstDev.reason})` : ""} — the coaching brief carries the gap` : null,
+            ].filter(Boolean).join(". "),
+            severity: over > 0 ? "high" : "medium",
+            manager: "recruiting_manager",
+            ctas: [{ label: "Coaching briefs", href: "/dashboard/team" }],
+          })
+        }
+      }
+    } catch (e) {
+      console.error(`[team-lead-brief] capacity exceptions failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  // WAVE 104 (lane 104D): the tenant's missions needing a human — BLOCKED / APPROVAL_REQUIRED /
+  // ESCALATED, through the ONE lazy seam (lib/kernel/missions.ts activeMissionsFor). A refused
+  // read is logged and leaves the brief without the row, never "all missions fine".
+  try {
+    const { activeMissionsFor } = await import("@/lib/kernel/missions")
+    const ms = await activeMissionsFor(params.brokerageId, { limit: 200 }, supabase as any)
+    if (ms.readRefused) console.error(`[team-lead-brief] missions read refused: ${ms.readRefused}`)
+    else if (ms.attention.length > 0) {
+      const top = ms.attention[0]
+      const byState = ms.attention.reduce<Record<string, number>>((acc, m) => { acc[m.state] = (acc[m.state] ?? 0) + 1; return acc }, {})
+      priorities.push({
+        id: "team-missions-attention",
+        title: `${ms.attention.length} mission${ms.attention.length === 1 ? "" : "s"} need${ms.attention.length === 1 ? "s" : ""} a decision`,
+        body: `${Object.entries(byState).map(([s, n]) => `${n} ${s.toLowerCase().replace("_", " ")}`).join(", ")} of ${ms.active.length} active. First: "${top.objective}" (${top.state.toLowerCase().replace("_", " ")}, ${top.owner_manager})`,
+        severity: byState.ESCALATED || byState.APPROVAL_REQUIRED ? "high" : "medium",
+        manager: top.owner_manager,
+        ctas: [{ label: "Open the flight recorder", href: "/dashboard/admin/ai-audit" }],
+      })
+    }
+  } catch (e) {
+    console.error(`[team-lead-brief] missions read failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  // WAVE 106 (lane 106A): open RESOURCE ALLOCATION recommendations awaiting a human (held leads the
+  // chain ranked an agent for, picks that differ from the rules, marketing budget splits) — one line,
+  // through the one board reader (lib/kernel/resource-allocation.ts loadAllocationBoard). A refused
+  // read leaves the line out, never "nothing to decide". Team leads are on the admin roster; agents
+  // never receive this brief (CLAUDE.md §5 — leads are the brokerage's).
+  try {
+    const { loadAllocationBoard } = await import("@/lib/kernel/resource-allocation")
+    const b = await loadAllocationBoard(supabase as any, params.brokerageId, { limit: 1 })
+    if (!b.ok) console.error(`[team-lead-brief] allocation board refused: ${b.error}`)
+    else if (b.board.open > 0) {
+      priorities.push({
+        id: "allocation-recommendations",
+        title: `${b.board.open} resource allocation recommendation${b.board.open === 1 ? "" : "s"} await${b.board.open === 1 ? "s" : ""} your decision`,
+        body: `${b.board.byKind.lead_assignment} lead assignment, ${b.board.byKind.marketing_allocation} marketing budget. ${b.board.latest[0] ? `Latest: ${b.board.latest[0].summary}` : ""} Nothing is applied until you approve it.`,
+        severity: "medium",
+        manager: "ai_isa",
+        ctas: [{ label: "Decide on Manager Trust", href: "/dashboard/admin/manager-trust" }],
+      })
+    }
+  } catch (e) {
+    console.error(`[team-lead-brief] allocation board failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   // AI ISA manager — unclaimed qualified handoffs into the team lead the brief
   // (canonical process: qualification converted them to team members' contacts).
   const unclaimedHandoffs = isaHandoffs.filter((h) => !h.claimed).length
@@ -123,7 +264,11 @@ export async function generateTeamLeadBrief(params: {
         : "All claimed — follow up on first-touch quality",
       severity: unclaimedHandoffs > 0 ? "high" : "medium",
       manager: "ai_isa",
-      ctas: [{ label: "Open team pipeline", href: "/dashboard/team-lead" }],
+      // /dashboard/team-lead never had a page.tsx. The team console is
+      // app/dashboard/team/page.tsx, whose boardScopeFor() gives user_type
+      // 'team_lead' the TEAM tier — their own board, exactly this brief's reader.
+      // (ROUTE_ALIASES already maps the other misspelling, /dashboard/teams → it.)
+      ctas: [{ label: "Open team pipeline", href: "/dashboard/team" }],
     })
   }
 
@@ -134,7 +279,7 @@ export async function generateTeamLeadBrief(params: {
       body: `Most critical: ${dealsAtRisk[0].property_address ?? "unknown"} (score ${Math.round(dealsAtRisk[0].overall_score)})`,
       severity: dealsAtRisk[0].risk_level === "critical" ? "critical" : "high",
       manager: "deal_coordinator",
-      ctas: [{ label: "Open team pipeline", href: "/dashboard/team-lead" }],
+      ctas: [{ label: "Open team pipeline", href: "/dashboard/team" }],
     })
   }
 
@@ -146,21 +291,78 @@ export async function generateTeamLeadBrief(params: {
         ? `${teamHotContacts} hot contacts across the team — schedule 1:1s with members carrying the most`
         : `Pipeline stable — good time for skill-building 1:1s`,
       severity: "medium",
-      ctas: [{ label: "View team", href: "/dashboard/team-lead" }],
+      ctas: [{ label: "View team", href: "/dashboard/team" }],
     })
+  }
+
+  // WAVE 103 (lane 103A) — THE TEAM'S COMPETENCY GAPS. The ONE competency model
+  // (lib/education/skill-freshness.ts:scoreCompetency via loadAgentCompetency) read for each team
+  // member; the lead sees who scores at or below the gap line and on what, so the 1:1 above has a
+  // subject. Capped to 25 members (a brief, not a census); a refused read leaves the line out.
+  let competencyGapAgents: Array<{ name: string; gaps: string[]; focus: string | null }> = []
+  if (teamAgentIds.length > 0) {
+    try {
+      const { loadAgentCompetency } = await import("@/lib/education/skill-freshness-radar")
+      const { data: members } = await supabase
+        .from("agents").select("id, user_id, users(first_name, last_name)")
+        .in("id", teamAgentIds.slice(0, 25)).eq("brokerage_id", params.brokerageId)
+      for (const m of (members ?? []) as any[]) {
+        const p = await loadAgentCompetency(supabase, { id: m.id, user_id: m.user_id ?? null, brokerage_id: params.brokerageId })
+        if (p.gaps.length === 0) continue
+        const u = Array.isArray(m.users) ? m.users[0] : m.users
+        const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "A team member"
+        // WAVE 106 (lane 106D): the development loop's FOCUS is the lowest evidenced gap (observeWeakness,
+        // one per member) — the line names it so the 1:1 has the loop's subject, not a list.
+        const { observeWeakness } = await import("@/lib/education/skill-freshness")
+        const focus = observeWeakness(p, { limit: 1 })[0]
+        competencyGapAgents.push({ name, gaps: p.gaps.slice(0, 2).map((g) => `${g.label} ${g.score}/100`), focus: focus ? focus.label : null })
+      }
+    } catch (e) {
+      console.error("[team-lead-brief] competency read failed (line left out):", (e as Error).message)
+    }
+  }
+  if (competencyGapAgents.length > 0) {
+    priorities.push({
+      id: "team-competency",
+      title: `${competencyGapAgents.length} team member${competencyGapAgents.length === 1 ? " is" : "s are"} in development`,
+      body: competencyGapAgents.slice(0, 3).map((a) => `${a.name}: ${a.gaps.join(", ")}${a.focus ? ` (focus: ${a.focus})` : ""}`).join(" · ") + " — the development loop has queued a module and an assessment for each focus; make it the 1:1 topic",
+      severity: "medium",
+      manager: "recruiting_manager",
+      ctas: [{ label: "View team", href: "/dashboard/team" }],
+    })
+  }
+  // Points tiers across the team (wave 103, lane 103C): the team lead sees the
+  // team board (ruling #191) and the brief carries its tier mix. A refused read
+  // reads as "—".
+  let teamTiersLine = "—"
+  if (teamAgentIds.length > 0) {
+    const { data: tierRows, error: tierErr } = await supabase
+      .from("agents")
+      .select("gamification_points")
+      .in("id", teamAgentIds)
+      .limit(5000)
+    if (tierErr) console.error(`[TeamLeadBrief] team tier read refused: ${tierErr.message}`)
+    else {
+      const { tierDistributionLine } = await import("@/lib/gamification/tiers")
+      teamTiersLine = tierDistributionLine(((tierRows ?? []) as Array<{ gamification_points: number | null }>).map((r) => r.gamification_points))
+    }
   }
 
   const metrics: BriefMetric[] = [
     { label: "Team members", value: teamMemberCount },
     { label: "Team deals at risk", value: dealsAtRisk.length },
     { label: "Team hot contacts", value: teamHotContacts },
+    { label: "Team tiers", value: teamTiersLine, href: "/dashboard/intelligence" },
     ...(isaHandoffs.length > 0 ? [{ label: "ISA handoffs (24h)", value: isaHandoffs.length }] : []),
+    ...(teamMemberCount > 0 ? [{ label: "Competency gaps", value: competencyGapAgents.length }] : []),
   ]
 
   let summary = "Team running normally — focus on coaching and pipeline review."
   if (priorities.length > 0) {
     try {
       const { text } = await generateTextRouted({
+        brokerageId: params.brokerageId,
+        userId: params.userId,
         feature: "coaching_insight",
         prompt:
           `One-sentence morning brief for a real estate team lead. ` +
@@ -195,9 +397,9 @@ export async function generateTeamLeadBrief(params: {
     .eq("briefing_date", today)
     .maybeSingle()
   if (existingBrief?.id) {
-    await supabase.from("ai_daily_briefings").update(briefRow).eq("id", existingBrief.id)
+    await sentinelWrite(supabase, supabase.from("ai_daily_briefings").update(briefRow).eq("id", existingBrief.id), { table: "ai_daily_briefings", flow: "ai_daily_briefings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } else {
-    await supabase.from("ai_daily_briefings").insert(briefRow)
+    await sentinelWrite(supabase, supabase.from("ai_daily_briefings").insert(briefRow), { table: "ai_daily_briefings", flow: "ai_daily_briefings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   return {
@@ -222,13 +424,10 @@ async function getTeamAgentIds(teamIds: string[]): Promise<string[]> {
   return ((data ?? []) as Array<{ id: string }>).map((a) => a.id)
 }
 
-function parseMarketPulse(market_pulse: string): BriefMetric[] {
-  try {
-    const parsed = JSON.parse(market_pulse)
-    if (Array.isArray(parsed)) return parsed
-  } catch {}
-  return []
-}
+// TOMBSTONE: local parseMarketPulse merged onto
+// lib/intelligence/user-type-briefs/types.ts parseMarketPulseMetrics
+// (imported above as `parseMarketPulse`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 /** Detect whether a user is a team lead (leads any team in their brokerage) */
 export async function isTeamLead(userId: string, brokerageId: string): Promise<boolean> {

@@ -23,11 +23,16 @@
  * for short crawls), normalizes the items into our TopicCandidate shape,
  * and the cron upserts them into content_topic_bank.
  *
- * Routes through callConnector for canonical egress; auth via the existing
- * 'apify' connector registry entry (Bearer APIFY_TOKEN).
+ * Routes through the official Apify SDK adapter (lib/providers/apify/client.ts,
+ * wave 70B) for canonical egress; auth via the existing 'apify' connector
+ * registry entry (Bearer APIFY_API_TOKEN — the registry's envKey; this file
+ * alone spelled it APIFY_TOKEN until 2026-09-03, so a tenant with the
+ * registry's spelling set had a topic scraper that no-op'd forever. Resolved
+ * through lib/env/aliases.ts; the old spelling is accepted for one release).
  */
 import "server-only"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { runActorSyncGetDatasetItems } from "@/lib/providers/apify/client"
+import { apifyToken } from "@/lib/env/aliases"
 
 export interface ApifyTopicItem {
   item_id:          string
@@ -47,29 +52,17 @@ interface ApifyRunInput {
   engagement_fields?: string[]
 }
 
-interface ApifyDatasetItem {
-  [key: string]: unknown
-}
+// Dataset item shape is untyped (`any[]`) — the SDK adapter's return type,
+// indexed dynamically below by args.title_field / url_field / engagement_fields.
 
 export async function runApifyScrape(args: ApifyRunInput): Promise<ApifyTopicItem[]> {
-  const token = process.env.APIFY_TOKEN
+  const token = apifyToken()
   if (!token) return [] // graceful no-op when not configured
 
-  // Apify's run-sync-get-dataset-items returns the dataset directly when the
-  // run finishes within the timeout. We bound it tight (60s) — anything
-  // longer we re-queue as async in a future cron.
-  const path = `acts/${encodeURIComponent(args.actor)}/run-sync-get-dataset-items`
-  const res = await callConnector<ApifyDatasetItem[]>({
-    connector: "apify",
-    baseUrl:   "https://api.apify.com/v2",
-    path,
-    method:    "POST",
-    auth:      { style: "bearer", token },
-    query:     { timeout: "60", format: "json" },
-    body:      args.input,
-    responseType: "json",
-    timeoutMs: 80_000,
-  })
+  // Apify's run-sync-get-dataset-items semantics (dataset back when the run
+  // finishes within the timeout). We bound it tight (60s) — anything longer
+  // we re-queue as async in a future cron.
+  const res = await runActorSyncGetDatasetItems(token, args.actor, args.input, { timeoutSecs: 60 })
   if (!res.ok || !Array.isArray(res.data)) return []
 
   const out: ApifyTopicItem[] = []

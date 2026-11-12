@@ -16,7 +16,7 @@
  *
  * Run: npx tsx scripts/first-touch-coordination-simulator.ts   (npm run test:first-touch-coord)
  */
-import { decideFirstTouch } from "../lib/campaign-sequences/first-touch-coordination"
+import { decideFirstTouch, FIRST_TOUCH_ARBITER_WINDOW_MINUTES } from "../lib/campaign-sequences/first-touch-coordination"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -41,8 +41,21 @@ async function main() {
 
   // ── Layer 1: pure decision matrix ───────────────────────────────────────────
   console.log("\n[Layer 1 · decideFirstTouch matrix]")
-  check("no first touch on record → send_and_claim",
+  // RE-ASSERTED (wave 145, lane 145Z — owner ruling 16 + lane 145E Outside-lane 3): "no first touch on record → send_and_claim"
+  // pinned the drip as the first greeter. The RULE now: inside the arbiter's window the drip WAITS (defer_to_arbiter) so the
+  // first hello is the arbiter's speed-to-lead decision; only past the window (the arbiter made no first touch) does the drip
+  // send and claim. An unknown enrollment stamp counts as past the window (never stalls the welcome).
+  const ENROLLED = "2026-10-27T12:00:00Z"
+  check("no first touch on record, INSIDE the arbiter's window → defer_to_arbiter (ruling 16: the arbiter owns the first hello)",
+    decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: CAPTURED, stepChannel: "email", firstTouchedAt: null, firstTouchChannel: null, enrolledAt: ENROLLED, now: new Date("2026-10-27T12:02:00Z") }) === "defer_to_arbiter")
+  check("no first touch on record, PAST the arbiter's window → send_and_claim (the arbiter made no first touch; the welcome is not dropped)",
+    decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: CAPTURED, stepChannel: "email", firstTouchedAt: null, firstTouchChannel: null, enrolledAt: ENROLLED, now: new Date(Date.parse(ENROLLED) + (FIRST_TOUCH_ARBITER_WINDOW_MINUTES + 1) * 60_000) }) === "send_and_claim")
+  check("no first touch on record, unknown enrollment stamp → send_and_claim (fail-safe: never a perpetual wait)",
     decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: CAPTURED, stepChannel: "email", firstTouchedAt: null, firstTouchChannel: null }) === "send_and_claim")
+  check("the arbiter stamped the SAME channel during the wait → the re-asked step stands down (skip_duplicate)",
+    decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: CAPTURED, stepChannel: "email", firstTouchedAt: "2026-10-27T12:01:00Z", firstTouchChannel: "email", enrolledAt: ENROLLED, now: new Date("2026-10-27T12:04:00Z") }) === "skip_duplicate")
+  check("a non-welcome first step never waits for the arbiter (send)",
+    decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: "offer_accepted", stepChannel: "email", firstTouchedAt: null, firstTouchChannel: null, enrolledAt: ENROLLED, now: new Date("2026-10-27T12:01:00Z") }) === "send")
   check("same channel already touched → skip_duplicate",
     decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: CAPTURED, stepChannel: "email", firstTouchedAt: "2026-06-13T00:00:00Z", firstTouchChannel: "email" }) === "skip_duplicate")
   check("different channel already touched → send (genuine 2nd channel)",

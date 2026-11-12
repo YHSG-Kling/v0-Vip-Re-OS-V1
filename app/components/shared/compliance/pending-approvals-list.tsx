@@ -17,6 +17,11 @@ import { formatDistanceToNow } from "date-fns"
 interface PendingApprovalsListProps {
   initialApprovals: any[]
   reviewerId: string
+  /** optional by design: the list already removes a reviewed item from its own local state
+   *  (setApprovals filter below) — the real UI update. This is an extra hook for a future
+   *  caller that surfaces a pending-count elsewhere on the page; the one current caller
+   *  (app/dashboard/compliance/page.tsx) is a server component and cannot pass a function
+   *  prop across the RSC boundary regardless. */
   onRefresh?: () => void
 }
 
@@ -130,7 +135,7 @@ export default function PendingApprovalsList({ initialApprovals, reviewerId, onR
                     </div>
                   )}
                   {approval.auto_scan_results.warnings?.length > 0 && (
-                    <div className="text-sm text-yellow-600">
+                    <div className="text-sm text-yellow-700">
                       {approval.auto_scan_results.warnings.length} warning(s)
                     </div>
                   )}

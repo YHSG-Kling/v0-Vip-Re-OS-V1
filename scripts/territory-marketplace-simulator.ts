@@ -187,17 +187,17 @@ check("cleanCarriedZip rejects short / long / alpha / empty input",
   cleanCarriedZip("78a04") === null && cleanCarriedZip("") === null && cleanCarriedZip(undefined) === null)
 const pricingSrc = src("app/pricing/page.tsx")
 const sectionSrc = src("app/pricing/territory-availability.tsx")
-const signupPageSrc = src("app/signup/page.tsx")
-const signupFormSrc = src("app/signup/signup-form.tsx")
+const signupPageSrc = src("app/get-started/page.tsx")
+const signupFormSrc = src("app/get-started/trial-funnel-form.tsx")
 const actionSrc = src("app/actions/auth/signup-brokerage.ts")
 const insightsPageSrc = src("app/dashboard/market-insights/page.tsx")
 const insightsClientSrc = src("app/dashboard/market-insights/market-insights-client.tsx")
 check("/pricing mounts the TerritoryAvailability section + territory JSON-LD ItemList",
   pricingSrc.includes("TerritoryAvailability") && pricingSrc.includes('"@type": "ItemList"') &&
   pricingSrc.includes("serializeJsonLd(territoryJsonLd)"))
-check("the section's CTAs carry the zip into /signup?zip=",
+check("the section's CTAs carry the zip into the signup funnel (/signup?zip= → 308 → /get-started)",
   sectionSrc.includes("/signup?zip=") && pricingSrc.includes("/signup?zip="))
-check("/signup validates + threads the carried zip (cleanCarriedZip → SignupForm → action)",
+check("the signup funnel validates + threads the carried zip (cleanCarriedZip → TrialFunnelForm → action)",
   signupPageSrc.includes("cleanCarriedZip(params.zip)") && signupPageSrc.includes("initialZip={initialZip}") &&
   signupFormSrc.includes("territoryZip: initialZip"))
 check("signup action stores the zip as signup_intent SUGGESTION (merge-never-replace bag)",

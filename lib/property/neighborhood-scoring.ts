@@ -5,12 +5,31 @@
 
 import type { OSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 
-// Neighborhood intelligence is gated to the most advanced AI plans.
-const ALLOWED_TIERS: ReadonlySet<string> = new Set(["brokerage", "multi_location"])
+// ── TIER PARITY (owner ruling) ───────────────────────────────────────────────
+// Neighborhood intelligence used to be gated to `brokerage` / `multi_location`
+// — "the most advanced AI plans". OWNER, verbatim: "brokerages can have teams
+// and agents but that is the brokerage tier. when we have the team and solo
+// agent subscription tiers, those subscriptions get the same level of features
+// as brokerages." Tiers differ by SEAT COUNT, not by feature set, so a solo
+// agent listing a house gets the same neighborhood report a brokerage's agent
+// does. The AI cost of producing it is platform-covered with per-tier overage
+// (CLAUDE.md §5) — that is the lever that scales with plan, not this gate.
+//
+// The `ALLOWED_TIERS` set that lived here is DELETED rather than widened to all
+// four names: a set every value satisfies is a set with no reader, and leaving
+// it would read as a live restriction to the next lane (CLAUDE.md §1). The tier
+// ARGUMENT stays — callers still pass what they read, the canonical vocabulary
+// is unchanged, and a future CAPACITY rule (not a capability rule) has a place
+// to land. An unknown / NULL tier passes too: a tenant whose plan_tier was
+// never backfilled is on SOME plan, and every plan includes this.
+//
+// The gate itself survives at app/actions/neighborhood-reports.ts:185, which is
+// the one caller.
 
-/** True only for the most advanced plans that include neighborhood intelligence. */
+/** True on every plan — see the parity note above. */
 export function isNeighborhoodReportAllowed(planTier: string | null | undefined): boolean {
-  return !!planTier && ALLOWED_TIERS.has(planTier)
+  void planTier
+  return true
 }
 
 export interface LivabilityResult {

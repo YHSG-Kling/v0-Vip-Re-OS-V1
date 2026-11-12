@@ -25,20 +25,20 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 function pureLayer() {
   console.log("\n[forecastVendorDemand · pure — stage → upcoming category demand]")
   const demand = forecastVendorDemand([{ stage: "UNDER_CONTRACT" }, { stage: "under_contract" }, { stage: "APPRAISAL" }, { stage: "CLOSING_PREP" }, { stage: "NEW" }])
-  check("under-contract deals forecast inspector demand", demand.get("Inspector") === 2)
-  check("appraisal forecasts a lender", demand.get("Lender") === 1)
-  check("closing-prep forecasts title", demand.get("Title Company") === 1)
-  check("a stage with no vendor need contributes nothing", !demand.has("Stager"))
+  check("under-contract deals forecast inspector demand", demand.get("inspector") === 2)
+  check("appraisal forecasts a lender", demand.get("lender") === 1)
+  check("closing-prep forecasts title", demand.get("title") === 1)
+  check("a stage with no vendor need contributes nothing", !demand.has("stager"))
 
   console.log("\n[assessCoverage · pure — gap / thin / covered, honest]")
-  const d = new Map<VendorCategory, number>([["Inspector", 3], ["Lender", 2], ["Title Company", 1]])
-  const reliable = new Map<VendorCategory, number>([["Inspector", 0], ["Lender", 1], ["Title Company", 2]])
+  const d = new Map<VendorCategory, number>([["inspector", 3], ["lender", 2], ["title", 1]])
+  const reliable = new Map<VendorCategory, number>([["inspector", 0], ["lender", 1], ["title", 2]])
   const a = assessCoverage(d, reliable)
-  check("category with demand + 0 reliable → GAP", a.find((x) => x.category === "Inspector")!.status === "gap")
-  check("category with demand + exactly 1 reliable → THIN (single point of failure)", a.find((x) => x.category === "Lender")!.status === "thin")
-  check("category with demand + ≥2 reliable → COVERED", a.find((x) => x.category === "Title Company")!.status === "covered")
+  check("category with demand + 0 reliable → GAP", a.find((x) => x.category === "inspector")!.status === "gap")
+  check("category with demand + exactly 1 reliable → THIN (single point of failure)", a.find((x) => x.category === "lender")!.status === "thin")
+  check("category with demand + ≥2 reliable → COVERED", a.find((x) => x.category === "title")!.status === "covered")
   check("gaps sort first", a[0].status === "gap")
-  check("a category with NO demand is never assessed (never a fabricated gap)", assessCoverage(new Map(), new Map([["Inspector", 0]])).length === 0)
+  check("a category with NO demand is never assessed (never a fabricated gap)", assessCoverage(new Map(), new Map([["inspector", 0]])).length === 0)
 }
 
 function sourceLayer() {
@@ -70,7 +70,7 @@ async function liveLayer() {
       const { data: t } = await svc.from("transactions").insert({ brokerage_id: brokerageId, stage: "UNDER_CONTRACT", status: "active", deal_name: `ZZ Coverage Test ${i}` }).select("id").single()
       cleanup.push({ table: "transactions", id: (t as any).id })
     }
-    const { data: v } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "ZZ Cover Lender", category: "Lender", status: "active" }).select("id").single()
+    const { data: v } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "ZZ Cover Lender", category: "lender", status: "active" }).select("id").single()
     cleanup.push({ table: "vendors", id: (v as any).id })
 
     const { runVendorCoverageForecast } = await import("../lib/kernel/vendor-coverage-forecast")

@@ -67,7 +67,12 @@ function sourceLayer() {
 
   const reconcile = src("lib/commission/reconcile-tracking.ts")
   check("reconcile reuses the canonical payment path (markCommissionPaid)", /markCommissionPaid/.test(reconcile))
-  check("reconcile skips already-paid/cancelled/voided ledger rows (idempotent)", /cancelled/.test(reconcile) && /voided/.test(reconcile))
+  check("reconcile skips cancelled/voided ledger rows", /cancelled/.test(reconcile) && /voided/.test(reconcile))
+  // KEEP-ONE (m283/m284): a PAID summary row whose distributions still lag is the drift the reaper
+  // heals — skipping on summary status alone would make the heal a no-op. Idempotent because a row
+  // whose distributions are already paid (or absent) is skipped on the next pass.
+  check("reconcile still heals a PAID summary row whose distributions lag",
+    /status === "paid"[\s\S]*?commission_distributions[\s\S]*?distStatus === "paid"[\s\S]*?continue/.test(reconcile))
   check("the ledger tracks the DEPOSIT (recordCommissionDepositReceived → deposit_received_at)", /recordCommissionDepositReceived[\s\S]*?deposit_received_at/.test(reconcile))
 
   const net = src("lib/intelligence/reaper-net.ts")
@@ -99,31 +104,28 @@ async function liveLayer() {
 
   const cleanup: Array<{ table: string; id: string }> = []
   try {
-    // Ledger row (pending) + a distribution (pending)
-    const { data: comm } = await svc.from("commissions").insert({
+    // KEEP-ONE (m283/m284): the summary row IS the agent_commissions row. Seed it PAID and leave
+    // its distribution lagging at pending — that is the drift the reaper heals.
+    const { data: comm } = await svc.from("agent_commissions").insert({
       transaction_id: transactionId, brokerage_id: brokerageId, agent_id: agentId,
-      gross_commission: 12000, agent_commission: 8400, brokerage_commission: 3600, status: "pending",
+      gross_commission: 12000, agent_split_percent: 70, close_date: new Date().toISOString().slice(0, 10),
+      net_to_agent: 8400, net_to_brokerage: 3600,
+      status: "paid", paid_at: new Date().toISOString(),
     }).select("id").single()
-    if (comm) cleanup.push({ table: "commissions", id: (comm as any).id })
+    if (comm) cleanup.push({ table: "agent_commissions", id: (comm as any).id })
     const { data: dist } = await svc.from("commission_distributions").insert({
       commission_id: (comm as any).id, transaction_id: transactionId, brokerage_id: brokerageId,
       distribution_type: "agent", agent_id: agentId, calculation_type: "flat", calculated_amount: 8400,
       source_of_funds: "brokerage", status: "pending",
     }).select("id").single()
     if (dist) cleanup.push({ table: "commission_distributions", id: (dist as any).id })
-    // Bridge row (paid) — the drift.
-    const { data: bridge } = await svc.from("agent_commissions").insert({
-      transaction_id: transactionId, brokerage_id: brokerageId, agent_id: agentId,
-      gross_commission: 12000, agent_split_percent: 70, status: "paid", paid_at: new Date().toISOString(),
-    }).select("id").single()
-    if (bridge) cleanup.push({ table: "agent_commissions", id: (bridge as any).id })
 
     const { reapCommissionTrackingDrift } = await import("../lib/finance/commission-tracking-reaper")
     const r = await reapCommissionTrackingDrift(brokerageId, svc as any)
     check("live: reaper reaped ≥ 1 drifted transaction", r.reaped >= 1)
 
-    const { data: after } = await svc.from("commissions").select("status").eq("id", (comm as any).id).maybeSingle()
-    check("live: the lagging ledger row is now PAID (healed)", (after as any)?.status === "paid")
+    const { data: after } = await svc.from("agent_commissions").select("status").eq("id", (comm as any).id).maybeSingle()
+    check("live: the summary ledger row is PAID", (after as any)?.status === "paid")
     const { data: distAfter } = await svc.from("commission_distributions").select("status").eq("id", (dist as any).id).maybeSingle()
     check("live: the distribution is now PAID too", (distAfter as any)?.status === "paid")
   } finally {

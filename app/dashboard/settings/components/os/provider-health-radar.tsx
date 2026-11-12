@@ -54,11 +54,11 @@ export function ProviderHealthRadar({
           </div>
           <div className="flex gap-4 text-sm">
             <div className="flex items-center gap-1">
-              <CheckCircle2 className="h-4 w-4 text-green-500" />
+              <CheckCircle2 className="h-4 w-4 text-green-600" />
               <span>{healthyCount}</span>
             </div>
             <div className="flex items-center gap-1">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
               <span>{pendingCount}</span>
             </div>
             <div className="flex items-center gap-1">
@@ -77,7 +77,7 @@ export function ProviderHealthRadar({
             >
               <div className="flex items-center gap-2">
                 {provider.status === "active" ? (
-                  <Wifi className="h-3 w-3 text-green-500" />
+                  <Wifi className="h-3 w-3 text-green-600" />
                 ) : provider.status === "error" ? (
                   <WifiOff className="h-3 w-3 text-red-500" />
                 ) : (

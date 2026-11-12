@@ -1,14 +1,15 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { bestEffort } from "@/lib/db/best-effort"
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { markOpenHouseCompleted } from "@/app/actions/seller-listing/execution-engine"
-import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { ingestOpenHouseAttendeeSignalAction } from "@/app/actions/lead-signal-ingest"
 import { interestLevelToSignalScale } from "@/lib/lead-intelligence/interest-level"
+import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -16,36 +17,9 @@ function isValidUUID(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 }
 
-/**
- * Resolve identity from the authenticated session. Every CRM-facing action in
- * this file must call this — the previous version trusted brokerageId / agentId
- * / userId as caller-supplied params, which let any signed-in user forge writes
- * for any brokerage.
- *
- * Returns the caller's brokerage_id, user_id, and (when present) the
- * canonical agents.id for that user. agentId is null for non-agent staff
- * (admins, brokers) — callers should fall back to userId in that case.
- */
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  const { data: a } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:185
+// requireCallerWithAgent (imported above as `requireCaller`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.
 
 /** Verify a listing belongs to the caller's brokerage. */
 async function verifyListingOwnership(
@@ -133,13 +107,51 @@ export async function getOpenHouseDashboard(listingId: string) {
         .in("event_id", eventIds)
     : { data: [] }
 
-  const { data: packetJobs } = await supabase
+  // `open_house_rsvp_tracking` — the BROADER RSVP source of truth, not just
+  // invited contacts: lib/voice/twilio-voice.ts files a row here from an
+  // AI-reception phone call with `source:"ai_reception"` even when the caller
+  // was never on the invitation list, and app/api/open-house/attend/route.ts's
+  // kiosk sign-in does the same. `open_house_invitations` alone would miss
+  // both. Ordered by `rsvp_updated_at` (falling back to `created_at` for a row
+  // whose status has never changed since insert) so the dashboard list reads
+  // "who moved most recently" — this column had a writer
+  // (app/actions/seller-open-house.ts updateRsvp / app/actions/
+  // open-house-automation.ts recordRsvpResponse / lib/voice/twilio-voice.ts)
+  // and no reader anywhere until this query (readerless-write census).
+  const { data: rsvpTrackingRows, error: rsvpTrackingError } = eventIds.length
+    ? await supabase
+        .from("open_house_rsvp_tracking")
+        .select("id, event_id, contact_id, rsvp_status, rsvp_updated_at, source, created_at")
+        .in("event_id", eventIds)
+        .order("rsvp_updated_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false })
+    : { data: [], error: null }
+  if (rsvpTrackingError) {
+    console.error("[seller-open-house] open_house_rsvp_tracking read failed:", rsvpTrackingError.message)
+  }
+
+  // Latest completed listing packet for this listing. Two honesty fixes:
+  //   1. This used to filter job_type='open_house_booklet' — a vocabulary
+  //      value NO writer produces (every real packet is 'full_packet' via
+  //      app/actions/ai-listing-packet.ts; the stage automation's stuck
+  //      'mls_packet' insert was retired — see the tombstone in
+  //      app/actions/listing-lifecycle.ts fireStageAutomations), so packetJob
+  //      was structurally null forever. Any completed packet is the binder the
+  //      agent brings to the open house — read what exists.
+  //   2. output_url now carries the hosted printable binder PDF when the
+  //      render succeeded (lib/documents/listing-packet-pdf.ts rail); it is
+  //      null for older packets and failed renders, so the event-day tab
+  //      still links to the packet panel rather than gating on the URL.
+  const { data: packetJobs, error: packetJobsError } = await supabase
     .from("listing_packet_jobs")
     .select("id, job_type, status, output_url, completed_at")
     .eq("listing_id", listingId)
-    .eq("job_type", "open_house_booklet")
+    .eq("status", "completed")
     .order("created_at", { ascending: false })
     .limit(1)
+  if (packetJobsError) {
+    console.error("[seller-open-house] listing_packet_jobs read failed:", packetJobsError.message)
+  }
 
   return {
     listing,
@@ -147,6 +159,7 @@ export async function getOpenHouseDashboard(listingId: string) {
     attendees: attendees ?? [],
     socialPosts: posts ?? [],
     invitations: realInvitations ?? [],
+    rsvpTracking: rsvpTrackingRows ?? [],
     packetJob: packetJobs?.[0] ?? null,
   }
 }
@@ -197,8 +210,15 @@ export async function inviteFarmContacts(params: {
         brokerage_id: auth.brokerageId,
         channel: ch,
         invitation_type: "open_house",
-        status: "invited",
-        sent_at: new Date().toISOString(),
+        // STAGED, NOT SENT. This used to write status:"invited" and stamp
+        // sent_at with now(), for a message that was never composed and never
+        // dispatched — no cron, no dispatchEmail, no sendSMS reads this table.
+        // The count then flowed into total_invites_sent on the event analytics,
+        // so the fabrication propagated into reporting. The consent filtering
+        // above (dnc_status, tcpa_consent) is real and stays; only the claim of
+        // delivery goes.
+        status: "queued",
+        sent_at: null,
       }))
   )
 
@@ -212,17 +232,40 @@ export async function inviteFarmContacts(params: {
 
   if (invErr) return { success: false, error: invErr.message }
 
+  // THE TENANT IS THE EVENT'S, RESOLVED THROUGH THE RECORD — same rule as the
+  // invitation rows above (and the worked rationale at
+  // app/actions/open-house.ts:481-498). A tracking row is filed against
+  // `event_id`, so it belongs to whichever brokerage owns that open house.
+  // `evOwn.event.brokerage_id` is the event row's own value, read by
+  // verifyEventOwnership() and already proven equal to auth.brokerageId by its
+  // Forbidden guard — so this is not a live cross-tenant write, it is stamped
+  // from the record so it stays correct if that guard is ever loosened.
+  //
+  // This upsert stamped nothing, and open_house_rsvp_tracking's RLS policy is
+  // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` (see
+  // open-house-automation.ts:695) — an untenanted row there is readable AND
+  // writable by every user of every tenant. That is the concrete cost of the
+  // NULLs this line was writing.
   const rsvpRows = contacts.map((contact) => ({
     event_id: params.eventId,
     contact_id: contact.id,
+    brokerage_id: evOwn.event.brokerage_id,
     rsvp_status: "invited",
     source: params.channel === "email" ? "email" : "sms",
     rsvp_updated_at: new Date().toISOString(),
   }))
 
-  await supabase
+  const { error: rsvpErr } = await supabase
     .from("open_house_rsvp_tracking")
     .upsert(rsvpRows, { onConflict: "event_id,contact_id", ignoreDuplicates: true })
+
+  if (rsvpErr) {
+    // The invitations above landed. Say what did and did not happen rather than
+    // reporting a clean success — supabase-js RESOLVES a refused write, so
+    // without this check a "permission denied" was indistinguishable from a
+    // successful no-op.
+    console.error("[inviteFarmContacts] rsvp tracking upsert failed:", rsvpErr.message)
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, invited: invitationRows.length }
@@ -255,17 +298,32 @@ export async function updateRsvp(params: {
     .eq("contact_id", params.contactId)
     .eq("brokerage_id", auth.brokerageId)
 
-  await supabase
+  // Tenant from the EVENT record (verifyEventOwnership above already read it and
+  // refused anything outside the caller's brokerage). Without it this upsert
+  // wrote a NULL-tenant tracking row that the
+  // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` policy
+  // leaves open to every tenant — and that the invitation UPDATE two statements
+  // up, which narrows on .eq("brokerage_id", …), could never match.
+  const { error: rsvpErr } = await supabase
     .from("open_house_rsvp_tracking")
     .upsert(
       {
         event_id: params.eventId,
         contact_id: params.contactId,
+        brokerage_id: evOwn.event.brokerage_id,
         rsvp_status: params.rsvpResponse,
         rsvp_updated_at: new Date().toISOString(),
       },
       { onConflict: "event_id,contact_id" }
     )
+
+  if (rsvpErr) {
+    // Reported as a failure on purpose: the tracking row is what the dashboard
+    // tallies read, so a landed invitation with no tracking row is not a
+    // recorded RSVP. Both writes are idempotent on (event_id, contact_id), so
+    // the retry this prompts is safe.
+    return { success: false, error: `RSVP tracking not saved: ${rsvpErr.message}` }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true }
@@ -287,38 +345,52 @@ export async function createQrCodeForEvent(params: {
 
   const supabase = await createClient()
 
-  const slug = `oh-${params.eventId.slice(0, 8)}`
-  const targetUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/open-house/${params.eventId}/signin`
+  // MERGED-THEN-DELETED: this used to be its own `qr_codes` upsert-on-slug, using the
+  // deterministic slug `oh-<eventId8>` as its idempotency. It never set destination_type, so
+  // open-house scans were invisible to every destination-bucketed analytic, and an 8-character
+  // slice of a uuid as a GLOBALLY UNIQUE slug is a collision waiting to happen across tenants —
+  // and a collision on that upsert would have re-pointed ANOTHER brokerage's code. The write now
+  // goes through the one minter with the key `open_house:<eventId>`; the slug is generated
+  // per-row and stays unique. What this path contributed and kept: purpose 'open_house' (the
+  // CHECK has no _signin variant) and the sign-in URL as the semantic destination.
+  const { mintTrackedQr, openHouseQrLabel } = await import("@/lib/marketing/tracked-qr")
+  const origin = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+  const minted = await mintTrackedQr({
+    brokerageId:     auth.brokerageId,
+    agentId:         evOwn.event.agent_id ?? auth.agentId,
+    label:           openHouseQrLabel(params.eventId),
+    destinationType: "book_meeting",
+    targetUrl:       `${origin}/open-house/${params.eventId}/signin`,
+    listingId:       params.listingId,
+    purpose:         "open_house",
+    origin:          origin || undefined,
+  })
 
-  const { data: qr, error } = await supabase
-    .from("qr_codes")
-    .upsert(
-      {
-        brokerage_id: auth.brokerageId,
-        agent_id: evOwn.event.agent_id ?? auth.agentId,
-        label: `Open House Sign-In — ${params.eventId.slice(0, 8)}`,
-        slug,
-        target_url: targetUrl,
-        purpose: "open_house_signin",
-        listing_id: params.listingId,
-        is_active: true,
-      },
-      { onConflict: "slug" }
-    )
-    .select()
-    .maybeSingle()
+  if (!minted) return { success: false, error: "The QR code was not created — the write was refused." }
 
-  if (error) return { success: false, error: error.message }
-  if (!qr) return { success: false, error: "Failed to upsert QR code" }
-
-  await supabase
+  const { error: linkError } = await supabase
     .from("open_house_events")
-    .update({ qr_code_id: qr.id })
+    .update({ qr_code_id: minted.qrCodeId })
     .eq("id", params.eventId)
     .eq("brokerage_id", auth.brokerageId)
 
+  // The event's qr_code_id is what the sign-in surface reads to find the code; a minted code the
+  // event cannot point at is not a usable QR, so this refusal is reported, not swallowed.
+  if (linkError) return { success: false, error: `QR code created but not attached to the event: ${linkError.message}` }
+
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
-  return { success: true, qr }
+  return {
+    success: true,
+    qr: {
+      id: minted.qrCodeId,
+      slug: minted.slug,
+      target_url: minted.targetUrl,
+      scan_url: minted.scanUrl,
+      image_url: minted.qrCodeDataUrl,
+      purpose: "open_house",
+      listing_id: params.listingId,
+    },
+  }
 }
 
 // ─── TAB 2 — END EVENT ───────────────────────────────────────────────────────
@@ -347,11 +419,22 @@ export async function endOpenHouseEvent(params: {
 
   if (updateErr) return { success: false, error: updateErr.message }
 
-  const { data: attendees } = await supabase
+  // THE READER THAT DECIDES WHETHER AN ATTENDEE EXISTS AT ALL — it drives the
+  // scoring loop below and the OPEN_HOUSE_ATTENDEE_CAPTURED events after it.
+  // supabase-js RESOLVES a refused query, so `const { data: attendees }` alone
+  // read a refusal as "nobody came": the event closed, every attendee went
+  // unscored, no capture event fired, and the action returned success. This is
+  // also the equality that makes an UNSTAMPED attendee invisible — `NULL =
+  // <uuid>` is never true — so the two failure modes were indistinguishable here.
+  const { data: attendees, error: attendeesError } = await supabase
     .from("open_house_attendees")
-    .select("id, arrival_time, check_in_time, working_with_agent, interest_level, notes")
+    .select("id, contact_id, arrival_time, check_in_time, working_with_agent, interest_level, notes")
     .eq("event_id", params.eventId)
     .eq("brokerage_id", auth.brokerageId)
+
+  if (attendeesError) {
+    return { success: false, error: `Could not read this event's attendees: ${attendeesError.message}` }
+  }
 
   if (attendees?.length) {
     for (const attendee of attendees) {
@@ -378,23 +461,45 @@ export async function endOpenHouseEvent(params: {
       const interestLevel =
         finalScore >= 70 ? "hot" : finalScore >= 40 ? "warm" : "cold"
 
-      await supabase
+      await bestEffort(supabase
         .from("open_house_attendees")
         .update({ ai_lead_score: finalScore, interest_level: interestLevel })
         .eq("id", attendee.id)
-        .eq("brokerage_id", auth.brokerageId)
+        .eq("brokerage_id", auth.brokerageId), "attendee score cache; recomputed on every scoring pass")
     }
 
-    // Fire OPEN_HOUSE_ATTENDEE_CAPTURED for each scored attendee — session-derived identity
+    // Fire OPEN_HOUSE_ATTENDEE_CAPTURED for each scored attendee — session-derived identity.
+    // The insert below was the WHOLE emit — an audit row with no fan-out, so
+    // lib/kernel/event-reactor.ts's OPEN_HOUSE_ATTENDEE_CAPTURED handler never
+    // ran for an attendee scored at event-close (same defect shape this file
+    // already fixed once for CONTACT_CREATED in convertAttendeeToContact below:
+    // keep the raw insert as the audit trail, ADD processKernelEvent so the
+    // reactor sees it — the emitter shape the other two attendee-capture paths
+    // use, app/api/open-house/attend/route.ts step 6 and this same file's
+    // convertAttendeeToContact). contact_id now rides along when the attendee
+    // already resolved to a contact (e.g. checked in through
+    // /api/open-house/attend, which creates the contact at check-in) so the
+    // reactor CAN hand off to deliverConversionWelcome — the ONE welcome path,
+    // still called DIRECTLY from convertAttendeeToContact below for the
+    // kiosk-checkin-then-convert flow. Both routes into deliverConversionWelcome
+    // are safe together: ensureClientWelcome (lib/kernel/client-welcome.ts)
+    // dedupes per contact via the existing agent_client_messages row, so an
+    // attendee already welcomed at check-in is a no-op here, never a second
+    // send — proved in scripts/conversion-welcome-simulator.ts.
     for (const attendee of attendees) {
-      await serviceClient.from("lifecycle_events").insert({
-        brokerage_id: auth.brokerageId,
-        entity_type: "listing",
-        entity_id: params.listingId,
-        event_type: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
-        actor_user_id: auth.userId,
-        metadata: { attendee_id: attendee.id, scored_at_event_end: true },
-      })
+      // ONE EMIT (wave 101C): row + fan-out in one emitKernelEvent. Metadata is the fan-out's (a
+      // superset of the row's, same values — the reactor reads metadata.contactId); contactId rides
+      // through; agentUserId: null keeps the reactor's attribution exactly as the bare fan-out had it.
+      await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: auth.brokerageId,
+        entityType: "listing",
+        entityId: params.listingId,
+        event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
+        actorUserId: auth.userId,
+        agentUserId: null,
+        contactId:   attendee.contact_id ?? undefined,
+        metadata: { attendee_id: attendee.id, contactId: attendee.contact_id ?? null, scored_at_event_end: true },
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
     }
   }
 
@@ -405,14 +510,14 @@ export async function endOpenHouseEvent(params: {
     attendeeCount: attendees?.length ?? 0,
   })
 
-  await serviceClient.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type: "listing_stage_machine",
-    entity_id: params.listingId,
-    event_type: "listing.open_house.completed",
-    actor_user_id: auth.userId,
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: auth.brokerageId,
+    entityType: "listing_stage_machine",
+    entityId: params.listingId,
+    event: "listing.open_house.completed",
+    actorUserId: auth.userId,
     metadata: { event_id: params.eventId, attendee_count: attendees?.length ?? 0 },
-  })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true }
@@ -500,35 +605,17 @@ export async function createOpenHouseEvent(params: {
 
   const serviceClient = createServiceClient()
 
-  const { data: event, error } = await serviceClient
-    .from("open_house_events")
-    .insert({
-      listing_id: params.listingId,
-      brokerage_id: auth.brokerageId,
-      agent_id: auth.agentId ?? auth.userId,
-      created_by: auth.userId,
-      event_date: params.eventDate,
-      start_time: params.startTime,
-      end_time: params.endTime,
-      description: params.description ?? null,
-      max_attendees: params.maxAttendees ?? null,
-      status: "scheduled",
-      registration_required: false,
-    })
-    .select()
-    .maybeSingle()
-
-  if (error) return { success: false, error: error.message }
-  if (!event) return { success: false, error: "Failed to create event" }
-
-  await serviceClient.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type: "listing",
-    entity_id: params.listingId,
-    event_type: KernelEvent.OPEN_HOUSE_SCHEDULED,
-    actor_user_id: auth.userId,
-    metadata: { event_id: event.id, event_date: params.eventDate },
+  // WAVE 149 (149F — lane 148H Still open 4): THE ONE WRITER. TOMBSTONE: this door's own open_house_events insert literal stood
+  // here; SURVIVOR lib/kernel/open-house.ts produceEventRow (same tenant, same agent/creator classes — agent_id is
+  // agents.id, NOT `?? auth.userId` (m361); created_by is users.id — plus the registry's registration rule for the kind).
+  const { produceEventRow } = await import("@/lib/kernel/open-house")
+  const produced = await produceEventRow(serviceClient, {
+    brokerageId: auth.brokerageId, agentId: auth.agentId ?? null, createdByUserId: auth.userId ?? null, kind: "open_house",
+    listingId: params.listingId, date: params.eventDate, startTime: params.startTime, endTime: params.endTime,
+    publicDescription: params.description ?? null, maxAttendees: params.maxAttendees ?? null,
   })
+  if (!produced.ok) return { success: false, error: produced.error }
+  const event = produced.event
 
   // Portal fan-out: the seller sees "Open house scheduled" on their portal.
   const { data: ohListing } = await serviceClient
@@ -536,17 +623,20 @@ export async function createOpenHouseEvent(params: {
     .select("seller_contact_id")
     .eq("id", params.listingId)
     .maybeSingle()
-  const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-  await fanOutKernelEvent({
+  // ONE EMIT (wave 101C): the audit-only row and the skipInsert fan-out that followed it carried
+  // the same event, entity and metadata — now one emitKernelEvent, so the portal card's reactor
+  // run gets the lifecycleEventId. Same seller hint, listing id and agent attribution as before.
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     event:           KernelEvent.OPEN_HOUSE_SCHEDULED,
     brokerageId:     auth.brokerageId,
     entityType:      "listing",
     entityId:        params.listingId,
+    actorUserId:     auth.userId,
     sellerContactId: ohListing?.seller_contact_id ?? undefined,
     listingId:       params.listingId,
     agentUserId:     auth.userId,
     metadata:        { event_id: event.id, event_date: params.eventDate },
-  }).catch(() => {})
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, event }
@@ -560,10 +650,17 @@ export async function checkInAttendee(params: {
   email?: string
   phone?: string
   workingWithAgent: boolean
-  tcpaConsent: boolean
+  /**
+   * THE ONE CONSENT COMPONENT (C15 — wave 148, lane 148B). The visitor ticks the boxes on the agent's device; the
+   * service-delivery box ("contact me about this open house") is required to sign in. TOMBSTONE: this used to be a
+   * `tcpaConsent: boolean` the event-day tab HARDCODED to `true` for every walk-in the agent typed — a consent nobody gave
+   * (ruling 3: consent is never fabricated). The field is gone; only what the visitor ticked is recorded.
+   */
+  consent: import("@/lib/kernel/compliance/consent-component").ConsentComponentSubmission | null
+  /** The visitor's situation (ruling 12) — what they SAID. */
+  situation?: { intent?: "buyer" | "seller" | "both" | null; timeline?: string | null }
 }) {
   if (!isValidUUID(params.eventId)) return { success: false, error: "Invalid event ID" }
-  if (!params.tcpaConsent) return { success: false, error: "TCPA consent is required" }
 
   // Public kiosk endpoint — no caller auth. Brokerage is derived from the
   // event itself, so an attacker can only create attendees against an event
@@ -571,27 +668,39 @@ export async function checkInAttendee(params: {
   // brokerage). They cannot forge cross-tenant data.
   const serviceClient = createServiceClient()
 
-  const { data: event } = await serviceClient
+  const { data: event, error: eventErr } = await serviceClient
     .from("open_house_events")
     .select("id, brokerage_id, listing_id, agent_id, status")
     .eq("id", params.eventId)
     .maybeSingle()
 
+  if (eventErr) return { success: false, error: "We could not look that event up right now. Please try again." }
   if (!event) return { success: false, error: "Event not found" }
   if (event.status === "completed" || event.status === "cancelled") {
     return { success: false, error: "Event is not accepting check-ins" }
   }
 
-  const safePhone = params.tcpaConsent ? (params.phone ?? null) : null
+  // THE WORDING NAMES THE EVENT'S AGENT / BROKERAGE — THE one brand rule (resolveConsentBrand), off the event row, never the body.
+  // Wave 148 (lane 148B): THE one intake door (C8) and the one consent component's server contract (C15), loaded here.
+  const { captureConsentedContact, consentGrantsFromComponent, resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  const brandName = await resolveConsentBrand(serviceClient, { agentId: event.agent_id ?? null, brokerageId: event.brokerage_id })
+  const email = params.email?.trim().toLowerCase() || null
+  const rawPhone = params.phone?.trim() || null
+  const c15 = consentGrantsFromComponent(params.consent, { door: "open_house_kiosk", brandName, provided: { email: !!email, phone: !!rawPhone } })
+  // THE SERVICE BOX IS THE SIGN-IN'S CONSENT (C15: service delivery is required for the service asked). No box → refused,
+  // nothing filed — the same rule the public kiosk door holds (app/api/open-house/attend/route.ts).
+  if (!c15.submission?.service_delivery) return { success: false, error: "Please tick the first consent box (the service follow-up) so the agent may follow up about this open house." }
+  // A phone is kept only with the service consent that covers it (calls / texts are what TCPA governs).
+  const safePhone = rawPhone
 
-  if (params.email) {
-    const { data: existing } = await serviceClient
+  if (email) {
+    const { data: existing, error: existingErr } = await serviceClient
       .from("open_house_attendees")
       .select("id")
       .eq("event_id", params.eventId)
-      .eq("email", params.email)
+      .eq("email", email)
       .maybeSingle()
-
+    if (existingErr) return { success: false, error: "We could not check the sign-in sheet right now. Please try again." }
     if (existing) {
       return { success: true, attendeeId: existing.id, duplicate: true }
     }
@@ -603,13 +712,14 @@ export async function checkInAttendee(params: {
       event_id: params.eventId,
       brokerage_id: event.brokerage_id,
       name: params.name,
-      email: params.email ?? null,
+      email,
       phone: safePhone,
       working_with_agent: params.workingWithAgent,
-      tcpa_consent: params.tcpaConsent,
+      tcpa_consent: c15.grants.some((g) => g.family === "phone" && g.given),
       check_in_time: new Date().toISOString(),
       arrival_time: new Date().toISOString(),
-      interest_level: "unknown",
+      // interest_level is NULLABLE and has no 'unknown' — at sign-in we have
+      // not assessed them yet, and NULL already says exactly that.
       ai_lead_score: 0,
     })
     .select("id")
@@ -617,32 +727,106 @@ export async function checkInAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await serviceClient.from("lifecycle_events").insert({
-    brokerage_id: event.brokerage_id,
-    entity_type: "listing",
-    entity_id: event.listing_id,
-    event_type: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
-    actor_user_id: event.agent_id,
-    metadata: {
-      attendee_id: attendee?.id,
-      event_id: params.eventId,
-      has_email: !!params.email,
-      working_with_agent: params.workingWithAgent,
-    },
-  })
-
-  if (params.email || safePhone) {
-    await serviceClient.from("contact_consent_events").insert({
-      brokerage_id: event.brokerage_id,
-      agent_id: event.agent_id,
-      consent_type: "tcpa",
-      consent_text: "By submitting this form, you consent to be contacted about real estate services.",
-      consent_source: "open_house_kiosk",
-      consented: true,
-    })
+  // THE CONTACT AT CHECK-IN — ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147Z Still open 1).
+  // TOMBSTONE: this used to resolve through lib/kernel/open-house.ts resolveOrCreateOpenHouseContact (an exact email/phone
+  // match, then its own contacts insert) and then INSERT its own contact_consent_events row with a wording the visitor never
+  // saw ("By submitting this form, you consent to be contacted about real estate services."). Both halves now ride THE one
+  // consented-intake door — lib/contact-pipeline/contact-capture.ts captureConsentedContact (C8): captureContact's dedupe
+  // (fail-closed, exact email = same person) → the Contact (the event's agent as owner AND creator — the person is assigned
+  // back to them, ruling 12) → each ticked C15 box recorded through the one consent writer with the wording the visitor read
+  // → the welcome (mentioning the visit) → enrichment → the AI ISA desk told. The attendee is stamped with the contact
+  // (COUNTED), and the contact + attendee become person-identity evidence through linkOpenHouseCheckInIdentity.
+  let checkedInContactId: string | null = null
+  if (attendee?.id && (email || safePhone)) {
+    const parts = String(params.name ?? "").trim().split(/\s+/).filter(Boolean)
+    const firstName = parts[0] ?? ""
+    const lastName = parts.slice(1).join(" ")
+    if (firstName) {
+      const { data: agentRow } = event.agent_id
+        ? await serviceClient.from("agents").select("user_id").eq("id", event.agent_id).maybeSingle()
+        : { data: null }
+      const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
+      const origin = await resolveOpenHouseWelcomeOrigin(serviceClient, params.eventId).catch(() => null)
+      const intent = params.situation?.intent ?? null
+      const resolved = await captureConsentedContact({
+        brokerageId: event.brokerage_id,
+        ownerAgentId: event.agent_id ?? null,
+        creatorUserId: (agentRow as { user_id?: string | null } | null)?.user_id ?? null,
+        source: "open_house",
+        first_name: firstName, last_name: lastName || null,
+        email, phone: safePhone,
+        // An open-house visitor tours a for-sale listing — a buyer-side contact unless they SAID otherwise (ruling 12).
+        contact_type: intent ?? "buyer",
+        ...(params.situation?.timeline ? { timeline: params.situation.timeline } : {}),
+        preferred_channel: safePhone ? "phone" : "email",
+        isa_reengage_allowed: false,
+        welcomeOrigin: origin,
+        consents: c15.grants,
+        intake: {
+          channel: "open_house",
+          sourceUrl: null,
+          evidence: { ...c15.evidence, wording_hash: c15.wordingHash, event_id: params.eventId, attendee_id: attendee.id, surface: "event_day_tab" },
+          formOwner: { table: "open_house_events", id: params.eventId },
+        },
+      }, { client: serviceClient })
+      if (!resolved.ok || !resolved.contactId) {
+        console.error(`[seller-open-house] consented check-in ${attendee.id} kept WITHOUT a contact — the intake was refused: ${resolved.reason ?? resolved.refused ?? "no contact id"}`)
+      } else {
+        checkedInContactId = resolved.contactId
+        for (const w of resolved.warnings) console.warn(`[seller-open-house] consented intake: ${w}`)
+        const { data: stamped, error: stampErr } = await serviceClient.from("open_house_attendees")
+          .update({ contact_id: checkedInContactId }).eq("id", attendee.id).eq("brokerage_id", event.brokerage_id).select("id")
+        if (stampErr || !stamped?.length) console.error(`[seller-open-house] attendee ${attendee.id} not linked to contact ${checkedInContactId}: ${stampErr?.message ?? "matched no row"}`)
+        const { linkOpenHouseCheckInIdentity } = await import("@/lib/open-house/instant-greeting")
+        await linkOpenHouseCheckInIdentity(serviceClient, {
+          brokerageId: event.brokerage_id, contactId: checkedInContactId, attendeeId: attendee.id, eventId: params.eventId,
+          firstName, lastName: lastName || null, email, phone: safePhone, source: "open_house_event_day",
+        })
+      }
+    }
   }
 
-  return { success: true, attendeeId: attendee?.id, duplicate: false }
+  // EVENT EVIDENCE + THE ARBITER (wave 147, lane 147F — ruling 7). The capture used to be emitted `auditOnly` BEFORE any
+  // contact existed, so the reactor's OPEN_HOUSE_ATTENDEE_CAPTURED reader (lib/kernel/event-reactor.ts — the AI ISA signal
+  // and the conversion welcome for metadata.contactId) never saw an event-day check-in. It now fans out, after the contact
+  // resolved, carrying contactId + eventId exactly as the kiosk door does.
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: event.brokerage_id,
+    entityType: "listing",
+    entityId: event.listing_id,
+    event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
+    actorUserId: event.agent_id,
+    contactId: checkedInContactId ?? undefined,
+    metadata: {
+      attendee_id: attendee?.id,
+      attendeeId: attendee?.id,
+      event_id: params.eventId,
+      eventId: params.eventId,
+      contactId: checkedInContactId,
+      has_email: !!email,
+      working_with_agent: params.workingWithAgent,
+    },
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "the check-in's lifecycle event (fanned out to the reactor); a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+
+  // TOMBSTONE (wave 148, lane 148B): the door's own `contact_consent_events` insert that stood here (consent_type 'tcpa', a
+  // fixed wording the visitor never saw) is retired — the consent is recorded by C8 above, one row per ticked C15 box, anchored
+  // to the contact, through THE one consent writer (lib/kernel/compliance/require-contact-consent.ts persistContactConsent).
+
+  return { success: true, attendeeId: attendee?.id, contactId: checkedInContactId, duplicate: false }
+}
+
+/**
+ * The name the C15 consent wording names at an event-day check-in — the EVENT's brokerage, exactly as checkInAttendee
+ * re-renders it on the server (so the words the visitor reads are the words the ledger stores). Public on purpose (the
+ * kiosk tab renders before any write); it returns only a display name for an event the caller already holds the id of.
+ */
+export async function getCheckInConsentBrand(eventId: string): Promise<{ brandName: string }> {
+  if (!isValidUUID(eventId)) return { brandName: "our brokerage" }
+  const svc = createServiceClient()
+  const { data: event } = await svc.from("open_house_events").select("brokerage_id, agent_id").eq("id", eventId).maybeSingle()
+  if (!event?.brokerage_id) return { brandName: "our brokerage" }
+  const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  return { brandName: await resolveConsentBrand(svc, { agentId: event.agent_id ?? null, brokerageId: event.brokerage_id }) }
 }
 
 // ─── POST-EVENT: CONVERT ATTENDEE TO CONTACT ─────────────────────────────────
@@ -673,60 +857,75 @@ export async function convertAttendeeToContact(params: {
   if (attendee.contact_id) return { success: false, error: "Already converted to contact" }
   if (!attendee.email) return { success: false, error: "Attendee has no email address" }
 
-  const nameParts = (attendee.name ?? "").trim().split(/\s+/)
-  const firstName = nameParts[0] ?? "Open House"
-  const lastName = nameParts.slice(1).join(" ") || "Attendee"
+  const nameParts = (attendee.name ?? "").trim().split(/\s+/).filter(Boolean)
+  const firstName = nameParts[0] ?? ""
+  // No invented surname (was "Attendee") — an unknown last name stays unknown.
+  const lastName = nameParts.slice(1).join(" ") || null
+  if (!firstName) return { success: false, error: "Attendee has no name to put on a contact" }
 
-  const { data: existingContact } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("brokerage_id", auth.brokerageId)
-    .eq("email", attendee.email)
-    .is("deleted_at", null)
-    .maybeSingle()
+  // ONE DOOR (wave 148, lane 148B — owner ruling 4). TOMBSTONE: this staff conversion used to run its own exact-email
+  // lookup (error not read — a refused read became "no match" and a SECOND contact) and its own contacts INSERT (with a
+  // fabricated last name, and tcpa_consent copied off the attendee row). It now rides captureContact — the dedupe
+  // (fail-closed, exact email = the same person), the lossless merge, the assignment (the converting agent as owner AND
+  // creator — ruling 12), the CONTACT_CAPTURED fan-out (the reactor's enrichment + auto-enroll readers), enrichment and
+  // person evidence. NO CONSENT IS CLAIMED HERE: a staff click is not the person's box. A consent the visitor gave at sign-in
+  // is on the consent ledger already (C8 at check-in); a pre-148 attendee row's bare tcpa_consent flag is not re-stamped as a
+  // contact consent (blind spot named in the lane notes). The welcome stays THE one conversion welcome below (it names the
+  // visit and grants the portal), so captureContact's own welcome + invite are deferred to it — never two emails.
+  const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
+  const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+  let captured: Awaited<ReturnType<typeof captureContact>>
+  try {
+    captured = await captureContact({
+      brokerageId: auth.brokerageId,
+      ownerAgentId: auth.agentId ?? null,
+      creatorUserId: auth.userId,
+      source: "open_house",
+      contact_type: "buyer",
+      status: "new",
+      first_name: firstName,
+      last_name: lastName,
+      email: attendee.email,
+      phone: attendee.tcpa_consent ? (attendee.phone ?? null) : null,
+      tcpa_consent: false,
+    }, { client: serviceClient, effects: { welcome: async () => undefined, portalInvite: async () => undefined } })
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : "Failed to create contact" }
+  }
+  const contactId = captured.contactId
+  const existingContact = captured.action === "merged"
 
-  let contactId: string
-
-  if (existingContact) {
-    contactId = existingContact.id
-  } else {
-    const { data: newContact, error: contactErr } = await serviceClient
-      .from("contacts")
-      .insert({
-        brokerage_id: auth.brokerageId,
-        agent_id: auth.agentId,
-        first_name: firstName,
-        last_name: lastName,
-        email: attendee.email,
-        phone: attendee.tcpa_consent ? (attendee.phone ?? null) : null,
-        source: "open_house",
-        contact_type: "buyer",
-        status: "new",
-        tcpa_consent: attendee.tcpa_consent,
-        tcpa_consent_source: "open_house_kiosk",
-        tcpa_consent_at: new Date().toISOString(),
-      })
-      .select("id")
-      .maybeSingle()
-
-    if (contactErr || !newContact) return { success: false, error: contactErr?.message ?? "Failed to create contact" }
-    contactId = newContact.id
-
-    await serviceClient.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type: "contact",
-      entity_id: contactId,
-      event_type: KernelEvent.CONTACT_CREATED,
-      actor_user_id: auth.userId,
-      metadata: { source: "open_house", attendee_id: params.attendeeId, listing_id: params.listingId },
-    })
+  if (!existingContact) {
+    // THE WELCOME (owner ruling 2026-09-10, wave 51): "contact came from open house
+    // — same welcome email but mentions the open house with welcome video/portal
+    // invite." This is the attendee's becomes-a-contact moment — hand it to
+    // deliverConversionWelcome (THE ONE welcome path) directly rather than waiting
+    // on kernel-event plumbing, since this function already has everything the
+    // welcome needs (contact_type is 'buyer' above, auth.agentId is agents.id).
+    // Best-effort: a welcome must never unwind a conversion that already landed.
+    // auth.agentId (CallerWithAgentResult) is `string | null` — no agent record for
+    // the caller means nobody for the welcome to be FROM, same gate
+    // ensureClientWelcome itself applies (state 'no_assigned_agent').
+    if (auth.agentId) {
+      try {
+        const origin = await resolveOpenHouseWelcomeOrigin(serviceClient, attendee.event_id)
+        const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+        await deliverConversionWelcome(serviceClient, {
+          contactId, agentId: auth.agentId, brokerageId: auth.brokerageId,
+          contactType: "buyer", firstName, lastName, origin,
+        })
+      } catch (e) {
+        console.error(`[seller-open-house] welcome delivery failed for contact ${contactId}:`, e)
+      }
+    }
   }
 
-  await supabase
+  const { error: attendeeLinkErr } = await supabase
     .from("open_house_attendees")
     .update({ contact_id: contactId })
     .eq("id", params.attendeeId)
     .eq("brokerage_id", auth.brokerageId)
+  if (attendeeLinkErr) console.error(`[seller-open-house] attendee NOT linked to the new contact: ${attendeeLinkErr.message}`)
 
   // Record a behavioral lead-intelligence signal: an open-house attendee just
   // became a tracked contact. Pushes engagement/intent/overall scores UP and
@@ -795,19 +994,20 @@ export async function scheduleShowingFromAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await serviceClient.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type: "listing",
-    entity_id: params.listingId,
-    event_type: KernelEvent.SHOWING_REQUESTED,
-    actor_user_id: auth.userId,
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: auth.brokerageId,
+    entityType: "listing",
+    entityId: params.listingId,
+    event: KernelEvent.SHOWING_REQUESTED,
+    actorUserId: auth.userId,
     metadata: {
       source: "open_house_post_event",
       attendee_id: params.attendeeId,
       contact_id: params.contactId,
       showing_request_id: showingReq?.id,
     },
-  })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, showingRequestId: showingReq?.id }
@@ -815,50 +1015,98 @@ export async function scheduleShowingFromAttendee(params: {
 
 // ─── POST-EVENT: REQUEST FEEDBACK FROM ATTENDEE ──────────────────────────────
 
+/**
+ * Ask one open-house attendee for their feedback.
+ *
+ * WHAT THIS USED TO DO, AND WHY IT COULD NOT BE WIRED AS WRITTEN. It sent
+ * nothing. It stamped `open_house_attendees.feedback_collected_at = now()` and
+ * returned success — recording that feedback had been COLLECTED at the moment
+ * it was merely REQUESTED, for a request that was never composed or dispatched.
+ * That column has a real writer already (open-house-automation.ts:submitFeedback,
+ * which stamps it alongside the rating and comments the visitor actually gave),
+ * and two screens read it as truth: this listing's post-event panel filters
+ * "awaiting feedback" on `!feedback_collected_at`, so every attendee asked would
+ * have vanished from the follow-up list having said nothing at all.
+ *
+ * MERGE, not deletion. The named rival that really sends is
+ * app/actions/open-house-automation.ts:sendFeedbackRequestToAttendee — it builds
+ * the feedback URL and calls sendFeedbackRequest, and it reads that sender's
+ * verdict instead of assuming delivery. The one thing it does NOT do is bound
+ * the tenant: it resolves the attendee through the RLS client, and the live
+ * policy on open_house_attendees is `brokerage_id IS NULL OR brokerage_id =
+ * current_user_brokerage_id()`, so an attendee row whose brokerage_id was never
+ * stamped is visible to EVERY brokerage. That check is the capability this
+ * function has and the rival lacks, so it is what survives here: the ownership
+ * proof is done first, against the true stored tenant read through the service
+ * client, and an untenanted row is refused outright rather than silently
+ * accepted. Delivery is then delegated to the sender that exists. Nothing
+ * writes a timestamp claiming feedback that has not arrived.
+ */
 export async function requestFeedbackFromAttendee(params: {
   attendeeId: string
-  eventId: string
   listingId: string
-  brokerageId?: string  // ignored — derived from session
-  agentId?: string  // ignored — derived from session
 }) {
   if (!isValidUUID(params.attendeeId)) return { success: false, error: "Invalid attendee ID" }
 
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  const supabase = await createClient()
-
-  // Verify attendee belongs to caller's brokerage
-  const { data: attendee } = await supabase
+  // Read the STORED tenant through the service client. Reading it through RLS
+  // would hand back an untenanted row without saying so, which is the whole
+  // hole this check exists to close.
+  const svc = createServiceClient()
+  const { data: attendee, error: readErr } = await svc
     .from("open_house_attendees")
-    .select("brokerage_id")
+    .select("id, brokerage_id, contact_id, feedback_collected_at")
     .eq("id", params.attendeeId)
     .maybeSingle()
-  if (!attendee || attendee.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "Forbidden" }
+
+  if (readErr) return { success: false, error: readErr.message }
+  if (!attendee) return { success: false, error: "Attendee not found" }
+  if (!attendee.brokerage_id) {
+    return {
+      success: false,
+      error: "This attendee record has no brokerage on it — it cannot be shown to belong to you",
+    }
+  }
+  if (attendee.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
+  if (attendee.feedback_collected_at) {
+    return { success: false, error: "This attendee has already given feedback" }
   }
 
-  const { error } = await supabase
-    .from("open_house_attendees")
-    .update({ feedback_collected_at: new Date().toISOString() })
-    .eq("id", params.attendeeId)
-    .eq("brokerage_id", auth.brokerageId)
-    .is("feedback_collected_at", null)
-
-  if (error) return { success: false, error: error.message }
+  // Delegate delivery to the sender that actually sends, and return ITS verdict.
+  const { sendFeedbackRequestToAttendee } = await import("@/app/actions/open-house-automation")
+  const sent = await sendFeedbackRequestToAttendee(params.attendeeId)
+  if (!sent.success) {
+    return { success: false, error: sent.error ?? "The feedback request was not delivered" }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
-  return { success: true }
+  return { success: true, feedbackUrl: sent.feedbackUrl ?? null }
 }
 
 // ─── POST-EVENT: GENERATE AI SUMMARY ─────────────────────────────────────────
 
-export async function generateOpenHouseAISummary(params: {
-  eventId: string
-  listingId: string
-  brokerageId?: string  // ignored — derived from session
-}) {
+/**
+ * A debrief of who actually walked through the door.
+ *
+ * This reads open_house_attendees — the table endOpenHouseEvent's scoring pass
+ * writes — so it can speak for any completed event. Its neighbour
+ * open-house-automation.ts:generatePerformanceInsights reads
+ * open_house_analytics instead, and the only writer of that table is
+ * open-house-automation.ts:createOpenHouseEvent, which is NOT the create path
+ * the open-house screen uses (that is seller-open-house.ts:createOpenHouseEvent,
+ * eighty lines above). Events made through the product therefore have no
+ * analytics row and the AI insights card answers "Analytics data not found"
+ * forever. These two are not duplicates: one summarises visitors, the other
+ * grades a row that does not exist yet.
+ *
+ * The select is narrowed to the fields the summary actually says out loud —
+ * email and phone were being read and never used, which is PII fetched for
+ * nothing.
+ */
+export async function generateOpenHouseAISummary(params: { eventId: string }) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
@@ -867,11 +1115,17 @@ export async function generateOpenHouseAISummary(params: {
 
   const supabase = await createClient()
 
-  const { data: attendees } = await supabase
+  const { data: attendees, error: attendeeErr } = await supabase
     .from("open_house_attendees")
-    .select("name, email, phone, working_with_agent, interest_level, ai_lead_score, notes")
+    .select("name, working_with_agent, interest_level, ai_lead_score, notes")
     .eq("event_id", params.eventId)
     .eq("brokerage_id", auth.brokerageId)
+
+  // A refused read is not an empty open house. `data ?? []` would have rendered
+  // an RLS denial as "nobody came".
+  if (attendeeErr) {
+    return { success: false, error: `Could not read the attendee list: ${attendeeErr.message}` }
+  }
 
   if (!attendees?.length) {
     return { success: true, summary: "No attendees recorded for this open house event." }
@@ -909,25 +1163,125 @@ export async function generateOpenHouseAISummary(params: {
 
 // ─── KIOSK: LOAD EVENT INFO (public — no auth) ───────────────────────────────
 
-export async function getOpenHouseEventPublic(eventId: string) {
+/**
+ * THE ONLY UNAUTHENTICATED READER IN THIS FILE.
+ *
+ * It is reached from /open-house/[eventId]/signin, a tablet on a hall table
+ * that anyone at the event can pick up, and it runs on the SERVICE client, so
+ * RLS is not a second line of defence — whatever this returns is public. Every
+ * field below is something a stranger standing in the doorway can already see,
+ * and everything else is deliberately absent:
+ *
+ *   NOT returned: listing_id, brokerage_id, agent_id, the agent's users.id or
+ *   email, list_price, max_attendees, the event's internal notes, and anything
+ *   at all about other attendees. The page this replaces handed its client
+ *   component the raw listing row (brokerage_id and agent_id included) plus the
+ *   agent's id and email address — all of which are serialised into the public
+ *   HTML payload.
+ *
+ * STATUS. The old filter was `.eq("status", "scheduled")`. open_house_events'
+ * live CHECK constraint is scheduled | marketing | active | completed |
+ * cancelled — so the moment an event went 'active', which is what it is DURING
+ * the open house, this returned null and the sign-in kiosk 404'd at exactly the
+ * hour it exists for. The three states below are the ones checkInAttendee will
+ * still accept a check-in for; completed and cancelled are refused by both,
+ * which is why they match.
+ *
+ * IDENTITY CLASSES. open_house_events.agent_id FKs agents(id) — verified live.
+ * The page looked that value up in `users` by id: an agents.id used in the
+ * users.id space, matching nothing, so no agent name has ever appeared on the
+ * kiosk. Resolving agents -> agents.user_id -> users is the fix; no `??`
+ * bridges the two spaces.
+ */
+export async function getOpenHouseEventPublic(eventId: string): Promise<{
+  eventId: string
+  eventDate: string
+  startTime: string | null
+  endTime: string | null
+  listing: { address: string; city: string | null; state: string | null } | null
+  brokerageName: string | null
+  branding: { appName: string | null; logoUrl: string | null; primaryColor: string | null } | null
+  agent: { displayName: string | null; photoUrl: string | null } | null
+  /** wave 147 (lane 147Z): a broker open's sign-ins are cooperating agents — the kiosk asks no consumer consent of them
+   *  (app/api/open-house/attend/route.ts records the visit and creates no consumer contact). */
+  brokerOpen: boolean
+} | null> {
   if (!isValidUUID(eventId)) return null
 
   const serviceClient = createServiceClient()
 
-  const { data: event } = await serviceClient
+  // ONE string literal — a select built by concatenation loses supabase-js's
+  // row inference and degrades every field access to GenericStringError.
+  const { data: event, error: eventErr } = await serviceClient
     .from("open_house_events")
-    .select(`
-      id, event_date, start_time, end_time, description, status,
-      listings:listing_id (
-        address, city, state, zip, list_price,
-        brokerages:brokerage_id (name)
-      )
-    `)
+    .select(
+      "id, event_date, start_time, end_time, status, brokerage_id, agent_id, event_type, listings:listing_id (address, city, state, brokerages:brokerage_id (name))"
+    )
     .eq("id", eventId)
-    .eq("status", "scheduled")
+    .in("status", ["scheduled", "marketing", "active"])
     .maybeSingle()
 
-  return event
+  if (eventErr || !event) return null
+
+  const listingRow = (event.listings ?? null) as unknown as
+    | { address: string | null; city: string | null; state: string | null; brokerages?: { name: string | null } | null }
+    | null
+
+  // Agent display identity: agents.id -> agents.user_id -> users. Name and photo
+  // only; the ids and the email stay on the server.
+  let agent: { displayName: string | null; photoUrl: string | null } | null = null
+  if (event.agent_id) {
+    const { data: agentRow } = await serviceClient
+      .from("agents")
+      .select("user_id, photo_url")
+      .eq("id", event.agent_id)
+      .maybeSingle()
+
+    if (agentRow?.user_id) {
+      const { data: userRow } = await serviceClient
+        .from("users")
+        .select("first_name, last_name")
+        .eq("id", agentRow.user_id)
+        .maybeSingle()
+
+      const displayName =
+        [userRow?.first_name, userRow?.last_name].filter(Boolean).join(" ") || null
+      agent = { displayName, photoUrl: agentRow.photo_url ?? null }
+    }
+  }
+
+  // Brokerage branding, scoped to THIS event's brokerage — never "the first
+  // settings row in the table".
+  let branding: { appName: string | null; logoUrl: string | null; primaryColor: string | null } | null = null
+  if (event.brokerage_id) {
+    const { data: settings } = await serviceClient
+      .from("global_settings")
+      .select("app_name, app_logo_url, primary_color")
+      .eq("brokerage_id", event.brokerage_id)
+      .maybeSingle()
+
+    if (settings) {
+      branding = {
+        appName: settings.app_name ?? null,
+        logoUrl: settings.app_logo_url ?? null,
+        primaryColor: settings.primary_color ?? null,
+      }
+    }
+  }
+
+  return {
+    eventId: event.id,
+    eventDate: event.event_date,
+    startTime: event.start_time ?? null,
+    endTime: event.end_time ?? null,
+    listing: listingRow?.address
+      ? { address: listingRow.address, city: listingRow.city ?? null, state: listingRow.state ?? null }
+      : null,
+    brokerageName: listingRow?.brokerages?.name ?? null,
+    branding,
+    agent,
+    brokerOpen: (event as unknown as { event_type?: string | null }).event_type === "broker_open",
+  }
 }
 
 // ─── INTELLIGENCE TAB: LOAD POST-EVENT DATA ──────────────────────────────────

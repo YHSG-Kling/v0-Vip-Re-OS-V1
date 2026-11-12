@@ -101,7 +101,7 @@ export function ClientFeedbackWidget({ contactId, transactionId, agentId }: Clie
                   className={cn(
                     "w-8 h-8 transition-colors",
                     (hovered || rating) >= star
-                      ? "fill-amber-400 text-amber-400"
+                      ? "fill-amber-400 text-amber-700"
                       : "text-muted-foreground",
                   )}
                 />
@@ -129,7 +129,7 @@ export function ClientFeedbackWidget({ contactId, transactionId, agentId }: Clie
                       className={cn(
                         "w-5 h-5 transition-colors",
                         (categoryRatings[key] ?? 0) >= star
-                          ? "fill-amber-400 text-amber-400"
+                          ? "fill-amber-400 text-amber-700"
                           : "text-muted-foreground",
                       )}
                     />

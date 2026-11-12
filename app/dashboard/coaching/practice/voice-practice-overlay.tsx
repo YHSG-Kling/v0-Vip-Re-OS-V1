@@ -19,7 +19,6 @@ import { Conversation } from "@elevenlabs/client"
 import type { Status } from "@elevenlabs/client"
 import { Mic, MicOff, X, Loader2, AlertCircle, Trophy } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { endPracticeSession } from "@/app/actions/objection-training"
 
 interface Props {

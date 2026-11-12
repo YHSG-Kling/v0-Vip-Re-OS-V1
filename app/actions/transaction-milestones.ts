@@ -26,6 +26,7 @@ import {
   setMilestoneDate,
 } from "@/lib/transactions/milestone-service"
 import { requireOverrideActor } from "@/lib/kernel/portal-auth"
+import { usd } from "@/lib/format/money"
 
 interface ScopedParams {
   transactionId: string
@@ -92,14 +93,14 @@ export async function overrideMilestoneAction(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Override authorization failed" }
   }
-  if (overrideCtx.brokerageId !== params.brokerageId) {
+  const claim = decideClaimedTenant({ actingBrokerageId: overrideCtx.brokerageId, claimedBrokerageId: params.brokerageId }); if (!claim.ok) { // lane 93A: the ONE claimed-tenant decision table (§6), not a hand-rolled copy; the write carries the SESSION's brokerage
     return { success: false, error: "Brokerage mismatch" }
   }
 
   try {
     await overrideMilestone({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   claim.brokerageId,
       milestoneName: params.milestoneName,
       overrideBy:    overrideCtx.userId,
       overrideReason: overrideCtx.reason,
@@ -141,11 +142,12 @@ export async function markAppraisalCompleteAction(
     appraisal_completed_date: new Date().toISOString().slice(0, 10),
   }
   if (params.appraisalValue != null) updatePayload.appraisal_value = params.appraisalValue
-  await supabase
+  const { error: appraisalErr } = await supabase
     .from("transactions")
     .update(updatePayload)
     .eq("id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
+  if (appraisalErr) return { success: false, error: `Could not record the appraisal on the transaction: ${appraisalErr.message}` }
 
   // Complete the appraisal_completed milestone — fan-out fires here.
   try {
@@ -157,6 +159,31 @@ export async function markAppraisalCompleteAction(
     })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Milestone complete failed" }
+  }
+
+  // THE PRODUCER OF KernelEvent.APPRAISAL_COMPLETED. Its portal template ("Appraisal
+  // complete — your agent will review the value with you") existed with no emitter:
+  // completeMilestone above emits the GENERIC MILESTONE_COMPLETED, whose template is
+  // inspection-worded. The appraisal-specific event fires here, at the fact-point,
+  // through the same canonical transaction emitter as APPRAISAL_ORDERED / _GAP below.
+  // Best-effort — the milestone completion above is the record.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.APPRAISAL_COMPLETED,
+      brokerageId: params.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: user.id,
+      metadata: {
+        appraisal_completed_date: updatePayload.appraisal_completed_date,
+        appraisal_value:          params.appraisalValue ?? null,
+        appraiser_name:           params.appraiserName ?? null,
+        appraisal_report_url:     params.appraisalReportUrl ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[markAppraisalCompleteAction] APPRAISAL_COMPLETED emit failed (non-blocking):", err)
   }
 
   // ── Appraisal-came-in-low detector (silent-risk close) ─────────────────────
@@ -234,7 +261,7 @@ async function runAppraisalGapDetection(args: {
   // (via {gap_framing}) and the huddle's risk level.
   const gapFraming =
     gapPct >= 5 ? "a significant gap" : gapPct >= 2 ? "a meaningful gap" : "a modest gap"
-  const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
   // (a) The REAL kernel event: staff notifications (default rules resolve agent + TC for
   // appraisal events) + the APPRAISAL_GAP_DETECTED portal template in event-fanout — the
@@ -630,3 +657,6 @@ export async function completeRepairAction(
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

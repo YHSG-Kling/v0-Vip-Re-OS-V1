@@ -48,7 +48,7 @@ export async function TenantSafetyWidget() {
           {total === 0 ? (
             <ShieldCheck className="h-5 w-5 text-emerald-600" />
           ) : (
-            <ShieldAlert className={"h-5 w-5 " + (counts.critical > 0 ? "text-red-600" : "text-orange-500")} />
+            <ShieldAlert className={"h-5 w-5 " + (counts.critical > 0 ? "text-red-600" : "text-orange-700")} />
           )}
           <div>
             <p className="text-sm font-semibold">Tenant Safety</p>
@@ -61,17 +61,17 @@ export async function TenantSafetyWidget() {
         </div>
         <div className="flex items-center gap-1.5">
           {counts.critical > 0 && (
-            <span className="text-[10px] uppercase px-1.5 py-0.5 rounded-full bg-red-500 text-white font-medium">
+            <span className="text-[10px] uppercase px-1.5 py-0.5 rounded-full bg-red-600 text-white font-medium">
               {counts.critical} critical
             </span>
           )}
           {counts.high > 0 && (
-            <span className="text-[10px] uppercase px-1.5 py-0.5 rounded-full bg-orange-500 text-white font-medium">
+            <span className="text-[10px] uppercase px-1.5 py-0.5 rounded-full bg-orange-700 text-white font-medium">
               {counts.high} high
             </span>
           )}
           {counts.medium > 0 && (
-            <span className="text-[10px] uppercase px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-medium">
+            <span className="text-[10px] uppercase px-1.5 py-0.5 rounded-full bg-amber-700 text-white font-medium">
               {counts.medium} medium
             </span>
           )}

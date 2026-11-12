@@ -56,9 +56,11 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
     const addresses = comparison.homes.map((h) => h.address)
     start(async () => {
       const r = await requestComparisonReview({ contactId, addresses })
+      // "Your agent will weigh in" used to print whether or not the alert was delivered. r.success
+      // now MEANS it landed; the refusal is the server's own sentence and names the next move.
       toast(r.success
         ? { title: "Your agent will weigh in", description: "They'll help you choose between your finalists." }
-        : { title: "Couldn't send", description: r.error ?? "Pick at least two homes", variant: "destructive" })
+        : { title: "Your agent wasn't reached", description: r.error ?? "Pick at least two homes", variant: "destructive" })
     })
   }
 
@@ -78,7 +80,7 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
               <button
                 key={h.id}
                 onClick={() => toggle(h.id)}
-                className={`text-xs rounded-full px-3 py-1 border transition ${on ? "bg-teal-600 text-white border-teal-600" : "bg-background text-muted-foreground border-input hover:border-teal-300"}`}
+                className={`text-xs rounded-full px-3 py-1 border transition ${on ? "bg-teal-700 text-white border-teal-600" : "bg-background text-muted-foreground border-input hover:border-teal-300"}`}
               >
                 {h.property_address ?? "Saved home"}
               </button>
@@ -113,7 +115,7 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
           ))}
         </div>
 
-        <Button className="w-full bg-teal-600 hover:bg-teal-700 text-white" onClick={getAgentTake} disabled={pending || comparison.homes.length < 2}>
+        <Button className="w-full bg-teal-700 hover:bg-teal-800 text-white" onClick={getAgentTake} disabled={pending || comparison.homes.length < 2}>
           <Users className="h-4 w-4 mr-1" />{pending ? "Sending…" : "Get my agent's take on these"}
         </Button>
       </CardContent>

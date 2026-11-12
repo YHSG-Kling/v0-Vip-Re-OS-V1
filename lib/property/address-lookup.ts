@@ -25,9 +25,22 @@ export interface AddressLookupResult {
   hasPool: boolean | null
   hasHoa: boolean | null
   taxAssessedValue: number | null
+  /** Lane 82A — the county's most recent ANNUAL property-tax bill in dollars (public record).
+   *  The payment calculators on public pages compute the tax line from THIS, not a flat rate. */
+  annualPropertyTax: number | null
+  /** Lane 82A — the monthly HOA fee/assessment in dollars, when published. */
+  hoaMonthlyFee: number | null
   lastSalePrice: number | null
   lastSaleDate: string | null       // ISO date
   neighborhoodSummary: string | null
+  /** Wave 142 (142C) — the parcel's LEGAL DESCRIPTION exactly as the county recorder / assessor
+   *  publishes it (lot / block / plat / section-township-range / metes-and-bounds), or null. Read by
+   *  lib/forms/legal-description.ts as the owner's "osint" source — accepted there ONLY together with
+   *  `legalDescriptionSource` (the page it was read from), a legal-description shape and not-low
+   *  confidence, then flagged for human verification. Never a street address, never paraphrased. */
+  legalDescription: string | null
+  /** The URL / record name the legal description was read from — the citation the acceptance requires. */
+  legalDescriptionSource: string | null
   dataConfidence: 'high' | 'medium' | 'low'
   sources: string[]                 // e.g. ['county_assessor', 'zillow_public']
 }
@@ -36,8 +49,8 @@ const EMPTY_RESULT: AddressLookupResult = {
   beds: null, baths: null, sqft: null, yearBuilt: null,
   lotSizeAcres: null, propertyType: null, stories: null,
   garageSpaces: null, hasPool: null, hasHoa: null,
-  taxAssessedValue: null, lastSalePrice: null, lastSaleDate: null,
-  neighborhoodSummary: null, dataConfidence: 'low', sources: [],
+  taxAssessedValue: null, annualPropertyTax: null, hoaMonthlyFee: null, lastSalePrice: null, lastSaleDate: null,
+  neighborhoodSummary: null, legalDescription: null, legalDescriptionSource: null, dataConfidence: 'low', sources: [],
 }
 
 /**
@@ -53,6 +66,11 @@ export async function lookupPropertyByAddress(params: {
   city: string
   state: string
   zip?: string
+  /** Tenant + actor for the AI cost ledger. This is a PAID Perplexity Sonar
+   *  call (~$0.005–0.015 each, per the note above) and it booked nothing.
+   *  Both are resolved server-side by the callers — never from a body (§4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<AddressLookupResult> {
   const { address, city, state, zip } = params
   const fullAddress = [address, city, state, zip].filter(Boolean).join(", ")
@@ -76,9 +94,13 @@ and public real estate databases. Return ONLY a JSON object with these fields
   "hasPool": <true|false|null>,
   "hasHoa": <true|false|null>,
   "taxAssessedValue": <integer in dollars or null>,
+  "annualPropertyTax": <integer in dollars — the most recent annual property-tax bill from the county treasurer/assessor, or null>,
+  "hoaMonthlyFee": <integer in dollars per month, or null>,
   "lastSalePrice": <integer in dollars or null>,
   "lastSaleDate": <"YYYY-MM-DD" or null>,
   "neighborhoodSummary": <1–2 sentence factual summary of the neighborhood or null>,
+  "legalDescription": <the parcel's legal description EXACTLY as the county recorder/assessor publishes it (lot/block/plat, subdivision, section-township-range or metes-and-bounds). Copy it verbatim from a county or public-record page; never paraphrase, never substitute the street address, null if not found>,
+  "legalDescriptionSource": <the URL or record name the legal description was copied from, or null>,
   "dataConfidence": <"high"|"medium"|"low">,
   "sources": [<list of data sources found>]
 }
@@ -88,6 +110,8 @@ Respond with ONLY the JSON object. No explanation, no markdown.
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: params.brokerageId ?? null,
+      userId: params.userId ?? null,
       feature: "home_value_estimate",
       prompt,
       maxTokens: 512,
@@ -111,9 +135,13 @@ Respond with ONLY the JSON object. No explanation, no markdown.
       hasPool: parsed.hasPool ?? null,
       hasHoa: parsed.hasHoa ?? null,
       taxAssessedValue: parsed.taxAssessedValue ?? null,
+      annualPropertyTax: parsed.annualPropertyTax ?? null,
+      hoaMonthlyFee: parsed.hoaMonthlyFee ?? null,
       lastSalePrice: parsed.lastSalePrice ?? null,
       lastSaleDate: parsed.lastSaleDate ?? null,
       neighborhoodSummary: parsed.neighborhoodSummary ?? null,
+      legalDescription: typeof parsed.legalDescription === 'string' && parsed.legalDescription.trim() ? parsed.legalDescription.trim() : null,
+      legalDescriptionSource: typeof parsed.legalDescriptionSource === 'string' && parsed.legalDescriptionSource.trim() ? parsed.legalDescriptionSource.trim() : null,
       dataConfidence: parsed.dataConfidence ?? 'low',
       sources: Array.isArray(parsed.sources) ? parsed.sources : [],
     }

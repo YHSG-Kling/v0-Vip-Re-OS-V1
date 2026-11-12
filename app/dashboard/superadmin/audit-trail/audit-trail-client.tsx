@@ -290,6 +290,21 @@ export function AuditTrailClient() {
                   />
                 </div>
               </div>
+
+              {/* Agent — `agentId` was already sent as `agent_id` on every fetch
+                  and on the CSV export, and the route narrows on it
+                  (app/api/admin/audit-events/route.ts:443 — metadata agent_id
+                  match OR actor-name substring), but no control ever set it, so
+                  the filter existed only in the query string. Same shape as
+                  Search; the placeholder names both things the route accepts. */}
+              <div className="space-y-2">
+                <Label>Agent</Label>
+                <Input
+                  placeholder="Agent id or name"
+                  value={agentId}
+                  onChange={(e) => setAgentId(e.target.value)}
+                />
+              </div>
             </div>
 
             {/* Custom Date Range */}

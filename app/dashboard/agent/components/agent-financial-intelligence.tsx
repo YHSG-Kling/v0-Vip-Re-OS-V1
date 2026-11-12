@@ -112,7 +112,7 @@ export function AgentFinancialIntelligence({
         <div className="grid grid-cols-2 gap-3">
           <div className="p-3 bg-muted/50 rounded-lg">
             <p className="text-xs text-muted-foreground">Pending Commission</p>
-            <p className={`text-lg font-bold ${pendingTotal > 0 ? 'text-green-600' : ''}`}>
+            <p className={`text-lg font-bold ${pendingTotal > 0 ? 'text-green-700' : ''}`}>
               {formatCurrency(pendingTotal)}
             </p>
           </div>
@@ -122,13 +122,13 @@ export function AgentFinancialIntelligence({
           </div>
           <div className="p-3 bg-muted/50 rounded-lg">
             <p className="text-xs text-muted-foreground">Month Expenses</p>
-            <p className={`text-lg font-bold ${monthExpenseTotal > 500 ? 'text-amber-600' : ''}`}>
+            <p className={`text-lg font-bold ${monthExpenseTotal > 500 ? 'text-amber-700' : ''}`}>
               {formatCurrency(monthExpenseTotal)}
             </p>
           </div>
           <div className="p-3 bg-muted/50 rounded-lg">
             <p className="text-xs text-muted-foreground">Net Pipeline Value</p>
-            <p className={`text-lg font-bold flex items-center gap-1 ${netPipelineValue >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            <p className={`text-lg font-bold flex items-center gap-1 ${netPipelineValue >= 0 ? 'text-green-700' : 'text-red-600'}`}>
               {netPipelineValue >= 0 ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
               {formatCurrency(netPipelineValue)}
             </p>

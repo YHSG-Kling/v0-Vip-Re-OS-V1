@@ -105,7 +105,7 @@ export function FairHousingScanner() {
                 )}
                 {warningCount > 0 && (
                   <Alert className="border-yellow-300 bg-yellow-50">
-                    <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                    <AlertTriangle className="h-4 w-4 text-yellow-700" />
                     <AlertDescription>
                       <p className="font-medium text-yellow-800 mb-2">{warningCount} warning{warningCount !== 1 ? "s" : ""}</p>
                       <ul className="space-y-1">

@@ -7,6 +7,8 @@
 // attention next across the whole lifecycle — the "knows the client for life" differentiator that a
 // per-deal CRM can't express. Pure (no I/O), unit-tested directly.
 
+import { clamp as mathClamp } from "@/lib/format/math"
+
 export type HealthBand = "thriving" | "warm" | "cooling" | "at_risk" | "dormant"
 
 export interface RelationshipHealthInput {
@@ -27,7 +29,9 @@ export interface RelationshipHealth {
   drivers: string[]
 }
 
-function clamp(n: number, lo = 0, hi = 100): number { return Math.max(lo, Math.min(hi, n)) }
+// TOMBSTONE (§1.1, 2026-09-08): the clamp arithmetic lived here; survivor
+// lib/format/math.ts:clamp (0–100 defaults kept as a thin wrapper).
+function clamp(n: number, lo = 0, hi = 100): number { return mathClamp(n, lo, hi) }
 
 export function bandForScore(score: number): HealthBand {
   if (score >= 80) return "thriving"

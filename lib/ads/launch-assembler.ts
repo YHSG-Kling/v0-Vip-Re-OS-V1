@@ -11,6 +11,41 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { AdBuildInput, AdObjective } from "./connectors/ad-payload"
 import { getConnector, loadConnectorCredential } from "./connectors/registry"
 import { adCredentialPlatform } from "./connection-status"
+// THE LAST DOOR BEFORE THE PLATFORM. The define doors gate the exclusion slot
+// when it is written; this one gates it again on the way OUT, because the row
+// can be reached by paths that are not those doors (a support-time SQL update, a
+// future writer) and because this is the only place the ids become real Meta
+// audiences. Same gate, not a second one (CLAUDE.md §6).
+import {
+  verifyExclusionSlot,
+  excludedAudienceIdsIn,
+  includedAudienceIdsIn,
+  type ExclusionAudienceRow,
+} from "./audience-exclusion"
+// WAVE 148 (lane 148C — owner ruling 1: compliance checks audience SELECTION and DELIVERY). The TARGETED slot is re-gated here
+// too, with the SAME selection gates the define / populate doors run (no second gate — CLAUDE.md §6), plus the platform policy
+// the look-alike lane recorded as data (housing has no platform look-alike model).
+import { assertAudienceSegmentationAllowed } from "@/lib/lead-governance/protected-class-signals"
+import { assertAudiencePersonaBasis } from "./audience-persona-basis"
+import { LOOKALIKE_AD_POLICY } from "@/lib/kernel/lookalike-research"
+
+type DeliveryAudienceRow = ExclusionAudienceRow & { audience_type?: string | null }
+
+/** PURE. Why one TARGETED audience may not be delivered to in a housing ad, or null. */
+function deliveryRefusalFor(row: DeliveryAudienceRow, campaignLabel: string): string | null {
+  const name = (row.audience_name ?? row.id).toString()
+  const rule = row.source_rule as { type?: unknown } | null | undefined
+  if (!LOOKALIKE_AD_POLICY.lookalike_model_available_for_housing && (row.audience_type === "lookalike" || rule?.type === "lookalike_seed")) {
+    return `campaign "${campaignLabel}" targets the look-alike audience "${name}" — housing is a special ad category with no platform look-alike model (${LOOKALIKE_AD_POLICY.summary}); a similarity model can reproduce a protected-class skew the seed carried. Target a governed CRM audience or a location instead.`
+  }
+  try {
+    assertAudienceSegmentationAllowed(rule, name)
+    assertAudiencePersonaBasis(rule, name)
+  } catch (e) {
+    return `campaign "${campaignLabel}" cannot deliver to audience "${name}" — ${(e as Error).message}`
+  }
+  return null
+}
 
 export interface AssembleResult { ok: boolean; input?: AdBuildInput; error?: string }
 
@@ -47,6 +82,116 @@ export async function assembleAdFromCampaign(
   const tc = campaign.targeting_config ?? {}
   const locations = Array.isArray(tc.locations) ? tc.locations : []
 
+  // ── THE TWO AUDIENCE SLOTS BECOME REAL PLATFORM AUDIENCES HERE ─────────────
+  //
+  // `custom_audience_ids` was declared on both TargetingConfigs and written as
+  // `[]` by three writers with NO READER anywhere (CLAUDE.md §1). This is the
+  // reader: our audience-row ids resolve to the platform's own audience ids and
+  // reach the Meta payload. `excluded_audience_ids` is its new opposite, and it
+  // is GATED before it resolves — an audience that may not suppress must not
+  // reach the platform's Exclude field, and this is the last place to say so.
+  const includedIds = includedAudienceIdsIn(tc)
+  const excludedIds = excludedAudienceIdsIn(tc)
+
+  const exclusionVerdict = await verifyExclusionSlot({
+    supabase,
+    brokerageId: campaign.brokerage_id,
+    targeting: tc,
+    campaignLabel: campaign.campaign_name,
+  })
+  if (!exclusionVerdict.ok) return { ok: false, error: exclusionVerdict.refusal }
+
+  let audienceRows: ExclusionAudienceRow[] = []
+  if (includedIds.length > 0 || excludedIds.length > 0) {
+    // Tenant-scoped, and the error is READ: supabase-js RESOLVES refusals, so
+    // `data ?? []` on an unread error would silently launch a campaign with none
+    // of the audiences the operator chose (CLAUDE.md §3).
+    const { data: auds, error: audErr } = await supabase
+      .from("facebook_custom_audiences")
+      .select("id, audience_name, external_audience_id, status, audience_type, source_rule")
+      .eq("brokerage_id", campaign.brokerage_id)
+      .in("id", [...includedIds, ...excludedIds])
+    if (audErr) return { ok: false, error: `could not read this campaign's audiences: ${audErr.message}` }
+    audienceRows = (auds ?? []) as ExclusionAudienceRow[]
+  }
+
+  // ── THE RAW PLATFORM AUDIENCE ID (148C) ─────────────────────────────────────
+  // `targeting_config.audience_external_id` had a reader (below) and NO writer anywhere — a raw platform id that only a hand edit
+  // could fill, and the one path onto the platform that no selection gate had ever seen (a Meta audience built in Ads Manager on
+  // age or interests would ship through it). It is KEPT, and now it must resolve to a governed audience of THIS brokerage.
+  const rawExternalId = typeof tc.audience_external_id === "string" && tc.audience_external_id.trim() ? tc.audience_external_id.trim() : null
+  let rawAudienceRow: DeliveryAudienceRow | null = null
+  if (rawExternalId) {
+    const { data: hit, error: hitErr } = await supabase
+      .from("facebook_custom_audiences")
+      .select("id, audience_name, external_audience_id, status, audience_type, source_rule")
+      .eq("brokerage_id", campaign.brokerage_id)
+      .eq("external_audience_id", rawExternalId)
+      .maybeSingle()
+    if (hitErr) return { ok: false, error: `could not verify targeting_config.audience_external_id: ${hitErr.message}` }
+    if (!hit) {
+      return {
+        ok: false,
+        error:
+          `targeting_config.audience_external_id "${rawExternalId}" is not a governed audience of this brokerage — a raw platform ` +
+          `audience id is never delivered to, because nothing here checked who it selects (protected characteristics, proxies, ` +
+          `look-alike models). Build or sync the audience in this product and target it by id.`,
+      }
+    }
+    rawAudienceRow = hit as DeliveryAudienceRow
+  }
+
+  const externalOf = new Map<string, string | null>()
+  const nameOf = new Map<string, string>()
+  for (const a of audienceRows) {
+    externalOf.set(a.id, a.external_audience_id ?? null)
+    nameOf.set(a.id, (a.audience_name ?? a.id).toString())
+  }
+
+  /**
+   * FAIL CLOSED ON AN UNRESOLVABLE AUDIENCE, in BOTH slots and for opposite
+   * reasons. An include that silently vanishes delivers a campaign to the wrong
+   * people; an EXCLUDE that silently vanishes delivers it to people the operator
+   * declared must not receive it — and that second one is the failure this whole
+   * lane exists to prevent, so neither may be dropped quietly.
+   */
+  const resolveSlot = (ids: string[], slot: string): { ok: true; ids: string[] } | { ok: false; error: string } => {
+    const out: string[] = []
+    for (const id of ids) {
+      if (!externalOf.has(id)) {
+        return { ok: false, error: `${slot} names audience ${id}, which does not exist in this brokerage` }
+      }
+      const ext = externalOf.get(id) ?? null
+      if (!ext) {
+        return {
+          ok: false,
+          error:
+            `${slot} names audience "${nameOf.get(id) ?? id}", which has never synced to the platform ` +
+            `(no external_audience_id), so the platform cannot apply it. Sync that audience first — ` +
+            `launching without it would ${slot === "excluded_audience_ids"
+              ? "show this ad to the very people the campaign says to suppress"
+              : "deliver this campaign to a different set of people than the one chosen"}.`,
+        }
+      }
+      out.push(ext)
+    }
+    return { ok: true, ids: out }
+  }
+
+  const includedExternal = resolveSlot(includedIds, "custom_audience_ids")
+  if (!includedExternal.ok) return { ok: false, error: includedExternal.error }
+  const excludedExternal = resolveSlot(excludedIds, "excluded_audience_ids")
+  if (!excludedExternal.ok) return { ok: false, error: excludedExternal.error }
+
+  // ── THE TARGETED SLOT IS GATED ON THE WAY OUT (148C) — selection re-checked at delivery ───────────────────────────────
+  const rowById = new Map(audienceRows.map((r) => [r.id, r as DeliveryAudienceRow]))
+  const targetedRows = [...includedIds.map((id) => rowById.get(id)).filter((r): r is DeliveryAudienceRow => !!r), ...(rawAudienceRow ? [rawAudienceRow] : [])]
+  for (const row of targetedRows) {
+    const refusal = deliveryRefusalFor(row, campaign.campaign_name)
+    if (refusal) return { ok: false, error: refusal }
+  }
+  const inclusionGated = true
+
   const input: AdBuildInput = {
     platform:       campaign.platform as AdBuildInput["platform"],
     objective:      (campaign.objective as AdObjective) ?? "leads",
@@ -65,6 +210,26 @@ export async function assembleAdFromCampaign(
     targeting: {
       locations: locations.map((l: any) => ({ city: l.city, state: l.state, zip: l.zip, radiusMiles: l.radius_miles ?? l.radiusMiles })),
       audienceExternalId: (tc.audience_external_id as string | null) ?? null,
+      audienceExternalIds: includedExternal.ids,
+      excludedAudienceExternalIds: excludedExternal.ids,
+      // THE ONLY PLACE THIS IS SET, and it is set from the verdict rather than
+      // asserted: `validateAdReadiness` refuses an ad that carries excluded
+      // audiences without it, so deleting the gate call above does not quietly
+      // publish an ungoverned suppression — it makes the ad unlaunchable. The
+      // simulator mutation-tests exactly that.
+      exclusionGovernance: exclusionVerdict.ok ? "gated" : undefined,
+      // Set from the delivery gate above (every targeted audience passed it) — validateAdReadiness refuses targeted audiences
+      // without it, so removing the gate makes the ad unlaunchable rather than quietly ungoverned.
+      inclusionGovernance: inclusionGated ? "gated" : undefined,
+      // The operator's interests reach the validator so a protected-class / proxy interest (an automation's free-text
+      // `ad_audience_prompt` lands here) is REFUSED in words instead of silently dropped by the payload builder.
+      interests: Array.isArray(tc.interests) ? (tc.interests as unknown[]).filter((x): x is string => typeof x === "string") : undefined,
+      // WAVE 148 (148Z): the age pair IS carried now that its three writers (lib/workflow/adapters/ad-campaign.ts,
+      // lib/wizard-staging/content-staging.ts, the ads dashboard) default to 18–65+ — a stored narrowing is an operator's
+      // intent to narrow a HOUSING audience, and validateAdReadiness refuses it in words instead of the Meta builder silently
+      // widening it. income_percentile has no platform field and no validator arm; its writers no longer default a cut.
+      ageMin: typeof tc.age_min === "number" ? tc.age_min : undefined,
+      ageMax: typeof tc.age_max === "number" ? tc.age_max : undefined,
     },
     specialAdCategory: "HOUSING",
   }
@@ -106,15 +271,39 @@ export async function publishLaunchingCampaigns(
 
     const res = await connector.publishCampaign({ structure, cred })
     if (res.ok) {
-      await supabase.from("ad_campaigns").update({
+      // The provider campaign now EXISTS (and can spend). A refused 'live' stamp
+      // loses its external id, so the next run would publish it AGAIN — never silent.
+      const { error: liveErr } = await supabase.from("ad_campaigns").update({
         status: "live",
         targeting_config: { ...tc, external_campaign_id: res.externalCampaignId ?? null, last_publish_error: null },
       }).eq("id", c.id)
+      if (liveErr) {
+        console.error(`[ad-publish] campaign ${c.id} published as ${res.externalCampaignId ?? "?"} but the live stamp was refused: ${liveErr.message}`)
+        failed++
+        continue
+      }
       published++
+      // THE VERSION THAT WENT OUT IS RECORDED (wave 146, lane 146E — ruling 9 / contract C4 version ledger): each
+      // approved creative's copy is recorded against its final (published_via ads_<platform>, ref = the provider id).
+      // Best-effort AFTER the provider accepted — a refused record is said, never silent, and never un-publishes.
+      try {
+        const { data: approved, error: apErr } = await supabase.from("ad_creative_variations").select("id, primary_text, updated_at")
+          .eq("ad_campaign_id", c.id).eq("brokerage_id", brokerageId).eq("approval_status", "approved")
+        if (apErr) console.error(`[ad-publish] campaign ${c.id}: approved creatives unreadable — publication not recorded: ${apErr.message}`)
+        const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+        for (const cr of (approved ?? []) as Array<{ id: string; primary_text: string | null; updated_at: string | null }>) {
+          if (!cr.primary_text?.trim()) continue
+          const rec = await recordDoorPublication(supabase as never, { brokerageId, assetKind: "ad_creative", assetTable: "ad_creative_variations", assetId: cr.id, content: cr.primary_text, approvedBy: null, approvedAt: cr.updated_at, via: `ads_${c.platform}`, ref: res.externalCampaignId ?? null })
+          if (!rec.ok) console.error(`[ad-publish] creative ${cr.id}: the published version was NOT recorded — ${rec.error}`)
+        }
+      } catch (e) {
+        console.error(`[ad-publish] campaign ${c.id}: publication record threw — ${(e as Error)?.message ?? e}`)
+      }
     } else {
-      await supabase.from("ad_campaigns").update({
+      const { error: errStampErr } = await supabase.from("ad_campaigns").update({
         targeting_config: { ...tc, last_publish_error: res.error ?? "publish failed" },
       }).eq("id", c.id)
+      if (errStampErr) console.error(`[ad-publish] campaign ${c.id} publish failed (${res.error ?? "?"}) and the error stamp was refused: ${errStampErr.message}`)
       failed++
     }
   }

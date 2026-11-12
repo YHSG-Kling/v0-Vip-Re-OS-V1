@@ -15,7 +15,8 @@
 
 import { getCustomerPortalFeed } from "@/app/actions/portal-stream"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Activity } from "lucide-react"
+import { Activity, BookOpen } from "lucide-react"
+import Link from "next/link"
 import { cn } from "@/lib/utils"
 
 interface Props {
@@ -91,6 +92,15 @@ export async function PortalLiveFeed({ contactId, limit, compact, hideWhenEmpty 
               <p className={cn("text-muted-foreground mt-0.5", compact ? "text-[10px]" : "text-[11px]")}>
                 {relativeTime(r.occurredAt)}
               </p>
+              {r.learningModuleId && !compact && (
+                <Link
+                  href={`/portal/${contactId}/learn?module=${r.learningModuleId}`}
+                  className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                >
+                  <BookOpen className="h-3 w-3" />
+                  What this means for you
+                </Link>
+              )}
             </div>
           </div>
         ))}

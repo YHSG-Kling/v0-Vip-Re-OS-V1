@@ -4,7 +4,7 @@ import { useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import { SendHorizontal, RefreshCw, AlertTriangle, Loader2, ExternalLink } from "lucide-react"
+import { SendHorizontal, RefreshCw, AlertTriangle, Loader2 } from "lucide-react"
 import { SignatureStatusBadge } from "./SignatureStatusBadge"
 import {
   sendDocumentForSignature,
@@ -38,6 +38,8 @@ interface DocumentSignaturePanelProps {
   // Signers to pre-populate (contact + agent)
   defaultSigners?: Signer[]
   onSent?: () => void
+  /** optional by design: style-override passthrough onto the root element; the
+   *  one caller (transaction-detail-client.tsx) needs no non-default look. */
   className?: string
 }
 
@@ -65,6 +67,8 @@ export function DocumentSignaturePanel({
   const [localStatus, setLocalStatus] = useState<string | null>(esignStatus ?? null)
   const [localSentAt, setLocalSentAt] = useState<string | null>(sentAt ?? null)
   const [error, setError] = useState<string | null>(null)
+  // Lane 88C — the in-window step (Google Drive eSignature / DocuSign sender view).
+  const [handoff, setHandoff] = useState<{ mode: "iframe" | "popup"; urls: Array<{ label: string; url: string }>; instructions: string } | null>(null)
 
   const isFullySigned = localStatus === "fully_signed"
   const isSent       = localStatus === "sent" || localStatus === "partially_signed"
@@ -89,10 +93,12 @@ export function DocumentSignaturePanel({
 
       if (!result.success) {
         setError(result.error ?? "Failed to send")
+        if (result.handoff) setHandoff(result.handoff)
         return
       }
 
-      setLocalStatus("sent")
+      setHandoff(result.handoff ?? null)
+      setLocalStatus(result.dispatchStatus === "awaiting_agent_send" ? "pending" : "sent")
       setLocalSentAt(new Date().toISOString())
       onSent?.()
     })
@@ -147,6 +153,17 @@ export function DocumentSignaturePanel({
         <p className="text-xs text-red-600 flex items-center gap-1">
           <AlertTriangle className="h-3 w-3" /> {error}
         </p>
+      )}
+
+      {handoff && (
+        <div className="text-xs space-y-1 rounded-md border px-2.5 py-2">
+          <p className="text-muted-foreground">{handoff.instructions}</p>
+          {handoff.urls.map((u) => (
+            <a key={u.url} href={u.url} target="_blank" rel="noopener noreferrer" className="block font-medium text-primary underline">
+              Open {u.label}
+            </a>
+          ))}
+        </div>
       )}
 
       {/* Actions */}

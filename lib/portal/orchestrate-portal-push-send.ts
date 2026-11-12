@@ -90,8 +90,11 @@ export async function orchestratePortalPushSend(
   // body_md collapse into customer_copy (markdown); cta_url +
   // cta_label flow through metadata jsonb where the portal UI reads
   // them.
+  // portal_event_stream.severity CHECK: celebration | critical | high | normal (wave 152, 152K — row 45 census): this
+  // map produced "info" / "warning", which the CHECK refuses, so every low / normal / high preset push to a Contact was
+  // refused whole — only "urgent" ever landed. Mapped onto the live vocabulary.
   const severityMap: Record<string, string> = {
-    low: "info", normal: "info", high: "warning", urgent: "critical",
+    low: "normal", normal: "normal", high: "high", urgent: "critical",
   }
   const customer_copy = `**${interpolate(preset.title, vars)}**\n\n${interpolate(preset.body_md, vars)}`
   const { data: msg, error } = await svc.from("portal_event_stream").insert({
@@ -101,7 +104,7 @@ export async function orchestratePortalPushSend(
     event_type:      "preset_push",
     customer_copy,
     customer_icon:   "bell",
-    severity:        severityMap[preset.priority ?? "normal"] ?? "info",
+    severity:        severityMap[preset.priority ?? "normal"] ?? "normal",
     metadata:        {
       preset_id:   preset.id,
       preset_name: preset.name,

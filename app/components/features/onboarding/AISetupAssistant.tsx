@@ -179,7 +179,7 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
                 <Button
                   type="submit"
                   size="icon"
-                  disabled={isLoading || !inputValue.trim()}
+                  aria-label="Send" disabled={isLoading || !inputValue.trim()}
                   className="h-9 w-9 rounded-xl bg-[#1e3a5f] hover:bg-[#2a4a73] flex-shrink-0"
                 >
                   <Send className="w-4 h-4" />

@@ -15,10 +15,12 @@
  *                                  managed_agent_sessions row as ended.
  *   - everything else            — log + ack.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import type { OutcomeEvaluationResult } from "@/lib/agents/outcomes"
 
 const ANTHROPIC_BASE = "https://api.anthropic.com"
 const ANTHROPIC_BETA = "managed-agents-2026-04-01"
@@ -119,9 +121,9 @@ export async function POST(request: NextRequest) {
 
   switch (eventType) {
     case "session.status_run_started":
-      await svc.from("managed_agent_sessions")
+      await sentinelWrite(svc, svc.from("managed_agent_sessions")
         .update({ status: "running", last_event_at: now })
-        .eq("id", sessionRow.id)
+        .eq("id", sessionRow.id), { table: "managed_agent_sessions", flow: "managed_agent_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       break
 
     case "session.status_idled": {
@@ -149,7 +151,7 @@ export async function POST(request: NextRequest) {
       let complianceViolations: string[] = []
       if (text) {
         try {
-          const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+          const { evaluateTenantOutbound: evaluateOutbound } = await import("@/lib/kernel/tenant-config-reads") // 86C: sessionless — tenant from the verified session row
           // Best-effort load of the contact so the gate runs the per-contact
           // checks (DNC / TCPA / suppression) when the session entity is a contact.
           // For transaction/listing entities, contact stays undefined and only the
@@ -252,6 +254,15 @@ export async function POST(request: NextRequest) {
         // against the known action types, and persist proposed rows in
         // the m143 ledger. Approval / execution happens via a separate
         // server action call from the admin UI.
+        // m618: "marketing_agent" is retired as a ManagerKey (owner: "we don't have a
+        // marketing agent manager" — survivor campaign_orchestrator, lib/kernel/
+        // manager-registry.ts) but DELIBERATELY KEPT as this agentKind check's value —
+        // it is a managed_agents.agent_kind execution-identity, not a ManagerKey, and
+        // collapsing it here would make this dispatch unable to tell
+        // lib/agents/marketing-agent.ts's session (resolutions[] output) apart from
+        // lib/agents/campaign-orchestrator.ts's own "campaign_orchestrator"-kind session
+        // (tool-driven drafts, no resolutions[]). See lib/agents/spawn-helper.ts's
+        // AgentKind comment.
         const agentEmbed = (sessionRow as unknown as { agent?: { agent_kind?: string } | Array<{ agent_kind?: string }> | null }).agent
         const agentKind = Array.isArray(agentEmbed) ? agentEmbed[0]?.agent_kind : agentEmbed?.agent_kind
         if (agentKind === "marketing_agent") {
@@ -302,20 +313,20 @@ export async function POST(request: NextRequest) {
         // the violations back to the agent's next session.events.send so it can
         // self-correct). Persist on the session row so admin UI can show why a
         // draft was held.
-        await svc.from("managed_agent_sessions")
+        await sentinelWrite(svc, svc.from("managed_agent_sessions")
           .update({
             last_agent_message: `[blocked by compliance] ${complianceViolations.join("; ")}`,
           })
-          .eq("id", sessionRow.id)
+          .eq("id", sessionRow.id), { table: "managed_agent_sessions", flow: "managed_agent_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         console.warn(`[anthropic-webhook] agent draft BLOCKED (session=${sessionId}):`, complianceViolations)
       }
       break
     }
 
     case "session.status_terminated":
-      await svc.from("managed_agent_sessions")
+      await sentinelWrite(svc, svc.from("managed_agent_sessions")
         .update({ status: "terminated", last_event_at: now, ended_at: now })
-        .eq("id", sessionRow.id)
+        .eq("id", sessionRow.id), { table: "managed_agent_sessions", flow: "managed_agent_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       break
 
     case "span.outcome_evaluation_end": {
@@ -331,17 +342,21 @@ export async function POST(request: NextRequest) {
       const explanation = (data.explanation as string | null) ?? null
       const usage = (data.usage ?? {}) as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number }
       if (outcomeId) {
-        await svc.from("agent_outcome_evaluations").insert({
-          brokerage_id:             sessionRow.brokerage_id,
-          managed_agent_session_id: sessionRow.id,
-          anthropic_outcome_id:     outcomeId,
+        // 102D: through THE ONE writer (lib/agents/outcomes.ts recordOutcomeEvaluation) — the same
+        // row the attributed experiment-arm outcomes extend. Analytics row: its loss does not change
+        // what the caller reports — logged, never silent (the sentinel contract this write had).
+        const { recordOutcomeEvaluation } = await import("@/lib/agents/outcomes")
+        const rec = await recordOutcomeEvaluation(svc, {
+          evaluator: "anthropic_rubric",
+          brokerageId: sessionRow.brokerage_id as string,
+          managedAgentSessionId: sessionRow.id as string,
+          anthropicOutcomeId: outcomeId,
           iteration,
-          result,
+          result: result as OutcomeEvaluationResult,
           explanation,
-          input_tokens:             usage.input_tokens             ?? null,
-          output_tokens:            usage.output_tokens            ?? null,
-          cache_read_input_tokens:  usage.cache_read_input_tokens  ?? null,
+          usage,
         })
+        if (!rec.ok) console.error(`[anthropic-webhook] agent_outcome_evaluations write refused (session=${sessionId}): ${rec.error}`)
       }
       break
     }

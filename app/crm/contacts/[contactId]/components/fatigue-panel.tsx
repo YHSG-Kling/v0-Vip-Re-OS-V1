@@ -37,9 +37,9 @@ interface FatigueAlert {
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 const RISK_COLOR: Record<RiskLevel, string> = {
-  fresh:    "text-emerald-600",
-  moderate: "text-amber-500",
-  high:     "text-orange-500",
+  fresh:    "text-emerald-700",
+  moderate: "text-amber-700",
+  high:     "text-orange-700",
   critical: "text-red-600",
 }
 
@@ -262,7 +262,7 @@ export function FatiguePanel({ contactId, brokerageId }: FatiguePanelProps) {
                 <p className="text-xs font-medium text-orange-700">
                   {formatAlertType(alert.alert_type)}
                   {alert.fatigue_score_at_trigger != null && (
-                    <span className="ml-1 text-orange-500 font-normal">
+                    <span className="ml-1 text-orange-700 font-normal">
                       (score {alert.fatigue_score_at_trigger})
                     </span>
                   )}
@@ -277,7 +277,7 @@ export function FatiguePanel({ contactId, brokerageId }: FatiguePanelProps) {
               <button
                 onClick={() => handleDismiss(alert.id)}
                 disabled={isPending}
-                className="text-xs text-orange-600 hover:text-orange-800 transition-colors disabled:opacity-50 font-medium"
+                className="text-xs text-orange-700 hover:text-orange-800 transition-colors disabled:opacity-50 font-medium"
               >
                 Dismiss
               </button>

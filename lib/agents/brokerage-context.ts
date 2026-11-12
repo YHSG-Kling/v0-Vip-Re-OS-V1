@@ -23,8 +23,10 @@
  * flows through context, not prompt rewrites.
  */
 import "server-only"
+import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
 import { createServiceClient } from "@/lib/supabase/service"
-import { applyBrandVoice }     from "@/lib/kernel/brand-voice"
+import { applyBrandVoice, loadSenderVoiceBrief, renderSenderVoiceBrief } from "@/lib/kernel/brand-voice"
+import { toPlanTier } from "@/lib/billing/plan-tier"
 
 const TIER_LABEL: Record<string, string> = {
   solo_agent:     "Solo",
@@ -46,6 +48,9 @@ export interface BrokerageContext {
     keyBrandMessages: string[]
     tagline:          string | null
   }
+  /** WAVE 151 (lane 151I): the SENDER's versioned voice brief, rendered (THE brand-voice reader) — the agent writes in it
+   *  from the first draft. Agent-scoped when `agentUserId` was given, else the brokerage's. Null = unreadable (said). */
+  senderVoiceBrief:   string | null
   /** Compliance gates that will REJECT non-compliant output downstream. The agent
    *  should self-filter against these BEFORE drafting to avoid wasted cycles. */
   complianceGates:    string[]
@@ -72,17 +77,24 @@ export async function resolveBrokerageContext(params: {
   /** Persona key from contacts.contact_persona (e.g. "first_time_buyer", "investor").
    *  Used by the brand-voice resolver and downstream prompting. */
   persona:      string
+  /** WAVE 151 (151I): the users.id of the agent the kickoff writes AS — the sender-voice brief is compiled for them. */
+  agentUserId?: string | null
 }): Promise<BrokerageContext> {
   const svc = createServiceClient()
 
   // 1. Brokerage name + tier.
   const { data: bk } = await svc
     .from("brokerages")
-    .select("name, subscription_tier, plan_tier")
+    // plan_tier only. This read was `subscription_tier ?? plan_tier`, and
+    // brokerages.subscription_tier has no writer — so the preferred value was
+    // whatever happened to be there when the row was created. A live tenant had
+    // plan_tier='solo_agent' with subscription_tier='brokerage', which made this
+    // module disagree with the lead router about the same tenant. m306 drops it.
+    .select("name, plan_tier")
     .eq("id", params.brokerageId)
     .maybeSingle()
   const brokerageName = (bk?.name as string | null)?.trim() || `Brokerage ${params.brokerageId.slice(0, 8)}`
-  const tierKey       = ((bk?.subscription_tier ?? bk?.plan_tier) as string | null) ?? "solo_agent"
+  const tierKey       = toPlanTier(bk?.plan_tier as string | null)
   const tierLabel     = TIER_LABEL[tierKey] ?? tierKey
 
   // 2. Brand voice — call the canonical resolver with empty content so we get back
@@ -94,7 +106,15 @@ export async function resolveBrokerageContext(params: {
     persona:     params.persona,
     messageType: "narrative",
     content:     "",
-  }).catch(() => null)
+    // 86C: agents spawn from crons and reactors with no session; the anon cookie read returned
+    // an EMPTY voice. params.brokerageId is the spawning run's tenant; read on the service client.
+  }, { client: svc }).catch(() => null)
+
+  // 2b. WAVE 151 (lane 151I): the SENDER's versioned voice brief — compiled by THE brand-voice reader from the agent's
+  //     approved settings and authorized examples, so the Managed Agent's first draft is already in their voice.
+  const senderVoiceBrief = await loadSenderVoiceBrief(svc as never, { brokerageId: params.brokerageId, agentUserId: params.agentUserId ?? null })
+    .then(renderSenderVoiceBrief)
+    .catch((e: unknown) => { console.error("[brokerage-context] sender-voice brief unavailable:", (e as Error)?.message ?? String(e)); return null })
 
   // 3. Compliance gates — the canonical short-list the agent must self-filter against.
   //    Full enforcement happens at the lib/kernel/compliance.ts:evaluateOutbound chokepoint
@@ -116,7 +136,7 @@ export async function resolveBrokerageContext(params: {
       .from("vendors")
       .select("id, name, email, phone, rating")
       .eq("brokerage_id", params.brokerageId)
-      .eq("category", "Lender")
+      .eq("category", VENDOR_CATEGORY_LENDER)
       .eq("status", "active")
       // Stable, deterministic tie-break: rating DESC (nulls last), then id
       // so a brokerage with multiple equally-rated approved lenders sees the
@@ -149,6 +169,7 @@ export async function resolveBrokerageContext(params: {
       keyBrandMessages: bv?.keyBrandMessages ?? [],
       tagline:          bv?.tagline          ?? null,
     },
+    senderVoiceBrief,
     complianceGates,
     preferredLender,
   }
@@ -176,6 +197,11 @@ export function renderBrokerageContextForKickoff(ctx: BrokerageContext): string 
   }
   if (ctx.brandVoice.preferredWords.length > 0) {
     lines.push(`Preferred phrasing: ${ctx.brandVoice.preferredWords.slice(0, 8).join(", ")}`)
+  }
+  if (ctx.senderVoiceBrief) {
+    // WAVE 151 (151I): the full brief — the agent drafts AS the sender from the first word, not as a later polish.
+    lines.push("")
+    lines.push(ctx.senderVoiceBrief)
   }
   lines.push("")
   lines.push("COMPLIANCE GATES (your output will be REJECTED if any fails):")

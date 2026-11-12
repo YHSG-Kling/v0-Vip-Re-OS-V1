@@ -7,7 +7,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { refreshRecentContactSpines } from "@/lib/kernel/conversation-memory"
+import { refreshRecentContactSpines, realSummaryRewriter } from "@/lib/kernel/conversation-memory"
 
 /**
  * CONTEXT SPINE REFRESH cron. The write side of the conversation-memory spine: for each
@@ -39,7 +39,10 @@ export async function GET(req: NextRequest) {
     if (error) throw error
     for (const b of (rows ?? []) as Array<{ id: string }>) {
       try {
-        const r = await refreshRecentContactSpines(b.id, {}, supabase)
+        // The warm-paragraph rewriter is an opt-in seam (the simulator injects its own);
+        // PRODUCTION opts in here. realSummaryRewriter may only re-phrase the deterministic
+        // facts and returns null on any failure, so the deterministic draft always stands.
+        const r = await refreshRecentContactSpines(b.id, { rewriter: realSummaryRewriter }, supabase)
         contactsConsidered += r.contactsConsidered
         spinesRefreshed += r.spinesRefreshed
         if (r.errors.length) errors.push(...r.errors.slice(0, 3))

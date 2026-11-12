@@ -226,7 +226,7 @@ export function AdminAssignmentPanel({ open, onOpenChange, brokerageId, userId, 
             </div>
           ) : leads.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
-              <CheckCircle2 className="h-10 w-10 mx-auto mb-3 text-green-500" />
+              <CheckCircle2 className="h-10 w-10 mx-auto mb-3 text-green-600" />
               <p className="text-sm font-medium">All leads are assigned</p>
             </div>
           ) : assignMode === "auto" ? (

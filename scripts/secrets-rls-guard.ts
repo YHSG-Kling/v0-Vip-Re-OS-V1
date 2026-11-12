@@ -1,0 +1,411 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/secrets-rls-guard.ts   (npm run test:secrets-rls)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * RLS + SECRETS FAIL CLOSED (wave 139E; owner "approve all" 1+2).
+ *
+ *  R1  the migration that creates the `ensure_rls` event trigger reproduces the live backstop:
+ *      CREATE OR REPLACE public.rls_auto_enable() (event_trigger, SECURITY DEFINER, ENABLE ROW
+ *      LEVEL SECURITY on public CREATE TABLE / CREATE TABLE AS / SELECT INTO) + the event trigger
+ *      created ONLY when pg_event_trigger has none (no DROP). Found by CONTENT, not by number.
+ *  R2  RLS-enabled implies no broad grant: that migration carries no GRANT / POLICY / DISABLE RLS.
+ *  S1  a missing key REFUSES a new secret write (typed SecretStorageRefusedError, no plaintext
+ *      returned, no secret in the message); legacy plaintext + existing envelopes still read and
+ *      are never rewritten; dual-key read (current + previous) for rotation.
+ *  S2  the refusal is ACTIONABLE: the OAuth refresh refuses BEFORE the provider exchange and the
+ *      platform incident is raised with no secret in it (injected client); crm-connect raises it.
+ *  S3  a secret never appears in an event/ledger payload (planted-secret positive control) and the
+ *      two audit sinks route through the redactor; console census over lib/ + app/.
+ *  S4  a tenant cannot read another tenant's secret through the canonical resolver.
+ *  S5  a custom manager / extension cannot request an undeclared secret or capability (the ONE
+ *      extension lifecycle path: skill-registry validators + requestExtensionCapability).
+ *  T6  (wave 140H) the named wave-139 blockers hold at HEAD: auto-filer recomputeDocumentChecklist,
+ *      status-sync syncOfferStatus and analytics-sync pin the tenant on the service client and read
+ *      their errors; submitOfferToCompliance and trackDelivery gate BEFORE the service client.
+ *  REG package.json + guard chain + MAINTENANCE_DOMAINS.
+ * No network. Scans read stripped source (scripts/strip-comments.ts, scripts/strip-sql-comments.ts).
+ */
+import { readFileSync, readdirSync, statSync } from "node:fs"
+import { join } from "node:path"
+import { stripComments, blankStrings } from "./strip-comments"
+import { stripSqlComments } from "./strip-sql-comments"
+
+let pass = 0, fail = 0
+const check = (n: string, c: boolean, detail = "") => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; console.log(`  ✗ ${n}${detail ? ` — ${detail}` : ""}`) } }
+const ROOT = process.cwd()
+const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
+const code = (p: string) => stripComments(read(p))
+
+// ── R1 / R2 — the RLS backstop migration ──────────────────────────────────────────────────────
+function rlsMigrationFaults(sql: string): string[] {
+  const s = stripSqlComments(sql)
+  const faults: string[] = []
+  if (!/CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.rls_auto_enable\s*\(\s*\)\s*RETURNS\s+event_trigger/i.test(s)) faults.push("function not CREATE OR REPLACE public.rls_auto_enable() RETURNS event_trigger")
+  if (!/SECURITY\s+DEFINER/i.test(s)) faults.push("function not SECURITY DEFINER")
+  if (!/enable\s+row\s+level\s+security/i.test(s)) faults.push("function does not enable row level security")
+  for (const tag of ["CREATE TABLE", "CREATE TABLE AS", "SELECT INTO"]) if (!s.includes(`'${tag}'`)) faults.push(`tag ${tag} missing`)
+  if (!/IN\s*\(\s*'public'\s*\)/i.test(s)) faults.push("public schema not enforced")
+  const create = s.search(/CREATE\s+EVENT\s+TRIGGER\s+ensure_rls\s+ON\s+ddl_command_end[\s\S]*?EXECUTE\s+FUNCTION\s+public\.rls_auto_enable\s*\(\s*\)/i)
+  if (create < 0) faults.push("CREATE EVENT TRIGGER ensure_rls ON ddl_command_end … EXECUTE FUNCTION public.rls_auto_enable() missing")
+  const guard = s.search(/IF\s+NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+(pg_catalog\.)?pg_event_trigger\s+WHERE\s+evtname\s*=\s*'ensure_rls'\s*\)\s*THEN/i)
+  if (guard < 0 || (create >= 0 && guard > create)) faults.push("no pg_event_trigger existence check before CREATE EVENT TRIGGER (not idempotent)")
+  if (/\bDROP\s+(EVENT\s+TRIGGER|FUNCTION|POLICY|TABLE|INDEX)\b/i.test(s)) faults.push("contains a DROP (held by the MCP for the owner)")
+  return faults
+}
+function broadGrantFaults(sql: string): string[] {
+  const s = stripSqlComments(sql)
+  const out: string[] = []
+  if (/\bGRANT\s/i.test(s)) out.push("GRANT")
+  if (/\b(CREATE|ALTER)\s+POLICY\b/i.test(s)) out.push("POLICY")
+  if (/DISABLE\s+ROW\s+LEVEL\s+SECURITY/i.test(s)) out.push("DISABLE RLS")
+  if (/\bTO\s+(anon|authenticated|public)\b/i.test(s)) out.push("TO anon/authenticated/public")
+  return out
+}
+
+function rlsLayer() {
+  console.log("\n[R1/R2 — automatic new-table RLS captured idempotently, no broad grant]")
+  const dir = "supabase/migrations"
+  const owners = readdirSync(join(ROOT, dir)).filter((f) => f.endsWith(".sql"))
+    .filter((f) => /CREATE\s+EVENT\s+TRIGGER\s+ensure_rls\b/i.test(stripSqlComments(read(`${dir}/${f}`))))
+  check("exactly ONE migration creates the ensure_rls event trigger", owners.length === 1, owners.join(", ") || "none")
+  if (owners.length !== 1) return
+  const file = `${dir}/${owners[0]}`
+  const sql = read(file)
+  const head = sql.split("\n")[0]
+  check("header is the lane stamp or an APPLIED LIVE stamp", /WRITTEN, NOT APPLIED|APPLIED LIVE/.test(head), head)
+  const faults = rlsMigrationFaults(sql)
+  check(`${owners[0]} reproduces the live function + trigger with an idempotency guard`, faults.length === 0, faults.join("; "))
+  const grants = broadGrantFaults(sql)
+  check(`${owners[0]} grants nothing and writes no policy`, grants.length === 0, grants.join(", "))
+  // positive controls — the finders still see the defects they exist for
+  const unguarded = sql.replace(/IF\s+NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+pg_catalog\.pg_event_trigger\s+WHERE\s+evtname\s*=\s*'ensure_rls'\s*\)\s*THEN/i, "IF true THEN")
+  check("CONTROL: removing the existence check is caught", rlsMigrationFaults(unguarded).some((f) => /idempotent/.test(f)))
+  check("CONTROL: a DROP EVENT TRIGGER is caught", rlsMigrationFaults(sql + "\nDROP EVENT TRIGGER ensure_rls;").some((f) => /DROP/.test(f)))
+  check("CONTROL: a planted GRANT / POLICY is caught", broadGrantFaults(sql + "\nGRANT ALL ON t TO anon;\nCREATE POLICY p ON t FOR ALL USING (true);").length >= 2)
+  check("CONTROL: a GRANT inside a comment is NOT counted (stripped)", broadGrantFaults(sql + "\n-- GRANT ALL ON t TO anon").length === 0)
+}
+
+// ── S1 — secrets fail closed (pure) ───────────────────────────────────────────────────────────
+async function cryptoLayer() {
+  console.log("\n[S1 — a missing key refuses a NEW secret write; reads never rewrite; dual-key rotation]")
+  const sc = await import("../lib/security/secret-crypto")
+  const PLANT = "plaintext-PLANTED-hunter2-7f3a"
+  const KEY_A = "a".repeat(64), KEY_B = "b".repeat(64)
+  delete process.env.SECRETS_ENCRYPTION_KEY; delete process.env.SECRETS_ENCRYPTION_KEY_PREVIOUS
+  let refused: unknown = null; let returned: unknown = "not-called"
+  try { returned = sc.encryptSecret(PLANT) } catch (e) { refused = e }
+  check("no key → encryptSecret THROWS the typed refusal (never returns)", sc.isSecretStorageRefused(refused) && returned === "not-called")
+  check("the refusal code is secrets_key_missing", (refused as { code?: string })?.code === "secrets_key_missing")
+  check("the refusal message carries no part of the secret", !String((refused as Error)?.message).includes(PLANT) && !String((refused as Error)?.message).includes("hunter2"))
+  check("no key → isEncryptionConfigured() is false (callers can refuse before a side effect)", !sc.isEncryptionConfigured())
+  check("empty / null are not secrets and pass (no refusal)", sc.encryptSecret("") === "" && sc.encryptSecret(null) === null)
+  check("legacy PLAINTEXT reads verbatim with no key (not an envelope)", sc.decryptSecret("legacy-plain") === "legacy-plain" && !sc.isEncrypted("legacy-plain"))
+
+  process.env.SECRETS_ENCRYPTION_KEY = KEY_A
+  const envA = sc.encryptSecret(PLANT)!
+  check("CONTROL: with a key the write succeeds as an envelope, not plaintext", sc.isEncrypted(envA) && !envA.includes(PLANT))
+  check("legacy plaintext still reads verbatim with a key (no rewrite)", sc.decryptSecret("legacy-plain") === "legacy-plain")
+  check("an already-encrypted value is not re-encrypted on write", sc.encryptSecret(envA) === envA)
+  delete process.env.SECRETS_ENCRYPTION_KEY
+  let noKeyRead = false
+  try { sc.decryptSecret(envA) } catch { noKeyRead = true }
+  check("an existing envelope is never returned as garbage without a key (throws)", noKeyRead)
+
+  process.env.SECRETS_ENCRYPTION_KEY = KEY_B; process.env.SECRETS_ENCRYPTION_KEY_PREVIOUS = KEY_A
+  check("ROTATION: current=B, previous=A → an A-sealed envelope still decrypts", sc.decryptSecret(envA) === PLANT)
+  const envB = sc.encryptSecret(PLANT)!
+  check("ROTATION: new writes seal with the CURRENT key only", sc.decryptSecret(envB) === PLANT)
+  delete process.env.SECRETS_ENCRYPTION_KEY_PREVIOUS
+  let dropped = false
+  try { sc.decryptSecret(envA) } catch { dropped = true }
+  check("ROTATION: with the previous key removed an A envelope THROWS (never a wrong plaintext)", dropped)
+  process.env.SECRETS_ENCRYPTION_KEY = KEY_A
+  let notWithB = false
+  try { sc.decryptSecret(envB) } catch { notWithB = true }
+  check("ROTATION: the previous key never sealed anything (B envelope fails under A alone)", notWithB)
+  let tamper = false
+  try { sc.decryptSecret(envA.slice(0, -4) + "AAAA") } catch { tamper = true }
+  check("a tampered envelope throws (GCM auth)", tamper)
+  delete process.env.SECRETS_ENCRYPTION_KEY
+  check("the env var for rotation is documented in .env.example", /^SECRETS_ENCRYPTION_KEY_PREVIOUS=/m.test(read(".env.example")))
+}
+
+// ── fake service client for S2 ─────────────────────────────────────────────────────────────────
+type Row = Record<string, unknown>
+function fakeSvc(tables: Record<string, Row[]>) {
+  const writes: Array<{ table: string; op: string; payload: unknown }> = []
+  const from = (table: string) => {
+    let op = "select"; let payload: unknown = null
+    const result = () => ({ data: op === "select" ? (tables[table] ?? []) : (op === "insert" ? [{ id: "n1" }] : op === "update" ? [{ id: "u1" }] : null), error: null, count: 0 }) // an update + .select() returns the matched row (the writer counts it)
+    const b: any = {
+      select: () => b, eq: () => b, in: () => b, or: () => b, not: () => b, gte: () => b, lte: () => b, limit: () => b, order: () => b,
+      insert: (p: unknown) => { op = "insert"; payload = p; writes.push({ table, op, payload: p }); return b },
+      update: (p: unknown) => { op = "update"; payload = p; writes.push({ table, op, payload: p }); return b },
+      maybeSingle: async () => ({ data: (tables[table] ?? [])[0] ?? null, error: null }),
+      single: async () => ({ data: { id: "n1" }, error: null }),
+      then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(result()).then(res, rej),
+    }
+    void payload
+    return b
+  }
+  return { client: { from } as any, writes }
+}
+
+async function incidentLayer() {
+  console.log("\n[S2 — the refusal is actionable: refuse BEFORE the OAuth exchange; platform incident, no secret]")
+  const PLANT_RT = "refresh-PLANTED-9c1e"
+  process.env.GOOGLE_CLIENT_ID = "guard-client"; process.env.GOOGLE_CLIENT_SECRET = "guard-secret"
+  delete process.env.SECRETS_ENCRYPTION_KEY; delete process.env.SECRETS_ENCRYPTION_KEY_PREVIOUS
+  const soon = new Date(Date.now() + 3600_000).toISOString()
+  const staff = [{ id: "staff-1", brokerage_id: "b-platform", platform_role: "superadmin" }]
+  const { client, writes } = fakeSvc({
+    platform_credentials: [{ id: "cred-1", refresh_token: PLANT_RT, token_expires_at: soon, platform: "gmail" }],
+    agent_api_credentials: [], social_media_accounts: [], notifications: [], users: staff,
+  })
+  let fetches = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async () => { fetches++; return new Response(JSON.stringify({ access_token: "new-at" }), { status: 200 }) }) as typeof fetch
+  try {
+    const { runCredentialRefresh } = await import("../lib/security/oauth-refresh")
+    const r = await runCredentialRefresh(client)
+    check("no key → the provider token exchange is NEVER called (the refresh token is not spent)", fetches === 0, `fetches=${fetches}`)
+    check("no key → the credential is reported refused (counted as failed, never skipped)", r.outcomes.some((o) => o.result === "refused_secret_storage") && r.failed >= 1 && r.refreshed === 0)
+    check("no key → no credential row was updated", !writes.some((w) => w.table === "platform_credentials"))
+    const inc = writes.filter((w) => w.table === "notifications")
+    const rows = inc.flatMap((w) => (Array.isArray(w.payload) ? w.payload : [w.payload])) as Row[]
+    check("the platform incident was raised to staff (secret_storage_unconfigured)", rows.some((n) => n.type === "secret_storage_unconfigured"))
+    check("the incident names the fix (SECRETS_ENCRYPTION_KEY) and carries no secret", rows.every((n) => !JSON.stringify(n).includes(PLANT_RT)) && rows.some((n) => String(n.body).includes("SECRETS_ENCRYPTION_KEY")))
+
+    // positive control: with a key the same sweep exchanges and writes an ENVELOPE, never plaintext
+    process.env.SECRETS_ENCRYPTION_KEY = "c".repeat(64)
+    const f2 = fakeSvc({ platform_credentials: [{ id: "cred-1", refresh_token: PLANT_RT, token_expires_at: soon, platform: "gmail" }], agent_api_credentials: [], social_media_accounts: [], notifications: [], users: staff })
+    const r2 = await runCredentialRefresh(f2.client)
+    const upd = f2.writes.find((w) => w.table === "platform_credentials")?.payload as Row | undefined
+    check("CONTROL: with a key the refresh runs and stores an enc:v1 envelope", r2.refreshed === 1 && typeof upd?.access_token === "string" && String(upd.access_token).startsWith("enc:v1:"))
+  } finally {
+    globalThis.fetch = realFetch
+    delete process.env.SECRETS_ENCRYPTION_KEY
+  }
+  const crm = code("app/actions/crm-connect.ts")
+  const refusal = crm.slice(crm.indexOf("!isEncryptionConfigured()"), crm.indexOf("!isEncryptionConfigured()") + 900)
+  check("crm-connect raises the incident on its refusal, tenant from the session member", /raiseSecretStorageIncident\(/.test(refusal) && /brokerageId:\s*member\.brokerageId/.test(refusal) && !/rawSecret|apiSecret/.test(refusal.slice(0, refusal.indexOf("return {"))))
+  const sentinel = code("lib/platform/os-sentinel.ts")
+  check("the daily posture sweep is wired (os-sentinel → reportSecretStoragePosture)", /reportSecretStoragePosture\(svc, now\)/.test(sentinel))
+  const rot = code("lib/security/credential-rotation.ts")
+  const posture = rot.slice(rot.indexOf("async function reportSecretStoragePosture"))
+  check("the posture census COUNTS (head) and never selects a secret value", /count:\s*"exact",\s*head:\s*true/.test(posture) && !/select\("(api_key|api_secret|access_token|refresh_token)/.test(posture))
+}
+
+// ── S3 — redaction ────────────────────────────────────────────────────────────────────────────
+const SECRET_IDENT_RE = /\b(apiSecret|rawSecret|api_secret|access_token|refresh_token|smtp_password|smtpPassword|accessToken|refreshToken|clientSecret|client_secret|decryptSecret\()/
+/** console.* calls whose ARGUMENT CODE (strings blanked) names a secret-bearing identifier. */
+function consoleSecretHits(src: string): number {
+  const s = blankStrings(stripComments(src))
+  let hits = 0
+  for (const m of s.matchAll(/console\.(log|info|warn|error|debug)\(/g)) {
+    let depth = 0, i = (m.index ?? 0) + m[0].length - 1, end = i
+    for (; i < s.length; i++) { if (s[i] === "(") depth++; else if (s[i] === ")") { depth--; if (depth === 0) { end = i; break } } }
+    if (SECRET_IDENT_RE.test(s.slice((m.index ?? 0), end))) hits++
+  }
+  return hits
+}
+function walk(dir: string, out: string[] = []): string[] {
+  for (const f of readdirSync(join(ROOT, dir))) {
+    const p = `${dir}/${f}`
+    if (f === "node_modules" || f.startsWith(".")) continue
+    const st = statSync(join(ROOT, p))
+    if (st.isDirectory()) walk(p, out)
+    else if (/\.(ts|tsx)$/.test(f)) out.push(p)
+  }
+  return out
+}
+
+async function redactionLayer() {
+  console.log("\n[S3 — a secret never lands in an event / ledger payload or a log line]")
+  const { redactSecretValues } = await import("../lib/security/export-credential-scan")
+  const PLANT = "sek-PLANTED-4b2d-value"
+  const payload = {
+    provider: "fub", count: 3, token: "{first_name}",
+    api_secret: PLANT, nested: { accessToken: PLANT, list: [{ "refresh-token": PLANT }, { note: "enc:v1:abc:def:ghi" }] },
+    stripe: "sk_live_" + "x".repeat(24), Authorization: `Bearer ${PLANT}`,
+  }
+  check("CONTROL: the planted secret is really in the raw payload", JSON.stringify(payload).includes(PLANT))
+  const red = redactSecretValues(payload)
+  const out = JSON.stringify(red)
+  check("the planted secret appears NOWHERE after redaction (name, nesting, arrays, header)", !out.includes(PLANT))
+  check("secret SHAPES are redacted (our envelope, a Stripe secret key)", !out.includes("enc:v1:abc") && !out.includes("sk_live_"))
+  check("non-secret fields pass untouched (incl. a template `token`)", red.provider === "fub" && red.count === 3 && red.token === "{first_name}")
+  check("the input object is not mutated", payload.api_secret === PLANT)
+  const emit = code("lib/kernel/emit.ts")
+  check("emitKernelEvent stores metadata through redactSecretValues", /const metadata: Record<string, unknown> = redactSecretValues\(/.test(emit))
+  const ledger = code("lib/kernel/action-ledger.ts")
+  check("withActionLedger stores detail through redactSecretValues", /detail:\s*redactSecretValues\(/.test(ledger))
+  check("CONTROL: the wiring check goes red on the unwrapped shape", !/detail:\s*redactSecretValues\(/.test(ledger.replace(/detail:\s*redactSecretValues\(/, "detail: (")))
+  // census: console calls in lib/ + app/ naming a secret-bearing identifier
+  check("CONTROL: the console census sees a planted leak", consoleSecretHits(`console.error("x", tokens.access_token)`) === 1 && consoleSecretHits(`console.error("access_token missing")`) === 0)
+  const files = [...walk("lib"), ...walk("app")]
+  const hits: string[] = []
+  for (const f of files) { const n = consoleSecretHits(read(f)); if (n) hits.push(`${f}×${n}`) }
+  console.log(`    census: ${files.length} files in lib/ + app/; console calls naming a secret identifier: ${hits.length ? hits.join(", ") : "0"}`)
+  check("no console call in lib/ + app/ passes a secret-bearing identifier", hits.length === 0, hits.join(", "))
+}
+
+// ── S4 — tenant isolation of the canonical secret resolver ────────────────────────────────────
+const STORES = ["agent_api_credentials", "platform_credentials", "integration_credentials"]
+function unpinnedSecretReads(src: string): string[] {
+  const s = stripComments(src)
+  const out: string[] = []
+  for (const store of STORES) {
+    let at = 0
+    for (;;) {
+      const i = s.indexOf(`.from("${store}")`, at)
+      if (i < 0) break
+      at = i + 1
+      const end = s.indexOf("\n\n", i)
+      const chain = s.slice(i, end < 0 ? i + 800 : Math.min(end, i + 800))
+      if (!/\.select\("[^"]*(api_key|api_secret|access_token|refresh_token)/.test(chain)) continue
+      if (!/\.eq\("brokerage_id",\s*input\.brokerageId\)/.test(chain)) out.push(store)
+    }
+  }
+  return out
+}
+function tenantLayer() {
+  console.log("\n[S4 — a tenant cannot read another tenant's secret (canonical resolver)]")
+  const cm = read("lib/integrations/connection-manager.ts")
+  const bad = unpinnedSecretReads(cm)
+  check("every secret-selecting store read in connection-manager pins brokerage_id from the verified input", bad.length === 0, bad.join(", "))
+  check("CONTROL: removing the agent-stage pin is caught", unpinnedSecretReads(cm.replace(/\.eq\("brokerage_id", input\.brokerageId\)\s*\n\s*\.in\("service_name", aliases\)/, '.in("service_name", aliases)')).includes("agent_api_credentials"))
+}
+
+// ── S5 — extensions cannot reach an undeclared secret / capability ────────────────────────────
+async function extensionLayer() {
+  console.log("\n[S5 — the extension lifecycle refuses an undeclared secret or capability]")
+  const reg = await import("../lib/kernel/skill-registry")
+  const { adapterFor, routedProviders } = await import("../lib/kernel/provider-adapters")
+  const name = routedProviders().find((p) => (adapterFor(p)?.credential.envVars.length ?? 0) > 0)!
+  const a = adapterFor(name)!
+  const base = { name, version: 1, adapter: a, evaluation_suite: "guard" }
+  const ok = reg.validateProviderAdapterExtension(base)
+  check(`CONTROL: the registered ${name} declaration itself is admitted`, ok.ok, ok.errors.join(", "))
+  const smug = reg.validateProviderAdapterExtension({ ...base, adapter: { ...a, credential: { ...a.credential, envVars: [...a.credential.envVars, "SUPABASE_SERVICE_ROLE_KEY", "SECRETS_ENCRYPTION_KEY"] } } })
+  check("a provider-adapter extension asking for an undeclared secret is refused by name", !smug.ok && smug.errors.includes("undeclared_credential:SUPABASE_SERVICE_ROLE_KEY") && smug.errors.includes("undeclared_credential:SECRETS_ENCRYPTION_KEY"))
+  const cm = reg.validateCustomManagerDeclaration({ secret: "x", api_key: "y" } as any)
+  check("a custom manager smuggling a secret field is refused (not_data)", !cm.ok && cm.errors.includes("not_data:secret") && cm.errors.includes("not_data:api_key"))
+  check("an undeclared capability is refused at call time", reg.capabilityCallRefusal([], null, "send_email")?.startsWith("undeclared_capability:") === true)
+  const { requestExtensionCapability } = await import("../lib/kernel/skill-marketplace")
+  let delegated = 0
+  const r = await requestExtensionCapability({ declared: [], owner: null }, { capability: "send_email" } as any, {} as any, { delegate: async () => { delegated++; return { ok: true } } })
+  check("requestExtensionCapability refuses before ANY delegation", !r.ok && delegated === 0, r.reason)
+}
+
+// ── T6 — the wave-139 cross-tenant / gate-before-service-client blockers (wave 140H) ──────────
+/** The chain that follows a `.from("<table>")` up to the next blank line (same windowing as S4). */
+function chainAfter(src: string, marker: string, from = 0): string {
+  const i = src.indexOf(marker, from)
+  if (i < 0) return ""
+  const end = src.indexOf("\n\n", i)
+  return src.slice(i, end < 0 ? i + 900 : Math.min(end, i + 900))
+}
+function blockerLayer() {
+  console.log("\n[T6 — the named wave-139 blockers at HEAD: tenant pinned on the service client; gate before the service client]")
+  // auto-filer.ts — recomputeDocumentChecklist runs on the service client (filer + RECONCILE_COUNTS rail)
+  const filer = code("lib/documents/auto-filer.ts")
+  const recompute = filer.slice(filer.indexOf("export async function recomputeDocumentChecklist"))
+  const docsChain = chainAfter(recompute, '.from("transaction_documents")')
+  check("auto-filer recomputeDocumentChecklist pins brokerage_id on transaction_documents and READS the error", /\.eq\("brokerage_id",\s*brokerageId\)/.test(docsChain) && /error:\s*docsError/.test(recompute) && /if \(docsError\)/.test(recompute))
+  check("auto-filer refuses to recompute with no tenant (fail closed) before the read", recompute.indexOf("if (!brokerageId)") >= 0 && recompute.indexOf("if (!brokerageId)") < recompute.indexOf('.from("transaction_documents")'))
+  check("auto-filer pins brokerage_id on the document_checklist read and update", /\.eq\("transaction_id",\s*transactionId\)\.eq\("brokerage_id",\s*brokerageId\)/.test(recompute) && /\.eq\("id",\s*\(existing as any\)\.id\)\.eq\("brokerage_id",\s*brokerageId\)/.test(recompute))
+  check("CONTROL: removing the transaction_documents pin is caught", !/\.eq\("brokerage_id",\s*brokerageId\)/.test(docsChain.replace('.eq("brokerage_id", brokerageId)', "")))
+  // status-sync.ts — syncOfferStatus on the service client
+  const sync = code("lib/buyer-offer/status-sync.ts")
+  const actChain = chainAfter(sync, '.from("activities")')
+  const offChain = chainAfter(sync, '.from("offers")')
+  check("syncOfferStatus takes the offer's tenant and pins it on the activities read AND the offers.status write (counted)", /syncOfferStatus\(\s*offerId: string,\s*brokerageId: string,?\s*\)/.test(sync) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(actChain) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(offChain) && /\.select\("id"\)/.test(offChain) && /updated\.length !== 1/.test(sync))
+  for (const f of ["app/actions/buyer-offer/submit-for-signature.ts", "app/actions/buyer-offer/respond-to-counter.ts"]) {
+    check(`${f} passes the session-verified tenant to syncOfferStatus`, /syncOfferStatus\(offerId,\s*[A-Za-z_][\w.]*(\s+as\s+string)?\)/.test(code(f)))
+  }
+  // analytics-sync.ts — cross-tenant sweep iterates per tenant
+  const an = code("lib/social/analytics-sync.ts")
+  const acctChain = chainAfter(an, '.from("social_media_accounts")')
+  check("analytics-sync groups posts per tenant and pins the credential read to that tenant", /byTenant/.test(an) && /for \(const \[tenantId, tenantPosts\] of byTenant\)/.test(an) && /\.eq\("brokerage_id",\s*tenantId\)/.test(acctChain) && /error:\s*accountError/.test(an))
+  check("analytics-sync decrypts the stored token and pins the analytics upsert to the tenant", /decryptSecret\(/.test(acctChain + an.slice(an.indexOf("const token"), an.indexOf("const token") + 200)) && /\.eq\("brokerage_id",\s*tenantId\)/.test(chainAfter(an, '.from("social_media_analytics")')))
+  check("CONTROL: an unpinned account read is caught", !/\.eq\("brokerage_id",\s*tenantId\)/.test(acctChain.replace('.eq("brokerage_id", tenantId)', "")))
+  // submit-to-compliance.ts — gate BEFORE createServiceClient
+  const stc = code("app/actions/buyer-offer/submit-to-compliance.ts")
+  const gateAt = stc.indexOf("await requireCallerTenant()")
+  check("submitOfferToCompliance gates on the session (requireCallerTenant) BEFORE createServiceClient()", gateAt > 0 && gateAt < stc.indexOf("createServiceClient()"))
+  check("…and refuses a foreign offer (session tenant must own the offer) + a sessionless caller without the presented secret", /offer\.brokerage_id !== sessionTenant/.test(stc) && /internalSecret === cronSecret/.test(stc) && /!caller\.ok && !presentedInternal/.test(stc))
+  check("the only sessionless caller (auto-execute-offer) PRESENTS CRON_SECRET", /internalSecret:\s*process\.env\.CRON_SECRET/.test(code("lib/transactions/auto-execute-offer.ts")))
+  check("the userId attribution is the session user unless the caller is on the tenant-admin roster (TENANT_ADMIN_USER_TYPES, not a retyped list)", /TENANT_ADMIN_USER_TYPES\.has\(caller\.userType/.test(stc) && !/\["broker",\s*"broker_admin"/.test(stc))
+  // direct-mail.ts — trackDelivery: the shared-secret gate precedes the service client
+  const dm = code("app/actions/direct-mail.ts")
+  const track = dm.slice(dm.indexOf("export async function trackDelivery"))
+  check("trackDelivery checks LOB_WEBHOOK_SECRET BEFORE createServiceClient() and resolves the tenant from the campaign row", track.indexOf("LOB_WEBHOOK_SECRET") > 0 && track.indexOf("LOB_WEBHOOK_SECRET") < track.indexOf("createServiceClient()") && /campaign\?\.brokerage_id/.test(track))
+  check("CONTROL: a service client built before the gate is caught", (() => { const swapped = track.replace("const supabase = createServiceClient()", "").replace("const secret = process.env.LOB_WEBHOOK_SECRET", "const supabase = createServiceClient()\n    const secret = process.env.LOB_WEBHOOK_SECRET"); return !(swapped.indexOf("LOB_WEBHOOK_SECRET") < swapped.indexOf("createServiceClient()")) })())
+}
+
+// ── T7 — secrets never reach the browser; shared secrets compare in constant time (wave 140P) ──────
+async function browserBoundaryLayer() {
+  console.log("\n[T7 — the 140P corrections: constant-time secret compare; no token in a forms-provider result; no secret column in a browser-bound credential read]")
+  // (1) the ONE constant-time compare and its two Lob callers
+  const { secretsEqual } = await import("../lib/security/constant-time")
+  check("secretsEqual: equal strings match; a differing byte, a different LENGTH (no throw), an empty or absent side never match", secretsEqual("whsec_abc", "whsec_abc") && !secretsEqual("whsec_abd", "whsec_abc") && !secretsEqual("whsec_ab", "whsec_abc") && !secretsEqual("", "") && !secretsEqual(undefined, "x") && !secretsEqual("x", null))
+  const track = code("app/actions/direct-mail.ts"); const trackBody = track.slice(track.indexOf("export async function trackDelivery"))
+  check("trackDelivery compares LOB_WEBHOOK_SECRET with secretsEqual (constant-time), never !== / ===", /secretsEqual\(params\.webhookSecret, secret\)/.test(trackBody) && !/webhookSecret !== secret|webhookSecret === secret/.test(trackBody))
+  const lob = code("app/api/webhooks/lob-events/route.ts")
+  check("the Lob receiver compares the presented secret with secretsEqual too (same gate, same posture)", /secretsEqual\(given, secret\)/.test(lob) && !/given !== secret/.test(lob))
+  check("CONTROL: the plain-inequality shape is what the finder refuses", /webhookSecret !== secret/.test(`if (!secret || params.webhookSecret !== secret) {`))
+  // (2) the forms-provider resolver answers a question, never the token; the egress half has no "use server" caller
+  const forms = code("lib/kernel/forms.ts")
+  const resolver = forms.slice(forms.indexOf("export async function resolveTransactionFormsProvider"), forms.indexOf("export async function loadTransactionFormsCredential"))
+  check("resolveTransactionFormsProvider's result type and body carry has_access_token (a handle) and NO access_token / decryptSecret", /has_access_token: boolean/.test(resolver) && !/access_token:\s*decryptSecret/.test(resolver) && !/access_token: string \| null/.test(resolver))
+  const loader = forms.slice(forms.indexOf("export async function loadTransactionFormsCredential"))
+  check("loadTransactionFormsCredential is the ONE decryptor of the forms token", /access_token: decryptSecret\(/.test(loader) && (forms.match(/decryptSecret\(/g) ?? []).length === 1)
+  // Wave 141 (lane 141C): lib/transactions/cda-esign.ts left this list — the CDA now dispatches
+  // through lib/esign/dispatch-packet.ts (the e-sign selection's credential, resolved by
+  // resolve-esign-provider.ts), so it has no forms-credential egress at all. The RULE below is
+  // unchanged: every caller that still signs a request from the forms credential loads it here.
+  const loaderCallers = ["app/actions/admin/commission-agreement.ts"]
+  check("lib/transactions/cda-esign.ts no longer reads the forms credential or the resolver's token at all (its e-sign rides dispatch-packet)", !/loadTransactionFormsCredential\(|resolveTransactionFormsProvider\(/.test(code("lib/transactions/cda-esign.ts")) && /dispatchEsignPacket\(/.test(code("lib/transactions/cda-esign.ts")))
+  /** PURE — the variables a file binds to resolveTransactionFormsProvider(...) that are later read for `.data?.access_token` / `.data.access_token`. */
+  const resolverTokenReads = (src: string): string[] => {
+    const names = [...src.matchAll(/const\s+(\w+)\s*=\s*await\s+resolveTransactionFormsProvider\(/g)].map((m) => m[1])
+    return names.filter((n) => new RegExp(`\\b${n}\\.data\\??\\.access_token\\b`).test(src))
+  }
+  for (const f of loaderCallers) check(`${f} loads the credential through loadTransactionFormsCredential at its Dotloop egress and never reads access_token off the resolver's result`, /loadTransactionFormsCredential\(/.test(code(f)) && resolverTokenReads(code(f)).length === 0, resolverTokenReads(code(f)).join(", "))
+  check("CONTROL: a token read off the resolver's result is what the finder catches; one off the loader's is not", resolverTokenReads(`const pr = await resolveTransactionFormsProvider({ b })\nconst k = pr.data?.access_token`).join() === "pr" && resolverTokenReads(`const pr = await resolveTransactionFormsProvider({ b })\nconst cred = await loadTransactionFormsCredential({ b })\nconst k = cred.data?.access_token`).length === 0)
+  const formsKernelAction = code("app/actions/forms-kernel.ts")
+  check("the \"use server\" wrapper (resolveFormsProviderAction) never imports or returns the credential loader", /resolveTransactionFormsProvider/.test(formsKernelAction) && !/loadTransactionFormsCredential/.test(formsKernelAction))
+  check("no caller RETURNS the loader's result from an export (the two callers consume it inside their body) and lib/kernel/index.ts does not re-export it", loaderCallers.every((f) => !/return (await )?loadTransactionFormsCredential/.test(code(f))) && !/loadTransactionFormsCredential/.test(code("lib/kernel/index.ts")))
+  // (3) the settings credential list a browser receives
+  const integ = code("app/actions/settings/integrations.ts")
+  const typeBlock = integ.slice(integ.indexOf("export type PlatformCredential"), integ.indexOf("export type ProviderOverride"))
+  check("PlatformCredential (a \"use server\" return type) has api_key_configured / access_token_configured and NO api_key / access_token / refresh_token field", /api_key_configured: boolean/.test(typeBlock) && /access_token_configured: boolean/.test(typeBlock) && !/\b(api_key|access_token|refresh_token):/.test(typeBlock))
+  check("the settings client reads no secret field off a credential", !/cred\.(api_key|access_token|refresh_token)\b/.test(code("app/dashboard/settings/integrations/integrations-client.tsx")))
+}
+
+function registrationLayer() {
+  console.log("\n[REG]")
+  const pkg = read("package.json")
+  check("package.json wires test:secrets-rls", /"test:secrets-rls":\s*"tsx scripts\/secrets-rls-guard\.ts"/.test(pkg))
+  check("the guard chain runs it", new RegExp("npm run test:secrets-rls(\\s|&|$)").test(JSON.parse(pkg).scripts.guard ?? ""))
+  check("a MAINTENANCE_DOMAINS entry owns it", /proof:\s*"test:secrets-rls"/.test(code("lib/kernel/manager-registry.ts")))
+}
+
+async function main() {
+  rlsLayer()
+  await cryptoLayer()
+  await incidentLayer()
+  await redactionLayer()
+  tenantLayer()
+  await extensionLayer()
+  blockerLayer()
+  await browserBoundaryLayer()
+  registrationLayer()
+  console.log("\nBLIND SPOTS: the migration is checked as TEXT (the live trigger was read once via MCP, 2026-10-08); the")
+  console.log("  redactor is name/shape based (a secret under a neutral key with no known shape passes); the console")
+  console.log("  census is identifier-based; S4 covers the canonical resolver only (other readers rely on RLS + their own pins).")
+  console.log(`\nRESULT: ${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`)
+  process.exit(fail === 0 ? 0 : 1)
+}
+main().catch((e) => { console.error(e); process.exit(1) })

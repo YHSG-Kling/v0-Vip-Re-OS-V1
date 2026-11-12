@@ -28,13 +28,16 @@ function rpcError(id: unknown, code: number, message: string, status = 200) {
 // scope-gated by the caller's token below, and every call audit-logs. All vendor egress here goes
 // through the connector-gateway (web search, RentCast, PeopleData) — never a bespoke fetch.
 const READ_EXECUTORS: Record<string, (args: any, ctx: { brokerageId: string }) => Promise<unknown>> = {
-  web_research: async (args) => {
+  web_research: async (args, ctx) => {
     const { webSearch } = await import("@/lib/ai/web-search")
-    return webSearch({ query: String(args.query ?? ""), maxResults: 6 })
+    // Wave 139 (139C): the search's spend books under the CALLER's tenant (was unbooked).
+    return webSearch({ query: String(args.query ?? ""), maxResults: 6, spend: { brokerageId: ctx.brokerageId || null, systemSource: "agentic_mcp" } })
   },
   property_valuation: async (args, ctx) => {
     const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
-    return getCurrentAvm({ address: String(args.address ?? ""), zipCode: args.zipCode ?? null, brokerageId: ctx.brokerageId, usePaidProviders: false })
+    // Wave 93 (lane 93B): an AI AGENT tool surface — RentCast yes, the BatchData backup NO (owner:
+    // no BatchData tools on AI agent surfaces; only the server-side chain falls back).
+    return getCurrentAvm({ address: String(args.address ?? ""), zipCode: args.zipCode ?? null, brokerageId: ctx.brokerageId, usePaidProviders: false, skipProviders: ["batchdata"] })
   },
   comparable_sales: async (args, ctx) => {
     const { getRentcastComps } = await import("@/lib/property/rentcast")

@@ -15,25 +15,25 @@ const quickActions: QuickAction[] = [
     label: "Call a Lead",
     href: "/mobile/voice",
     icon: <Phone className="h-6 w-6" />,
-    color: "bg-emerald-500 text-white",
+    color: "bg-emerald-700 text-white",
   },
   {
     label: "Send Update",
     href: "/dashboard/communications/inbox",
     icon: <MessageSquare className="h-6 w-6" />,
-    color: "bg-blue-500 text-white",
+    color: "bg-blue-600 text-white",
   },
   {
     label: "Check Pipeline",
     href: "/crm?contact_type=buyer",
     icon: <BarChart3 className="h-6 w-6" />,
-    color: "bg-amber-500 text-white",
+    color: "bg-amber-700 text-white",
   },
   {
     label: "Start Voice",
     href: "/mobile/voice",
     icon: <Mic className="h-6 w-6" />,
-    color: "bg-purple-500 text-white",
+    color: "bg-purple-600 text-white",
   },
 ]
 

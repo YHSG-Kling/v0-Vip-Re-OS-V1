@@ -21,9 +21,9 @@ interface RecentCommandsFeedProps {
 
 function confidenceColor(score: number | null): string {
   if (score === null) return "text-muted-foreground"
-  if (score >= 0.8) return "text-green-600"
-  if (score >= 0.6) return "text-amber-500"
-  return "text-red-500"
+  if (score >= 0.8) return "text-green-700"
+  if (score >= 0.6) return "text-amber-700"
+  return "text-red-600"
 }
 
 function relativeTime(iso: string): string {
@@ -55,7 +55,7 @@ export function RecentCommandsFeed({ commands }: RecentCommandsFeedProps) {
                 {/* Success/fail icon */}
                 <div className="mt-0.5 shrink-0">
                   {cmd.success ? (
-                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    <CheckCircle2 className="h-4 w-4 text-green-600" />
                   ) : (
                     <XCircle className="h-4 w-4 text-red-500" />
                   )}

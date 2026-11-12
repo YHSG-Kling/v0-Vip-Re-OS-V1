@@ -113,7 +113,7 @@ export async function setServiceModeAction(
 
   const wantsHandoff = params.mode === "handoff"
   const canFireHandoff = wantsHandoff && FEATURES.BUYER_MOVE_UTILITY_CONNECT
-  const { data: updated } = await supabase
+  const { data: updated, error: moveModeErr } = await supabase
     .from("buyer_move_cases")
     .update({
       service_mode: params.mode,
@@ -126,6 +126,7 @@ export async function setServiceModeAction(
     .eq("id", (row as any).id)
     .select("*")
     .maybeSingle()
+  if (moveModeErr) return { success: false, error: `Could not update the move plan: ${moveModeErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   const moveCase = updated ? await getBuyerMoveCase(supabase as any, params) : null

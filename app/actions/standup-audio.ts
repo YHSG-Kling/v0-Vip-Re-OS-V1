@@ -10,9 +10,10 @@
  * text too, so the UI shows the brief even when TTS is unavailable.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { synthesizeSpeech, audioBufferToDataUrl } from "@/lib/voice/elevenlabs-tts"
 import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
+import { elevenLabsModelForLane, withNaturalPauses } from "@/lib/video/realism-profile"
 import { generateManagerStandup } from "@/lib/intelligence/manager-standup"
 import { composeStandupScript } from "@/lib/intelligence/standup-narrative"
 
@@ -26,8 +27,8 @@ export interface StandupAudioResult {
 }
 
 export async function generateStandupAudio(): Promise<StandupAudioResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -36,9 +37,13 @@ export async function generateStandupAudio(): Promise<StandupAudioResult> {
 
   // Resolve the broker's chosen voice (clone vs generic), same as the morning brief.
   const resolved = await resolveSelfVoice(ctx.userId)
+  // MODEL + PACING through the ONE selector (lane 77C) — same lane as the
+  // morning brief (app/actions/brief-audio.ts): a scripted, uninterruptible read.
+  const modelId = elevenLabsModelForLane("brief_narration")
   const result = await synthesizeSpeech({
-    text: script,
+    text: withNaturalPauses(script, modelId),
     voiceId: resolved.voiceId,
+    modelId,
     voiceSettings: { stability: 0.55, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true },
     brokerageId: ctx.brokerageId,
   })

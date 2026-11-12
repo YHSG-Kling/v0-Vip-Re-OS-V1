@@ -26,7 +26,7 @@ import { adCampaignAdapter }        from "./ad-campaign"
 import { listingLandingPageAdapter } from "./listing-landing-page"
 import { sendForEsignAdapter }       from "./send-for-esign"
 import { sendGiftAdapter }           from "./send-gift"
-import { addToSegmentAdapter, removeFromCampaignAdapter } from "./segment-ops"
+import { addToSegmentAdapter, removeFromSegmentAdapter, removeFromCampaignAdapter } from "./segment-ops"
 
 // In-app message adapter (inline — simple enough to not need its own file)
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
@@ -52,19 +52,20 @@ const inAppAdapter: ChannelAdapter = {
       return { status: "error", providerKey: "in_app", error: "No agent record for in_app message" }
     }
 
-    const { data: convRow } = await supabase
+    const { data: convRow, error: convUpsertErr } = await supabase
       .from("conversations")
       .upsert(
         { contact_id: contact.id, agent_id: resolvedAgentId, brokerage_id: brokerageId, status: "active", updated_at: new Date().toISOString() },
         { onConflict: "contact_id,agent_id" }
       )
       .select("id").single()
+    if (convUpsertErr) console.error(`[workflow-adapter] in-app conversation NOT resolved: ${convUpsertErr.message}`)
 
     if (!convRow?.id) {
       return { status: "error", providerKey: "in_app", error: "Could not resolve conversation" }
     }
 
-    const { data: msgRow } = await supabase.from("messages").insert({
+    const { data: msgRow, error: inAppMsgErr } = await supabase.from("messages").insert({
       conversation_id: convRow.id,
       contact_id: contact.id,
       agent_id: resolvedAgentId,
@@ -77,6 +78,7 @@ const inAppAdapter: ChannelAdapter = {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }).select("id").single()
+    if (inAppMsgErr) console.error(`[workflow-adapter] in-app message NOT recorded: ${inAppMsgErr.message}`)
 
     return {
       status: msgRow ? "sent" : "error",
@@ -96,16 +98,18 @@ const aiCallAdapter: ChannelAdapter = {
   channel: "ai_call",
   async execute(ctx: StepContext): Promise<StepResult> {
     const { contact, agentId, entity } = ctx
-    if (entity === "lead") {
-      return { status: "skipped", providerKey: "ai_call", error: "ai_call not permitted for unconsented leads (email/direct-mail only)" }
+    // Wave 91 (lane 91B): the ONE lead-stage predicate, not a local entity test.
+    const { channelRefusalForRecipient } = await import("@/lib/ai-isa/lead-channel-policy")
+    const leadStage = channelRefusalForRecipient(entity === "lead" ? { leadId: (contact?.id as string) ?? "lead" } : { contactId: (contact?.id as string) ?? null }, "ai_call")
+    if (leadStage) {
+      return { status: "skipped", providerKey: "ai_call", error: leadStage }
     }
     if (!contact?.id || !contact?.phone) {
       return { status: "error", providerKey: "ai_call", error: "No contact phone for ai_call" }
     }
     const { initiateVoiceCall } = await import("@/lib/voice-engine/call-executor")
-    const vendor = process.env.VAPI_API_KEY ? "vapi_isa" : "twilio"
     const r = await initiateVoiceCall(
-      { contactId: contact.id as string, initiatorRole: "ai", callType: "outbound", vendor, agentId: agentId ?? undefined },
+      { contactId: contact.id as string, initiatorRole: "ai", callType: "outbound", vendor: "twilio", agentId: agentId ?? undefined },
       contact.phone as string,
     )
     return {
@@ -178,6 +182,7 @@ registry.register(listingLandingPageAdapter)
 registry.register(sendForEsignAdapter)
 registry.register(sendGiftAdapter)
 registry.register(addToSegmentAdapter)
+registry.register(removeFromSegmentAdapter)
 registry.register(removeFromCampaignAdapter)
 registry.register(inAppAdapter)
 registry.register(aiCallAdapter)

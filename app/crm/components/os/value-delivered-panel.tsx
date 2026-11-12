@@ -34,9 +34,9 @@ export function ValueDeliveredPanel({
       </CardHeader>
       <CardContent>
         {/* Metric row */}
-        <div className="grid grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
           <div className="text-center p-2 bg-gray-50 rounded-lg">
-            <CheckCircle2 className="h-4 w-4 mx-auto text-emerald-500 mb-1" />
+            <CheckCircle2 className="h-4 w-4 mx-auto text-emerald-600 mb-1" />
             <p className="text-lg font-bold">{metrics.milestonesCompleted || 0}</p>
             <p className="text-xs text-muted-foreground">Milestones</p>
           </div>

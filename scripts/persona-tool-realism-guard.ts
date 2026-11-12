@@ -1,0 +1,447 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/persona-tool-realism-guard.ts   (npm run test:persona-tool-realism)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Lane 79B — owner verbatim (wave 79): "the persona tools I believe are not
+ * realistic as far as the questions or info that they would be looking for.
+ * we created these batchdata tools that are not necessarily a good choice for
+ * a tool and are basically the only provider tools that are built… tools for
+ * the ai agents should not be using batchdata tools if there are less
+ * expensive tools to look up properties but the ai agents need to not be
+ * salesy but also try to get them qualified…"
+ *
+ * Proves, with NO network and NO database:
+ *   Layer 0 — strip-comments positive control (CLAUDE.md §2).
+ *   Layer 1 — every ToolPersona has a realistic QUESTION model: asks, an
+ *             infoNeeded set drawn ONLY from QUALIFICATION_GOALS keys, a
+ *             ladder (≥ 3 rungs, value first, offer last), and ≥ 2 of the
+ *             owner's five follow-up offers, every offer a registered
+ *             catalogue capability. Seller + sphere carry the value-review
+ *             callback whose own description says the AGENT states the number.
+ *   Layer 2 — every UserTypeSeat has asks + followUps (≥ 2), each followUp
+ *             naming a registered seat tool / customer capability / draft_ai_
+ *             reply, and seatPromptBlock renders them.
+ *   Layer 3 — the platform prospect model: producers_count + preferred_path
+ *             goals, a guide of the same shape, every offer a registered
+ *             PLATFORM_PROSPECT_TOOL_NAMES tool, the callback exit registered
+ *             and the follow-up ladder standing down on details.callback.
+ *   Layer 4 — NO PERSONA TOOL FILE IMPORTS BATCHDATA (blankStrings so a
+ *             description cannot false-match) + positive-control fixture;
+ *             PERSONA_TOOL_POLICY names no property tool for any persona.
+ *   Layer 5 — the property rail (injected rungs): cache short-circuits;
+ *             RentCast reached only when cheaper rungs miss; BatchData NEVER
+ *             for a conversation even when the policy allows it; BatchData
+ *             DOES run for acquisition under an allowing policy (positive
+ *             control); "off"/no-opt-in refuse; a customer never sees a
+ *             valuation; rung costs are monotone cheapest-first.
+ *   Layer 6 — registration: package.json script + guard ordering after
+ *             test:scrapers + MAINTENANCE_DOMAINS entry.
+ */
+import { readFileSync } from "node:fs"
+import { stripComments, blankStrings } from "./strip-comments"
+
+let passed = 0, failed = 0
+const failures: string[] = []
+function check(name: string, cond: boolean, detail?: string) {
+  if (cond) { passed++; console.log(`  ✓ ${name}`) }
+  else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
+}
+const stripped = (path: string) => stripComments(readFileSync(path, "utf8"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 0 · strip-comments positive control]")
+const railSrc = stripped("lib/ai-isa/property-lookup-rail.ts")
+check("a comment-only phrase is ABSENT from stripped property-lookup-rail.ts", !railSrc.includes("THE ONE PROPERTY-LOOKUP RAIL"))
+check("a real code token from the same file IS present", railSrc.includes("export async function lookupPropertyForConversation"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 1 · every persona has a realistic question model]")
+const { TOOL_PERSONAS, PERSONA_TOOL_POLICY, FREE_INTERNAL_TOOL_NAMES, costRankForTool } = await import("../lib/ai-isa/persona-tool-policy")
+const { PERSONA_QUESTION_GUIDE, QUALIFICATION_GOALS, QUALIFICATION_FOLLOW_UP_MENU, OWNER_FOLLOW_UP_OFFERS, PLATFORM_PROSPECT_QUESTION_GUIDE, PLATFORM_QUALIFICATION_GOALS, PLATFORM_EXIT_MENU, buildQualificationPrompt } = await import("../lib/ai-isa/qualification-playbook")
+const { CAPABILITY_CATALOGUE, CAPABILITY_IDS } = await import("../lib/ai-isa/capability-catalogue")
+
+const goalKeys = new Set(QUALIFICATION_GOALS.map((g) => g.key))
+const catalogueIds = new Set(CAPABILITY_IDS as readonly string[])
+const menuTools = new Set(QUALIFICATION_FOLLOW_UP_MENU.map((o) => o.tool))
+check("denominator: six ToolPersonas and ≥ 9 qualification goals loaded", TOOL_PERSONAS.length === 6 && goalKeys.size >= 9)
+check("OWNER_FOLLOW_UP_OFFERS names the owner's five follow-ups and every one is a menu tool",
+  OWNER_FOLLOW_UP_OFFERS.length === 5 && OWNER_FOLLOW_UP_OFFERS.every((t) => menuTools.has(t)))
+check("PERSONA_QUESTION_GUIDE keys equal TOOL_PERSONAS exactly", Object.keys(PERSONA_QUESTION_GUIDE).sort().join(",") === [...TOOL_PERSONAS].sort().join(","))
+for (const persona of TOOL_PERSONAS) {
+  const g = PERSONA_QUESTION_GUIDE[persona]
+  const badInfo = g.infoNeeded.filter((k) => !goalKeys.has(k))
+  const badOffers = g.offers.filter((t) => !catalogueIds.has(t))
+  const ownerOffers = g.offers.filter((t) => OWNER_FOLLOW_UP_OFFERS.includes(t))
+  check(`${persona}: asks ≥ 4, ladder ≥ 3 rungs, infoNeeded ≥ 3 and ⊆ QUALIFICATION_GOALS keys`,
+    g.asks.length >= 4 && g.ladder.length >= 3 && g.infoNeeded.length >= 3 && badInfo.length === 0, badInfo.join(","))
+  check(`${persona}: every offer is a registered catalogue capability`, badOffers.length === 0, badOffers.join(","))
+  check(`${persona}: draws ≥ 2 of the owner's five follow-ups (callback / matching listings / value review / listing appt / showing)`, ownerOffers.length >= 2, ownerOffers.join(","))
+  check(`${persona}: infoNeeded always includes contact_info + intent + follow_up_preference (the hand-off triad)`,
+    ["contact_info", "intent", "follow_up_preference"].every((k) => g.infoNeeded.includes(k)))
+  check(`${persona}: the ladder's LAST rung is the offer and its FIRST rung gives value before asking`,
+    /offer/i.test(g.ladder[g.ladder.length - 1]) && /answer|open with|lead with|value/i.test(g.ladder[0]))
+  check(`${persona}: no ladder rung manufactures urgency or quotes a value`, !g.ladder.some((r) => /act now|limited time|today only|worth \$|\$\d/i.test(r)))
+}
+// The two personas whose "what's it worth" ask must NEVER produce a number.
+const hvr = CAPABILITY_CATALOGUE.find((c) => c.id === "schedule_home_value_review")
+check("seller + sphere offer schedule_home_value_review, whose own catalogue entry says the AGENT states the number, never the AI",
+  PERSONA_QUESTION_GUIDE.seller.offers.includes("schedule_home_value_review") && PERSONA_QUESTION_GUIDE.sphere.offers.includes("schedule_home_value_review")
+  && !!hvr && /AGENT states the number, never the AI/.test(hvr.usefulFor))
+check("seller offers the no-obligation listing appointment and its ladder speaks the '≥ a week out, no obligation' choice",
+  PERSONA_QUESTION_GUIDE.seller.offers.includes("book_listing_appointment") && /no obligation/.test(PERSONA_QUESTION_GUIDE.seller.ladder.join(" ")))
+check("investor offers search_offmarket_opportunities (own cache, property-only) and stays off the value review / explainer / vendor bench",
+  PERSONA_QUESTION_GUIDE.investor.offers.includes("search_offmarket_opportunities") && !PERSONA_QUESTION_GUIDE.investor.offers.some((t) => ["schedule_home_value_review", "send_explainer_video", "request_vendor_referral"].includes(t)))
+check("buyer / renter / relocation / investor offer send_matching_listings (the 'list of properties matching the criteria they just told us')",
+  (["buyer", "renter", "relocation", "investor"] as const).every((p) => PERSONA_QUESTION_GUIDE[p].offers.includes("send_matching_listings")))
+check("every persona offers schedule_callback (call them again when THEY are ready)", TOOL_PERSONAS.every((p) => PERSONA_QUESTION_GUIDE[p].offers.includes("schedule_callback")))
+for (const persona of TOOL_PERSONAS) {
+  const prompt = buildQualificationPrompt({ persona, surface: "widget" })
+  check(`${persona}: the routed prompt renders the ladder, the infoNeeded line and the offers (data → prompt)`,
+    prompt.includes("THE LADDER") && prompt.includes("record_qualification should hold") && PERSONA_QUESTION_GUIDE[persona].offers.every((t) => prompt.includes(t)))
+}
+check("POSITIVE CONTROL: a guide with an off-vocabulary infoNeeded key IS caught by the same predicate", ["contact_info", "budget_30_60_90"].filter((k) => !goalKeys.has(k)).length === 1)
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 2 · every seat has asks + follow-up offers naming registered tools]")
+const { USER_TYPE_SEATS, USER_TYPE_TOOL_POLICY, seatPromptBlock } = await import("../lib/ai-isa/user-type-tool-policy")
+const { USER_TYPE_SEAT_TOOL_BUILDERS } = await import("../lib/ai-isa/user-type-tools")
+const seatBuilders = new Set(Object.keys(USER_TYPE_SEAT_TOOL_BUILDERS))
+const TOOL_TOKEN = /\b[a-z]+(?:_[a-z]+)+\b/g
+for (const seat of USER_TYPE_SEATS) {
+  const p = USER_TYPE_TOOL_POLICY[seat]
+  check(`${seat}: asks ≥ 2 and followUps ≥ 2`, p.asks.length >= 2 && p.followUps.length >= 2)
+  const allowed = new Set<string>([...seatBuilders, "draft_ai_reply", ...(p.customerPersonaToolsForContact ? [...catalogueIds, "find_listing_appointment_slots"] : [])])
+  const named = [...new Set(p.followUps.flatMap((f) => f.match(TOOL_TOKEN) ?? []))].filter((t) => t.includes("_") && (seatBuilders.has(t) || catalogueIds.has(t) || t === "draft_ai_reply" || t === "find_listing_appointment_slots" || /^(get|send|update|respond|flag|list|schedule|book|lookup|find|search)_/.test(t)))
+  const unknown = named.filter((t) => !allowed.has(t))
+  check(`${seat}: every tool a followUp names is registered for that seat (seat builder / customer bundle when it may act for a contact / draft_ai_reply)`, named.length >= 1 && unknown.length === 0, unknown.join(","))
+  check(`${seat}: seatPromptBlock renders the follow-up menu`, seatPromptBlock(seat).includes("WHAT TO OFFER NEXT"))
+}
+check("partner seats (vendor/lender/title) never name a customer capability or a property tool in their follow-ups",
+  (["vendor", "lender", "title"] as const).every((s) => !USER_TYPE_TOOL_POLICY[s].followUps.some((f) => /send_matching_listings|schedule_home_value_review|lookup_property_facts|search_offmarket/.test(f))))
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 3 · platform prospects — the same non-salesy standard]")
+const { PLATFORM_PROSPECT_TOOL_NAMES, platformExitMenuMatchesTools } = await import("../lib/platform/prospect-agent-tools")
+const { PROSPECT_PREFERRED_PATHS, normalizeProspectQualification } = await import("../lib/platform/prospect-capture")
+const platformGoalKeys = new Set(PLATFORM_QUALIFICATION_GOALS.map((g) => g.key))
+check("PLATFORM_QUALIFICATION_GOALS carries size_seats + producers_count (wave-79: producing seats are the priced unit) + current_tools + pain + timeline + preferred_path",
+  ["size_seats", "producers_count", "current_tools", "pain", "timeline", "preferred_path"].every((k) => platformGoalKeys.has(k)))
+const pg = PLATFORM_PROSPECT_QUESTION_GUIDE
+check("the platform guide has asks ≥ 6, a ladder ≥ 4, infoNeeded ⊆ platform goal keys ∪ contact_info",
+  pg.asks.length >= 6 && pg.ladder.length >= 4 && pg.infoNeeded.every((k) => platformGoalKeys.has(k) || k === "contact_info"))
+check("the platform guide's asks cover size, producers, current stack, pain, timeline bucket and the demo/trial/paid/callback path",
+  /how many agents/.test(pg.asks.join(" ")) && /produce/.test(pg.asks.join(" ")) && /use today/.test(pg.asks.join(" ")) && /solve/.test(pg.asks.join(" ")) && /1-3, 3-6, 6-12/.test(pg.asks.join(" ")) && /see it live, try it themselves, start now, or a callback/.test(pg.asks.join(" ")))
+check("every platform offer is a registered PLATFORM_PROSPECT_TOOL_NAMES tool, and the exit menu still matches the bundle",
+  pg.offers.every((t) => (PLATFORM_PROSPECT_TOOL_NAMES as readonly string[]).includes(t)) && platformExitMenuMatchesTools())
+check("the platform offers include the callback-when-ready exit AND the demo / signup / start / human exits (the owner's follow-up set, platform edition)",
+  ["schedule_prospect_callback", "book_demo_appointment", "send_signup_link", "start_subscription", "request_human_handoff"].every((t) => pg.offers.includes(t)) && PLATFORM_EXIT_MENU.some((o) => o.tool === "schedule_prospect_callback"))
+const platformPrompt = buildQualificationPrompt({ surface: "platform_reception" })
+check("the platform_reception prompt renders the prospect ladder and never the real-estate goal list",
+  platformPrompt.includes("THE LADDER") && platformPrompt.includes("save_prospect should hold") && !platformPrompt.includes("Property they're selling"))
+check("PROSPECT_PREFERRED_PATHS = demo / trial / paid / callback / undecided and normalizeProspectQualification keeps producers_count + preferred_path, drops an off-vocabulary path",
+  [...PROSPECT_PREFERRED_PATHS].sort().join(",") === "callback,demo,paid,trial,undecided"
+  && normalizeProspectQualification({ producers_count: 7.4, preferred_path: "trial" }).producers_count === 7
+  && normalizeProspectQualification({ preferred_path: "trial" }).preferred_path === "trial"
+  && !("preferred_path" in normalizeProspectQualification({ preferred_path: "webinar" as never })))
+const toolsSrc = stripped("lib/platform/prospect-agent-tools.ts")
+const followupSrc = stripped("lib/platform/prospect-followup.ts")
+const captureSrc = stripped("lib/platform/prospect-capture.ts")
+check("schedule_prospect_callback is registered as tool({…}) and writes through the ONE prospect writer (markProspectCallback in prospect-capture.ts)",
+  /schedule_prospect_callback:\s*tool\(\{/.test(toolsSrc) && /markProspectCallback\(svc,/.test(toolsSrc) && /export async function markProspectCallback/.test(captureSrc))
+check("save_prospect's schema carries producers_count and preferred_path", /producers_count:\s*z\.number\(\)/.test(toolsSrc) && /preferred_path:\s*z\.enum\(PROSPECT_PREFERRED_PATHS\)/.test(toolsSrc))
+check("both follow-up ladder rungs stand down on details.callback IN THE QUERY (a prospect who asked for a callback is scheduled, never chased)",
+  (followupSrc.match(/\.is\("details->callback",\s*null\)/g) ?? []).length === 2)
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 4 · no persona tool imports BatchData; the policy names no property tool]")
+const PERSONA_TOOL_FILES = [
+  "lib/ai-isa/capability-catalogue.ts",
+  "lib/ai-isa/customer-context-tools.ts",
+  "lib/ai-isa/property-lookup-tools.ts",
+  "lib/ai-isa/qualification-playbook.ts",
+  "lib/ai-isa/persona-tool-policy.ts",
+  "lib/ai-isa/user-type-tools.ts",
+]
+const BATCHDATA_IMPORT = /from\s*["']@\/lib\/external\/batchdata-[a-z-]+["']|import\(["']@\/lib\/external\/batchdata-[a-z-]+["']\)/
+for (const f of PERSONA_TOOL_FILES) {
+  const src = blankStrings(stripped(f))
+  const raw = stripped(f)
+  check(`${f}: imports NO lib/external/batchdata-* module (static or dynamic)`, !BATCHDATA_IMPORT.test(raw))
+  // CALL shapes only — persona-tool-policy.ts legitimately NAMES skip_trace_property
+  // inside its cost-rank regex (a classifier, not a call).
+  check(`${f}: no BatchData / skip-trace CALL in stripped+blanked source`, !/callBatchDataMcp\(|batchDataPreferMcp\(|skipTrace\w*\(|enrichPropertyWithBatchData\(/.test(src))
+}
+check("POSITIVE CONTROL: the same import scan DOES flag a fixture importing batchdata-mcp",
+  BATCHDATA_IMPORT.test(`import { callBatchDataMcp } from "@/lib/external/batchdata-mcp"`) && BATCHDATA_IMPORT.test(`const m = await import("@/lib/external/batchdata-mcp")`))
+const PROPERTY_TOOL_NAME = /lookup_property$|search_properties|comparable_property|investor_buybox|verify_address/
+for (const persona of TOOL_PERSONAS) {
+  check(`PERSONA_TOOL_POLICY.${persona}.batchDataToolNames names NO property tool`, !PERSONA_TOOL_POLICY[persona].batchDataToolNames.some((n) => PROPERTY_TOOL_NAME.test(n)))
+}
+check("sphere is the ONLY persona with any BatchData tool name, and those are the DNC purpose (verify_phone / check_dnc_status / check_tcpa_status)",
+  TOOL_PERSONAS.every((p) => p === "sphere" ? PERSONA_TOOL_POLICY[p].batchDataToolNames.slice().sort().join(",") === "check_dnc_status,check_tcpa_status,verify_phone" : PERSONA_TOOL_POLICY[p].batchDataToolNames.length === 0))
+check("POSITIVE CONTROL: the property-tool name scan DOES flag the retired names", PROPERTY_TOOL_NAME.test("search_properties_preview") && PROPERTY_TOOL_NAME.test("lookup_property"))
+check("lookup_property_facts + search_offmarket_opportunities are FREE-ranked (rank 0) and catalogued",
+  FREE_INTERNAL_TOOL_NAMES.includes("lookup_property_facts") && FREE_INTERNAL_TOOL_NAMES.includes("search_offmarket_opportunities")
+  && costRankForTool("lookup_property_facts") === 0 && catalogueIds.has("lookup_property_facts") && catalogueIds.has("search_offmarket_opportunities"))
+const cctSrc = stripped("lib/ai-isa/customer-context-tools.ts")
+check("buildCustomerFreeTools mounts lookup_property_facts (identity-optional) and search_offmarket_opportunities (contact-gated, persona-gated via isCapabilityEnabled)",
+  /out\.lookup_property_facts = buildLookupPropertyFactsTool\(/.test(cctSrc) && /isCapabilityEnabled\("search_offmarket_opportunities", ctx\.persona, disabled\)/.test(cctSrc) && /contactId: ctx\.contactId \}\)/.test(cctSrc))
+check("the off-market tool reads investor_offmarket_candidates pinned to BOTH brokerage_id and the ctx contact, and redacts through toInvestorFacingCandidates",
+  /\.from\("investor_offmarket_candidates"\)[\s\S]{0,300}?\.eq\("brokerage_id", ctx\.brokerageId\)[\s\S]{0,80}?\.eq\("contact_id", ctx\.contactId\)/.test(stripped("lib/ai-isa/property-lookup-tools.ts")) && /toInvestorFacingCandidates\(/.test(stripped("lib/ai-isa/property-lookup-tools.ts")))
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 5 · the property rail — cheapest first, BatchData only for acquisition under policy]")
+const rail = await import("../lib/ai-isa/property-lookup-rail")
+const { lookupPropertyForConversation, isBatchDataRungAllowed, redactFactsForAudience, PROPERTY_LOOKUP_RUNG_ORDER, PROPERTY_LOOKUP_RUNG_COST_USD, BATCHDATA_ELIGIBLE_PURPOSES } = rail
+type Facts = import("../lib/ai-isa/property-lookup-rail").PropertyLookupFacts
+type Rung = import("../lib/ai-isa/property-lookup-rail").PropertyLookupRung
+const facts = (source: Rung, extra: Partial<Facts> = {}): Facts => ({
+  address: "123 Main St", city: "Austin", state: "TX", zip: "78701", beds: 3, baths: 2, sqft: 1800, yearBuilt: 1998, lotSize: null,
+  propertyType: "single_family", listingStatus: null, listPrice: null, estimatedValue: 450000, taxAssessedValue: 390000, annualPropertyTax: null, propertyTaxYear: null, hoaMonthly: null,
+  // lat / lon / isEstimate: the listing_intake fields lane 80B merged onto the facts (enrichment-chain.ts → rail).
+  mlsNumber: null, listingUrl: null, lat: null, lon: null, isEstimate: false, source, sourceNote: "fixture", ...extra,
+})
+const calls: Rung[] = []
+const rungs = (hits: Partial<Record<Rung, boolean>>) => Object.fromEntries(PROPERTY_LOOKUP_RUNG_ORDER.map((r) => [r, async () => { calls.push(r); return hits[r] ? facts(r) : null }])) as Record<Rung, () => Promise<Facts | null>>
+const req = (purpose: import("../lib/ai-isa/property-lookup-rail").PropertyLookupPurpose, audience: "customer" | "staff" = "customer") =>
+  ({ brokerageId: "b-1", purpose, audience, address: { street: "123 Main St", city: "Austin", state: "TX", zip: "78701" } })
+const ALLOW = { batchDataTier: "lean" as const, batchDataOptedIn: true }
+const NO_OPT_IN = { batchDataTier: "lean" as const, batchDataOptedIn: false }
+const OFF = { batchDataTier: "off" as const, batchDataOptedIn: true }
+
+// RE-ANCHORED (lane 85D). This check's old name said the documented cost was "non-decreasing
+// up to public records", and it only tested that the paid rungs were > 0. It could not see
+// that RentCast ($0.074) runs ahead of public records ($0.015) and BatchData ($0.05). The RULE
+// now: the order is cheapest-ADEQUATE-first, so every rung that precedes a CHEAPER rung must
+// name why (PROPERTY_LOOKUP_RUNG_COST_USD[r].aheadOfCheaper), and the free own-data rungs lead.
+type RungCostTable = Readonly<Record<Rung, { usd: number; aheadOfCheaper?: string }>>
+function unexplainedCostInversions(order: readonly Rung[], cost: RungCostTable): string[] {
+  const out: string[] = []
+  order.forEach((r, i) => {
+    for (const later of order.slice(i + 1)) {
+      if (cost[later].usd < cost[r].usd && !(cost[r].aheadOfCheaper ?? "").includes(later)) {
+        out.push(`${r} ($${cost[r].usd}) precedes cheaper ${later} ($${cost[later].usd}) with no reason naming ${later}`)
+      }
+    }
+  })
+  return out
+}
+check("rung order is cache → tenant_idx → rentcast → public_records → batchdata; the free own-data rungs lead",
+  PROPERTY_LOOKUP_RUNG_ORDER.join(",") === "cache,tenant_idx,rentcast,public_records,batchdata"
+  && PROPERTY_LOOKUP_RUNG_COST_USD.cache.usd === 0 && PROPERTY_LOOKUP_RUNG_COST_USD.tenant_idx.usd === 0
+  && PROPERTY_LOOKUP_RUNG_ORDER.slice(2).every((r) => PROPERTY_LOOKUP_RUNG_COST_USD[r].usd > 0))
+{
+  const inv = unexplainedCostInversions(PROPERTY_LOOKUP_RUNG_ORDER, PROPERTY_LOOKUP_RUNG_COST_USD)
+  check("every cost inversion in the ladder is a NAMED adequacy exception (cheapest-adequate-first, not a false monotone claim)", inv.length === 0, inv.join("; "))
+  const stripped: RungCostTable = Object.fromEntries(PROPERTY_LOOKUP_RUNG_ORDER.map((r) => [r, { usd: PROPERTY_LOOKUP_RUNG_COST_USD[r].usd }])) as RungCostTable
+  const ctl = unexplainedCostInversions(PROPERTY_LOOKUP_RUNG_ORDER, stripped)
+  check("POSITIVE CONTROL: with the reasons removed the finder flags exactly rentcast→public_records and rentcast→batchdata (the claim lane84E found false)",
+    ctl.length === 2 && ctl.every((x) => x.startsWith("rentcast")) && ctl.some((x) => x.includes("public_records")) && ctl.some((x) => x.includes("batchdata")), ctl.join("; "))
+}
+// Re-anchored wave 92 (lane 92B): the carve-out is LEAD work only — 'valuation' (81B's staff
+// comps/AVM lane) left it when its callers moved to RentCast (owner: "batchdata is to be used more
+// for scrapping leads"); a conversation or a listing intake still never reaches BatchData.
+check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc — never conversation, listing_intake or valuation",
+  [...BATCHDATA_ELIGIBLE_PURPOSES].sort().join(",") === "acquisition,dnc,skip_trace")
+check("isBatchDataRungAllowed: conversation → false even under an allowing policy; acquisition → true only with tier≠off AND opt-in",
+  !isBatchDataRungAllowed("conversation", ALLOW) && !isBatchDataRungAllowed("listing_intake", ALLOW)
+  && isBatchDataRungAllowed("acquisition", ALLOW) && !isBatchDataRungAllowed("acquisition", NO_OPT_IN) && !isBatchDataRungAllowed("acquisition", OFF))
+
+{ // cache hit short-circuits — nothing paid runs
+  calls.length = 0
+  const r = await lookupPropertyForConversation(req("conversation"), { rungs: rungs({ cache: true }), policy: ALLOW })
+  check("cache hit: found from the cache and NO other rung ran (rungsTried = [cache])", r.found && r.facts?.source === "cache" && calls.join(",") === "cache" && r.rungsTried.join(",") === "cache")
+}
+{ // cache + idx miss → rentcast answers
+  calls.length = 0
+  const r = await lookupPropertyForConversation(req("conversation"), { rungs: rungs({ rentcast: true }), policy: ALLOW })
+  check("cache + tenant IDX miss → RentCast answers, public records and BatchData never run", r.found && r.facts?.source === "rentcast" && calls.join(",") === "cache,tenant_idx,rentcast")
+}
+{ // everything misses for a CONVERSATION — BatchData is SKIPPED even though policy allows and the rung would answer
+  calls.length = 0
+  const r = await lookupPropertyForConversation(req("conversation"), { rungs: rungs({ batchdata: true }), policy: ALLOW })
+  check("conversation purpose: BatchData NEVER runs even when the policy allows it and it would have answered (not found; skipped reason names the purpose)",
+    !r.found && !calls.includes("batchdata") && r.skipped.some((s) => s.rung === "batchdata" && /reserved for acquisition/.test(s.reason)))
+}
+{ // POSITIVE CONTROL — acquisition + allowing policy → BatchData runs last and answers
+  calls.length = 0
+  const r = await lookupPropertyForConversation(req("acquisition", "staff"), { rungs: rungs({ batchdata: true }), policy: ALLOW })
+  check("POSITIVE CONTROL: acquisition purpose under an allowing policy reaches BatchData LAST and answers from it",
+    r.found && r.facts?.source === "batchdata" && calls.join(",") === "cache,tenant_idx,rentcast,public_records,batchdata")
+}
+{ // acquisition but no opt-in / tier off → refused
+  calls.length = 0
+  const a = await lookupPropertyForConversation(req("acquisition", "staff"), { rungs: rungs({ batchdata: true }), policy: NO_OPT_IN })
+  const b = await lookupPropertyForConversation(req("acquisition", "staff"), { rungs: rungs({ batchdata: true }), policy: OFF })
+  check("acquisition WITHOUT the platform-staff opt-in, or with tier off → BatchData never runs (fail closed, reason named)",
+    !a.found && !b.found && !calls.includes("batchdata") && a.skipped.some((s) => /opted/.test(s.reason)) && b.skipped.some((s) => /tier is off/.test(s.reason)))
+}
+{ // audience redaction
+  const cust = await lookupPropertyForConversation(req("conversation", "customer"), { rungs: rungs({ cache: true }), policy: ALLOW })
+  const staff = await lookupPropertyForConversation(req("conversation", "staff"), { rungs: rungs({ cache: true }), policy: ALLOW })
+  check("a CUSTOMER audience never receives estimatedValue / taxAssessedValue; the STAFF audience keeps them (positive control) — the home-value review callback stays the only number path",
+    cust.facts?.estimatedValue === null && cust.facts?.taxAssessedValue === null && cust.facts?.beds === 3 && staff.facts?.estimatedValue === 450000)
+  const red = redactFactsForAudience(facts("cache", { listPrice: 425000 }), "customer")
+  check("redactFactsForAudience keeps the public listPrice of a listing while stripping valuation-shaped figures", red.listPrice === 425000 && red.estimatedValue === null)
+}
+{ // a throwing rung never fails the lookup — the ladder continues
+  calls.length = 0
+  const r = await lookupPropertyForConversation(req("conversation"), {
+    rungs: { ...rungs({ public_records: true }), tenant_idx: async () => { calls.push("tenant_idx"); throw new Error("idx dark") } }, policy: ALLOW,
+  })
+  check("a dark rung (tenant IDX throws) is recorded as skipped and the ladder continues to the next paid rung", r.found && r.facts?.source === "public_records" && r.skipped.some((s) => s.rung === "tenant_idx"))
+}
+{ // §4 fail closed
+  const r = await lookupPropertyForConversation({ ...req("conversation"), brokerageId: "" }, { rungs: rungs({ cache: true }), policy: ALLOW })
+  check("a tenant-less request runs NO rung at all (§4)", !r.found && r.rungsTried.length === 0)
+}
+check("the rail's batchdata rung is reachable ONLY behind isBatchDataRungAllowed in stripped source (one guarded call site)",
+  (railSrc.match(/isBatchDataRungAllowed\(req\.purpose, policy\)/g) ?? []).length === 1 && /if \(rung === "batchdata"\)/.test(railSrc))
+check("the rail's paid rungs ride EXISTING survivors (searchRentcastSaleListings / lookupPropertyByAddress / batchDataPreferMcp / meterVendorSpend) — no second provider client",
+  /searchRentcastSaleListings\(/.test(railSrc) && /lookupPropertyByAddress\(/.test(railSrc) && /batchDataPreferMcp/.test(railSrc) && /meterVendorSpend\(/.test(railSrc) && !/fetch\(/.test(railSrc))
+// RE-ANCHORED (lane 85D): the builder now also serves the staff copilot's seat tool with a
+// SERVER-set audience ("staff", never BatchData: the purpose stays "conversation"). The rule is
+// unchanged: purpose is a literal, audience is never a model input, defaults to "customer",
+// and the customer bundle's call passes no audience override.
+{
+  const plt = stripped("lib/ai-isa/property-lookup-tools.ts")
+  const cct2 = stripped("lib/ai-isa/customer-context-tools.ts")
+  check("the persona tool calls the rail with purpose 'conversation' and a server-set audience defaulting to 'customer' — never a purpose or audience the model can choose",
+    /purpose: "conversation",\s*audience,/.test(plt) && /const audience = opts\.audience \?\? "customer"/.test(plt)
+    && !/purpose: z\./.test(plt) && !/audience: z\./.test(plt)
+    && /buildLookupPropertyFactsTool\(ctx as CustomerCapabilityContext\)/.test(cct2))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 6 · registration]")
+const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> }
+check("package.json registers test:persona-tool-realism → this file", pkg.scripts["test:persona-tool-realism"] === "tsx scripts/persona-tool-realism-guard.ts")
+const guardLine = pkg.scripts.guard ?? ""
+check("the guard chain runs it AFTER test:scrapers (wave 79 ruling: new proofs append after test:scrapers)",
+  guardLine.indexOf("npm run test:scrapers") >= 0 && guardLine.indexOf("npm run test:persona-tool-realism") > guardLine.indexOf("npm run test:scrapers"))
+const { MAINTENANCE_DOMAINS } = await import("../lib/kernel/manager-registry")
+check("MAINTENANCE_DOMAINS.persona_tool_realism names this proof under ai_isa",
+  MAINTENANCE_DOMAINS.persona_tool_realism?.proof === "test:persona-tool-realism" && MAINTENANCE_DOMAINS.persona_tool_realism?.manager === "ai_isa")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 96 (lane 96B — owner blueprint: "tools small + risk-classed (READ / LOW_RISK_WRITE /
+// COMMUNICATION / FINANCIAL / LEGAL / IRREVERSIBLE) with approval by class; humans own consequential
+// actions"). The classification rides THIS registry (persona-tool-policy.ts, beside costRankForTool).
+console.log("\n[Layer R · every AI tool is risk-classed; every consequential tool names an existing gate (wave 96)]")
+{
+  const { riskClassForTool, TOOL_APPROVAL_GATE } = await import("../lib/ai-isa/persona-tool-policy")
+  const { readdirSync, existsSync } = await import("node:fs")
+  const TOOL_FILES = [
+    ...readdirSync("lib/ai-isa").filter((f) => f.endsWith(".ts")).map((f) => `lib/ai-isa/${f}`),
+    "lib/platform/prospect-agent-tools.ts", "lib/voice/platform-reception.ts",
+    // Wave 97 (lane 97C): the staff toolkit (agentTools) — mounted through selectToolsForSeat.
+    "app/api/internal/ai-chat/route.ts",
+  ]
+  // A tool NAME is a key bound to tool({...}) or to a build*Tool builder (stripped source — a tombstone
+  // naming a retired tool is not a mount).
+  const TOOL_KEY = /\b([a-z][a-z0-9_]+)\s*(?::|=)\s*(?:tool\(|build[A-Za-z]+Tool\b)/g
+  const census = (src: string) => [...src.matchAll(TOOL_KEY)].map((m) => m[1])
+  const names = new Set<string>()
+  for (const f of TOOL_FILES) for (const n of census(stripped(f))) names.add(n)
+  const byClass: Record<string, string[]> = {}
+  for (const n of names) (byClass[riskClassForTool(n)] ??= []).push(n)
+  console.log(`  census: ${names.size} tool names across ${TOOL_FILES.length} files — ${Object.entries(byClass).map(([k, v]) => `${k} ${v.length}`).join(" · ")}`)
+  check("POSITIVE CONTROL: the census finds a tool bound with tool({ and one bound to a builder; an unclassified name fails CLOSED (IRREVERSIBLE)",
+    census("const r = { wire_funds_now: tool({ execute }) , e_sign_offer: buildESignTool }").join(",") === "wire_funds_now,e_sign_offer"
+      && riskClassForTool("wire_funds_now") === "IRREVERSIBLE" && riskClassForTool("get_my_context") === "READ")
+  const unclassified = [...names].filter((n) => riskClassForTool(n) === "IRREVERSIBLE")
+  check(`every mounted AI tool name is classified (none falls through to the fail-closed default)${unclassified.length ? ` — unclassified: ${unclassified.join(", ")}` : ""}`,
+    names.size >= 40 && unclassified.length === 0)
+  const consequential = [...names].filter((n) => ["COMMUNICATION", "FINANCIAL", "LEGAL", "IRREVERSIBLE"].includes(riskClassForTool(n)))
+  const ungated = consequential.filter((n) => {
+    const gate = TOOL_APPROVAL_GATE[n]
+    const file = gate?.match(/^((?:lib|app)\/[\w./-]+\.ts)/)?.[1]
+    return !file || !existsSync(file)
+  })
+  check(`every consequential tool (${consequential.length}: ${consequential.join(", ")}) names an EXISTING gate file`, consequential.length > 0 && ungated.length === 0, `ungated: ${ungated.join(", ")}`)
+  check("no LEGAL or IRREVERSIBLE tool is mounted on any AI surface (signing / filing stays with humans)", !(byClass.LEGAL?.length) && !(byClass.IRREVERSIBLE?.length))
+  const { selectToolsForPersona } = await import("../lib/ai-isa/persona-tool-policy")
+  const origWarn = console.warn; console.warn = () => {}
+  const mounted = Object.keys(selectToolsForPersona({ wire_funds_now: {}, get_my_context: {}, send_newsletter: {}, rentcast_value_lookup: {} }))
+  console.warn = origWarn
+  check("EXECUTED: selectToolsForPersona refuses an unclassified (fail-closed IRREVERSIBLE) tool and keeps classified READ / COMMUNICATION tools (positive control: the same call keeps 3 of 4)",
+    !mounted.includes("wire_funds_now") && mounted.length === 3 && mounted.includes("send_newsletter"), mounted.join(","))
+  // Wave 97 (lane 97C): the check runs at EVERY mount point — the prospect agent and the staff toolkit too.
+  const { selectToolsForSeat } = await import("../lib/ai-isa/user-type-tool-policy")
+  const { refuseUnmountableTools } = await import("../lib/ai-isa/persona-tool-policy")
+  console.warn = () => {}
+  const seatMounted = Object.keys(selectToolsForSeat("staff", {
+    staffTools: { create_task: {}, send_portal_message: {}, wire_funds_now: {} }, seatTools: {}, batchDataTools: {}, rentCastTools: { rentcast_value_lookup: {} }, customerTools: { e_sign_offer: {} },
+  }))
+  const prospectMounted = Object.keys(refuseUnmountableTools({ platform_faq_lookup: {}, start_subscription: {}, send_signup_link: {}, file_lawsuit: {} }, "proof"))
+  console.warn = origWarn
+  check("EXECUTED: selectToolsForSeat refuses an unclassified STAFF-TOOLKIT tool and an unclassified customer-bundle tool, keeping the classified ones (positive control: 3 of 5 survive)",
+    !seatMounted.includes("wire_funds_now") && !seatMounted.includes("e_sign_offer") && ["create_task", "send_portal_message", "rentcast_value_lookup"].every((n) => seatMounted.includes(n)) && seatMounted.length === 3, seatMounted.join(","))
+  check("EXECUTED: the prospect-agent filter keeps FINANCIAL start_subscription + COMMUNICATION send_signup_link + READ FAQ and refuses an unclassified tool (positive control: 3 of 4 survive)",
+    prospectMounted.length === 3 && !prospectMounted.includes("file_lawsuit") && prospectMounted.includes("start_subscription"), prospectMounted.join(","))
+  const recSrc = stripped("lib/voice/platform-reception.ts"), seatSrc = stripped("lib/ai-isa/user-type-tool-policy.ts"), personaSrc = stripped("lib/ai-isa/persona-tool-policy.ts")
+  check("WIRED: platformReceptionTools (the prospect agent's ONE mount — voice, /get-started chat, live agent) returns refuseUnmountableTools(...); selectToolsForSeat returns refuseUnmountableTools(out, …); selectToolsForPersona asks isToolMountableByRisk",
+    /return refuseUnmountableTools\(\{ \.\.\.faq, \.\.\.prospect \}/.test(recSrc) && /return refuseUnmountableTools\(out,/.test(seatSrc) && /if \(!isToolMountableByRisk\(n\)\)/.test(personaSrc))
+  check("POSITIVE CONTROL: the wiring finder rejects the pre-97 unfiltered mount shape", !/return refuseUnmountableTools\(\{ \.\.\.faq, \.\.\.prospect \}/.test("  return { ...faq, ...prospect }"))
+  const census97 = census(stripped("app/api/internal/ai-chat/route.ts"))
+  check(`the staff toolkit census reads the route (${census97.length} tool names; ≥ 20) and every one is classified`,
+    census97.length >= 20 && census97.every((n) => riskClassForTool(n) !== "IRREVERSIBLE"), census97.filter((n) => riskClassForTool(n) === "IRREVERSIBLE").join(","))
+  const UNRESOLVED = /unresolved|not traced/i
+  const stillUnresolved = consequential.filter((n) => UNRESOLVED.test(TOOL_APPROVAL_GATE[n] ?? ""))
+  check(`every consequential tool's gate is TRACED, none says unresolved (${stillUnresolved.join(", ") || "none"})`, stillUnresolved.length === 0)
+  check("POSITIVE CONTROL: the unresolved-gate finder flags the 96B wording", UNRESOLVED.test("the alert sends ride the listing-alert pipeline (delivery gate unresolved)"))
+  check("the traced delivery gates name lib/providers/dispatch.ts for the three that send (newsletter, market report, matching listings)",
+    ["send_newsletter", "send_market_report", "send_matching_listings"].every((n) => /lib\/providers\/dispatch\.ts::dispatchEmail/.test(TOOL_APPROVAL_GATE[n] ?? "")))
+  console.log("  blind spots: rentcast_* / batchdata_* tools are built from vendor MCP catalogues at runtime (named by prefix → READ; their spend is gated by costRankForTool + resolveBatchDataAccess); tools mounted outside lib/ai-isa, the two platform files and the staff route are not in the census (lib/voice/twilio-voice.ts VOICE_TOOL_ALLOWLIST builds from these same builders); send_explainer_video is addressed to the contact and delivered only after a human approves it (lib/video/client-video-delivery.ts) — its gate is the approval queue, recorded in TOOL_APPROVAL_GATE.")
+}
+
+// Wave 98 (lane 98C) — THE AUTHORITY LADDER keyed to the risk classes (gap map #22). The RULE, not a
+// waypoint: each class has a minimum rung derived from MIN_AUTHORITY_FOR_RISK; COMMUNICATION needs ≥3;
+// FINANCIAL mounts only behind a named approval gate; LEGAL/IRREVERSIBLE never; DEFAULT keeps today's mount.
+console.log("\n[Layer A · authority ladder 0-6 per tenant per agent kind, keyed to the risk class (wave 98)]")
+{
+  const P = await import("../lib/ai-isa/persona-tool-policy")
+  const { autonomyDecision } = await import("../lib/managers/autonomy-gate")
+  const origWarn = console.warn; console.warn = () => {}
+  const reg = { get_my_context: {}, schedule_callback: {}, send_newsletter: {}, start_subscription: {}, mark_do_not_contact: {}, wire_funds_now: {} }
+  const at = (lvl: 0 | 1 | 2 | 3 | 4 | 5 | 6) => Object.keys(P.selectToolsForPersona(reg, { authorityLevel: lvl })).sort().join(",")
+  const dflt = Object.keys(P.selectToolsForPersona(reg)).sort().join(",")
+  check("DEFAULT is today's behaviour: no level passed mounts exactly what level 6 mounts", dflt === at(P.DEFAULT_AUTHORITY_LEVEL) && P.DEFAULT_AUTHORITY_LEVEL === 6, dflt)
+  check("level 0 (read only) mounts READ + the protective opt-out only", at(0) === "get_my_context,mark_do_not_contact", at(0))
+  check("level 2 (draft) mounts no COMMUNICATION tool; level 3 does (COMMUNICATION needs ≥3)",
+    !at(2).includes("send_newsletter") && at(3).includes("send_newsletter") && P.MIN_AUTHORITY_FOR_RISK.COMMUNICATION === 3)
+  check("FINANCIAL mounts only at the top rung AND only with a named approval gate", !at(5).includes("start_subscription") && at(6).includes("start_subscription")
+    && P.isToolAllowedAtAuthority("start_subscription", 6) === Boolean(P.TOOL_APPROVAL_GATE.start_subscription))
+  check("LEGAL / IRREVERSIBLE (and an unclassified name) never mount at any rung", [0, 1, 2, 3, 4, 5, 6].every((l) => !P.isToolAllowedAtAuthority("wire_funds_now", l as 0)) && P.MIN_AUTHORITY_FOR_RISK.LEGAL === null)
+  check("every risk class's rung is monotone (a higher rung never loses a tool)",
+    ([0, 1, 2, 3, 4, 5] as const).every((l) => at(l).split(",").every((n) => !n || at((l + 1) as 1).split(",").includes(n))))
+  const held = autonomyDecision({ managerKey: "ai_isa" as never, effective: null, authorityLevel: 2 })
+  const ok = autonomyDecision({ managerKey: "ai_isa" as never, effective: null, authorityLevel: 3 })
+  const approved = autonomyDecision({ managerKey: "ai_isa" as never, effective: null, authorityLevel: 0, humanApproved: true })
+  check("EXECUTED dispatch decision: an autonomous send at level 2 is HELD, at level 3 allowed, a human-approved send is never held (positive control)",
+    held.held && !ok.held && approved.allow, `${held.reason}`)
+  const dispatchSrc = stripped("lib/providers/dispatch.ts"), gateSrc = stripped("lib/managers/autonomy-gate.ts")
+  const mounts = ["app/actions/ai-isa/handle-inbound-email.ts", "app/api/did/custom-llm/route.ts", "app/api/widget/message/route.ts", "app/api/portal/ai-chat/route.ts", "lib/voice/twilio-voice.ts"]
+  const unwired = mounts.filter((f) => !/resolveAgentAuthorityLevel\(/.test(stripped(f)) || !/selectToolsForPersona\([^;]*authorityLevel/.test(stripped(f).replace(/\n/g, " ")))
+  check(`WIRED: all ${mounts.length} persona mounts resolve the tenant's rung and pass it to selectToolsForPersona`, unwired.length === 0, unwired.join(", "))
+  check("WIRED: dispatch's autonomyGate passes authorityLevel; the rung is read from managed_agents.config.authority_level",
+    /autonomyDecision\(\{[^}]*authorityLevel/.test(dispatchSrc) && /cfg\.authority_level/.test(gateSrc))
+  check("POSITIVE CONTROL: the mount-wiring finder rejects the pre-98 unscoped mount", !/selectToolsForPersona\([^;]*authorityLevel/.test("tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),"))
+  const writerSrc = stripped("app/actions/admin/manager-evals.ts")
+  check("WRITER: setManagerAuthorityLevel stores authority_level on managed_agents.config, tenant from the session",
+    /export async function setManagerAuthorityLevel/.test(writerSrc) && /cfg\.authority_level = level/.test(writerSrc) && /\.eq\("brokerage_id", ctx\.brokerageId\)/.test(writerSrc))
+  console.warn = origWarn
+  console.log("  blind spots: the staff copilot (selectToolsForSeat) and the platform prospect agent are not keyed to a tenant rung (a human session / the platform itself acts); rungs 4 and 5 add no capability in code yet (reserved).")
+}
+
+console.log("\n" + "─".repeat(60))
+console.log(` RESULT: ${passed} passed, ${failed} failed`)
+if (failed > 0) {
+  console.log("\nFailures:")
+  for (const f of failures) console.log(`  ✗ ${f}`)
+  console.log("\n❌ PERSONA_TOOL_REALISM — see failures above")
+  process.exit(1)
+} else {
+  console.log(" ✅ PERSONA_TOOL_REALISM — every persona, seat and platform prospect has a realistic question model with the owner's follow-ups; no persona tool touches BatchData; the property rail is cheapest-first and BatchData is acquisition/skip-trace/DNC only")
+}

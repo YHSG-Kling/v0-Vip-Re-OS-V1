@@ -52,7 +52,7 @@ export function TenantSetupPanel({ brokerageId }: { brokerageId: string }) {
             <div className="space-y-1.5">
               {required.map((i) => (
                 <div key={i.key} className="flex items-start gap-2 text-sm">
-                  <span className={"mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold " + (i.done ? "bg-green-500 text-white" : "border-2 border-red-300 text-transparent")}>✓</span>
+                  <span className={"mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold " + (i.done ? "bg-green-700 text-white" : "border-2 border-red-300 text-transparent")}>✓</span>
                   <div className="min-w-0">
                     <span className={i.done ? "text-muted-foreground line-through" : "font-medium"}>{i.label}</span>
                     {!i.done && <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">required</span>}
@@ -68,7 +68,7 @@ export function TenantSetupPanel({ brokerageId }: { brokerageId: string }) {
                 <div className="mt-2 space-y-1">
                   {optional.map((i) => (
                     <div key={i.key} className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span className={i.done ? "text-green-600" : ""}>{i.done ? "✓" : "○"}</span>{i.label}
+                      <span className={i.done ? "text-green-700" : ""}>{i.done ? "✓" : "○"}</span>{i.label}
                     </div>
                   ))}
                 </div>

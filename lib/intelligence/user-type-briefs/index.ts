@@ -159,6 +159,17 @@ function buildAgentPriorityCtas(p: {
     case "view_listing":
       return [{ label: "Open listing", href: `/dashboard/listings/${id}` }]
     case "complete_task":
+      // RESTORED (lane G3, 2026-09-03). The 2026-09-02 tombstone here recorded
+      // that this CTA had been removed because no page opened a task by id:
+      // app/dashboard/tasks did not exist and /tasks redirected to /dashboard.
+      // Both halves that tombstone said were missing now exist — a tasks-by-id
+      // reader gated by brokerage_id + assignee-or-tenant-admin
+      // (app/actions/tasks.ts getTaskById) and the detail page at
+      // app/dashboard/tasks/[taskId] with the mark-complete control
+      // (TaskRowActions → completeTask). The brief EMAILS that already minted
+      // this path go live with it. A `return` here also ends the fall-through
+      // the tombstone relied on; the entity fallback below is unchanged for
+      // every other action_type.
       return [{ label: "Complete task", href: `/dashboard/tasks/${id}` }]
     default:
       // Fallback by entity type when AI didn't pick action_type

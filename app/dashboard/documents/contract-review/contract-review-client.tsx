@@ -58,23 +58,17 @@ interface ReviewIssue {
   recommendation?: string
 }
 
-function IssueBadge({ level }: { level: IssueLevel }) {
-  const map: Record<IssueLevel, { label: string; cls: string }> = {
-    critical: { label: "Critical", cls: "bg-red-100 text-red-700 border-red-200" },
-    warning: { label: "Warning", cls: "bg-amber-100 text-amber-700 border-amber-200" },
-    info: { label: "Info", cls: "bg-blue-100 text-blue-700 border-blue-200" },
-  }
-  const { label, cls } = map[level]
-  return (
-    <Badge variant="outline" className={`text-xs ${cls}`}>
-      {label}
-    </Badge>
-  )
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `IssueBadge` stood here, never
+// called. The severity it would have labeled is already communicated twice
+// over at every row's real render site (~line 890): the group the row sits
+// in is titled by severity ("Critical Issues (N)" / "Warnings (N)" /
+// "Notes (N)", ~line 877), and each row already carries the color-coded
+// severity glyph from the survivor below, `IssueIcon`. A third, redundant
+// text badge per row was not built to replace either.
 
 function IssueIcon({ level }: { level: IssueLevel }) {
   if (level === "critical") return <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
-  if (level === "warning") return <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+  if (level === "warning") return <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
   return <Info className="h-4 w-4 text-blue-500 shrink-0" />
 }
 
@@ -432,7 +426,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
         {extractOpen && (
           <CardContent className="space-y-4">
             {!selectedTxId && (
-              <p className="text-xs text-amber-600">Select a transaction above before extracting contract terms.</p>
+              <p className="text-xs text-amber-700">Select a transaction above before extracting contract terms.</p>
             )}
             <div>
               <Label className="text-xs">Paste contract text below</Label>
@@ -535,7 +529,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
         {analyzeOpen && (
           <CardContent className="space-y-4">
             {!selectedTxId && (
-              <p className="text-xs text-amber-600">Select a transaction above before analyzing a contract.</p>
+              <p className="text-xs text-amber-700">Select a transaction above before analyzing a contract.</p>
             )}
             {analyzeDocs.length === 0 && selectedTxId && (
               <p className="text-xs text-muted-foreground">No documents found for this transaction.</p>
@@ -631,7 +625,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
                           : "text-blue-700 border-blue-200"
                         return (
                           <div key={i} className="flex gap-2 p-2 rounded-lg border bg-muted/30">
-                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />
+                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
                             <div className="min-w-0 flex-1 space-y-0.5">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <p className="text-xs font-medium">{r.risk}</p>
@@ -732,7 +726,7 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
         {compareOpen && (
           <CardContent className="space-y-4">
             {!selectedTxId && (
-              <p className="text-xs text-amber-600">Select a transaction above before comparing versions.</p>
+              <p className="text-xs text-amber-700">Select a transaction above before comparing versions.</p>
             )}
             {txDocs.length === 0 && selectedTxId && (
               <p className="text-xs text-muted-foreground">No documents found for this transaction.</p>

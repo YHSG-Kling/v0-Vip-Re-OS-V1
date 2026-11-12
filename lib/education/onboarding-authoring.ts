@@ -33,13 +33,21 @@ export async function authorModuleFor(topic: OnboardingTopic, tier: Tier): Promi
   return object
 }
 
-/** Persist an onboarding module as a gated learning_modules draft (pending_review). Idempotent by tag. */
+/** Persist an onboarding module as a gated learning_modules draft (pending_review). Idempotent by tag.
+ *  Lane 78B — FIGURES: demo-tenant screenshots of the OS surfaces the topic
+ *  teaches (lib/assets/screenshot-capture.ts DEMO_STILL_SURFACES.educationTopics)
+ *  are appended to the body as an "In the OS" section — training material
+ *  grounded in the real product, never a described-but-unseen screen. No still
+ *  yet → no section (never a broken image). */
 export async function persistOnboardingModule(svc: Svc, brokerageId: string, tag: string, topic: OnboardingTopic, curriculum: Curriculum): Promise<boolean> {
+  const { listDemoStills, figuresForEducationTopic, renderFigures } = await import("@/lib/assets/screenshot-capture")
+  // Wave 84B: only stills the ONE use rule admits for training (screenshot-uses.ts).
+  const figures = renderFigures(figuresForEducationTopic(topic.key, await listDemoStills(svc, { use: "training" })))
   const { error } = await svc.from("learning_modules").insert({
     brokerage_id: brokerageId,
     title: curriculum.title,
     summary: curriculum.summary,
-    body: renderModuleBody(curriculum, `Your day-one onboarding path, authored for your plan.`),
+    body: [renderModuleBody(curriculum, `Your day-one onboarding path, authored for your plan.`), figures].filter(Boolean).join("\n\n"),
     quiz_questions: curriculum.quiz as any,
     is_ai_generated: true,
     status: "pending_review",

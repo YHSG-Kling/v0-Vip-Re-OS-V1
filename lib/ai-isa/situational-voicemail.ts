@@ -10,7 +10,11 @@
 // references the person's STAGE + INTENT only — never race, religion, sex, national origin,
 // disability, familial status, or age itself. {agent_name} is interpolated by the sender.
 
-export type VoicemailSide = "buyer" | "seller" | "both" | "past_client"
+// ONE VOCABULARY PER FUNCTION (CLAUDE.md §6). The three ai-isa persona unions name the
+// same four sides: ContactReelPersona and PortalPersona spell the post-close one
+// "lifetime"; this one spelled it "past_client" — a second spelling of one idea, and one
+// that m539 has now retired from contacts.contact_type as well. All three agree here.
+export type VoicemailSide = "buyer" | "seller" | "both" | "lifetime"
 
 export interface SituationalVoicemailInput {
   firstName: string
@@ -44,7 +48,7 @@ export function buildSituationalVoicemailScript(i: SituationalVoicemailInput): s
     return `Hi ${first}, it's {agent_name}. I've been watching both sides of your move — a few homes that fit just came up, and I pulled where your current place stands so we can line the timing up right. No pressure at all; call me back when you get a sec and we'll map it out together.`
   }
 
-  if (i.side === "past_client") {
+  if (i.side === "lifetime") {
     return `Hi ${first}, it's {agent_name} — just thinking of you. Homes in your area have moved nicely, so your equity's likely grown; I put together a quick snapshot for you. No need to do anything — just call me back if you'd ever like to take a look. Always here for you.`
   }
 

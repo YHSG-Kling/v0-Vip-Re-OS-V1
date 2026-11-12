@@ -35,7 +35,31 @@ function sourceLayer() {
   console.log("\n[wiring — session log, ledger points, lift KPI, UI, owned]")
   const act = src("app/actions/onboarding/mentor-session.ts")
   check("logMentorSession writes the canonical mentor_sessions table", /from\("mentor_sessions"\)\.insert\(\{/.test(act))
-  check("logMentorSession awards CONSOLIDATED ledger points to both parties", /from\("agent_points_log"\)\.insert\(\[[\s\S]*?MENTOR_SESSION_HELD[\s\S]*?menteeAgentId/.test(act))
+  // This asserted a DIRECT `agent_points_log.insert([...])` covering both parties.
+  // m484 made award_agent_points() the one award path — increment and ledger row
+  // in a single transaction — and no app writer inserts into that table any more,
+  // so the old shape asserted an implementation the ruling deliberately removed.
+  // The claim that still matters is unchanged: BOTH parties are credited, for the
+  // same named reason, through the one path.
+  // Re-anchored (wave 103, lane 103C): the direct awardAgentPoints loop moved onto
+  // the EVENT REACTOR. The action now EMITS MENTOR_SESSION_HELD naming both parties,
+  // and lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES (party
+  // "mentor_and_mentee") credits both through the one award path — test:gamification
+  // proves that rule. The claim that still matters is unchanged: BOTH parties, ONE path.
+  check(
+    "logMentorSession emits MENTOR_SESSION_HELD naming mentor + mentee (the reactor awards both through the one path)",
+    /KernelEvent\.MENTOR_SESSION_HELD/.test(act) &&
+      /mentor_agent_id:\s*input\.mentorAgentId,\s*mentee_agent_id:\s*input\.menteeAgentId/.test(act) &&
+      !/awardAgentPoints\(/.test(act),
+  )
+  check(
+    "the reactor rule credits BOTH parties for MENTOR_SESSION_HELD",
+    /event:\s*KernelEvent\.MENTOR_SESSION_HELD,\s*reason:\s*"MENTOR_SESSION_HELD",\s*scope:\s*"per_reference",\s*party:\s*"mentor_and_mentee"/.test(src("lib/gamification/award-points.ts")),
+  )
+  check(
+    "and it writes the ledger through that path only — no direct agent_points_log insert survives here",
+    !/from\("agent_points_log"\)\.insert\(/.test(act),
+  )
   check("a low mentee rating flags a possible mismatch to the broker", /menteeRating \?\? 5\) <= 2[\s\S]*?mentor_mismatch_review/.test(act))
   check("getMentorLift compares mentored vs unmentored newer agents", /getMentorLift/.test(act) && /computeMentorLift\(/.test(act))
   check("the mentee UI wires the log-session form", /logMentorSession\(\{ mentorAgentId/.test(src("app/dashboard/onboarding/mentorship/mentorship-client.tsx")))

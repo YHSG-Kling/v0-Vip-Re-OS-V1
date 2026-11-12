@@ -1,3 +1,14 @@
+// ─── TOMBSTONE (orphan doctrine §1.1, lane BT 2026-08-27) ────────────────────
+// app/api/widget/loader/route.ts DELETED. That route served a DYNAMIC loader
+// snippet whose iframe pointed at `${appUrl}/widget?...` — a path with NO page
+// (app/widget/ has only [brokerageSlug]/ and chat/), so every embed of that
+// snippet rendered a 404 iframe: nothing working could break. It also took
+// brokerage_id/agent_id UUIDs in the query — the identity shape
+// lib/widget/resolve-widget-tenant.ts records replacing with slug resolution.
+// SURVIVOR: THIS file — the static loader the settings page hands customers
+// (app/dashboard/settings/widget/widget-settings-client.tsx: `${appUrl}/widget-loader.js`),
+// iframing /widget/chat. The widget_enabled gate the deleted route performed is
+// not lost: /api/widget/session enforces it via resolve-widget-tenant.ts:75.
 ;(function () {
   'use strict'
 

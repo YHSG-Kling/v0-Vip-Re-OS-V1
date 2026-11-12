@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createClient } from "@/lib/supabase/client"
 import { Badge }    from "@/components/ui/badge"
 import { Button }   from "@/components/ui/button"
 import { Input }    from "@/components/ui/input"
@@ -9,7 +8,7 @@ import { Label }    from "@/components/ui/label"
 import { cn }       from "@/lib/utils"
 import {
   upsertFinancialProfile,
-  recordDocumentUpload,
+  uploadFinancialVerificationDocument,
   markFinanciallyVerified,
   connectBuyerToLender,
 } from "@/app/actions/buyer-financial"
@@ -99,22 +98,29 @@ function FinancialVerificationForm({
     startTransition(async () => {
       const docCategory = buyerType === "financing" ? "pre_approval_letter" : "proof_of_funds"
 
-      // Upload to Supabase Storage first — store a real persistent URL
-      const supabase = createClient()
-      const ext = file.name.split(".").pop()
-      const path = `documents/${contactId}/${Date.now()}.${ext}`
-      const { error: storageErr } = await supabase.storage
-        .from("agent-media")
-        .upload(path, file, { upsert: false })
+      // The BYTES go to the server, which stores them in the PRIVATE
+      // client-documents bucket and records a time-limited signed URL.
+      //
+      // This used to upload a buyer's pre-approval / proof-of-funds into the
+      // PUBLIC `agent-media` bucket and persist a getPublicUrl onto the row — a
+      // permanent, unauthenticated link to the client's financial paperwork,
+      // sitting in a bucket whose whole purpose is world-readable marketing
+      // images. On storage failure it fell back to `URL.createObjectURL`, which
+      // stores a blob: URL that is dead the moment the tab closes: the row then
+      // claimed to hold a document nobody could ever open again. Both are gone —
+      // the server action fails closed and says why.
+      const buf = await file.arrayBuffer()
+      let binary = ""
+      const bytes = new Uint8Array(buf)
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+      }
 
-      const uploadedUrl = storageErr
-        ? URL.createObjectURL(file) // fallback if storage fails
-        : supabase.storage.from("agent-media").getPublicUrl(path).data.publicUrl
-
-      const result = await recordDocumentUpload({
-        contactId, brokerageId, uploadedBy: agentUserId,
-        documentName:  file.name,
-        documentUrl:   uploadedUrl,
+      const result = await uploadFinancialVerificationDocument({
+        contactId,
+        fileName:     file.name,
+        contentType:  file.type || "application/octet-stream",
+        base64:       btoa(binary),
         docCategory,
         verificationAmount: buyerType === "cash" && verifyAmount ? Number(verifyAmount) : undefined,
         verificationLender: buyerType === "financing" && lender ? lender : undefined,

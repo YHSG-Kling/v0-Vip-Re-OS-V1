@@ -14,7 +14,10 @@
 import {
   detectUngroundedClaims,
   detectFairHousingRisk,
+  runDirectorEval,
   type DirectorArtifact,
+  type DirectorEvalReport,
+  type EvalCase,
 } from "@/lib/video/director-eval-harness"
 
 export type OutboundEvalDimension = "hallucination" | "fair_housing" | "scope_creep"
@@ -112,6 +115,9 @@ export interface BrokerageOutboundAudit {
   flagged: number
   /** every finding across the evaluated messages, for the audit artifact. */
   findings: Array<OutboundFinding & { managerKind: string; messageId: string }>
+  /** Set when the proposal queue could not be READ. An audit that could not look
+   *  is not a clean audit (CLAUDE.md §4) — callers must not report it as one. */
+  unreadable?: string
 }
 
 /**
@@ -126,10 +132,16 @@ export async function evalBrokerageOutbound(
 ): Promise<BrokerageOutboundAudit> {
   const audit: BrokerageOutboundAudit = { evaluated: 0, clean: 0, flagged: 0, findings: [] }
   if (!brokerageId) return audit
-  const { data } = await client.from("agent_client_messages")
+  // supabase-js RESOLVES a refusal: the un-destructured read this replaced
+  // turned "permission denied" into "0 messages, all clean".
+  const { data, error } = await client.from("agent_client_messages")
     .select("id, agent_kind, subject, body, rationale, status")
     .eq("brokerage_id", brokerageId).eq("status", "proposed")
     .limit(opts.limit ?? 500)
+  if (error) {
+    audit.unreadable = `agent_client_messages read refused: ${String((error as { message?: string }).message ?? error)}`
+    return audit
+  }
 
   for (const m of ((data ?? []) as Array<Record<string, any>>)) {
     const res = evalManagerMessage({
@@ -148,5 +160,75 @@ export async function evalBrokerageOutbound(
       for (const f of res.findings) audit.findings.push({ ...f, managerKind: res.managerKind, messageId: m.id })
     }
   }
+  return audit
+}
+
+// ─── THE DIRECTOR HALF, LIVE ─────────────────────────────────────────────────
+//
+// lib/video/director-eval-harness.ts scores four FINRA-2026 dimensions over a
+// Director artifact + its bounded facts + its staged row; its header promises a
+// "guarded live layer" that points it at REAL Director-staged rows read-only.
+// Until 2026-09-03 no such layer existed — runDirectorEval, evalScopeCreep and
+// evalLearningCannotRewardBlocked ran only in scripts/director-eval-simulator.ts
+// against fixtures. This is that layer: the same shape as evalBrokerageOutbound
+// above (read-only, never throws, honest about an unreadable queue), consumed by
+// the weekly manager-eval cron and the admin compliance-eval page beside it.
+
+export interface BrokerageDirectorAudit {
+  evaluated: number
+  report: DirectorEvalReport | null
+  /** Rows whose video_metadata carried no `facts` — hallucination grounding ran
+   *  on superlatives only for these (the harness's honest-empty rule). */
+  ungroundedRows: number
+  unreadable?: string
+}
+
+/**
+ * evalBrokerageDirectorReels — LIVE, read-only. Run the Director eval harness
+ * over a brokerage's Director-staged reels (video_metadata.requested_via =
+ * 'asset_manager', the stamp commissionVideo writes) that are still gated or
+ * recently approved. Scope creep (a row that left 'pending_review' without a
+ * human, a distributed asset on an unapproved row) is zero-tolerance; the fact
+ * set the Director bounded the hook to is read from video_metadata.facts.
+ */
+export async function evalBrokerageDirectorReels(
+  brokerageId: string,
+  client: { from: (t: string) => any },
+  opts: { limit?: number; extraProtectedTerms?: string[] } = {},
+): Promise<BrokerageDirectorAudit> {
+  const audit: BrokerageDirectorAudit = { evaluated: 0, report: null, ungroundedRows: 0 }
+  if (!brokerageId) return audit
+  const { data, error } = await client.from("ai_video_projects")
+    .select("id, script_content, status, approval_status, video_url, compliance_status, video_metadata")
+    .eq("brokerage_id", brokerageId)
+    .eq("is_ai_generated", true)
+    .eq("video_metadata->>requested_via", "asset_manager")
+    .in("approval_status", ["pending_review", "approved"])
+    .order("created_at", { ascending: false })
+    .limit(opts.limit ?? 200)
+  if (error) {
+    audit.unreadable = `ai_video_projects read refused: ${String((error as { message?: string }).message ?? error)}`
+    return audit
+  }
+  const cases: EvalCase[] = []
+  for (const r of ((data ?? []) as Array<Record<string, any>>)) {
+    const meta = (r.video_metadata ?? {}) as { facts?: unknown; hook_variant?: unknown }
+    const facts = Array.isArray(meta.facts) ? (meta.facts as unknown[]).map(String) : []
+    if (facts.length === 0) audit.ungroundedRows++
+    const hook = String(meta.hook_variant ?? r.script_content ?? "")
+    if (!hook.trim()) continue
+    cases.push({
+      artifact: { hook, script: String(r.script_content ?? hook), label: String(r.id) },
+      allowedFacts: facts,
+      // An APPROVED row legitimately left 'pending_review' through the human
+      // gate; the scope-creep check is for rows that are still supposed to be
+      // gated. Approved rows are still fact-checked and Fair-Housing-checked.
+      ...(r.approval_status === "pending_review"
+        ? { stagedRow: { approval_status: r.approval_status, status: r.status, video_url: r.video_url, compliance_status: r.compliance_status } }
+        : {}),
+    })
+  }
+  audit.evaluated = cases.length
+  audit.report = runDirectorEval(cases, { extraProtectedTerms: opts.extraProtectedTerms ?? [] })
   return audit
 }

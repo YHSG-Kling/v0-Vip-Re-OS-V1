@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
-import { calculateLeadScore } from "@/lib/services/lead-management.service"
-import { NotFoundError } from "@/lib/errors"
-import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment"
+// Wave 148 (lane 148B): the import rides THE one contact door (which runs resolveAgentForContact itself).
+import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { normalizeContactIntent, type ContactIntent } from "@/lib/contact-types"
+import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LEAD APPLICATION SERVICE — business model
@@ -69,7 +69,10 @@ import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment
 
 // Types inlined here — canonical home for lead domain types (no upward imports)
 export type LeadScore = 'hot' | 'warm' | 'cold' | 'unqualified'
-export type LeadIntent = 'buying' | 'selling' | 'both' | 'renting' | 'investing' | 'unknown'
+// WAVE 149 (lane 149A — owner ruling 3): intent is buyer | seller | both. TOMBSTONE: 'buying' | 'selling' | 'renting' |
+// 'investing' | 'unknown' stood here — a second spelling of intent (leads.lead_type is written 'buyer' / 'seller', so a
+// `lead_type = 'buying'` filter matched nothing) plus a persona ('investing' → contact_persona 'investor') and two non-intents.
+export type LeadIntent = ContactIntent
 export type LeadStatus = 'new' | 'contacted' | 'qualified' | 'nurturing' | 'converted' | 'lost' | 'inactive'
 export type LeadSource = 'website' | 'referral' | 'social_media' | 'paid_ads' | 'open_house' | 'cold_call' | 'zillow' | 'realtor' | 'other'
 export type Lead = {
@@ -89,6 +92,41 @@ export type Lead = {
   [key: string]: any
 }
 
+/**
+ * THE ONE BROKERAGE LEAD LIST.
+ *
+ * ── MERGED IN (wave 14), BEFORE the duplicate was retired ────────────────────
+ * app/actions/leads.ts used to export a second `getLeads` over the same table,
+ * with the same session-derived brokerage scope and a DIFFERENT filter
+ * vocabulary. It had no caller — its apparent one was a comment in the deleted
+ * app/api/leads/list/route.ts, the string-literal false positive class the
+ * wired-surface guard was hardened against. Per CLAUDE.md §1 the survivor takes
+ * the capability FIRST and the duplicate goes second, so the six filters that
+ * lived only there are here now:
+ *
+ *   lifecycleState        → leads.lifecycle_state (the ISA pipeline vocabulary;
+ *                           NOT the same column as `status`, which is the lead-desk
+ *                           disposition. Both are kept because both have writers.)
+ *   urgencyLevel          → leads.urgency_level
+ *   assignedAgentId       → leads.agent_id, as an admin-view NARROWING. Under
+ *                           adminView:false the agent scope already pins the
+ *                           caller's own rows and this cannot widen it.
+ *   aiIsaOwner            → leads.ai_isa_owner
+ *   minimumViableForIsa   → leads.minimum_viable_for_isa
+ *   activeOnly            → leads.is_active
+ *
+ * `activeOnly` is OPT-IN rather than the retired function's unconditional
+ * `.eq("is_active", true)`. Silently adopting that default here would have
+ * removed rows from the live /app/leads table the moment this shipped — a
+ * behaviour change dressed as a merge. The caller asks for it.
+ *
+ * NOT merged, deliberately: the retired function's ROLE LADDER
+ * (TENANT_ADMIN_USER_TYPES + 'isa', which admits team_lead and isa but not
+ * platform staff) differs from this lane's (LEAD_DESK_ROLES + platform staff).
+ * Widening or narrowing an access roster is an owner ruling, not a merge — the
+ * same call already recorded on the getLead tombstone in
+ * app/actions/lead-management.ts.
+ */
 export async function serviceGetLeads(
   agentId: string,
   brokerageId: string,
@@ -103,6 +141,28 @@ export async function serviceGetLeads(
     sortBy?: string
     sortOrder?: "asc" | "desc"
     adminView?: boolean
+    /** ── merged from the retired app/actions/leads.ts:getLeads ── */
+    lifecycleState?: string
+    urgencyLevel?: string
+    assignedAgentId?: string
+    aiIsaOwner?: boolean
+    minimumViableForIsa?: boolean
+    activeOnly?: boolean
+    /**
+     * TEAM ROW SCOPE — the agents.id list of the caller's own team(s), supplied
+     * by lib/auth/lead-visibility.ts and NEVER by a request body.
+     *
+     * A NARROWING only, and structurally incapable of widening: it is an
+     * additional `.in("agent_id", …)` on top of the brokerage pin and (on the
+     * agent view) on top of the caller's own agent pin, so it can only
+     * intersect. It exists because the owner's ruling admits `team_lead` to the
+     * lead desk while "teams see only their own board" still holds — an
+     * admission with no row scope would hand every team lead the brokerage's
+     * whole desk. An EMPTY array means "a team with no agents", which correctly
+     * matches nothing; `undefined` means brokerage or platform scope, i.e. no
+     * team narrowing at all. The two must not be collapsed.
+     */
+    teamAgentIds?: string[]
   }
 ) {
   const supabase = await createClient()
@@ -127,9 +187,35 @@ export async function serviceGetLeads(
     )
   }
   if (params?.score) query = query.eq("lead_score", params.score)
-  if (params?.intent) query = query.eq("lead_type", params.intent)
+  if (params?.intent) {
+    // ONE intent reader (lib/contact-types.ts): a legacy 'buying' from an old client still filters on the stored 'buyer'.
+    const intent = normalizeContactIntent(params.intent)
+    if (intent) query = query.eq("lead_type", intent)
+  }
   if (params?.status) query = query.eq("status", params.status)
   if (params?.source) query = query.eq("source", params.source)
+
+  // ── the merged filters ──────────────────────────────────────────────────────
+  if (params?.lifecycleState) query = query.eq("lifecycle_state", params.lifecycleState)
+  if (params?.urgencyLevel) query = query.eq("urgency_level", params.urgencyLevel)
+  // NARROWING ONLY. On the agent view agent_id is already pinned above to the
+  // caller's own id, so this second .eq() can only intersect with it — a caller
+  // naming somebody else's agent id gets an empty page, never their leads.
+  if (params?.assignedAgentId) query = query.eq("agent_id", params.assignedAgentId)
+  // TEAM ROW SCOPE. Applied after every other filter and never in place of one —
+  // it intersects, it cannot widen. `[]` (a team with no agents) becomes an
+  // impossible filter rather than an empty `.in()` list, whose PostgREST spelling
+  // is not a filter at all.
+  if (params?.teamAgentIds !== undefined) {
+    query = params.teamAgentIds.length > 0
+      ? query.in("agent_id", params.teamAgentIds)
+      : query.eq("agent_id", "00000000-0000-0000-0000-000000000000")
+  }
+  if (params?.aiIsaOwner !== undefined) query = query.eq("ai_isa_owner", params.aiIsaOwner)
+  if (params?.minimumViableForIsa !== undefined) {
+    query = query.eq("minimum_viable_for_isa", params.minimumViableForIsa)
+  }
+  if (params?.activeOnly) query = query.eq("is_active", true)
 
   const sortBy = params?.sortBy || "created_at"
   const sortOrder = params?.sortOrder || "desc"
@@ -225,9 +311,9 @@ export async function serviceRejectLead(
 }
 
 // Lane B import: forms / Facebook ads / real-estate-site exports land here.
-// The source captured TCPA consent already, so each row goes directly into
-// `contacts` with tcpa_consent=true stamped, deduped against existing
-// contacts in the brokerage on email + phone_digits.
+// Each row goes through THE one contact door (captureContact — dedupe, merge,
+// assignment, enrichment). Consent is recorded ONLY when the uploaded row itself
+// attests it (wave 148: the old blanket tcpa_consent=true was a fabricated consent).
 //
 // Agent assignment per the user's product rules:
 //   - If the row carries an explicit owner agent (form attached to an
@@ -253,7 +339,7 @@ export async function serviceImportLeads(
   if (!leads?.length) return { imported: 0, deduped: 0, unassigned: 0 }
 
   // Statuses where AI-ISA outreach must NOT auto-enable (active relationship).
-  // Matches RESTRICTED_STATES in the Vapi webhook + compliance authority gate.
+  // Matches REPRESENTATION_LOCK_STATES (lib/kernel/compliance.ts authority gate).
   const RESTRICTED_STATUSES = new Set([
     "representation",
     "active_transaction",
@@ -262,109 +348,86 @@ export async function serviceImportLeads(
     "lifetime_customer",
   ])
 
-  // Mirror the generation expression on contacts.phone_digits
-  // (regexp_replace(phone, '\\D', '', 'g')) so our lookup matches the
-  // stored value exactly. Slicing to last-10 here would miss contacts
-  // saved with country code prefixes.
-  const normalizeDigits = (p?: string | null) =>
-    p ? p.replace(/\D/g, "") : null
-
   let imported = 0
   let deduped = 0
   let unassigned = 0
 
   for (const lead of leads) {
-    const email = lead.email?.trim().toLowerCase() ?? null
-    const phoneDigits = normalizeDigits(lead.phone)
-
-    // Dedup: lookup any existing contact in this brokerage matching either
-    // email or phone_digits. No unique constraint exists on contacts(email),
-    // so this guard runs in application code.
-    let existingId: string | null = null
-    if (email || phoneDigits) {
-      let dedupQuery = supabase
-        .from("contacts")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-        .is("deleted_at", null)
-
-      if (email && phoneDigits) {
-        dedupQuery = dedupQuery.or(`email.eq.${email},phone_digits.eq.${phoneDigits}`)
-      } else if (email) {
-        dedupQuery = dedupQuery.eq("email", email)
-      } else if (phoneDigits) {
-        dedupQuery = dedupQuery.eq("phone_digits", phoneDigits)
-      }
-
-      const { data: existing } = await dedupQuery.limit(1).maybeSingle()
-      existingId = existing?.id ?? null
-    }
-
-    if (existingId) {
-      deduped++
-      continue
-    }
-
     const incomingStatus = (lead.status ?? "new").toString().toLowerCase()
     const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
+    // Owner ruling 3 (wave 149A): the import's stated intent, read through the ONE intent reader — buyer | seller | both, else NULL.
+    const importedIntent = normalizeContactIntent((lead.lead_type as string | null | undefined) ?? lead.intent ?? null)
+
+    // OWNER RULING, verbatim: "invitation from a lead converting to a contact makes
+    // sense for status qualified but any other new contacts coming in from forms,
+    // lead magnets, other real estate sites, etc. haven't been qualified yet."
+    //
+    // AN IMPORT IS ONE OF THOSE DOORS, and this is the door where the claim is
+    // cheapest to forge: `lead.status` is caller-supplied all the way from
+    // app/actions/lead-management.ts:209 `importLeads`, which is a "use server"
+    // export and therefore a PUBLIC HTTP ENDPOINT (CLAUDE.md §4). An uploaded row
+    // that simply said `status: "qualified"` is NOT believed — `contacts.status =
+    // 'qualified'` is EARNED by the lead→contact CONVERSION path alone
+    // (lib/portal/portal-invite-core.ts stampQualifiedIfLeadConverted). Only the
+    // qualified spelling is refused, and only for what gets STORED.
+    const storedStatus = statusForNewContact(incomingStatus, "new")
     const sourceLabel = lead.source ?? "admin_import"
 
-    // Resolve the owner agent (agents.id) per the precedence in
-    // resolveAgentForContact. If no agent exists in the brokerage at all,
-    // count this as unassigned and skip — the contact can't be persisted
-    // without an owner (the CRM treats agent_id as required for routing).
-    const ownerAgentId = lead.owner_agent_id ?? null
-    const assignment = await resolveAgentForContact({
-      brokerageId,
-      ownerAgentId,
-      source: sourceLabel,
-      propertyZipCode: (lead as Record<string, unknown>).property_zip_code as string | null | undefined,
-    })
+    // CONSENT IS NEVER FABRICATED (wave 148, lane 148B — owner ruling 3). TOMBSTONE: this door stamped
+    // `tcpa_consent: true` on EVERY imported row ("Lane B: consent was captured at source") — a claim with no wording, no
+    // time and no evidence behind it, which the dispatch TCPA gate then believed. A row carries consent only when the
+    // import itself ATTESTS it (an explicit `tcpa_consent: true` column on the uploaded row), recorded as the importing
+    // agent's attestation with whatever wording the row carried — never invented.
+    const attested = (lead as Record<string, unknown>).tcpa_consent === true
+    const attestedText = String((lead as Record<string, unknown>).tcpa_consent_text ?? "").trim()
 
-    if (!assignment.agentId) {
-      unassigned++
-      console.error(
-        `[serviceImportLeads] no eligible agent in brokerage ${brokerageId}; skipping import row`
-      )
-      continue
+    // ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147Z Still open 1). TOMBSTONE (orphan doctrine §1.1): the
+    // email / phone_digits `.or()` dedupe (error unread, the raw value spliced into the filter), the resolveAgentForContact
+    // call and the contacts INSERT that stood here were a second contact writer. Merged onto THE one survivor —
+    // lib/contact-pipeline/contact-capture.ts captureContact — riding this door's own session client (the injected-client
+    // contract; RLS stays the gate). Preserved: the owner precedence (a row's owner_agent_id, else the brokerage rules —
+    // captureContact calls the same resolveAgentForContact), the assignment attribution and the import provenance in
+    // metadata, ai_isa_enabled off for an active-relationship status, the stored status, source / source_family, the
+    // enrichment queue (captureContact's). CHANGED, on purpose: a row matching an existing contact is MERGED fill-if-empty
+    // (its new facts land, nothing is overwritten, conflicts go to notes) instead of silently skipped — it is still counted
+    // as `deduped`. A row with no eligible agent is still counted `unassigned` and skipped.
+    try {
+      const captured = await captureContact({
+        brokerageId,
+        ownerAgentId: lead.owner_agent_id ?? null,
+        creatorUserId: null,
+        source: sourceLabel,
+        source_family: "contact_direct",
+        // TOMBSTONE (wave 149, lane 149A — owner ruling 3, m935): `contact_type: "lead"` stood here. The imported row's intent
+        // is read from what the import says (buyer / buying / seller / both …) through the ONE intent reader; unknown → NULL.
+        ...(importedIntent ? { contact_type: importedIntent } : {}),
+        status: storedStatus,
+        ai_isa_enabled: aiIsaEnabled,
+        first_name: lead.first_name ?? null,
+        last_name: lead.last_name ?? null,
+        email: lead.email?.trim().toLowerCase() ?? null,
+        phone: lead.phone ?? null,
+        tcpa_consent: attested,
+        tcpa_consent_source: attested ? `import_attested:${sourceLabel}` : null,
+        tcpa_consent_text: attested ? (attestedText || `[import attested consent by agent ${agentId ?? "unknown"}; no wording supplied]`) : null,
+        metadata: {
+          imported_via: "serviceImportLeads",
+          imported_by_agent_id: agentId,
+          original: lead as Record<string, unknown>,
+        },
+      }, { client: supabase })
+      if (captured.action === "merged") deduped++
+      else imported++
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (/no eligible agent/i.test(message)) {
+        unassigned++
+        console.error(`[serviceImportLeads] no eligible agent in brokerage ${brokerageId}; skipping import row`)
+      } else {
+        // Don't abort the batch on a single row failure — log and continue.
+        console.error("[serviceImportLeads] capture failed:", message)
+      }
     }
-
-    const { error: insertErr } = await supabase.from("contacts").insert({
-      brokerage_id: brokerageId,
-      agent_id: assignment.agentId, // agents.id, not users.id
-      first_name: lead.first_name ?? "Unknown",
-      last_name: lead.last_name ?? "Contact",
-      email,
-      phone: lead.phone ?? null,
-      // phone_digits is a generated column derived from `phone` — do not set.
-      source: sourceLabel,
-      source_family: "contact_direct",
-      contact_type: "lead",
-      status: incomingStatus || "new",
-      // Lane B: consent was captured at source. Stamp it explicitly.
-      tcpa_consent: true,
-      tcpa_consent_at: new Date().toISOString(),
-      tcpa_consent_source: sourceLabel,
-      // Auto-enroll into AI-ISA unless restricted-status.
-      ai_isa_enabled: aiIsaEnabled,
-      // Enrichment runs through the existing PeopleData queue.
-      enrichment_source: null,
-      metadata: {
-        imported_via: "serviceImportLeads",
-        imported_by_agent_id: agentId,
-        assignment_method: assignment.method,
-        assignment_rule_id: assignment.ruleId ?? null,
-        original: lead as Record<string, unknown>,
-      },
-    })
-
-    if (insertErr) {
-      // Don't abort the batch on a single row failure — log and continue.
-      console.error("[serviceImportLeads] insert failed:", insertErr.message)
-      continue
-    }
-
-    imported++
   }
 
   revalidatePath("/leads")

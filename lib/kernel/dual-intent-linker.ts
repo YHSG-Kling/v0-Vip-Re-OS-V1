@@ -13,10 +13,12 @@
 //         Concierge (seller) for a 'both' contact (lib/kernel/event-reactor L208-215);
 //       - both agents accept 'both' (shopping-agent L150 / listing-concierge L141);
 //       - communications.ts maps 'both' → "dual" tone.
-//     The GAP this module fills: the lead→contact spine NEVER actually WRITES
-//     'both' (motivationToContactType maps 'both'→'buyer'). So a person with both
-//     a seller listing and buyer criteria stays mono-typed and only ONE manager
-//     wakes up. linkDualJourneys closes that gap.
+//     The GAP this module was written for: the lead→contact spine used to map
+//     'both'→'buyer' in motivationToContactType. Wave 149 (lane 149A) closed that
+//     at the SOURCE — motivationToContactType now writes 'both'. linkDualJourneys
+//     stays (idempotent) for the remaining case: a person who BECOMES dual later
+//     (a seller listing and buyer criteria arriving on separate days), so both
+//     managers wake up.
 //   · journey_states — the canonical buyer/seller journey ROLLUP table
 //     (LIFECYCLE_EVENT_CONTRACT §1: "journey_states.current_stage = buyer/seller
 //     journey rollups"). The live table has a UNIQUE(user_id) constraint, so a
@@ -410,17 +412,19 @@ export async function linkDualJourneys(
     updated_at: nowIso,
   }
 
-  const { data: buyerJourney } = await supabase
+  const { data: buyerJourney, error: buyerJourneyErr } = await supabase
     .from("journey_states")
     .upsert(buyerRow, { onConflict: "user_id" })
     .select("id")
     .maybeSingle()
+  if (buyerJourneyErr) console.error(`[dual-intent] buyer journey NOT upserted: ${buyerJourneyErr.message}`)
 
-  const { data: sellerJourney } = await supabase
+  const { data: sellerJourney, error: sellerJourneyErr } = await supabase
     .from("journey_states")
     .upsert(sellerRow, { onConflict: "user_id" })
     .select("id")
     .maybeSingle()
+  if (sellerJourneyErr) console.error(`[dual-intent] seller journey NOT upserted: ${sellerJourneyErr.message}`)
 
   // ── 3. Surface the dependency (only when it actually gates) ──────────────────
   let dependencyCardPushed = false

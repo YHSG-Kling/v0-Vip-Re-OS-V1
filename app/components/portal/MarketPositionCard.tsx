@@ -15,7 +15,7 @@ import {
   MapPin,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { formatPrice } from "@/lib/portal/resolve-seller-context"
+import { usdOrNAOnNullish as formatPrice } from "@/lib/format/money"
 
 interface NeighborhoodReport {
   id: string
@@ -30,6 +30,10 @@ interface MarketPositionCardProps {
   report: NeighborhoodReport | null
   comparison: "above" | "below" | "at" | null
   listPrice: number | null
+  /** optional by design: the skeleton branch below is for a future
+   *  client-driven refresh — the only caller, seller-home.tsx, is a Server
+   *  Component that awaits its data before rendering, so it is never mid-load
+   *  when this card renders. */
   isLoading?: boolean
 }
 
@@ -120,11 +124,11 @@ export function MarketPositionCard({
             <div className="flex items-center justify-center gap-2 text-sm">
               <ComparisonIcon className={cn(
                 "h-4 w-4",
-                diffPct > 0 ? "text-green-600" : diffPct < 0 ? "text-amber-600" : "text-blue-600"
+                diffPct > 0 ? "text-green-700" : diffPct < 0 ? "text-amber-700" : "text-blue-600"
               )} />
               <span className={cn(
                 "font-medium",
-                diffPct > 0 ? "text-green-600" : diffPct < 0 ? "text-amber-600" : "text-blue-600"
+                diffPct > 0 ? "text-green-700" : diffPct < 0 ? "text-amber-700" : "text-blue-600"
               )}>
                 {diffPct > 0 ? "+" : ""}{diffPct.toFixed(1)}% vs neighborhood median
               </span>

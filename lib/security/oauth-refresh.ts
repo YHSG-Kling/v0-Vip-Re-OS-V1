@@ -7,7 +7,11 @@
 //
 // Two production properties:
 //   • PROVIDER-GATED — a refresh only runs when that provider's OAuth client creds are in the env
-//     (GOOGLE_OAUTH_CLIENT_ID/SECRET, MICROSOFT_OAUTH_CLIENT_ID/SECRET); otherwise it is skipped,
+//     (GOOGLE_CLIENT_ID/SECRET, MICROSOFT_CLIENT_ID/SECRET — resolved through lib/env/aliases.ts;
+//     this file alone used to spell them GOOGLE_OAUTH_CLIENT_ID / MICROSOFT_OAUTH_CLIENT_ID while
+//     the three OAuth flows next to it read the un-prefixed names, so a correctly configured
+//     tenant got "skipped_unconfigured" on every Google/Microsoft credential, forever — §6, fixed
+//     2026-09-03; the old spelling is still accepted for one release); otherwise it is skipped,
 //     exactly like every other integration seam (no fabricated calls, no test spend).
 //   • ENCRYPT-ON-WRITE — the refreshed access_token is written through encryptSecret (at-rest
 //     encryption). This is the first safe encrypt-WRITE path: the readers were switched to the
@@ -15,7 +19,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { credentialRotationStatus } from "@/lib/security/credential-rotation"
-import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
+import { encryptSecret, decryptSecret, isEncryptionConfigured, isSecretStorageRefused } from "@/lib/security/secret-crypto"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -27,7 +32,7 @@ export function shouldAttemptRefresh(cred: { tokenExpiresAt: string | null; hasR
   return s === "expired" || s === "expiring_soon"
 }
 
-interface ProviderOAuth { tokenUrl: string; clientId?: string; clientSecret?: string }
+interface ProviderOAuth { tokenUrl: string; clientId?: string | null; clientSecret?: string | null }
 
 /** PURE-ish: resolve the provider's OAuth token endpoint + client creds from env. null = unsupported
  *  or unconfigured (→ skip). */
@@ -36,25 +41,30 @@ export function resolveProviderOAuth(provider: string | null): ProviderOAuth | n
     case "gmail":
     case "google_calendar":
     case "google":
-      return { tokenUrl: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET }
+      return { tokenUrl: "https://oauth2.googleapis.com/token", ...googleOAuthClient() }
     case "outlook":
     case "microsoft":
-      return { tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token", clientId: process.env.MICROSOFT_OAUTH_CLIENT_ID, clientSecret: process.env.MICROSOFT_OAUTH_CLIENT_SECRET }
+      return { tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token", ...microsoftOAuthClient() }
     default:
       return null
   }
 }
 
-export interface RefreshOutcome { id: string; provider: string | null; result: "refreshed" | "skipped_unconfigured" | "skipped_unsupported" | "failed" }
+export interface RefreshOutcome { id: string; provider: string | null; result: "refreshed" | "skipped_unconfigured" | "skipped_unsupported" | "refused_secret_storage" | "failed" }
 
 /** Refresh one credential row (from platform_credentials / agent_api_credentials). Provider-gated. */
-export async function refreshCredential(
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+async function refreshCredential(
   svc: Svc,
   row: { table: string; id: string; provider: string | null; refresh_token: string | null },
 ): Promise<RefreshOutcome> {
   const oauth = resolveProviderOAuth(row.provider)
   if (!oauth) return { id: row.id, provider: row.provider, result: "skipped_unsupported" }
   if (!oauth.clientId || !oauth.clientSecret) return { id: row.id, provider: row.provider, result: "skipped_unconfigured" }
+  // FAIL CLOSED BEFORE THE EXCHANGE (wave 139E). encryptSecret refuses with no key; asking only at
+  // the write would already have spent the refresh token — a provider that rotates refresh tokens
+  // (Microsoft) invalidates the old one, and the new pair could not be stored. Refuse first.
+  if (!isEncryptionConfigured()) return { id: row.id, provider: row.provider, result: "refused_secret_storage" }
   const refreshToken = decryptSecret(row.refresh_token) // decrypt in case the refresh_token is already encrypted
   if (!refreshToken) return { id: row.id, provider: row.provider, result: "failed" }
 
@@ -66,16 +76,19 @@ export async function refreshCredential(
     if (!json.access_token) return { id: row.id, provider: row.provider, result: "failed" }
 
     const expiresAt = new Date(Date.now() + (json.expires_in ?? 3600) * 1000).toISOString()
-    await svc.from(row.table).update({
+    const { data: written, error: writeErr } = await svc.from(row.table).update({
       // ENCRYPT-ON-WRITE — safe because the readers use decryptSecret (backward-compatible).
       access_token: encryptSecret(json.access_token),
       ...(json.refresh_token ? { refresh_token: encryptSecret(json.refresh_token) } : {}),
       token_expires_at: expiresAt,
       updated_at: new Date().toISOString(),
-    }).eq("id", row.id)
+    }).eq("id", row.id).select("id")
+    // supabase-js RESOLVES a refusal — an unread error reported "refreshed" for a token never stored; an
+    // update that matched NO row also resolves (CLAUDE.md §3), so count what was written too.
+    if (writeErr || !Array.isArray(written) || written.length !== 1) return { id: row.id, provider: row.provider, result: "failed" }
     return { id: row.id, provider: row.provider, result: "refreshed" }
-  } catch {
-    return { id: row.id, provider: row.provider, result: "failed" }
+  } catch (e) {
+    return { id: row.id, provider: row.provider, result: isSecretStorageRefused(e) ? "refused_secret_storage" : "failed" }
   }
 }
 
@@ -85,23 +98,46 @@ export async function runCredentialRefresh(client?: Svc, now: Date = new Date())
   const horizon = new Date(now.getTime() + 7 * 86_400_000).toISOString()
   const outcomes: RefreshOutcome[] = []
 
-  for (const table of ["platform_credentials", "agent_api_credentials", "social_media_accounts", "calendar_provider_accounts"]) {
-    const providerCol = table === "agent_api_credentials" ? "service_type" : table === "calendar_provider_accounts" ? "provider" : "platform"
-    const { data } = await svc.from(table)
+  // calendar_provider_accounts is DELIBERATELY ABSENT. It has no refresh_token
+  // and no access_token column (verified live) — it stamps an expiry for a
+  // connection whose OAuth material lives in platform_credentials /
+  // agent_api_credentials. There is nothing here to exchange.
+  //
+  // It used to be in this list, keyed on a `provider` column it also does not
+  // have, so every sweep issued a query naming three non-existent columns. The
+  // result was destructured as `{ data }` with the error dropped, so it failed
+  // silently on every run and simply refreshed nothing from that table. The
+  // rotation MONITOR still watches it for staleness — see credential-rotation —
+  // because a stale calendar connection needs a human to reconnect, which is a
+  // different answer from "we refreshed it for you".
+  for (const table of ["platform_credentials", "agent_api_credentials", "social_media_accounts"]) {
+    const providerCol = table === "agent_api_credentials" ? "service_type" : "platform"
+    const { data, error } = await svc.from(table)
       .select(`id, refresh_token, token_expires_at, ${providerCol}`)
       .not("token_expires_at", "is", null).not("refresh_token", "is", null)
       .lte("token_expires_at", horizon).limit(500)
+    if (error) {
+      console.error(`[oauth-refresh] scan of ${table} FAILED (not refreshed):`, error.message)
+      continue
+    }
     for (const r of (data ?? []) as any[]) {
       if (!shouldAttemptRefresh({ tokenExpiresAt: r.token_expires_at, hasRefreshToken: !!r.refresh_token }, now)) continue
       outcomes.push(await refreshCredential(svc, { table, id: r.id, provider: r[providerCol] ?? null, refresh_token: r.refresh_token }))
     }
   }
 
+  // A refused secret write is a FAILED refresh (never "skipped" — nobody may read it as fine) and it
+  // raises the actionable platform incident (wave 139E). No token reaches the incident.
+  const refused = outcomes.filter((o) => o.result === "refused_secret_storage").length
+  if (refused > 0) {
+    const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+    await raiseSecretStorageIncident(svc, { surface: `OAuth token refresh sweep (${refused} credential${refused === 1 ? "" : "s"} not refreshed)`, brokerageId: null, code: "secrets_key_missing", now })
+  }
   return {
     attempted: outcomes.length,
     refreshed: outcomes.filter((o) => o.result === "refreshed").length,
     skipped: outcomes.filter((o) => o.result.startsWith("skipped")).length,
-    failed: outcomes.filter((o) => o.result === "failed").length,
+    failed: outcomes.filter((o) => o.result === "failed").length + refused,
     outcomes,
   }
 }

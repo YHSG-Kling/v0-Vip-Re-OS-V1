@@ -123,6 +123,7 @@ export function AgentCommandStrip({
             <Button
               variant="ghost"
               size="icon"
+              aria-label="Refresh briefing"
               onClick={onRefreshBriefing}
               disabled={refreshing}
               className="text-white hover:bg-white/10"

@@ -109,6 +109,7 @@ export async function exitTenantAction(): Promise<{ ok: boolean; error?: string 
   const svc = createServiceClient()
   const active = await loadActiveImpersonation(auth.userId, svc)
   const ended = await endImpersonation(auth.userId, svc)
+  if (!ended.ok) return { ok: false, error: "Could not end the impersonation session — it is still active." }
   if (active) {
     await audit(auth.userId, auth.email, "impersonation.exit", active.targetBrokerageId, {
       session_id: ended.endedSessionId ?? active.id, target_user_id: active.targetUserId,

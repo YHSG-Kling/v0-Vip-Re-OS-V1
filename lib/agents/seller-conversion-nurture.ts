@@ -22,7 +22,7 @@ import { isUnconvertedSellerCandidate } from "./seller-conversion-eligibility"
 type Svc = ReturnType<typeof createServiceClient>
 
 /** Don't re-kick the same un-converted seller more than once per ~30 days. */
-export const SELLER_NURTURE_COOLDOWN_DAYS = 30
+const SELLER_NURTURE_COOLDOWN_DAYS = 30
 
 export interface SellerConversionResult { scanned: number; handedOff: number }
 

@@ -22,6 +22,15 @@
  * This helper is parameterized by the draft function and the gate
  * function so each producer keeps its own prompt + persona/journey
  * choices but they all share one retry policy.
+ *
+ * ITS PUBLIC-COPY TWIN (wave 142, lane 142E): lib/kernel/marketing/
+ * public-copy-rewrite.ts rewritePublicCopyUntilCompliant — the same
+ * draft → gate → redraft-with-findings shape for PUBLIC marketing copy
+ * (lead magnets, landing pages, ads, social, the book), PURE so it is
+ * proven in memory, capped at PUBLIC_COPY_MAX_REWRITES (the owner's two)
+ * and recording an ESCALATION for the human reviewer. This one stays the
+ * spoken-script survivor: `server-only`, ONE redraft, the five producers'
+ * contract unchanged.
  */
 import "server-only"
 

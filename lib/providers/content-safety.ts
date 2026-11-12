@@ -15,6 +15,7 @@
 // Either way it records a compliance_events row so the catch is auditable.
 
 import { evaluateContentSafety } from "@/lib/compliance/content-safety-checks"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface ContentSafetyInput {
@@ -27,6 +28,8 @@ export interface ContentSafetyInput {
   contactId?: string | null
   actorUserId?: string | null
   systemSource?: string | null
+  /** A human approved this send — the human keeps the actor column even on an ISA source. */
+  humanApproved?: boolean
 }
 
 export interface ContentSafetyResult {
@@ -40,13 +43,43 @@ function stripHtml(s?: string | null): string {
   return (s ?? "").replace(/<[^>]+>/g, " ")
 }
 
+type BackstopHit = { category: string; phrase: string; severity: string; reference: string }
+
+/**
+ * WAVE 148 (148Z — lane 148F hand-off, owner ruling 17 "never name the event"): THE LIFE-EVENT SCREEN AT THE CHOKEPOINT.
+ * Lane 148F's screen (lib/enrichment/life-event-vocabulary.ts screenLifeEventOutreach) ran only on personalize-outreach drafts;
+ * every other automated body (arbiter replies, sequences, magnets, sphere touches, voicemail scripts) reached the wire unscreened.
+ * It now runs here on EVERY body, beside the fair-housing scan: surveillance tells and intimate / hardship words always; the
+ * protected-proxy / career words of the events THIS person's record carries (contacts.life_events, tenant-pinned). One screen,
+ * one vocabulary — no second list. A record that cannot be read FAILS CLOSED for an autonomous send (the carried-event half of
+ * the gate could not run, CLAUDE.md §4); a human-approved send is flagged, as every category here is.
+ */
+async function lifeEventHits(input: ContentSafetyInput, text: string): Promise<BackstopHit[]> {
+  const { screenLifeEventOutreach } = await import("@/lib/enrichment/life-event-vocabulary")
+  const REF = "owner ruling 17 — automated outreach never names or alludes to a life event (lib/enrichment/life-event-vocabulary.ts)"
+  const toHits = (v: ReturnType<typeof screenLifeEventOutreach>): BackstopHit[] =>
+    v.hits.map((h) => ({ category: "life_event_mention", phrase: h.term, severity: "high", reference: `${REF} [${h.event}]` }))
+  const always = screenLifeEventOutreach(text)
+  if (!always.ok || !input.contactId) return toHits(always)
+  let events: unknown = []
+  try {
+    const { data, error } = await createServiceClient().from("contacts").select("life_events")
+      .eq("id", input.contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+    if (error) throw new Error(error.message)
+    events = (data as { life_events?: unknown } | null)?.life_events ?? []
+  } catch (e) {
+    return [{ category: "life_event_mention", phrase: "(record unreadable)", severity: "high", reference: `${REF} — the person's life-event record could not be read (${e instanceof Error ? e.message : String(e)}), so the carried-event screen did not run` }]
+  }
+  return toHits(screenLifeEventOutreach(text, { events }))
+}
+
 export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<ContentSafetyResult> {
   const text = input.parts.map(stripHtml).join("\n").trim()
   if (!text) return { blocked: false, violations: [] }
 
   // SYNCHRONOUS PRE-ACTION EVAL — every release-blocking category (fair housing, unsubstantiated
-  // guarantee, PII leak, prompt-injection echo), not just Fair Housing.
-  const hits = evaluateContentSafety(text)
+  // guarantee, PII leak, prompt-injection echo), not just Fair Housing — plus the ruling-17 life-event screen (wave 148Z).
+  const hits: BackstopHit[] = [...evaluateContentSafety(text), ...(await lifeEventHits(input, text))]
   if (hits.length === 0) return { blocked: false, violations: [] }
 
   const phrases = hits.map((h) => h.phrase)
@@ -58,9 +91,20 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
   // Auditable record of the catch (best-effort — never let logging break the gate decision).
   try {
     const svc = createServiceClient()
-    await svc.from("compliance_events").insert({
+    // ISA IS A SYSTEM AI ISA (wave 101C): an ISA send's catch names the ISA's system user
+    // (lib/auth/isa-actor.ts isaAuditActor), never the agent whose id rode the send.
+    const { isAiIsaSystemSource } = await import("@/lib/kernel/action-ledger")
+    const isaActor = isAiIsaSystemSource(input.systemSource) && input.humanApproved !== true
+      ? await (await import("@/lib/auth/isa-actor")).isaAuditActor(svc as any, input.brokerageId, input.actorUserId ?? null)
+      : null
+    // SERVICE-ROLE client → sentinelWrite (lib/kernel/write-sentinel.ts). A lost
+    // safety-catch audit row is exactly the kind of loss the repair digest exists
+    // to rank: it means the platform blocked something and cannot prove it did.
+    await sentinelWrite(
+      svc,
+      svc.from("compliance_events").insert({
       brokerage_id: input.brokerageId,
-      actor_user_id: input.actorUserId ?? null,
+      actor_user_id: isaActor ? isaActor.actorUserId : (input.actorUserId ?? null),
       actor_role: input.isAutonomous ? "ai_manager" : "system",
       entity_type: `outbound_${input.channel}`,
       entity_id: input.contactId ?? null,
@@ -69,8 +113,15 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
       violations: hits.map((h) => ({ category: h.category, phrase: h.phrase, severity: h.severity, reference: h.reference })),
       blocked_reason: blocked ? reason : null,
       severity,
-      details: { system_source: input.systemSource ?? null, autonomous: input.isAutonomous, disposition: blocked ? "blocked" : "flagged", categories },
-    })
+      details: { system_source: input.systemSource ?? null, autonomous: input.isAutonomous, disposition: blocked ? "blocked" : "flagged", categories, ...(isaActor?.onBehalfOfUserId ? { on_behalf_of_user_id: isaActor.onBehalfOfUserId } : {}) },
+      }),
+      {
+        table: "compliance_events",
+        flow: "content_safety_backstop_audit",
+        brokerageId: input.brokerageId ?? null,
+        reason: "audit echo of a safety catch — the gate decision above is the real control and must not fail because logging did",
+      },
+    )
   } catch (err) {
     console.warn("[content-safety] compliance_events insert failed:", (err as any)?.message)
   }

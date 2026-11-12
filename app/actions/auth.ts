@@ -40,17 +40,6 @@ type AuthActionResult =
   | { success: true; user: AuthUserSummary }
   | { success: false; error: string }
 
-type RegisterActionResult =
-  | {
-      success: true
-      user: {
-        id: string
-        email: string | null
-      } | null
-      needsEmailConfirmation: boolean
-    }
-  | { success: false; error: string }
-
 type CallbackActionResult =
   | { success: true; userId: string; user: AuthUserSummary }
   | {
@@ -190,70 +179,32 @@ export async function signOut(): Promise<{ success: true } | { success: false; e
   }
 }
 
-export async function getCurrentUser(): Promise<AuthUserSummary | null> {
-  try {
-    const supabase = await createClient()
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser()
-
-    if (error || !user) {
-      return null
-    }
-
-    return {
-      id: user.id,
-      email: user.email ?? null,
-    }
-  } catch (error) {
-    console.error('[auth.getCurrentUser] unexpected error:', error)
-    return null
-  }
-}
-
-export async function registerUser(
-  email: string,
-  password: string,
-  firstName: string,
-  lastName: string
-): Promise<RegisterActionResult> {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase.auth.signUp({
-      email: email.trim(),
-      password,
-      options: {
-        data: {
-          first_name: firstName.trim(),
-          last_name: lastName.trim(),
-        },
-      },
-    })
-
-    if (error) {
-      return {
-        success: false,
-        error: error.message,
-      }
-    }
-
-    return {
-      success: true,
-      user: data.user
-        ? {
-            id: data.user.id,
-            email: data.user.email ?? null,
-          }
-        : null,
-      needsEmailConfirmation: !data.session,
-    }
-  } catch (error) {
-    console.error('[auth.registerUser] unexpected error:', error)
-    return {
-      success: false,
-      error: 'An unexpected error occurred during registration.',
-    }
-  }
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// TWO EXPORTS REMOVED HERE — both collapsed into a NAMED, MORE COMPLETE SURVIVOR.
+//
+// `getCurrentUser()` returned `{ id, email }` from `supabase.auth.getUser()` and
+// nothing else. Both of its would-be callers already have a strict superset:
+//   · server side — `lib/auth/permissions.ts:getCurrentUserContext()` returns the
+//     same id + email PLUS brokerageId, brokerageName, roleName and capabilities,
+//     resolved from the canonical `users` row and `user_role_assignments`.
+//   · client side — `lib/auth/useAuth.ts:useAuth()` (imported as
+//     "@/lib/auth/client"), which the file's own header names the CANONICAL
+//     client-side auth hook and which app-shell, the CRM and the settings
+//     sidebar already use.
+// Nothing was merged forward: neither survivor was missing anything this held.
+//
+// `registerUser()` was a bare `supabase.auth.signUp({ email, password })`. The
+// platform does not create accounts that way. Every real account is provisioned
+// through `app/actions/auth/signup-brokerage.ts:signupBrokerageAction` →
+// `provisionTenantOwner`, which creates the auth user FIRST so
+// `public.users.id === auth.users.id`, pins the brokerage, creates the teams row
+// for a team tenant, gives a solo/team owner their `agents` row, opens the trial
+// subscription and sends the magic-link invite. Staff and vendors come in via
+// `auth.admin.inviteUserByEmail` (lib/kernel/users.ts, platform-staff.ts,
+// vendor-invite.ts). A signUp with none of that produces an auth user whose
+// `users` row has no brokerage — untenanted, and therefore invisible to every
+// `.eq("brokerage_id", …)` read in the product. `"use server"` also made it a
+// public unauthenticated POST endpoint, so it was a way to create accounts that
+// skipped the trial funnel, attribution and provisioning entirely.
+// Nothing was merged forward: the survivor is a superset in every respect.
+// ─────────────────────────────────────────────────────────────────────────────

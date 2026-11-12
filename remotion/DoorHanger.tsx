@@ -18,7 +18,8 @@
  * mintVideoQr; compositions never read the DB.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill, Img, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface DoorHangerProps {
   /** "JUST SOLD" / "SOLD IN 9 DAYS" — the eyebrow above the address. */
@@ -43,13 +44,19 @@ export interface DoorHangerProps {
   }
 }
 
-const W = 1350, H = 3375
+// TOMBSTONE (2026-09-03): `const W = 1350, H = 3375` used to sit here — a
+// second copy of the geometry Root.tsx registers and
+// lib/remotion/composition-geometry.ts mirrors (the spec block above is the
+// DERIVATION of that number, not a third declaration of it). The canvas now
+// reads its own size from useVideoConfig(); test:remotion-setup §5 refuses a
+// composition file that re-declares its registered width or height.
 const SAFE = 96 // bleed + ~0.25" safe inset
 
 export const DoorHanger: React.FC<DoorHangerProps> = ({
   headline, address, cityState, heroImageUrl, hook,
   agentName, agentPhone, agentPhotoUrl, qrCodeDataUrl, qrCaption, brand,
 }) => {
+  const { width: W, height: H } = useVideoConfig()
   return (
     <AbsoluteFill style={{ width: W, height: H, backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif" }}>
       {/* KNOB ZONE — dashed die-cut guide (Ø 600px ≈ 2"), stripped by the printer */}
@@ -59,7 +66,7 @@ export const DoorHanger: React.FC<DoorHangerProps> = ({
       }} />
       {brand.logoUrl && (
         <div style={{ position: "absolute", top: 380, left: W / 2 - 110, width: 220, height: 220, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Img src={brand.logoUrl} style={{ maxWidth: 200, maxHeight: 200, objectFit: "contain" }} />
+          <SafeImg src={brand.logoUrl} style={{ maxWidth: 200, maxHeight: 200, objectFit: "contain" }} />
         </div>
       )}
 
@@ -77,7 +84,7 @@ export const DoorHanger: React.FC<DoorHangerProps> = ({
 
       {/* HERO PHOTO */}
       <div style={{ position: "absolute", top: 1260, left: SAFE, right: SAFE, height: 820, overflow: "hidden", borderRadius: 18, backgroundColor: "#1e293b", border: `8px solid ${brand.accentColor}` }}>
-        {heroImageUrl && <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+        {heroImageUrl && <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
       </div>
 
       {/* THE NEIGHBOR HOOK + QR */}
@@ -97,7 +104,7 @@ export const DoorHanger: React.FC<DoorHangerProps> = ({
       <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "#ffffff", borderTop: `10px solid ${brand.accentColor}`, padding: `44px ${SAFE}px ${SAFE - 20}px` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
           {agentPhotoUrl ? (
-            <Img src={agentPhotoUrl} style={{ width: 170, height: 170, borderRadius: 85, objectFit: "cover", border: `6px solid ${brand.primaryColor}` }} />
+            <SafeImg src={agentPhotoUrl} style={{ width: 170, height: 170, borderRadius: 85, objectFit: "cover", border: `6px solid ${brand.primaryColor}` }} />
           ) : (
             <div style={{ width: 170, height: 170, borderRadius: 85, backgroundColor: brand.primaryColor, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 72, fontWeight: 800 }}>
               {(agentName[0] ?? "A").toUpperCase()}

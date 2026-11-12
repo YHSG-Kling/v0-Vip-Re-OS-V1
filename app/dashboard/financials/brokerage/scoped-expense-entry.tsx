@@ -19,10 +19,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Receipt, Loader2, CheckCircle2 } from "lucide-react"
 import { logScopedExpense, type ExpenseScope } from "@/app/actions/financials"
+import { EXPENSE_CATEGORIES } from "@/lib/documents/receipt-rules"
 
 // Same category vocabulary the agent expense flow + tax concierge fold on —
 // these map to brokerage_p_l buckets (marketing/office/tech/operating).
-const CATEGORIES = ["marketing", "office", "technology", "education", "transportation", "other"]
+// One vocabulary (CLAUDE.md §6): the expense categories live in lib/documents/receipt-rules.ts (wave 152, lane 152D).
+const CATEGORIES = EXPENSE_CATEGORIES
 
 export interface TeamOption { id: string; name: string }
 
@@ -121,7 +123,7 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
             {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : "Save Expense"}
           </Button>
           {saved && (
-            <span className="flex items-center gap-1.5 text-sm text-emerald-600">
+            <span className="flex items-center gap-1.5 text-sm text-emerald-700">
               <CheckCircle2 className="h-4 w-4" /> Logged — P&amp;L updates on the next nightly rollup
             </span>
           )}

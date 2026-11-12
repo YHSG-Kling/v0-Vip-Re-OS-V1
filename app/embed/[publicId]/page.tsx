@@ -12,6 +12,7 @@
 import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { EmbedWidget } from "./embed-widget"
+import { normalizeEnabledModes } from "@/lib/embed/widget-modes"
 
 export const dynamic = "force-dynamic"
 
@@ -29,7 +30,7 @@ export default async function EmbedPage({ params, searchParams }: PageProps) {
   const supabase = createServiceClient()
   const { data: widget } = await supabase
     .from("embed_widgets")
-    .select("public_id, label, welcome_message, enabled_modes, lead_capture_mode, lead_capture_fields, allowed_domains, style, is_active, brokerage_id")
+    .select("public_id, label, welcome_message, enabled_modes, lead_capture_mode, lead_capture_fields, allowed_domains, style, is_active, brokerage_id, agent_id")
     .eq("public_id", publicId)
     .maybeSingle()
 
@@ -42,6 +43,11 @@ export default async function EmbedPage({ params, searchParams }: PageProps) {
   if (allowed.length > 0 && origin && !allowed.includes(origin)) {
     notFound()
   }
+
+  // C15 (wave 148, lane 148B — owner recommendation: "the embed widget gets the consent component"): the consent names the
+  // widget's BROKERAGE, read here exactly as /api/embed/capture re-renders it — the shown words are the stored words.
+  const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  const consentBrandName = await resolveConsentBrand(supabase, { agentId: (widget as { agent_id?: string | null }).agent_id ?? null, brokerageId: widget.brokerage_id })
 
   return (
     <html lang="en">
@@ -62,10 +68,11 @@ export default async function EmbedPage({ params, searchParams }: PageProps) {
             referrer={referrer ?? null}
             pageUrl={pageUrl ?? null}
             welcomeMessage={widget.welcome_message ?? null}
-            enabledModes={widget.enabled_modes as ("text" | "live")[]}
+            enabledModes={normalizeEnabledModes(widget.enabled_modes)}
             leadCaptureMode={widget.lead_capture_mode as "immediate" | "after_first_message" | "optional"}
             leadCaptureFields={widget.lead_capture_fields as string[]}
             label={widget.label ?? "Chat"}
+            consentBrandName={consentBrandName}
             style={widget.style as Record<string, any>}
           />
         </div>

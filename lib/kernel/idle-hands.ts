@@ -96,8 +96,9 @@ export async function runIdleHands(
     return true
   }
 
-  // ── Marketing Manager: stale listings get a social draft (existing approval gate). ──
-  if (mayAct("marketing_agent")) {
+  // ── Campaign Orchestrator (m618: survivor of the retired marketing_agent/"Marketing
+  //    Manager" seat): stale listings get a social draft (existing approval gate). ──
+  if (mayAct("campaign_orchestrator")) { // m618: survivor of the retired marketing_agent seat
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString()
     const { data: stale } = await supabase.from("listings")
       .select("id, address, city, agent_id").eq("brokerage_id", brokerageId)
@@ -111,7 +112,7 @@ export async function runIdleHands(
         platform: "all", post_type: "new_listing",
         content: `Still available and worth a look: ${l.address ?? "this home"}${l.city ? ` in ${l.city}` : ""}. Reach out for a private tour.`,
         status: "draft", approval_status: "pending", ai_generated: true,
-        post_brief: "IDLE HANDS — Marketing Manager: listing active 7+ days with no social touch this week; keep it in front of buyers.",
+        post_brief: "IDLE HANDS — Campaign Orchestrator: listing active 7+ days with no social touch this week; keep it in front of buyers.",
       })
       if (!error) result.socialDrafts += 1
     }
@@ -182,15 +183,33 @@ export async function runIdleHands(
       .select("id").eq("brokerage_id", brokerageId)
       .or("email.is.null,phone.is.null")
       .neq("nurture_status", "withdrawn").limit(20)
+    // TOMBSTONE (orphan doctrine §1.1, 2026-09-04) — the existence check and the
+    // insert here were both against `contact_enrichment_queue`.
+    // SURVIVOR: lib/enrichment/contact-enrichment-core.ts ::
+    // queueContactEnrichment, which writes `lead_enrichment_queue` — the queue
+    // lib/lead-pipeline/enrichment-orchestrator.ts:processEnrichmentQueue
+    // actually drains. `contact_enrichment_queue` has NO DRAIN anywhere in the
+    // tree, so every row this loop wrote sat pending forever and the
+    // "self-healing data loop" healed nothing. Its `metadata.reason` was the
+    // column the opposite-missing census flagged as write-only; the reason now
+    // travels as the survivor's free-form `trigger_type`.
+    //
+    // The survivor subsumes the pending check (its own idempotency guard reads
+    // pending/processing on the drained table) and adds the freshness check,
+    // the owner's live-deal suppression rule and the backlog cap — so a refusal
+    // is a real refusal and is not counted as queued.
     for (const g of ((gaps ?? []) as any[]).slice(0, 5)) {
-      const { data: pending } = await supabase.from("contact_enrichment_queue").select("id")
-        .eq("contact_id", g.id).in("status", ["pending", "running"]).limit(1).maybeSingle()
-      if (pending) continue
-      const { error } = await supabase.from("contact_enrichment_queue").insert({
-        brokerage_id: brokerageId, contact_id: g.id, source: "idle_hands",
-        status: "pending", metadata: { reason: "missing email or phone — self-healing data loop" },
+      const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+      const q = await queueContactEnrichment({
+        contactId: g.id,
+        brokerageId,
+        triggerType: "idle_hands",
+        supabase,
       })
-      if (!error) result.enrichmentsQueued += 1
+      if (q.queued) result.enrichmentsQueued += 1
+      else if (q.reason === "error") {
+        console.error(`[idle-hands] enrichment queue refused for ${g.id}: ${q.error ?? "unknown"}`)
+      }
     }
   }
 

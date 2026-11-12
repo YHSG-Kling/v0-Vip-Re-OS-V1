@@ -55,7 +55,7 @@ export function AdminOperationsRadar({ brokerageId }: AdminOperationsRadarProps)
           .from("agent_onboarding")
           .select("id, status, updated_at, completion_percentage")
           .eq("brokerage_id", brokerageId)
-          .in("status", ["pending", "in_progress"]),
+          .in("status", ["in_progress"]),
         // Incomplete agent setups
         supabase
           .from("agents")
@@ -202,7 +202,7 @@ export function AdminOperationsRadar({ brokerageId }: AdminOperationsRadarProps)
                 <div className="flex items-center justify-between">
                   <span className="text-xl font-bold">{signal.value}</span>
                   {signal.status === "clear" && (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                   )}
                 </div>
               </div>

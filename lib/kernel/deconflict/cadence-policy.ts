@@ -32,8 +32,15 @@ export interface EngagementSignals {
 export const MIN_SAMPLE = 20
 /** Engaged audiences (≥ this open/click/convert rate) earn a modest loosening. */
 export const HIGH_ENGAGEMENT = 0.5
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: LOW_ENGAGEMENT.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Cooling audiences (≤ this rate) get tightened to protect the relationship. */
-export const LOW_ENGAGEMENT = 0.1
+const LOW_ENGAGEMENT = 0.1
 
 export interface LearnedCadence {
   policy: ChannelPolicy

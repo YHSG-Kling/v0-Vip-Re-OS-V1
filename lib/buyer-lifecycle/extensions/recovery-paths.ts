@@ -321,50 +321,41 @@ export async function getBuyersEligibleForRecovery(params: {
   const { brokerageId, daysInOnHold, limit = 100 } = params
   const supabase = createServiceClient()
 
-  // Get all contacts for brokerage
-  const { data: contacts, error } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .limit(limit)
+  // ONE query, and it reads the table the writer actually writes.
+  //
+  // This was an N+1 (a state lookup per contact) sitting on top of a read that could never
+  // return anything: the "days in state" clock came from `activities` where activity_type =
+  // 'buyer.lifecycle.transition', and nothing has ever written that row — transitions go to
+  // lifecycle_events via transitionLifecycle(). transitionEvent was therefore always null,
+  // the `if (transitionEvent)` never opened, and this function returned an EMPTY LIST every
+  // time. No buyer on hold was ever nominated for recovery.
+  //
+  // m367's buyer_lifecycle_current_states returns entered_at — the timestamp of the latest
+  // transition — which IS the clock this needed. Same source as the state, so the state and
+  // its age can no longer disagree.
+  const { data: stateRows, error } = await supabase.rpc("buyer_lifecycle_current_states", {
+    p_brokerage_id: brokerageId,
+    p_start: null,
+    p_end:   null,
+  })
 
-  if (error || !contacts) {
-    console.error("[5.1D] Error fetching contacts:", error)
+  if (error) {
+    console.error("[5.1D] recovery-eligibility read failed:", error.message)
     return []
   }
 
+  const now = Date.now()
   const eligibleBuyers: Array<{ contactId: string; daysInState: number }> = []
 
-  for (const contact of contacts) {
-    const currentState = await getCurrentBuyerState(contact.id)
-
-    if (currentState === "BUYER_ON_HOLD") {
-      // Get transition to ON_HOLD date
-      const { data: transitionEvent } = await supabase
-        .from("activities")
-        .select("created_at")
-        .eq("activity_type", "buyer.lifecycle.transition")
-        .eq("entity_type", "contact")
-        .eq("entity_id", contact.id)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single()
-
-      if (transitionEvent) {
-        const transitionDate = new Date(transitionEvent.created_at)
-        const now = new Date()
-        const diff = now.getTime() - transitionDate.getTime()
-        const daysInState = Math.floor(diff / (1000 * 60 * 60 * 24))
-
-        if (daysInState >= daysInOnHold) {
-          eligibleBuyers.push({
-            contactId: contact.id,
-            daysInState,
-          })
-        }
-      }
+  for (const row of (stateRows ?? []) as Array<{ contact_id: string; current_state: string | null; entered_at: string | null }>) {
+    if (row.current_state !== "BUYER_ON_HOLD" || !row.entered_at) continue
+    const daysInState = Math.floor((now - new Date(row.entered_at).getTime()) / (1000 * 60 * 60 * 24))
+    if (daysInState >= daysInOnHold) {
+      eligibleBuyers.push({ contactId: row.contact_id, daysInState })
     }
   }
 
-  return eligibleBuyers
+  // The limit bounds the RESULT. It previously capped how many contacts were SCANNED, so a
+  // brokerage could hold more eligible buyers than it ever surfaced.
+  return eligibleBuyers.slice(0, limit)
 }

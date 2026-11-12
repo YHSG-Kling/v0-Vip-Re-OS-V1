@@ -21,7 +21,8 @@
  * resolveReelBrand, facts from the listing row, QR from mintVideoQr.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill, Img, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface ListingFlyerProps {
   address: string
@@ -53,7 +54,12 @@ export interface ListingFlyerProps {
   }
 }
 
-const W = 2625, H = 3375
+// TOMBSTONE (2026-09-03): `const W = 2625, H = 3375` used to sit here — a
+// second copy of the geometry Root.tsx registers and
+// lib/remotion/composition-geometry.ts mirrors (the spec block above is the
+// DERIVATION of that number, not a third declaration of it). The canvas now
+// reads its own size from useVideoConfig(); test:remotion-setup §5 refuses a
+// composition file that re-declares its registered width or height.
 const SAFE = 96 // ~0.25" + bleed compensation
 
 export const ListingFlyer: React.FC<ListingFlyerProps> = ({
@@ -61,6 +67,7 @@ export const ListingFlyer: React.FC<ListingFlyerProps> = ({
   heroImageUrl, photoUrls, agentName, agentPhone, agentPhotoUrl,
   qrCodeDataUrl, qrCaption, statusLine, brand,
 }) => {
+  const { width: W, height: H } = useVideoConfig()
   const facts = [
     beds && `${beds} BD`, baths && `${baths} BA`, sqft && `${sqft} SQFT`, propertyType,
   ].filter(Boolean) as string[]
@@ -69,7 +76,7 @@ export const ListingFlyer: React.FC<ListingFlyerProps> = ({
     <AbsoluteFill style={{ width: W, height: H, backgroundColor: "#ffffff", fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif" }}>
       {/* HERO — full-bleed photo with the status eyebrow */}
       <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1700, overflow: "hidden", backgroundColor: brand.primaryColor }}>
-        {heroImageUrl && <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+        {heroImageUrl && <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
         <div style={{
           position: "absolute", top: SAFE + 40, left: SAFE + 40, padding: "26px 60px",
           backgroundColor: brand.accentColor, color: brand.primaryColor,
@@ -79,7 +86,7 @@ export const ListingFlyer: React.FC<ListingFlyerProps> = ({
         </div>
         {brand.logoUrl && (
           <div style={{ position: "absolute", top: SAFE + 40, right: SAFE + 40, padding: 28, backgroundColor: "#ffffffee", borderRadius: 16 }}>
-            <Img src={brand.logoUrl} style={{ height: 110, objectFit: "contain" }} />
+            <SafeImg src={brand.logoUrl} style={{ height: 110, objectFit: "contain" }} />
           </div>
         )}
       </div>
@@ -109,7 +116,7 @@ export const ListingFlyer: React.FC<ListingFlyerProps> = ({
           <div style={{ display: "flex", gap: 24, marginBottom: 44 }}>
             {strip.map((u, i) => (
               <div key={i} style={{ flex: 1, height: 380, overflow: "hidden", borderRadius: 14, backgroundColor: "#e5e7eb" }}>
-                <Img src={u} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <SafeImg src={u} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               </div>
             ))}
           </div>
@@ -128,7 +135,7 @@ export const ListingFlyer: React.FC<ListingFlyerProps> = ({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 40 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 40 }}>
             {agentPhotoUrl ? (
-              <Img src={agentPhotoUrl} style={{ width: 220, height: 220, borderRadius: 110, objectFit: "cover", border: `8px solid ${brand.primaryColor}` }} />
+              <SafeImg src={agentPhotoUrl} style={{ width: 220, height: 220, borderRadius: 110, objectFit: "cover", border: `8px solid ${brand.primaryColor}` }} />
             ) : (
               <div style={{ width: 220, height: 220, borderRadius: 110, backgroundColor: brand.primaryColor, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 96, fontWeight: 800 }}>
                 {(agentName[0] ?? "A").toUpperCase()}

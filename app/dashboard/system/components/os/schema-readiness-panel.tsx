@@ -77,9 +77,9 @@ export function SchemaReadinessPanel({ brokerageId }: SchemaReadinessPanelProps)
               >
                 <div className="flex items-start gap-2 min-w-0">
                   {check.present ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 mt-0.5 shrink-0" />
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
                   ) : (
-                    <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+                    <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
                   )}
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground">{check.name}</p>

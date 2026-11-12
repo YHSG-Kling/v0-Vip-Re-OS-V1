@@ -19,7 +19,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { FileText, Download, ExternalLink } from "lucide-react"
+// TOMBSTONE (orphan doctrine §1.3): `ExternalLink` was imported here and rendered
+// NOWHERE. It had nothing to point at — `billing_invoices` carries exactly one URL
+// column, `pdf_url` (verified live against hrvaqgvukzxfskkcrwbt; there is no
+// hosted_invoice_url), and that link is already rendered by the SURVIVOR at
+// invoice-history-table.tsx:135, the `Download` anchor with target="_blank". A second
+// icon for the same single destination would be two spellings of one action (§6).
+import { FileText, Download } from "lucide-react"
 
 interface Invoice {
   id: string
@@ -27,6 +33,10 @@ interface Invoice {
   amount_cents: number
   status: string
   pdf_url?: string | null
+  /** The discount Stripe applied on this invoice (billing_invoices.discount_cents, m777 —
+   *  written by the billing webhook from Stripe's own total_discount_amounts). amount_cents
+   *  is already the discounted amount paid; this is shown beside it, never subtracted again. */
+  discount_cents?: number | null
 }
 
 interface InvoiceHistoryTableProps {
@@ -96,6 +106,35 @@ export function InvoiceHistoryTable({ invoices }: InvoiceHistoryTableProps) {
             No invoices found for this period.
           </div>
         ) : (
+          <>
+          {/* MOBILE ADAPTS, never merely shrinks (owner, wave 141; lane 141I): one row per invoice as a
+              card below md — date, amount, status and the same PDF link; the table renders from md up. */}
+          <div className="md:hidden divide-y">
+            {filteredInvoices.map((invoice) => (
+              <div key={invoice.id} className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-sm font-medium">
+                    {new Date(invoice.invoice_date).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}
+                  </p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm">${(invoice.amount_cents / 100).toFixed(2)}</span>
+                    {getStatusBadge(invoice.status)}
+                  </div>
+                </div>
+                {invoice.pdf_url ? (
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={invoice.pdf_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1">
+                      <Download className="h-4 w-4" />
+                      PDF
+                    </a>
+                  </Button>
+                ) : (
+                  <span className="text-sm text-muted-foreground">-</span>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow>
@@ -117,6 +156,11 @@ export function InvoiceHistoryTable({ invoices }: InvoiceHistoryTableProps) {
                   </TableCell>
                   <TableCell className="font-medium">
                     ${(invoice.amount_cents / 100).toFixed(2)}
+                    {typeof invoice.discount_cents === "number" && invoice.discount_cents > 0 && (
+                      <span className="ml-2 text-xs font-normal text-emerald-700">
+                        (includes ${(invoice.discount_cents / 100).toFixed(2)} discount)
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell>{getStatusBadge(invoice.status)}</TableCell>
                   <TableCell className="text-right">
@@ -144,6 +188,8 @@ export function InvoiceHistoryTable({ invoices }: InvoiceHistoryTableProps) {
               ))}
             </TableBody>
           </Table>
+          </div>
+          </>
         )}
       </CardContent>
     </Card>

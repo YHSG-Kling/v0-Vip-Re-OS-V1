@@ -11,6 +11,8 @@
 // is the single source of truth, applied at BOTH propose and approve so a contact who
 // revokes consent in the interim is silently dropped before any dial.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { DEFAULT_FOLLOWUP_POLICY, loadFollowupPolicy } from "@/lib/ai-isa/followup-policy"
 import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -39,24 +41,38 @@ export function eligibleForIsaCall(c: IsaCallConsent): { allowed: boolean; reaso
   return { allowed: true }
 }
 
-/** Voice-results learn-loop thresholds (transparent, like the propensity weights). */
-export const CALL_COOLDOWN_DAYS = 14     // any recent ISA call → don't re-dial yet
-export const COLD_COOLDOWN_DAYS = 30     // a cold-quality outcome suppresses longer
+/**
+ * Voice-results learn-loop thresholds (transparent, like the propensity weights).
+ *
+ * WAVE 143 (lane 143E; owner: "the follow-up timetable must not depend on code"): the two re-dial GAPS are the TENANT's follow-up policy
+ * (lib/ai-isa/followup-policy.ts guardrails.callCooldownDays / coldCallCooldownDays — versioned through tenant_policy_versions), read by
+ * proposeIsaDialBatch below. The constants here are only the PLATFORM DEFAULTS, derived from that policy's defaults (one number, one
+ * place) so a caller that never loaded a policy (a pure unit test, manager-signals-simulator) keeps the historical behaviour.
+ * COLD_QUALITY_FLOOR is a score threshold, not a timetable, and stays here.
+ */
+export const CALL_COOLDOWN_DAYS = DEFAULT_FOLLOWUP_POLICY.guardrails.callCooldownDays   // any recent ISA call → don't re-dial yet
+export const COLD_COOLDOWN_DAYS = DEFAULT_FOLLOWUP_POLICY.guardrails.coldCallCooldownDays // a cold-quality outcome suppresses longer
 export const COLD_QUALITY_FLOOR = 30     // lead_quality_score below this = cold outcome
+
+/** The re-dial gaps one decision uses — the tenant's policy values, or the platform defaults when none was loaded. */
+export interface CallCooldowns { callDays: number; coldDays: number }
+export const DEFAULT_CALL_COOLDOWNS: CallCooldowns = Object.freeze({ callDays: CALL_COOLDOWN_DAYS, coldDays: COLD_COOLDOWN_DAYS })
 
 /** Pure: should past call outcomes keep this contact OFF the next dial list?
  *  appointment_set → yes (they're with the agent now); cold quality (<floor) within
- *  COLD_COOLDOWN_DAYS → yes; any call within CALL_COOLDOWN_DAYS → yes. */
+ *  the cold gap → yes; any call within the call gap → yes. The look-back is the longer of the two gaps. */
 export function callCooldownActive(
   history: Array<{ appointment_set: boolean | null; lead_quality_score: number | null; created_at: string }>,
   now: number = Date.now(),
+  cooldowns: CallCooldowns = DEFAULT_CALL_COOLDOWNS,
 ): boolean {
+  const outerDays = Math.max(cooldowns.callDays, cooldowns.coldDays)
   for (const h of history) {
     const ageDays = (now - new Date(h.created_at).getTime()) / 86_400_000
-    if (ageDays < 0 || ageDays > COLD_COOLDOWN_DAYS) continue
+    if (ageDays < 0 || ageDays > outerDays) continue
     if (h.appointment_set) return true
-    if (h.lead_quality_score != null && h.lead_quality_score < COLD_QUALITY_FLOOR) return true
-    if (ageDays <= CALL_COOLDOWN_DAYS) return true
+    if (h.lead_quality_score != null && h.lead_quality_score < COLD_QUALITY_FLOOR && ageDays <= cooldowns.coldDays) return true
+    if (ageDays <= cooldowns.callDays) return true
   }
   return false
 }
@@ -110,16 +126,19 @@ export async function proposeIsaDialBatch(
   const byId = new Map((rows ?? []).map((c: any) => [c.id, c as IsaCallConsent & { agent_id: string | null }]))
 
   // VOICE-RESULTS LEARN LOOP — past call outcomes shape who we call next:
-  //   · any ISA call in the last CALL_COOLDOWN_DAYS → skip (don't hammer)
+  //   · any ISA call inside the tenant's call gap (followup_policy guardrails.callCooldownDays) → skip (don't hammer)
   //   · appointment_set on a recent call → skip (they're with the agent now)
   //   · lead_quality_score < COLD_QUALITY_FLOOR on a recent call → skip for the
-  //     longer COLD_COOLDOWN_DAYS (the call told us they're not ready)
+  //     longer cold gap (guardrails.coldCallCooldownDays — the call told us they're not ready)
+  // The tenant's gaps are read ONCE per proposal; a refused policy read keeps the platform defaults (loadFollowupPolicy says so).
+  const { policy: followup } = await loadFollowupPolicy(supabase, params.brokerageId)
+  const cooldowns: CallCooldowns = { callDays: followup.guardrails.callCooldownDays, coldDays: followup.guardrails.coldCallCooldownDays }
   const { data: recentCalls } = await supabase
     .from("ai_isa_calls")
     .select("contact_id, appointment_set, lead_quality_score, created_at")
     .eq("brokerage_id", params.brokerageId)
     .in("contact_id", ids)
-    .gte("created_at", new Date(Date.now() - COLD_COOLDOWN_DAYS * 86_400_000).toISOString())
+    .gte("created_at", new Date(Date.now() - Math.max(cooldowns.callDays, cooldowns.coldDays) * 86_400_000).toISOString())
   const callHistory = new Map<string, Array<{ appointment_set: boolean | null; lead_quality_score: number | null; created_at: string }>>()
   for (const c of (recentCalls ?? []) as any[]) {
     const list = callHistory.get(c.contact_id) ?? []
@@ -133,7 +152,7 @@ export async function proposeIsaDialBatch(
     if (!c) continue
     if (agentId && c.agent_id !== agentId) continue          // agent-scoped: only this agent's contacts
     if (!eligibleForIsaCall(c).allowed) continue
-    if (callCooldownActive(callHistory.get(r.contactId) ?? [])) continue
+    if (callCooldownActive(callHistory.get(r.contactId) ?? [], Date.now(), cooldowns)) continue
     targets.push({ contact_id: r.contactId, name: r.name, phone: String(c.phone), propensity_score: r.result.score })
     if (targets.length >= limit) break
   }
@@ -158,12 +177,12 @@ export async function proposeIsaDialBatch(
       const { data: a } = await supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
       const agentUserId = (a as { user_id: string | null } | null)?.user_id ?? null
       if (agentUserId) {
-        await supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id: agentUserId, brokerage_id: params.brokerageId, type: "dial_batch_approval",
           title: "AI ISA wants to call your contacts",
           body: `${targets.length} consented contact${targets.length === 1 ? "" : "s"} ready to dial — review & approve.`,
           entity_type: "ai_isa_call_batch", entity_id: batchId, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "voice_dial_batch_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
     } catch (e) {
       console.error("[proposeIsaDialBatch] real-time approval alert failed:", e)
@@ -185,7 +204,7 @@ export type DialExecutor = (target: DialTarget, ctx: { brokerageId: string; agen
 const realDialExecutor: DialExecutor = async (target, ctx) => {
   const { initiateVoiceCall } = await import("@/lib/voice-engine/call-executor")
   const res = await initiateVoiceCall(
-    { contactId: target.contact_id, initiatorRole: "ai", callType: "outbound", vendor: "vapi_isa", agentId: ctx.agentId ?? undefined },
+    { contactId: target.contact_id, initiatorRole: "ai", callType: "outbound", vendor: "twilio", agentId: ctx.agentId ?? undefined },
     target.phone,
   )
   // ai_isa_calls.voice_call_id FKs to voice_calls(id) — use callId (the row id), not the
@@ -245,10 +264,11 @@ export async function approveIsaDialBatch(
   const droppedForConsent = proposed.length - dialTargets.length
 
   // Claim the batch first (proposed → completed) so a concurrent approve can't double-dial.
-  const { data: claimed } = await supabase
+  const { data: claimed, error: batchClaimErr } = await supabase
     .from("ai_isa_call_batches")
     .update({ status: "completed", approved_by: params.approverUserId, approved_at: new Date().toISOString(), completed_at: new Date().toISOString() })
     .eq("id", params.batchId).eq("status", "proposed").select("id").maybeSingle()
+  if (batchClaimErr) return { ok: false, dialTargets: [], dialedCount: 0, attemptedCount: 0, droppedForConsent: 0, error: `Could not claim the batch: ${batchClaimErr.message}` }
   if (!claimed) return { ok: false, dialTargets: [], dialedCount: 0, attemptedCount: 0, droppedForConsent: 0, error: "batch already actioned" }
 
   // Dial each consented target + record the governed attempt into ai_isa_calls.
@@ -260,19 +280,20 @@ export async function approveIsaDialBatch(
     catch (e) { outcome = { contactId: t.contact_id, placed: false, voiceCallId: null, error: (e as Error).message } }
     if (outcome.placed) placed += 1
     results.push(outcome)
-    await supabase.from("ai_isa_calls").insert({
+    await sentinelWrite(supabase, supabase.from("ai_isa_calls").insert({
       brokerage_id: params.brokerageId,
       contact_id: t.contact_id,
       voice_call_id: outcome.voiceCallId,
       script_used: script ? script.slice(0, 500) : null,
       ai_response_summary: (outcome.placed ? "call placed via AI ISA dial batch" : (outcome.error ?? "not placed")).slice(0, 500),
-    })
+    }), { table: "ai_isa_calls", flow: "isa_dial_batch_attempt", reason: "per-attempt ISA row; the call (or its failure) already happened" })
   }
 
-  await supabase.from("ai_isa_call_batches").update({
+  const { error: batchResultsErr } = await supabase.from("ai_isa_call_batches").update({
     dialed_count: placed,
     call_results: { attempted: dialTargets.length, placed, dropped_for_consent: droppedForConsent, outcomes: results },
   }).eq("id", params.batchId)
+  if (batchResultsErr) console.error(`[voice-dial-batch] batch results NOT recorded: ${batchResultsErr.message}`)
 
   return { ok: true, dialTargets, dialedCount: placed, attemptedCount: dialTargets.length, droppedForConsent }
 }
@@ -298,7 +319,7 @@ export async function enqueueDialBatchNotifications(
   if (rows.length === 0) return { agentAlerts: 0, managerEscalations: 0 }
 
   const { data: mgrs } = await supabase.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(20)
   const managerIds = ((mgrs ?? []) as Array<{ id: string }>).map((m) => m.id)
 
   const already = async (userId: string, batchId: string, type: string) => {

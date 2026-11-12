@@ -44,13 +44,16 @@ interface PresetRow {
 
 export async function orchestratePodcastPresetPublish(
   args: OrchestratePodcastPresetPublishArgs,
+  deps: { client?: ReturnType<typeof createServiceClient> } = {},
 ): Promise<OrchestratePodcastPresetPublishResult> {
-  const svc = createServiceClient()
+  const svc = deps.client ?? createServiceClient()
 
-  const { data: presetData } = await svc.from("podcast_episode_presets")
+  // §3: a refused read is a refusal, never "not found" (supabase-js RESOLVES errors).
+  const { data: presetData, error: presetErr } = await svc.from("podcast_episode_presets")
     .select("id, brokerage_id, name, podcast_episode_id, target_distribution_channels, is_active")
     .eq("id", args.presetId)
     .maybeSingle()
+  if (presetErr) return { success: false, error: `preset_read_refused: ${presetErr.message}` }
   const preset = presetData as PresetRow | null
   if (!preset) return { success: false, error: "preset_not_found" }
   if (preset.brokerage_id !== args.brokerageId) return { success: false, error: "tenant_mismatch", presetName: preset.name }
@@ -58,13 +61,19 @@ export async function orchestratePodcastPresetPublish(
   if (!preset.podcast_episode_id) return { success: false, error: "no_episode_linked", presetName: preset.name }
 
   // Verify the episode is in tenant + ready to distribute.
-  const { data: episode } = await svc.from("podcast_episodes")
-    .select("id, brokerage_id, status")
+  // Wave 144 (lane 144H, owner ruling 18 — approved creative keeps its human approval): "ready" used to be read and never
+  // checked, so a preset staged distribution rows for an episode still pending_review. The SAME gate the distributor
+  // (app/api/cron/distribute-podcast-episodes) applies now holds at this write: finished AND approved by a human.
+  const { data: episode, error: episodeErr } = await svc.from("podcast_episodes")
+    .select("id, brokerage_id, status, approval_status")
     .eq("id", preset.podcast_episode_id)
     .maybeSingle()
-  const ep = episode as { id: string; brokerage_id: string | null; status: string | null } | null
+  if (episodeErr) return { success: false, error: `episode_read_refused: ${episodeErr.message}`, presetName: preset.name }
+  const ep = episode as { id: string; brokerage_id: string | null; status: string | null; approval_status: string | null } | null
   if (!ep) return { success: false, error: "episode_not_found", presetName: preset.name }
   if (ep.brokerage_id !== args.brokerageId) return { success: false, error: "episode_tenant_mismatch", presetName: preset.name }
+  if (ep.approval_status !== "approved") return { success: false, error: `episode_not_approved: the episode is ${ep.approval_status ?? "unreviewed"} — a human approves it before any channel receives it`, presetName: preset.name }
+  if (!["completed", "published"].includes(String(ep.status ?? ""))) return { success: false, error: `episode_not_ready: status ${ep.status ?? "unknown"} — only a finished episode is distributed`, presetName: preset.name }
 
   const channels = preset.target_distribution_channels ?? []
   if (channels.length === 0) {

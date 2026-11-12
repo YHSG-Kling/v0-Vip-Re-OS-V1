@@ -15,12 +15,12 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 function main() {
   console.log("\n[Stalled past threshold → escalate]")
   check("generating for 4h (>3h) → escalate", classifyStaleVideo({ status: "generating", ageHours: 4 }) === "escalate")
-  check("rendering for 3h (>2h) → escalate", classifyStaleVideo({ status: "rendering", ageHours: 3 }) === "escalate")
-  check("remotion_pending for 5h (>2h) → escalate", classifyStaleVideo({ status: "remotion_pending", ageHours: 5 }) === "escalate")
+  check("queued for 3h (>2h) → escalate", classifyStaleVideo({ status: "queued", ageHours: 3 }) === "escalate")
+  check("queued for 5h (>2h) → escalate", classifyStaleVideo({ status: "queued", ageHours: 5 }) === "escalate")
 
   console.log("\n[Still within the window → keep (let the crons finish it)]")
   check("generating for 0.5h → keep", classifyStaleVideo({ status: "generating", ageHours: 0.5 }) === "keep")
-  check("remotion_pending for 0.2h → keep", classifyStaleVideo({ status: "remotion_pending", ageHours: 0.2 }) === "keep")
+  check("queued for 0.2h → keep", classifyStaleVideo({ status: "queued", ageHours: 0.2 }) === "keep")
 
   console.log("\n[Terminal + agent-blocked are never reaped]")
   check("completed → keep", classifyStaleVideo({ status: "completed", ageHours: 999 }) === "keep")
@@ -29,7 +29,16 @@ function main() {
 
   console.log("\n[Unknown non-terminal state → don't reap blindly]")
   check("unknown status → keep", classifyStaleVideo({ status: "some_new_state", ageHours: 999 }) === "keep")
-  check("thresholds cover the 3 Director non-terminal states", ["remotion_pending", "generating", "rendering"].every((s) => typeof VIDEO_STALE_HOURS[s] === "number"))
+  // m374 merged the three Director non-terminal spellings into two:
+  // remotion_pending → queued, and rendering → generating. Both surviving
+  // states must still carry a threshold or a stalled reel is never escalated.
+  check("thresholds cover both Director non-terminal states",
+    ["queued", "generating"].every((s) => typeof VIDEO_STALE_HOURS[s] === "number"))
+  // …and the retired spellings must not linger as thresholds, which would be a
+  // rule keyed to a value the CHECK constraint now refuses.
+  check("no retired spelling still carries a threshold",
+    ["remotion_pending", "rendering", "audio_ready", "submitting", "awaiting_provider"]
+      .every((s) => VIDEO_STALE_HOURS[s] === undefined))
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

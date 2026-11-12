@@ -19,7 +19,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
+import { priorityRank } from "@/lib/kernel/priority-rank"
 
 export type OverdueSeverity = "critical" | "high" | "medium" | "low"
 export type OverdueCategory =
@@ -53,13 +54,16 @@ export interface OverdueSummary {
 }
 
 export async function getOverdueSummary(): Promise<OverdueSummary> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return EMPTY
   }
 
   const svc = createServiceClient()
-  const elevated = ["admin", "broker", "broker_admin", "superadmin", "tc", "transaction_coordinator", "compliance_officer"].includes(
+  // SCOPE LADDER (kept inline — admits tc/compliance tiers): 'superadmin'
+  // removed — dead as users.user_type (0 live rows); broker_owner added —
+  // storable seat that owns the brokerage.
+  const elevated = ["admin", "broker", "broker_owner", "broker_admin", "tc", "transaction_coordinator", "compliance_officer"].includes(
     ctx.userType ?? ""
   )
 
@@ -102,7 +106,7 @@ export async function getOverdueSummary(): Promise<OverdueSummary> {
     ...licensesResult,
     ...giftsResult,
     ...lendersResult,
-  ].sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity) || b.daysOverdue - a.daysOverdue)
+  ].sort((a, b) => priorityRank(b.severity) - priorityRank(a.severity) || b.daysOverdue - a.daysOverdue)
 
   const byCategory = items.reduce(
     (acc, item) => ({ ...acc, [item.category]: (acc[item.category] ?? 0) + 1 }),
@@ -307,9 +311,11 @@ function severityFromDays(days: number, hint?: string): OverdueSeverity {
   return "low"
 }
 
-function severityWeight(s: OverdueSeverity): number {
-  return { critical: 4, high: 3, medium: 2, low: 1 }[s]
-}
+// TOMBSTONE (§1.1, 2026-09-03): `severityWeight(s) → {critical:4, high:3,
+// medium:2, low:1}[s]` stood here — one of five hand copies of the same rank
+// map. Survivor: lib/kernel/priority-rank.ts:45 (PRIORITY_RANK, identical
+// numbering) via `priorityRank` (:65), imported above and applied at the sort in
+// getOverdueSummary.
 
 function humanize(s: string): string {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())

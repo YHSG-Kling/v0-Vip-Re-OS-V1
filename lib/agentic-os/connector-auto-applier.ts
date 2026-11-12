@@ -13,6 +13,13 @@
  *     Vercel) AND the most recent probe for the connector reports a healthy status — confirming
  *     the fix landed. Otherwise the proposal stays pending for a human.
  *
+ *   - `declared_alternate` (wave 137, lane 137C — owner: "apply the declared change … retry, record
+ *     evidence") — a CONFIG-level alternate the provider's ADAPTER DECLARATION lists in code
+ *     (lib/kernel/provider-adapters.ts api.alternates, level 'config': a version query/header or a
+ *     base URL). Applied only when the declaration still lists it; the row stores the alternate ID,
+ *     never the config — egress reads the config from code (provider-adapters.ts loadAppliedAlternate), so a DB row can
+ *     never point the gateway at an undeclared endpoint.
+ *
  * Anything else (endpoint_change / auth_change / param_rename / shape_update / no_evidence) is
  * NEVER auto-applied — those need human review because the change semantics can break callers.
  *
@@ -21,11 +28,51 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { declaredConfigAlternate } from "@/lib/kernel/provider-adapters"
 
 const SAFE_KINDS: Record<string, { minConfidence: number }> = {
-  retry_other_actor: { minConfidence: 0.5 },
-  rotate_key:        { minConfidence: 0.8 },
+  retry_other_actor:  { minConfidence: 0.5 },
+  rotate_key:         { minConfidence: 0.8 },
+  declared_alternate: { minConfidence: 1 },
 }
+
+type ApplierClient = { from: (table: string) => any }
+
+/**
+ * Apply ONE declared config-level alternate (lane 137C): write the evidence row as a
+ * `declared_alternate` proposal, then flip it pending → applied through the SAME idempotent,
+ * `.select()`-counted update the cron pass uses. Refuses an alternate the adapter does not declare
+ * at config level. Never throws.
+ */
+export async function applyDeclaredAlternate(
+  svc: ApplierClient,
+  p: { connector: string; alternateId: string; failureSignature: string; evidence: Record<string, unknown> },
+): Promise<{ applied: boolean; proposalId: string | null; reason: string }> {
+  const declared = declaredConfigAlternate(p.connector, p.alternateId)
+  if (!declared) return { applied: false, proposalId: null, reason: `${p.alternateId} is not a declared config-level alternate of ${p.connector}` }
+  const { adapter, alternate } = declared
+  const { data: row, error: insErr } = await svc.from("connector_healing_proposals").insert({
+    connector: p.connector,
+    failure_signature: p.failureSignature.slice(0, 300),
+    failure_sample: [p.evidence],
+    proposal_kind: "declared_alternate",
+    proposal_summary: `apply declared alternate ${alternate.id} (${alternate.version ?? alternate.baseUrl ?? "config"}) — ${alternate.reason}`.slice(0, 500),
+    proposal_payload: { alternate_id: alternate.id, provider: adapter.provider, old: { version: adapter.api.version, baseUrl: adapter.api.baseUrl }, new: { version: alternate.version ?? null, baseUrl: alternate.baseUrl ?? null, query: alternate.query ?? null, headers: alternate.headers ? Object.keys(alternate.headers) : null } },
+    docs_evidence: adapter.api.docsUrl ? [{ url: adapter.api.docsUrl, snippet: alternate.reason }] : [],
+    confidence: 1,
+    status: "pending",
+  }).select("id").maybeSingle()
+  if (insErr || !row?.id) return { applied: false, proposalId: null, reason: `evidence row refused: ${insErr?.message ?? "no row"}` }
+  const { data: flipped, error: upErr } = await svc.from("connector_healing_proposals")
+    .update({ status: "applied", applied_at: new Date().toISOString(), applied_by: "auto", notes: `auto-applied declared alternate ${alternate.id} (adapter declaration, config-level)` })
+    .eq("id", row.id).eq("status", "pending").select("id")
+  if (upErr) return { applied: false, proposalId: row.id, reason: `apply refused: ${upErr.message}` }
+  if (!Array.isArray(flipped) || flipped.length !== 1) return { applied: false, proposalId: row.id, reason: `apply matched ${Array.isArray(flipped) ? flipped.length : 0} rows — not applied` }
+  return { applied: true, proposalId: row.id, reason: `applied ${alternate.id}` }
+}
+
+// The applied-alternate READER lives beside the declaration it resolves through:
+// lib/kernel/provider-adapters.ts loadAppliedAlternate (read by the gateway at egress and by the healer).
 
 export interface AutoApplyResult {
   scanned:  number
@@ -66,7 +113,13 @@ export async function autoApplyPendingProposals(opts?: {
     // Per-kind extra checks
     let okToApply = false
     let appliedNotes = ""
-    if (p.proposal_kind === "retry_other_actor") {
+    if (p.proposal_kind === "declared_alternate") {
+      // Still declared at config level in code? A row naming an alternate the declaration dropped stays pending.
+      const altId = (p.proposal_payload as { alternate_id?: string } | null)?.alternate_id ?? ""
+      if (!declaredConfigAlternate(p.connector as string, altId)) { result.skipped++; continue }
+      okToApply = true
+      appliedNotes = `auto-applied: declared config-level alternate ${altId} (adapter declaration).`
+    } else if (p.proposal_kind === "retry_other_actor") {
       // Runtime already swaps via pickActors(); record the auto-acknowledgement.
       okToApply = true
       appliedNotes = "auto-applied: runtime auto-swap handles actor rotation; marking proposal complete."

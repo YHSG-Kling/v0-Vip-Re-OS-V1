@@ -1,0 +1,36 @@
+-- m372 — the health surface was monitoring two vendors this OS does not call
+--
+-- OWNER RULING: "yes remove those rows of heygen and vapi both are not part of
+-- the app."
+--
+-- service_status seeds 15 platform-level rows. Two of them name vendors the
+-- owner retired long ago — 'heygen' (HeyGen (Video)) and 'vapi' (Vapi (Voice)).
+-- Video is Remotion + D-ID + ElevenLabs; voice is Twilio + ElevenLabs. Neither
+-- retired vendor has a client, a credential slot or a request path left.
+--
+-- WHY THIS IS THE DATA HALF OF AN ALREADY-SOLVED CODE PROBLEM. The vendor
+-- retirement rail is deliberate and already correct: DECOMMISSIONED_PROVIDERS
+-- in lib/platform/provider-posture.ts NAMES both vendors precisely so it can
+-- EXCLUDE them, and provider-posture filters its provider map through that set.
+-- The tenancy matrix keeps both entries on purpose, as vendor-ownership history.
+-- That is the "a retired vendor survives only as its own epitaph" discipline
+-- that scripts/vendor-retirement-guard.ts enforces.
+--
+-- What no filter covered was a LEDGER ROW. service_status is a table the health
+-- cron iterates directly, one check per row, so these two would have been polled
+-- on every run and rendered on /dashboard/system as two more providers whose
+-- health an operator is invited to care about. Neither has a check function, so
+-- both resolve to 'unknown' forever — permanently unknown rows next to real
+-- ones, which is exactly the noise that trains people to ignore a health board.
+--
+-- Verified before writing: system_health_checks and health_check_history hold
+-- ZERO rows for either key, and no foreign key references service_status, so
+-- this deletes two rows and orphans nothing.
+--
+-- The code half of this ruling lands alongside: the health cron now skips any
+-- service_key in DECOMMISSIONED_PROVIDERS, so a future re-seed or a restored
+-- backup cannot quietly resurrect them, and the vendor-retirement guard gains
+-- an assertion that the ledger itself stays clear of retired vendors.
+
+DELETE FROM public.service_status
+WHERE service_key IN ('heygen', 'vapi');

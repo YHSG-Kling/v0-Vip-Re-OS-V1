@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextRequest, NextResponse } from "next/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
     .maybeSingle()
 
   const resolvedType = profile?.user_type ?? profile?.role ?? ""
-  if (!profile || !["broker", "admin", "superadmin"].includes(resolvedType)) {
+  if (!profile || !isAdminOrBroker({ user_type: resolvedType })) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
@@ -27,7 +28,7 @@ export async function GET(request: NextRequest) {
   const brokerageId = searchParams.get("brokerageId") || profile.brokerage_id
 
   // Verify brokerage access
-  if (brokerageId !== profile.brokerage_id && resolvedType !== "superadmin") {
+  if (!decideClaimedTenant({ actingBrokerageId: profile.brokerage_id, claimedBrokerageId: brokerageId }).ok && resolvedType !== "superadmin") { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
@@ -68,3 +69,6 @@ export async function GET(request: NextRequest) {
     },
   })
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

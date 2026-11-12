@@ -330,7 +330,7 @@ check("contact attach rides the ONE voice-transcript ledger (voice_calls + call 
 check("tenant attach rides communications (channel 'zoom_transcript', contact_id null)",
   transcriptsSrc.includes('from("communications")') && transcriptsSrc.includes('channel: "zoom_transcript"') && transcriptsSrc.includes("contact_id: null"))
 check("both attach lanes are idempotent per meeting uuid",
-  transcriptsSrc.includes('eq("vapi_call_id", vendorCallId)') && transcriptsSrc.includes('eq("metadata->>zoom_uuid", meetingUuid)'))
+  transcriptsSrc.includes('eq("vendor_call_id", vendorCallId)') && transcriptsSrc.includes('eq("metadata->>zoom_uuid", meetingUuid)'))
 
 check("webhook route verifies Zoom's signature and gates on the secret (no secret → 401)",
   webhookSrc.includes("verifyZoomWebhook") && webhookSrc.includes("ZOOM_WEBHOOK_SECRET_TOKEN") && webhookSrc.includes("endpoint.url_validation"))
@@ -397,8 +397,9 @@ check("registry: vendor/contact scopes may NOT connect meetings (they join, neve
 check("field-spec: meetings connect is owner-scoped for any owner-capable actor (platform included, no brokerage anchor)",
   isConnectSupported("meetings", "zoom", { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: false }).available === true
   && isConnectSupported("meetings", "zoom", { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }).available === false)
-check("role → scope mapping still covers the four connectable levels",
-  connectionScopeForUserType("superadmin").scope === "platform"
+check("role → scope mapping still covers the four connectable levels (platform = the live identity user_type 'admin' + platform_role 'superadmin')",
+  connectionScopeForUserType("admin", "superadmin").scope === "platform"
+  && connectionScopeForUserType("superadmin").scope !== "platform" // legacy user_type alone FAILS CLOSED toward the tenant scopes (CLAUDE.md §4)
   && connectionScopeForUserType("broker").scope === "brokerage"
   && connectionScopeForUserType("team_lead").scope === "team"
   && connectionScopeForUserType("agent").scope === "agent")

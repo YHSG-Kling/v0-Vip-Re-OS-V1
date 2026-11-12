@@ -1,9 +1,20 @@
 // SYSTEM: QR Form Submit → Contact creation (Contact-first, Track B)
 // Form submission = TCPA consent. Creates contact via captureContact().
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { captureContact } from '@/lib/contact-pipeline/contact-capture'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
+import { captureConsentedContact, consentGrantsFromComponent, resolveCapturedLanguage, resolveConsentBrand, situationFromBody } from '@/lib/contact-pipeline/contact-capture'
+// WAVE 152 (lane 152C): the ONE lifecycle classifier + wording, and the per-code-per-day visitor key — the only basis on
+// which a consented submission may claim the scan that preceded it.
+import { qrLifecycleState, qrUnavailableNotice, isAbsentColumnRefusal, QR_REPEAT_WINDOW_MS } from '@/lib/marketing/qr-contract'
+import { qrScanEvidence } from '@/lib/marketing/tracked-qr'
+
+// The wording the QR landing shows beside its box (app/qr/[slug]/QRLandingClient.tsx, the tcpa_checked label) — hashed onto the
+// consent record (C8). Kept verbatim; a change to the label is a new version here.
+const QR_CONSENT_TEXT = 'By submitting this form, I consent to receive calls, texts, and emails from this agent and their brokerage regarding real estate services. I understand I may opt out at any time. Message and data rates may apply.'
+const QR_CONSENT_VERSION = 'qr_landing:v1'
 import { KernelEvent } from '@/lib/kernel/events'
 
 export const dynamic = 'force-dynamic'
@@ -15,10 +26,23 @@ interface QRSubmitBody {
   last_name: string
   email?: string
   phone?: string
-  tcpa_checked: boolean
+  /** @deprecated pre-148 clients — the bare box with QR_CONSENT_TEXT. Superseded by `consent`. */
+  tcpa_checked?: boolean
+  /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). The wording is re-rendered here, never the body's. */
+  consent?: unknown
+  /** The person's situation (ruling 12) — validated against the live CHECK vocabularies by situationFromBody. */
+  situation?: unknown
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
+  // lead capture from a printed QR code (venue wifi shares one address, so
+  // the ceiling is generous). Idiom: app/api/track/visitor/route.ts.
+  const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("qr-submit", rateIp, { limit: 60, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   try {
     const body = (await req.json()) as QRSubmitBody
     const { slug, qrCodeId, first_name, last_name, email, phone, tcpa_checked } = body
@@ -26,7 +50,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // ── Step 1: TCPA channel check — do not block lead creation ─────────────
     // Per TCPA corrected rule: create contact regardless of consent.
     // Suppress phone/SMS when tcpa_checked is false.
-    const consentGiven = tcpa_checked === true
+    const legacyConsentGiven = tcpa_checked === true
 
     if (!slug || !qrCodeId) {
       return NextResponse.json(
@@ -42,17 +66,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // migrations). Previously this select silently failed and agent_user_id
     // came back undefined, dropping the per-agent attribution on captured
     // leads.
-    const { data: qr, error: qrError } = await supabase
-      .from('qr_codes')
-      .select('id, brokerage_id, agent_id, lead_count')
-      .eq('id', qrCodeId)
-      .eq('is_active', true)
-      .single()
+    //
+    // `is_active` is NOT part of the lookup, and `expires_at` is now read: a
+    // paused code, an expired code and an id that matches nothing are three
+    // different facts. THIS IS THE REFUSAL THAT MATTERS — /api/qr/scan can only
+    // speak for scans it routes, but this endpoint is reachable directly from a
+    // bookmarked landing page, and capturing a lead through a retired code
+    // writes a contact the tenant will read as coming from a live campaign.
+    // THE PAIR MUST AGREE (wave 141F): the landing hands this door both the id and the slug of
+    // ONE code. Looking the row up by id alone and recording whatever slug the body carried
+    // let a forged body file a capture under one code's tenant while naming another code's
+    // slug in the evidence (rawPayload / the touchpoint metadata). Both predicates, fail
+    // closed — a mismatched pair is "not found", not a guess at which half to trust.
+    // WAVE 152 (152C): the m945 retirement columns are read when present (a retired or
+    // revoked code takes no submissions either); before m945 the read degrades.
+    const readCode = (cols: string) => supabase.from('qr_codes').select(cols).eq('id', qrCodeId).eq('slug', slug).maybeSingle()
+    const SUBMIT_COLUMNS = 'id, brokerage_id, agent_id, lead_count, is_active, expires_at, marketing_campaign_id'
+    let { data: qrRow, error: qrError } = await readCode(`${SUBMIT_COLUMNS}, retired_at, retired_reason`)
+    if (qrError && isAbsentColumnRefusal(qrError)) ({ data: qrRow, error: qrError } = await readCode(SUBMIT_COLUMNS))
+    const qr = qrRow as unknown as { id: string; brokerage_id: string; agent_id: string | null; lead_count: number | null; is_active: boolean | null; expires_at: string | null; marketing_campaign_id: string | null; retired_at?: string | null; retired_reason?: string | null } | null
 
     if (qrError || !qr) {
       return NextResponse.json(
-        { success: false, error: 'QR code not found or inactive' },
-        { status: 404 },
+        { success: false, error: qrError ? 'We couldn\'t reach this code right now. Nothing was saved — please try again in a minute.' : 'We don\'t recognize this QR code. Nothing was saved — contact the business that gave you the code for the right link.' },
+        { status: qrError ? 503 : 404 },
+      )
+    }
+
+    // Paused (403), expired / retired / revoked (410) — the same words the scan door shows,
+    // and nothing is captured for any of them.
+    const state = qrLifecycleState(qr)
+    if (state !== 'active') {
+      const notice = qrUnavailableNotice(state)
+      return NextResponse.json(
+        { success: false, error: `${notice.heading}. ${notice.detail} ${notice.action}` },
+        { status: state === 'paused' ? 403 : 410 },
       )
     }
 
@@ -61,9 +109,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // routes through resolveAgentForContact() so the brokerage's assignment
     // rules apply when no QR is agent-tagged.
     const ownerAgentId: string | null = qr.agent_id ?? null
+    // Ruling 12 (wave 148): the code's agent is its CREATOR — the person is assigned back to them (contacts.source_agent_id).
+    const { data: qrAgent } = ownerAgentId ? await supabase.from('agents').select('user_id').eq('id', ownerAgentId).maybeSingle() : { data: null }
+    const qrCreatorUserId: string | null = (qrAgent as { user_id?: string | null } | null)?.user_id ?? null
 
     const now = new Date().toISOString()
-    const { contactId, action } = await captureContact({
+    // C15 (wave 148): the ONE consent component's boxes, each recorded with the wording re-rendered from THE one brand rule
+    // (the QR page renders the same). A cached pre-148 page sends `tcpa_checked` beside QR_CONSENT_TEXT (legacy record).
+    const qrBrand = await resolveConsentBrand(supabase, { agentId: ownerAgentId, brokerageId: qr.brokerage_id })
+    const qrC15 = consentGrantsFromComponent(body.consent, { door: 'qr_landing', brandName: qrBrand, provided: { email: !!email, phone: !!phone } })
+    if (qrC15.submission && !qrC15.submission.service_delivery) {
+      return NextResponse.json({ success: false, error: 'Please tick the first consent box (the service follow-up) so we can follow up.' }, { status: 400 })
+    }
+    const qrConsents = qrC15.submission
+      ? qrC15.grants
+      : [{ family: 'phone' as const, given: legacyConsentGiven, text: QR_CONSENT_TEXT, textVersion: QR_CONSENT_VERSION, purposes: ['requested_information' as const] }]
+    const consentGiven = qrConsents.some((g) => g.family === 'phone' && g.given)
+    // ── C8 (wave 147, lane 147A — owner ruling 1): the consented submission → the canonical CONTACT, its consent record, the
+    //    arbiter told. The tenant is the QR row's (re-verified by the contract against qr_codes); never the body's.
+    const intake = await captureConsentedContact({
       brokerageId: qr.brokerage_id,
       ownerAgentId,
       source: 'qr_scan',
@@ -73,17 +137,33 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Only store phone when TCPA consent given; omit to prevent calling
       phone: consentGiven ? (phone || null) : null,
       preferred_channel: consentGiven ? 'phone' : 'email',
-      tcpa_consent: consentGiven,
-      tcpa_consent_date: consentGiven ? now : null,
       rawPayload: { slug, qrCodeId, first_name, last_name, email, phone },
+      // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
+      language: resolveCapturedLanguage(null, req.headers.get('accept-language')),
+      creatorUserId: qrCreatorUserId,
+      ...(() => { const sit = situationFromBody(body.situation); return { ...(sit.contact_type ? { contact_type: sit.contact_type } : {}), ...(sit.timeline ? { timeline: sit.timeline } : {}) } })(),
+      ...(qr.marketing_campaign_id ? { campaign_attribution_id: qr.marketing_campaign_id as string } : {}),
+      source_channel: 'qr_code',
+      consents: qrConsents,
+      intake: {
+        capturedAt: now, channel: 'qr', sourceUrl: `/qr/${slug}`,
+        evidence: { ...qrC15.evidence, ...(qrC15.wordingHash ? { wording_hash: qrC15.wordingHash } : {}), qr_code_id: qr.id, slug, ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, user_agent: req.headers.get('user-agent') ?? null },
+        formOwner: { table: 'qr_codes', id: qr.id },
+      },
     })
+    if (!intake.ok || !intake.contactId) {
+      const status = intake.refused === 'not_identifiable' ? 400 : intake.refused === 'cross_tenant_form' || intake.refused === 'form_not_found' ? 404 : 500
+      return NextResponse.json({ success: false, error: intake.reason ?? 'Capture failed' }, { status })
+    }
+    const contactId = intake.contactId
+    const action = intake.replay ? 'merged' : (intake.action ?? 'merged')
 
     // ── Step 4: Increment lead_count only on new contact creation ─────────────
     if (action === 'created') {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('qr_codes')
         .update({ lead_count: (qr.lead_count ?? 0) + 1 })
-        .eq('id', qr.id)
+        .eq('id', qr.id), { table: "qr_codes", flow: "qr_codes_write", reason: "QR lead counter (reporting)" })
 
       // Wave 36 — variant lead attribution. If this QR was attached to
       // a direct_mail_campaigns row that carried a variant_id, bump the
@@ -118,22 +198,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             .eq('brokerage_id', qr.brokerage_id)
             .maybeSingle()
           if (existingOutcomes) {
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from('direct_mail_variant_outcomes')
               .update({
                 leads_count: ((existingOutcomes.leads_count as number) ?? 0) + 1,
                 updated_at:  new Date().toISOString(),
               })
-              .eq('id', existingOutcomes.id)
+              .eq('id', existingOutcomes.id), { table: "direct_mail_variant_outcomes", flow: "direct_mail_variant_outcomes_write", reason: "variant analytics counter; the lead itself is captured above" })
           } else {
-            await supabase.from('direct_mail_variant_outcomes').insert({
+            await sentinelWrite(supabase, supabase.from('direct_mail_variant_outcomes').insert({
               variant_id:   c.variant_id,
               brokerage_id: qr.brokerage_id,
               sends_count:  0,
               scans_count:  0,
               leads_count:  1,
               updated_at:   new Date().toISOString(),
-            })
+            }), { table: "direct_mail_variant_outcomes", flow: "direct_mail_variant_outcomes_write", reason: "variant analytics counter; the lead itself is captured above" })
           }
         }
       } catch (e) {
@@ -141,21 +221,72 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     }
 
-    // ── Step 5: Link most recent unlinked scan event to contact ───────────────
-    const { data: scanEvent } = await supabase
+    // ── Step 4b: Record the CAMPAIGN TOUCHPOINT ───────────────────────────────
+    // This is the moment a QR scan stops being anonymous: the code is known, the
+    // contact is now known, and if the code belongs to a marketing campaign then
+    // that campaign has just touched that person. marketing_campaign_touchpoints
+    // is the shared ledger de-confliction (the over-messaging frequency cap),
+    // attribution and the team bullpen all read — and 'qr_scan' is a channel its
+    // live CHECK admits that NOTHING was writing, so a QR-driven touch was
+    // invisible to every one of them.
+    //
+    // Only when the code carries a marketing_campaign_id: the table's
+    // origin CHECK requires campaign_id OR sequence_id, and a QR with no campaign
+    // has no campaign to credit. external_table/external_id point back at the QR
+    // itself so the touch is traceable to the exact code that produced it.
+    //
+    // Best-effort and non-blocking — recordCampaignTouchpointSafe never throws,
+    // and an attribution write must never fail the capture the prospect is
+    // waiting on.
+    if (qr.marketing_campaign_id) {
+      try {
+        const { recordCampaignTouchpointSafe } = await import('@/lib/marketing/touchpoint-recorder')
+        void recordCampaignTouchpointSafe({
+          brokerageId:   qr.brokerage_id as string,
+          campaignId:    qr.marketing_campaign_id as string,
+          contactId,
+          channel:       'qr_scan',
+          externalTable: 'qr_codes',
+          externalId:    qr.id as string,
+          source:        'trigger',
+          status:        'converted',
+          metadata:      { slug, action },
+        })
+      } catch (err) {
+        console.error('[qr/submit] touchpoint record failed:', err)
+      }
+    }
+
+    // ── Step 5: Link THIS person's own scan to the contact — never someone else's ───
+    // WAVE 152 (152C). TOMBSTONE: this step linked "the most recent unlinked scan" of the
+    // code to whoever submitted — on a code printed on 500 postcards that is a STRANGER's
+    // scan (the directive: "Do not claim an anonymous scan = a known consumer"). A scan is
+    // now linked only when it carries the SAME visitor key this submission computes (same
+    // code, same UTC day, same coarse network + browser) inside the repeat window; anything
+    // else stays anonymous. SURVIVOR: the visitor-key predicate below. Before m946 there is
+    // no key column, the read is refused, and no scan is linked (fail closed — the Contact
+    // itself was still captured above, through the consent it gave).
+    // The SAME derivation the scan door uses (app/api/qr/scan: x-forwarded-for's first hop + the browser string).
+    const submitEvidence = qrScanEvidence({ qrCodeId: qr.id, ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null, userAgent: req.headers.get('user-agent'), referrer: null })
+    const { data: scanEvent, error: scanLinkError } = await supabase
       .from('qr_scan_events')
       .select('id')
       .eq('qr_code_id', qr.id)
+      .eq('visitor_key', submitEvidence.visitorKey)
       .is('contact_id', null)
+      .gte('scanned_at', new Date(Date.now() - QR_REPEAT_WINDOW_MS).toISOString())
       .order('scanned_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+    if (scanLinkError && !isAbsentColumnRefusal(scanLinkError)) {
+      console.error('[qr/submit] own-scan lookup refused — no scan linked:', scanLinkError.message)
+    }
 
-    if (scanEvent) {
-      await supabase
+    if (scanEvent && !scanLinkError) {
+      await sentinelWrite(supabase, supabase
         .from('qr_scan_events')
         .update({ contact_id: contactId })
-        .eq('id', scanEvent.id)
+        .eq('id', scanEvent.id), { table: "qr_scan_events", flow: "qr_scan_events_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     // ── Step 6: Emit lifecycle event + fan out ────────────────────────────────
@@ -163,18 +294,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // campaign_sequences with trigger_event='contact_captured' (so e.g.
     // a "QR-captured lead" nurture drip starts immediately) AND emits a
     // welcome portal message for the new contact.
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'contact',
       entity_id: contactId,
       event_type: KernelEvent.CONTACT_CAPTURED,
       metadata: { source: 'qr_scan', slug, qrCodeId, action },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     if (action === 'created') {
       try {
-        const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
-        await fanOutKernelEvent({
+        // Row already written above → skipInsert (fan-out only).
+        const { emitKernelEvent } = await import('@/lib/kernel/emit')
+        await emitKernelEvent({
           event:       KernelEvent.CONTACT_CAPTURED,
           brokerageId: qr.brokerage_id,
           entityType:  'contact',
@@ -182,6 +314,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           contactId,
           agentUserId: undefined,
           metadata:    { source: 'qr_scan', slug, qrCodeId, ownerAgentId },
+          skipInsert:  true,
         })
       } catch { /* non-blocking */ }
     }

@@ -31,6 +31,11 @@ import { upsertCampaignPreset, deactivateCampaignPreset, type PresetChannel } fr
 import type { PlaybookScore } from "@/app/actions/creative-playbooks"
 import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
 import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
+import { EstimateStillsCard } from "./estimate-stills-card"
+import { EstimateComparisonCard } from "./estimate-comparison-card"
+import { PublicPageStillsCard } from "./public-page-stills-card"
+import { LearnedVisualRulesCard } from "./learned-visual-rules-card"
+import { TopicVideoCadenceCard } from "./topic-video-cadence-card"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -309,6 +314,14 @@ export function CampaignBundlesClient({
               </div>
             ))}
           </div>
+          {/* Wave 80D — the Zestimate Challenge's still: tenant-picked source + address, pending approval. */}
+          <EstimateStillsCard />
+          <EstimateComparisonCard />
+          {/* Wave 85A — general public-page stills (listing / own site / market / community pages): every use once approved. */}
+          <PublicPageStillsCard />
+          <LearnedVisualRulesCard />
+          {/* Wave 83B — the autonomous topic-video cadence (default 3/week). */}
+          <TopicVideoCadenceCard />
         </section>
       )}
 
@@ -453,7 +466,7 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
           {/* Performance row — populated daily by the
               bundle-attribution-rollup cron. Shown even when zero so
               the agent can see the bundle has never fired. */}
-          <div className="mt-2 grid grid-cols-4 gap-2 border-t pt-2">
+          <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 border-t pt-2">
             <Metric label="dispatches"  value={p.dispatch_count} />
             <Metric label="scans"       value={p.total_scans}    />
             <Metric label="leads"       value={p.total_leads}    />
@@ -469,9 +482,6 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
                 <span className="font-mono text-gray-400">{idx + 1}.</span>
                 <span className="font-medium">{CHANNEL_LABEL[it.channel]}</span>
                 <span className="text-gray-500 truncate">{presetName(it.channel, it.preset_id)}</span>
-                {it.send_after_minutes > 0 && (
-                  <span className="text-gray-400">· +{it.send_after_minutes}min</span>
-                )}
               </li>
             ))}
           </ol>
@@ -721,13 +731,9 @@ function ItemEditor({ idx, item, catalog, onMove, onRemove, onUpdate, isFirst, i
             <option key={p.id} value={p.id}>{p.name} [{p.scope_type}]</option>
           ))}
         </select>
-        <label className="text-xs text-gray-700 flex items-center gap-1 whitespace-nowrap">
-          <span>+</span>
-          <input type="number" min={0} step={1} value={item.send_after_minutes}
-            onChange={(e) => onUpdate({ send_after_minutes: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-            className="w-16 border rounded px-1 py-0.5 text-xs" />
-          <span>min</span>
-        </label>
+        {/* wave 150, lane 150Z (lane 150SZ Outside-lane 2): the "send after N min" input is removed — the dispatcher never
+            honoured it and owner rulings forbid a fixed timetable. The list sets ORDER only; timing is the arbiter's. */}
+        <span className="text-xs text-gray-700 whitespace-nowrap" title="Items go out in this order; the OS decides when each follow-on is useful">order only</span>
         <div className="flex gap-0.5">
           <button type="button" onClick={() => onMove(-1)} disabled={isFirst}
             title="Move up" className="text-xs px-1.5 py-0.5 border border-gray-200 rounded disabled:opacity-30">↑</button>

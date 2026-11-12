@@ -7,7 +7,9 @@
 
 export { DotloopProvider } from "@/lib/integrations/providers/dotloop-provider"
 
+import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { resolveTenantProviderCredentials } from "@/lib/integrations/providers/provider-resolver"
 
 // ─── DOTLOOP DIRECT HELPERS ───────────────────────────────────────────────────
 // Thin functional wrappers around DotloopProvider for callers that don't want
@@ -15,10 +17,21 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
 
-function getDotloopCredentials() {
-  const apiKey = process.env.DOTLOOP_API_KEY
-  const profileId = process.env.DOTLOOP_PROFILE_ID
-  return apiKey && profileId ? { apiKey, profileId } : null
+/**
+ * THE TENANT'S Dotloop credential (wave 141, lane 141C). TOMBSTONE: `getDotloopCredentials()` read
+ * process.env.DOTLOOP_API_KEY / DOTLOOP_PROFILE_ID — ONE platform profile for every brokerage's loops,
+ * the cross-tenant shape the owner forbids ("Transaction-provider credentials are the TENANT's; no
+ * shared cross-tenant credentials"). Every helper below now takes the brokerage it acts FOR and
+ * resolves that tenant's own row through the ONE resolver
+ * (lib/integrations/providers/provider-resolver.ts resolveTenantProviderCredentials — agent → team →
+ * brokerage; a platform-tier row is refused by name). No credential → an honest refusal, never
+ * another account's loop.
+ */
+async function getDotloopCredentials(brokerageId: string): Promise<{ apiKey: string; profileId: string } | null> {
+  if (!brokerageId) return null
+  const r = await resolveTenantProviderCredentials("dotloop", { brokerageId })
+  if (!r.ok) { console.warn(`[providers/esign] ${r.reason}`); return null }
+  return { apiKey: r.credentials.apiKey, profileId: r.credentials.profileId }
 }
 
 /** All Dotloop egress through the connector-gateway (bearer auth). */
@@ -50,15 +63,15 @@ export interface CreateLoopResult {
   error?: string
 }
 
-export async function createLoop(params: CreateLoopParams): Promise<CreateLoopResult> {
-  const credentials = getDotloopCredentials()
+export async function createLoop(brokerageId: string, params: CreateLoopParams): Promise<CreateLoopResult> {
+  const credentials = await getDotloopCredentials(brokerageId)
 
   // No credentials → return an honest, observable failure. The previous "return a fake
   // mock-loop-${ts} ID" path poisoned the DB with non-existent loop IDs; downstream calls then
   // 404'd against Dotloop with confusing errors. Callers should treat this the same as any other
   // configuration-missing failure: surface to the user, don't persist the result.
   if (!credentials) {
-    return { success: false, error: "Dotloop credentials not configured (DOTLOOP_API_KEY / DOTLOOP_PROFILE_ID)" }
+    return { success: false, error: "Dotloop is not connected for this brokerage (Settings → Integrations)" }
   }
 
   const { apiKey, profileId } = credentials
@@ -82,6 +95,8 @@ export async function createLoop(params: CreateLoopParams): Promise<CreateLoopRe
 }
 
 export interface AddParticipantParams {
+  /** The tenant whose Dotloop credential signs the request — from the caller's VERIFIED context. */
+  brokerageId: string
   loopId: string
   email: string
   name: string
@@ -89,10 +104,10 @@ export interface AddParticipantParams {
 }
 
 export async function addParticipant(params: AddParticipantParams): Promise<{ success: boolean; error?: string }> {
-  const credentials = getDotloopCredentials()
+  const credentials = await getDotloopCredentials(params.brokerageId)
 
   if (!credentials) {
-    return { success: false, error: "Dotloop credentials not configured" }
+    return { success: false, error: "Dotloop is not connected for this brokerage (Settings → Integrations)" }
   }
 
   const { apiKey, profileId } = credentials
@@ -119,13 +134,13 @@ export interface GetLoopStatusResult {
   error?: string
 }
 
-export async function getLoopSignatureStatus(loopId: string): Promise<GetLoopStatusResult> {
-  const credentials = getDotloopCredentials()
+export async function getLoopSignatureStatus(brokerageId: string, loopId: string): Promise<GetLoopStatusResult> {
+  const credentials = await getDotloopCredentials(brokerageId)
 
   // Previous fake "3 of 5 signed, 60%" response misled the UI into showing fictional progress
   // when Dotloop was unconfigured. Honest zero with an error explains why the bar is empty.
   if (!credentials) {
-    return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: "Dotloop credentials not configured" }
+    return { success: false, total: 0, signed: 0, pending: 0, percentComplete: 0, error: "Dotloop is not connected for this brokerage (Settings → Integrations)" }
   }
 
   const { apiKey, profileId } = credentials
@@ -174,13 +189,13 @@ export interface SyncLoopDocumentsResult {
   error?: string
 }
 
-export async function syncLoopDocuments(loopId: string): Promise<SyncLoopDocumentsResult> {
-  const credentials = getDotloopCredentials()
+export async function syncLoopDocuments(brokerageId: string, loopId: string): Promise<SyncLoopDocumentsResult> {
+  const credentials = await getDotloopCredentials(brokerageId)
 
   // Previous "return [] silently" misled callers (e.g. app/actions/dotloop-integration.ts:48)
   // into reporting "Synced 0 documents" success when Dotloop was unconfigured.
   if (!credentials) {
-    return { success: false, folders: [], error: "Dotloop credentials not configured" }
+    return { success: false, folders: [], error: "Dotloop is not connected for this brokerage (Settings → Integrations)" }
   }
 
   const { apiKey, profileId } = credentials
@@ -195,6 +210,8 @@ export async function syncLoopDocuments(loopId: string): Promise<SyncLoopDocumen
 // ─── UPLOAD LOOP DOCUMENT ──────────────────────────────────────────────────────
 
 export interface UploadLoopDocumentParams {
+  /** The tenant whose Dotloop credential signs the request — from the caller's VERIFIED context. */
+  brokerageId: string
   loopId: string
   documentName: string
   fileUrl: string
@@ -210,10 +227,10 @@ export interface UploadLoopDocumentResult {
 export async function uploadLoopDocument(
   params: UploadLoopDocumentParams
 ): Promise<UploadLoopDocumentResult> {
-  const credentials = getDotloopCredentials()
+  const credentials = await getDotloopCredentials(params.brokerageId)
 
   if (!credentials) {
-    return { success: false, error: "Dotloop credentials not configured" }
+    return { success: false, error: "Dotloop is not connected for this brokerage (Settings → Integrations)" }
   }
 
   const { apiKey, profileId } = credentials
@@ -239,11 +256,11 @@ export interface GetLoopActivityResult {
   error?: string
 }
 
-export async function getLoopActivity(loopId: string): Promise<GetLoopActivityResult> {
-  const credentials = getDotloopCredentials()
+export async function getLoopActivity(brokerageId: string, loopId: string): Promise<GetLoopActivityResult> {
+  const credentials = await getDotloopCredentials(brokerageId)
 
   if (!credentials) {
-    return { success: false, activities: [], error: "Dotloop credentials not configured" }
+    return { success: false, activities: [], error: "Dotloop is not connected for this brokerage (Settings → Integrations)" }
   }
 
   const { apiKey, profileId } = credentials

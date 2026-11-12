@@ -36,6 +36,27 @@ export async function listPdfFields(pdfBytes: Uint8Array | ArrayBuffer): Promise
 }
 
 /**
+ * The TEXT fields a PDF carries and their current values — what the FormWizard's Fill step
+ * renders as editable inputs beside the preview (lane 88C: the agent types into OUR fields,
+ * the server re-fills the PDF, and the preview + the packet that goes to e-sign carry
+ * exactly what they typed; typing into a browser's PDF viewer changed nothing we could send).
+ * Non-text fields (checkboxes, radios, signatures) are left to the e-sign step.
+ */
+export async function readPdfTextFields(pdfBytes: Uint8Array | ArrayBuffer): Promise<PdfFieldValue[]> {
+  const doc = await PDFDocument.load(toUint8(pdfBytes), { ignoreEncryption: true })
+  const out: PdfFieldValue[] = []
+  for (const f of doc.getForm().getFields()) {
+    const name = f.getName()
+    try {
+      out.push({ name, value: doc.getForm().getTextField(name).getText() ?? "" })
+    } catch {
+      /* not a text field */
+    }
+  }
+  return out
+}
+
+/**
  * Fill an AcroForm PDF with the given values. Only TEXT fields that exist are filled; a requested
  * field the PDF lacks (or a non-text field) is returned in `skipped`. Optionally flatten (lock the
  * filled values into the page so they can't be edited downstream). Never throws on a missing field.

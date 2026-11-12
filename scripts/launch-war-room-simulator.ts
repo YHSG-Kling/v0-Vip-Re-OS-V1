@@ -27,9 +27,12 @@ async function main() {
     check("war room convened: reel + channels + open house + neighbor farm + ad + summary",
       r1.launches >= 1 && r1.reels >= 1 && r1.channelsStaged >= 3 && r1.openHousesProposed >= 1 && r1.neighborFarms >= 1 && r1.adsStaged >= 1 && r1.summariesProposed >= 1)
     // Open house scheduled (unpublished).
-    const { data: oh } = await svc.from("open_houses").select("id, status, is_published, event_date").eq("listing_id", (l as any).id).maybeSingle()
-    if (oh) cleanup.push({ table: "open_houses", id: (oh as any).id })
-    check("Listing Concierge: open house PROPOSED as a draft (no fabricated date), unpublished", (oh as any)?.status === "draft" && (oh as any)?.is_published === false)
+    // open_house_events is the survivor (`open_houses` retired by m543). event_date is
+    // asserted NULL here, not merely absent: m543's CHECK permits a null date only on a
+    // draft, so this reads back the invariant rather than trusting the writer.
+    const { data: oh } = await svc.from("open_house_events").select("id, status, is_published, event_date").eq("listing_id", (l as any).id).maybeSingle()
+    if (oh) cleanup.push({ table: "open_house_events", id: (oh as any).id })
+    check("Listing Concierge: open house PROPOSED as a draft (no fabricated date), unpublished", (oh as any)?.status === "draft" && (oh as any)?.is_published === false && (oh as any)?.event_date === null)
     // Coming-soon social drafted.
     const { data: sp } = await svc.from("social_posts").select("id, post_type, approval_status").eq("listing_id", (l as any).id).eq("post_type", "coming_soon").maybeSingle()
     if (sp) cleanup.push({ table: "social_posts", id: (sp as any).id })

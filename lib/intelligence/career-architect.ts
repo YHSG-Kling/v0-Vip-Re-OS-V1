@@ -17,7 +17,7 @@ import { zipFromAddress } from "@/lib/intelligence/negotiation-bands"
 type Svc = SupabaseClient<any, any, any>
 
 export const MIN_CLOSINGS = 3
-export const CAREER_WINDOW_DAYS = 365
+const CAREER_WINDOW_DAYS = 365
 
 export interface CareerProfile {
   agentId: string
@@ -74,7 +74,7 @@ export function composeCareerSuggestions(p: CareerProfile): CareerSuggestion[] {
 }
 
 /** Load a producing agent's career profile from the ledgers. */
-export async function loadCareerProfiles(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<CareerProfile[]> {
+async function loadCareerProfiles(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<CareerProfile[]> {
   const since = new Date(now.getTime() - CAREER_WINDOW_DAYS * 86_400_000).toISOString()
   const [{ data: closed }, { data: decisions }] = await Promise.all([
     svc.from("transactions").select("agent_id, purchase_price, property_address")
@@ -116,10 +116,29 @@ export async function loadCareerProfiles(svc: Svc, brokerageId: string, now: Dat
   })
 }
 
-/** The ZIP an agent has worked the most contacts in (the forming farm, pre-closings). */
+/**
+ * The ZIP an agent has worked the most contacts in (the forming farm, pre-closings).
+ *
+ * `now` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, so this one read was
+ * the ONLY unwindowed input in a brief that says of itself, in the rationale it
+ * writes onto every message, that it is "grounded ONLY in this agent's own
+ * ${CAREER_WINDOW_DAYS}-day ledger". Every closing, volume and decision-time figure
+ * beside it comes from `since` (line 78, derived from the same `now`); the touched
+ * farm counted contacts from any year the brokerage has ever held, and the arbitrary
+ * `.limit(1000)` then took whichever thousand of them PostgREST felt like — so a
+ * new agent's "forming farm" could be a ZIP they have not touched since 2019.
+ * Windowed to the same ledger, and ordered so the limit takes the RECENT thousand
+ * rather than an unordered thousand.
+ */
 async function loadTopTouchedZip(svc: Svc, brokerageId: string, agentId: string, now: Date): Promise<{ zip: string; count: number } | null> {
+  const since = new Date(now.getTime() - CAREER_WINDOW_DAYS * 86_400_000).toISOString()
   const { data: contacts } = await svc.from("contacts")
-    .select("zip_code, city").eq("brokerage_id", brokerageId).eq("agent_id", agentId).limit(1000)
+    .select("zip_code, city")
+    .eq("brokerage_id", brokerageId)
+    .eq("agent_id", agentId)
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(1000)
   const counts = new Map<string, number>()
   for (const c of ((contacts ?? []) as any[])) {
     const zip = typeof c.zip_code === "string" && /^\d{5}/.test(c.zip_code) ? c.zip_code.slice(0, 5) : null
@@ -132,7 +151,7 @@ async function loadTopTouchedZip(svc: Svc, brokerageId: string, agentId: string,
 const quarterTag = (now: Date) => `career_architect:${now.getFullYear()}-Q${Math.floor(now.getMonth() / 3) + 1}`
 
 /** Quarterly gated brief per producing agent. Idempotent per (agent, quarter). */
-export async function runCareerArchitect(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ briefed: number }> {
+async function runCareerArchitect(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ briefed: number }> {
   const profiles = await loadCareerProfiles(svc, brokerageId, now)
   let briefed = 0
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")

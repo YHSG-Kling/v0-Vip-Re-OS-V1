@@ -26,17 +26,17 @@ const bk = (vendorId: string, category: string, cost: number, n: number): Priced
 function pureLayer() {
   console.log("\n[flagOverpricedVendors · pure — peer benchmark, honest gating]")
   // 3 inspectors: A@100, B@110, C@200 (median of avgs = 110; C is 82% above → flagged)
-  const bookings = [...bk("A", "Inspector", 100, 3), ...bk("B", "Inspector", 110, 3), ...bk("C", "Inspector", 200, 3)]
+  const bookings = [...bk("A", "inspector", 100, 3), ...bk("B", "inspector", 110, 3), ...bk("C", "inspector", 200, 3)]
   const flags = flagOverpricedVendors(bookings)
   check("the overpriced vendor (C @ $200 vs $110 median) is flagged", flags.length === 1 && flags[0].vendorId === "C")
   check("the flag reports the % above the category median", flags[0].pctAbove >= 20 && flags[0].categoryMedian === 110)
   check("fairly-priced peers are NOT flagged", !flags.some((f) => f.vendorId === "A" || f.vendorId === "B"))
 
   console.log("\n[honest gating · pure]")
-  check("a vendor with too few bookings isn't benchmarked", flagOverpricedVendors([...bk("A", "Inspector", 100, 3), ...bk("B", "Inspector", 110, 3), ...bk("C", "Inspector", 200, 2)]).length === 0)
-  check("a category with too few peers has no median → no flag", flagOverpricedVendors([...bk("A", "Inspector", 100, 3), ...bk("C", "Inspector", 200, 3)]).length === 0)
-  check("within-threshold pricing isn't flagged", flagOverpricedVendors([...bk("A", "Lender", 100, 3), ...bk("B", "Lender", 105, 3), ...bk("C", "Lender", 115, 3)]).length === 0)
-  check("$0 / null costs are ignored (honest)", flagOverpricedVendors([...bk("A", "Inspector", 0, 5), { vendorId: "A", category: "Inspector", cost: null }]).length === 0)
+  check("a vendor with too few bookings isn't benchmarked", flagOverpricedVendors([...bk("A", "inspector", 100, 3), ...bk("B", "inspector", 110, 3), ...bk("C", "inspector", 200, 2)]).length === 0)
+  check("a category with too few peers has no median → no flag", flagOverpricedVendors([...bk("A", "inspector", 100, 3), ...bk("C", "inspector", 200, 3)]).length === 0)
+  check("within-threshold pricing isn't flagged", flagOverpricedVendors([...bk("A", "lender", 100, 3), ...bk("B", "lender", 105, 3), ...bk("C", "lender", 115, 3)]).length === 0)
+  check("$0 / null costs are ignored (honest)", flagOverpricedVendors([...bk("A", "inspector", 0, 5), { vendorId: "A", category: "inspector", cost: null }]).length === 0)
 }
 
 function sourceLayer() {
@@ -62,7 +62,7 @@ async function liveLayer() {
   const cleanup: Array<{ table: string; id: string }> = []
   try {
     const seed = async (name: string, cost: number) => {
-      const { data: v } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name, category: "Inspector", status: "active" }).select("id").single()
+      const { data: v } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name, category: "inspector", status: "active" }).select("id").single()
       cleanup.push({ table: "vendors", id: (v as any).id })
       for (let i = 0; i < 3; i++) {
         const { data: b } = await svc.from("vendor_bookings").insert({ brokerage_id: brokerageId, vendor_id: (v as any).id, cost, status: "completed", service_type: "inspection" }).select("id").single()

@@ -214,7 +214,7 @@ BEGIN
   RAISE NOTICE '── Journey 5: Vendor contact-scoping — assignment + RLS helper ──';
 
   INSERT INTO vendors (brokerage_id, name, category, email, access_level)
-  VALUES (v_brokerage_id, 'J5 Inspector', 'Inspector', 'j5-vendor@flow-test.example', 'transaction_only')
+  VALUES (v_brokerage_id, 'J5 Inspector', 'inspector', 'j5-vendor@flow-test.example', 'transaction_only')
   RETURNING id INTO v_vendor_id;
 
   INSERT INTO vendor_contact_assignments (vendor_id, contact_id, brokerage_id, assigned_by, scope, status)

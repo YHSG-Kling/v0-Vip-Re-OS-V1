@@ -1,4 +1,10 @@
-import { createClient as createAuthClient, type SupabaseClient } from "@supabase/supabase-js"
+// THE ONE service-client factory (lane 140O, CLAUDE.md §4 "gate first, then use the
+// service client"). TOMBSTONE: this module built its own `createClient(url, serviceKey)`
+// from the raw env — a second spelling of lib/supabase/service.ts that the proofs which
+// swap that one leaf (scripts/seat-user-convergence-guard.ts's Module._load shim) could
+// never see, and a second place the env check lived. The factory throws the same way when
+// the service env is absent.
+import { createServiceClient } from "@/lib/supabase/service"
 
 /**
  * Provisions the AI-ISA system actor for a brokerage.
@@ -13,23 +19,16 @@ import { createClient as createAuthClient, type SupabaseClient } from "@supabase
  * The handle_new_auth_user trigger reads first_name/last_name/
  * user_type/brokerage_id from raw_user_meta_data; we supply all four.
  *
- * MUST be called from a server-side context with SUPABASE_SERVICE_ROLE_KEY.
- * Returns the ISA actor's user_id.
+ * GATE FIRST (§4): every caller is a gated internal — createTenantCore / the operating
+ * baseline (lib/kernel/tenant-operating-baseline.ts) with the id the caller minted or
+ * resolved, never a request body. Returns the ISA actor's user_id.
  */
 export async function provisionIsaActorForBrokerage(args: {
   brokerageId: string
   brokerageName?: string
   brokerageSlug?: string | null
 }): Promise<{ userId: string; created: boolean }> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
-  if (!url || !serviceKey) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-  }
-
-  const admin: SupabaseClient = createAuthClient(url, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  })
+  const admin = createServiceClient()
 
   // Fast path — brokerage already has an actor.
   const { data: existing } = await admin

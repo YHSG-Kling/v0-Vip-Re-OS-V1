@@ -7,9 +7,9 @@
  * This is GOVERNANCE ONLY - performs NO actions, only returns YES/NO
  */
 
-import { createServiceClient } from "@/lib/supabase/service"
 import { isSystemGateEnabled, type BuyerState } from "./lifecycle-definitions"
 import { checkFinancialVerification } from "./financial-verification"
+import { getCurrentBuyerState } from "./lifecycle-logger"
 
 export interface GatingResult {
   allowed: boolean
@@ -157,29 +157,23 @@ export async function isOfferAllowed(contactId: string): Promise<GatingResult> {
   }
 }
 
-/**
- * Get current buyer state from most recent lifecycle transition event
- */
-async function getCurrentBuyerState(contactId: string): Promise<BuyerState | null> {
-  const supabase = createServiceClient()
-  
-  const { data: event, error } = await supabase
-    .from("activities")
-    .select("metadata")
-    .eq("activity_type", "buyer.lifecycle.transition")
-    .eq("entity_type", "contact")
-    .eq("entity_id", contactId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single()
-  
-  if (error || !event || !event.metadata) {
-    return null
-  }
-  
-  const metadata = event.metadata as Record<string, unknown>
-  return (metadata.to_state as BuyerState) || null
-}
+// CONSOLIDATED AWAY — this file's private getCurrentBuyerState.
+//
+// It read `activities` where activity_type = 'buyer.lifecycle.transition'. NOTHING has ever
+// written that row: the canonical writer, emitLifecycleTransition, routes through
+// transitionLifecycle() into `lifecycle_events` with entity_type 'buyer_lifecycle'. Live
+// census at removal: 0 rows matching the activity type, 8 real buyer_lifecycle rows in
+// lifecycle_events — the state existed the whole time, in the other table.
+//
+// So this returned null for every buyer, always. And these gates FAIL CLOSED on null
+// ("Buyer state not found"), which means isSearchAllowed / isTourAllowed / isOfferAllowed
+// and the batch check denied EVERY buyer permanently. A governance layer that blocks
+// everyone is not safe, it is broken — it cannot distinguish an unverified buyer from a
+// fully verified one, so the gate carries no information at all.
+//
+// Named survivor: lib/buyer-lifecycle/lifecycle-logger.ts:getCurrentBuyerState — same
+// signature, same return type, reads the table the writer actually writes. Nothing is
+// lost; the local copy did strictly less.
 
 /**
  * Batch check gating for multiple buyers

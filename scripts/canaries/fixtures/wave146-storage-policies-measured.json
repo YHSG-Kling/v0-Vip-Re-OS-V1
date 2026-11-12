@@ -1,0 +1,33 @@
+{
+  "_what": "A MEASUREMENT, never a pass: the live storage.objects + public.offers SELECT-side policies of project hrvaqgvukzxfskkcrwbt, read through the Supabase MCP (read-only `select … from pg_policies`) by lane 146J. The wave-146 security canary uses these rows as the OPEN SPECIMEN its readiness-honesty step must classify as 'not applied' (positive control), and prints the measurement time beside the pending-owner step. It is not the live state at any later time; the live state is read again by the owner's §F verification query.",
+  "measuredAt": "2026-10-29T17:05:00Z",
+  "project": "hrvaqgvukzxfskkcrwbt",
+  "query": "select policyname, cmd, qual, with_check from pg_policies where schemaname='storage' and tablename='objects' and (qual ~ '(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)' or with_check ~ '(…same…)')",
+  "counts": { "objects_in_the_five_buckets": 0, "offers_rows": 0, "offers_rows_with_null_brokerage": 0, "buckets_public": 0 },
+  "storageObjects": [
+    { "policyname": "auth delete brokerage-forms", "cmd": "DELETE", "qual": "(bucket_id = 'brokerage-forms'::text)", "with_check": "" },
+    { "policyname": "auth delete client-documents", "cmd": "DELETE", "qual": "(bucket_id = 'client-documents'::text)", "with_check": "" },
+    { "policyname": "auth delete offer-documents", "cmd": "DELETE", "qual": "(bucket_id = 'offer-documents'::text)", "with_check": "" },
+    { "policyname": "auth delete transaction-documents", "cmd": "DELETE", "qual": "(bucket_id = 'transaction-documents'::text)", "with_check": "" },
+    { "policyname": "auth read agent-documents", "cmd": "SELECT", "qual": "(bucket_id = 'agent-documents'::text)", "with_check": "" },
+    { "policyname": "auth read brokerage-forms", "cmd": "SELECT", "qual": "(bucket_id = 'brokerage-forms'::text)", "with_check": "" },
+    { "policyname": "auth read client-documents", "cmd": "SELECT", "qual": "(bucket_id = 'client-documents'::text)", "with_check": "" },
+    { "policyname": "auth read offer-documents", "cmd": "SELECT", "qual": "(bucket_id = 'offer-documents'::text)", "with_check": "" },
+    { "policyname": "auth read transaction-documents", "cmd": "SELECT", "qual": "(bucket_id = 'transaction-documents'::text)", "with_check": "" },
+    { "policyname": "auth update agent-documents", "cmd": "UPDATE", "qual": "(bucket_id = 'agent-documents'::text)", "with_check": "" },
+    { "policyname": "auth update brokerage-forms", "cmd": "UPDATE", "qual": "(bucket_id = 'brokerage-forms'::text)", "with_check": "" },
+    { "policyname": "auth update client-documents", "cmd": "UPDATE", "qual": "(bucket_id = 'client-documents'::text)", "with_check": "" },
+    { "policyname": "auth update offer-documents", "cmd": "UPDATE", "qual": "(bucket_id = 'offer-documents'::text)", "with_check": "" },
+    { "policyname": "auth update transaction-documents", "cmd": "UPDATE", "qual": "(bucket_id = 'transaction-documents'::text)", "with_check": "" },
+    { "policyname": "auth upload agent-documents", "cmd": "INSERT", "qual": "", "with_check": "(bucket_id = 'agent-documents'::text)" },
+    { "policyname": "auth upload brokerage-forms", "cmd": "INSERT", "qual": "", "with_check": "(bucket_id = 'brokerage-forms'::text)" },
+    { "policyname": "auth upload client-documents", "cmd": "INSERT", "qual": "", "with_check": "(bucket_id = 'client-documents'::text)" },
+    { "policyname": "auth upload offer-documents", "cmd": "INSERT", "qual": "", "with_check": "(bucket_id = 'offer-documents'::text)" },
+    { "policyname": "auth upload transaction-documents", "cmd": "INSERT", "qual": "", "with_check": "(bucket_id = 'transaction-documents'::text)" }
+  ],
+  "offers": [
+    { "policyname": "offers_tenant_select", "cmd": "SELECT", "roles": "{authenticated}", "qual": "((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))" },
+    { "policyname": "offers_tenant_update", "cmd": "UPDATE", "roles": "{authenticated}", "qual": "((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))" },
+    { "policyname": "offers_tenant_delete", "cmd": "DELETE", "roles": "{authenticated}", "qual": "((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))" }
+  ]
+}

@@ -9,7 +9,7 @@
 // contacts, listings, reviews all key off agent_id → agents.id. So a location/team report = "the set
 // of agents in that location/team" → filter the agent-keyed report data by those agent ids.
 
-import { resolveEgressScope, type EgressScopeKind } from "./egress-scope"
+import { resolveEgressScopeForViewer, type EgressScopeKind } from "./egress-scope"
 
 export type { EgressScopeKind } from "./egress-scope"
 
@@ -59,7 +59,10 @@ type Sb = { from: (t: string) => any }
  * returns an empty member set rather than silently widening to the brokerage.
  */
 export async function resolveReportScope(supabase: Sb, ctx: ReportScopeCtx): Promise<ResolvedReportScope> {
-  const scope = resolveEgressScope({
+  // WAVE 150 (lane 150DAC, C34): a multi-location tenant reports through the hierarchy (resolveEgressScopeForViewer —
+  // an office head's report is their offices' agents, never the whole house because of a user_type); a single-office
+  // tenant keeps the ladder byte-identically. The reader fails closed to own work.
+  const { scope } = await resolveEgressScopeForViewer(supabase, {
     userType: ctx.userType,
     userId: ctx.userId,
     brokerageId: ctx.brokerageId,
@@ -70,10 +73,12 @@ export async function resolveReportScope(supabase: Sb, ctx: ReportScopeCtx): Pro
   let memberAgentIds: string[] = []
   if (scope.kind === "location" || scope.kind === "team") {
     let q = supabase.from("agents").select("id").eq("brokerage_id", ctx.brokerageId)
-    if (scope.kind === "location" && scope.locationId) q = q.eq("location_id", scope.locationId)
-    if (scope.kind === "team" && scope.teamId) q = q.eq("team_id", scope.teamId)
-    const { data } = await q
-    memberAgentIds = (data ?? []).map((a: { id: string }) => a.id)
+    if (scope.kind === "location" && scope.locationId) q = q.in("location_id", scope.locationIds?.length ? scope.locationIds : [scope.locationId])
+    if (scope.kind === "team" && scope.teamId) q = q.in("team_id", scope.teamIds?.length ? scope.teamIds : [scope.teamId])
+    const { data, error } = await q
+    // A refused member read is an EMPTY scope (a real empty report), never brokerage-wide.
+    if (error) console.error(`[reporting-scope] member read refused — empty report: ${error.message}`)
+    memberAgentIds = error ? [] : (data ?? []).map((a: { id: string }) => a.id)
   }
 
   return {

@@ -38,9 +38,9 @@ const PATTERN_LABEL: Record<string, string> = {
 }
 
 const SEVERITY_BG: Record<string, string> = {
-  critical: "bg-red-500 text-white",
-  high:     "bg-orange-500 text-white",
-  medium:   "bg-amber-500 text-white",
+  critical: "bg-red-600 text-white",
+  high:     "bg-orange-700 text-white",
+  medium:   "bg-amber-700 text-white",
   low:      "bg-gray-300 text-gray-800",
 }
 
@@ -331,6 +331,16 @@ export function IntelligenceMeshClient({ open, dismissed, agents }: Props) {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-muted-foreground">{PATTERN_LABEL[i.patternKey] ?? i.patternKey}:</span>
                   <span className="font-medium">{i.headline}</span>
+                </div>
+                {/* WHO WAVED IT AWAY, AND ON WHAT GROUNDS. All three were written
+                    by dismissInsightAction and read by nothing, so this list could
+                    say a brokerage-wide pattern had been dismissed without naming
+                    the decision — which is exactly what a second reviewer needs
+                    before reopening it. */}
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {i.dismissedByName ? `dismissed by ${i.dismissedByName}` : "dismissed"}
+                  {i.dismissedAt ? ` · ${new Date(i.dismissedAt).toLocaleDateString()}` : ""}
+                  {i.dismissalReason ? ` — ${i.dismissalReason}` : " — no reason recorded"}
                 </div>
               </li>
             ))}

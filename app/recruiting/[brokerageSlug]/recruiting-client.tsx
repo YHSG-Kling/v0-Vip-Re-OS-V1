@@ -4,14 +4,14 @@ import { useMemo, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Slider } from "@/components/ui/slider"
 import { toast } from "sonner"
 import {
-  Sparkles, Calculator, TrendingUp, Clock, Bot, ShieldCheck, Megaphone, CheckCircle2, ArrowRight, Loader2,
+  Sparkles, Calculator, Bot, ShieldCheck, Megaphone, CheckCircle2, ArrowRight, Loader2,
+  Network, HeartPulse, PiggyBank,
 } from "lucide-react"
 import { submitRecruitInquiry } from "./actions"
 
@@ -29,6 +29,11 @@ interface BrokerageView {
   splitToAgent:   number | null
   monthlyFee:     number | null
   valueProps:     string[]
+  /** Benefit offerings — fail-closed booleans resolved server-side (`=== true`);
+   *  when all are false the benefits section does not render at all. */
+  offersRevenueShare: boolean
+  offersMedical:      boolean
+  offersRetirement:   boolean
 }
 
 interface ReferringAgent {
@@ -201,6 +206,68 @@ export function RecruitingLandingClient({ brokerage, referringAgent }: Props) {
           </div>
         </div>
       </section>
+
+      {/* ── Benefit offerings (m574 + m264) — only what the broker marked; nothing
+             offered → no section. Wording states the offering, never plan terms. */}
+      {(brokerage.offersRevenueShare || brokerage.offersMedical || brokerage.offersRetirement) && (
+        <section className="px-4 pb-12 sm:pb-16">
+          <div className="max-w-5xl mx-auto">
+            <h2 className="text-2xl font-semibold mb-2 text-center">Benefits {brokerage.name} offers</h2>
+            <p className="text-sm text-muted-foreground text-center mb-8">
+              Eligibility, enrollment windows, and plan details are governed by the brokerage&apos;s plan
+              documents and independent-contractor agreement.
+            </p>
+            <div className="grid gap-4 md:grid-cols-3">
+              {brokerage.offersRevenueShare && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="h-9 w-9 rounded-md bg-emerald-100 flex items-center justify-center mb-2">
+                      <Network className="h-5 w-5 text-emerald-700" />
+                    </div>
+                    <CardTitle className="text-base">Residual income — revenue share</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-muted-foreground">
+                      Earn a share of the production of the agents you help bring aboard — income that
+                      keeps paying beyond your own closings.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+              {brokerage.offersMedical && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="h-9 w-9 rounded-md bg-rose-100 flex items-center justify-center mb-2">
+                      <HeartPulse className="h-5 w-5 text-rose-700" />
+                    </div>
+                    <CardTitle className="text-base">Medical benefits</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-muted-foreground">
+                      Access to medical benefits — rare in this industry, offered here.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+              {brokerage.offersRetirement && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="h-9 w-9 rounded-md bg-amber-100 flex items-center justify-center mb-2">
+                      <PiggyBank className="h-5 w-5 text-amber-700" />
+                    </div>
+                    <CardTitle className="text-base">Retirement savings</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-muted-foreground">
+                      A retirement savings option, so commission income can build long-term wealth.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ── ROI calculator ──────────────────────────────────────────────── */}
       <section id="calculator" className="px-4 py-12 sm:py-16 bg-muted/40">

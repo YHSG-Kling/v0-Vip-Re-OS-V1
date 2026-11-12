@@ -43,15 +43,15 @@ function pureLayer() {
 
   console.log("\n[pickBackupVendor · pure — different same-category vendor, preference-first]")
   const bench: BenchVendor[] = [
-    { id: "v1", name: "Ghost Inspect", category: "Inspector", email: null, rating: 5 },   // the failed vendor
-    { id: "v2", name: "Reliable Inspect", category: "Inspector", email: null, rating: 3 },
-    { id: "v3", name: "Preferred Inspect", category: "Inspector", email: null, rating: 2 },
-    { id: "v4", name: "Some Title", category: "Title Company", email: null, rating: 5 },
+    { id: "v1", name: "Ghost Inspect", category: "inspector", email: null, rating: 5 },   // the failed vendor
+    { id: "v2", name: "Reliable Inspect", category: "inspector", email: null, rating: 3 },
+    { id: "v3", name: "Preferred Inspect", category: "inspector", email: null, rating: 2 },
+    { id: "v4", name: "Some Title", category: "title", email: null, rating: 5 },
   ]
-  check("excludes the failed vendor + picks same category", pickBackupVendor(bench, "v1", "Inspector", new Set())?.id === "v2")
-  check("preference-first: a preferred lower-rated backup beats a higher-rated one", pickBackupVendor(bench, "v1", "Inspector", new Set(["v3"]))?.id === "v3")
-  check("no other same-category vendor → null (honest)", pickBackupVendor([bench[0], bench[3]], "v1", "Inspector", new Set()) === null)
-  check("wrong category is never offered as a backup", pickBackupVendor(bench, "v1", "Inspector", new Set())?.category === "Inspector")
+  check("excludes the failed vendor + picks same category", pickBackupVendor(bench, "v1", "inspector", new Set())?.id === "v2")
+  check("preference-first: a preferred lower-rated backup beats a higher-rated one", pickBackupVendor(bench, "v1", "inspector", new Set(["v3"]))?.id === "v3")
+  check("no other same-category vendor → null (honest)", pickBackupVendor([bench[0], bench[3]], "v1", "inspector", new Set()) === null)
+  check("wrong category is never offered as a backup", pickBackupVendor(bench, "v1", "inspector", new Set())?.category === "inspector")
 
   console.log("\n[computeVendorSla · pure — the shared SLA source of truth]")
   const sla = computeVendorSla([
@@ -71,9 +71,9 @@ function pureLayer() {
 
   console.log("\n[rankVendors · pure — a PROVEN breacher is auto-demoted, unproven is not]")
   const rankBench: BenchVendor[] = [
-    { id: "good", name: "Reliable", category: "Inspector", email: null, rating: 4 },
-    { id: "bad", name: "Flaky", category: "Inspector", email: null, rating: 5 },   // higher rating but breaching
-    { id: "new", name: "Unproven", category: "Inspector", email: null, rating: 3 },
+    { id: "good", name: "Reliable", category: "inspector", email: null, rating: 4 },
+    { id: "bad", name: "Flaky", category: "inspector", email: null, rating: 5 },   // higher rating but breaching
+    { id: "new", name: "Unproven", category: "inspector", email: null, rating: 3 },
   ]
   const slaMap = { bad: { slaPct: 40, total: 6 }, good: { slaPct: 95, total: 5 }, new: { slaPct: 50, total: 1 } }
   const ranked2 = rankVendors(rankBench, { slaByVendor: slaMap })
@@ -89,7 +89,19 @@ function sourceLayer() {
   const auto = src("lib/kernel/vendor-no-show-autopilot.ts")
   check("autopilot marks the ghosted booking no_show (the missing writer)", /updateVendorBookingStatus\(\{[\s\S]*?toStatus: "no_show"/.test(auto))
   check("autopilot proposes a GATED backup (agent-audience, nothing auto-books)", /proposeClientMessage\(\{[\s\S]*?agentKind: "deal_coordinator"[\s\S]*?audience: "agent"/.test(auto))
-  check("backup ranking uses the vendor_directory preference source of truth", /resolvePreferredVendorIds\(bench/.test(auto))
+  // The promise has always been "the backup is ranked preference-first"; the
+  // SOURCE of preference has moved twice. It was a bridge onto a separate
+  // vendor_directory table; then, after that bridge died, broker approval
+  // (status='active') standing in for it — which made EVERY approved vendor
+  // preferred, so the ranking was preference-first over a set containing the
+  // whole eligible pool, i.e. it ranked nothing. m355 put the broker's real
+  // `preferred` flag on the vendor row, so this now asserts the flag itself.
+  check("backup ranking is preference-first from the broker's actual preferred flag",
+    /\.select\("id, name, category, email, rating, preferred"\)/.test(auto)
+    && /\.filter\(\(r\) => r\.preferred === true\)/.test(auto)
+    && /rankVendors\(pool, \{ preferredVendorIds \}\)/.test(auto))
+  check("…from ONE read — no second query on the same table to drift from it",
+    (auto.match(/from\("vendors"\)/g) ?? []).length === 1)
   const cron = src("app/api/cron/vendor-orchestration/route.ts")
   check("the daily vendor-orchestration cron runs the autopilot", /runVendorNoShowAutopilotAll/.test(cron))
   const reg = src("lib/kernel/manager-registry.ts")
@@ -107,9 +119,9 @@ async function liveLayer() {
   const brokerageId = (brk as any).id
   const cleanup: Array<{ table: string; id: string }> = []
   try {
-    const { data: v1 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Ghost Inspect (test)", category: "Inspector", rating: 5, status: "active" }).select("id").single()
+    const { data: v1 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Ghost Inspect (test)", category: "inspector", rating: 5, status: "active" }).select("id").single()
     cleanup.push({ table: "vendors", id: (v1 as any).id })
-    const { data: v2 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Backup Inspect (test)", category: "Inspector", rating: 4, status: "active" }).select("id").single()
+    const { data: v2 } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "Backup Inspect (test)", category: "inspector", rating: 4, status: "active" }).select("id").single()
     cleanup.push({ table: "vendors", id: (v2 as any).id })
     const pastDate = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10)
     const { data: bkg } = await svc.from("vendor_bookings").insert({ brokerage_id: brokerageId, vendor_id: (v1 as any).id, service_type: "home inspection", scheduled_date: pastDate, status: "confirmed" }).select("id").single()

@@ -48,7 +48,7 @@ export async function renderBoardPacketPdf(d: BoardPacketData): Promise<Uint8Arr
   line(`Appointments booked live on calls: ${d.aiBookings}`)
   line(`AI reply drafts your agents sent: ${d.draftsUsed}`)
   line(`Opt-outs honored immediately: ${d.optOutsHonored} — compliance is a feature`)
-  line(`Marketing-attributed closed volume: ${money(d.attributedGciCents)} across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`)
+  line(`Marketing-attributed closed commission: ${money(d.attributedGciCents)} across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`)
 
   // AI TEAM INTELLIGENCE — the monthly learning-loop proof, fed by the ONE
   // pure composer (lib/kernel/intelligence-report.ts). Only earned sections

@@ -21,7 +21,7 @@ export async function getContactDecisionReceipts(
       .select("channel, decision, block_reason, recipient_local_hour, created_at")
       .eq("contact_id", contactId).gte("created_at", since).limit(500),
     svc.from("marketing_campaign_touchpoints")
-      .select("channel, metadata, sent_at")
+      .select("channel, metadata, sent_at, source, sequence_id")
       .eq("contact_id", contactId).eq("brokerage_id", brokerageId).gte("sent_at", since).limit(500),
     svc.from("ai_video_projects")
       .select("title, script_content, video_type, status, approval_status, video_metadata, created_at")

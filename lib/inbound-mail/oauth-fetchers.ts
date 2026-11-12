@@ -42,16 +42,18 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import type { ParsedInboundEmail, InboundAttachment } from "./providers"
+import { splitAddressHeader, type ParsedInboundEmail, type InboundAttachment } from "./providers"
+import { inboundMetaFrom, normalizeMessageId } from "./message-meta"
 import type { ResolvedInboundProvider } from "./resolve-user-provider"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 // ─── Token refresh ──────────────────────────────────────────────────────────
 
 async function refreshGmailToken(credential: ResolvedInboundProvider): Promise<string | null> {
   const refreshToken = credential.refresh_token
   if (!refreshToken) return null
-  const clientId     = process.env.GOOGLE_CLIENT_ID
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+  // ONE SPELLING (§6): GOOGLE_CLIENT_ID/SECRET via lib/env/aliases.ts.
+  const { clientId, clientSecret } = googleOAuthClient()
   if (!clientId || !clientSecret) return null
 
   const res = await callConnector<{ access_token?: string }>({
@@ -71,8 +73,7 @@ async function refreshGmailToken(credential: ResolvedInboundProvider): Promise<s
 async function refreshOutlookToken(credential: ResolvedInboundProvider): Promise<string | null> {
   const refreshToken = credential.refresh_token
   if (!refreshToken) return null
-  const clientId     = process.env.MICROSOFT_CLIENT_ID
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
+  const { clientId, clientSecret } = microsoftOAuthClient()
   const tenantId     = process.env.MICROSOFT_TENANT_ID ?? "common"
   if (!clientId || !clientSecret) return null
 
@@ -140,13 +141,20 @@ export async function fetchGmailMessagesSinceHistory(params: {
       (msg.payload?.headers ?? []).map((h: any) => [String(h.name).toLowerCase(), String(h.value)]),
     )
     const fromEmail = extractEmail(headers.get("from") ?? "")
+    const fromName  = splitAddressHeader(headers.get("from") ?? "").name
     const toEmail   = extractEmail(headers.get("to")   ?? "")
     const subject   = headers.get("subject") ?? ""
 
     // Collect attachments + their bytes
     const attachments: InboundAttachment[] = []
+    // The FULL plain-text body (wave 143, lane 143A): `msg.snippet` is ~100 characters, which is not enough to tell an
+    // acceptance from a counter. The first text/plain part is decoded; the snippet stays the fallback.
+    let bodyTextFull = ""
     async function walk(part: any) {
       if (!part) return
+      if (!bodyTextFull && part.mimeType === "text/plain" && part.body?.data) {
+        try { bodyTextFull = Buffer.from(String(part.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8") } catch { /* keep the snippet */ }
+      }
       if (part.filename && part.body?.attachmentId) {
         const attRes = await callConnector<{ data?: string }>({
           connector: "gmail", baseUrl: "https://gmail.googleapis.com",
@@ -169,10 +177,13 @@ export async function fetchGmailMessagesSinceHistory(params: {
     emails.push({
       provider:   "gmail",
       fromEmail,
+      fromName,
       toEmail,
       subject,
-      bodyText:   (msg.snippet ?? "").toString(),
+      bodyText:   bodyTextFull || (msg.snippet ?? "").toString(),
       attachments,
+      // Gmail's payload headers carry Message-ID / In-Reply-To / References / Authentication-Results (wave 143, 143A).
+      ...inboundMetaFrom(msg.payload?.headers, fromEmail),
     })
   }
 
@@ -209,17 +220,21 @@ export async function fetchOutlookMessage(params: {
   return {
     provider:   "outlook",
     fromEmail,
+    fromName:   (msg.from?.emailAddress?.name ?? null) || null,
     toEmail,
     subject:    (msg.subject ?? "").toString().trim(),
     bodyText:   (msg.bodyPreview ?? "").toString(),
     attachments,
+    // Graph exposes the RFC Message-ID as `internetMessageId`; thread headers and authentication results are not in the
+    // default payload, so the thread match falls back to the offer token and the sender stays "unknown" (wave 143, 143A).
+    messageId:  normalizeMessageId(msg.internetMessageId == null ? null : String(msg.internetMessageId)),
   }
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function extractEmail(raw: string): string {
-  // "Name <addr@host>" → "addr@host"; "addr@host" → "addr@host"
-  const m = raw.match(/<([^>]+)>/)
-  return (m ? m[1] : raw).toLowerCase().trim()
+  // "Name <addr@host>" → "addr@host"; "addr@host" → "addr@host" — the one
+  // splitter in ./providers (wave 94), not a second spelling of it.
+  return splitAddressHeader(raw).email
 }

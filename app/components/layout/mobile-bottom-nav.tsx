@@ -1,6 +1,5 @@
 'use client'
 
-import React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
@@ -20,10 +19,14 @@ export function MobileBottomNav({ items }: MobileBottomNavProps) {
     return IconComponent ? <IconComponent className="w-5 h-5" /> : null
   }
 
+  // Lane 90D (test:rendered-empty-states): no items rendered an 80px white bar
+  // over the page content with nothing in it.
+  if (items.length === 0) return null
+
   return (
     // pb-[env(safe-area-inset-bottom)] — keep tap targets above the iOS home
     // indicator when installed as a PWA (root viewport uses viewport-fit=cover).
-    <nav className="flex items-center justify-around min-h-20 bg-white pb-[env(safe-area-inset-bottom)]">
+    <nav aria-label="Mobile" className="flex items-center justify-around min-h-20 bg-white pb-[env(safe-area-inset-bottom)]">
       {items.map((item) => {
         if (!item.href) return null
         const isActive = pathname === item.href
@@ -31,6 +34,7 @@ export function MobileBottomNav({ items }: MobileBottomNavProps) {
           <Link
             key={item.id}
             href={item.href}
+            aria-current={isActive ? 'page' : undefined}
             className={cn(
               'flex flex-col items-center justify-center gap-1 py-2 px-3 rounded-lg transition-colors flex-1',
               isActive ? 'text-blue-700 bg-blue-50' : 'text-gray-600'

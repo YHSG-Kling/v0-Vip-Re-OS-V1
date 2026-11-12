@@ -36,6 +36,7 @@ import {
   sanitizeEnumValue,
 } from "../lib/data-steward/value-normalizer"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -115,8 +116,15 @@ function testValueNormalization() {
   // migration changes a constraint, this fails before imports start writing
   // values the DB rejects — or worse, values reporting doesn't recognize.
   const LIVE_CONSTRAINTS: Record<string, string[]> = {
-    contact_type: ['lead', 'prospect', 'client', 'lifetime', 'lifetime_customer', 'past_client',
-      'sphere', 'vendor', 'referral_partner', 'investor', 'buyer', 'seller', 'both', 'other'],
+    // contact_type is DERIVED from the GENERATED vocabulary cache, not retyped
+    // (CLAUDE.md §2 — do not pin an assertion to a waypoint). It was a hand-copied
+    // 12-value list "re-read 2026-08-23"; m539 had collapsed lifetime / past_client
+    // onto lifetime_customer and m563 then REMOVED 'client' (owner: "client isn't a
+    // type"), so a hand-kept copy would have declared a value the live CHECK refuses
+    // to be inside the constraint — i.e. this vocabulary-integrity check would have
+    // passed a normalizer that writes rows the database drops (23514). The other
+    // three lists below have no generated source and stay written out.
+    contact_type: [...(CHECK_VOCABULARIES.contacts?.contact_type ?? [])],
     lead_temperature: ['hot', 'warm', 'cold'],
     lender_status: ['cash', 'pre_approved', 'needs_pre_approval', 'unknown'],
     preferred_channel: ['phone', 'email', 'sms'], // TS contract (captureContact)

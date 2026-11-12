@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { repairIncompleteAccountSetup } from "@/lib/kernel/users"
+import { resolveUserWorkspaceContext, emitUserProvisionedEvent } from "@/lib/kernel/users"
+import { KernelEvent } from "@/lib/kernel/events"
 import { determineFirstLoginDestination } from "@/lib/kernel/onboarding"
 
 export const dynamic = "force-dynamic"
@@ -10,11 +11,25 @@ export const dynamic = "force-dynamic"
  *
  * Resolution order:
  *   1. Not authenticated              → /login
- *   2. Attempt silent self-repair     → fixes any missing domain records
- *   3. determineFirstLoginDestination → returns the correct route based on
- *      role, setup state, and onboarding progress
+ *   2. Detect an incomplete account   → evidence row, visible setup route
+ *   3. determineFirstLoginDestination → the correct route for role, setup
+ *      state and onboarding progress
  *
  * This page never renders UI — it is a pure server-side redirect.
+ *
+ * FIRST LOGIN IS NEVER A HIDDEN REPAIR (owner, wave 140). TOMBSTONE: this page
+ * used to call `ensureAgentBrokerage()` (mint a brokerage-of-one + a trialing
+ * subscription on a GET) and `repairIncompleteAccountSetup()` (write agents /
+ * onboarding / RBAC rows) on EVERY visit — a repair nobody asked for, invisible
+ * to the tenant, and ineffective for exactly the accounts that need it: measured
+ * live 2026-10-11, the 4 agent-type users without an agents row and the 10
+ * tenant users without a role grant had never reached this page. The seat flow
+ * now produces the whole chain (lib/kernel/users.ts inviteTenantMember →
+ * createOrRepairUserDomainRecords, which the tenant invite, the god console and
+ * the recruiting door all converge on), and an incomplete account is DETECTED
+ * here, evidenced (USER_ACCOUNT_INCOMPLETE), and routed to a setup screen the
+ * person can see. The repair executor survives as lib/kernel/users.ts
+ * repairIncompleteAccountSetup for the readiness repair.
  */
 export default async function DashboardPage() {
   const context = await getAgentContext()
@@ -23,11 +38,35 @@ export default async function DashboardPage() {
     redirect("/login")
   }
 
-  // Silently repair any missing domain records on every visit.
-  // This is idempotent — does nothing if all records already exist.
-  // It prevents the infinite-spinner / blank-dashboard state from
-  // an incomplete invite provisioning path.
-  await repairIncompleteAccountSetup(context.userId)
+  const workspace = await resolveUserWorkspaceContext(context.userId)
+  if (!workspace.isComplete) {
+    // Evidence, never a silent write (LAW 5): who, what is missing, where it was seen.
+    await emitUserProvisionedEvent({
+      userId:       context.userId,
+      userType:     workspace.userType,
+      brokerageId:  workspace.brokerageId,
+      callerUserId: context.userId,
+      eventType:    KernelEvent.USER_ACCOUNT_INCOMPLETE,
+      metadata:     { missingRecords: workspace.missingRecords, surface: "dashboard_router" },
+    })
+    // THE READINESS CONTRACT (wave 140): the gap is routed through
+    // evaluateTenantReadiness({ repair: true }) — its seats / adminUser checks
+    // run the declared playbook (repair_user_records → repairIncompleteAccountSetup)
+    // through the self-healing engine, which leaves a self_heal_events row, a
+    // ledger row and a kernel event, then re-verifies. Not a hidden repair: it is
+    // evidenced, policy-capped, and the account is still routed to the VISIBLE
+    // setup state below when anything remains. Gate first (the session resolved
+    // this tenant), then the service client. A thrown evaluation never 500s the
+    // landing — the route still shows the setup state.
+    if (workspace.brokerageId) {
+      try {
+        const [{ evaluateTenantReadiness }, { createServiceClient }] = await Promise.all([import("@/lib/kernel/tenant-readiness"), import("@/lib/supabase/service")])
+        await evaluateTenantReadiness(createServiceClient(), workspace.brokerageId, { repair: true })
+      } catch (e) {
+        console.error("[dashboard] readiness repair failed", (e as Error).message)
+      }
+    }
+  }
 
   // Determine the correct destination from onboarding + workspace state
   const destination = await determineFirstLoginDestination(context.userId)

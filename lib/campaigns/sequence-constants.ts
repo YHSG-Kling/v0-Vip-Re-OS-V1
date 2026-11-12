@@ -74,6 +74,7 @@ export const VALID_STEP_TYPES = new Set([
   "wait",
   "condition",
   "add_to_segment",
+  "remove_from_segment",
   "remove_from_campaign",
   "ai_image",
   "video",
@@ -110,7 +111,50 @@ export const NURTURE_SEQUENCE_TYPES = [
 
 export type SequenceCategory = "marketing" | "nurture"
 
+/**
+ * THE `campaign_sequences.sequence_type` VOCABULARY — one definition, two
+ * former copies.
+ *
+ * These five values are exactly the live CHECK constraint on
+ * `campaign_sequences.sequence_type` (scripts/check-vocabularies.ts:407 —
+ * drip / nurture / post_close / re_engagement / transaction), so a picker built
+ * from this list can only offer a value the column will accept, and a validator
+ * built from it can only refuse a value the column would have refused anyway.
+ *
+ * MERGED FROM (§1.1, both byte-identical in their values):
+ *   · app/dashboard/campaigns/sequences/SequencesListClient.tsx:74 — the create
+ *     dialog's picker and the card's type badge.
+ *   · app/actions/workflows.ts:317 — a function-local list guarding the drip
+ *     drain. It stays a local IMPORT, never a re-export: that file is
+ *     `"use server"`, where every export is a public HTTP endpoint (§4).
+ *
+ * NOT the same list as MARKETING_SEQUENCE_TYPES / NURTURE_SEQUENCE_TYPES above:
+ * those two hold values (listing_launch, buyer_nurture, …) that the live CHECK
+ * does not permit, so the `.in("sequence_type", …)` filters built from them in
+ * app/actions/campaign-sequences.ts:71-73 cannot match a stored row. Recorded
+ * here rather than reconciled — that is a query defect in another file, not a
+ * spelling choice this constant can settle.
+ */
+export const SEQUENCE_TYPES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "drip",          label: "Drip" },
+  { value: "nurture",       label: "Nurture" },
+  { value: "re_engagement", label: "Re-engagement" },
+  { value: "transaction",   label: "Transaction" },
+  { value: "post_close",    label: "Post-Close" },
+]
+
+/**
+ * A step as the builders hold it in state.
+ *
+ * The per-channel fields below are the ones named explicitly for convenience;
+ * the index signature carries the rest of lib/workflow/step-palette.ts's field
+ * specs (gift, e-sign, showing, tour, newsletter, listing-page, condition …).
+ * saveSequenceSteps uses the PALETTE as its allow-list rather than a hand-kept
+ * list of columns — which is what it used to do, and why a broker could fill in
+ * an ad budget or a gift occasion and have it silently dropped on save.
+ */
 export interface SequenceBuilderStep {
+  [field: string]: unknown
   id?: string
   step_number: number
   step_name: string

@@ -54,7 +54,7 @@ export function PublicInfoForm({ listingId }: Props) {
   if (status === "success") {
     return (
       <div className="text-center py-4">
-        <CheckCircle className="h-10 w-10 text-green-500 mx-auto mb-3" />
+        <CheckCircle className="h-10 w-10 text-green-600 mx-auto mb-3" />
         <p className="font-semibold text-gray-900 text-sm">Message Received!</p>
         <p className="text-xs text-gray-600 mt-1">
           We'll get back to you within one business day.
@@ -120,7 +120,7 @@ export function PublicInfoForm({ listingId }: Props) {
       </div>
 
       {errorMsg && (
-        <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+        <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
           {errorMsg}
         </p>
       )}

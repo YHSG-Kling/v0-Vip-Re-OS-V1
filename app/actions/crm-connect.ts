@@ -14,12 +14,17 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
+import { INTEGRATION_STATUS_CONNECTED, INTEGRATION_STATUS_NOT_CONFIGURED } from "@/lib/integrations/integration-status"
+import { encryptSecret, isEncryptionConfigured } from "@/lib/security/secret-crypto"
 
 export type CrmProvider = "gohighlevel" | "lofty" | "followupboss"
 const CRM_PROVIDERS: CrmProvider[] = ["gohighlevel", "lofty", "followupboss"]
 
 // Roles that manage the BROKERAGE-wide CRM. Everyone else (agents) manages their OWN.
-const BROKERAGE_ROLES = ["superadmin", "admin", "broker", "broker_owner"]
+// SCOPE LADDER (kept inline — this array decides WHERE credentials are scoped,
+// so widening it moves seats across scopes): 'superadmin' removed — dead as
+// users.user_type (0 live rows store it).
+const BROKERAGE_ROLES = ["admin", "broker", "broker_owner"]
 
 interface Member {
   userId: string
@@ -41,10 +46,42 @@ async function requireMember(): Promise<{ ok: true; member: Member } | { ok: fal
   }
 }
 
-/** Connect (or update) a CRM by API key, and make it the active CRM for the caller's scope. */
+/**
+ * Connect (or update) a CRM by API key, and make it the active CRM for the caller's scope.
+ *
+ * ─── THE SECRET HALF (wave 14) ───────────────────────────────────────────────
+ * `agent_api_credentials.api_secret` and `integration_credentials.api_secret` are
+ * READ — lib/integrations/connection-manager.ts resolves both into
+ * `ResolvedConnection.apiSecret`, and lib/providers/vibe.ts and
+ * lib/agentic-os/connector-probe.ts:247 sign requests with the pair. This action is
+ * the ONLY writer of either table's credential columns anywhere in the tree, and it
+ * took an api_key only, so both columns were writerless and every pair-authenticated
+ * provider resolved to `apiSecret: null`.
+ *
+ * `apiSecret` is OPTIONAL and stays optional. Most CRMs (Follow Up Boss, Lofty,
+ * GoHighLevel) issue a single key and have no second half — a required box would
+ * make the common case impossible to fill in honestly. The column now simply has a
+ * writer for the providers that DO issue one.
+ *
+ * STORED THE WAY THIS TREE STORES SECRETS, not a new scheme: lib/security/secret-crypto.ts
+ * (`encryptSecret` → self-describing `enc:v1:` envelope, AES-256-GCM; since wave 139E
+ * it REFUSES — throws SecretStorageRefusedError — when SECRETS_ENCRYPTION_KEY is unset,
+ * never storing plaintext). The api_key column is still written as given: its readers
+ * do not all decrypt yet (lib/content-intel/newsapi-ai.ts reads it raw) — open item. The reader
+ * — connection-manager — was switched to the backward-compatible `decryptSecret`
+ * FIRST, which is the documented safe order in that module's own header. The
+ * discrete `api_secret` COLUMN is used, not a second `*_encrypted` column: the only
+ * `api_key_encrypted` in this schema is on vendor_marketplace_profiles, a table with
+ * 0 rows and no writer, and copying its shape would fork the scheme.
+ *
+ * NEVER LOGGED. The secret is not put in an error string, a revalidate path, or the
+ * returned value; a refused write reports the PostgREST message only.
+ */
 export async function connectCrmAction(params: {
   provider: CrmProvider
   apiKey: string
+  /** Optional second half of a key+secret pair — only providers that issue one. */
+  apiSecret?: string
   apiUrl?: string
 }): Promise<{ ok: true; scope: "agent" | "brokerage" } | { ok: false; error: string }> {
   if (!CRM_PROVIDERS.includes(params.provider)) return { ok: false, error: "Unknown CRM provider" }
@@ -53,6 +90,38 @@ export async function connectCrmAction(params: {
   if (!gate.ok) return gate
   const { member } = gate
   const supabase = await createClient()
+
+  // A blank box is NOT a secret. Writing "" would make `!!connection.apiSecret`
+  // true at every gate that asks whether a pair is configured (vibe.ts:57,
+  // connector-probe.ts:247) and produce a signed request that 401s at the
+  // provider instead of an honest "not connected" here.
+  const rawSecret = params.apiSecret?.trim()
+
+  // FAIL CLOSED (CLAUDE.md §4). Since wave 139E `encryptSecret` itself THROWS
+  // SecretStorageRefusedError with no SECRETS_ENCRYPTION_KEY (it used to be a
+  // deliberate no-op). This check runs first so the refusal is a typed result
+  // with an incident, not an exception. Before 139E, with no key this line stored
+  // the operator's provider SECRET as plaintext into
+  // agent_api_credentials.api_secret / integration_credentials.api_secret and
+  // reported success — "nobody checked" rendering as "checked and fine".
+  //
+  // Scoped to the NEW-SECRET branch ONLY. Most CRMs (Follow Up Boss, Lofty,
+  // GoHighLevel) issue a single key and have no second half, and refusing that
+  // path would break every connect (the api_key readers do not all decrypt yet).
+  if (rawSecret && !isEncryptionConfigured()) {
+    // Wave 139E — the refusal is ACTIONABLE: platform staff get the incident (tenant from the
+    // session gate above; the secret itself is never passed). Gate first, then the service client.
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+    await raiseSecretStorageIncident(createServiceClient(), { surface: `crm connect (${params.provider})`, brokerageId: member.brokerageId, code: "secrets_key_missing" })
+    return {
+      ok: false,
+      error:
+        "Secret storage is not configured on this deployment, so the API secret cannot be stored safely. " +
+        "Connect with the API key alone, or ask an administrator to configure secret encryption first.",
+    }
+  }
+
 
   if (member.agentScoped) {
     // Agent's OWN CRM — agent-scoped credential. resolveConnection reads this first.
@@ -64,7 +133,8 @@ export async function connectCrmAction(params: {
           brokerage_id: member.brokerageId,
           service_name: params.provider,
           service_type: "crm_sync",
-          api_key: params.apiKey.trim(),
+          api_key: encryptSecret(params.apiKey.trim()),
+          api_secret: encryptSecret(rawSecret || null),
           config: params.apiUrl?.trim() ? { apiUrl: params.apiUrl.trim() } : {},
           is_active: true,
         },
@@ -82,7 +152,8 @@ export async function connectCrmAction(params: {
       {
         brokerage_id: member.brokerageId,
         provider_name: params.provider,
-        api_key: params.apiKey.trim(),
+        api_key: encryptSecret(params.apiKey.trim()),
+        api_secret: encryptSecret(rawSecret || null),
         webhook_url: params.apiUrl?.trim() || null,
         is_active: true,
         updated_at: new Date().toISOString(),
@@ -94,7 +165,10 @@ export async function connectCrmAction(params: {
   const { error: intErr } = await supabase
     .from("brokerage_integrations")
     .upsert(
-      { brokerage_id: member.brokerageId, provider_type: "crm", provider_name: params.provider, status: "active", metadata: { configured_by: member.userId } },
+      // brokerage_integrations.status ∈ (connected, error, not_configured).
+      // This wrote 'active', which the CHECK rejects — so the credential landed
+      // and the integration row did not, and the caller saw a failed connect.
+      { brokerage_id: member.brokerageId, provider_type: "crm", provider_name: params.provider, status: INTEGRATION_STATUS_CONNECTED, metadata: { configured_by: member.userId } },
       { onConflict: "brokerage_id,provider_name" },
     )
   if (intErr) return { ok: false, error: intErr.message }
@@ -110,11 +184,16 @@ export async function disconnectCrmAction(provider: CrmProvider): Promise<{ ok: 
   const { member } = gate
   const supabase = await createClient()
 
+  // A DISCONNECT that did not land leaves the credential ACTIVE — the sync keeps
+  // pushing contacts to a CRM the user just disconnected. Read every refusal.
   if (member.agentScoped) {
-    await supabase.from("agent_api_credentials").update({ is_active: false }).eq("agent_id", member.agentId).eq("service_name", provider)
+    const { error: agentCredErr } = await supabase.from("agent_api_credentials").update({ is_active: false }).eq("agent_id", member.agentId).eq("service_name", provider)
+    if (agentCredErr) return { ok: false, error: `Could not disconnect ${provider}: ${agentCredErr.message}` }
   } else {
-    await supabase.from("integration_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
-    await supabase.from("brokerage_integrations").update({ status: "not_configured" }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    const { error: credErr } = await supabase.from("integration_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    if (credErr) return { ok: false, error: `Could not disconnect ${provider}: ${credErr.message}` }
+    const { error: statusErr } = await supabase.from("brokerage_integrations").update({ status: INTEGRATION_STATUS_NOT_CONFIGURED }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    if (statusErr) return { ok: false, error: `${provider} credential deactivated, but the integration status was not updated: ${statusErr.message}` }
   }
   revalidatePath("/settings/crm")
   return { ok: true }
@@ -148,12 +227,48 @@ export async function syncContactNowAction(contactId: string): Promise<
   if (!result.success) {
     return { ok: false, error: result.requiresConfiguration ? `${result.providerKey} is not connected` : (result.error ?? "Sync failed") }
   }
+
+  // Manager ownership: the manual push is a DATA STEWARD operation (CRM/identity
+  // stewardship). Announce it on the bus to the Sphere Manager (lifetime-relationship
+  // owner) so the Command Center feed shows the record was mirrored — feed-only,
+  // idempotent per contact. Best-effort: a bus hiccup never fails the sync itself.
+  // (Only the MANUAL sync surfaces here; the autonomous per-update sync stays silent.)
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    const name = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "a contact"
+    await publishManagerSignal({
+      brokerageId: member.brokerageId,
+      fromManager: "data_steward",
+      toManager: "sphere_of_influence",
+      signalType: "contact_crm_synced",
+      message: `Data Steward mirrored ${name} to ${result.providerKey} (manual sync-out).`,
+      entityType: "contact",
+      entityId: contact.id,
+      contactId: contact.id,
+      payload: { providerKey: result.providerKey, action: result.action ?? null, trigger: "manual-sync" },
+    })
+  } catch { /* the CRM push already succeeded — the feed announcement is best-effort */ }
+
   return { ok: true, providerKey: result.providerKey, action: result.action, contactId: result.contactId }
 }
 
-/** Which CRM is connected/active in the caller's scope. */
+/** Which CRM is connected/active in the caller's scope — and how its LAST push went (wave 141,
+ *  lane 141D: the sync layer stamps every tenant-credentialed outcome on the credential row,
+ *  lib/crm/sync.ts crmSyncOutcomePatch; this read hands it to the settings page so a failing
+ *  integration is the TENANT's to see and fix, never a silent `.catch(() => {})`). */
 export async function getCrmStatusAction(): Promise<
-  { ok: true; scope: "agent" | "brokerage"; active: string | null; connected: CrmProvider[] } | { ok: false; error: string }
+  | {
+      ok: true; scope: "agent" | "brokerage"; active: string | null; connected: CrmProvider[]
+      /** The provider's own refusal on the last push (null = the last push succeeded or none ran). */
+      lastError: string | null
+      /** When the active CRM last accepted a push (null = never recorded). */
+      lastSyncedAt: string | null
+      /** The provider ACCEPTED the active credential on its last successful push (agent scope:
+       *  agent_api_credentials.is_verified, the outcome stamp's own column; brokerage scope: the
+       *  integration row is connected with no recorded error). */
+      verified: boolean
+    }
+  | { ok: false; error: string }
 > {
   const gate = await requireMember()
   if (!gate.ok) return gate
@@ -163,12 +278,19 @@ export async function getCrmStatusAction(): Promise<
   if (member.agentScoped) {
     const { data } = await supabase
       .from("agent_api_credentials")
-      .select("service_name, is_active")
+      .select("service_name, is_active, is_verified, error_message, last_verified_at")
       .eq("agent_id", member.agentId)
       .eq("service_type", "crm_sync")
       .in("service_name", CRM_PROVIDERS)
-    const connected = (data ?? []).filter((c) => c.is_active).map((c) => c.service_name as CrmProvider)
-    return { ok: true, scope: "agent", active: connected[0] ?? null, connected }
+    const activeRows = (data ?? []).filter((c) => c.is_active)
+    const connected = activeRows.map((c) => c.service_name as CrmProvider)
+    const activeRow = activeRows[0] ?? null
+    return {
+      ok: true, scope: "agent", active: connected[0] ?? null, connected,
+      lastError: (activeRow?.error_message as string | null) ?? null,
+      lastSyncedAt: (activeRow?.last_verified_at as string | null) ?? null,
+      verified: activeRow?.is_verified === true && !activeRow?.error_message,
+    }
   }
 
   const { data: creds } = await supabase
@@ -178,11 +300,16 @@ export async function getCrmStatusAction(): Promise<
     .in("provider_name", CRM_PROVIDERS)
   const { data: active } = await supabase
     .from("brokerage_integrations")
-    .select("provider_name, status")
+    .select("provider_name, status, last_error, last_health_check_at")
     .eq("brokerage_id", member.brokerageId)
     .eq("provider_type", "crm")
-    .eq("status", "active")
+    .eq("status", INTEGRATION_STATUS_CONNECTED)
     .maybeSingle()
   const connected = (creds ?? []).filter((c) => c.is_active).map((c) => c.provider_name as CrmProvider)
-  return { ok: true, scope: "brokerage", active: active?.provider_name ?? null, connected }
+  return {
+    ok: true, scope: "brokerage", active: active?.provider_name ?? null, connected,
+    lastError: (active?.last_error as string | null) ?? null,
+    lastSyncedAt: active?.last_error ? null : ((active?.last_health_check_at as string | null) ?? null),
+    verified: !!active && !active.last_error,
+  }
 }

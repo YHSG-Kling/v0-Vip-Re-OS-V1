@@ -9,12 +9,13 @@
 // so the trust tier the broker sees == the one we'd gate autonomy on.
 
 /** Live CHECK on agent_outcome_evaluations.result. */
-export const EVAL_RESULTS = ["satisfied", "needs_revision", "max_iterations_reached", "failed", "interrupted"] as const
-export type EvalResult = (typeof EVAL_RESULTS)[number]
+const EVAL_RESULTS = ["satisfied", "needs_revision", "max_iterations_reached", "failed", "interrupted"] as const
+type EvalResult = (typeof EVAL_RESULTS)[number]
 
 /** The rubric grader's "this output met the bar" verdict. */
-export const PASS_RESULT: EvalResult = "satisfied"
-export function isPassResult(r: string): boolean { return r === PASS_RESULT }
+const PASS_RESULT: EvalResult = "satisfied"
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isPassResult(r: string): boolean { return r === PASS_RESULT }
 
 export type TrustTier = "trusted" | "monitored" | "probation" | "insufficient_data"
 export type AutonomyPosture = "autonomous" | "review_recommended" | "approval_required"

@@ -72,7 +72,7 @@ export function LaunchStateStrip({
             {mediaReady ? (
               <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
             ) : (
-              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
             )}
             <span className={mediaReady ? "text-green-700" : "text-amber-700"}>Media</span>
           </div>
@@ -80,7 +80,7 @@ export function LaunchStateStrip({
             {publishReady ? (
               <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
             ) : (
-              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
             )}
             <span className={publishReady ? "text-green-700" : "text-amber-700"}>Publish</span>
           </div>
@@ -88,7 +88,7 @@ export function LaunchStateStrip({
             {marketingReady ? (
               <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
             ) : (
-              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
             )}
             <span className={marketingReady ? "text-green-700" : "text-amber-700"}>Marketing</span>
           </div>

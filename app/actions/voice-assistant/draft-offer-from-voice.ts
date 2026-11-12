@@ -5,8 +5,22 @@
  * pipeline so the agent's existing voice assistant can drive a packet
  * end-to-end through a single transcript stream.
  *
- * Conversational pattern (matches the same model as
- * /api/workflow/intake/offer):
+ * THE SURVIVOR OF THE OFFER-INTAKE CONSOLIDATION.
+ * app/api/workflow/intake/offer/route.ts was the same business process behind an HTTP
+ * door: same extractOfferIntake, same workflow_intake_sessions row, same
+ * fillOfferPacket, same documents insert (document_type 'offer',
+ * status 'needs_agent_input'), same generateOfferDraft staging, same FormWizard URL.
+ * It was retired because nothing in the tree addressed it and nothing outside could:
+ * it authenticated on `supabase.auth.getUser()`, i.e. a browser session, so it was not
+ * an external door — while THIS function is the canonical driver reached from
+ * app/mobile/voice/voice-session-button.tsx, app/actions/wizard-staging.ts and
+ * app/api/internal/voice-command/route.ts.
+ * Per CLAUDE.md §1 the survivor took the duplicate's missing half first: the
+ * runAllOfferChecks pre-flight and its findings/addenda passthrough (see the finalize
+ * branch). Nothing else on that route existed here — its intakeToOfferDraftParams()
+ * mapper produces field-for-field what this function already hand-builds.
+ *
+ * Conversational pattern:
  *
  *   Turn 1 — agent says "draft offer at 800K on 123 Main, 3% earnest…"
  *           → server stores a workflow_intake_session, returns the missing
@@ -20,8 +34,14 @@
  * Auth: requires authenticated user. All work scoped to user's brokerage.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { extractOfferIntake, type OfferIntake } from "@/lib/workflow/intake/voice-to-offer"
+// intakeToOfferDraftParams is the ONE intake → generateOfferDraft mapping. It was
+// written for the retired /api/workflow/intake/offer route while this action hand-built
+// the identical object beside it; the survivor takes the shared mapper so there is one
+// spelling of the mapping, not two (CLAUDE.md §6). `state` is checked before it is
+// called, so its throw-on-missing-state can never fire here.
+import { extractOfferIntake, intakeToOfferDraftParams, type OfferIntake } from "@/lib/workflow/intake/voice-to-offer"
 import { fillOfferPacket } from "@/lib/workflow/intake/form-fill-engine"
 
 export interface VoiceDraftOfferRequest {
@@ -33,6 +53,24 @@ export interface VoiceDraftOfferRequest {
   contactId?:  string
   /** When true, force finalize with what we have (skip more questions) */
   forceFinalize?: boolean
+}
+
+/** One proactive-check finding — the shape lib/workflow/intelligence/proactive-checks.ts
+ *  returns. Re-declared structurally rather than imported so this action's response type
+ *  stays serialisable across the server-action boundary.
+ *
+ *  NOT EXPORTED, deliberately, and for two reasons at once: this is a "use server" file
+ *  where every export is a public endpoint (CLAUDE.md §4), and an exported type that no
+ *  other module names is a category-3 orphan export. It is reachable where it needs to
+ *  be — structurally, through the exported VoiceDraftOfferResponse union — so the two
+ *  consumers that read `.blockers` need no named import. */
+interface OfferCheckFinding {
+  severity:        string
+  category:        string
+  title:           string
+  detail:          string
+  recommendation?: string
+  action?:         { label: string; href: string }
 }
 
 export type VoiceDraftOfferResponse =
@@ -50,11 +88,25 @@ export type VoiceDraftOfferResponse =
       spokenResponse:     string
     }
   | {
+      /** PROACTIVE CHECKS REFUSED THE DRAFT. Merged onto this action when the duplicate
+       *  HTTP door (app/api/workflow/intake/offer) was retired — see the note on the
+       *  finalize branch. Nothing is staged: the agent fixes the blocker and re-finalizes. */
+      kind:               "blocked"
+      sessionId:          string
+      blockers:           OfferCheckFinding[]
+      findings:           OfferCheckFinding[]
+      addenda:            unknown[]
+      spokenResponse:     string
+    }
+  | {
       kind:               "finalized"
       sessionId:          string
       documentId:         string
       formwizardUrl:      string
       spokenResponse:     string
+      /** Non-blocking warnings/info the FormWizard shows as a "review these" panel. */
+      findings:           OfferCheckFinding[]
+      addenda:            unknown[]
     }
   | {
       kind:               "error"
@@ -71,7 +123,14 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
   const brokerageId = userRow?.brokerage_id
   if (!brokerageId) return { kind: "error", error: "No brokerage on user" }
 
-  // ── Load any prior session ──────────────────────────────────────────────
+  // ── Load any prior session — OWNER-SCOPED (§4) ──────────────────────────
+  // `sessionId` is caller-supplied, and without the `agent_user_id` predicate
+  // any authenticated user could resume ANOTHER user's intake — reading their
+  // contact linkage and the whole prior conversation — by guessing or
+  // replaying a session id. Identity comes from the SESSION, never the
+  // request. A miss (not found OR not yours — deliberately indistinguishable)
+  // starts a NEW session: req.sessionId is cleared so the persist below
+  // inserts rather than updating a row this caller does not own.
   let priorIntake: OfferIntake | undefined
   let priorConversation: Array<{ role: string; content: string; ts: string }> = []
   if (req.sessionId) {
@@ -79,11 +138,14 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
       .from("workflow_intake_sessions")
       .select("current_intake, conversation, contact_id")
       .eq("id", req.sessionId)
+      .eq("agent_user_id", user.id)
       .maybeSingle()
     if (session) {
       priorIntake = session.current_intake as OfferIntake
       priorConversation = (session.conversation as any[]) || []
       if (!req.contactId && session.contact_id) req.contactId = session.contact_id
+    } else {
+      req.sessionId = undefined
     }
   }
 
@@ -91,6 +153,9 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
   const extracted = await extractOfferIntake({
     text:  req.voiceInput,
     prior: priorIntake,
+    // §4 — session user, and the brokerage read off THEIR users row.
+    brokerageId,
+    userId: user.id,
   })
 
   const newConversation = [
@@ -101,14 +166,14 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
   // ── Persist / upsert session ─────────────────────────────────────────────
   let sessionId = req.sessionId
   if (sessionId) {
-    await supabase.from("workflow_intake_sessions").update({
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
       current_intake: extracted.intake,
       conversation:   newConversation,
       status:         extracted.readyToDraft ? "ready_to_draft" : "in_progress",
       updated_at:     new Date().toISOString(),
-    }).eq("id", sessionId)
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   } else {
-    const { data: newSession } = await supabase.from("workflow_intake_sessions").insert({
+    const { data: newSession, error: sessionInsErr } = await supabase.from("workflow_intake_sessions").insert({
       brokerage_id:   brokerageId,
       agent_user_id:  user.id,
       contact_id:     req.contactId ?? null,
@@ -117,6 +182,9 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
       current_intake: extracted.intake,
       status:         extracted.readyToDraft ? "ready_to_draft" : "in_progress",
     }).select("id").single()
+    // The intake still proceeds this turn, but without a session row the next
+    // turn cannot resume it — never silent.
+    if (sessionInsErr) console.error(`[voice-intake] intake session NOT created: ${sessionInsErr.message}`)
     sessionId = newSession?.id
   }
   if (!sessionId) return { kind: "error", error: "Could not persist intake session" }
@@ -128,12 +196,12 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
       ? `Got it. ${top.map(q => q.question).join(" ")}`
       : "Got it. What else?"
     // Append assistant turn
-    await supabase.from("workflow_intake_sessions").update({
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
       conversation: [
         ...newConversation,
         { role: "assistant", content: spoken, ts: new Date().toISOString() },
       ],
-    }).eq("id", sessionId)
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return {
       kind:           "needs_more_info",
@@ -163,6 +231,51 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
     return { kind: "error", error: "Cannot finalize — propertyState is missing" }
   }
 
+  // ── PROACTIVE CHECKS, BEFORE ANY FILL ────────────────────────────────────
+  // MERGED FROM THE RETIRED DUPLICATE. app/api/workflow/intake/offer/route.ts ran
+  // the SAME pipeline as this action (extract → session → fillOfferPacket → documents
+  // row → generateOfferDraft → FormWizard url) behind an HTTP door nothing in the tree
+  // addressed, and it carried ONE thing this action did not: runAllOfferChecks with a
+  // hard-blocker refusal. That meant every offer staged by VOICE — the mobile panel,
+  // the wizard Copilot, and the premium voice lane, i.e. every live path — skipped the
+  // MLS validation, the financing preflight, the buyer-agency/legal-name completeness
+  // gate and the addendum auto-detect, while the door nobody used enforced them.
+  // The gate runs FIRST so a blocker stops the flow before a packet is filled, which
+  // is what the route's own comment said it was for: it saves a wasted pass.
+  // Best-effort by design, exactly as on the retired route: if the checks themselves
+  // crash we proceed rather than refuse — this is an ADVISORY pre-flight, not the
+  // compliance gate of record (that is submitOfferToCompliance /
+  // lib/transactions/transaction-creation-gate.ts, which still refuses downstream).
+  let proactive: Awaited<ReturnType<typeof import("@/lib/workflow/intelligence/proactive-checks").runAllOfferChecks>> | null = null
+  try {
+    const { runAllOfferChecks } = await import("@/lib/workflow/intelligence/proactive-checks")
+    proactive = await runAllOfferChecks({
+      intake:      extracted.intake,
+      contactId:   req.contactId ?? null,
+      agentUserId: user.id,
+      brokerageId,
+      listingId:   extracted.intake.listingId.value,
+    })
+  } catch { /* checks are best-effort — proceed if they crash */ }
+
+  if (proactive && !proactive.passed) {
+    const top = proactive.blockers[0]
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
+      status:     "ready_to_draft",
+      updated_at: new Date().toISOString(),
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
+    return {
+      kind:     "blocked",
+      sessionId,
+      blockers: proactive.blockers as OfferCheckFinding[],
+      findings: proactive.findings as OfferCheckFinding[],
+      addenda:  proactive.addenda,
+      spokenResponse: top
+        ? `I can't stage this yet — ${top.title}. ${top.recommendation ?? top.detail}`
+        : "I can't stage this yet — a pre-flight check refused the offer.",
+    }
+  }
+
   let filledPacket
   try {
     filledPacket = await fillOfferPacket({ intake: extracted.intake, brokerageId })
@@ -170,7 +283,7 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
     return { kind: "error", error: (err as Error).message ?? "Fill engine failed" }
   }
 
-  const { data: doc } = await supabase.from("documents").insert({
+  const { data: doc, error: docInsErr } = await supabase.from("documents").insert({
     brokerage_id:  brokerageId,
     contact_id:    req.contactId ?? null,
     document_type: "offer",
@@ -188,6 +301,7 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
     content: JSON.stringify({ filledPacket, intake: extracted.intake }, null, 2),
     created_at: new Date().toISOString(),
   }).select("id").single()
+  if (docInsErr) return { kind: "error", error: `Could not create document: ${docInsErr.message}` }
   if (!doc) return { kind: "error", error: "Could not create document" }
 
   // Record AI-fill audit trail
@@ -200,24 +314,22 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
   try {
     const draftMod = await import("@/app/actions/ai-offer-creation")
     if (typeof (draftMod as any).generateOfferDraft === "function") {
-      await (draftMod as any).generateOfferDraft({
+      await (draftMod as any).generateOfferDraft(intakeToOfferDraftParams({
+        intake: extracted.intake,
         brokerageId,
         contactId: req.contactId ?? null,
         agentUserId: user.id,
-        state,
-        propertyAddress: extracted.intake.propertyAddress.value ?? undefined,
-        listingId: extracted.intake.listingId.value ?? null,
         documentId: doc.id,
-      })
+      }))
     }
   } catch { /* generator optional */ }
 
   // Update session
-  await supabase.from("workflow_intake_sessions").update({
+  await bestEffort(supabase.from("workflow_intake_sessions").update({
     status: "drafted",
     document_id: doc.id,
     updated_at: new Date().toISOString(),
-  }).eq("id", sessionId)
+  }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   const formwizardUrl = req.contactId
     ? `/crm?contact=${req.contactId}&action=new_offer&documentId=${doc.id}`
@@ -229,5 +341,10 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
     documentId:    doc.id,
     formwizardUrl,
     spokenResponse: "Packet staged for your review. Opening the FormWizard now.",
+    // Non-blocking warnings + suggested addenda ride out with the packet so the
+    // FormWizard can show them beside the prefilled fields (the retired route's
+    // "review these" panel — the only other thing it carried).
+    findings: (proactive?.findings ?? []) as OfferCheckFinding[],
+    addenda:  proactive?.addenda ?? [],
   }
 }

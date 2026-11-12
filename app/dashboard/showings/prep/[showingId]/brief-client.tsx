@@ -31,10 +31,10 @@ const fmt = (iso: string | null) => {
 }
 
 const MATCH_META: Record<string, { Icon: typeof CheckCircle2; color: string }> = {
-  yes:     { Icon: CheckCircle2, color: "text-emerald-600" },
+  yes:     { Icon: CheckCircle2, color: "text-emerald-700" },
   no:      { Icon: XCircle,      color: "text-red-600" },
-  partial: { Icon: MinusCircle,  color: "text-amber-600" },
-  unknown: { Icon: HelpCircle,   color: "text-slate-400" },
+  partial: { Icon: MinusCircle,  color: "text-amber-700" },
+  unknown: { Icon: HelpCircle,   color: "text-slate-500" },
 }
 
 export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: Props) {
@@ -270,7 +270,7 @@ export function ShowingBriefClient({ showingId, briefing, showingScheduledAt }: 
                 <ul className="space-y-1.5">
                   {briefing.aiObjections.map((o, i) => (
                     <li key={i} className="text-xs flex items-start gap-1.5">
-                      <span className="text-amber-600 mt-0.5">•</span> {o}
+                      <span className="text-amber-700 mt-0.5">•</span> {o}
                     </li>
                   ))}
                 </ul>

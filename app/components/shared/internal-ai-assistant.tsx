@@ -29,6 +29,9 @@ import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2, Zap, Mic, MicOff, Phone, Volume2 } from "lucide-react"
+import { useEnterToSubmit } from "@/hooks/use-enter-to-submit"
+import { IntentAffordance } from "@/app/components/shared/intent-affordance"
+import type { IntentInterpretation } from "@/lib/voice-admin/intent-interface"
 
 // ─── Suggested questions by role ─────────────────────────────────────────────
 
@@ -562,6 +565,8 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
   const [voiceTranscript, setVoiceTranscript] = useState("")
   const [callQueue, setCallQueue] = useState<CallQueueItem[]>([])
   const [voiceResponse, setVoiceResponse] = useState<string | null>(null)
+  /** A plan the team brain handed to the ONE affordance (C17 action "intent_interface"). */
+  const [intentSeed, setIntentSeed] = useState<{ utterance: string; interpretation: IntentInterpretation | null } | null>(null)
   const [fetchedWakeWord, setFetchedWakeWord] = useState<string | null>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const wakeRecognitionRef = useRef<SpeechRecognition | null>(null)
@@ -590,6 +595,10 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     transport: new DefaultChatTransport({
       api: "/api/internal/ai-chat",
       headers: sessionIdForTransport ? { "x-internal-session-id": sessionIdForTransport } : {},
+      // Lane 77A — the contact the panel is OPEN ON, so a staff seat gets the
+      // customer free bundle for that person (the route tenant-checks the row
+      // and derives the persona from it; a partner seat ignores it).
+      body: pageContext?.contactId ? { contactId: pageContext.contactId } : {},
       fetch: async (url, options) => {
         const response = await fetch(url, options as RequestInit)
         const newId = response.headers.get("x-session-id")
@@ -643,6 +652,12 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     })
       .then(async (res) => {
         if (!res.ok || !res.body) {
+          // Surface the refusal reason (never silent) before the graceful
+          // browser-TTS fallback — census: route-response-field.
+          try {
+            const { error, code } = await res.json()
+            if (error) console.warn(`voice-tts refused: ${error}${code ? ` (${code})` : ""}`)
+          } catch {}
           speakViaBrowser()
           return
         }
@@ -663,14 +678,27 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     setVoiceTranscript(transcript)
     setVoiceResponse(null)
     setCallQueue([])
+    setIntentSeed(null)
 
     try {
       const res = await fetch("/api/internal/voice-command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript, sessionId }),
+        body: JSON.stringify({ transcript, sessionId, modality: "voice" }),
       })
       const data = await res.json()
+
+      if (!res.ok) {
+        // A refusal (unauthorized / no agent profile / bad transcript) has no
+        // spokenResponse — data.ok is false only on the "not ready yet" 409,
+        // data.error on every other refusal. Either way the assistant must
+        // SAY something, never process silently as if nothing came back.
+        const refusalMsg = data.ok === false ? data.spoken : data.error
+        const msg = refusalMsg ?? "Sorry, I couldn't process that command. Please try again."
+        setVoiceResponse(msg)
+        speakText(msg)
+        return
+      }
 
       if (data.spokenResponse) {
         setVoiceResponse(data.spokenResponse)
@@ -682,6 +710,10 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
       // If the intent is general, also forward to text chat
       if (data.action === "forward_to_chat") {
         sendMessageRef.current({ text: transcript })
+      }
+      // C17: another desk executes it — the one affordance takes the plan from here.
+      if (data.action === "intent_interface" && data.data?.interpretation) {
+        setIntentSeed({ utterance: transcript, interpretation: data.data.interpretation as IntentInterpretation })
       }
     } catch {
       const errMsg = "Sorry, I couldn't process that command. Please try again."
@@ -894,12 +926,10 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     setInput("")
   }, [input, isStreaming, sendMessage, prepareNote])
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
+  // `handleKeyDown` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to hooks/use-enter-to-submit.ts `useEnterToSubmit`
+  // (used below).
+  const handleKeyDown = useEnterToSubmit<HTMLTextAreaElement>(handleSend)
 
   // ── Note draft helpers ──────────────────────────────────────────────────────
   const updateDraft = useCallback((cardId: string, updates: Partial<NoteDraft>) => {
@@ -1198,6 +1228,7 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
                           stage_email_campaign: "Email Campaign Drafted",
                           stage_open_house: "Open House Scheduled",
                           stage_blog_draft: "Blog Drafted",
+                          draft_listing_description: "Listing Description Drafted",
                           stage_podcast_episode: "Podcast Episode Drafted",
                           stage_video_project: "Video Project Drafted",
                           stage_direct_mail_campaign: "Direct Mail Drafted",
@@ -1384,6 +1415,18 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
                       Replay
                     </button>
                   </div>
+                )}
+
+                {/* C17 (wave 148D): the team brain understood a request another desk executes (an ad, a
+                    blog, an open house, who may need help…). The ONE affordance carries it from here —
+                    the plan, the missing detail it asks for, and the "yes, do it" — never a second UI. */}
+                {intentSeed && !voiceProcessing && (
+                  <IntentAffordance
+                    screen="assistant"
+                    compact
+                    seed={intentSeed}
+                    context={{ contactId: pageContext?.contactId ?? null, listingId: pageContext?.listingId ?? null }}
+                  />
                 )}
 
                 {/* Call queue — shown after hot contacts query */}

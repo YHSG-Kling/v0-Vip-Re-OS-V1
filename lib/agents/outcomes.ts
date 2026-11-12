@@ -25,13 +25,105 @@
  */
 import "server-only"
 
+// ─── THE ONE agent_outcome_evaluations WRITER (wave 102, lane 102D) ──────────────────────────
+// Before 102D the only insert sat inline in app/api/webhooks/anthropic-agent/route.ts
+// (span.outcome_evaluation_end). It now lives here so the SECOND evaluator — an attributed
+// real-world outcome landing on an experiment-arm action (lib/intelligence/roi-ledger.ts
+// recordExperimentArmOutcomes) — extends the same row and the same writer rather than adding a
+// second table or a second inserter (CLAUDE.md §1, OWNER LAW 2). The two evaluators are told apart
+// by `evaluator` (m700): 'anthropic_rubric' rows carry the session + outcome id; 'ledger_attribution'
+// rows carry the ledger action, the experiment key/arm and the outcome they earned.
+
+/** agent_outcome_evaluations.result — the live CHECK (lib/managers/eval-scoring.ts EVAL_RESULTS). */
+export type OutcomeEvaluationResult = "satisfied" | "needs_revision" | "max_iterations_reached" | "failed" | "interrupted"
+
+export type OutcomeEvaluationInput =
+  | {
+      evaluator: "anthropic_rubric"
+      brokerageId: string
+      managedAgentSessionId: string
+      anthropicOutcomeId: string
+      iteration: number
+      result: OutcomeEvaluationResult
+      explanation: string | null
+      usage?: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null }
+    }
+  | {
+      evaluator: "ledger_attribution"
+      brokerageId: string
+      /** The agent_action_ledger row that carried `detail.experiment = { key, arm }`. */
+      ledgerActionId: string
+      experimentKey: string
+      experimentArm: string
+      /** `<kind>:<source row id>` — the attribution's own stable outcome ref. */
+      outcomeRef: string
+      outcomeKind: "reply" | "appointment" | "contract" | "closed"
+      /** When the outcome happened (the attribution anchor), not when this row was written. */
+      outcomeAt: string
+      explanation: string | null
+    }
+
+/**
+ * The ONE insert. The row literal sits inside `.insert({...})` so the column censuses see every
+ * column this module writes. Refusals are READ and returned (§3); `duplicate: true` is the m700
+ * UNIQUE (ledger_action_id, outcome_ref) saying this arm outcome was already recorded — idempotent.
+ */
+export async function recordOutcomeEvaluation(
+  svc: { from: (t: string) => any },
+  input: OutcomeEvaluationInput,
+): Promise<{ ok: true; id: string | null; duplicate: boolean } | { ok: false; error: string; code?: string }> {
+  const row = input.evaluator === "anthropic_rubric"
+    ? {
+        brokerage_id:             input.brokerageId,
+        evaluator:                "anthropic_rubric",
+        managed_agent_session_id: input.managedAgentSessionId,
+        anthropic_outcome_id:     input.anthropicOutcomeId,
+        iteration:                input.iteration,
+        result:                   input.result,
+        explanation:              input.explanation,
+        input_tokens:             input.usage?.input_tokens             ?? null,
+        output_tokens:            input.usage?.output_tokens            ?? null,
+        cache_read_input_tokens:  input.usage?.cache_read_input_tokens  ?? null,
+      }
+    : {
+        brokerage_id:     input.brokerageId,
+        evaluator:        "ledger_attribution",
+        iteration:        0,
+        // An attributed outcome IS the bar met in the real world (eval-scoring's PASS_RESULT).
+        result:           "satisfied",
+        explanation:      input.explanation,
+        ledger_action_id: input.ledgerActionId,
+        experiment_key:   input.experimentKey,
+        experiment_arm:   input.experimentArm,
+        outcome_ref:      input.outcomeRef,
+        outcome_kind:     input.outcomeKind,
+        evaluated_at:     input.outcomeAt,
+      }
+  const { data, error } = await svc.from("agent_outcome_evaluations").insert(row).select("id").maybeSingle()
+  if (error) {
+    if (String(error.code ?? "") === "23505") return { ok: true, id: null, duplicate: true }
+    return { ok: false, error: String(error.message ?? "refused"), code: error.code ? String(error.code) : undefined }
+  }
+  return { ok: true, id: ((data as { id?: string } | null)?.id ?? null), duplicate: false }
+}
+
+/** True when the refusal means m700 part 2 is not applied yet (no evaluator / experiment columns). */
+export function isOutcomeEvaluationSchemaLag(code: string | undefined): boolean {
+  return code === "PGRST204" || code === "42703" || code === "23502"
+}
+
 export type AgentOutcomeKind =
   | "buyer_concierge"
   | "listing_concierge"
   | "deal_coordinator"
   | "sphere_of_influence"
   | "campaign_orchestrator"
-  | "marketing_agent"
+  // TOMBSTONE (m618) — "marketing_agent" renamed "campaign_orchestrator_broadcast": the
+  // retired marketing_agent ManagerKey's survivor is campaign_orchestrator, which already
+  // owns a DIFFERENT rubric (the 1:1 sphere-opportunity one, case "campaign_orchestrator"
+  // above) — this is that same manager's OTHER weekly job (1:many brand/broadcast), kept
+  // as a distinct rubric tag so the two switch cases don't collide.
+  | "campaign_orchestrator_broadcast"
   | "asset_manager"
 
 export interface OutcomeRubric {
@@ -262,8 +354,10 @@ You PASS when all 8 hold. Iterate until they do or max_iterations hits.
 }
 
 /**
- * Marketing Agent — owns the BRAND/PROMOTION lane (1:many broadcast).
- * Distinct from campaign_orchestrator which owns the 1:1 contact lane.
+ * Campaign Orchestrator's BRAND/PROMOTION lane (1:many broadcast weekly job — m618:
+ * survivor of the retired marketing_agent seat, lib/agents/marketing-agent.ts).
+ * Distinct from campaign_orchestrator's own 1:1 contact-campaign lane (buildCampaignOrchestratorRubric
+ * above) — same manager, two weekly jobs, two rubrics.
  *
  * Inputs the agent watches each week:
  *   - listing_promo_videos rows in 'remotion_pending' (Just Listed reels
@@ -392,7 +486,7 @@ export function buildOutcomeFor(
     case "deal_coordinator":      return buildDealCoordinatorRubric({  brokerageName: params.brokerageName, dealName:   params.subjectName })
     case "sphere_of_influence":   return buildSphereOfInfluenceRubric({ brokerageName: params.brokerageName, sphereSize: params.sphereSize ?? 0 })
     case "campaign_orchestrator": return buildCampaignOrchestratorRubric({ brokerageName: params.brokerageName, opportunityCount: params.opportunityCount ?? 0 })
-    case "marketing_agent":       return buildMarketingAgentRubric({
+    case "campaign_orchestrator_broadcast": return buildMarketingAgentRubric({
       brokerageName:        params.brokerageName,
       pendingListingPromos: params.pendingListingPromos ?? 0,
       atRiskListings:       params.atRiskListings       ?? 0,

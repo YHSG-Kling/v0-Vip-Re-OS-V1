@@ -8,6 +8,7 @@
 // No server imports — testable, and importable by the render endpoint without dragging server deps.
 
 import { composePartnersMeetingScript, type WeekInBusiness } from "@/lib/intelligence/partners-meeting"
+import { compactDollarsMoney } from "@/lib/format/money"
 
 export type ReelCardKind = "team" | "finance" | "compliance"
 export interface ReelCard {
@@ -35,16 +36,23 @@ export interface PartnersMeetingReelProps {
   narration: string
   agentName: string
   avatarVideoUrl: string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the presenter clip
+   * (wave 62 — PartnersMeetingReel's file-header note flagged this as the one
+   * unresolved carry: the PIP rides ONE continuous take across every card +
+   * the ask, and nothing threaded the clip's real length through, so a short
+   * render just held its last frame for the remainder). Optional + additive:
+   * absent renders exactly as before (the composition's own
+   * avatarFadeOutFrame call no-ops with no measurement). Same contract as
+   * AgentTalkingHeadReel's avatarDurationSeconds.
+   */
+  avatarDurationSeconds?: number | null
   agentPhotoUrl: string | null
   brand: PartnersMeetingReelBrand
 }
 
-const fmtUsd = (n: number) => {
-  const v = Math.round(Math.max(0, n))
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (v >= 10_000) return `$${Math.round(v / 1000)}K`
-  return `$${v.toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `fmtUsd` lived here; survivor lib/format/money.ts:compactDollarsMoney
+const fmtUsd = compactDollarsMoney
 
 /**
  * PURE: WeekInBusiness → reel props. Cards appear ONLY when earned (count/amount > 0); the Finance
@@ -57,6 +65,7 @@ export function buildPartnersMeetingReelProps(
     audienceName?: string | null
     agentName?: string
     avatarVideoUrl?: string | null
+    avatarDurationSeconds?: number | null
     agentPhotoUrl?: string | null
     brand?: Partial<PartnersMeetingReelBrand>
   } = {},
@@ -101,6 +110,7 @@ export function buildPartnersMeetingReelProps(
     narration: composePartnersMeetingScript(w, opts.audienceName ?? null),
     agentName: opts.agentName ?? "Your Team",
     avatarVideoUrl: opts.avatarVideoUrl ?? null,
+    avatarDurationSeconds: opts.avatarDurationSeconds ?? null,
     agentPhotoUrl: opts.agentPhotoUrl ?? null,
     brand: {
       primaryColor: opts.brand?.primaryColor ?? "#0F172A",

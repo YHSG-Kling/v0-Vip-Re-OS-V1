@@ -19,20 +19,20 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 export const runtime = "nodejs"
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs   = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  // verifyCronAuth refused an unset CRON_SECRET above, so it is present here;
+  // the self-calls below forward it as the same Bearer credential.
+  const expected = process.env.CRON_SECRET as string
 
   const svc = createServiceClient()
 
@@ -48,13 +48,17 @@ export async function GET(req: NextRequest) {
 
   let staged = 0
   for (const c of (candidates ?? []) as { id: string; brokerage_id: string; agent_id: string | null; created_by: string | null }[]) {
-    const ownerUserId = c.created_by ?? c.agent_id
-    if (!ownerUserId) continue
+    // newsletter_campaigns.agent_id is already agents-class; created_by is a
+    // users id, so it is resolved rather than used as a same-class fallback.
+    // No agent either way ⇒ nothing to attribute the render to, so it is not staged.
+    const ownerAgentId = c.agent_id
+      ?? (c.created_by ? await resolveAgentIdInBrokerage(svc, c.created_by, c.brokerage_id) : null)
+    if (!ownerAgentId) continue
     try {
       const { error } = await svc.from("newsletter_video_renders").insert({
         brokerage_id:           c.brokerage_id,
         newsletter_campaign_id: c.id,
-        agent_id:               ownerUserId,
+        agent_id:               ownerAgentId,
         status:                 "queued",
       })
       if (!error) staged++

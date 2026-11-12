@@ -2,10 +2,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
-  TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle2,
+  TrendingUp, TrendingDown, Target, CheckCircle2,
   Clock, DollarSign, Sparkles,
 } from "lucide-react"
 import { computeAndPersistGapAction, getLatestGapAction } from "@/app/actions/income-engine"
+import { ActionDisposition } from "./action-disposition"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 
@@ -224,6 +225,10 @@ export default async function IncomeTruthPage() {
                         )}
                       </div>
                     </div>
+                    {/* Disposition — the only writers of this row's status.
+                        Without them the queue was advisory only and the same
+                        recommendation returned every week. */}
+                    <ActionDisposition actionId={a.id} />
                   </div>
                 </div>
               ))}

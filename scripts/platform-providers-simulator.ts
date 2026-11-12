@@ -43,7 +43,11 @@ function sourceLayer() {
   const act = src("app/actions/superadmin/platform-providers.ts")
   check("get/set actions are superadmin-gated + audited", /requireSuperadmin/.test(act) && /superadmin_audit_log"\)\.insert\([\s\S]*?platform_provider_update/.test(act))
   const prov = src("lib/kernel/providers.ts")
-  check("the read side (resolveProvider) already honors scope_type='superadmin'", /scope_type",\s*"superadmin"/.test(prov))
+  // Re-anchored 86C (rule, not spelling): the cascade is one parameterised read (resolveProviderCore
+  // readOverride(scope, id)); the superadmin tier is asked by name, and the SAME row is proved to
+  // answer on the service client by scripts/tenant-config-reads-simulator.ts §3.
+  check("the read side (resolveProvider) already honors scope_type='superadmin'",
+    /\.eq\("scope_type", scope\)/.test(prov) && /readOverride\("superadmin", null\)/.test(prov) && /scope_type",\s*"superadmin"|readOverride\("superadmin"/.test(prov))
   check("getSystemProviderStatus gates channels on the superadmin rows", /scope_type",\s*"superadmin"[\s\S]*?direct_mail/.test(src("app/actions/settings/provider-settings-actions.ts")))
   const page = src("app/dashboard/superadmin/platform/page.tsx")
   check("the god console mounts the providers panel with live config", /getPlatformProviderConfig\(\)/.test(page) && /<PlatformProvidersPanel/.test(page))

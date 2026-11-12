@@ -1,3 +1,12 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ DEAD — DO NOT RE-RUN. The `vendor_directory` table this file touches no   ║
+-- ║ longer exists: m355 folded its curation columns onto `vendors` and        ║
+-- ║ dropped it (one vendor system, per the owner's ruling on drift).          ║
+-- ║ Its columns (team_id, audience_tags, stage_tags, display_priority,        ║
+-- ║ visible_in_portal) now live on `vendors`.                                ║
+-- ║ Kept only as the historical record of how the schema got here.           ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
 -- ============================================================================
 -- Vendor Directory — team scoping + audience/stage targeting
 -- ============================================================================

@@ -11,10 +11,13 @@
  *                                 (first time crossing $100k, $250k, $500k, $1M)
  *
  * VALUE FRESHNESS:
- *   - getCurrentAvm() uses Perplexity AI-CMA as Tier 1 (~$0.01 per call)
+ *   - Wave 92 (lane 92B2, owner: "use rentcast as much as possible regarding … home values"):
+ *     getCurrentAvm() asks RENTCAST FIRST for the brokerage this scan runs for (one request per
+ *     home per 14 days at most — the contact's own 14-day window below AND RentCast's 14-day fact
+ *     cache), with Perplexity AI-CMA (~$0.01) as the fallback when RentCast is not eligible
+ *     (platform key unset / vendor budget paused) or has no confident value.
  *   - Cache window: 14 days. Stale values auto-refresh every cron run.
- *   - No daily budget cap on refreshes — Perplexity cost is small enough that
- *     keeping data current beats budgeting against it.
+ *   - The vendor budget gate is the cap: over budget, the scan falls back to Perplexity.
  *   - Premium paid providers only fire via runAiCma({ mode: 'premium' }) on
  *     agent click, never from this background scan.
  *
@@ -26,8 +29,10 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateTextRouted } from "@/lib/ai/models"
 import { getCurrentAvm } from "@/lib/avm/provider-chain"
+import { WEALTH_STATUS_DEFAULT } from "@/lib/wealth-advisor/recommendation-status"
 
 const REFI_OPPORTUNITY_BPS_THRESHOLD = 100   // 1.0% rate drop
 const EQUITY_MILESTONES = [100_000, 250_000, 500_000, 1_000_000]
@@ -178,6 +183,7 @@ async function processBrokerageWealthScan(
         contact: c,
         prior,
         marketRate,
+        brokerageId,
       })
       if (opportunities.refreshedAvm) avmRefreshes++
 
@@ -187,15 +193,22 @@ async function processBrokerageWealthScan(
           contact: c,
           opportunity: opp,
           marketRate,
+          // §4 — the brokerage this scan is running for, not a caller value.
+          brokerageId,
         })
         opp.aiNarrative = narrative
 
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("wealth_advisor_recommendations")
           .insert({
             contact_id: c.id,
+            // contacts.agent_id → agents(id); every reader of this table filters
+            // on an agents.id, so the class matches.
             agent_id: c.agent_id,
             brokerage_id: brokerageId,
+            // Explicit rather than leaning on the column default, so the one
+            // place that owns this vocabulary is the same one the readers use.
+            status: WEALTH_STATUS_DEFAULT,
             opportunity_type: opp.type,
             current_avm_value: opp.currentAvm,
             estimated_equity: opp.estimatedEquity,
@@ -209,15 +222,25 @@ async function processBrokerageWealthScan(
             scenarios: opp.scenarios,
             signals_supporting: opp.signals,
             expires_at: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString(), // 60-day window
-          })
+          }), { table: "wealth_advisor_recommendations", flow: "wealth_advisor_recommendations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         opportunitiesCreated++
       }
 
       // Stamp last_pls_scored_at so the round-robin moves forward
-      await supabase
-        .from("contacts")
-        .update({ last_pls_scored_at: new Date().toISOString() })
-        .eq("id", c.id)
+      await sentinelWrite(
+        supabase,
+        supabase
+          .from("contacts")
+          .update({ last_pls_scored_at: new Date().toISOString() })
+          .eq("id", c.id),
+        {
+          table: "contacts",
+          flow: "wealth_advisor_scan_cursor",
+          brokerageId,
+          reason:
+            "round-robin cursor for the wealth-advisor sweep; the opportunities themselves are already written and the sweep is idempotent, so a lost cursor costs an early re-scan",
+        },
+      )
     } catch {
       errors++
     }
@@ -294,14 +317,15 @@ async function detectOpportunities(input: {
   }
   prior?: PriorTransaction
   marketRate: MarketRate
+  brokerageId?: string
 }): Promise<{ opportunities: DetectedOpportunity[]; refreshedAvm: boolean }> {
-  const { contact, prior, marketRate } = input
+  const { contact, prior, marketRate, brokerageId } = input
   const opportunities: DetectedOpportunity[] = []
   let refreshedAvm = false
   let avm = contact.home_value_estimate ?? null
 
-  // Refresh AVM if missing or stale (>14 days). Free Perplexity AI-CMA, no
-  // budget cap — keeping the value current beats stale-data risk.
+  // Refresh AVM if missing or stale (>14 days). RentCast first (wave 92), Perplexity
+  // AI-CMA as the fallback — keeping the value current beats stale-data risk.
   const needsRefresh =
     !avm ||
     !contact.last_enriched_at ||
@@ -316,19 +340,43 @@ async function detectOpportunities(input: {
       cachedValue: avm,
       cachedAt: contact.last_enriched_at,
       cacheStaleAfterDays: 14,
+      // Wave 92 (lane 92B2): the tenant this scan runs for — RentCast is metered and gated per
+      // tenant, so without it the chain can never reach its first tier.
+      brokerageId: brokerageId ?? null,
     })
     if (fresh && fresh.value > 0) {
       avm = fresh.value
       refreshedAvm = true
       // Persist back to contact row
       const supabase = createServiceClient()
-      await supabase
-        .from("contacts")
-        .update({
-          home_value_estimate: fresh.value,
-          last_enriched_at: new Date().toISOString(),
-        })
-        .eq("id", contact.id)
+      await sentinelWrite(
+        supabase,
+        supabase
+          .from("contacts")
+          .update({
+            home_value_estimate: fresh.value,
+            last_enriched_at: new Date().toISOString(),
+          })
+          .eq("id", contact.id),
+        {
+          table: "contacts",
+          flow: "wealth_advisor_avm_refresh_cache",
+          brokerageId,
+          reason:
+            "caches a refreshed AVM back onto the contact; the value in hand is used for this scan regardless and the 14-day cache check simply re-fetches next time, so a lost cache costs an AVM call, not a result",
+        },
+      )
+      // FIELD PROVENANCE (wave 100, lane 100C — THE ONE writer): which AVM tier answered (RentCast /
+      // BatchData / …), its confidence and when — the chain already normalizes all three.
+      if (brokerageId) {
+        const { stampFieldProvenance } = await import("@/lib/lead-pipeline/enrichment-column-map")
+        const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+        const prov = await persistFieldProvenance(supabase, { table: "contacts", id: contact.id, brokerageId }, stampFieldProvenance(["home_value_estimate"], {
+          source: fresh.source, capability: "property.avm", purpose: "valuation",
+          retrievedAt: fresh.fetchedAt, matchConfidence: fresh.confidence,
+        }))
+        if (!prov.ok) console.warn("[wealth-advisor] AVM provenance not recorded:", prov.error)
+      }
     }
   }
 
@@ -570,6 +618,9 @@ async function generateOpportunityNarrative(input: {
   contact: { age_range: string | null; contact_persona: string | null }
   opportunity: DetectedOpportunity
   marketRate: MarketRate
+  /** Tenant for the AI cost ledger — the brokerage this scan is running for,
+   *  threaded down from scanBrokerageOpportunities (§4). */
+  brokerageId: string | null
 }): Promise<string> {
   const { contact, opportunity, marketRate } = input
   const personaContext = [
@@ -604,6 +655,7 @@ Return the message text only, no preamble.`
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId,
       feature: "smart_suggestions",
       prompt,
       temperature: 0.6,

@@ -12,39 +12,21 @@
  * an inbound message triggers a draft.  No new KernelEvents required.
  */
 
-import { generateAIResponse }  from "@/lib/ai"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext }     from "@/lib/identity"
-import { applyBrandVoice }     from "@/lib/kernel/brand-voice"
-import { processKernelEvent }  from "@/lib/kernel/notification-engine"
-import { KernelEvent }         from "@/lib/kernel/events"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import {
+  generateAIReplyDraftForTenant,
+  type GenerateAIReplyDraftParams,
+  type GenerateAIReplyDraftResult,
+} from "@/lib/ai-reply-coach/reply-draft-core"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
-export interface GenerateAIReplyDraftParams {
-  brokerageId:     string
-  agentUserId:     string
-  conversationId:  string
-  contactId:       string
-  listingId?:      string
-  /** The inbound message id that triggered the draft — pass null for proactive/outbound drafts */
-  inboundMessageId: string | null
-  inboundBody:     string
-  channel:         "email" | "sms" | "in_app"
-  /** Optional override — defaults to brand voice tone if omitted */
-  toneOverride?:   "professional" | "friendly" | "empathetic" | "assertive"
-}
-
-export interface GenerateAIReplyDraftResult {
-  success:         boolean
-  draftId?:        string
-  draftBody?:      string
-  draftSubject?:   string
-  suggestedTone?:  string
-  confidenceScore?: number
-  brandVoiceNotes?: string[]
-  error?:          string
-}
+// The draft types live with the generator (lib/ai-reply-coach/reply-draft-core.ts);
+// re-exported type-only, which a "use server" module may do (erased at compile).
+export type { GenerateAIReplyDraftParams, GenerateAIReplyDraftResult } from "@/lib/ai-reply-coach/reply-draft-core"
 
 export interface AcceptDraftParams {
   draftId:     string
@@ -79,190 +61,18 @@ function computeEditDelta(original: string, final: string): Record<string, any> 
 export async function generateAIReplyDraft(
   params: GenerateAIReplyDraftParams
 ): Promise<GenerateAIReplyDraftResult> {
-  const supabase = createServiceClient()
-
-  try {
-    // ── 1. Load contact + recent thread context ──────────────────────────────
-    const [{ data: contact }, { data: recentMsgs }, { data: listing }] = await Promise.all([
-      supabase
-        .from("contacts")
-        .select("id, first_name, last_name, contact_type, contact_persona, status, timeline, dnc_status, tcpa_consent")
-        .eq("id", params.contactId)
-        .maybeSingle(),
-      supabase
-        .from("messages")
-        .select("id, direction, body, type, created_at")
-        .eq("conversation_id", params.conversationId)
-        .order("created_at", { ascending: false })
-        .limit(8),
-      params.listingId
-        ? supabase
-            .from("listings")
-            .select("id, address, list_price, lifecycle_stage")
-            .eq("id", params.listingId)
-            .maybeSingle()
-        : Promise.resolve({ data: null }),
-    ])
-
-    if (!contact) {
-      return { success: false, error: "Contact not found" }
-    }
-
-    // ── 2. DNC / TCPA guard ──────────────────────────────────────────────────
-    if (contact.dnc_status) {
-      return { success: false, error: "Contact is on DNC list — draft blocked" }
-    }
-    if (params.channel === "sms" && !contact.tcpa_consent) {
-      return { success: false, error: "No TCPA consent recorded — SMS draft blocked" }
-    }
-
-    // ── 3. Load brand voice (brokerage → agent hierarchy) ───────────────────
-    const brandVoiceResult = await applyBrandVoice({
-      brokerageId:  params.brokerageId,
-      actorUserId:  params.agentUserId,
-      actorRole:    "agent",
-      journeyType:  "seller",
-      persona:      contact.contact_persona ?? "general",
-      messageType:  params.channel === "in_app" ? "chat" : params.channel,
-      content:      params.inboundBody, // evaluate inbound content for tone context
-    })
-
-    const resolvedTone = params.toneOverride
-      ?? brandVoiceResult.notes.find(n => n.startsWith("Target tone:"))?.replace("Target tone: ", "")
-      ?? "professional"
-
-    // ── 4. Build context summary ─────────────────────────────────────────────
-    const threadHistory = (recentMsgs ?? [])
-      .reverse()
-      .map(m => `${m.direction === "inbound" ? "Contact" : "Agent"}: ${(m.body ?? "").substring(0, 120)}`)
-      .join("\n")
-
-    const charLimit = params.channel === "sms" ? 160 : params.channel === "in_app" ? 500 : 2000
-    const includeSubject = params.channel === "email"
-
-    // ── 5. Generate draft via AI ─────────────────────────────────────────────
-    const draftResponse = await generateAIResponse({
-      prompt: `You are a real estate agent's AI reply coach. Generate a ${resolvedTone} reply.
-
-INBOUND MESSAGE (requires reply):
-"${params.inboundBody}"
-
-CONTACT:
-- Name: ${contact.first_name} ${contact.last_name}
-- Type: ${contact.contact_type ?? "unknown"}
-- Persona: ${contact.contact_persona ?? "general"}
-- Timeline: ${contact.timeline ?? "unknown"}
-
-${listing ? `LISTING CONTEXT:
-- Address: ${listing.address}
-- List Price: $${listing.list_price?.toLocaleString() ?? "TBD"}
-- Stage: ${listing.lifecycle_stage ?? "unknown"}
-` : ""}
-
-RECENT THREAD (newest last):
-${threadHistory || "No prior messages"}
-
-BRAND VOICE GUIDANCE:
-${brandVoiceResult.notes.join("\n") || "Use professional, helpful tone"}
-
-REQUIREMENTS:
-- Channel: ${params.channel} (max ${charLimit} chars)
-- Tone: ${resolvedTone}
-- Address the contact by first name
-- Be specific, warm, action-oriented
-- Do NOT use prohibited phrases: ${brandVoiceResult.violations.length > 0 ? brandVoiceResult.violations.join(", ") : "none flagged"}
-${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first line, then a blank line, then the body" : "- Return ONLY the message body, no subject line"}
-- Return ONLY the message content, no meta-commentary`,
-      metadata: {
-        userId: params.agentUserId,
-        brokerageId: params.brokerageId,
-        feature: "ai_reply_coach",
-      },
-    })
-    const rawDraft = draftResponse.text
-
-    // ── 6. Parse subject vs body if email ───────────────────────────────────
-    let draftSubject: string | undefined
-    let draftBody = rawDraft.trim()
-
-    if (includeSubject && draftBody.startsWith("SUBJECT:")) {
-      const lines = draftBody.split("\n")
-      draftSubject = lines[0].replace("SUBJECT:", "").trim()
-      draftBody    = lines.slice(2).join("\n").trim()
-    }
-
-    // ── 7. Compute confidence score (heuristic: length + voice compliance) ──
-    const hasViolations     = brandVoiceResult.violations.length > 0
-    const withinCharLimit   = draftBody.length <= charLimit
-    const baseConfidence    = 85
-    const violationPenalty  = hasViolations ? brandVoiceResult.violations.length * 8 : 0
-    const lengthPenalty     = withinCharLimit ? 0 : 10
-    const confidenceScore   = Math.max(40, Math.min(99, baseConfidence - violationPenalty - lengthPenalty))
-
-    const contextSummary = `Inbound: "${params.inboundBody.substring(0, 80)}…" | Contact: ${contact.first_name} ${contact.last_name} | Channel: ${params.channel}`
-
-    // ── 8. Persist to ai_message_drafts ─────────────────────────────────────
-    const { data: draft, error: insertError } = await supabase
-      .from("ai_message_drafts")
-      .insert({
-        brokerage_id:      params.brokerageId,
-        agent_user_id:     params.agentUserId,
-        source_message_id: params.inboundMessageId ?? null,
-        conversation_id:   params.conversationId,
-        contact_id:        params.contactId,
-        listing_id:        params.listingId ?? null,
-        channel:           params.channel,
-        context_summary:   contextSummary,
-        trigger_event:     "inbound_message",
-        draft_subject:     draftSubject ?? null,
-        draft_body:        draftBody,
-        suggested_tone:    resolvedTone,
-        confidence_score:  confidenceScore,
-        status:          "pending",
-        final_body:      null,
-        edit_delta:      null,
-        acted_at:        null,
-        sent_message_id: null,
-      })
-      .select("id")
-      .single()
-
-    if (insertError) {
-      return { success: false, error: insertError.message }
-    }
-
-    // ── 9. Write smart_assistant_suggestions row ─────────────────────────────
-    await supabase.from("smart_assistant_suggestions").insert({
-      agent_id:            params.agentUserId,
-      title:               `AI Reply Ready — ${contact.first_name} ${contact.last_name}`,
-      description:         `${resolvedTone} draft prepared for ${params.channel} reply (confidence: ${confidenceScore}%)`,
-      context_type:        "inbox_reply",
-      action_type:         "accept_or_edit_draft",
-      action_payload_json: JSON.stringify({ draftId: draft.id, conversationId: params.conversationId }),
-      priority:            confidenceScore >= 80 ? "high" : "medium",
-      status:              "pending",
-    })
-
-    // ── 10. Kernel event — non-blocking ─────────────────────────────────────
-    await processKernelEvent({
-      event:      KernelEvent.MESSAGE_FROM_CONTACT,
-      brokerageId: params.brokerageId,
-      entityType: "conversation",
-      entityId:   params.conversationId,
-    }).catch(() => {})
-
-    return {
-      success:         true,
-      draftId:         draft.id,
-      draftBody,
-      draftSubject,
-      suggestedTone:   resolvedTone,
-      confidenceScore,
-      brandVoiceNotes: brandVoiceResult.notes,
-    }
-  } catch (err: any) {
-    return { success: false, error: err.message ?? "Unknown error" }
+  // THE PUBLIC DOOR (lane 92A). The generator lives in
+  // lib/ai-reply-coach/reply-draft-core.ts and trusts its tenant; this export is
+  // reachable over HTTP, so the tenant is the SESSION's (a foreign body brokerage
+  // is refused, an absent one is filled from the session) and the draft's agent
+  // must be the caller — a draft is written into that agent's queue and books AI
+  // spend in their name.
+  const caller = await requireCallerTenant(params.brokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (params.agentUserId && params.agentUserId !== caller.userId) {
+    return { success: false, error: "Forbidden: a reply draft is generated for your own conversations only." }
   }
+  return generateAIReplyDraftForTenant({ ...params, brokerageId: caller.brokerageId, agentUserId: caller.userId })
 }
 
 // ─── ACTION 2: ACCEPT DRAFT ───────────────────────────────────────────────────
@@ -307,10 +117,10 @@ export async function acceptDraft(params: AcceptDraftParams): Promise<{ success:
   if (error) return { success: false, error: error.message }
 
   // Dismiss associated smart_assistant_suggestion
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("smart_assistant_suggestions")
     .update({ status: "dismissed" })
-    .contains("action_payload_json", `"draftId":"${params.draftId}"`)
+    .contains("action_payload_json", `"draftId":"${params.draftId}"`), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { success: true }
 }
@@ -341,10 +151,10 @@ export async function rejectDraft(params: RejectDraftParams): Promise<{ success:
 
   if (error) return { success: false, error: error.message }
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("smart_assistant_suggestions")
     .update({ status: "dismissed" })
-    .contains("action_payload_json", `"draftId":"${params.draftId}"`)
+    .contains("action_payload_json", `"draftId":"${params.draftId}"`), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { success: true }
 }
@@ -362,6 +172,8 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
     channel: string
     created_at: string
     status: string
+    listing_id: string | null
+    source_message_id: string | null
   }>
   error?: string
 }> {
@@ -374,7 +186,7 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
 
   const { data, error } = await supabase
     .from("ai_message_drafts")
-    .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status")
+    .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status, listing_id, source_message_id")
     .eq("conversation_id", conversationId)
     .eq("brokerage_id", ctx.brokerageId)
     .eq("status", "pending")
@@ -383,4 +195,72 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
 
   if (error) return { success: false, error: error.message }
   return { success: true, drafts: data ?? [] }
+}
+
+// ─── ACTION 5: RECORD THE MESSAGE A DRAFT WAS ACTUALLY SENT AS ──────────────
+//
+// acceptDraft only stages the draft's body into the compose bar — the agent
+// can still edit further before sending, and the send itself goes through the
+// unrelated messages pipeline (sendMessage in app/actions/communications.ts).
+// sent_message_id is the RECONCILIATION column: it closes the loop from
+// "the AI proposed this" to "and this is what actually went out", which
+// outcomeForConversationDrafts below reads to grade acceptance-vs-real-send.
+
+export async function recordDraftSent(params: {
+  draftId: string
+  messageId: string
+}): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const supabase = createServiceClient()
+  const { error } = await supabase
+    .from("ai_message_drafts")
+    .update({ sent_message_id: params.messageId, status: "sent" })
+    .eq("id", params.draftId)
+    .eq("brokerage_id", ctx.brokerageId)
+    // Only a draft the agent actually accepted can be reconciled to a send —
+    // a still-pending or already-dismissed draft has no business being marked
+    // sent underneath the agent.
+    .in("status", ["accepted", "edited"])
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+// ─── ACTION 6: RECENT DRAFT OUTCOMES FOR A CONVERSATION ─────────────────────
+//
+// The reconciliation surface: for a conversation's last few AI drafts, whether
+// each one was actually sent (sent_message_id set) or accepted-then-abandoned
+// (accepted with no sent_message_id — the agent edited it away from the
+// compose bar, or navigated off before sending). Read by AIReplyCoachPanel's
+// "Recent AI drafts" strip.
+
+export async function loadRecentDraftOutcomes(conversationId: string): Promise<{
+  success: boolean
+  outcomes?: Array<{
+    id: string
+    status: string
+    confidence_score: number | null
+    listing_id: string | null
+    sent_message_id: string | null
+    created_at: string
+  }>
+  error?: string
+}> {
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("ai_message_drafts")
+    .select("id, status, confidence_score, listing_id, sent_message_id, created_at")
+    .eq("conversation_id", conversationId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("status", ["accepted", "edited", "sent"])
+    .order("created_at", { ascending: false })
+    .limit(5)
+
+  if (error) return { success: false, error: error.message }
+  return { success: true, outcomes: data ?? [] }
 }

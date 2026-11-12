@@ -32,6 +32,9 @@
  *   A future enhancement would key suggested_default by state_code.
  */
 
+// Wave 145 (lane 145H — CLAUDE.md §6): the contract-type and financing-type enums below ARE the ONE vocabularies.
+import { CONTRACT_SUBTYPES, CONTRACT_SUBTYPE_LABEL, FINANCING_TYPES } from "@/lib/compliance/checklist-dimensions"
+
 export type FieldType =
   | "text"        // free-form string
   | "number"      // integer or float
@@ -153,15 +156,20 @@ export const OFFER_FIELD_DEFS: Record<string, FieldDef> = {
     id: "financingType", label: "Financing type", category: "terms",
     hint: "Conventional, FHA, VA, USDA, or cash?",
     type: "enum",
-    enum_values: ["conventional", "fha", "va", "cash", "usda", "other"] as const,
+    // Wave 145 (lane 145H — lane 144A Outside-lane 1): THE financing list, imported, not retyped (the same six).
+    enum_values: FINANCING_TYPES,
     suggested_default: "conventional", required: true,
   },
+  // WAVE 145 (lane 145H): ONE contract-type vocabulary — CONTRACT_SUBTYPES (lib/compliance/checklist-dimensions.ts), the
+  // list the required-document checklist matches. This enum was a SECOND list (residential | as_is | new_construction |
+  // land | commercial). residential → standard (alias, resolves forever); land / commercial are PROPERTY types and
+  // as_is a jurisdictional sale condition / state form — see the tombstone at CONTRACT_SUBTYPE_ALIASES.
   contractType: {
     id: "contractType", label: "Contract type", category: "terms",
-    hint: "Standard residential, as-is, new construction, land, or commercial?",
+    hint: `Which purchase contract: ${CONTRACT_SUBTYPES.map((k) => CONTRACT_SUBTYPE_LABEL[k].toLowerCase()).join(", ")}?`,
     type: "enum",
-    enum_values: ["residential", "as_is", "new_construction", "land", "commercial"] as const,
-    suggested_default: "residential", required: true,
+    enum_values: CONTRACT_SUBTYPES,
+    suggested_default: "standard", required: true,
   },
 
   // ── Timing ──

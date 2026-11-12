@@ -54,34 +54,34 @@ check(`small sample (< ${MIN_DECISIONS}) gates nothing — trusted until proven 
 
 // A real rejected sample pauses initiative.
 const distrusted = scoreOutcomes([
-  ...Array.from({ length: 3 }, () => human("marketing_agent", true)),
-  ...Array.from({ length: 12 }, () => human("marketing_agent", false)),
+  ...Array.from({ length: 3 }, () => human("campaign_orchestrator", true)),
+  ...Array.from({ length: 12 }, () => human("campaign_orchestrator", false)),
 ])
 check(`real sample below ${TRUST_THRESHOLD * 100}% approval → initiative PAUSED`,
-  !isManagerTrusted(distrusted, "marketing_agent") && distrusted["marketing_agent"].approvalRate === 0.2)
+  !isManagerTrusted(distrusted, "campaign_orchestrator") && distrusted["campaign_orchestrator"].approvalRate === 0.2)
 
 // A healthy manager stays trusted; per-manager isolation.
 const mixed = scoreOutcomes([
   ...Array.from({ length: 15 }, () => human("shopping_agent", true)),
-  ...Array.from({ length: 12 }, () => human("marketing_agent", false)),
+  ...Array.from({ length: 12 }, () => human("campaign_orchestrator", false)),
 ])
 check("healthy manager trusted while the rejected one is paused (per-manager isolation)",
-  isManagerTrusted(mixed, "shopping_agent") && !isManagerTrusted(mixed, "marketing_agent"))
+  isManagerTrusted(mixed, "shopping_agent") && !isManagerTrusted(mixed, "campaign_orchestrator"))
 check("rates are exact (15/15 approved = 1.0; 0/12 = 0.0)",
-  mixed["shopping_agent"].approvalRate === 1 && mixed["marketing_agent"].approvalRate === 0)
+  mixed["shopping_agent"].approvalRate === 1 && mixed["campaign_orchestrator"].approvalRate === 0)
 
 // DIRECTION, not just a score: the human's spoken reasons are summarized per manager.
 const withReasons = summarizeRejectionFeedback([
-  { agent_kind: "marketing_agent", status: "rejected", approved_by: "u1", send_error: "agent feedback: too pushy" },
-  { agent_kind: "marketing_agent", status: "rejected", approved_by: "u1", send_error: "agent feedback: wrong tone" },
-  veto("marketing_agent"),
+  { agent_kind: "campaign_orchestrator", status: "rejected", approved_by: "u1", send_error: "agent feedback: too pushy" },
+  { agent_kind: "campaign_orchestrator", status: "rejected", approved_by: "u1", send_error: "agent feedback: wrong tone" },
+  veto("campaign_orchestrator"),
   { agent_kind: "sphere_of_influence", status: "rejected", approved_by: "u1", send_error: null },
-  ...Array.from({ length: 5 }, (_, i) => ({ agent_kind: "marketing_agent", status: "rejected", approved_by: "u1", send_error: `agent feedback: r${i}` })),
+  ...Array.from({ length: 5 }, (_, i) => ({ agent_kind: "campaign_orchestrator", status: "rejected", approved_by: "u1", send_error: `agent feedback: r${i}` })),
 ])
 check("feedback: 'agent feedback:' reasons extracted per manager, capped at 3",
-  withReasons["marketing_agent"].length === 3 && withReasons["marketing_agent"][0] === "too pushy")
+  withReasons["campaign_orchestrator"].length === 3 && withReasons["campaign_orchestrator"][0] === "too pushy")
 check("feedback: machine vetoes + reasonless rejections never appear",
-  !withReasons["marketing_agent"].some((f) => f.includes("vetoed")) && !withReasons["sphere_of_influence"])
+  !withReasons["campaign_orchestrator"].some((f) => f.includes("vetoed")) && !withReasons["sphere_of_influence"])
 const fbScore = scoreOutcomes([
   { agent_kind: "ai_isa", status: "rejected", approved_by: "u1", send_error: "agent feedback: too long" },
 ])

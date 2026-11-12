@@ -35,6 +35,20 @@ export default async function SuperadminTicketPage({ params }: { params: Promise
         </div>
       </div>
 
+      {/* AI triage (wave 142G) — what the OS already decided and did, so the person starts from the verdict, not from zero */}
+      {t.triage && (
+        <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+          <p className="text-xs font-medium text-indigo-700 mb-1">
+            AI triage · {t.triage.category ?? "—"} · {t.triage.priority ?? "—"} · owner {t.triage.owner ?? "—"}{t.triage.operation ? ` · re-checking ${t.triage.operation.replace(/_/g, " ")}` : ""}
+          </p>
+          {t.triage.summary && <p className="text-sm">{t.triage.summary}</p>}
+          <p className="text-[11px] text-muted-foreground mt-1">
+            {t.triage.answerDelivered ? "The submitter was pointed to matching help articles." : "No grounded help answer was found."}{" "}
+            {t.triage.needsHuman ? "A person owes the reply." : "A person verifies."} · {t.triage.model === "routed" ? "model" : "rule-based"} read
+          </p>
+        </div>
+      )}
+
       {/* Original request */}
       {t.description && (
         <div className="rounded-lg border bg-muted/30 p-3">

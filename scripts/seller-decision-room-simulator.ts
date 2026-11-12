@@ -25,7 +25,7 @@ function report() {
   console.log(" SELLER_DECISION_PASS")
 }
 
-const costs: SellerCosts = { commissionRate: 0.05, mortgagePayoff: 200000, countyCityTaxes: 2000, hoaDuesProration: 500, otherProratedFees: 1000 }
+const costs: SellerCosts = { commissionRate: 0.05, mortgagePayoff: 200000, countyCityTaxes: 2000, hoaDuesProration: 500, otherProratedFees: 1000, transactionFee: 0 }
 
 function main() {
   console.log("══════════════════════════════════════════════════")

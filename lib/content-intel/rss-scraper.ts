@@ -46,13 +46,22 @@ export async function fetchRssFeed(args: {
     timeoutMs: 20_000,
   })
   if (!res.ok || !res.data) return []
-  const xml = res.data
+  return parseRssXml(res.data, { sourceTrust: trust })
+}
 
+/**
+ * PURE — the RSS 2.0 / Atom item parse, split out of fetchRssFeed (wave 144, lane 144G) so the
+ * local-intelligence feed leg (lib/content-intel/local-intel.ts) parses a tenant's community
+ * calendar / city news feed with the SAME parser after its own robots.txt check — one parser,
+ * not a second copy. fetchRssFeed's output is unchanged.
+ */
+export function parseRssXml(xml: string, opts: { sourceTrust?: number; now?: number } = {}): RssItem[] {
+  const trust = Math.min(90, Math.max(40, opts.sourceTrust ?? 60))
   const itemBlocks = extractBlocks(xml, "item")
   const entryBlocks = extractBlocks(xml, "entry")
   const blocks = itemBlocks.length > 0 ? itemBlocks : entryBlocks
 
-  const now = Date.now()
+  const now = opts.now ?? Date.now()
   const out: RssItem[] = []
   for (const block of blocks.slice(0, 30)) {
     const title       = decodeText(extractField(block, "title") ?? "")

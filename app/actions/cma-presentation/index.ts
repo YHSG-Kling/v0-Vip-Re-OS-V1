@@ -63,7 +63,20 @@ export async function generateCompletePresentation(params: {
   presentationAssembled: boolean
   videoGenerated: boolean
   readyForDecision: boolean
+  /**
+   * A REAL listing_presentations.id — the agent can open
+   * /dashboard/listings/presentations/{this}. It was not returned at all before,
+   * and the id the assembler minted internally was a crypto.randomUUID() that
+   * pointed at no row, so there was nothing to link to even if it had been.
+   */
+  presentationId?: string
   errors?: string[]
+  /**
+   * Non-fatal but load-bearing: a REFUSED artifact lookup, or a missing CMA /
+   * net sheet. These explain why "Ready for Decision" can read "Not yet" on a
+   * run that otherwise succeeded — previously they were dropped on the floor.
+   */
+  warnings?: string[]
 }> {
   const { generateCMA } = await import("./cma-generator")
   const { generateNetSheet } = await import("./net-sheet-calculator")
@@ -74,6 +87,7 @@ export async function generateCompletePresentation(params: {
   let netSheetGenerated = false
   let presentationAssembled = false
   let videoGenerated = false
+  let presentationId: string | undefined
 
   try {
     // Step 1: Generate CMA
@@ -126,10 +140,15 @@ export async function generateCompletePresentation(params: {
 
     if (presentationResult.success) {
       presentationAssembled = true
+      presentationId = presentationResult.presentationId
       videoGenerated = !!presentationResult.videoProjectId
     } else {
       errors.push(`Presentation assembly failed: ${presentationResult.error}`)
     }
+    // Warnings are part of the honest picture — a refused CMA lookup is why
+    // "Ready for Decision" can read "Not yet" with a CMA on file, and the agent
+    // should see the reason rather than an unexplained badge.
+    const warnings = presentationResult.warnings ?? []
 
     const readyForDecision = cmaGenerated && netSheetGenerated && presentationAssembled
 
@@ -140,11 +159,13 @@ export async function generateCompletePresentation(params: {
       presentationAssembled,
       videoGenerated,
       readyForDecision,
-      errors: errors.length > 0 ? errors : undefined
+      presentationId,
+      errors: errors.length > 0 ? errors : undefined,
+      warnings: warnings.length > 0 ? warnings : undefined,
     }
   } catch (error: any) {
     errors.push(error.message || "Unknown error in complete presentation workflow")
-    
+
     return {
       success: false,
       cmaGenerated,
@@ -152,6 +173,7 @@ export async function generateCompletePresentation(params: {
       presentationAssembled,
       videoGenerated,
       readyForDecision: false,
+      presentationId,
       errors
     }
   }

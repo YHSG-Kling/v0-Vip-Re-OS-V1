@@ -94,7 +94,7 @@ export async function runPartnerAgreementWatch(
         // Fresh escalation (not the open-signal dedupe): notify the owning agent too.
         const ownerUserId = (p.user_id as string | null) ?? null
         if (ownerUserId) {
-          await svc.from("notifications").insert({
+          const { error: notifyError } = await svc.from("notifications").insert({
             user_id: ownerUserId,
             brokerage_id: input.brokerageId,
             type: "partner_agreement_lapsing",
@@ -103,7 +103,8 @@ export async function runPartnerAgreementWatch(
             entity_type: "referral_partner",
             entity_id: p.id,
             priority: urgency === "lapsed" ? "high" : "medium",
-          }).then(() => {}, () => {})
+          })
+          if (notifyError) console.warn("[partner-agreement-watch.ts] notifications insert refused — the bell will not ring:", notifyError.message)
         }
         out.escalated++
       }

@@ -7,9 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { ActionConfirmSheet } from "@/app/components/action-framework/action-confirm-sheet"
 import { createTask } from "@/app/actions/tasks"
-import { updateComplianceCheck } from "@/app/actions/transaction-compliance"
 import {
-  Clock,
   ChevronRight,
   AlertTriangle,
   CheckCircle2,
@@ -23,8 +21,11 @@ import { createClient } from "@/lib/supabase/client"
 
 interface SlaMonitorPanelProps {
   brokerageId: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stats?: any
+  /** optional by design: this panel already runs its own dedicated SLA query
+   *  (overdueTasks/stuckRequests/pendingApprovals/avgResponseTime/
+   *  complianceRate below) — more specific and more current than the
+   *  dashboard-wide getAdminDashboardStats snapshot the caller passes here. */
+  stats?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 interface SlaMetrics {
@@ -140,10 +141,12 @@ export function SlaMonitorPanel({ brokerageId }: SlaMonitorPanelProps) {
     // checkId/transactionId/brokerageId; for overdue tasks without a compliance check
     // we directly update the task status.
     const supabase = createClient()
-    await supabase
+    const { data: resolveRows, error: resolveErr } = await supabase
       .from("tasks")
       .update({ status: "completed", updated_at: new Date().toISOString() })
-      .eq("id", task.id)
+      .eq("id", task.id).select("id")
+    if (resolveErr) return void showToast(`Could not resolve: ${resolveErr.message}`)
+    if ((resolveRows ?? []).length === 0) return void showToast(`Could not resolve: no row matched (not permitted from your account)`)
     setOverdueTasks((prev) => prev.filter((t) => t.id !== task.id))
     setMetrics((prev) => prev ? { ...prev, overdueTasks: Math.max(0, prev.overdueTasks - 1) } : prev)
     showToast(`Resolved: ${task.title}`)

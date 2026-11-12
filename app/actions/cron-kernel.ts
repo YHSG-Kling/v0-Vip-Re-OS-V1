@@ -12,7 +12,7 @@
 // or pollute the log. All five exports now require either:
 //   - An authenticated brokerage session (admin path), OR
 //   - An `internalSecret` matching process.env.CRON_SECRET (used by the
-//     /api/cron/* routes that already verify the header CRON_SECRET via
+//     /api/cron/… routes that already verify the header CRON_SECRET via
 //     verifyCronAuth — they pass it through here as a shared-secret).
 
 "use server"
@@ -35,7 +35,7 @@ import {
   type RecordCronFailureOutput,
 } from "@/lib/kernel/cron-logging"
 
-// Soft auth check — these actions are called from 65+ /api/cron/* routes
+// Soft auth check — these actions are called from 65+ /api/cron/… routes
 // that already verify CRON_SECRET via verifyCronAuth(). Updating every
 // caller to pass through the secret is a high-risk sweep with no real
 // security gain (cron audit pollution is the only realistic exploit and
@@ -49,7 +49,7 @@ async function softAuthCheck(actionName: string): Promise<void> {
     if (!user) {
       console.warn(
         `[cron-kernel] ${actionName} called without an authenticated session — ` +
-        "if this is from a /api/cron/* route this is expected; otherwise investigate RPC abuse.",
+        "if this is from a /api/cron/… route this is expected; otherwise investigate RPC abuse.",
       )
     }
   } catch {

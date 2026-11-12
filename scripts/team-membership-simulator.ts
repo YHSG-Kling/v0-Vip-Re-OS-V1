@@ -60,11 +60,33 @@ async function liveLayer(): Promise<void> {
       { team_id: teamId, agent_id: agentId, brokerage_id: brokerageId, role: "isa", split_percent: 20, source_of_funds: "brokerage", is_active: true },
     ])
 
-    const ctx = { agentId, brokerageId, agentNetCents: 10000 } as unknown as Parameters<typeof applyTeamSplit>[0]
-    const result = await applyTeamSplit(ctx)
-    check("team_members are consumed (2 distributions produced)", (result.teamDistributions?.length ?? 0) === 2)
-    check("only the agent-funded 30% is deducted (10000 → 7000)", result.agentFinalNetCents === 7000)
-    check("the brokerage-funded split is tracked but not deducted from the agent", (result.teamDistributions ?? []).some((d) => d.source_of_funds === "brokerage"))
+    // ── THE RULING (2026-08-28, closing the last m575 sibling): a
+    // brokerage-funded member's share comes from the DEAL'S COMPANY DOLLAR
+    // (deducted from brokerageFinalCents, conserving step 11's identity), and
+    // when the deal cannot fund it — post-cap that dollar is $0 — it routes
+    // WHOLE to company books (m577), never dropped and never an identity
+    // violation. The retired assertion here pinned the defect itself:
+    // "tracked but not deducted" was deducted from NOTHING, and step 11 failed
+    // every deal carrying such a row.
+
+    // Case 1 — the deal CAN fund the brokerage member (pre-cap company dollar).
+    const funded = await applyTeamSplit({
+      agentId, brokerageId, agentNetCents: 10000, brokerageFinalCents: 2500, capStatus: "pre_cap",
+    } as unknown as Parameters<typeof applyTeamSplit>[0])
+    check("funded: both members produce distributions", (funded.teamDistributions?.length ?? 0) === 2)
+    check("funded: only the agent-funded 30% is deducted from the agent (10000 → 7000)", funded.agentFinalNetCents === 7000)
+    check("funded: the brokerage-funded 20% is deducted from the COMPANY dollar (2500 → 500)", funded.brokerageFinalCents === 500)
+    check("funded: no company-books obligation arises", (funded.companyObligations?.length ?? 0) === 0)
+
+    // Case 2 — post-cap: the deal has NO company dollar to fund the member.
+    const postCap = await applyTeamSplit({
+      agentId, brokerageId, agentNetCents: 10000, brokerageFinalCents: 0, capStatus: "post_cap",
+    } as unknown as Parameters<typeof applyTeamSplit>[0])
+    check("post-cap: the agent-funded member still distributes in-deal", (postCap.teamDistributions ?? []).filter((d) => d.source_of_funds === "agent").length === 1)
+    check("post-cap: the brokerage-funded member is NOT an in-deal distribution", !(postCap.teamDistributions ?? []).some((d) => d.source_of_funds === "brokerage"))
+    check("post-cap: it is a company-books obligation instead (type team_member, whole share)",
+      (postCap.companyObligations ?? []).some((o) => o.obligation_type === "team_member" && o.calculated_amount === 20))
+    check("post-cap: the company dollar is not driven negative", postCap.brokerageFinalCents === 0)
   } finally {
     await svc.from("team_members").delete().eq("team_id", teamId)
     await svc.from("teams").delete().eq("id", teamId)

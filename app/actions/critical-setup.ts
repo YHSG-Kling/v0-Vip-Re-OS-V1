@@ -16,6 +16,7 @@ import {
   normalizeCriticalRole,
   type CriticalSetupReadiness,
 } from "@/lib/onboarding/critical-setup"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 
 export async function getMyCriticalSetupReadiness(): Promise<CriticalSetupReadiness | null> {
   const supabase = await createClient()
@@ -38,9 +39,23 @@ export async function getMyCriticalSetupReadiness(): Promise<CriticalSetupReadin
 
   let vendorId: string | null = null
   if (role === "vendor") {
-    const { data: ra } = await svc.from("user_role_assignments").select("vendor_id")
-      .eq("user_id", user.id).not("vendor_id", "is", null).maybeSingle()
-    vendorId = (ra as { vendor_id?: string | null } | null)?.vendor_id ?? null
+    // WAS: `.not("vendor_id","is",null).maybeSingle()` with no limit.
+    // user_role_assignments is UNIQUE on (user_id, role), NOT on user_id, so the
+    // constraint PERMITS a user to hold two vendor-bearing grants under different
+    // roles. `.maybeSingle()` over two rows is an ERROR, not a pick, and supabase-js
+    // RESOLVES it — so the day that happens this reads as "no vendor" and the whole
+    // vendor setup checklist silently empties. Read all grants and choose.
+    const grantsResult = await readRoleGrants(svc, user.id)
+    if (!grantsResult.ok) {
+      console.error("[critical-setup] role grant read failed:", grantsResult.error)
+      return null
+    }
+    const { vendorId: resolved, ambiguous } = selectVendorId(grantsResult.grants)
+    if (ambiguous) {
+      console.error("[critical-setup] user holds grants for MORE THAN ONE vendor; refusing to guess:", user.id)
+      return null
+    }
+    vendorId = resolved
   }
 
   const facts = await loadCriticalSetupFacts(svc, {

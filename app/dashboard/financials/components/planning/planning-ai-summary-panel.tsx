@@ -107,7 +107,7 @@ export function PlanningAiSummaryPanel({
                 </div>
               )}
               {syncStatus.errors > 0 && (
-                <Link href="/dashboard/settings/integrations" className="text-xs text-amber-600 hover:underline">
+                <Link href="/dashboard/settings/integrations" className="text-xs text-amber-700 hover:underline">
                   View {syncStatus.errors} sync error{syncStatus.errors !== 1 ? "s" : ""}
                 </Link>
               )}
@@ -134,7 +134,7 @@ export function PlanningAiSummaryPanel({
           <div className="grid grid-cols-1 gap-2">
             <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
               <span className="text-sm text-muted-foreground">Net Income</span>
-              <span className={`text-sm font-semibold ${netIncome >= 0 ? "text-green-600" : "text-red-600"}`}>
+              <span className={`text-sm font-semibold ${netIncome >= 0 ? "text-green-700" : "text-red-600"}`}>
                 {formatCurrency(netIncome)}
               </span>
             </div>
@@ -146,7 +146,7 @@ export function PlanningAiSummaryPanel({
             
             <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
               <span className="text-sm text-muted-foreground">Net After Est. Tax</span>
-              <span className={`text-sm font-semibold ${netAfterTax >= 0 ? "text-green-600" : "text-red-600"}`}>
+              <span className={`text-sm font-semibold ${netAfterTax >= 0 ? "text-green-700" : "text-red-600"}`}>
                 {formatCurrency(netAfterTax)}
               </span>
             </div>

@@ -17,7 +17,7 @@ interface StatusConfig {
 
 function getLeadStatusConfig(lead: LeadStatusBadgeProps["lead"]): StatusConfig {
   if (!lead.is_active) {
-    return { label: "Converted", color: "bg-gray-100 text-gray-500 border border-gray-200" }
+    return { label: "Converted", color: "bg-gray-100 text-gray-600 border border-gray-200" }
   }
 
   if (lead.reengagement_status === "active") {

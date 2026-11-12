@@ -64,7 +64,12 @@ const EXPECTED_CLIENT = [
   // activity
   "OPEN_HOUSE_SCHEDULED", "SHOWING_FEEDBACK_RECEIVED",
   // esign & docs
-  "OFFER_OS_ESIGN_COMPLETED", "ESIGN_SIGNED_COMPLETED", "DOCUMENT_REQUESTED",
+  // ESIGN_PACKET_SIGNED, not ESIGN_SIGNED_COMPLETED: the "Document signed"
+  // template moved onto the spelling the provider webhooks actually emit
+  // (lib/esign-webhooks/finalize-packet.ts; tombstone at event-fanout.ts). The
+  // old member has no emitter and no notification_rules row (checked live
+  // 2026-09-03) — pinning it here would keep a template on a dead spelling.
+  "OFFER_OS_ESIGN_COMPLETED", "ESIGN_PACKET_SIGNED", "DOCUMENT_REQUESTED",
   // lifetime / post-close
   "REVIEW_REQUEST_SENT", "ANNIVERSARY_TRIGGERED", "MARKET_UPDATE_SENT", "SELLER_UPDATE_SENT",
 ]

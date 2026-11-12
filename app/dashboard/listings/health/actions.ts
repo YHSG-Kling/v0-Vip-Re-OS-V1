@@ -21,8 +21,10 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { computePriceDropRecommendation } from "@/lib/kernel/listing-price-advisor"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
+import { RESOLVED_HISTORY_LIMIT, RESOLVED_HISTORY_WINDOW_DAYS } from "@/lib/listing-health/resolved-history-bounds"
 
 export type RiskLevel = "healthy" | "watch" | "at_risk" | "critical"
 
@@ -35,6 +37,23 @@ export interface ListingHealthRow {
   status:            string | null
   goLiveDate:        string | null
   scoreId:           string | null
+  /**
+   * listing_health_scores.agent_id — the agent who OWNED the listing at the moment
+   * the score was written (lib/listing-health/health-scorer.ts:572 copies
+   * listings.agent_id, so it is AGENTS class, not users). Nullable: an unassigned
+   * listing is still scored.
+   */
+  scoredAgentId:     string | null
+  /**
+   * TRUE when this row's score was produced under a DIFFERENT agent than the one
+   * reading the board. The board selects listings by their CURRENT agent_id, so a
+   * reassigned listing arrives carrying the previous owner's snapshot — the score,
+   * the flags and the narrative are all about somebody else's work on it. Until
+   * agent_id was read, that row was presented as this agent's own. It stays on the
+   * board (the listing is theirs now and the risk is real); it is LABELLED, not
+   * hidden and not silently attributed.
+   */
+  scoredUnderPreviousAgent: boolean
   overallScore:      number | null
   previousScore:     number | null
   scoreDelta:        number | null
@@ -43,6 +62,16 @@ export interface ListingHealthRow {
   flags:             string[]
   aiNarrative:       string | null
   recommendedActions: Array<{ action: string; reasoning: string; impactEstimate?: string }>
+  /** Recommended price move — null when the advisor honestly declines. */
+  priceAdvice: {
+    recommend:        boolean
+    recommendedPrice: number | null
+    dropAmount:       number | null
+    dropPct:          number | null
+    justification:    string[]
+    confidence:       "low" | "medium" | "high"
+    reason:           string
+  } | null
   interventions: Array<{
     id:               string
     severity:         "low" | "medium" | "high" | "critical"
@@ -54,10 +83,50 @@ export interface ListingHealthRow {
   }>
 }
 
+/** A CLEARED intervention across the board, with who cleared it. */
+export interface RecentlyClearedIntervention {
+  id:               string
+  listingId:        string
+  address:          string | null
+  severity:         "low" | "medium" | "high" | "critical"
+  category:         string | null
+  issueDetected:    string | null
+  sellerImpacted:   boolean
+  createdAt:        string
+  resolvedAt:       string | null
+  /** users.id (scripts/schema-fk-map.ts:458 — resolved_by → users). */
+  resolvedBy:       string | null
+  /** Resolved tenant-scoped. Null with resolvedBy set = an account outside
+   *  this brokerage; both null = nobody was recorded. */
+  resolvedByName:   string | null
+  resolutionNote:   string | null
+}
+
+/**
+ * The cross-listing "recently cleared" audit. BOUNDS ARE STATED, not implied:
+ * newest `limit`, resolved within `windowDays`. `error` is the refused read —
+ * a refused audit read must render as "could not read", never as "nothing was
+ * ever cleared" (§3: supabase-js RESOLVES refusals).
+ */
+export interface RecentlyClearedBoard {
+  rows:       RecentlyClearedIntervention[]
+  error:      string | null
+  windowDays: number
+  limit:      number
+}
+
 export interface ListingHealthBoard {
   rows: ListingHealthRow[]
   summary: { healthy: number; watch: number; at_risk: number; critical: number }
+  recentlyCleared: RecentlyClearedBoard
 }
+
+// THE SAME BOUNDS AS THE PER-LISTING AUDIT (§6 — one spelling of "recent").
+// RESOLVED_HISTORY_LIMIT / RESOLVED_HISTORY_WINDOW_DAYS are imported above from
+// lib/listing-health/resolved-history-bounds.ts, which carries the rationale.
+// TOMBSTONE (2026-09-03): the module-level restatement that stood here (the
+// lifecycle page's copy was function-local and not importable) is the hoist
+// its own comment named as the follow-up.
 
 export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { error: string }> {
   const supabase = await createClient()
@@ -78,15 +147,18 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
     .limit(100)
 
   const listingIds = (listings ?? []).map((l: { id: string }) => l.id)
+  const emptyCleared: RecentlyClearedBoard = {
+    rows: [], error: null, windowDays: RESOLVED_HISTORY_WINDOW_DAYS, limit: RESOLVED_HISTORY_LIMIT,
+  }
   if (listingIds.length === 0) {
-    return { rows: [], summary: { healthy: 0, watch: 0, at_risk: 0, critical: 0 } }
+    return { rows: [], summary: { healthy: 0, watch: 0, at_risk: 0, critical: 0 }, recentlyCleared: emptyCleared }
   }
 
   // 2. Latest score per listing — cron writes a row every 12h; we use the most
   //    recent scored_at per listing_id.
   const { data: scores } = await svc
     .from("listing_health_scores")
-    .select("id, listing_id, overall_score, previous_score, score_delta, risk_level, days_on_market, flags, ai_narrative, recommended_actions, scored_at")
+    .select("id, listing_id, agent_id, overall_score, previous_score, score_delta, risk_level, days_on_market, flags, ai_narrative, recommended_actions, scored_at")
     .in("listing_id", listingIds)
     .order("scored_at", { ascending: false })
   const scoreByListing = new Map<string, any>()
@@ -109,6 +181,124 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
     interventionsByListing.set(i.listing_id, list)
   }
 
+  // 3b. RECENTLY CLEARED — the cross-listing audit (built 2026-09-02).
+  //     The open-only read above is deliberately untouched; this is a SECOND,
+  //     bounded read beside it, mirroring the per-listing history at
+  //     app/dashboard/listings/[id]/lifecycle/page.tsx:265-318: resolved=true,
+  //     resolved_at within the window, newest first, limit, error READ, and
+  //     the clearer's name resolved tenant-scoped. Before this a broker
+  //     sweeping ALL listings could see what was open on each and never who
+  //     had cleared what — the resolution record (resolved_by / resolved_at /
+  //     resolution_note, stamped by resolveIntervention below) existed only
+  //     one listing at a time.
+  //
+  //     Service client, so the tenant predicate is EXPLICIT (§4): the listing
+  //     ids are already this agent's, and brokerage_id is anchored to the
+  //     session's agents row resolved at the top of this function.
+  const resolvedSince = new Date(Date.now() - RESOLVED_HISTORY_WINDOW_DAYS * 86_400_000).toISOString()
+  const { data: clearedRows, error: clearedError } = await svc
+    .from("listing_health_interventions")
+    .select("id, listing_id, severity, category, issue_detected, seller_impacted, created_at, resolved_at, resolved_by, resolution_note")
+    .in("listing_id", listingIds)
+    .eq("brokerage_id", agentRow.brokerage_id)
+    .eq("resolved", true)
+    .gte("resolved_at", resolvedSince)
+    .order("resolved_at", { ascending: false })
+    .limit(RESOLVED_HISTORY_LIMIT)
+  if (clearedError) {
+    // §3: a swallowed error here would render the audit as "nothing has ever
+    // been cleared" — the opposite of what this section exists to tell.
+    console.error("[listing health board] recently-cleared read failed:", clearedError.message)
+  }
+
+  // WHO CLEARED IT. resolved_by FKs users(id) (scripts/schema-fk-map.ts:458) —
+  // USERS-class, disjoint from agents.id, so it is never resolved against
+  // `agents`. One batched `.in()`, anchored to the session's brokerage, so a
+  // foreign id stays unresolved rather than borrowing a name from another
+  // tenant. Same lookup the lifecycle page makes at :300-314.
+  const resolverNames = new Map<string, string>()
+  const resolverIds = Array.from(new Set(
+    (clearedRows ?? []).map((r: any) => r.resolved_by as string | null).filter((v): v is string => !!v),
+  ))
+  let resolverError: string | null = null
+  if (resolverIds.length > 0) {
+    const { data: resolvers, error: resolverErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", resolverIds)
+      .eq("brokerage_id", agentRow.brokerage_id)
+    if (resolverErr) {
+      console.error("[listing health board] resolver name lookup failed:", resolverErr.message)
+      resolverError = resolverErr.message
+    }
+    for (const u of (resolvers ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>) {
+      const full = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+      resolverNames.set(u.id, full || u.email || "Teammate")
+    }
+  }
+  const addressByListing = new Map<string, string | null>(
+    (listings ?? []).map((l: any) => [l.id as string, (l.address ?? null) as string | null]),
+  )
+  const recentlyCleared: RecentlyClearedBoard = {
+    rows: clearedError ? [] : (clearedRows ?? []).map((r: any) => ({
+      id:             r.id,
+      listingId:      r.listing_id,
+      address:        addressByListing.get(r.listing_id) ?? null,
+      severity:       r.severity,
+      category:       r.category ?? null,
+      issueDetected:  r.issue_detected ?? null,
+      sellerImpacted: r.seller_impacted ?? false,
+      createdAt:      r.created_at,
+      resolvedAt:     r.resolved_at ?? null,
+      resolvedBy:     r.resolved_by ?? null,
+      resolvedByName: r.resolved_by ? (resolverNames.get(r.resolved_by) ?? null) : null,
+      resolutionNote: r.resolution_note ?? null,
+    })),
+    // The rows are still shown when only the NAME lookup failed — the audit
+    // is real, the names are the part that could not be read, and the client
+    // says which.
+    error: clearedError
+      ? `Could not read the cleared-intervention history: ${clearedError.message}`
+      : resolverError
+      ? `Cleared history loaded, but resolver names could not be read: ${resolverError}`
+      : null,
+    windowDays: RESOLVED_HISTORY_WINDOW_DAYS,
+    limit: RESOLVED_HISTORY_LIMIT,
+  }
+
+  // Price-advice inputs. Showing VELOCITY (last 14d vs the prior 14d) and the
+  // comp median are what turn "this listing is stale" into "list it at $X".
+  const showingsRecent = new Map<string, number>()
+  const showingsPrior = new Map<string, number>()
+  const compMedianByListing = new Map<string, number>()
+  if (listingIds.length > 0) {
+    const now = Date.now()
+    const d14 = new Date(now - 14 * 86_400_000).toISOString()
+    const d28 = new Date(now - 28 * 86_400_000).toISOString()
+    const { data: showRows } = await svc
+      .from("showings")
+      .select("listing_id, scheduled_date")
+      .in("listing_id", listingIds)
+      .eq("brokerage_id", agentRow.brokerage_id)
+      .gte("scheduled_date", d28)
+    for (const r of (showRows ?? []) as any[]) {
+      const when = String(r.scheduled_date ?? "")
+      const bucket = when >= d14 ? showingsRecent : showingsPrior
+      bucket.set(r.listing_id, (bucket.get(r.listing_id) ?? 0) + 1)
+    }
+    const { data: cmaRows } = await svc
+      .from("cma_reports")
+      .select("listing_id, recommended_price, created_at")
+      .in("listing_id", listingIds)
+      .eq("brokerage_id", agentRow.brokerage_id)
+      .order("created_at", { ascending: false })
+    for (const r of (cmaRows ?? []) as any[]) {
+      if (r.recommended_price != null && !compMedianByListing.has(r.listing_id)) {
+        compMedianByListing.set(r.listing_id, Number(r.recommended_price))
+      }
+    }
+  }
+
   // Risk-level ordering for sorting: critical first, then at_risk, watch, healthy.
   const RISK_ORDER: Record<RiskLevel, number> = { critical: 0, at_risk: 1, watch: 2, healthy: 3 }
 
@@ -125,6 +315,11 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
       status:       l.status ?? null,
       goLiveDate:   l.go_live_date ?? null,
       scoreId:      s.id ?? null,
+      scoredAgentId: (s.agent_id ?? null) as string | null,
+      // Only a score that EXISTS and names a DIFFERENT agent counts. A null
+      // agent_id (unassigned when scored) is not evidence of a handover, and
+      // neither is the absence of a score row.
+      scoredUnderPreviousAgent: !!s.id && !!s.agent_id && s.agent_id !== agentRow.id,
       overallScore: s.overall_score != null ? Number(s.overall_score) : null,
       previousScore: s.previous_score != null ? Number(s.previous_score) : null,
       scoreDelta:   s.score_delta != null ? Number(s.score_delta) : null,
@@ -135,6 +330,16 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
       recommendedActions: Array.isArray(s.recommended_actions)
         ? (s.recommended_actions as Array<{ action: string; reasoning: string; impactEstimate?: string }>)
         : [],
+      priceAdvice:
+        l.list_price != null && s.days_on_market != null
+          ? computePriceDropRecommendation({
+              listPrice: Number(l.list_price),
+              daysOnMarket: Number(s.days_on_market),
+              showingsRecent: showingsRecent.get(l.id) ?? 0,
+              showingsPrior: showingsPrior.get(l.id) ?? 0,
+              compMedian: compMedianByListing.get(l.id) ?? null,
+            })
+          : null,
       interventions: ivs.map((iv) => ({
         id:               iv.id,
         severity:         iv.severity,
@@ -159,7 +364,7 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
     { healthy: 0, watch: 0, at_risk: 0, critical: 0 } as Record<RiskLevel, number>
   )
 
-  return { rows, summary }
+  return { rows, summary, recentlyCleared }
 }
 
 /**
@@ -175,7 +380,30 @@ export async function resolveIntervention(
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { error } = await svc
+
+  // GATE FIRST, THEN THE SERVICE CLIENT (§4). This update previously matched on
+  // `interventionId` alone: service client, so RLS does not save it, and no
+  // brokerage or agent predicate — a caller who knew (or guessed) an id could
+  // resolve ANOTHER TENANT'S intervention, and §3 says an UPDATE matching
+  // nothing also resolves, so the wrong-tenant attempt reported success. The
+  // resolution is now auditable to a real person (resolved_by is read by the
+  // listing lifecycle history), which makes a forged one worse than useless.
+  //
+  // Same anchor the read paths in this file use at :79 — the caller's own agents
+  // row. A caller with no agents row cannot resolve anything.
+  const { data: agentRow, error: agentErr } = await svc
+    .from("agents")
+    .select("brokerage_id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (agentErr) return { success: false, error: "Could not verify your brokerage — nothing was resolved." }
+  if (!agentRow?.brokerage_id) return { success: false, error: "Your account is not linked to a brokerage." }
+
+  // COUNTED (§3): with the tenant predicate in place, zero matched rows is a
+  // refusal — wrong tenant, unknown id, or already resolved — not a silent
+  // success. All three are the same answer to the caller and none of them may
+  // render as "resolved".
+  const { data: updated, error } = await svc
     .from("listing_health_interventions")
     .update({
       resolved:        true,
@@ -185,7 +413,12 @@ export async function resolveIntervention(
     })
     .eq("id", interventionId)
     .eq("resolved", false)
+    .eq("brokerage_id", agentRow.brokerage_id)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "That intervention was not found in your brokerage, or it was already resolved." }
+  }
   return { success: true }
 }
 

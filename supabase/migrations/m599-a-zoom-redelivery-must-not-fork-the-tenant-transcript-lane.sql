@@ -1,0 +1,108 @@
+-- m599 — a Zoom redelivery must not fork the tenant transcript lane.
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STATUS: APPLIED 2026-09-02 (integrator, MCP execute_sql, hrvaqgvukzxfskkcrwbt).
+-- Preflight matched this header exactly: 0 rows, 4 indexes, target absent.
+-- Postflight: pg_indexes shows uq_communications_zoom_uuid as a partial UNIQUE
+-- btree on ((metadata ->> 'zoom_uuid')) WHERE that expression IS NOT NULL — the
+-- exact shape below. No column, CHECK, or FK changed; no cache regenerated.
+-- Written by lane Z1; only the integrator
+-- applies. Nothing to regenerate afterwards — see ORDERING below.
+--
+-- MEASURED BEFORE WRITING THIS (live db, hrvaqgvukzxfskkcrwbt, 2026-09-02):
+--
+--   public.communications
+--     total rows ................................................ 0
+--     rows carrying metadata->>'zoom_uuid' ...................... 0
+--
+--   Every index that exists on the table:
+--     communications_pkey  UNIQUE (id)
+--     idx_comm_brokerage   (brokerage_id, sent_at DESC) WHERE brokerage_id IS NOT NULL
+--     idx_comm_contact     (contact_id, sent_at DESC)   WHERE contact_id IS NOT NULL
+--     idx_comm_email       (contact_email)              WHERE contact_email IS NOT NULL
+--
+--   Every UNIQUE or CHECK constraint on the table (pg_constraint, contype u/c):
+--     communications_direction_check              ← the ONLY one. No unique.
+--
+--   Planner, verbatim, for the lookup the attacher runs on every delivery:
+--     EXPLAIN SELECT id FROM public.communications WHERE metadata->>'zoom_uuid' = 'abc';
+--       Seq Scan on communications  (cost=0.00..13.60 rows=1 width=16)
+--         Filter: ((metadata ->> 'zoom_uuid'::text) = 'abc'::text)
+--
+-- WHY THIS IS THE SAME DEFECT m464 CLOSED ON voice_calls, ONE LANE OVER
+--
+--   lib/connections/zoom-transcripts.ts attaches a Zoom transcript on one of
+--   two lanes (resolveZoomAttachTarget, lib/connections/zoom.ts): a TENANT-hosted
+--   meeting lands on voice_calls (vendor_call_id 'zoom:<uuid>'), a PLATFORM-
+--   hosted meeting lands on communications (metadata.zoom_uuid = <uuid>,
+--   channel 'zoom_transcript', contact_id NULL, brokerage_id = the tenant).
+--
+--   m464 gave the voice_calls lane a real backstop — uq_voice_calls_vendor_call_id
+--   — and the attacher reads 23505 from it as "already attached". The
+--   communications lane got only a check-then-insert (:132-137): read by
+--   metadata->>'zoom_uuid', insert if null. Zoom retries recording webhooks, and
+--   two concurrent deliveries of one meeting both read null and both insert —
+--   two transcript rows for one meeting in the tenant's GDPR export, the exact
+--   shape m464's header names as "a race with a nicer shape, not a fix".
+--
+--   Until lane Z1 (2026-09-02) this lane could not be reached by any human
+--   actor at all (connectionScopeForUserType read user_type alone, and no live
+--   row carries user_type='superadmin'), which is why the table holds 0 rows and
+--   why the defect was never observed. It becomes reachable in the same wave
+--   this file is written; the backstop must exist before the first redelivery.
+--
+-- WHY PARTIAL
+--
+--   Every non-Zoom communications row — email, sms, portal, every channel this
+--   table has ever held — has NO zoom_uuid and must never collide with another.
+--   A btree unique does not collide NULLs with each other, so a full index
+--   would not refuse them — but it would still index every one of those rows
+--   for nothing, and it would leave the rule implicit. The WHERE clause states
+--   it: exactly one transcript row per Zoom meeting uuid, and rows that are
+--   not Zoom transcripts are not in the index at all.
+--
+-- WHY THE KEY IS GLOBAL AND NOT (brokerage_id, zoom_uuid)
+--
+--   A Zoom meeting uuid is unique across Zoom, and the webhook handler has no
+--   session and no tenant — it resolves the tenant FROM the calendar event it
+--   finds. Same reasoning as m464's vendor_call_id: the lookup is global, so
+--   the key is global.
+--
+-- WHAT THIS BUYS THE APPLICATION
+--
+--   A redelivery that loses the race now fails LOUDLY at SQLSTATE 23505 instead
+--   of silently forking the tenant's transcript record. zoom-transcripts.ts
+--   already reads 23505 on this insert as the idempotent "already attached"
+--   answer (lane Z1, same wave) — the arm is inert until this index exists and
+--   live the moment it does. The pre-check stays as the fast path.
+--
+-- NO VOCABULARY IS ADDED. This is an index, not a CHECK; check-vocabularies.ts
+-- and check-vocabulary-guard have nothing to learn from it, so NO regeneration
+-- of scripts/check-vocabularies.ts is owed after applying. schema-snapshot.ts
+-- lists columns, not indexes — also unchanged.
+--
+-- ORDERING (integrator): apply → nothing to regenerate → done.
+--
+-- PREFLIGHT (run first; each line must hold or STOP):
+--   -- the table is still zoom_uuid-free OR already unique per uuid — a
+--   -- pre-existing duplicate would make CREATE UNIQUE INDEX fail, and that
+--   -- failure is the finding, not something to work around:
+--   SELECT metadata->>'zoom_uuid' AS zoom_uuid, count(*)
+--     FROM public.communications
+--    WHERE metadata->>'zoom_uuid' IS NOT NULL
+--    GROUP BY 1 HAVING count(*) > 1;                      -- expect: 0 rows
+--   -- the index does not already exist under another name:
+--   SELECT indexname FROM pg_indexes
+--    WHERE schemaname='public' AND tablename='communications'
+--      AND indexdef ILIKE '%zoom_uuid%';                   -- expect: 0 rows
+--
+-- POSTFLIGHT (the m464 proof shape — run inside a transaction and ROLLBACK, or
+-- delete the two probe rows; residue must be 0):
+--   -- two inserts with the SAME zoom_uuid → the second must raise 23505;
+--   -- two inserts with NO zoom_uuid       → both accepted;
+--   -- EXPLAIN the lookup above            → Index Scan on uq_communications_zoom_uuid.
+--   SELECT count(*) FROM public.communications WHERE metadata->>'zoom_uuid' IS NOT NULL;
+--     -- expect: the MEASURED-BEFORE count (0) once probes are gone.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_communications_zoom_uuid
+  ON public.communications ((metadata->>'zoom_uuid'))
+  WHERE metadata->>'zoom_uuid' IS NOT NULL;

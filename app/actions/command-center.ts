@@ -37,7 +37,11 @@ async function requireApprover(): Promise<{ userId: string; brokerageId: string 
     .eq("id", user.id)
     .maybeSingle()
   const role = u?.user_type ?? "agent"
-  if (!["admin", "broker", "superadmin"].includes(role)) return { error: "Not authorized to approve agent actions" }
+  // SCOPE LADDER (kept inline — isSuperadmin below hands wider scope): dead
+  // 'superadmin' removed from the array only — 0 live rows store that
+  // users.user_type, so it admitted nobody (isSuperadmin stays dead-false,
+  // unchanged behavior). broker_owner added: storable seat that owns the brokerage.
+  if (!["admin", "broker", "broker_owner"].includes(role)) return { error: "Not authorized to approve agent actions" }
   return { userId: user.id, brokerageId: u?.brokerage_id ?? null, isSuperadmin: role === "superadmin", role }
 }
 
@@ -221,13 +225,41 @@ export async function runTeamCommand(
   if (!user) return { ok: false, spoken: "You're not signed in." }
   const { data: u } = await supabase
     .from("users")
-    .select("brokerage_id, first_name")
+    .select("brokerage_id, first_name, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { ok: false, spoken: "I can't find your brokerage — contact your admin." }
 
-  const { parseTeamCommandText } = await import("@/lib/voice/parse-team-command")
-  const parsed = parseTeamCommandText(text)
+  // C17 FIRST (wave 148, lane 148D): the ONE intent interface hears the sentence before the team-command
+  // floor. A request the OS answers through a domain capability — an ad, a market blog, an open house, a
+  // buyer search, who may need help — is said back as its plan (what I'll do, what I still need, that it
+  // waits for a yes) and finished on the one affordance, instead of "I didn't catch a team command".
+  // Rules only here (no model spend on the bar). Everything else is the team-command floor — and since wave
+  // 148Z C17 names THAT too (interpretation.teamCommand), so this bar picks nothing itself.
+  const { interpretIntent } = await import("@/lib/voice-admin/intent-interface")
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const agentId = await resolveAgentId(supabase as never, user.id)
+  // Wave 149 (149J): tenant capability GRANTS join the seat — read on the session client (a person reads their own
+  // grant rows); a refused read leaves the seat alone (fail closed).
+  const { withTenantRoleGrants } = await import("@/lib/auth/role-grants")
+  const granted = await withTenantRoleGrants(supabase as never, { userId: user.id, userType: (u as { user_type?: string | null }).user_type ?? null, platformRole: (u as { platform_role?: string | null }).platform_role ?? null, agentId }, u.brokerage_id)
+  if (granted.note) console.warn(`[command-center] ${granted.note}`)
+  const interpretation = interpretIntent({
+    utterance: text, modality: "text", screen: "assistant",
+    actor: granted.actor,
+    tenant: { brokerageId: u.brokerage_id },
+  })
+  if (interpretation.family === "domain") {
+    const spoken = interpretation.authority_check.allowed
+      ? `${interpretation.plan.summary} Finish it on the assistant bar — it asks for anything missing and waits for your yes.`
+      : (interpretation.authority_check.reasons[0] ?? interpretation.plan.summary)
+    return { ok: interpretation.authority_check.allowed, spoken, command: "intent_interface", acting: false }
+  }
+
+  // TOMBSTONE (wave 148, 148Z): this bar called `parseTeamCommandText(text)` (lib/voice/parse-team-command.ts) itself — a
+  // second place that picked commands outside the one module. SURVIVOR: lib/voice-admin/intent-interface.ts interpretIntent →
+  // `teamCommand` (teamCommandFloor), read here; dispatchTeamCommand below is unchanged and keeps its own gates.
+  const parsed = interpretation.teamCommand
   if (!parsed) {
     return { ok: false, spoken: "I didn't catch a team command in that. Try \"what should I do today\", \"what do you know about <name>\", \"anything near <address>\", or \"cut a reel for <listing>\"." }
   }

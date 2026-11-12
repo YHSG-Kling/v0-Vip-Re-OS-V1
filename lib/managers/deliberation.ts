@@ -54,9 +54,12 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { AD_CAMPAIGN_RUNNING_STATUSES } from "@/lib/integrations/ad-campaign-vocabulary"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey, type CollaborationDomain,
 } from "@/lib/kernel/manager-registry"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -79,7 +82,8 @@ export interface ManagerBrief {
 
 /** One manager's bounded rebuttal of the OTHERS' positions (round 36) — cited from
  *  its OWN loader's real citations, same grounding guard as the position itself. */
-export interface PositionRebuttal {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface PositionRebuttal {
   /** The factual pushback on the other positions (empty note = no rebuttal held). */
   note: string
   /** Field-level citations — filtered to the rebutting manager's REAL citations. */
@@ -87,7 +91,8 @@ export interface PositionRebuttal {
 }
 
 /** One manager's argued position. */
-export interface ManagerPosition {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ManagerPosition {
   manager: ManagerKey
   proposal: string
   reasoning: string
@@ -98,7 +103,8 @@ export interface ManagerPosition {
   rebuttal?: PositionRebuttal | null
 }
 
-export interface DeliberationDissent {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DeliberationDissent {
   manager: ManagerKey
   /** Why the losing position had merit — honest, on the record. */
   note: string
@@ -106,7 +112,8 @@ export interface DeliberationDissent {
 
 /** THE PRINCIPAL'S CALL (round 36) — the human's recorded override of the argued
  *  winner, on the SAME payload record. The argued record stays intact underneath. */
-export interface DeliberationOverride {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DeliberationOverride {
   /** The position the principal picked instead — must be one that actually argued. */
   winner: ManagerKey
   /** The principal's stated reason — required; an unexplained override is refused. */
@@ -144,7 +151,11 @@ export function isDeliberativeDomain(domainKey: string | null | undefined): bool
   return !!domainKey && MANAGER_COLLABORATIONS[domainKey]?.deliberate === true
 }
 
-/** Every deliberative collaboration domain (governance surface / sim). PURE. */
+/** Every deliberative collaboration domain (governance surface / sim). PURE.
+ *  CENSUS NOTE: proof-only by design — read by scripts/manager-deliberation-simulator.ts:105
+ *  (every deliberative domain has a loader + a raiser); no product surface enumerates the set
+ *  (team-argument-map derives per-manager via collaborationsFor).
+ *  @proofSeam no duplicate to merge — the set has no other reader by design (see note above) */
 export function deliberativeDomains(): CollaborationDomain[] {
   return Object.values(MANAGER_COLLABORATIONS).filter((d) => d.deliberate === true)
 }
@@ -212,7 +223,11 @@ export function applyPrincipalOverride(
   }
 }
 
-/** PURE: what actually governs — the principal's call when recorded, else the argued winner. */
+/** PURE: what actually governs — the principal's call when recorded, else the argued winner.
+ *  CENSUS NOTE: proof-only by design — scripts/manager-deliberation-simulator.ts:298,551. The
+ *  governance surface (manager-trust-client.tsx DeliberationBlock) deliberately renders the argued
+ *  winner AND the principal's call side by side, so it never collapses them to one value.
+ *  @proofSeam no duplicate to merge — the UI deliberately does not collapse to this value (see note above) */
 export function effectiveWinner(record: DeliberationRecord): ManagerKey | null {
   return record.override?.winner ?? record.winner
 }
@@ -257,7 +272,8 @@ export function parseDeliberation(payload: Record<string, unknown> | null | unde
 // Read-only, brokerage-scoped, bounded. An empty tenant yields honest empty facts.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface ReferralContext {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ReferralContext {
   brokerageId: string
   ask: string
   entityType: string | null
@@ -266,7 +282,7 @@ export interface ReferralContext {
 
 type FactLoader = (svc: Svc, ctx: ReferralContext) => Promise<{ facts: string[]; citations: string[] }>
 
-const usd = (n: number): string => `$${Math.round(n).toLocaleString("en-US")}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /** Seller side: the listing(s) in dispute — price, market time, showings, walkaway. */
 const loadListingConciergeFacts: FactLoader = async (svc, ctx) => {
@@ -354,7 +370,7 @@ const loadFinanceManagerFacts: FactLoader = async (svc, ctx) => {
   // until that ledger earns a real writer.)
   const { data: open } = await svc.from("transactions")
     .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
-    .eq("brokerage_id", ctx.brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(200)
+    .eq("brokerage_id", ctx.brokerageId).in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(200)
   const facts: string[] = [], citations: string[] = []
   const openRows = (open ?? []) as any[]
   if (openRows.length > 0) {
@@ -415,13 +431,21 @@ const loadComplianceOfficerFacts: FactLoader = async (svc, ctx) => {
 }
 
 /** Organic side: what the brand's own posts actually did in the last 30 days. */
-const loadMarketingAgentFacts: FactLoader = async (svc, ctx) => {
+// TOMBSTONE (m618) — was the standalone "marketing_agent" seat's loader
+// (loadMarketingAgentFacts). marketing_agent is a retired ManagerKey; MANAGER_FACT_LOADERS
+// can hold only one entry per key, so this body is now MERGED into
+// loadOrganicContentFactsInto below, called from loadCampaignOrchestratorFacts (its
+// survivor) alongside that function's own sequence/touchpoint facts — nothing lost, one seat.
+/** The organic-content half of Campaign Orchestrator's seat (social_posts) — merged
+ *  in-place rather than left as a second loader for the same key. */
+async function loadOrganicContentFactsInto(
+  svc: Svc, ctx: ReferralContext, facts: string[], citations: string[],
+): Promise<void> {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data } = await svc.from("social_posts")
     .select("id, platform, post_type, status, approval_status, published_at, engagement_data")
     .eq("brokerage_id", ctx.brokerageId).gte("created_at", since).limit(300)
   const rows = (data ?? []) as any[]
-  const facts: string[] = [], citations: string[] = []
   const published = rows.filter((r) => r.status === "published" || r.published_at)
   if (published.length > 0) {
     const byPlatform = new Map<string, number>()
@@ -437,7 +461,6 @@ const loadMarketingAgentFacts: FactLoader = async (svc, ctx) => {
     facts.push(`${pending} post${pending === 1 ? "" : "s"} waiting in the approval queue`)
     citations.push(`social_posts.pending_count=${pending} (social_posts.brokerage_id=${ctx.brokerageId})`)
   }
-  return { facts, citations }
 }
 
 /** Paid side: live campaign spend / leads / CPL — the ad-outcome-loop's own shape. */
@@ -445,7 +468,7 @@ const loadAdsManagerFacts: FactLoader = async (svc, ctx) => {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: campaigns } = await svc.from("ad_campaigns")
     .select("id, campaign_name, status, daily_budget")
-    .eq("brokerage_id", ctx.brokerageId).in("status", ["live", "active"]).limit(10)
+    .eq("brokerage_id", ctx.brokerageId).in("status", [...AD_CAMPAIGN_RUNNING_STATUSES]).limit(10)
   const facts: string[] = [], citations: string[] = []
   for (const c of (campaigns ?? []) as any[]) {
     const { data: perf } = await svc.from("ad_performance")
@@ -676,6 +699,9 @@ const loadCampaignOrchestratorFacts: FactLoader = async (svc, ctx) => {
     facts.push(`${touchRows.length} campaign touch${touchRows.length === 1 ? "" : "es"} on the shared ledger in 30d${contactScoped ? " for this contact" : ""} (${[...byChannel.entries()].map(([c, n]) => `${n} ${c}`).join(", ")})`)
     citations.push(`marketing_campaign_touchpoints.count_30d=${touchRows.length}${contactScoped ? ` (marketing_campaign_touchpoints.contact_id=${ctx.entityId})` : ` (marketing_campaign_touchpoints.brokerage_id=${ctx.brokerageId})`}`)
   }
+  // m618: the retired marketing_agent seat's organic-content facts (social_posts),
+  // MERGED onto this survivor loader — brokerage-wide only, same as the seat it replaces.
+  if (!contactScoped) await loadOrganicContentFactsInto(svc, ctx, facts, citations)
   return { facts, citations }
 }
 
@@ -688,7 +714,9 @@ export const MANAGER_FACT_LOADERS: Partial<Record<ManagerKey, FactLoader>> = {
   deal_coordinator: loadDealCoordinatorFacts,
   finance_manager: loadFinanceManagerFacts,
   compliance_officer: loadComplianceOfficerFacts,
-  marketing_agent: loadMarketingAgentFacts,
+  // TOMBSTONE (m618) — "marketing_agent: loadMarketingAgentFacts" removed (retired
+  // ManagerKey); its facts are merged into campaign_orchestrator's loader below via
+  // loadOrganicContentFactsInto.
   ads_manager: loadAdsManagerFacts,
   cron_manager: loadCronManagerFacts,
   // Round 36 — the new deliberative seats, each grounded in ITS OWN stewarded tables.
@@ -722,7 +750,8 @@ export async function loadManagerBrief(
 // deterministic engine. Any engine failure → the deliberation records 'unavailable'.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface ArgueInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ArgueInput {
   manager: ManagerKey
   domain: CollaborationDomain
   ask: string
@@ -733,7 +762,8 @@ export interface ArgueInput {
 
 /** ONE bounded rebuttal turn (round 36): a manager reads the OTHERS' positions and may
  *  push back with cited evidence from its OWN brief — or honestly decline (null). */
-export interface RebutInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface RebutInput {
   manager: ManagerKey
   domain: CollaborationDomain
   ask: string
@@ -745,7 +775,8 @@ export interface RebutInput {
   brokerageId: string
 }
 
-export interface ResolveInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ResolveInput {
   domain: CollaborationDomain
   ask: string
   positions: ManagerPosition[]
@@ -763,7 +794,8 @@ export interface DeliberationEngine {
 }
 
 /** The production engine — structured generation through the ONE gateway. */
-export function gatewayEngine(): DeliberationEngine {
+// internal helper — called in-file by deliberate
+function gatewayEngine(): DeliberationEngine {
   return {
     async argue(input) {
       const { generateObjectRouted } = await import("@/lib/ai/models")
@@ -961,7 +993,8 @@ export async function deliberate(params: {
   }
 }
 
-export interface RunDeliberationInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface RunDeliberationInput {
   brokerageId: string
   /** MANAGER_COLLABORATIONS key the referral traveled — must be deliberative. */
   collabDomain: string
@@ -986,7 +1019,10 @@ export async function runDeliberation(
   input: RunDeliberationInput, client?: Svc, engine?: DeliberationEngine,
 ): Promise<DeliberationRecord | null> {
   const domain = MANAGER_COLLABORATIONS[input.collabDomain]
-  if (!domain || domain.deliberate !== true) return null
+  // The ONE predicate for "this domain deliberates" (isDeliberativeDomain above) —
+  // the referral handler and the team argument map read the same one, so the
+  // three sites can never disagree about which domains argue.
+  if (!domain || !isDeliberativeDomain(input.collabDomain)) return null
 
   // Idempotent reuse — the argument already happened; never re-argue on a retry.
   const existing = parseDeliberation(input.existingPayload)

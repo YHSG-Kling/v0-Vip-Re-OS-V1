@@ -32,7 +32,18 @@ export default async function BuyerIntakePage({ params }: PageProps) {
 
   const { data: tokenRow } = await svc
     .from("buyer_intake_tokens")
-    .select("id, status, expires_at, brokerage_id, contact_id, agent_user_id")
+    // submitted_at is stamped by POST /api/workflow/buyer-intake/submit:99 and was
+    // read by nothing — a buyer who came back to the link was told "your
+    // information is on file" with no date, which is exactly the reassurance the
+    // stamp exists to give ("received on …"). It is the buyer's OWN submission
+    // timestamp on their own token, so it crosses no §5 line.
+    // submitted_data is the jsonb snapshot of what THIS buyer typed
+    // (submit/route.ts:100) and had no reader either. Shown back to the buyer on
+    // their own token as a receipt — their own legal name, funds source and
+    // maximum purchase. CLAUDE.md §5 bars a contact from seeing financials that
+    // are not their own; this is theirs, submitted by them, on a link addressed
+    // to them, and no agent/brokerage figure is added to it.
+    .select("id, status, expires_at, submitted_at, submitted_data, brokerage_id, contact_id, agent_user_id")
     .eq("token", token)
     .maybeSingle()
 
@@ -81,6 +92,8 @@ export default async function BuyerIntakePage({ params }: PageProps) {
           token={token}
           status={tokenRow.status}
           expiresAt={tokenRow.expires_at}
+          submittedAt={tokenRow.submitted_at ?? null}
+          submittedData={(tokenRow.submitted_data as Record<string, unknown> | null) ?? null}
           contactFirstName={contactFirstName}
           contactEmail={contactEmail}
         />

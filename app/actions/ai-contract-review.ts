@@ -1,8 +1,8 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
@@ -10,6 +10,9 @@ import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_contract_review")
 
 // Every exported function in this file previously skipped the auth gate
 // and the brokerage scope check. Any signed-in caller could:
@@ -79,7 +82,9 @@ export async function reviewContract(params: {
     return { success: false, error: "Unauthorized" }
   }
   const brokerageId = ctx.brokerageId
-  const agentId = ctx.agentId ?? ctx.userId
+  // NOT `?? ctx.userId` (m360) — contract_reviews.agent_id is agents-class.
+  const agentId = ctx.agentId
+  if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
   const supabase = createServiceClient()
 
@@ -154,7 +159,7 @@ Be thorough but practical. Focus on actionable issues.`,
     })
 
     // Save review results
-    const { data: savedReview } = await supabase
+    const { data: savedReview, error: reviewSaveErr } = await supabase
       .from("contract_reviews")
       .insert({
         document_id: params.documentId,
@@ -176,6 +181,8 @@ Be thorough but practical. Focus on actionable issues.`,
       })
       .select()
       .single()
+    // The review is returned either way; a refused save means no record of it exists.
+    if (reviewSaveErr) console.error(`[ai-contract-review] review for document ${params.documentId} NOT saved: ${reviewSaveErr.message}`)
 
     // Create tasks for critical issues. pass 14 (variable-insert sweep):
     // transaction_tasks has NO agent_id/source columns — assignment keys on
@@ -198,7 +205,7 @@ Be thorough but practical. Focus on actionable issues.`,
         ai_generated: true,
       }))
 
-      await supabase.from("transaction_tasks").insert(tasks)
+      await sentinelWrite(supabase, supabase.from("transaction_tasks").insert(tasks), { table: "transaction_tasks", flow: "transaction_tasks_write", reason: "AI follow-up tasks from a review whose findings are returned to the caller" })
     }
 
     // Log compliance event if issues found. Canonical gate-event schema is
@@ -208,7 +215,7 @@ Be thorough but practical. Focus on actionable issues.`,
       const { data: agentRow } = ctx.agentId
         ? await supabase.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
         : { data: null }
-      await supabase.from("compliance_events").insert({
+      const { error: complianceLogError } = await supabase.from("compliance_events").insert({
         brokerage_id: brokerageId,
         actor_role: ctx.role,
         actor_user_id: agentRow?.user_id ?? ctx.userId,
@@ -224,6 +231,15 @@ Be thorough but practical. Focus on actionable issues.`,
           critical_count: criticalIssues.length,
         },
       })
+      if (complianceLogError) {
+        // The review itself is saved and returned; this is the ledger row a
+        // broker would produce as evidence that the issues were flagged. It is
+        // not allowed to disappear without a word.
+        console.error(
+          `[ai-contract-review] compliance_events insert REFUSED for transaction ${params.transactionId} — ${review.issues.length} contract issue(s) are UNRECORDED:`,
+          complianceLogError.message,
+        )
+      }
     }
 
     revalidatePath(`/transactions/${params.transactionId}`)
@@ -346,6 +362,9 @@ export async function compareContractVersions(params: {
     }
 
     const { text: comparison } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Compare these two versions of a real estate document and identify all changes:
 

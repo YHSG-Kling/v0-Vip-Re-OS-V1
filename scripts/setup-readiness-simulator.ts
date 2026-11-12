@@ -27,7 +27,7 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 const EMPTY: SetupSnapshot = {
-  hasLicense: false, hasEoInsurance: false, hasVoiceClone: false, hasAvatar: false, hasOutreachChannel: false,
+  hasLicense: false, hasEoInsurance: false, hasVoiceClone: false, hasAvatar: false, hasOutreachChannel: false, hasManagingBroker: false,
   hasMobilePhone: false, hasProfilePhoto: false, hasPersonalWebsite: false, hasEmailSignature: false,
   hasSocialAccount: false, hasPayoutAccount: false, hasMotto: false, hasAdditionalBrand: false,
   hasAssistantVoice: false, hasCommissionContract: false, hasEmailOrCalendar: false,

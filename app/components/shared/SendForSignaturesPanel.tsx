@@ -84,7 +84,14 @@ export function SendForSignaturesPanel({
     if (agentEmail) initial.push({ name: agentName, email: agentEmail, role: "agent" })
     return initial
   })
-  const [result, setResult]       = useState<{ success: boolean; error?: string; blockerType?: string } | null>(null)
+  const [result, setResult]       = useState<{
+    success: boolean
+    error?: string
+    blockerType?: string
+    message?: string
+    /** Lane 88C — the in-window step (DocuSign sender view / Google Drive eSignature). */
+    handoff?: { mode: "iframe" | "popup"; urls: Array<{ label: string; url: string }>; instructions: string } | null
+  } | null>(null)
   const [isPending, startTrans]   = useTransition()
   const [open, setOpen]           = useState(false)
   const [newName, setNewName]     = useState("")
@@ -109,7 +116,9 @@ export function SendForSignaturesPanel({
       setResult(res)
       if (res.success) {
         onSent?.()
-        setTimeout(() => setOpen(false), 1200)
+        // A hand-off (the agent still presses Send in the provider window) keeps the
+        // sheet open so the window link stays in front of them.
+        if (!("handoff" in res && res.handoff)) setTimeout(() => setOpen(false), 1200)
       }
     })
   }
@@ -220,7 +229,18 @@ export function SendForSignaturesPanel({
             {result?.success && (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 flex items-center gap-2 text-sm text-emerald-700">
                 <Check className="h-4 w-4 shrink-0" />
-                Offer submitted for signature
+                {result.message ?? "Offer sent for signature"}
+              </div>
+            )}
+            {result?.success && result.handoff && (
+              <div className="rounded-lg border px-4 py-3 space-y-2 text-xs">
+                <p className="text-muted-foreground">{result.handoff.instructions}</p>
+                {result.handoff.urls.map((u) => (
+                  <a key={u.url} href={u.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 font-medium text-primary hover:underline">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Open {u.label}
+                  </a>
+                ))}
               </div>
             )}
 

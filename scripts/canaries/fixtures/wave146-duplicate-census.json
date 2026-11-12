@@ -1,0 +1,163 @@
+{
+  "_what": "The wave-145 duplicate census (lane 145I: names exported by more than one app/actions module, measured at b364eb4b) that wave-146 ruling 15 binds: each name is retired only with proof (survivor named file:line, every caller migrated) or KEPT with its dependency recorded. Test data for scripts/canaries/wave146-managers-ui.ts; a census, never a pass.",
+  "source": "$S/145I/dups.txt (lane 145I)",
+  "count": 38,
+  "names": {
+    "addContactNote": [
+      "app/actions/communications.ts",
+      "app/actions/contacts.ts"
+    ],
+    "approveSocialPost": [
+      "app/actions/listing-media.ts",
+      "app/actions/social-media-automation.ts"
+    ],
+    "checkCompliance": [
+      "app/actions/ai-content-generation.tsx",
+      "app/actions/link-to-video.ts"
+    ],
+    "checkInAttendee": [
+      "app/actions/open-house-automation.ts",
+      "app/actions/seller-open-house.ts"
+    ],
+    "completeMilestone": [
+      "app/actions/copilot.ts",
+      "app/actions/transactions.ts"
+    ],
+    "completeTask": [
+      "app/actions/journey-tasks.ts",
+      "app/actions/tasks.ts"
+    ],
+    "connectSocialAccount": [
+      "app/actions/social-media-automation.ts",
+      "app/actions/social-publishing.ts"
+    ],
+    "createOpenHouseEvent": [
+      "app/actions/open-house-automation.ts",
+      "app/actions/seller-open-house.ts"
+    ],
+    "deleteSocialPost": [
+      "app/actions/listing-media.ts",
+      "app/actions/social-media-automation.ts",
+      "app/actions/social-publishing.ts"
+    ],
+    "disconnectProvider": [
+      "app/actions/accounting-sync.ts",
+      "app/actions/connections/connection-center.ts"
+    ],
+    "disconnectSocialAccount": [
+      "app/actions/social-media-automation.ts",
+      "app/actions/social-publishing.ts"
+    ],
+    "executeAITool": [
+      "app/actions/ai-tools-hub.ts",
+      "app/actions/workflows.ts"
+    ],
+    "executeWorkflow": [
+      "app/actions/multi-persona.ts",
+      "app/actions/workflows.ts"
+    ],
+    "generateBlogPost": [
+      "app/actions/ai-content-generation.tsx",
+      "app/actions/blog.ts"
+    ],
+    "generateVideoScript": [
+      "app/actions/link-to-video.ts",
+      "app/actions/video/generate-script.ts",
+      "app/actions/video-generation.ts"
+    ],
+    "getClosingChecklist": [
+      "app/actions/ai-closing-workflow.ts",
+      "app/actions/transactions.ts"
+    ],
+    "getContactDocuments": [
+      "app/actions/contact-details.ts",
+      "app/actions/documents.ts"
+    ],
+    "getContentCalendar": [
+      "app/actions/ai-content-generation.tsx",
+      "app/actions/content-studio.ts"
+    ],
+    "getDocumentFolders": [
+      "app/actions/documents.ts",
+      "app/actions/dotloop-integration.ts"
+    ],
+    "getNeighborhoodData": [
+      "app/actions/ai-content-generation.tsx",
+      "app/actions/listing-landing.ts"
+    ],
+    "getShowingRequests": [
+      "app/actions/seller-showings.ts",
+      "app/actions/smart-insights.ts"
+    ],
+    "getSocialAccounts": [
+      "app/actions/listing-media.ts",
+      "app/actions/social-publishing.ts"
+    ],
+    "getSocialPosts": [
+      "app/actions/listing-media.ts",
+      "app/actions/social-publishing.ts"
+    ],
+    "getVendorRecommendations": [
+      "app/actions/ai-vendor-management.ts",
+      "app/actions/marketing-package-automation.ts"
+    ],
+    "getVideoProjects": [
+      "app/actions/listing-media.ts",
+      "app/actions/listing-video.ts",
+      "app/actions/podcast-generation.ts",
+      "app/actions/video/create-video-project.ts"
+    ],
+    "getVideoQueue": [
+      "app/actions/link-to-video.ts",
+      "app/actions/video-generation.ts"
+    ],
+    "getVideoTemplates": [
+      "app/actions/listing-media.ts",
+      "app/actions/video-generation.ts"
+    ],
+    "markAllRead": [
+      "app/actions/notification-actions.ts",
+      "app/actions/notifications.ts"
+    ],
+    "recordSellerResponse": [
+      "app/actions/buyer-offer/record-seller-response.ts",
+      "app/actions/buyer-offer/track-offer-lifecycle.ts"
+    ],
+    "requestShowing": [
+      "app/actions/showings.ts",
+      "app/actions/smart-insights.ts"
+    ],
+    "saveProperty": [
+      "app/actions/idx-search.ts",
+      "app/actions/smart-insights.ts"
+    ],
+    "scheduleContent": [
+      "app/actions/ai-content-generation.tsx",
+      "app/actions/content-studio.ts"
+    ],
+    "scheduleListingAppointment": [
+      "app/actions/listing-lifecycle.ts",
+      "app/actions/seller-listing/execution-engine.ts"
+    ],
+    "scheduleOpenHouse": [
+      "app/actions/open-house-automation.ts",
+      "app/actions/seller-listing/execution-engine.ts"
+    ],
+    "sendMessage": [
+      "app/actions/ai-communication-hub.ts",
+      "app/actions/workflows.ts"
+    ],
+    "submitVendorInvoice": [
+      "app/actions/multi-persona.ts",
+      "app/actions/vendor-payments.ts"
+    ],
+    "unsaveProperty": [
+      "app/actions/idx-search.ts",
+      "app/actions/smart-insights.ts"
+    ],
+    "updateSocialPost": [
+      "app/actions/social-media-automation.ts",
+      "app/actions/social-publishing.ts"
+    ]
+  }
+}

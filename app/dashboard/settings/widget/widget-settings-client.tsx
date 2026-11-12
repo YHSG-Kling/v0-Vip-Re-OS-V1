@@ -12,6 +12,8 @@ import { Separator } from "@/components/ui/separator"
 import { Copy, Check, ExternalLink, LayoutTemplate, Bot, ShieldCheck } from "lucide-react"
 import { saveWidgetSettings, saveAIIdentity } from "./actions"
 import { useRouter } from "next/navigation"
+// One formality vocabulary (live CHECK: formal | semi_formal | casual) — wave 93, lane 93D.
+import { FORMALITY_LEVELS, FORMALITY_LABELS, normalizeFormalityLevel } from "@/lib/branding/formality"
 
 interface AIIdentity {
   id: string
@@ -55,7 +57,7 @@ export default function WidgetSettingsClient({
   const [assistantName, setAssistantName] = useState(initialIdentity?.assistant_name ?? "Alex")
   const [personaLabel, setPersonaLabel] = useState(initialIdentity?.persona_label ?? "Real Estate Assistant")
   const [tone, setTone] = useState(initialIdentity?.tone ?? "friendly")
-  const [formalityLevel, setFormalityLevel] = useState(initialIdentity?.formality_level ?? "conversational")
+  const [formalityLevel, setFormalityLevel] = useState<string>(normalizeFormalityLevel(initialIdentity?.formality_level) ?? "semi_formal")
   const [welcomeMessage, setWelcomeMessage] = useState(
     initialIdentity?.welcome_message ?? "Hi! I'm here to help you with your real estate journey. How can I assist you today?"
   )
@@ -270,7 +272,7 @@ export default function WidgetSettingsClient({
             <div className="space-y-1.5">
               <Label className="text-sm">Formality level</Label>
               <div className="flex flex-wrap gap-2">
-                {["conversational", "semi-formal", "formal"].map((f) => (
+                {FORMALITY_LEVELS.map((f) => (
                   <button
                     key={f}
                     onClick={() => setFormalityLevel(f)}
@@ -280,7 +282,7 @@ export default function WidgetSettingsClient({
                         : "border-border bg-background text-foreground hover:bg-muted"
                     }`}
                   >
-                    {f}
+                    {FORMALITY_LABELS[f]}
                   </button>
                 ))}
               </div>

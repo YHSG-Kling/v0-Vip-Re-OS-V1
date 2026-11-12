@@ -19,7 +19,9 @@
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
+import { captureConsentedContact, consentGrantsFromComponent, resolveCapturedLanguage, resolveConsentBrand } from "@/lib/contact-pipeline/contact-capture"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const runtime = "nodejs"
 
@@ -31,9 +33,18 @@ interface Body {
   last_name?: string
   email?: string
   phone?: string
+  /** THE ONE CONSENT COMPONENT's submission (C15 — wave 148). The wording is re-rendered here, never taken from the body. */
+  consent?: unknown
 }
 
 export async function POST(request: NextRequest) {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
+  // contact capture from a third-party page. Idiom: app/api/track/visitor/route.ts.
+  const rateIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("embed-capture", rateIp, { limit: 20, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   const body = await request.json().catch(() => null) as Body | null
   if (!body?.publicId || !body?.sessionId) {
     return NextResponse.json({ error: "publicId + sessionId required" }, { status: 400 })
@@ -81,22 +92,31 @@ export async function POST(request: NextRequest) {
         resolvedAgentId = pool[0]
       }
       // Advance the cursor so the next capture gets a different agent.
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("embed_widgets")
         .update({ last_routed_agent_id: resolvedAgentId })
-        .eq("id", widget.id)
+        .eq("id", widget.id), { table: "embed_widgets", flow: "embed_widgets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   }
 
   // resolvedAgentId is agents.id (embed_widgets.agent_id FK → agents). Pass
   // it through directly; captureContact handles agents.id correctly.
 
-  // ── Capture (dedupe + create + score + enrich + emit kernel event) ──────
-  // Visitors providing info on an embed are explicitly opting in — that's
-  // the TCPA consent boundary for any later SMS / call follow-up.
-  let result
+  // ── Capture — C8 (wave 147, lane 147A — owner ruling 1) ─────────────────
+  // CONSENT IS WHAT THE PERSON SAW, NOT WHAT THE DOOR ASSUMES. This door used to stamp tcpa_consent = true on every capture
+  // ("visitors providing info on an embed are explicitly opting in"), but the embed form (app/embed/[publicId]/embed-widget.tsx
+  // leadCaptureFields) shows NO consent box and NO disclosure wording — a TCPA consent with no wording behind it is a false
+  // record. The person is identifiable, so they still land on the canonical CONTACT; no consent row is written and the tcpa_*
+  // columns are not claimed (fail closed). The consent box + wording on the embed form is listed Still-open in the 147A notes.
+  // THE one brand rule (resolveConsentBrand): the widget's agent, else its brokerage — the embed page renders the same.
+  const embedBrand = await resolveConsentBrand(supabase, { agentId: widget.agent_id ?? null, brokerageId: widget.brokerage_id })
+  const embedC15 = consentGrantsFromComponent(body.consent, { door: "embed_widget", brandName: embedBrand, provided: { email: !!body.email?.trim(), phone: !!body.phone?.trim() } })
+  if (embedC15.submission && !embedC15.submission.service_delivery) {
+    return NextResponse.json({ error: "Please tick the first consent box (the service follow-up) so we can follow up." }, { status: 400 })
+  }
+  let result: Awaited<ReturnType<typeof captureConsentedContact>>
   try {
-    result = await captureContact({
+    result = await captureConsentedContact({
       brokerageId: widget.brokerage_id,
       ownerAgentId: resolvedAgentId ?? null,
       source: "widget",
@@ -104,27 +124,38 @@ export async function POST(request: NextRequest) {
       last_name: body.last_name?.trim() ?? null,
       email: body.email?.trim()?.toLowerCase() ?? null,
       phone: body.phone?.trim() ?? null,
-      preferred_channel: body.email ? "email" : "sms",
-      tcpa_consent: true,
-      tcpa_consent_date: new Date().toISOString(),
+      preferred_channel: "email",
+      // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
+      language: resolveCapturedLanguage(null, request.headers.get("accept-language")),
+      embed_widget_id: widget.id,
+      // C15 (wave 148, lane 148B — owner recommendation): the embed form now renders the ONE consent component, so what the
+      // visitor ticked IS recorded — each box with the wording re-rendered from the widget's brokerage name (the page renders
+      // the same). A cached pre-148 widget sends no submission → no consent claimed, exactly as wave 147 held it.
+      consents: embedC15.submission ? embedC15.grants : [{ family: "phone", given: false, text: null, textVersion: "embed:no_disclosure_shown" }],
+      intake: {
+        channel: "embed", sourceUrl: `/embed/${body.publicId}`,
+        evidence: { ...embedC15.evidence, ...(embedC15.wordingHash ? { wording_hash: embedC15.wordingHash } : {}), embed_widget_id: widget.id, session_id: body.sessionId, ip: rateIp, user_agent: request.headers.get("user-agent") ?? null },
+        formOwner: { table: "embed_widgets", id: widget.id },
+      },
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message ?? "Capture failed" }, { status: 500 })
   }
+  if (!result.ok || !result.contactId) {
+    return NextResponse.json({ error: result.reason ?? "Capture failed" }, { status: result.refused === "not_identifiable" ? 400 : 500 })
+  }
 
-  // ── Stamp embed attribution + link to the visitor session ───────────────
-  // contacts.embed_widget_id ties the contact back to the originating embed
-  // so the broker can see "leads from this embed". embed_sessions.contact_id
-  // links the conversation history.
-  await supabase
-    .from("contacts")
-    .update({ embed_widget_id: widget.id })
-    .eq("id", result.contactId)
-
-  await supabase
+  // ── Link to the visitor session ─────────────────────────────────────────
+  // FIRST TOUCH WINS (wave 148, 148Z — lane 148B Still open 8; owner ruling 22 takes the recommendation, and the one door's own
+  // rule is "prior history preserved — the first touch, the first source, the first owner win"). TOMBSTONE: a
+  // `contacts.update({ embed_widget_id: widget.id })` stood here AFTER the capture — last touch: redundant for a new contact,
+  // and for a returning one it OVERWROTE the embed they first arrived through. SURVIVOR: the `embed_widget_id: widget.id` passed
+  // to captureConsentedContact above (lib/contact-pipeline/contact-capture.ts captureColumns firstTouch — set on create,
+  // fill-if-empty on merge). Every later visit is still on the record: embed_sessions.contact_id below links each session.
+  await sentinelWrite(supabase, supabase
     .from("embed_sessions")
     .update({ contact_id: result.contactId })
-    .eq("id", body.sessionId)
+    .eq("id", body.sessionId), { table: "embed_sessions", flow: "embed_sessions_write", reason: "session→contact link; the contact is already captured" })
 
   return NextResponse.json({ contactId: result.contactId })
 }

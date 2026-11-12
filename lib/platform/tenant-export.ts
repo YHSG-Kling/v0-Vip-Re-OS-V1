@@ -18,7 +18,7 @@ export const TENANT_EXPORT_TABLES = [
   "communications", "tasks", "documents",
   "vendors", "referrals",
   "marketing_campaigns", "marketing_assets",
-  "commissions", "commission_records",
+  "agent_commissions",
   "subscriptions", "billing_invoices", "support_tickets",
 ] as const
 
@@ -35,7 +35,8 @@ export interface TenantExportBundle {
 const PER_TABLE_LIMIT = 10_000
 
 /** PURE: the bundle summary — counts + which tables hit the row cap. */
-export function summarizeExport(tables: Record<string, unknown[]>): { counts: Record<string, number>; truncated: string[] } {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function summarizeExport(tables: Record<string, unknown[]>): { counts: Record<string, number>; truncated: string[] } {
   const counts: Record<string, number> = {}
   const truncated: string[] = []
   for (const [name, rows] of Object.entries(tables)) {

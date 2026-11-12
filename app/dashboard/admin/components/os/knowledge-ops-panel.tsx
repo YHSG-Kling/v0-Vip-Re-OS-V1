@@ -7,8 +7,6 @@ import { Button } from "@/components/ui/button"
 import { 
   BookOpen, 
   ChevronRight,
-  AlertCircle,
-  CheckCircle2,
   Loader2,
   FileText,
   Clock
@@ -179,7 +177,7 @@ export function KnowledgeOpsPanel({ brokerageId }: KnowledgeOpsPanelProps) {
           </div>
         )}
 
-        <Link href="/dashboard/admin/knowledge">
+        <Link href="/dashboard/settings/knowledge-base">
           <Button variant="outline" size="sm" className="w-full">
             Manage Knowledge Base
             <ChevronRight className="h-4 w-4 ml-1" />

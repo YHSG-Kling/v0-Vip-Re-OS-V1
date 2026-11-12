@@ -403,7 +403,7 @@ function GhostRecoveryTab({ items, brokerageId }: { items: GhostContact[]; broke
   if (localItems.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-card p-10 text-center space-y-2">
-        <CheckCircle2 size={28} className="mx-auto text-green-500" />
+        <CheckCircle2 size={28} className="mx-auto text-green-600" />
         <p className="text-sm text-muted-foreground">No ghost contacts — your pipeline is active!</p>
       </div>
     )
@@ -428,7 +428,7 @@ function GhostRecoveryTab({ items, brokerageId }: { items: GhostContact[]; broke
               </p>
             </div>
             {isRecovered ? (
-              <span className="text-xs text-green-600 font-medium flex items-center gap-1">
+              <span className="text-xs text-green-700 font-medium flex items-center gap-1">
                 <CheckCircle2 size={13} /> Recovery sent
               </span>
             ) : (

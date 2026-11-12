@@ -61,11 +61,19 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
         contactName: videoContactName,
         userId: agentId
       })
-      console.log("[v0] Video script result:", result)
-      if (result && result.script) {
-        setOutput(result.script)
+      if (result?.script) {
+        // Advisory compliance notes ride along with the script so the agent
+        // sees what the gate flagged instead of copying it out unaware.
+        const warnings = result.complianceWarnings
+        setOutput(
+          warnings?.length
+            ? `${result.script}\n\n---\nCompliance notes (${warnings.length}) — review before sending:\n${warnings.map((w) => `• ${w}`).join("\n")}`
+            : result.script,
+        )
       } else {
-        setOutput("Generated script is empty. Please try again or adjust your settings.")
+        // A refusal has a reason — a compliance block, a missing brokerage, an
+        // AI failure. Showing "empty, try again" hid all three.
+        setOutput(result?.error ?? "Generated script is empty. Please try again or adjust your settings.")
       }
     } catch (e: any) {
       console.error("[v0] Error generating video script:", e)
@@ -210,7 +218,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     },
     {
       icon: Mail,
-      iconColor: "text-orange-600",
+      iconColor: "text-orange-700",
       title: "Direct Mail",
       description: "Generate neighborhood direct mail in 30 seconds",
       href: "/dashboard/campaigns/mail",
@@ -269,7 +277,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     },
     {
       icon: TrendingUp,
-      iconColor: "text-green-600",
+      iconColor: "text-green-700",
       title: "Market Report",
       description: "Send a market update your homeowner will actually read",
       href: "/dashboard/market-insights",
@@ -297,7 +305,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     },
     {
       icon: Radio,
-      iconColor: "text-teal-600",
+      iconColor: "text-teal-700",
       title: "Podcast Engine",
       description: "Turn this market insight into content your sphere will share",
       href: "/dashboard/marketing/podcast",
@@ -513,7 +521,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                             </div>
                           )}
                           {!output.toLowerCase().includes('error') && (
-                            <div className="absolute bottom-3 right-3 bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium shadow-lg flex items-center gap-1.5">
+                            <div className="absolute bottom-3 right-3 bg-green-700 text-white text-xs px-3 py-1.5 rounded-md font-medium shadow-lg flex items-center gap-1.5">
                               <Check className="h-3 w-3" />
                               Ready to Use
                             </div>

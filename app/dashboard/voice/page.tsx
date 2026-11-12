@@ -90,7 +90,7 @@ export default async function VoiceDashboardPage() {
       .order("created_at", { ascending: false })
       .limit(20),
 
-    // Contacts for VAPI call panel
+    // Contacts for the AI call panel
     supabase
       .from("contacts")
       .select("id, first_name, last_name, phone")

@@ -18,7 +18,7 @@ const TIER_LABEL: Record<string, string> = {
 function ItemRow({ item }: { item: ResolvedSetupItem }) {
   return (
     <Link href={item.href} className="flex items-start gap-3 rounded-lg border px-3 py-2.5 hover:bg-muted/50">
-      <span className={"mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold " + (item.done ? "bg-green-500 text-white" : "border-2 border-muted-foreground/30 text-transparent")}>
+      <span className={"mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold " + (item.done ? "bg-green-700 text-white" : "border-2 border-muted-foreground/30 text-transparent")}>
         ✓
       </span>
       <div className="min-w-0 flex-1">

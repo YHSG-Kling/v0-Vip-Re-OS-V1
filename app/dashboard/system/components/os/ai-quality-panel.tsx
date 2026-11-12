@@ -98,10 +98,10 @@ export function AIQualityPanel({ brokerageId }: AIQualityPanelProps) {
   const qualityLevel = qualityScore >= 90 ? 'excellent' : qualityScore >= 75 ? 'good' : qualityScore >= 50 ? 'fair' : 'needs-attention'
 
   const qualityColors = {
-    excellent: 'text-green-600 bg-green-50 dark:bg-green-950/20',
+    excellent: 'text-green-700 bg-green-50 dark:bg-green-950/20',
     good: 'text-blue-600 bg-blue-50 dark:bg-blue-950/20',
-    fair: 'text-yellow-600 bg-yellow-50 dark:bg-yellow-950/20',
-    'needs-attention': 'text-red-600 bg-red-50 dark:bg-red-950/20',
+    fair: 'text-yellow-700 bg-yellow-50 dark:bg-yellow-950/20',
+    'needs-attention': 'text-red-700 bg-red-50 dark:bg-red-950/20',
   }
 
   return (
@@ -132,7 +132,7 @@ export function AIQualityPanel({ brokerageId }: AIQualityPanelProps) {
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-lg border border-border p-3">
             <div className="flex items-center gap-2 mb-1">
-              <TrendingUp className="h-4 w-4 text-green-500" />
+              <TrendingUp className="h-4 w-4 text-green-600" />
               <span className="text-sm text-muted-foreground">Positive</span>
             </div>
             <p className="text-xl font-bold">{metrics?.positiveCount || 0}</p>

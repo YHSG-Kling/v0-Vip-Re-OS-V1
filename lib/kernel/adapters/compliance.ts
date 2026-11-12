@@ -69,6 +69,8 @@ const VALID_PERSONAS: Persona[] = [
   "senior",
   "expired",
   "foreclosure",
+  // Owner ruling 2026-08-31: "investor is a persona and not a contact type" (m589).
+  "investor",
   "other",
 ]
 
@@ -121,7 +123,11 @@ function normalizeContact(contact?: EvaluateKernelOutboundParams["contact"]): Ke
 }
 
 export async function evaluateKernelOutbound(
-  params: EvaluateKernelOutboundParams
+  params: EvaluateKernelOutboundParams,
+  // 86C: pass-through of evaluateOutbound's client seam — a SESSIONLESS caller (the sequence
+  // step executor's authority gate) hands in the service client it already holds, with the
+  // tenant from its verified enrollment row; session callers omit it and keep the cookie client.
+  opts?: Parameters<typeof evaluateOutbound>[1],
 ): Promise<ComplianceResult> {
   return evaluateOutbound({
     actorContext: {
@@ -135,7 +141,7 @@ export async function evaluateKernelOutbound(
     messageType: normalizeMessageType(params.messageType),
     content: params.content,
     contact: normalizeContact(params.contact),
-  })
+  }, opts)
 }
 
 export function isComplianceBlocked(result: ComplianceResult): boolean {

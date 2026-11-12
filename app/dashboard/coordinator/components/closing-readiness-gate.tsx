@@ -18,7 +18,6 @@ import {
 interface ClosingReadinessGateProps {
   transactionId: string
   transactionStage: string
-  agentId: string
   brokerageId?: string
 }
 
@@ -31,7 +30,6 @@ interface ReadinessResult {
 export function ClosingReadinessGate({
   transactionId,
   transactionStage,
-  agentId,
   brokerageId = "",
 }: ClosingReadinessGateProps) {
   const [result, setResult] = useState<ReadinessResult | null>(null)
@@ -72,7 +70,7 @@ export function ClosingReadinessGate({
 
   if (result.canProceed) {
     return (
-      <Badge className="bg-emerald-500 text-white gap-1 text-xs">
+      <Badge className="bg-emerald-700 text-white gap-1 text-xs">
         <CheckCircle2 className="h-3 w-3" />
         Ready to Close
       </Badge>

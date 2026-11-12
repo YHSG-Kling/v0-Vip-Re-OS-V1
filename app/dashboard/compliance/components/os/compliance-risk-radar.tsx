@@ -57,8 +57,8 @@ export function ComplianceRiskRadar({
 
   const severityBadge = {
     critical: "bg-destructive text-destructive-foreground",
-    warning: "bg-orange-500 text-white",
-    healthy: "bg-green-500 text-white",
+    warning: "bg-orange-700 text-white",
+    healthy: "bg-green-700 text-white",
   }
 
   const overallRisk = criticalPressure > 50 ? "critical" : criticalPressure > 25 ? "warning" : "healthy"
@@ -93,7 +93,7 @@ export function ComplianceRiskRadar({
         <div className="space-y-2">
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Compliance Rate</span>
-            <span className={`font-medium ${complianceRate >= 90 ? "text-green-600" : complianceRate >= 70 ? "text-orange-600" : "text-destructive"}`}>
+            <span className={`font-medium ${complianceRate >= 90 ? "text-green-700" : complianceRate >= 70 ? "text-orange-700" : "text-destructive"}`}>
               {complianceRate}%
             </span>
           </div>

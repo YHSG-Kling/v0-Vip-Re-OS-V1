@@ -23,12 +23,19 @@
  * Run: npx tsx scripts/speed-to-lead-simulator.ts  (npm run test:speed-to-lead)
  */
 
+import { readFileSync } from "node:fs"
 import {
   firstTouchDecision,
   DEFAULT_AGENT_GRACE_MINUTES,
   summarizeFirstTouchLatency,
+  summarizeIsaProofNumbers,
+  VOICE_CONNECTED_STATUSES,
+  VOICE_DIALED_TERMINAL_STATUSES,
 } from "../lib/ai-isa/speed-to-lead-policy"
 import type { FirstTouchInput } from "../lib/ai-isa/speed-to-lead-policy"
+import { PHASE1_WINDOW_DAYS, PHASE3_SPACING_DAYS } from "../lib/ai-isa/reengagement-policy"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 import {
   buildPersonalizationFacts,
   buildOutreachPrompt,
@@ -250,8 +257,15 @@ async function main() {
   check("rich input → occupation present",        richKeys.includes("occupation"))
   check("rich input → household_income present",  richKeys.includes("household_income"))
   check("rich input → home_owner_status present", richKeys.includes("home_owner_status"))
-  check("rich input → life_event present",        richKeys.includes("life_event"))
-  check("rich input → marital_status present",    richKeys.includes("marital_status"))
+  // WAVE 148 (lane 148F, owner ruling 17) — re-asserted to the RULE: a life event is never copy ("it is about them and their
+  // emotions at this time"); it shapes only the TONE fact, and the event itself rides no fact the prompt shows.
+  check("rich input → a life event shapes only the TONE (148F): a tone fact, never a 'life_event' copy fact",
+    richKeys.includes("tone") && !richKeys.includes("life_event") && !richFacts.some((f) => !f.key.startsWith("_") && /new job|started a new/i.test(f.value)))
+  // WAVE 148 (148Z — lane 148F hand-off, rulings 1 + 17): re-asserted to the RULE. Marital status is a protected class and the
+  // shadow of the marital life events; it never becomes a copy fact, and its VALUE appears in no shown fact. Positive control:
+  // the same input still yields the other facts (the builder is not simply empty).
+  check("rich input → marital_status is NEVER a copy fact, and 'married' appears in no shown fact",
+    !richKeys.includes("marital_status") && !richFacts.some((f) => !f.key.startsWith("_") && /\bmarried\b/i.test(f.value)) && richKeys.includes("occupation"))
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[Layer 1d · Two different records → different prompts (non-hardcoded proof)]")
@@ -278,10 +292,13 @@ async function main() {
   check("prompt A ≠ prompt B (non-hardcoded)",      promptAText !== promptBText)
   check("prompt A includes Alice",                  promptAText.includes("Alice"))
   check("prompt A includes Austin",                 promptAText.includes("Austin"))
-  check("prompt A includes life_event (new_baby)",  promptAText.toLowerCase().includes("child") || promptAText.toLowerCase().includes("baby"))
+  // WAVE 148 (148F, ruling 17): the USER message (the facts) never names the life event — the system message carries the rule
+  // (and lists example events in the rule itself, which is why the whole-prompt text is not the thing tested).
+  const userOf = (p: typeof promptA) => String(p.find((m) => m.role === "user")?.content ?? "").toLowerCase()
+  check("prompt A never names the life event (new baby) — the tone carries it instead",  !/child|baby/.test(userOf(promptA)) && /tone/.test(userOf(promptA)))
   check("prompt B includes Bob",                    promptBText.includes("Bob"))
   check("prompt B includes Dallas",                 promptBText.includes("Dallas"))
-  check("prompt B includes life_event (retirement)",promptBText.toLowerCase().includes("retir"))
+  check("prompt B never names the life event (retirement) — the tone carries it instead", !/retir/.test(userOf(promptB)) && /tone/.test(userOf(promptB)))
 
   // Deterministic fallback: two different records yield different copy
   const fallbackA = buildDeterministicCopy(recordA, "email", "Alice")
@@ -331,6 +348,95 @@ async function main() {
   // clock-skew guard: firstTouchedAt before createdAt is excluded from latency (still counted in channel mix).
   const skew = summarizeFirstTouchLatency([{ createdAt: t0.toISOString(), firstTouchedAt: new Date(t0.getTime() - 5000).toISOString(), channel: "email" }])
   check("latency: negative (clock-skew) latency excluded", skew.touchedCount === 0 && skew.channelBreakdown.email === 1)
+  // Lane 90C — the SLA meter PER CHANNEL (89D P2-8: first-response seconds per lead per channel).
+  check("latency per channel: email median of 60/600 = 330s with 1/2 within SLA; sms 120s with 1/1",
+    sum.perChannel.email?.medianSeconds === 330 && sum.perChannel.email?.touchedCount === 2 && Math.round((sum.perChannel.email?.pctWithinSla ?? 0) * 100) === 50
+    && sum.perChannel.sms?.medianSeconds === 120 && sum.perChannel.sms?.pctWithinSla === 1)
+  check("latency per channel: a skewed row is excluded from its channel too (no bucket for it)", !("email" in skew.perChannel))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Layer 1g (lane 90C): THE THREE PROOF NUMBERS competitors publish — response
+  // rate, connect rate, days of follow-up — pure math over the ledgers.
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[Layer 1g · ISA proof numbers — response rate / connect rate / days of follow-up]")
+  const d = (daysAgo: number) => new Date(t0.getTime() - daysAgo * 86_400_000).toISOString()
+  const proof = summarizeIsaProofNumbers({
+    outreach: [
+      // lead A: 3 sends over 20 days, replied on the 2nd (email) → 1 replied person
+      { leadId: "A", channel: "email", sentAt: d(20) },
+      { leadId: "A", channel: "email", sentAt: d(12), repliedAt: d(11) },
+      { leadId: "A", channel: "sms", sentAt: d(0) },
+      // lead B: 2 sends 5 days apart, never replied
+      { leadId: "B", channel: "email", sentAt: d(5) },
+      { leadId: "B", channel: "email", sentAt: d(0) },
+      // contact C (no lead id): 1 send, status 'replied' spelling
+      { leadId: null, contactId: "C", channel: "sms", sentAt: d(3), status: "replied" },
+      // a row with no person and a row with no sent_at are ignored, never counted
+      { leadId: null, contactId: null, channel: "email", sentAt: d(1) },
+      { leadId: "D", channel: "email", sentAt: null },
+    ],
+    calls: [
+      { status: "completed", direction: "outbound" },
+      { status: "no_answer", direction: "outbound" },
+      { status: "voicemail", direction: "outbound" },
+      { status: "failed", direction: "outbound" },
+      { status: "in_progress", direction: "outbound" }, // still live — not dialed-terminal
+      { status: "blocked", direction: "outbound" },     // never dialed
+      { status: "completed", direction: "inbound" },    // not an ISA dial
+    ],
+  })
+  check("response rate: 2 of 3 people reached wrote back (a person counts once; replied_at OR status='replied')",
+    proof.responseRate.numerator === 2 && proof.responseRate.denominator === 3 && Math.round((proof.responseRate.rate ?? 0) * 100) === 67)
+  check("response rate per channel: email 1/2, sms 1/2 (A's reply was on email; C's on sms)",
+    proof.responseRateByChannel.email?.numerator === 1 && proof.responseRateByChannel.email?.denominator === 2
+    && proof.responseRateByChannel.sms?.numerator === 1 && proof.responseRateByChannel.sms?.denominator === 2)
+  check("connect rate: 1 of 4 finished outbound dials reached a person (in_progress / blocked / inbound excluded)",
+    proof.connectRate.numerator === 1 && proof.connectRate.denominator === 4 && proof.connectRate.rate === 0.25)
+  check("days of follow-up: A spans 20d, B spans 5d → median 13 (12.5 rounded half-up), max 20, 2 persons; C's single send does not count",
+    proof.followUp.personsWithFollowUp === 2 && proof.followUp.medianDays === 13 && proof.followUp.maxDays === 20)
+  check("days of follow-up carries the ladder's own horizon, READ from reengagement-policy (never retyped)",
+    proof.followUp.policy.phase1WindowDays === PHASE1_WINDOW_DAYS && proof.followUp.policy.phase3SpacingDays === PHASE3_SPACING_DAYS)
+  const noRows = summarizeIsaProofNumbers({ outreach: [], calls: [] })
+  check("no rows → honest nulls, never a fabricated 0%",
+    noRows.responseRate.rate === null && noRows.connectRate.rate === null && noRows.followUp.medianDays === null && noRows.followUp.personsWithFollowUp === 0)
+  // POSITIVE CONTROL on the vocabulary: every status the connect-rate math names
+  // is a LIVE voice_calls.status CHECK value — a retired spelling here would
+  // silently read as "never connected" (CLAUDE.md §2: assert the rule, derive).
+  const liveStatuses = new Set(CHECK_VOCABULARIES.voice_calls?.status ?? [])
+  check(`connect-rate statuses ⊆ live voice_calls.status CHECK (${[...VOICE_DIALED_TERMINAL_STATUSES].join("/")})`,
+    liveStatuses.size > 0 && VOICE_DIALED_TERMINAL_STATUSES.every((s) => liveStatuses.has(s)) && VOICE_CONNECTED_STATUSES.every((s) => liveStatuses.has(s)))
+  check("POSITIVE CONTROL: the same subset test REJECTS a status the CHECK does not carry", !liveStatuses.has("answered_by_human"))
+  check("connected ⊂ dialed-terminal (a call cannot connect without finishing)", VOICE_CONNECTED_STATUSES.every((s) => VOICE_DIALED_TERMINAL_STATUSES.includes(s)))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Layer 1h (lane 90C): the numbers are SURFACED — one reader, three surfaces
+  // (stripped source; CLAUDE.md §2).
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[Layer 1h · one reader, three surfaces — ISA console, ISA analytics, Brokerage Intelligence]")
+  const src = (p: string) => stripComments(readFileSync(p, "utf8"))
+  const metricsSrc = src("app/actions/ai-isa/speed-to-lead-metrics.ts")
+  check("getSpeedToLeadMetrics reads isa_outreach_log AND voice_calls and feeds summarizeIsaProofNumbers (code, not comment)",
+    metricsSrc.includes('.from("isa_outreach_log")') && metricsSrc.includes('.from("voice_calls")') && metricsSrc.includes("summarizeIsaProofNumbers("))
+  check("getSpeedToLeadMetrics READS every ledger's error into `refused` (CLAUDE.md §3 — a refused read is never a clean zero)",
+    (metricsSrc.match(/res\.error/g) ?? []).length >= 1 && metricsSrc.includes("refused.push("))
+  const panelSrc = src("app/dashboard/isa/components/speed-to-lead-panel.tsx")
+  check("the panel exports IsaProofNumbersStrip and renders responseRate / connectRate / followUp + the refused notice",
+    panelSrc.includes("export function IsaProofNumbersStrip") && panelSrc.includes("proof.responseRate") && panelSrc.includes("proof.connectRate") && panelSrc.includes("followUp") && panelSrc.includes("refused"))
+  check("the panel renders the per-channel SLA meter (recent.perChannel)", panelSrc.includes("recent.perChannel"))
+  for (const [label, path] of [
+    ["ISA console", "app/dashboard/isa/page.tsx"],
+    ["ISA analytics", "app/dashboard/isa/analytics/page.tsx"],
+    ["Brokerage Intelligence", "app/dashboard/brokerage/intelligence/page.tsx"],
+  ] as const) {
+    const s = src(path)
+    check(`${label} calls getSpeedToLeadMetrics( and mounts the strip (SpeedToLeadPanel or IsaProofNumbersStrip)`,
+      s.includes("getSpeedToLeadMetrics(") && (s.includes("<SpeedToLeadPanel") || s.includes("<IsaProofNumbersStrip")))
+  }
+  const analyticsSrc = src("app/dashboard/isa/analytics/page.tsx")
+  check("ISA analytics no longer reads fields the outcomes reader never returned (totalContacted/totalQualified/byOutcome — the blind meter)",
+    !/outcomes\.(totalContacted|totalQualified|byOutcome)\b/.test(analyticsSrc) && analyticsSrc.includes("outcomes.stats."))
+  check("POSITIVE CONTROL: the blind-meter scan DOES flag a fixture that still reads outcomes.totalContacted",
+    /outcomes\.(totalContacted|totalQualified|byOutcome)\b/.test("const n = outcomes.totalContacted || 0"))
 
   // ───────────────────────────────────────────────────────────────────────────
   // Layer 2: LIVE (gated)

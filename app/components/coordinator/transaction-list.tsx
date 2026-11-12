@@ -3,8 +3,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ClipboardList, MapPin, Calendar, ChevronRight, AlertTriangle, CheckCircle2 } from "lucide-react"
+import { ClipboardList, MapPin, Calendar, ChevronRight, AlertTriangle } from "lucide-react"
 import Link from "next/link"
+import { StatusBadge } from "@/components/status/status-badge"
 
 interface Transaction {
   id: string
@@ -168,9 +169,14 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                           <div className="flex items-center gap-2 flex-wrap">
                             <MapPin className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                             <span className="font-medium truncate">{txn.property_address || "No address"}</span>
-                            <Badge className={`${getStageColor(txn.stage)} border text-xs`}>
-                              {formatStage(txn.stage || txn.status)}
-                            </Badge>
+                            {txn.stage && (
+                              <Badge className={`${getStageColor(txn.stage)} border text-xs`}>
+                                {formatStage(txn.stage)}
+                              </Badge>
+                            )}
+                            {/* C23 census (wave 148, lane 148I): the deal's STATUS is shown as itself — showing only the stage
+                                hid it (a FUNDED deal read "Closed", a pre-contract one showed a raw word). */}
+                            <StatusBadge entity="transaction" value={txn.status} />
                           </div>
 
                           {/* Metrics Row */}
@@ -184,7 +190,7 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                                     Past Due
                                   </Badge>
                                 ) : daysToClose <= 7 ? (
-                                  <Badge variant="outline" className="text-amber-600 border-amber-300 text-xs">
+                                  <Badge variant="outline" className="text-amber-700 border-amber-300 text-xs">
                                     {daysToClose}d to close
                                   </Badge>
                                 ) : (
@@ -205,8 +211,8 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                           {/* Flags/Issues */}
                           {flags.length > 0 && (
                             <div className="flex items-center gap-2 mt-1">
-                              <AlertTriangle className="h-3 w-3 text-amber-500" />
-                              <span className="text-xs text-amber-600">{flags.slice(0, 2).join(" | ")}</span>
+                              <AlertTriangle className="h-3 w-3 text-amber-600" />
+                              <span className="text-xs text-amber-700">{flags.slice(0, 2).join(" | ")}</span>
                               {flags.length > 2 && (
                                 <Badge variant="outline" className="text-xs">
                                   +{flags.length - 2} more
@@ -217,7 +223,7 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                         </div>
 
                         {/* Action Button */}
-                        <Button variant="ghost" size="icon" asChild className="flex-shrink-0">
+                        <Button variant="ghost" size="icon" asChild className="flex-shrink-0" aria-label="Open transaction">
                           <Link href={`/transactions/${txn.id}`}>
                             <ChevronRight className="h-5 w-5" />
                           </Link>

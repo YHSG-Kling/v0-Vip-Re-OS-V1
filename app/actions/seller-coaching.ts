@@ -1,10 +1,11 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient }        from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getSellerCoaching }   from "@/lib/seller-coaching"
+import { getSellerCoaching }   from "@/lib/seller-coaching/coaching-generator" // the module, not the barrel (proxy-graph budget)
 import { getSellerPersona }    from "@/lib/seller-coaching/persona-utils"
-import type { SellerPersona, SellerCoachingContent } from "@/lib/seller-coaching"
+import type { SellerPersona, SellerCoachingContent } from "@/lib/seller-coaching/coaching-generator"
 
 interface GetListingCoachingResult {
   success: boolean
@@ -137,11 +138,11 @@ export async function refreshSellerCoaching(
 
   // Invalidate: set updated_at to epoch so staleness check forces re-generation
   const svc = createServiceClient()
-  await svc
+  await sentinelWrite(svc, svc
     .from("seller_stage_coaching")
     .update({ updated_at: new Date(0).toISOString() })
     .eq("listing_stage", listing.lifecycle_stage ?? "LEAD")
-    .or(persona ? `persona.eq.${persona},persona.is.null` : "persona.is.null")
+    .or(persona ? `persona.eq.${persona},persona.is.null` : "persona.is.null"), { table: "seller_stage_coaching", flow: "seller_stage_coaching_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Re-run full generation
   return getListingCoaching(listingId)

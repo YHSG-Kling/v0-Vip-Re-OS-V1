@@ -96,7 +96,7 @@ export function FullProviderRegistryCard() {
         <div className="flex items-center gap-3 flex-wrap">
           <Button size="sm" onClick={run} disabled={busy}>{busy ? "Sweeping…" : "Run registry sweep"}</Button>
           {p && (
-            <span className={p.needsAttentionCount === 0 ? "text-green-600 font-medium text-xs" : "text-amber-600 font-medium text-xs"}>
+            <span className={p.needsAttentionCount === 0 ? "text-green-700 font-medium text-xs" : "text-amber-700 font-medium text-xs"}>
               {p.providerCount} providers · {p.needsAttentionCount} need attention
             </span>
           )}
@@ -132,6 +132,9 @@ export function FullProviderRegistryCard() {
                             <span className="font-medium" title={`Sources: ${r.sources.join(", ")}${r.envVars.length ? ` · Env: ${r.envVars.join(", ")}` : ""}`}>
                               {r.label}
                             </span>
+                            {r.healthState !== "healthy" && (
+                              <span className="ml-1 text-[11px] text-muted-foreground" title={r.healthReason}>· {r.healthState.replace("_", " ")}</span>
+                            )}
                             {r.needsAttention && (
                               <div className="text-[11px] text-red-600 max-w-[360px]">
                                 needs attention — {r.attentionReason}{" "}
@@ -162,9 +165,9 @@ export function FullProviderRegistryCard() {
                               <span className="text-muted-foreground">—</span>
                             ) : (
                               <span>
-                                <span className="text-green-600">{r.selfHeal.healed} healed</span>
+                                <span className="text-green-700">{r.selfHeal.healed} healed</span>
                                 {r.selfHeal.failed > 0 && <span className="text-red-600"> · {r.selfHeal.failed} failed</span>}
-                                {r.selfHeal.escalated > 0 && <span className="text-amber-600"> · {r.selfHeal.escalated} escalated</span>}
+                                {r.selfHeal.escalated > 0 && <span className="text-amber-700"> · {r.selfHeal.escalated} escalated</span>}
                               </span>
                             )}
                           </td>
@@ -233,7 +236,7 @@ export function TwilioFleetPostureCard() {
         <div className="flex items-center gap-3 flex-wrap">
           <Button size="sm" onClick={run} disabled={busy}>{busy ? "Sweeping…" : "Run fleet sweep"}</Button>
           {p && (
-            <span className={driftedTenants + suspended === 0 ? "text-green-600 font-medium" : "text-amber-600 font-medium"}>
+            <span className={driftedTenants + suspended === 0 ? "text-green-700 font-medium" : "text-amber-700 font-medium"}>
               {driftedTenants} drifted · {suspended} suspended/closed · {mismatched} inventory mismatch
             </span>
           )}
@@ -332,7 +335,7 @@ export function SendgridPostureCard() {
         <div className="flex items-center gap-3">
           <Button size="sm" onClick={run} disabled={busy}>{busy ? "Sweeping…" : "Run SendGrid sweep"}</Button>
           {p && (
-            <span className={p.configured ? "text-muted-foreground text-xs" : "text-amber-600 text-xs font-medium"}>
+            <span className={p.configured ? "text-muted-foreground text-xs" : "text-amber-700 text-xs font-medium"}>
               {p.detail}
             </span>
           )}

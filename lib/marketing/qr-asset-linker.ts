@@ -15,33 +15,43 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent, processKernelEvent } from "@/lib/kernel"
+// WAVE 152 (lane 152C): the one coarse device classifier and the pre-m946 read fallback (pure QR contract).
+import { qrDeviceClass } from "./qr-contract"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
+/** marketing_asset_qr_links.placement_type — EXACTLY the live CHECK
+ *  (scripts/check-vocabularies.ts marketing_asset_qr_links.placement_type).
+ *
+ *  TOMBSTONE (§6, wave 82D — the 81D open item): this union used to read
+ *  flyer | postcard | sign_rider | business_card | brochure | social_post |
+ *  email | website | other — a local vocabulary the database refuses for 6 of
+ *  its 9 values (only "flyer" was ever insertable). One vocabulary per
+ *  function: the CHECK is the survivor. A printed postcard/brochure is a
+ *  "mailer", a social post a "social_landing", a video outro a "video_endcard".
+ *  scripts/estimate-comparison-guard.ts holds this list equal to the cache. */
 export type QrPlacementType =
   | "flyer"
-  | "postcard"
-  | "sign_rider"
-  | "business_card"
-  | "brochure"
-  | "social_post"
-  | "email"
-  | "website"
-  | "other"
+  | "listing_asset"
+  | "mailer"
+  | "podcast_landing"
+  | "social_landing"
+  | "video_endcard"
 
-/** Wave 36 — canonical semantic of where a QR scan lands. target_url is
- *  the runtime URL; this enum is what analytics aggregates over. The
- *  CHECK constraint on qr_codes.destination_type (m148) is the source
- *  of truth for the allowed values. */
-export type QrDestinationType =
-  | "landing_page"
-  | "video_avatar_tour"
-  | "cma_form"
-  | "listing_detail"
-  | "book_meeting"
-  | "podcast_episode"
-  | "anniversary_video"
-  | "other"
+// Module-private ("use server" files export only async functions): the same
+// list as the type, for the fail-closed check below.
+const QR_PLACEMENT_TYPES: readonly QrPlacementType[] = ["flyer", "listing_asset", "mailer", "podcast_landing", "social_landing", "video_endcard"]
+
+/** Wave 36 — canonical semantic of where a QR scan lands. This enum is what analytics aggregates
+ *  over; the CHECK constraint on qr_codes.destination_type (m148) is the source of truth for the
+ *  allowed values.
+ *
+ *  MERGED: this file used to declare its own copy of the union. It is now an alias of the one
+ *  declared next to the one QR minter, so the reader and the writer cannot drift into disagreeing
+ *  about the live vocabulary — which is how a value outside the CHECK reaches an insert and gets
+ *  silently refused. */
+export type { QrDestinationType } from "./tracked-qr"
+import type { QrDestinationType } from "./tracked-qr"
 
 export interface QrLinkParams {
   marketingAssetId: string
@@ -76,6 +86,11 @@ export interface QrLinkInfo {
 export async function linkQrToAsset(
   params: QrLinkParams
 ): Promise<{ success: boolean; linkId?: string; error?: string }> {
+  // Fail closed BEFORE any read: a placement outside the live CHECK would be a
+  // refused insert (supabase-js resolves it) — name it instead.
+  if (!(QR_PLACEMENT_TYPES as readonly string[]).includes(String(params.placementType))) {
+    return { success: false, error: `placement "${String(params.placementType)}" is not one of ${QR_PLACEMENT_TYPES.join(" | ")}` }
+  }
   const { brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
@@ -260,6 +275,13 @@ export async function getQrCodePerformance(
       isFirstScan: boolean
       contactId?: string
     }>
+    /** Mobile vs desktop vs other, parsed from qr_scan_events.user_agent —
+     *  never the raw string (device class only, nothing identifying). */
+    deviceBreakdown: { mobile: number; desktop: number; other: number }
+    /** Distinct visitors among the loaded window — a cross-check on isFirstScan-based uniqueScans. Since wave 152
+     *  (152C) it counts the coarse per-code-per-day visitor key (qr_scan_events.visitor_key); only rows recorded before
+     *  m946 fall back to their stored address. Never displayed as anything but a count; nothing identifying leaves. */
+    uniqueIpCount: number
   }
   error?: string
 }> {
@@ -278,10 +300,15 @@ export async function getQrCodePerformance(
     return { success: false, error: "QR code not found" }
   }
 
-  // Get recent scan events
+  // Get recent scan events. WAVE 152 (152C): new rows carry only the PERMITTED context — a coarse
+  // device_class and a per-code-per-day visitor_key (m946); the raw ip_address / user_agent are no
+  // longer written by the scan door. They are still READ here for rows recorded before m946 (and by
+  // the lead-magnet tracker until its writer moves — see lane 152C notes), reduced to the same coarse
+  // class on the way out and never returned.
+  // m946 was applied live 2026-11-12 — one select; the pre-apply degrade (a shorter select on PGRST204) retired with it.
   const { data: scanEvents, error: scanError } = await supabase
     .from("qr_scan_events")
-    .select("scanned_at, is_first_scan, contact_id")
+    .select("scanned_at, is_first_scan, contact_id, ip_address, user_agent, device_class, visitor_key")
     .eq("qr_code_id", qrCodeId)
     .eq("brokerage_id", brokerageId)
     .order("scanned_at", { ascending: false })
@@ -296,6 +323,19 @@ export async function getQrCodePerformance(
   const leadsGenerated = qrCode.lead_count ?? 0
   const conversionRate = totalScans > 0 ? (leadsGenerated / totalScans) * 100 : 0
 
+  const deviceBreakdown = { mobile: 0, desktop: 0, other: 0 }
+  const visitorSet = new Set<string>()
+  for (const e of (scanEvents ?? []) as Array<{ ip_address?: string | null; user_agent?: string | null; device_class?: string | null; visitor_key?: string | null }>) {
+    // The visitor key (coarse, per code per day) when present; the legacy address only for older rows.
+    const visitor = e.visitor_key ?? e.ip_address ?? null
+    if (visitor) visitorSet.add(visitor)
+    const device = e.device_class ?? qrDeviceClass(e.user_agent)
+    if (device === "mobile" || device === "tablet") deviceBreakdown.mobile++
+    else if (device === "desktop") deviceBreakdown.desktop++
+    else deviceBreakdown.other++
+  }
+  const ipSet = visitorSet
+
   return {
     success: true,
     performance: {
@@ -308,6 +348,8 @@ export async function getQrCodePerformance(
         isFirstScan: e.is_first_scan,
         contactId: e.contact_id ?? undefined,
       })),
+      deviceBreakdown,
+      uniqueIpCount: ipSet.size,
     },
   }
 }

@@ -27,7 +27,6 @@ import {
   isPlatformSocialChannel,
   CHANNEL_LABELS,
   type PlatformSocialAccountView,
-  type PlatformSocialChannel,
 } from "@/lib/platform/platform-social"
 import { canTransitionDraft } from "@/lib/platform/product-content"
 import { publishToSocialPlatform } from "@/lib/social/publisher"
@@ -147,19 +146,32 @@ export async function publishProductDraftAction(input: { id: string; imageUrl?: 
   const svc = createServiceClient()
 
   const { data: draft } = await svc.from("platform_social_drafts")
-    .select("id, channel, angle, content, hashtags, status, media_type")
+    .select("id, channel, angle, content, hashtags, status, media_type, video_url")
     .eq("id", input.id).maybeSingle()
   if (!draft) return { ok: false, error: "Draft not found" }
   if ((draft as any).status !== "approved") return { ok: false, error: "Approve the draft before publishing" }
-  if ((draft as any).media_type === "video") {
-    return { ok: false, error: "Auto-publish covers text posts only — upload the rendered video on the channel and record the permalink manually" }
-  }
 
   const channel = (draft as any).channel as string
   if (!isPlatformSocialChannel(channel)) return { ok: false, error: `Unknown channel: ${channel}` }
   const support = channelDispatchSupport(channel)
   if (!support.supported || !support.publisherPlatform) {
     return { ok: false, error: support.reason ?? `${CHANNEL_LABELS[channel]} auto-publish is not supported — copy & post manually` }
+  }
+
+  // Wave 142 (lane 142F): a VIDEO draft publishes only on a channel that takes video (YouTube), and
+  // only once its render has landed on the draft (the render route attaches video_url). A video
+  // draft on a text channel, or a text draft on YouTube, is refused with the honest reason — the
+  // old blanket "auto-publish covers text posts only" is gone for the one channel that can take it.
+  const isVideoDraft = (draft as any).media_type === "video"
+  const draftVideoUrl = String((draft as any).video_url ?? "").trim()
+  if (isVideoDraft && !support.requiresVideo) {
+    return { ok: false, error: `${CHANNEL_LABELS[channel]} auto-publish covers text posts — upload the rendered video on the channel and record the permalink manually` }
+  }
+  if (support.requiresVideo && !isVideoDraft) {
+    return { ok: false, error: support.reason ?? `${CHANNEL_LABELS[channel]} takes video uploads only` }
+  }
+  if (support.requiresVideo && !/^https?:\/\/.+/.test(draftVideoUrl)) {
+    return { ok: false, error: `${CHANNEL_LABELS[channel]} needs the rendered video — this draft has no video_url yet (the ProductPromoReel render attaches it when it finishes)` }
   }
 
   // Instagram Graph refuses text-only posts — an image URL is REQUIRED (the
@@ -190,7 +202,17 @@ export async function publishProductDraftAction(input: { id: string; imageUrl?: 
     accountId = profile.accountId
     const { data: acct } = await svc.from("platform_social_accounts").select("credential_ref").eq("platform", channel).maybeSingle()
     if (acct?.credential_ref) {
-      await svc.from("platform_credentials").update({ account_id: accountId, updated_at: new Date().toISOString() }).eq("id", acct.credential_ref)
+      // Persisting the LinkedIn member id is what stops every subsequent post
+      // re-fetching it. Written silently, a refusal is invisible — this post
+      // still goes out with the id in hand, and the next call pays the same
+      // profile ping again forever.
+      const { error: persistError } = await svc.from("platform_credentials").update({ account_id: accountId, updated_at: new Date().toISOString() }).eq("id", acct.credential_ref)
+      if (persistError) {
+        console.error(
+          `[platform-social] platform_credentials account_id persist REFUSED for credential ${acct.credential_ref} — the LinkedIn member id will be re-fetched on every post:`,
+          persistError.message,
+        )
+      }
     }
   }
 
@@ -207,6 +229,8 @@ export async function publishProductDraftAction(input: { id: string; imageUrl?: 
     // Instagram: the container flow's image (validated above). Facebook stays a
     // text feed post — any link in the content gets Meta's own preview.
     ...(support.requiresImage ? { mediaUrls: [imageUrl] } : {}),
+    // YouTube: the draft's rendered product video, uploaded public — the platform's own marketing.
+    ...(support.requiresVideo ? { mediaUrls: [draftVideoUrl], privacyStatus: "public" as const } : {}),
   })
   if (!result.success) {
     return { ok: false, error: result.error ?? `Publish to ${CHANNEL_LABELS[channel]} failed` }

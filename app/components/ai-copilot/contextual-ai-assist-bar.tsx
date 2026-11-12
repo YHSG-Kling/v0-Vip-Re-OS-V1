@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Badge } from "@/components/ui/badge"
 import { Sparkles, Check, AlertCircle, Copy, RotateCcw } from "lucide-react"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import { generateContextualDraft, generateSocialPostContent } from "@/app/actions/social/generate-social-post"

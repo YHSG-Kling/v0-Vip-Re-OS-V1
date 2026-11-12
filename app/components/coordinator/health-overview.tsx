@@ -89,8 +89,8 @@ export function HealthOverview({ transactions, healthScores }: HealthOverviewPro
   }, [transactions])
 
   const getScoreColor = (score: number) => {
-    if (score >= 80) return "text-emerald-600"
-    if (score >= 60) return "text-amber-600"
+    if (score >= 80) return "text-emerald-700"
+    if (score >= 60) return "text-amber-700"
     return "text-red-600"
   }
 
@@ -125,7 +125,7 @@ export function HealthOverview({ transactions, healthScores }: HealthOverviewPro
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-sm">
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
                   Low Risk
                 </span>
                 <Badge variant="secondary" className="bg-emerald-100 text-emerald-700">
@@ -134,7 +134,7 @@ export function HealthOverview({ transactions, healthScores }: HealthOverviewPro
               </div>
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-sm">
-                  <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
                   Medium Risk
                 </span>
                 <Badge variant="secondary" className="bg-amber-100 text-amber-700">
@@ -159,7 +159,7 @@ export function HealthOverview({ transactions, healthScores }: HealthOverviewPro
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-sm">
-                  <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
+                  <TrendingUp className="h-3.5 w-3.5 text-emerald-600" />
                   Improving
                 </span>
                 <Badge variant="secondary" className="bg-emerald-100 text-emerald-700">

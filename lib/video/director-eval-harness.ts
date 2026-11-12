@@ -65,7 +65,7 @@ export interface DirectorArtifact {
 }
 
 /** A flattened artifact: every string the artifact asserts, joined for scanning. */
-export function artifactText(a: DirectorArtifact): string {
+function artifactText(a: DirectorArtifact): string {
   const script = a.script ?? a.hook
   const captions = a.captionText ?? script // captions inherit the script verbatim
   return [a.hook, script, captions].filter(Boolean).join("  ")

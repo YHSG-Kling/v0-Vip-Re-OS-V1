@@ -2,8 +2,16 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported here and never called. This file's event rail is the ORCHESTRATOR,
+// not the notification engine: the hero-photo fan-out at :113 emits through
+// `emitEventFromCron` (lib/orchestrator/internal.ts) with event_type
+// "image.generated", which is a dotted orchestrator type and deliberately not a
+// KernelEvent member. There is no KernelEvent for listing-media approval either
+// — `LISTING_MEDIA_SCHEDULED` (lib/kernel/events.ts:62) is the only media member
+// and it belongs to the scheduler, not to this file — so there is no missing
+// emission here to build, only a pair of imports naming the wrong rail.
 
 // ─────────────────────────────────────────────────────────────
 // LISTING MEDIA
@@ -23,7 +31,15 @@ export async function getListingMedia(listingId: string) {
 export async function uploadListingMedia(params: {
   listingId: string
   brokerageId: string
-  mediaType: "photo" | "video" | "floor_plan" | "virtual_tour" | "document"
+  // MIRRORS the live listing_media_media_type_check exactly. This union said
+  // "floor_plan" — one underscore the column does not have — so a floor plan
+  // typed here could never store, and it omitted graphic / reel / story, three
+  // types the column accepts and no caller could name. The picker in
+  // media-grid.tsx was already corrected to the real vocabulary; this signature
+  // was left behind, so the screen and the action disagreed about what a media
+  // type is. A value the CHECK rejects fails SILENTLY — supabase-js resolves a
+  // refused insert — so the upload would report success and store nothing.
+  mediaType: "photo" | "video" | "floorplan" | "virtual_tour" | "graphic" | "reel" | "story" | "document"
   fileUrl: string
   thumbnailUrl?: string
   caption?: string
@@ -51,10 +67,21 @@ export async function uploadListingMedia(params: {
    * Ignored when usageIntent='mls'.
    */
   hasEmbeddedAttribution?: boolean
+  /**
+   * WAVE 150 (lane 150XY — owner ruling 2026-11-06, R9): a listing PHOTO is lawful only from the tenant's IDX / MLS feed or
+   * when the uploading user owns it. Every media_type 'photo' goes through lib/listings/owner-photo-upload.ts
+   * recordOwnerUploadedListingPhoto, which refuses without this attestation (the statement + its version shown on screen).
+   */
+  ownershipAttestation?: { accepted: boolean; version: string } | null
 }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
+  // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4): the body brokerageId reached
+  // a service-client write further down; it is now asserted, and re-keyed.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { data: null, error: tenant.error }
+  params = { ...params, brokerageId: tenant.brokerageId }
 
   const usageIntent = params.usageIntent ?? "public_marketing"
   const isMlsBound = usageIntent === "mls"
@@ -63,32 +90,51 @@ export async function uploadListingMedia(params: {
   // regardless of what the caller asserted (MLS rules override agent intent).
   const attributionAsserted = !isMlsBound && params.hasEmbeddedAttribution === true
 
-  const { data, error } = await supabase
-    .from("listing_media")
-    .insert({
-      listing_id:         params.listingId,
-      brokerage_id:       params.brokerageId,
-      media_type:         params.mediaType,
-      file_url:           params.fileUrl,
-      thumbnail_url:      params.thumbnailUrl ?? null,
-      caption:            params.caption ?? null,
-      alt_text:           params.altText ?? null,
-      tags:               params.tags ?? [],
-      is_primary:         params.isPrimary ?? false,
-      approval_required:  params.approvalRequired ?? true,
-      is_approved:        false,
-      kernel_compliance_passed: false,
-      usage_intent:              usageIntent,
-      has_logo_overlay:          attributionAsserted,
-      has_brokerage_attribution: attributionAsserted,
-      has_eho_mark:              attributionAsserted,
-      uploaded_by:        user.id,
-      sort_order:         0,
-    })
-    .select("id")
-    .single()
+  const commonRow = {
+    thumbnail_url:      params.thumbnailUrl ?? null,
+    alt_text:           params.altText ?? null,
+    tags:               params.tags ?? [],
+    is_primary:         params.isPrimary ?? false,
+    approval_required:  params.approvalRequired ?? true,
+    is_approved:        false,
+    kernel_compliance_passed: false,
+    usage_intent:              usageIntent,
+    has_logo_overlay:          attributionAsserted,
+    has_brokerage_attribution: attributionAsserted,
+    has_eho_mark:              attributionAsserted,
+    sort_order:         0,
+  }
 
-  if (error) return { data: null, error: error.message }
+  let data: { id: string }
+  let galleryWarning: string | null = null
+  if (params.mediaType === "photo") {
+    // THE ONE OWNER-PHOTO WRITER (wave 150, lane 150XY): uploader + listing + ownership attestation on listing_media, and the
+    // entry on listings.photos. Session client — RLS applies; the tenant is the session's (re-keyed above).
+    const { recordOwnerUploadedListingPhoto } = await import("@/lib/listings/owner-photo-upload")
+    const rec = await recordOwnerUploadedListingPhoto(supabase, {
+      brokerageId: params.brokerageId, listingId: params.listingId, userId: user.id, fileUrl: params.fileUrl,
+      caption: params.caption ?? null, attestation: params.ownershipAttestation ?? null, row: commonRow,
+    })
+    if (!rec.ok) return { data: null, error: rec.error }
+    data = { id: rec.mediaId }
+    galleryWarning = rec.galleryWarning
+  } else {
+    const ins = await supabase
+      .from("listing_media")
+      .insert({
+        listing_id:         params.listingId,
+        brokerage_id:       params.brokerageId,
+        media_type:         params.mediaType,
+        file_url:           params.fileUrl,
+        caption:            params.caption ?? null,
+        ...commonRow,
+        uploaded_by:        user.id,
+      })
+      .select("id")
+      .single()
+    if (ins.error) return { data: null, error: ins.error.message }
+    data = ins.data as { id: string }
+  }
 
   // Run brand compliance check immediately after upload
   const compliance = await checkBrandCompliance({
@@ -100,10 +146,12 @@ export async function uploadListingMedia(params: {
   // Hero-photo fan-out — ONLY when the asset is public-marketing-bound.
   // MLS-bound uploads stay attached to the listing only; they would
   // violate MLS rules if they auto-drafted into branded social posts.
+  let fanoutWarning: string | null = null
   if (params.mediaType === "photo" && params.isPrimary && !isMlsBound) {
     try {
       const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
-      await emitEventFromCron({
+      // Result READ (wave 91) — a refused record is no longer reported as a fan-out.
+      const emitted = await emitEventFromCron({
         brokerage_id: params.brokerageId,
         user_id:      user.id,
         event_type:   "image.generated",
@@ -121,12 +169,26 @@ export async function uploadListingMedia(params: {
           skip_listing_attach: true,
         },
       })
+      if (!emitted.success) {
+        console.error(`[uploadListingMedia] image.generated fan-out NOT recorded for listing_media ${data.id}: ${emitted.error}`)
+        fanoutWarning = `The hero photo was saved, but it was not sent on to marketing: ${emitted.error ?? "the event was refused"}`
+      }
     } catch (eventErr) {
       console.error("[uploadListingMedia] image.generated fan-out failed:", eventErr)
+      fanoutWarning = `The hero photo was saved, but it was not sent on to marketing: ${eventErr instanceof Error ? eventErr.message : "the event failed"}`
+    }
+    // Lane 92A: surfaced, not only logged — the refusal ledger (self_heal_events → repair
+    // digest / Exception Center; service client, the session client cannot reach it) and
+    // the upload toast that already reports this upload's compliance problems.
+    if (fanoutWarning) {
+      const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      await recordBestEffortLoss(createServiceClient(), { table: "lifecycle_events", flow: "image_generated_fanout", brokerageId: params.brokerageId,
+        reason: "the image itself is saved; the image.generated fan-out (attach to the listing / campaign, social draft) did not run for it" }, fanoutWarning)
     }
   }
 
-  return { data: { ...data, compliance }, error: null }
+  return { data: { ...data, compliance, fanoutWarning, galleryWarning }, error: null }
 }
 
 export async function approveListingMedia(mediaId: string) {
@@ -213,70 +275,19 @@ export async function getVideoTemplates() {
   return error ? { data: null, error: error.message } : { data, error: null }
 }
 
-export async function createVideoProject(params: {
-  listingId: string
-  brokerageId: string
-  title: string
-  scriptContent: string
-  videoType: string
-  avatarId?: string
-  voiceId?: string
-  templateId?: string
-}) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { data: null, error: "Not authenticated" }
-
-  // Resolve agent record for agent_id (NOT NULL)
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!agent?.id) return { data: null, error: "No agent record found" }
-
-  // Migration 1052: resolve the actual provider (D-ID default, with agent
-  // + brokerage overrides). Listing videos are customer-facing by default
-  // and must pass compliance at distribute time.
-  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
-  const provider = await resolveVideoProvider(supabase, {
-    brokerageId: params.brokerageId,
-    agentUserId: user.id,
-  })
-  const providerCols = initialProviderColumns(provider)
-
-  const { data, error } = await supabase
-    .from("ai_video_projects")
-    .insert({
-      listing_id:          params.listingId,
-      brokerage_id:        params.brokerageId,
-      agent_id:            agent.id,
-      title:               params.title,
-      script_content:      params.scriptContent,
-      video_type:          params.videoType,
-      video_provider:      provider,
-      ...providerCols,
-      status:              "planning",
-      audience_type:       "customer_facing",
-      provider_avatar_id:  params.avatarId ?? null,
-      provider_voice_id:   params.voiceId ?? null,
-      provider_template_id: params.templateId ?? null,
-    })
-    .select("id")
-    .single()
-
-  if (error) return { data: null, error: error.message }
-
-  // Emit brand compliance check
-  await checkBrandCompliance({
-    contentType: "video",
-    contentId:   data.id,
-    brokerageId: params.brokerageId,
-  })
-
-  return { data, error: null }
-}
+// ── DELETED: createVideoProject (wave 56, orphan doctrine §1.1 — duplicate) ──
+//
+// SURVIVOR: app/actions/video/create-video-project.ts:305 createVideoProject —
+// the CANONICAL creator (session-gated tenant, the fair-housing render hold
+// BEFORE the row exists, the scriptPending shell lane, campaign attribution).
+// What THIS copy had that the survivor lacked was merged there first:
+// templateId → provider_template_id, audienceType → audience_type
+// ('customer_facing' for listing videos), and brandComplianceCheck →
+// lib/kernel/brand-compliance.ts checkBrandCompliance after insert. This copy
+// did a raw ai_video_projects insert with NO compliance/render hold at all.
+// Its one caller, app/dashboard/listings/[id]/media/components/video-panel.tsx,
+// now calls the survivor with agentUserId = the session user (the survivor
+// resolves users→agents itself).
 
 export async function deleteVideoProject(projectId: string) {
   const supabase = await createClient()
@@ -312,61 +323,33 @@ export async function getSocialAccounts(brokerageId: string) {
   return error ? { data: null, error: error.message } : { data, error: null }
 }
 
-export async function createSocialPost(params: {
-  listingId: string
-  brokerageId: string
-  platform: string
-  postType: string
-  content: string
-  hashtags?: string[]
-  mediaUrls?: string[]
-  scheduledFor?: string
-  socialAccountId?: string
-}) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { data: null, error: "Not authenticated" }
-
-  // Resolve agent_id
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-
-  const { data, error } = await supabase
-    .from("social_posts")
-    .insert({
-      listing_id:          params.listingId,
-      brokerage_id:        params.brokerageId,
-      user_id:             user.id,
-      agent_id:            agent?.id ?? null,
-      platform:            params.platform,
-      post_type:           params.postType,
-      content:             params.content,
-      hashtags:            params.hashtags ?? [],
-      media_urls:          params.mediaUrls ?? [],
-      scheduled_for:       params.scheduledFor ?? null,
-      social_account_id:   params.socialAccountId ?? null,
-      status:              params.scheduledFor ? "scheduled" : "draft",
-      approval_status:     "pending",
-      brand_compliance_passed: false,
-    })
-    .select("id")
-    .single()
-
-  if (error) return { data: null, error: error.message }
-
-  // Run compliance check
-  await checkBrandCompliance({
-    contentType: "social_post",
-    contentId:   data.id,
-    brokerageId: params.brokerageId,
-  })
-
-  return { data, error: null }
-}
+// ── DELETED: createSocialPost (wave 56, lane OC, Task C duplicates sweep) ──
+//
+// SURVIVOR: app/actions/social-publishing.ts:265 createSocialPost.
+//
+// This was a SECOND parallel writer to social_posts with no fair-housing /
+// real-estate compliance gate at all — it ran checkBrandCompliance (brand
+// VOICE compliance) AFTER the insert, best-effort, never blocking the post;
+// the survivor runs runComplianceGate (real-estate/fair-housing rules)
+// BEFORE the insert and HOLDS the post (approval_status='pending',
+// brand_compliance_passed=false) on a violation. Session-derived brokerage
+// too: this version took brokerageId directly from the request body (the
+// IDOR shape CLAUDE.md §4 names) rather than from resolveCaller().
+//
+// MERGED ONTO THE SURVIVOR FIRST (this version had it, the survivor didn't):
+// agent_id resolution (via resolveAgentIdInBrokerage, same helper this file
+// used) and a socialAccountId param writing social_account_id — both now on
+// app/actions/social-publishing.ts:265.
+//
+// ONE real caller — app/dashboard/listings/[id]/media/components/social-panel.tsx
+// — repointed to the survivor (param shape: listingId→linkedListingId,
+// platform→platforms:[platform], postType→contentType; scheduledFor
+// defaults to now since the survivor requires it).
+//
+// approveSocialPost/deleteSocialPost below are UNTOUCHED — social-publishing.ts
+// has its own approve/delete pair for ITS callers; the listing-media panel
+// still uses these ones and they were not part of this duplicate (only the
+// create verb was examined for wave 56 Task C).
 
 export async function approveSocialPost(postId: string) {
   const supabase = await createClient()

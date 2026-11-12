@@ -1,3 +1,33 @@
+-- ⚠ m440 — THE ROLE-GATED SELECT POLICIES IN THIS FILE HAVE BEEN REPAIRED.
+--
+-- The team-lead / TC / compliance-officer SELECT policies below were installed on
+-- the live database (through scripts/111-fix-agent-id-rls-policies.sql, which
+-- inlines the auth.* helper bodies from 000-helper-functions.sql) gating on
+-- 'team_leader', 'transaction_coordinator' and 'compliance_manager' — three
+-- user_type values users_user_type_check CANNOT store. Every one of those
+-- policies was therefore false for every user who will ever exist, and the tc,
+-- compliance-officer and team-lead surfaces read ZERO rows.
+--
+-- m440 repaired them on the database: the role comes from the built public.*
+-- helper (is_tc_role / is_compliance_officer_role / is_team_lead_role, each a
+-- POSITIVE roster naming both spellings), the tenant from has_brokerage_access(),
+-- and the TEAM from m431's public.current_user_team_id() / public.agent_team_id()
+-- rather than users.team_id — which is NULL for every live user and is only one of
+-- the four places a team is recorded. m440 also removed the whole-brokerage
+-- disjunct that sat beside the team clause and contradicted the owner's ruling
+-- that "teams should only see their own board".
+--
+-- THE BLOCKS BELOW NOW MATCH THAT, so re-running this file reinstalls the repair
+-- instead of reinstating the defect. Annotating the risk was not enough: a warning
+-- header does not stop a bootstrap script, and this file's own CREATE POLICY text
+-- is what actually decides what exists after it runs. m441 asserts the repair on
+-- the database and goes red if any of it is undone.
+--
+-- The public.* helpers are the ones to use in anything added here. The auth.*
+-- family in 000-helper-functions.sql has never been installed on this database —
+-- that file needs a dashboard superuser connection and was never run — which is
+-- precisely how a spelling nothing could store ended up deciding live access.
+
 -- =====================================================
 -- RLS GOVERNANCE: TRANSACTIONS TABLE POLICIES
 -- =====================================================
@@ -47,16 +77,16 @@ CREATE POLICY "broker_read_brokerage_transactions"
 CREATE POLICY "tc_read_brokerage_transactions"
   ON transactions FOR SELECT
   USING (
-    auth.is_tc()
-    AND auth.has_brokerage_access(brokerage_id)
+    public.is_tc_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
 -- Compliance Manager: Read all transactions in their brokerage
 CREATE POLICY "compliance_read_brokerage_transactions"
   ON transactions FOR SELECT
   USING (
-    auth.is_compliance_manager()
-    AND auth.has_brokerage_access(brokerage_id)
+    public.is_compliance_officer_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
 -- Agent: Read own transactions
@@ -72,22 +102,33 @@ CREATE POLICY "agent_read_own_transactions"
     )
   );
 
--- Team Leader: Read team transactions
--- FIX: *agent_id stores agents.id; must join agents -> users to resolve team membership
+-- Team Lead: read the deals of the agents on THEIR team — and no others.
+--
+-- Brought level with what m440 and then m444 installed on the live database.
+-- `auth.is_team_leader()` inlined `user_type = 'team_leader'`, a value
+-- users_user_type_check cannot store, so this policy was false for every user who
+-- will ever exist; and it resolved the team through `users.team_id`, one of the
+-- FOUR places a team is recorded here and the one that is NULL for every live user.
+--
+-- There is now NO role test. Owner ruling: "a team lead is an agent that runs
+-- their own team" — leading is a fact in teams.team_lead_id, read by
+-- public.current_user_led_team_id(). The row's team comes from m431's
+-- public.agent_team_id(). Measured live: the real lead is user_type='agent' and
+-- failed the old role gate, while the one 'team_lead' account runs no team and
+-- passed it.
+--
+-- All three agent columns FK agents(id), so each is asked the row's-team question
+-- the same way. The tenant anchor is an AND: a team lead never widens to the
+-- brokerage, and NULL is fail-closed — no resolvable team means an empty board.
 CREATE POLICY "team_leader_read_team_transactions"
-  ON transactions FOR SELECT
+  ON transactions FOR SELECT TO authenticated
   USING (
-    auth.is_team_leader()
+    public.current_user_led_team_id() IS NOT NULL
+    AND public.has_brokerage_access(brokerage_id)
     AND (
-      agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id WHERE u.team_id = auth.user_team_id()
-      ) OR
-      seller_agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id WHERE u.team_id = auth.user_team_id()
-      ) OR
-      buyer_agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id WHERE u.team_id = auth.user_team_id()
-      )
+      public.agent_team_id(agent_id)        = public.current_user_led_team_id()
+      OR public.agent_team_id(seller_agent_id) = public.current_user_led_team_id()
+      OR public.agent_team_id(buyer_agent_id)  = public.current_user_led_team_id()
     )
   );
 
@@ -142,8 +183,8 @@ CREATE POLICY "agent_insert_own_transactions"
 CREATE POLICY "tc_insert_transactions"
   ON transactions FOR INSERT
   WITH CHECK (
-    auth.is_tc()
-    AND auth.has_brokerage_access(brokerage_id)
+    public.is_tc_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
 -- =====================================================
@@ -167,8 +208,8 @@ CREATE POLICY "broker_update_brokerage_transactions"
 CREATE POLICY "tc_update_brokerage_transactions"
   ON transactions FOR UPDATE
   USING (
-    auth.is_tc()
-    AND auth.has_brokerage_access(brokerage_id)
+    public.is_tc_role()
+    AND public.has_brokerage_access(brokerage_id)
   );
 
 -- Agent: Update own transactions
@@ -203,9 +244,9 @@ CREATE POLICY "admin_delete_transactions"
 CREATE POLICY "tc_manage_milestones"
   ON transaction_milestones FOR ALL
   USING (
-    auth.is_tc()
+    public.is_tc_role()
     AND transaction_id IN (
-      SELECT id FROM transactions WHERE brokerage_id = auth.user_brokerage_id()
+      SELECT id FROM transactions WHERE public.has_brokerage_access(brokerage_id)
     )
   );
 
@@ -268,9 +309,9 @@ CREATE POLICY "broker_manage_offers"
 CREATE POLICY "tc_manage_offers"
   ON offers FOR ALL
   USING (
-    auth.is_tc()
+    public.is_tc_role()
     AND transaction_id IN (
-      SELECT id FROM transactions WHERE brokerage_id = auth.user_brokerage_id()
+      SELECT id FROM transactions WHERE public.has_brokerage_access(brokerage_id)
     )
   );
 

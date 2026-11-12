@@ -40,8 +40,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   AlertCircle,
   Calendar,
-  Check,
-  Image as ImageIcon,
   Loader2,
   Plus,
   Send,
@@ -53,7 +51,13 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "sonner"
-import { upload } from "@vercel/blob/client"
+// Was @vercel/blob/client's `upload()`. Survivor:
+// lib/storage/browser-upload.ts#uploadViaSignedUrl (owner ruling — all file
+// storage lives in Supabase buckets). Still a direct browser→storage PUT, so
+// post video is not capped at Vercel's 4.5 MB function body limit. The old call
+// passed a BARE `file.name` as the key, putting every tenant's media in one
+// root namespace; the key is now built server-side under the session brokerage.
+import { uploadViaSignedUrl } from "@/lib/storage/browser-upload"
 import { scheduleSocialPost, updateSocialPost } from "@/app/actions/social-media-automation"
 import { generateSocialPostContent, suggestHashtags } from "@/app/actions/social/generate-social-post"
 import { GenerateImageButton } from "@/app/components/ai-image/generate-image-button"
@@ -78,9 +82,11 @@ const POST_TYPES = [
   { value: "price_reduction", label: "Price Reduction" },
   { value: "just_sold", label: "Just Sold" },
   { value: "market_update", label: "Market Update" },
-  { value: "tips", label: "Tips & Advice" },
-  { value: "community", label: "Community Spotlight" },
-  { value: "testimonial", label: "Client Testimonial" },
+  { value: "open_house_recap", label: "Open House Recap" },
+  { value: "carousel", label: "Carousel" },
+  // "tips", "community" and "testimonial" were offered here and the column has
+  // never accepted them. Anything that is not one of the named campaign kinds
+  // is a Custom post, which the column does accept.
   { value: "custom", label: "Custom" },
 ]
 
@@ -105,6 +111,8 @@ interface PostComposerDialogProps {
     social_account_id: string
   }
   requiresBrokerApproval?: boolean
+  /** Who approves this person's post — the C5 answer (lib/kernel/approval-authority.ts approverFor), worded. */
+  approverLine?: string | null
   onSaved?: (post: any) => void
 }
 
@@ -193,6 +201,7 @@ export function PostComposerDialog({
   accounts,
   initialPost,
   requiresBrokerApproval = false,
+  approverLine = null,
   onSaved,
 }: PostComposerDialogProps) {
   const isEdit = !!initialPost
@@ -260,15 +269,16 @@ export function PostComposerDialog({
           toast.error(`${file.name} is not an image or video`)
           continue
         }
-        if (file.size > 50 * 1024 * 1024) {
-          toast.error(`${file.name} exceeds 50MB limit`)
+        // The hardcoded 50 MB was a number this file invented; the real ceiling
+        // is the bucket's, which uploadViaSignedUrl gets from the server and
+        // reports in its refusal. Checking it here as well would be a second
+        // spelling of the same limit (CLAUDE.md §6) and would drift.
+        const stored = await uploadViaSignedUrl({ purpose: "social_composer", file })
+        if (!stored.ok) {
+          toast.error(`${file.name}: ${stored.error}`)
           continue
         }
-        const blob = await upload(file.name, file, {
-          access: "public",
-          handleUploadUrl: "/api/blob/upload",
-        })
-        uploaded.push(blob.url)
+        uploaded.push(stored.url)
       }
       if (uploaded.length > 0) {
         setMediaUrls(prev => [...prev, ...uploaded])
@@ -355,10 +365,12 @@ export function PostComposerDialog({
             : undefined,
         })
       } else {
+        // No agentId (wave 146, lane 146H): the prop is the session USER id, and scheduleSocialPost verifies a
+        // supplied agentId as an AGENTS id — every new post from this dialog was refused "Forbidden". Omitted,
+        // the action uses the session's own agents row (CLAUDE.md §3: agents.id and users.id are disjoint).
         result = await scheduleSocialPost({
           brokerageId,
           userId,
-          agentId,
           platform,
           postType,
           content,
@@ -406,6 +418,12 @@ export function PostComposerDialog({
             <Shield className="h-4 w-4 flex-shrink-0" />
             Broker approval is required for all posts at this brokerage. Your post will be submitted for review.
           </div>
+        )}
+        {approverLine && (
+          <p className="text-xs text-muted-foreground" data-testid="post-approver-line">
+            <Shield className="inline h-3.5 w-3.5 mr-1 align-[-2px]" aria-hidden="true" />
+            {approverLine}
+          </p>
         )}
 
         <Tabs value={tab} onValueChange={(v) => setTab(v as any)}>

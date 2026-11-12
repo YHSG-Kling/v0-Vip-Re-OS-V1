@@ -234,7 +234,7 @@ export function VariantCatalogClient({ initialRows }: { initialRows: VariantCata
                                   {r.is_active ? "Active" : "Disabled"}
                                 </button>
                               ) : (
-                                <span className={`text-xs px-2 py-0.5 rounded ${r.is_active ? "bg-gray-100 text-gray-600" : "bg-gray-50 text-gray-400"}`}>
+                                <span className={`text-xs px-2 py-0.5 rounded ${r.is_active ? "bg-gray-100 text-gray-600" : "bg-gray-50 text-gray-500"}`}>
                                   {r.is_active ? "Active" : "Disabled"}
                                 </span>
                               )}

@@ -96,7 +96,7 @@ export function AuditEventDrawer({ event, open, onClose }: AuditEventDrawerProps
           <SheetTitle className="flex items-center gap-2">
             Event Detail
             {isComplianceSensitive && (
-              <Badge variant="outline" className="border-amber-500 text-amber-600">
+              <Badge variant="outline" className="border-amber-500 text-amber-700">
                 <Shield className="mr-1 h-3 w-3" />
                 Compliance
               </Badge>

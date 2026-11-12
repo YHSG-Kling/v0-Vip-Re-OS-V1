@@ -217,7 +217,7 @@ Tables include: transaction_tasks, appointments, newsletters, direct_mail_campai
 - ShowingTime API
 - MLS direct feeds
 - Google Calendar sync
-- Zapier webhooks
+- Zapier webhooks (OUTBOUND only since wave 87 — a Zap Catch Hook URL as a tenant outbound webhook; no inbound Zapier route)
 
 ---
 

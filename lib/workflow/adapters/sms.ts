@@ -4,7 +4,7 @@
  * before this adapter is called.
  */
 
-import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { sequenceStepLedger, type ChannelAdapter, type StepContext, type StepResult } from "../channel-registry"
 import { dispatchSms } from "@/lib/providers/dispatch"
 
 export const smsAdapter: ChannelAdapter = {
@@ -12,6 +12,15 @@ export const smsAdapter: ChannelAdapter = {
 
   async execute(ctx: StepContext): Promise<StepResult> {
     const { contact, step, brokerageId, agentUserId, entity } = ctx
+
+    // Wave 91 (lane 91B) — a LEAD is never texted (owner: "Leads usually are non consenting so no
+    // sms or calls allowed only email and direct mail"). On a lead-entity step `contact.id` is a
+    // leads.id; it used to be handed to dispatchSms as a contactId. The ONE predicate refuses it.
+    const { channelRefusalForRecipient } = await import("@/lib/ai-isa/lead-channel-policy")
+    const leadStage = channelRefusalForRecipient(entity === "lead" ? { leadId: (contact?.id as string) ?? "lead" } : { contactId: (contact?.id as string) ?? null }, "sms")
+    if (leadStage) {
+      return { status: "skipped", providerKey: "sms", error: leadStage }
+    }
 
     if (!contact?.phone) {
       return { status: "error", providerKey: "sms", error: "No phone on contact" }
@@ -43,9 +52,13 @@ export const smsAdapter: ChannelAdapter = {
     const result = await dispatchSms({
       brokerageId,
       systemSource: "sequence",
+      // WAVE 148 (148Z): a campaign-sequence text is MARKETING — the dispatch consent-purpose gate refuses it to a person
+      // whose recorded SMS consent covers only the service they asked for (owner ruling 3; lane 148B Still open 3).
+      channelPurpose: "campaign",
       contactId: contact.id,
       to: contact.phone,
       message: rendered.textBody,
+      ledger: sequenceStepLedger(ctx),
     })
 
     return {

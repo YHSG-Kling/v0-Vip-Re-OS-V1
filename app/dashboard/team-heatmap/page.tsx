@@ -3,6 +3,8 @@ export const dynamic = "force-dynamic"
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveMapProvider, bookMapLoadSpend } from "@/lib/property/street-view"
+import { loadProviderHealth } from "@/lib/agentic-os/connector-gateway"
 import { createClient } from "@/lib/supabase/server"
 import {
   getHeatmapSnapshots,
@@ -30,8 +32,6 @@ import {
   TrendingUp,
   TrendingDown,
   Users,
-  Home,
-  DollarSign,
   AlertTriangle,
   Target,
 } from "lucide-react"
@@ -40,6 +40,7 @@ import {
 import { HeatmapFilterBar } from "./heatmap-filter-bar"
 import { HeatmapMap } from "./heatmap-map"
 import { HeatmapLegend } from "./heatmap-legend"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Team Heatmap | VIP-OS",
@@ -66,7 +67,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
   try {
     context = await getAgentContext()
   } catch {
-    redirect("/auth/login?redirect=/dashboard/team-heatmap")
+    redirect("/login")
   }
 
   const supabase = await createClient()
@@ -77,7 +78,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
     .single()
 
   const userRole = user?.user_type || "agent"
-  const isPrivileged = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRole)
+  const isPrivileged = isAdminOrBroker({ user_type: userRole })
 
   // Parse filters from URL
   const filters: HeatmapFilters = {
@@ -111,8 +112,16 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
     getTeamsForFilter(),
   ])
 
-  // Check if Google Maps API key is available
-  const hasMapKey = !!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || !!process.env.MAPBOX_TOKEN
+  // THE MAP PROVIDER (wave 140, lane 140I; owner: "team heatmap chooses a VALID configured provider,
+  // never Google Maps with an empty key"). Before this the page tested `Google key OR MAPBOX_TOKEN` and
+  // the client then loaded Google Maps JS regardless — with MAPBOX_TOKEN alone the script tag rendered
+  // `key=` empty. Now the ONE map_render route is walked server-side (Mapbox first, Google Maps the
+  // fallback, health-aware, unconfigured providers skipped) and the client receives only the chosen
+  // provider + its PUBLIC credential. One map load is booked per render, with the route as evidence.
+  const mapHealth = await Promise.all((["mapbox", "google_maps"] as const).map(async (p) => [p, await loadProviderHealth(p)] as const))
+  const mapChoice = resolveMapProvider("browser_tiles", { health: Object.fromEntries(mapHealth) })
+  if (mapChoice) await bookMapLoadSpend({ brokerageId: context.brokerageId ?? null, choice: mapChoice, systemSource: "team_heatmap" })
+  const hasMapKey = mapChoice !== null
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -142,13 +151,14 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
         <Card className="overflow-hidden">
           <CardContent className="p-0">
             <div className="h-[60vh] min-h-[400px] relative">
-              {hasMapKey ? (
+              {hasMapKey && mapChoice ? (
                 <Suspense fallback={<MapPlaceholder />}>
                   <HeatmapMap
                     snapshots={snapshots}
                     revenueWeighted={filters.revenueWeighted}
                     opportunityZones={opportunityZones}
                     showGaps={false}
+                    map={{ provider: mapChoice.provider, key: mapChoice.key, browser: mapChoice.browser }}
                   />
                 </Suspense>
               ) : (
@@ -221,7 +231,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              <Target className="h-4 w-4 text-amber-500" />
+              <Target className="h-4 w-4 text-amber-600" />
               Opportunity Zones
             </CardTitle>
             <CardDescription>High demand, low inventory</CardDescription>
@@ -353,7 +363,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
                         <div
                           className={`flex items-center justify-end gap-1 ${
                             agent.change_pct > 0
-                              ? "text-green-600"
+                              ? "text-green-700"
                               : "text-red-600"
                           }`}
                         >
@@ -389,8 +399,11 @@ function MapPlaceholder({ showConfigMessage = false }: { showConfigMessage?: boo
       <div className="text-center">
         <MapPin className="mx-auto h-12 w-12 text-muted-foreground/50" />
         <p className="mt-2 text-sm text-muted-foreground">
+          {/* Sanitized capability status (owner, wave 141): the map provider is platform-managed, so a
+              tenant reads WHAT is unavailable, never which platform env var to set — that instruction
+              lives on the superadmin providers console. */}
           {showConfigMessage
-            ? "Configure NEXT_PUBLIC_GOOGLE_MAPS_KEY or MAPBOX_TOKEN in settings"
+            ? "Maps aren't available yet — the platform's map provider isn't configured. Your team's activity is still listed below."
             : "Loading map..."}
         </p>
       </div>

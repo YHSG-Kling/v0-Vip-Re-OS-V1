@@ -1,59 +1,128 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published transcribeFromUrl(url) as a public HTTP door: any
+// authenticated session could make THIS server issue a GET at an arbitrary URL
+// of its choosing and spend that session's tenant vendor budget on the answer —
+// the SSRF shape the allowlist section below reasons about, opened to every
+// browser session rather than only to the repurpose lane's own actions. Every
+// caller is in-process server code (re-verified 2026-09-03):
+//   · lib/repurpose/actions.ts:21 (import) → :692 and :800, "use server" actions
+//     that already sit behind ctx.brokerageId
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling a fetch-anything door.
+// The residual SSRF edge recorded below (http:// admitted, no private-range
+// refusal on the egress gateway) is unchanged by this — it is simply no longer
+// reachable except through those two gated actions.
+import "server-only"
 
-// Transcribe a direct media-file URL (mp4/mp3/wav/m4a/webm) via Whisper.
-// There is no YouTube/Vimeo caption extraction in this app, and Whisper accepts
-// an audio/video file buffer (~25MB limit) — not a web page. So this only works
-// for a directly-downloadable media file; callers fall back to a pasted
-// transcript for page links (YouTube/Vimeo) or oversized files.
+// Transcribe a direct media-file URL (mp4/mp3/wav/m4a/webm) for the REPURPOSE
+// lane. There is no YouTube/Vimeo caption extraction in this app, and a
+// transcription vendor accepts an audio/video file buffer — not a web page. So
+// this only works for a directly-downloadable media file; callers fall back to a
+// pasted transcript for page links (YouTube/Vimeo) or oversized files.
+//
+// THE IMPLEMENTATION MOVED, THE CONTRACT DID NOT. Everything this function used
+// to do now lives in lib/repurpose/transcribe-core.ts — the ONE transcription
+// primitive, shared with app/actions/ai-voice-transcription.ts:transcribeAudio,
+// which had grown a second copy of the same four steps.
+//
+// ── THE GATE IS ON (owner ruling: "yes that gate STT needs to be turned on; any
+//    ai use is vercel ai gateway") ───────────────────────────────────────────
+// This lane used to call the primitive with NO options, so `checkVendorBudget`
+// never pre-flighted and `vendor_usage_tracking` never recorded — the repurpose
+// lane spent on Whisper without appearing on any ledger, while its sibling
+// transcribeAudio was fully gated and metered through the same primitive. That
+// is now closed: every call here supplies a `brokerageId`, which is the single
+// switch that turns ON both the budget pre-flight and the ledger write inside
+// transcribe-core.ts. (The primitive's FAIL-OPEN contract is untouched: only a
+// MEASURED `allowed: false` refuses; an unreadable ledger or plan tier still
+// transcribes.)
+//
+// ── WHY THE SIGNATURE IS STILL ONE ARGUMENT ─────────────────────────────────
+// Until 2026-09-03 this file was `"use server"`, which made this export an RPC
+// endpoint any session could call with any arguments. `brokerageId` decides
+// WHOSE vendor ledger is billed, so accepting it as a parameter would have
+// handed the browser a cross-tenant write knob — bill another brokerage, or aim
+// the refusal at a tenant that is already at its ceiling. The door is closed
+// now (header), and the one-argument shape is kept as an IN-PROCESS CONTRACT:
+// the tenant is still resolved SERVER-SIDE, from `getAgentContext()`, which
+// reads the session cookie through `supabase.auth.getUser()` and then
+// `users.brokerage_id` / `user_role_assignments` — never from an argument. (It
+// also honours the platform-staff act-as seam, so an impersonated run bills the
+// tenant being acted for, the same as every other action.)
+//
+// An unresolvable tenant REFUSES rather than falling through ungated. Both
+// in-repo call sites (lib/repurpose/actions.ts:692 and :800) already sit behind
+// `ctx.brokerageId`, so the refusal is unreachable on the real paths; it stays
+// because a tenant resolver that can be skipped is not one, and
+// scripts/transcription-source-guard.ts T13 pins the one-argument shape.
+//
+// ── THE HOST ALLOWLIST: DELIBERATELY NOT PASSED, AND HERE IS THE REASONING ───
+// The primitive's `allowedHosts` is a HOST allowlist — it admits a named set and
+// fails closed on everything else, including on an empty set. There is no
+// "any public host" spelling of it, so the choice here is binary:
+//
+//   · Pass `platformAudioHostRules()` (what transcribeAudio passes) and the
+//     feature dies. That set is the hosts THIS system produces or stores audio
+//     on — our Supabase bucket, Vercel Blob, Twilio, Zoom. The repurpose lane
+//     exists to transcribe a link the AGENT PASTED: their own webinar recording
+//     on someone else's CDN, a competitor's clip, a podcast host. Every one of
+//     those is refused by that set. An allowlist here does not tighten the
+//     feature, it deletes it — and it is the feature the owner is paying for.
+//   · Pass nothing, and accept that the server issues a GET at an address the
+//     user chose.
+//
+// This lane passes NOTHING, and the residual is named rather than smoothed over.
+// What actually bounds it, all of it already in the primitive:
+//
+//   1. THE CONTENT-TYPE CAP is the load-bearing one for exfiltration. The
+//      response must match `^(audio|video)/` or the call returns `not_media`
+//      BEFORE any vendor sees a byte. An internal service answering `text/html`
+//      or `application/json` — the shape of nearly everything an SSRF probe is
+//      aimed at — can never become a transcript handed back to the caller.
+//   2. THE 25MB BYTE CAP bounds what one call can pull.
+//   3. `auth: { style: "none" }` on the `asset-download` connector: no platform
+//      credential is attached to the fetch, so a hostile URL cannot harvest one.
+//   4. THE BUDGET GATE, as of this change, meters it. Blind probing used to be
+//      free and invisible; it now costs the probing tenant's own vendor budget
+//      and lands on their ledger with `system_source = "repurpose_transcription"`.
+//
+// What is NOT closed, stated plainly so nobody reads this comment as a
+// clearance: the primitive accepts `http://` as well as `https://` here (it only
+// requires `^https?://`), and neither it nor the connector gateway refuses
+// RFC1918 / link-local / loopback targets — the gateway has no private-address
+// blocklist. A blind request to an internal address will still LEAVE; it just
+// cannot return anything to the caller unless that address answers with an
+// audio/video content-type. Closing that properly means a scheme + private-range
+// refusal on the egress gateway, which is every `asset-download` call site's
+// problem and not this lane's to invent — it is recorded here as the open edge
+// rather than left for someone to rediscover.
 
-import { openai } from "@ai-sdk/openai"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
-
-const MAX_BYTES = 25 * 1024 * 1024 // Whisper hard limit
-const MEDIA_CT = /^(audio|video)\//i
-
-export type TranscribeResult =
-  | { success: true; transcript: string }
-  | { success: false; reason: "not_media" | "too_large" | "fetch_failed" | "no_speech" | "error"; message: string }
+// TYPE-ONLY import, and deliberately NOT re-exported: a type re-export out of a
+// "use server" module is one of the two shapes that has broken page-data
+// collection in this repo before (see scripts/use-server-export-guard.ts). The
+// single consumer, lib/repurpose/actions.ts, imports the function and never the
+// type; anything wanting the type imports ./transcribe-core.
+import type { TranscribeResult } from "./transcribe-core"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function transcribeFromUrl(url: string): Promise<TranscribeResult> {
-  if (!/^https?:\/\/\S+$/i.test(url)) {
-    return { success: false, reason: "error", message: "Invalid URL" }
+  // TENANT FROM THE SESSION, NEVER FROM THE ARGUMENTS — see the header.
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) {
+    return {
+      success: false,
+      reason: "error",
+      message: "No brokerage context — transcription is metered per brokerage",
+    }
   }
-  if (!process.env.OPENAI_API_KEY) {
-    return { success: false, reason: "error", message: "Transcription is not configured" }
-  }
 
-  try {
-    const res = await callConnector<Buffer>({
-      connector: "asset-download", baseUrl: "", path: "", url,
-      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
-    })
-    if (!res.ok || !res.data) {
-      return { success: false, reason: "fetch_failed", message: `Could not fetch the URL (${res.status})` }
-    }
-
-    const contentType = res.headers["content-type"] ?? ""
-    if (!MEDIA_CT.test(contentType)) {
-      // HTML pages (YouTube/Vimeo links), etc. — not transcribable here.
-      return { success: false, reason: "not_media", message: "That link isn't a direct audio/video file" }
-    }
-
-    if (res.data.byteLength > MAX_BYTES) {
-      return { success: false, reason: "too_large", message: "File is larger than 25MB" }
-    }
-
-    const { experimental_transcribe } = await import("ai")
-    const result = await experimental_transcribe({
-      model: openai.transcription("whisper-1"),
-      audio: new Uint8Array(res.data),
-    })
-    const transcript = (result.text ?? "").trim()
-    if (!transcript) {
-      return { success: false, reason: "no_speech", message: "No speech detected in the media" }
-    }
-    return { success: true, transcript }
-  } catch (err) {
-    return { success: false, reason: "error", message: err instanceof Error ? err.message : "Transcription failed" }
-  }
+  const { transcribeMediaUrl } = await import("./transcribe-core")
+  return transcribeMediaUrl(url, {
+    // Supplying the tenant is what turns ON the budget pre-flight and the vendor
+    // ledger inside the primitive. No allowlist: see the header for why, and for
+    // what bounds the fetch instead.
+    brokerageId,
+    systemSource: "repurpose_transcription",
+  })
 }

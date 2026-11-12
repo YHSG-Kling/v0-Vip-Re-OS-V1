@@ -48,6 +48,71 @@ export function classifyQuestion(text: string | null | undefined): { topic: stri
   return null
 }
 
+/**
+ * Wave 142G — the PRODUCT lexicon: what people ask SUPPORT about (how the OS works), as opposed to the real-estate
+ * lexicon above (what clients ask about the business). Support ticket subjects + descriptions are classified here;
+ * a recurring product topic becomes a `support:<topic>` gap the curriculum author answers with a HELP ARTICLE /
+ * walkthrough (channel article) instead of an agent course. Same honesty rules: fixed lexicon, first match wins, an
+ * uncategorizable ticket is skipped, never force-fit; no LLM in the clustering.
+ */
+const PRODUCT_TOPIC_LEXICON: Array<{ topic: string; label: string; keywords: string[] }> = [
+  { topic: "forms_esign", label: "sending forms for e-signature (FormWizard / e-sign)", keywords: ["e-sign", "esign", "e sign", "signature", "docusign", "dotloop", "skyslope", "form wizard", "formwizard", "forms"] },
+  { topic: "cda", label: "the commission disbursement (CDA) workflow", keywords: ["cda", "commission disbursement", "disbursement"] },
+  { topic: "offers", label: "creating and responding to offers", keywords: ["offer", "counter offer", "counteroffer"] },
+  { topic: "listings", label: "listings and MLS sync", keywords: ["listing", "mls"] },
+  { topic: "transactions", label: "transactions and closings in the OS", keywords: ["transaction", "closing checklist", "closing"] },
+  { topic: "billing_seats", label: "billing, plans and seats", keywords: ["billing", "invoice", "seat", "subscription", "plan ", "charged", "payment"] },
+  { topic: "website_domain", label: "your website and custom domain", keywords: ["website", "domain", "dns", "landing page"] },
+  { topic: "phone_sms", label: "phone numbers, texting and A2P registration", keywords: ["phone number", "a2p", "10dlc", "sms", "text message", "texting", "caller id"] },
+  { topic: "integrations", label: "connecting integrations and providers", keywords: ["integration", "connect", "api key", "crm", "zapier", "hubspot", "ghl", "gohighlevel", "oauth"] },
+  { topic: "lead_magnets", label: "lead magnets, forms and QR capture", keywords: ["lead magnet", "qr", "form submission", "capture form", "magnet"] },
+  { topic: "video", label: "videos, avatars and reels", keywords: ["video", "avatar", "reel", "render"] },
+  { topic: "enrichment", label: "contact enrichment and skip tracing", keywords: ["enrichment", "enrich", "skip trace", "skip-trace"] },
+  { topic: "login_access", label: "logging in, invitations and permissions", keywords: ["login", "log in", "password", "invite", "invitation", "permission", "access", "locked out"] },
+  { topic: "education", label: "the academy and lessons", keywords: ["academy", "course", "lesson", "training"] },
+  { topic: "ai_assistant", label: "the AI assistant and voice ISA", keywords: ["assistant", "ai isa", "voice", "copilot", "chatbot", "avatar chat"] },
+]
+
+/** PURE: classify a support question to a PRODUCT topic, or null when it matches no known topic. */
+/** @proofSeam the proof classifies a how-to and an unrecognisable line directly */
+export function classifySupportQuestion(text: string | null | undefined): { topic: string; label: string } | null {
+  const t = (text ?? "").toLowerCase()
+  if (t.trim().length < 8) return null
+  for (const entry of PRODUCT_TOPIC_LEXICON) {
+    if (entry.keywords.some((k) => t.includes(k))) return { topic: entry.topic, label: entry.label }
+  }
+  return null
+}
+
+interface RawSupportQuestion { subject: string; description?: string | null; ref?: string | null }
+
+/**
+ * PURE: cluster support tickets into `support:<topic>` GapSignals (source "support", recurrence-only like compliance
+ * and questions). A topic must recur across at least `minAskers` tickets in the window; evidence = de-identified
+ * subjects to ground the help article.
+ */
+export function buildSupportSignals(tickets: RawSupportQuestion[], opts: { minAskers?: number } = {}): GapSignal[] {
+  const minAskers = opts.minAskers ?? QUESTION_MIN_ASKERS
+  const byTopic = new Map<string, { label: string; count: number; evidence: string[] }>()
+  for (const t of tickets) {
+    const cls = classifySupportQuestion(`${t.subject ?? ""} ${t.description ?? ""}`)
+    if (!cls) continue
+    const e = byTopic.get(cls.topic) ?? { label: cls.label, count: 0, evidence: [] }
+    e.count++
+    if (e.evidence.length < 5) e.evidence.push((t.subject ?? "").trim().slice(0, 160))
+    byTopic.set(cls.topic, e)
+  }
+  const signals: GapSignal[] = []
+  for (const [topic, e] of byTopic) {
+    if (e.count < minAskers) continue
+    signals.push({
+      topicKey: `support:${topic}`, topicLabel: e.label, source: "support",
+      weakCount: e.count, totalCount: e.count, avgScore: null, evidence: e.evidence,
+    })
+  }
+  return signals
+}
+
 export interface RawQuestion { text: string; ref?: string | null }
 
 /**

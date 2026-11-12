@@ -63,16 +63,32 @@ export async function autoDetectCommissionDispute(
 
   if (params.dispositionRoute === "in_app") {
     // Auto-file the dispute so the on-platform broker resolves it. System-initiated (not a user action).
-    await svc
+    //
+    // THE RESULT IS CHECKED. This is the agent's money: if the update is
+    // rejected (CHECK, RLS, a status race), the dispute is never filed, and
+    // discarding the result would have returned "auto_disputed" to the caller
+    // anyway — reporting a dispute that does not exist. supabase-js RESOLVES a
+    // rejected write, so silence here is not evidence of success.
+    const { error: disputeError } = await svc
       .from("agent_commissions")
       .update({ status: "disputed", dispute_reason: reason, disputed_at: now, disputed_by: "system:ai_finance", dispute_resolution: null, dispute_resolved_at: null, updated_at: now })
       .eq("id", commissionId)
       .in("status", ["pending", "approved"]) // idempotent — no-op if already disputed
-    await svc.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId, // NOT NULL (pass 5): missing → the dispute event never landed
-      entity_type: "agent_commission", entity_id: commissionId,
-      event_type: "commission_disputed", metadata: { reason, auto: true, source: "cda_contract_discrepancy" }, created_at: now,
-    }).then(() => {}, () => {})
+    if (disputeError) {
+      console.error("[auto-dispute] failed to file commission dispute:", disputeError.message)
+      return { acted: "none", reason: null }
+    }
+    // The event mirror IS allowed to fail — the dispute above is the record that
+    // matters, and losing its timeline echo must not undo it.
+    // LINEAGE (wave 98, lane 98B): through THE emitter (lib/kernel/emit.ts) — audit-only type,
+    // nothing fans out; the echo now carries the causation of the CDA event that raised it.
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const echo = await emitKernelEvent({
+      brokerageId: params.brokerageId, // NOT NULL (pass 5): missing → the dispute event never landed
+      entityType: "agent_commission", entityId: commissionId,
+      event: "commission_disputed", metadata: { reason, auto: true, source: "cda_contract_discrepancy" }, createdAt: now,
+    })
+    if (echo.error) console.warn("[auto-dispute] timeline echo of a dispute already filed on agent_commissions refused:", echo.error)
     return { acted: "auto_disputed", reason }
   }
 
@@ -85,12 +101,13 @@ export async function autoDetectCommissionDispute(
       .from("notifications")
       .select("id").eq("user_id", userId).eq("type", "cda_contract_mismatch").eq("entity_id", commissionId).gte("created_at", since).limit(1)
     if (!existing || existing.length === 0) {
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: userId, brokerage_id: params.brokerageId, type: "cda_contract_mismatch",
         title: "Check your CDA before your brokerage signs",
         body: `${reason}. Because your brokerage isn't on the platform, raise this with them directly through your form platform before it's finalized.`,
         entity_type: "agent_commission", entity_id: commissionId, priority: "high", channel: "in_app",
-      }).then(() => {}, () => {})
+      })
+      if (notifyError) console.warn("[auto-dispute.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
   }
   return { acted: "agent_flagged", reason }

@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Users, UserPlus, Loader2, Trash2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { listTeamMembers, addTeamMember, removeTeamMember, type TeamMemberRow } from "@/app/actions/admin/team-members"
-import { TEAM_ROLES, SOURCE_OF_FUNDS } from "@/lib/teams/membership"
+import { TEAM_ROLES, SOURCE_OF_FUNDS, isTeamRole, type TeamRole } from "@/lib/teams/membership"
 
 type Opt = { id: string; name: string }
 
@@ -20,7 +20,8 @@ export function TeamMembersClient({ teams, agents }: { teams: Opt[]; agents: Opt
   const [members, setMembers] = useState<TeamMemberRow[]>([])
   const [loading, setLoading] = useState(false)
   const [agentId, setAgentId] = useState("")
-  const [role, setRole] = useState<string>("buyers_agent")
+  // Typed to the roster the Select below renders from — matches addTeamMember's tightened input.
+  const [role, setRole] = useState<TeamRole>("buyers_agent")
   const [split, setSplit] = useState("30")
   const [source, setSource] = useState<string>("agent")
   const [pending, startTransition] = useTransition()
@@ -90,7 +91,7 @@ export function TeamMembersClient({ teams, agents }: { teams: Opt[]; agents: Opt
                 </div>
                 <div className="space-y-1">
                   <Label>Role</Label>
-                  <Select value={role} onValueChange={setRole}>
+                  <Select value={role} onValueChange={(v) => { if (isTeamRole(v)) setRole(v) }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>{TEAM_ROLES.map((r) => <SelectItem key={r} value={r}>{r.replace(/_/g, " ")}</SelectItem>)}</SelectContent>
                   </Select>

@@ -1,0 +1,15 @@
+{
+  "inertByFile": {},
+  "orphanActions": [
+    "app/actions/ai-transaction-coordinator.ts:getClosingPrep",
+    "app/actions/ai-transaction-coordinator.ts:prepareForClosing",
+    "app/actions/email-campaigns.ts:sendEmailCampaign",
+    "app/actions/lead-intelligence.ts:analyzeGoogleSearchIntent",
+    "app/actions/lead-intelligence.ts:enrichPropertyIntelligence",
+    "app/actions/lead-intelligence.ts:scrapeExternalBehavior",
+    "app/actions/lead-intelligence.ts:scrapeSocialSignalsWithZenRows",
+    "app/actions/lead-intelligence.ts:trackBehavior",
+    "app/actions/lead-intelligence.ts:trackExternalActivity",
+    "app/actions/listings.ts:getListingById"
+  ]
+}

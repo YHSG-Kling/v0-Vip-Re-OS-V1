@@ -9,9 +9,13 @@ import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 interface Props {
   brokerageId: string
   agentUserId: string
+  /** Resolved server-side via lib/kernel/resolve-user-team.ts (THE ONE answer
+   *  for "which team is this agent on") — scopes FormWizard's e-sign
+   *  template/provider resolution to the agent's team. */
+  teamId?: string | null
 }
 
-export function ListingsNewButton({ brokerageId, agentUserId }: Props) {
+export function ListingsNewButton({ brokerageId, agentUserId, teamId }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [open, setOpen] = useState(false)
@@ -59,6 +63,7 @@ export function ListingsNewButton({ brokerageId, agentUserId }: Props) {
         mode="listing"
         brokerageId={brokerageId}
         agentUserId={agentUserId}
+        teamId={teamId}
         open={open}
         onClose={handleClose}
         documentId={documentId}

@@ -12,7 +12,6 @@ import {
   BarChart2,
   Target,
   Plus,
-  Trash2,
   Loader2,
   MapPin,
   ExternalLink,
@@ -341,7 +340,7 @@ export function CompetitorsClient({ initialCompetitors, agentId, defaultMarketAr
                       <ul className="space-y-1">
                         {landscape.differentiators.map((d: string, i: number) => (
                           <li key={i} className="flex items-start gap-1.5">
-                            <span className="text-green-600 mt-0.5">✓</span>
+                            <span className="text-green-700 mt-0.5">✓</span>
                             <span>{d}</span>
                           </li>
                         ))}

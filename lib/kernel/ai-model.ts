@@ -24,13 +24,19 @@ import { selectModelForTask } from "@/lib/ai/models"
 import type { AIModel } from "@/lib/ai/cost-tracking"
 
 // ─── TIER ORDER ────────────────────────────────────────────────────────────────
-// All 10 AIModel literals from lib/ai/cost-tracking.ts, cheapest → most capable.
+// All 11 AIModel literals from lib/ai/cost-tracking.ts, cheapest → most capable.
 // Tier ordering crosses provider families intentionally — see file header.
 // To add a new model: add it to AIModel in cost-tracking.ts AND insert it
 // at the correct tier position here. Do not append blindly to the end.
+//
+// gpt-5-mini added wave 59 (docs/ai-agent-surfaces-2026-09.md §2) — verified
+// $0.25/$2.00 per 1M in/out, between gpt-4o-mini ($0.15/$0.60) and
+// claude-haiku/gemini-flash ($1.00+/$2.50+): the primary/fallback model for
+// the anonymous website-widget chat surface.
 
 const MODEL_TIER_ORDER: AIModel[] = [
   "gpt-4o-mini",          // cheapest — simple classification, routing decisions
+  "gpt-5-mini",           // cheap OpenAI — anonymous widget chat, fast tool calls
   "claude-haiku",         // cheap Anthropic — high-volume internal tasks
   "gemini-flash",         // cheap Google — vision tasks
   "perplexity-sonar",     // web search, lightweight research

@@ -14,6 +14,8 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { incrementUsage } from "@/lib/usage"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { ingestOfferLostSignalAction } from "@/app/actions/lead-signal-ingest"
+import { CONTRACT_TERM_COLUMNS } from "@/lib/transactions/contract-terms"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Every seller-side offer action (accept / counter / reject / portal-link /
@@ -52,16 +54,23 @@ async function verifyListingInCallerBrokerage(
 
 // Column list kept out of the query chain so the tenant filters on the query
 // itself stay auditable.
+//
+// THE CONTRACT TERMS COME FROM ONE PLACE. This list hand-typed all twelve of
+// them, as did the comparison query below and the offer->transaction bridge —
+// three copies that could disagree, and disagreeing is exactly how they came to
+// be dropped at the bridge in the first place. lib/transactions/contract-terms.ts
+// is now the single definition; only the columns that are NOT contract terms are
+// spelled out here.
 const OFFER_LIST_COLUMNS =
-  "id, offer_number, offer_price, earnest_money, closing_date, financing_type, " +
-  "down_payment_amount, down_payment_percent, appraisal_contingency_days, " +
-  "financing_contingency_days, inspection_period_days, escalation_clause, " +
-  "escalation_cap, appraisal_gap, closing_cost_contribution, due_diligence_fee, " +
-  "possession_terms, contingencies, buyer_notes, seller_net_estimate, " +
+  `${CONTRACT_TERM_COLUMNS.join(", ")}, ` +
+  "id, offer_number, offer_price, earnest_money, closing_date, " +
+  "contingencies, buyer_notes, seller_net_estimate, " +
   "ai_recommendation, ai_analysis, ai_extraction_status, ai_extracted_data, " +
   "offer_document_url, offer_document_name, status, offer_type, parent_offer_id, " +
   "current_round, is_winning_offer, submitted_at, response_deadline, " +
-  "seller_viewed_at, contact_id, agent_id, brokerage_id"
+  // form_source is rendered by the offers manager; it was missing here, so a
+  // refresh through this reader would have blanked that column.
+  "seller_viewed_at, contact_id, agent_id, brokerage_id, listing_id, form_source"
 
 export async function getOffersForListing(listingId: string) {
   const auth = await requireCaller()
@@ -91,7 +100,39 @@ export async function acceptOffer(params: {
   listingId: string
   brokerageId?: string  // ignored — derived from session
   agentUserId?: string  // ignored — derived from session
-}) {
+  /**
+   * THE FULLY EXECUTED CONTRACT, for an offer from an OUTSIDE buyer's agent (wave
+   * 93, lane 93D2 — found live: such an offer could never become a transaction).
+   * Their buyer signed on their paperwork, so our e-sign webhook — the only other
+   * writer of the execution columns — never fires, and the transaction gate
+   * refused "buyer has not signed yet" forever.
+   *
+   * The signed PDF is filed FIRST through the offer document door
+   * (POST /api/offers/[offerId]/upload-document, docType 'signed_contract' — it is
+   * stored, linked to the offer and scanned there); its documents.id comes here.
+   * The execution is then recorded through the ONE seller-response door
+   * (app/actions/buyer-offer/record-seller-response.ts): seller accepted + contract
+   * on file, plus — when the buyer's signature is not yet established — a NAMED
+   * human's attestation of it against that document (never inferred, never an
+   * AI reading). Nothing about the gates changes: the readiness gate below and the
+   * bridge's transaction-creation gate still decide.
+   */
+  executedContract?: {
+    documentId: string
+    buyerSignature?: { signedAt: string; attestation: string }
+  }
+}): Promise<{
+  success: boolean
+  error?: string
+  /** The gate's refusal is "not fully executed" — the surface should ask for the executed contract. */
+  needs_executed_contract?: boolean
+  /** The buyer's signature is not established, and only an attestation can establish it. */
+  needs_buyer_signature_attestation?: boolean
+  /** Executed, but the compliance gate blocked (or could not run) — its reason is in `error`. */
+  needs_compliance?: boolean
+  /** The transaction the accept created (or that the compliance gate created for it). */
+  transactionId?: string
+}> {
   const { offerId, listingId } = params
 
   if (!isValidUUID(offerId) || !isValidUUID(listingId)) {
@@ -113,24 +154,153 @@ export async function acceptOffer(params: {
 
   const supabase = createServiceClient()
 
-  // Also verify the offer belongs to this listing AND this brokerage
-  const { data: offerRow } = await supabase
+  // Also verify the offer belongs to this listing AND this brokerage. The read's
+  // `error` is destructured (§3): a refused read used to render as "Forbidden".
+  const { data: offerRow, error: offerRowError } = await supabase
     .from("offers")
     .select("brokerage_id, listing_id")
     .eq("id", offerId)
     .maybeSingle()
+  if (offerRowError) return { success: false, error: `Could not read the offer: ${offerRowError.message}` }
   if (!offerRow || offerRow.brokerage_id !== brokerageId || offerRow.listing_id !== listingId) {
     return { success: false, error: "Forbidden" }
+  }
+
+  const { isOfferFullyExecuted } = await import("@/lib/transactions/offer-execution-state")
+
+  // ── THE EXECUTED CONTRACT, RECORDED THROUGH THE ONE DOOR (lane 93D2) ─────────
+  // FIRST, before compliance: the owner's ruling (2026-09-04) is that compliance
+  // runs ONCE THE OFFER IS FULLY EXECUTED BY BOTH BUYER AND SELLER — execution is
+  // the precondition of the gate, so the executed contract is recorded before the
+  // gate is asked. Only when it is not already on file: a re-accept after a later
+  // refusal must not re-stamp the execution time or attest twice. The predicate is
+  // the ONE definition (lib/transactions/offer-execution-state.ts), never re-spelled.
+  if (params.executedContract) {
+    if (!isValidUUID(params.executedContract.documentId)) {
+      return { success: false, error: "Invalid executed-contract document ID" }
+    }
+    const { data: execRow, error: execErr } = await supabase
+      .from("offers")
+      .select("buyer_signed_at, seller_response_type, seller_signed_at, fully_signed_contract_received_at, transaction_id")
+      .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (execErr) return { success: false, error: `Could not read the offer's execution state: ${execErr.message}` }
+    if (!execRow || !isOfferFullyExecuted(execRow as any)) {
+      const { recordSellerResponse } = await import("@/app/actions/buyer-offer/record-seller-response")
+      const recorded = await recordSellerResponse({
+        offerId,
+        responseType:   "accepted",
+        documentId:     params.executedContract.documentId,
+        buyerSignature: params.executedContract.buyerSignature,
+        notes:          "Fully executed contract filed by the listing side — seller accepted the outside buyer's offer.",
+        callerConverts: true,
+      })
+      if (!recorded.success) {
+        return {
+          success: false,
+          error: `The executed contract was not recorded, so the offer was not accepted: ${recorded.error}`,
+          needs_buyer_signature_attestation: recorded.needs_buyer_signature_attestation,
+        }
+      }
+    }
   }
 
   // ── COMPLIANCE GATE (System 7.1B — ABSOLUTE) ─────────────────────────────
   // No offer may be accepted without a prior buyer.offer.compliance.passed event.
   const { checkCompliancePassed } = await import("@/lib/buyer-offer/compliance-gate")
-  const complianceCheck = await checkCompliancePassed(offerId)
+  let complianceCheck = await checkCompliancePassed(offerId)
   if (!complianceCheck.passed) {
+    // ── EXECUTED BUT NOT YET THROUGH COMPLIANCE → RUN THE ONE GATE (lane 93D2) ──
+    // Refusing here sent a fully executed outside offer to a staff override. The
+    // gate exists: lib/transactions/offer-compliance-loop.ts → submitOfferToCompliance
+    // audits the brokerage checklist + the packet's signatures/initials and, on a
+    // pass, creates the transaction itself (the bridge's gates still run inside).
+    // Nothing is decided here: a block returns the gate's own reason.
+    const { data: gateRow, error: gateRowError } = await supabase
+      .from("offers")
+      .select("buyer_signed_at, seller_response_type, seller_signed_at, fully_signed_contract_received_at, transaction_id")
+      .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (gateRowError) return { success: false, error: `Could not read the offer's execution state: ${gateRowError.message}` }
+    if (!gateRow || !isOfferFullyExecuted(gateRow as any)) {
+      return {
+        success: false,
+        error: `Compliance gate: offer ${offerId} has not passed compliance review, and it cannot — the contract is not fully executed by both buyer and seller. File the executed contract first.`,
+        needs_executed_contract: true,
+        needs_buyer_signature_attestation: (gateRow && !gateRow.buyer_signed_at) || undefined,
+      }
+    }
+    const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+    const turn = await runOfferComplianceLoop(supabase as any, { brokerageId, offerId, trigger: "agreement_executed", actorUserId: agentUserId })
+    if (turn.outcome === "advanced" && turn.transactionId) {
+      // The gate created the transaction. What is left is the listing side's own
+      // bookkeeping — exactly what the bridge path below does after its creation.
+      const { error: winErr } = await supabase
+        .from("offers")
+        .update({ is_winning_offer: true, status: "accepted", responded_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", offerId)
+        .eq("brokerage_id", brokerageId)
+      const { error: sibErr } = await supabase
+        .from("offers")
+        .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
+        .eq("listing_id", listingId)
+        .eq("brokerage_id", brokerageId)
+        .neq("id", offerId)
+      await transitionLifecycle({
+        brokerageId,
+        entityType:  "listing_stage_machine",
+        entityId:    listingId,
+        fromState:   "",
+        toState:     "UNDER_CONTRACT",
+        actorUserId: agentUserId,
+        eventType:   "UNDER_CONTRACT",
+        metadata:    { winning_offer_id: offerId, transaction_id: turn.transactionId, via: "offer_compliance_gate" },
+      })
+      revalidatePath(`/dashboard/listings/${listingId}/offers`)
+      revalidatePath(`/dashboard/transactions`)
+      const flagRefused = [winErr, sibErr].filter(Boolean).map((e) => e!.message)
+      return flagRefused.length === 0
+        ? { success: true, transactionId: turn.transactionId }
+        : { success: false, transactionId: turn.transactionId, error: `The transaction was created, but the winning-offer flags were refused (${flagRefused.join(" | ")}) — correct them on the offers list.` }
+    }
+    if (turn.outcome === "blocked") {
+      return { success: false, error: `Executed contract on file. Compliance gate blocked the transaction: ${turn.reason ?? "missing required documents"}`, needs_compliance: true }
+    }
+    // "outside_window"/"unknown": the gate did not run. A staff-passed gate event
+    // could exist from a concurrent click — re-read once, then fail closed.
+    complianceCheck = await checkCompliancePassed(offerId)
+    if (!complianceCheck.passed) {
+      return {
+        success: false,
+        error: `Compliance gate: offer ${offerId} has not passed compliance review, and the gate could not run (${turn.reason ?? turn.outcome}).`,
+        needs_compliance: true,
+      }
+    }
+  }
+
+  // ── THE TRANSACTION GATE, BEFORE ANY WRITE (wave 93, lane 93D — found live) ──
+  // An accepted offer MUST produce a transaction (below), and the bridge refuses
+  // one unless the OFFER row carries buyer signature + executed contract +
+  // compliance_passed_at. Asked only AFTER the accept, a refusal left the agent
+  // with an accept-then-revert and — because the listing had already been moved
+  // to UNDER_CONTRACT and nothing moved it back — a draft listing reading
+  // "pending" with no accepted offer and no transaction. Ask the same gate the
+  // bridge asks (one function, lib/transactions/offer-bridge.ts) first, and
+  // refuse with its reason while nothing has been written.
+  const { assertOfferReadyForTransaction } = await import("@/lib/transactions/offer-bridge")
+  const readiness = await assertOfferReadyForTransaction({ offerId, brokerageId })
+  if (!readiness.allowed) {
+    // Say which remedy applies, so the surface can ask for the executed contract
+    // (and the buyer-signature attestation) instead of showing a dead end.
+    // Read off the gate's own row through the ONE predicate — never off its prose.
+    const notExecuted = !!readiness.offer && !readiness.offer.transaction_id && !isOfferFullyExecuted(readiness.offer)
     return {
       success: false,
-      error: `Compliance gate: offer ${offerId} has not passed compliance review. ${complianceCheck.error ?? ""}`.trim(),
+      error: `Offer cannot be accepted yet: ${readiness.reason}`,
+      needs_executed_contract: notExecuted || undefined,
+      needs_buyer_signature_attestation: (readiness.offer && !readiness.offer.buyer_signed_at) || undefined,
     }
   }
 
@@ -148,31 +318,50 @@ export async function acceptOffer(params: {
 
   if (winnerError) return { success: false, error: winnerError.message }
 
-  // Clear winning flag on all other offers for this listing
-  await supabase
+  // ROLLBACK THAT SAYS WHETHER IT HAPPENED (lane 87E, swallowed-refusal census).
+  // Every revert below used to drop its result and then report "acceptance
+  // rolled back" — a refused revert left the offer reading ACCEPTED with no
+  // transaction behind it while the agent was told it had been undone.
+  const rollbackAcceptance = async (): Promise<string> => {
+    const { error: revertError } = await supabase
+      .from("offers")
+      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
+    const { error: siblingsRevertError } = await supabase
+      .from("offers")
+      .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
+      .eq("listing_id", listingId)
+      .eq("brokerage_id", brokerageId)
+    const refused = [revertError, siblingsRevertError].filter(Boolean).map((e) => e!.message)
+    if (refused.length === 0) return "acceptance rolled back."
+    console.error(`[acceptOffer] ROLLBACK REFUSED for offer ${offerId}:`, refused.join(" | "))
+    return `the rollback was REFUSED (${refused.join(" | ")}) — offer ${offerId} may still read accepted; correct it before re-accepting.`
+  }
+
+  // Clear winning flag on all other offers for this listing. A refusal here would
+  // leave TWO winning offers on one listing, so it is read and the accept undone.
+  const { error: siblingError } = await supabase
     .from("offers")
     // Live column is is_winning_offer; the older winning_offer alias was never deployed.
     .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
     .eq("listing_id", listingId)
     .eq("brokerage_id", brokerageId)
     .neq("id", offerId)
+  if (siblingError) {
+    return {
+      success: false,
+      error: `[acceptOffer] Could not clear the other offers' winning flag (${siblingError.message}) — ${await rollbackAcceptance()}`,
+    }
+  }
 
   // OFFER_ACCEPTED is now emitted once, from the shared chokepoint createTransactionFromOffer (below),
   // which carries the real contract dates (earnest money / inspection / closing) in metadata so the
   // proactive "under contract" card is date-specific. Emitting here too would write a date-less card
   // first and the portal writer's title-dedupe would then suppress the rich one — so we don't.
 
-  // transitionLifecycle — listing_stage_machine → UNDER_CONTRACT
-  await transitionLifecycle({
-    brokerageId,
-    entityType:  "listing_stage_machine",
-    entityId:    listingId,
-    fromState:   "",
-    toState:     "UNDER_CONTRACT",
-    actorUserId: agentUserId,
-    eventType:   "UNDER_CONTRACT",
-    metadata:    { winning_offer_id: offerId },
-  })
+  // (The listing's UNDER_CONTRACT transition now runs AFTER the transaction exists —
+  // see below. Here it stranded the listing whenever the transaction was refused.)
 
   // ── CREATE TRANSACTION SHELL (HARD-REQUIRED) ─────────────────────────────
   // Accepted offer MUST always produce a transaction record.
@@ -188,12 +377,7 @@ export async function acceptOffer(params: {
 
   if (!acceptedOffer) {
     // Revert: clear winning status so offer is not stranded
-    await supabase
-      .from("offers")
-      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
-      .eq("id", offerId)
-      .eq("brokerage_id", brokerageId)
-    return { success: false, error: "[acceptOffer] Could not load offer data — acceptance rolled back." }
+    return { success: false, error: `[acceptOffer] Could not load offer data — ${await rollbackAcceptance()}` }
   }
 
   try {
@@ -227,22 +411,26 @@ export async function acceptOffer(params: {
     // HARD FAIL — revert the offer status so it is not stranded as "accepted"
     // with no corresponding transaction.
     console.error("[acceptOffer] createTransactionFromOffer HARD FAIL — reverting offer:", err)
-    await supabase
-      .from("offers")
-      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
-      .eq("id", offerId)
-      .eq("brokerage_id", brokerageId)
-    // Also clear winning_offer flag on sibling offers we may have cleared
-    await supabase
-      .from("offers")
-      .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
-      .eq("listing_id", listingId)
-      .eq("brokerage_id", brokerageId)
+    // Reverts the winner AND clears the winning flag on every sibling.
+    const rolledBack = await rollbackAcceptance()
     return {
       success: false,
-      error: `[acceptOffer] Transaction creation failed — offer acceptance rolled back. ${err instanceof Error ? err.message : String(err)}`,
+      error: `[acceptOffer] Transaction creation failed — ${rolledBack} ${err instanceof Error ? err.message : String(err)}`,
     }
   }
+
+  // transitionLifecycle — listing_stage_machine → UNDER_CONTRACT, only once the
+  // hard-required transaction exists (wave 93: moved below createTransactionFromOffer).
+  await transitionLifecycle({
+    brokerageId,
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "",
+    toState:     "UNDER_CONTRACT",
+    actorUserId: agentUserId,
+    eventType:   "UNDER_CONTRACT",
+    metadata:    { winning_offer_id: offerId },
+  })
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
   revalidatePath(`/dashboard/transactions`)
@@ -259,10 +447,14 @@ export async function sendCounterOffer(params: {
   responseDeadline: string            // ISO string
   notes?: string
   contingencyChanges?: string[]
+  // Optional term changes. Omitted = unchanged: the parent's term carries
+  // forward (lib/transactions/contract-terms.ts carryCounterTerms).
+  closingDate?: string
+  earnestMoney?: number
 }) {
   const {
     parentOfferId, listingId,
-    counterPrice, responseDeadline, notes, contingencyChanges,
+    counterPrice, responseDeadline, notes, contingencyChanges, closingDate, earnestMoney,
   } = params
 
   if (!isValidUUID(parentOfferId) || !isValidUUID(listingId)) {
@@ -278,73 +470,36 @@ export async function sendCounterOffer(params: {
     return { success: false, error: "Forbidden" }
   }
 
+  // TOMBSTONE (orphan doctrine §1.1, wave 96 lane 96A): this action's own counter
+  // INSERT, parent update and OFFER_COUNTER_SENT emit were a second writer of the
+  // counter row. Merged ONTO the survivor lib/kernel/offers.ts:326 issueCounterOffer
+  // (the listing check, earnest money, response deadline, uploaded_by, the
+  // tenant-scoped parent update and this fan-out all moved there first); what
+  // stays here is the slide-over's GATE — session caller, listing in the caller's
+  // brokerage — and then the service client, AFTER the gate (CLAUDE.md §4).
   const supabase = createServiceClient()
-
-  // Fetch parent offer to derive contact + current_round; verify ownership
-  const { data: parent } = await supabase
-    .from("offers")
-    .select("contact_id, current_round, contingencies, brokerage_id, listing_id")
-    .eq("id", parentOfferId)
-    .single()
-
-  if (!parent) return { success: false, error: "Parent offer not found" }
-  if (parent.brokerage_id !== brokerageId || parent.listing_id !== listingId) {
-    return { success: false, error: "Forbidden" }
-  }
-
-  const nextRound = (parent.current_round ?? 1) + 1
-
-  const { data: counter, error: insertError } = await supabase
-    .from("offers")
-    .insert({
-      listing_id:        listingId,
-      contact_id:        parent.contact_id,
-      brokerage_id:      brokerageId,
-      agent_id:          await resolveAgentId(supabase as any, agentUserId),
-      uploaded_by:       agentUserId,
-      offer_price:       counterPrice,
-      offer_type:        "counter",
-      parent_offer_id:   parentOfferId,
-      current_round:     nextRound,
-      status:            "submitted",
-      response_deadline: responseDeadline,
-      notes:             notes ?? null,
-      contingencies:     contingencyChanges ?? parent.contingencies,
-      ai_extraction_status: "manual",
-      submitted_at:      new Date().toISOString(),
-      created_at:        new Date().toISOString(),
-      updated_at:        new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (insertError || !counter) return { success: false, error: insertError?.message ?? "Insert failed" }
-
-  // Mark parent as countered — scoped
-  await supabase
-    .from("offers")
-    .update({ status: "countered", updated_at: new Date().toISOString() })
-    .eq("id", parentOfferId)
-    .eq("brokerage_id", brokerageId)
-
-  // Canonical fan-out: lifecycle event + staff notification + buyer/seller
-  // portal updates. The counter offer row is the entity.
-  await emitTransactionEvent({
-    event:       KernelEvent.OFFER_COUNTER_SENT,
-    entityType:  "offer",
+  const { issueCounterOffer } = await import("@/lib/kernel/offers")
+  const result = await issueCounterOffer({
+    offerId:          parentOfferId,
+    listingId,
     brokerageId,
-    entityId:    counter.id,
-    actorUserId: agentUserId,
-    metadata: {
-      listing_id:      listingId,
-      parent_offer_id: parentOfferId,
-      counter_price:   counterPrice,
-      round:           nextRound,
-    },
-  }).catch(() => {})
+    agentId:          (await resolveAgentId(supabase as any, agentUserId)) as string,
+    actorUserId:      agentUserId,
+    counterPrice,
+    closingDate,
+    earnestMoney,
+    contingencies:    contingencyChanges,
+    notes,
+    responseDeadline,
+  }, supabase as any)
+  if (!result.success || !result.data) return { success: false, error: result.error ?? "Insert failed" }
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
-  return { success: true, counterId: counter.id }
+  return {
+    success: true,
+    counterId: result.data.counterId,
+    warning: result.data.warning,
+  }
 }
 
 // ── REJECT OFFER ──────────────────────────────────────────────────────────────
@@ -448,24 +603,38 @@ export async function generateSellerPortalLink(params: {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
   // Write to each active offer's ai_extracted_data merging portal token — scoped
-  const { data: activeOffers } = await supabase
+  const { data: activeOffers, error: activeOffersError } = await supabase
     .from("offers")
     .select("id, ai_extracted_data")
     .eq("listing_id", listingId)
     .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", '("rejected")')
+  if (activeOffersError) return { success: false, error: `Could not read this listing's offers: ${activeOffersError.message}` }
 
+  // The link's token is only good on the offers it was STAMPED onto, so a
+  // refused stamp is a link that opens onto fewer offers than the agent thinks
+  // they are sharing. Each refusal is READ and a partial link is refused rather
+  // than handed out (lane 87E, swallowed-refusal census).
+  const unstamped: string[] = []
   for (const offer of activeOffers ?? []) {
     const merged = {
       ...(offer.ai_extracted_data ?? {}),
       seller_portal_token: token,
       seller_portal_expires_at: expiresAt,
     }
-    await supabase
+    const { error: stampError } = await supabase
       .from("offers")
       .update({ ai_extracted_data: merged, updated_at: new Date().toISOString() })
       .eq("id", offer.id)
       .eq("brokerage_id", auth.brokerageId)
+    if (stampError) unstamped.push(`${offer.id}: ${stampError.message}`)
+  }
+  if (unstamped.length > 0) {
+    console.error("[seller-offers] seller link token not stamped on:", unstamped.join(" | "))
+    return {
+      success: false,
+      error: `The seller link was not created — ${unstamped.length} of ${(activeOffers ?? []).length} offer(s) refused the link token.`,
+    }
   }
 
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/seller/offers/${listingId}?token=${token}`
@@ -515,14 +684,21 @@ export async function recordSellerView(listingId: string) {
   }
 
   const now = new Date().toISOString()
-  await svc
+  // `.select()` + `error` are read deliberately. This previously discarded both
+  // and returned {success:true} whether or not the stamp landed — and
+  // seller_viewed_at is the evidence an agent relies on to say "your seller has
+  // seen this offer". A count of 0 is a legitimate outcome (already viewed), so
+  // it is reported honestly rather than treated as failure.
+  const { data: stamped, error: stampErr } = await svc
     .from("offers")
     .update({ seller_viewed_at: now, updated_at: now })
     .eq("listing_id", listingId)
     .eq("brokerage_id", listingRow.brokerage_id)
     .is("seller_viewed_at", null)
+    .select("id")
+  if (stampErr) return { success: false, error: stampErr.message }
 
-  return { success: true }
+  return { success: true, newlyViewed: stamped?.length ?? 0 }
 }
 
 // ── TRIGGER AI COMPARISON ─────────────────────────────────────────────────────
@@ -555,13 +731,7 @@ export async function triggerOfferComparison(params: {
 
   const { data: offersRaw } = await supabase
     .from("offers")
-    .select(`
-      id, offer_number, offer_price, earnest_money,
-      closing_date, financing_type, down_payment_amount, down_payment_percent,
-      appraisal_contingency_days, financing_contingency_days, inspection_period_days,
-      escalation_clause, escalation_cap, appraisal_gap, closing_cost_contribution,
-      possession_terms, contingencies, seller_net_estimate
-    `)
+    .select(`${CONTRACT_TERM_COLUMNS.join(", ")}, id, offer_number, offer_price, earnest_money, closing_date, contingencies, seller_net_estimate`)
     .eq("listing_id", listingId)
     .eq("brokerage_id", brokerageId)
     .not("status", "in", '("rejected","countered")')
@@ -570,22 +740,37 @@ export async function triggerOfferComparison(params: {
     return { success: false, error: "At least 2 active offers are required for AI comparison" }
   }
 
+  // THE BROKERAGE'S REAL RATE, not a house default. This read `0.06` with a
+  // comment saying the real rate was configurable elsewhere — so every net-to-
+  // seller figure in the comparison, and the ranking built on top of it, was
+  // computed at a rate the brokerage may never have charged. The resolver was
+  // already here, used by the duplicate comparison action that this one absorbed
+  // (see the note below), and is carried across rather than left to die with it.
+  const commissionResult = await resolveCommissionRate(agentUserId)
+  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
+
   const result = await analyzeAndCompareOffers({
     listingId,
     brokerageId,
     agentUserId,
     listPrice: listing?.list_price ?? 0,
     offers: offersRaw as any,
-    commissionRate: 0.06,  // default — brokerage-configurable via commission_adjustments
+    commissionRate: commissionResult.totalRate,
   })
 
   return result
 }
 
 // ── LOAD LATEST PERSISTED OFFER COMPARISON ────────────────────────────────────
-// analyzeMultipleOffers / kernel compareOffers persist comparison rows to
-// offer_comparison — this reads the latest one back so a generated comparison
-// survives page refresh instead of re-burning AI inference.
+// triggerOfferComparison (via lib/offers/offer-analyzer.ts:analyzeAndCompareOffers)
+// and kernel compareOffersForListing persist comparison rows to offer_comparison —
+// this reads the latest one back so a generated comparison survives page refresh
+// instead of re-burning AI inference.
+//
+// The claim above was ASPIRATIONAL until wave 13. The analyzer wrote
+// offers.ai_recommendation per offer and a lifecycle event, and never wrote an
+// offer_comparison row at all — so `ai_recommendation` and `ai_analysis_notes`
+// selected here were NULL on every read, and "survives page refresh" did not.
 export async function loadLatestOfferComparison(listingId: string) {
   if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
 
@@ -598,9 +783,16 @@ export async function loadLatestOfferComparison(listingId: string) {
 
   const supabase = createServiceClient()
 
+  // agent_id is WHO RAN THE COMPARISON — both writers stamp it
+  // (lib/kernel/offers.ts:336 and lib/offers/offer-analyzer.ts:194) and it is
+  // AGENTS class (agents.id, disjoint from the users.id in created_by beside it).
+  // Nothing read it, so on a co-listed or team-covered listing the agent opening
+  // this page was shown a recommendation as though it were their own analysis with
+  // no way to see that a colleague had generated it — and no way to tell a
+  // comparison run before a handover from one run after it.
   const { data: comparison, error } = await supabase
     .from("offer_comparison")
-    .select("id, offer_ids, comparison_matrix, net_to_seller_by_offer, ai_recommendation, ai_analysis_notes, recommended_offer_id, created_at")
+    .select("id, offer_ids, comparison_matrix, net_to_seller_by_offer, ai_recommendation, ai_analysis_notes, recommended_offer_id, agent_id, created_at")
     .eq("listing_id", listingId)
     // tenant anchor (scope burn-down)
     .eq("brokerage_id", auth.brokerageId)
@@ -609,7 +801,32 @@ export async function loadLatestOfferComparison(listingId: string) {
     .maybeSingle()
 
   if (error) return { success: false, error: error.message }
-  return { success: true, comparison }
+  if (!comparison) return { success: true, comparison: null }
+
+  // The generating agent's display name, resolved agents → users (agents.user_id)
+  // and anchored to the caller's own brokerage, so an id from anywhere else stays
+  // unresolved rather than borrowing a name. Four states, never collapsed.
+  const generatedByAgentId = (comparison as { agent_id: string | null }).agent_id ?? null
+  let generatedByName: string | null = null
+  let generatedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused" = "not_recorded"
+  if (generatedByAgentId) {
+    const { data: agentRow, error: agentErr } = await supabase
+      .from("agents")
+      .select("id, users(first_name, last_name)")
+      .eq("id", generatedByAgentId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (agentErr) {
+      console.error("[seller-offers] comparison author lookup refused:", agentErr.message)
+      generatedByState = "lookup_refused"
+    } else {
+      const u = (agentRow as any)?.users
+      generatedByName = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || null
+      generatedByState = generatedByName ? "resolved" : "unresolved"
+    }
+  }
+
+  return { success: true, comparison: { ...comparison, generatedByAgentId, generatedByName, generatedByState } }
 }
 
 // ── FETCH LINKED TRANSACTION FOR A LISTING ────────────────────────────────────
@@ -671,9 +888,13 @@ export async function getRepairNegotiationItems(transactionId: string): Promise<
     .from("transaction_repair_negotiations")
     .select("id, item_description, estimated_cost, actual_cost, status, priority, requested_by")
     .eq("transaction_id", transactionId)
-    .order("priority", { ascending: true })
+    // priority is TEXT (CHECK critical|high|medium|low): `ORDER BY priority ASC`
+    // sorted it alphabetically, so `low` outranked `medium`. SQL orders by
+    // created_at (request order); the rank is applied in code
+    // (lib/kernel/priority-rank.ts). No limit here, so no over-fetch needed.
+    .order("created_at", { ascending: true })
   if (error) return { success: false, items: [], error: error.message }
-  return { success: true, items: data ?? [] }
+  return { success: true, items: [...(data ?? [])].sort(byPriorityDesc) }
 }
 
 // ── LOOKUP MLS NUMBER BY BUYER CONTACT + PROPERTY ADDRESS ─────────────────────
@@ -751,7 +972,7 @@ export async function analyzeOffer(offerId: string, _userId?: string) {
 
   const commissionResult = await resolveCommissionRate(userId)
   if ("error" in commissionResult) return { success: false, error: commissionResult.error }
-  const { totalRate } = commissionResult
+  const { brokerageId: usageBrokerageId, totalRate } = commissionResult
 
   const netToSeller = calcNetToSeller({
     offer_price:              offer.offer_price,
@@ -759,11 +980,52 @@ export async function analyzeOffer(offerId: string, _userId?: string) {
     commission_rate:          totalRate,
   })
 
-  await incrementUsage(userId, "llm_calls", 1)
+  // ── llm_calls CEILING, CONSULTED BEFORE THE SPEND (wave 26) ───────────────
+  // The increment below has metered this lane since the tenant fix; nothing ever
+  // read the counter back. plan_limits carries an `llm_calls` row per tier and
+  // lib/usage/check-cap.ts already held its cap message — the ceiling existed
+  // and was never asked. A metered ceiling with no reader is a writer with no
+  // reader (CLAUDE.md §1) on a metric the tenant is billed against.
+  //
+  // NOT a second AI gate: generateTextRouted below still runs the
+  // ai_tokens_monthly fair-use pre-flight (lib/ai/fair-use.ts, m479). That meters
+  // TOKENS; this meters CALLS — the counter this function itself writes.
+  //
+  // BEFORE the increment, deliberately: the bump at the end of this block is
+  // unconditional and fires ahead of the model call, so checking after it would
+  // charge the tenant for the call it just refused. addQuantity:1 asks whether
+  // THIS call crosses the cap. Soft-warn passes; only the hard cap refuses, with
+  // check-cap's own message rather than a second wording (§6).
+  //
+  // Keyed on usageBrokerageId — the SAME id the counter is written under two
+  // lines down, so the cap reads exactly the row the spend will bump.
+  {
+    const { checkUsageCap } = await import("@/lib/usage/check-cap")
+    const llmCap = await checkUsageCap({
+      brokerageId: usageBrokerageId,
+      metric: "llm_calls",
+      addQuantity: 1,
+    })
+    if (!llmCap.allowed) {
+      return {
+        success: false as const,
+        error: llmCap.message ?? "You've reached this month's plan limit for AI requests.",
+      }
+    }
+  }
+
+  // METERED TO THE TENANT, NOT A PERSON. This passed `userId` — a users.id — as
+  // the brokerageId, so the counter row failed usage_counters' tenant RLS
+  // (brokerage_id = current_user_brokerage_id()), the error was swallowed, and
+  // this paid inference was never metered. The commission resolver above already
+  // returned the real brokerage id.
+  await incrementUsage(usageBrokerageId, "llm_calls", 1)
 
   const listPrice = Number((offer.listing as any)?.list_price ?? 0)
 
   const { text: analysis } = await generateText({
+    brokerageId: auth.brokerageId,
+    userId: auth.userId,
     model: "openai/gpt-4o-mini",
     prompt: `You are a real estate offer analysis expert. Analyze this offer and provide structured feedback.
 
@@ -793,7 +1055,10 @@ RECOMMENDATION: [Accept/Counter/Reject]
 REASONING: [2-3 sentences]`,
   })
 
-  await supabase
+  // Persisted so the offer card and the comparison read the same verdict; a
+  // refusal is READ and reported beside the analysis instead of the card
+  // silently showing the previous one (lane 87E, swallowed-refusal census).
+  const { error: analysisSaveError } = await supabase
     .from("offers")
     .update({
       ai_analysis: {
@@ -808,105 +1073,37 @@ REASONING: [2-3 sentences]`,
     })
     .eq("id", offerId)
     .eq("brokerage_id", auth.brokerageId)
+  if (analysisSaveError) {
+    console.error(`[seller-offers] analysis for offer ${offerId} not saved:`, analysisSaveError.message)
+  }
 
   return {
     success:   true,
     analysis,
     net_sheet: { net_to_seller: netToSeller, purchase_price: offer.offer_price },
+    warning: analysisSaveError ? `The analysis was produced but not saved to the offer: ${analysisSaveError.message}` : undefined,
   }
 }
 
-export async function analyzeMultipleOffers(listingId: string, _userId?: string) {
-  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
-
-  // Auth gate — burns paid AI inference + inserts a comparison row.
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-  const userId = auth.userId
-
-  if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) {
-    return { success: false, error: "Forbidden" }
-  }
-
-  const supabase = createServiceClient()
-
-  const { data: offers } = await supabase
-    .from("offers")
-    .select(`*, buyer:contacts(id, first_name, last_name)`)
-    .eq("listing_id", listingId)
-    .eq("brokerage_id", auth.brokerageId)
-    .in("status", ["pending", "countered"])
-
-  if (!offers || offers.length === 0) {
-    return { success: false, error: "No offers to compare" }
-  }
-
-  const commissionResult = await resolveCommissionRate(userId)
-  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
-  const { brokerageId, totalRate } = commissionResult
-
-  const offerComparisons = offers.map((offer) => {
-    const net = calcNetToSeller({
-      offer_price:              offer.offer_price,
-      closing_cost_contribution: offer.closing_cost_contribution ?? null,
-      commission_rate:          totalRate,
-    })
-    return {
-      offer_id:             offer.id,
-      buyer_name:           `${(offer.buyer as any)?.first_name ?? "Unknown"} ${(offer.buyer as any)?.last_name ?? "Buyer"}`,
-      offer_price:          offer.offer_price,
-      net_to_seller:        net,
-      down_payment_percent: offer.down_payment_percent,
-      financing_type:       offer.financing_type,
-      contingencies_count:  offer.contingencies?.length ?? 0,
-      closing_date:         offer.closing_date,
-      days_to_close:        offer.closing_date
-        ? Math.floor((new Date(offer.closing_date).getTime() - Date.now()) / 86400000)
-        : 0,
-    }
-  })
-
-  // Sort descending by net_to_seller so index [0] is always the best offer.
-  offerComparisons.sort((a, b) => b.net_to_seller - a.net_to_seller)
-
-  await incrementUsage(userId, "llm_calls", 1)
-
-  const { text: comparison } = await generateText({
-    model: "openai/gpt-4o-mini",
-    prompt: `Compare these ${offers.length} offers and rank from best to worst.
-
-${offerComparisons.map((o, i) => `
-Offer ${i + 1} (${o.buyer_name}):
-  Price: $${o.offer_price.toLocaleString()}, Net: $${o.net_to_seller.toLocaleString()}
-  Down: ${o.down_payment_percent}%, Financing: ${o.financing_type}
-  Contingencies: ${o.contingencies_count}, Days to Close: ${o.days_to_close}
-`).join("")}
-
-Provide: 1) RANKED LIST with reasoning 2) COMPARISON MATRIX 3) OVERALL RECOMMENDATION 4) NEGOTIATION STRATEGY`,
-  })
-
-  const netByOffer: Record<string, number> = {}
-  offerComparisons.forEach(o => { netByOffer[o.offer_id] = o.net_to_seller })
-
-  const { data: _compData, error: compInsertError } = await supabase.from("offer_comparison").insert({
-    listing_id:              listingId,
-    brokerage_id:            brokerageId,
-    agent_id:                await resolveAgentId(supabase as any, userId),
-    created_by:              userId,
-    offer_ids:               offers.map(o => o.id),
-    ai_recommendation:       comparison.substring(0, 500),
-    ai_analysis_notes:       comparison,
-    net_to_seller_by_offer:  netByOffer,
-    comparison_matrix:       offerComparisons,
-    recommended_offer_id:    offerComparisons[0]?.offer_id ?? null,
-  })
-
-  if (compInsertError) {
-    return { success: false, error: "Failed to persist comparison: " + compInsertError.message }
-  }
-
-  return { success: true, comparison, offers: offerComparisons }
-}
+// ── analyzeMultipleOffers WAS HERE — SURVIVOR: app/actions/seller-offers.ts:triggerOfferComparison ──
+//
+// Two implementations of one capability: compare this listing's active offers,
+// rank them by net to seller, and persist the result to `offer_comparison`. They
+// were not variants — they were the same feature written twice, with different
+// offer filters and two different commission rates, so which comparison a seller
+// saw depended on which surface happened to call.
+//
+// The survivor delegates to lib/offers/offer-analyzer.ts:analyzeAndCompareOffers,
+// which is also what lib/kernel/offers.ts:compareOffers uses — one analyzer, one
+// persisted shape. What the deleted copy had and the survivor did not is the
+// COMMISSION RATE: it resolved the brokerage's real configured rate through
+// resolveCommissionRate, while the survivor hardcoded 0.06. That was merged onto
+// the survivor FIRST (above); only then was this removed.
+//
+// It became callable-by-nobody when the seller portal stopped invoking it on
+// every page load — it re-burned paid inference per render to rebuild a
+// comparison that was already persisted. That is why it surfaced now; it is not
+// why it was deleted. The capability is intact at the survivor.
 
 export async function calculateNetSheet(params: {
   purchase_price:      number

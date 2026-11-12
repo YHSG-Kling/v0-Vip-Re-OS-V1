@@ -1,14 +1,19 @@
 "use client"
 
-import { useState, useEffect, useRef, useTransition, useCallback } from "react"
+import { bestEffort } from "@/lib/db/best-effort"
+import { useState, useEffect, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Button }    from "@/components/ui/button"
 import { Input }     from "@/components/ui/input"
 import { Badge }     from "@/components/ui/badge"
 import { cn }        from "@/lib/utils"
-import { searchProperties, smartSearch } from "@/app/actions/idx-search"
-import { isTourAllowed }                 from "@/lib/buyer-lifecycle/gating-helpers"
+import { searchProperties, smartSearch, getSavedProperties } from "@/app/actions/idx-search"
+// The gate runs on the SERVER. Importing gating-helpers directly into this client
+// component pulled the kernel (and the service-role client) into the browser bundle and
+// broke the production build; canBuyerScheduleTours is the server action that already
+// wraps exactly this check, with UUID validation in front of it.
+import { canBuyerScheduleTours }          from "@/app/actions/buyer-lifecycle-core"
 import { requestShowing }                from "@/app/actions/showings"
 import { createClient }                  from "@/lib/supabase/client"
 import { useToast }                      from "@/hooks/use-toast"
@@ -111,7 +116,7 @@ function PropertyCard({
         timer = setTimeout(async () => {
           viewedRef.current = true
           const supabase = createClient()
-          await supabase.from("buyer_behavior_log").insert({
+          await bestEffort(supabase.from("buyer_behavior_log").insert({
             brokerage_id:     brokerageId,
             contact_id:       buyerId,
             signal_type:      "property_viewed",
@@ -123,7 +128,7 @@ function PropertyCard({
             city:             property.city      ?? null,
             signal_value:     1,
             source:           "agent_dashboard",
-          })
+          }), "buyer behavior signal for matching")
         }, 2000)
       } else {
         clearTimeout(timer)
@@ -317,7 +322,11 @@ export function SearchClient({
       resolvedListingId = brokerageListing?.id ?? null
     }
 
-    await supabase.from("saved_properties").insert({
+    // The saved_properties row IS the saved property. This used to be wrapped in bestEffort(…, "analytics/cache/annotation
+    // row: its loss does not change what the caller reports") — false: a refused insert (RLS, a CHECK, a duplicate) left the
+    // agent looking at a "Property saved" toast and a filled heart for a property nobody saved (wave 143J). The refusal is
+    // read and the optimistic UI waits for it; only the behaviour-signal rows below are genuinely best-effort.
+    const { error: saveError } = await supabase.from("saved_properties").insert({
       contact_id:        buyerId,
       brokerage_id:      brokerageId,
       user_id:           user.id,
@@ -336,7 +345,12 @@ export function SearchClient({
       property_type:     property.property_type ?? null,
       primary_photo_url: property.primary_photo_url ?? null,
     })
-    await supabase.from("buyer_behavior_log").insert({
+    if (saveError) {
+      console.error("[search] saved_properties insert refused:", saveError.message)
+      toast({ title: "Could not save this property", description: "Nothing was saved. Please try again.", variant: "destructive" })
+      return
+    }
+    await bestEffort(supabase.from("buyer_behavior_log").insert({
       brokerage_id:     brokerageId,
       contact_id:       buyerId,
       signal_type:      "property_saved",
@@ -344,26 +358,26 @@ export function SearchClient({
       property_address: property.address    ?? null,
       list_price:       property.list_price ?? null,
       source:           "agent_dashboard",
-    })
+    }), "buyer behavior signal for matching")
     setSavedIds(prev => new Set([...prev, key]))
     toast({ title: "Property saved" })
   }
 
   async function handleDismissProperty(property: Property) {
     const supabase = createClient()
-    await supabase.from("buyer_behavior_log").insert({
+    await bestEffort(supabase.from("buyer_behavior_log").insert({
       brokerage_id:     brokerageId,
       contact_id:       buyerId,
       signal_type:      "property_dismissed",
       mls_number:       property.mls_number ?? null,
       property_address: property.address    ?? null,
       source:           "agent_dashboard",
-    })
+    }), "buyer behavior signal for matching")
     setProperties(prev => prev.filter(p => (p.mls_number ?? p.id) !== (property.mls_number ?? property.id)))
   }
 
   async function handleScheduleShowing(property: Property) {
-    const gateResult = await isTourAllowed(buyerId)
+    const gateResult = await canBuyerScheduleTours(buyerId)
     if (!gateResult.allowed) {
       setShowGate(true)
       return
@@ -802,28 +816,32 @@ export function SearchClient({
   }) {
   const [saved, setSaved]     = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  // A REFUSED READ IS NOT AN EMPTY LIST (wave 144, lane 144Z): the read now goes through the module that owns saving
+  // (app/actions/idx-search.ts getSavedProperties) and its error is shown, never rendered as "No saved properties yet".
+  const [loadError, setLoadError] = useState<string | null>(null)
   const { toast }             = useToast()
   const router                = useRouter()
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase
-      .from("saved_properties")
-      .select("id, listing_id, property_address, mls_number, list_price, bedrooms, bathrooms, sqft, city, state, primary_photo_url, saved_at")
-      .eq("contact_id", buyerId)
-      .eq("dismissed", false)
-      .order("saved_at", { ascending: false })
-      .then(({ data }: { data: any[] | null }) => { setSaved(data ?? []); setLoading(false) })
+    let cancelled = false
+    getSavedProperties(buyerId).then((r) => {
+      if (cancelled) return
+      setLoadError(r.success ? null : (r.error ?? "could not be read"))
+      setSaved(r.properties ?? [])
+      setLoading(false)
+    })
+    return () => { cancelled = true }
   }, [buyerId])
 
   async function handleRemove(id: string) {
     const supabase = createClient()
-    await supabase.from("saved_properties").update({ dismissed: true }).eq("id", id)
+    await bestEffort(supabase.from("saved_properties").update({ dismissed: true }).eq("id", id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     setSaved(prev => prev.filter(s => s.id !== id))
     toast({ title: "Removed from saved" })
   }
 
   if (loading) return <div className="text-xs text-muted-foreground p-4">Loading saved properties...</div>
+  if (loadError) return <div className="text-xs text-destructive p-4">Saved properties could not be loaded: {loadError}</div>
   if (saved.length === 0) return <div className="text-xs text-muted-foreground p-4">No saved properties yet</div>
 
   return (

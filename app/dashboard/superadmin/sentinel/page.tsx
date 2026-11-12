@@ -3,6 +3,9 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { OsSentinelBoard } from "./os-sentinel-board"
 import { SentinelActionQueue } from "./sentinel-action-queue"
+import { SaasOperationsBoard } from "./saas-operations-board"
+import { FinancialHaltsBoard } from "./financial-halts-board"
+import { HealingConsole } from "./healing-console"
 
 export const dynamic = "force-dynamic"
 
@@ -78,7 +81,9 @@ async function PlatformRailSignals() {
 export default async function OsSentinelPage() {
   const gate = await requirePlatformCapability("sentinel")
   if (!gate.userId) redirect("/login")
-  if (!gate.ok) redirect("/dashboard")
+  // Lane 90D (89D P3-11): refuse IN PLACE like every other superadmin page
+  // (audit-trail, plans, usage-reports) instead of a silent bounce to /dashboard.
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: requires platform sentinel capability</div>
 
   return (
     <div className="p-6 space-y-6">
@@ -87,6 +92,12 @@ export default async function OsSentinelPage() {
         <p className="text-muted-foreground text-sm">One view of the whole agentic OS — every subsystem, the top open incidents, and the self-healing that keeps it running. Below it: the sentinel&apos;s daily proposed actions for the subscriber fleet, drafted and waiting on your approval.</p>
       </div>
       <SentinelActionQueue />
+      {/* Wave 108B: platform self-operation — per-tenant SaaS signals + support missions */}
+      <SaasOperationsBoard />
+      {/* Wave 137: halted financial writers across tenants — platform release with evidence */}
+      <FinancialHaltsBoard />
+      {/* Wave 139F: the healing console — per-incident self-healing evidence + the platform policy ceiling */}
+      <HealingConsole />
       {/* Platform-rail bus signals — feed-only manager_signals staff must see */}
       <section className="rounded-lg border p-4 space-y-3">
         <div>

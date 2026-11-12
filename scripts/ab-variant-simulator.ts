@@ -33,9 +33,16 @@ function main() {
 
   console.log("[assignAbVariant]")
   check("non-test sequence → no variant (unchanged behaviour)", assignAbVariant({ isAbTest: false }) === null)
-  check("test sequence + rand<0.5 → A", assignAbVariant({ isAbTest: true, rand: 0.2 }) === "A")
-  check("test sequence + rand>=0.5 → B", assignAbVariant({ isAbTest: true, rand: 0.8 }) === "B")
-  check("explicit provided variant wins", assignAbVariant({ isAbTest: true, provided: "B", rand: 0.1 }) === "B")
+  // Wave 101 (101B): the split is the kernel's STABLE hash (lib/kernel/experiments.ts), not Math.random.
+  const on = { readable: true, killSwitch: false, disabled: [] as string[] }
+  const B = "11111111-1111-4111-8111-111111111111", SEQ = "22222222-2222-4222-8222-222222222222"
+  const arms = Array.from({ length: 400 }, (_, i) => assignAbVariant({ isAbTest: true, brokerageId: B, recipientId: `r-${i}`, sequenceId: SEQ, policy: on }))
+  const nA = arms.filter((a) => a === "A").length
+  check("test sequence → both arms used, near 50/50 over 400 recipients", nA > 160 && nA < 240, `A=${nA}`)
+  check("same recipient + sequence → same arm every time (stable)", assignAbVariant({ isAbTest: true, brokerageId: B, recipientId: "r-7", sequenceId: SEQ, policy: on }) === arms[7])
+  check("kill switch → control A for everyone", Array.from({ length: 50 }, (_, i) => assignAbVariant({ isAbTest: true, brokerageId: B, recipientId: `r-${i}`, sequenceId: SEQ, policy: { ...on, killSwitch: true } })).every((a) => a === "A"))
+  check("no readable policy passed → control A (fail closed)", assignAbVariant({ isAbTest: true, brokerageId: B, recipientId: "r-1", sequenceId: SEQ }) === "A")
+  check("explicit provided variant wins", assignAbVariant({ isAbTest: true, provided: "B", brokerageId: B, recipientId: "r-1", sequenceId: SEQ, policy: { ...on, killSwitch: true } }) === "B")
   check("invalid provided ignored on non-test → null", assignAbVariant({ isAbTest: false, provided: "Z" as any }) === null)
 
   console.log("\n[pickStepVariant]")

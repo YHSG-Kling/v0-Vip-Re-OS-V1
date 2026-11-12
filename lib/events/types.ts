@@ -10,11 +10,16 @@
 
 export interface EventInput {
   brokerage_id: string
+  /** users.id of the ACTOR (lifecycle_events.actor_user_id FKs public.users). Never a contact id. */
   user_id?: string
   event_type: string
   payload: Record<string, any>
   source: "ui" | "webhook" | "system" | "cron"
   dedupe_key?: string
+  /** Explicit entity — when absent, derived from payload (contact_id / listing_id / …), and
+   *  the brokerage itself is the last resort: both columns are NOT NULL on the live table. */
+  entity_type?: string
+  entity_id?: string
 }
 /** @alias Event — avoids collision with DOM Event in server-action contexts. */
 export type OrchestratorEvent = Event
@@ -49,6 +54,19 @@ export const EVENT_TYPES = {
   VIDEO_PUBLISHED: "video.published",
   VIDEO_HIGH_ENGAGEMENT: "video.high_engagement",
   IMAGE_GENERATED: "image.generated",
+  // Wave 89 (lane 89E, census round 34 — event-flow known gaps → handlers BUILT).
+  // Both were audit-echo inserts straight into lifecycle_events (dispatched to
+  // nobody). Emitted through the dispatching helpers now; routed below.
+  ONBOARDING_STALLED: "onboarding.stalled",
+  AGENT_DELEGATED_TO_AI: "agent.delegated_to_ai",
   AI_SUGGESTION_CREATED: "ai.suggestion_created",
   AI_SUGGESTION_ACTIONED: "ai.suggestion_actioned",
+  // The client-portal journey (lanes 86F/86F2). All three are emitted from
+  // app/actions/journey-tasks.ts completeTask through lib/portal/journey-milestone-
+  // events.ts — the service core that inserts AND dispatches (recordLifecycleEvent);
+  // stage / all-done only when that completion is the one that finished them.
+  // Reactions: lib/portal/journey-event-handlers.ts.
+  JOURNEY_TASK_COMPLETED: "journey.task_completed",
+  JOURNEY_STAGE_COMPLETED: "journey.stage_completed",
+  JOURNEY_ALL_TASKS_DONE: "journey.all_tasks_done",
 } as const

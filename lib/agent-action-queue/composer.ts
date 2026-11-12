@@ -33,6 +33,9 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { latestByContact } from "@/lib/lifetime-customer-npv/current"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
+import { clamp as mathClamp } from "@/lib/format/math"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -100,14 +103,20 @@ function severityImpactMultiplier(s: ActionSeverity): number {
        : 0.1
 }
 
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
+// lib/format/dates.ts:daysBetween. The 9999 "unknown" sentinel and the
+// round-to-nearest-day rule are this queue's own ranking policy, not shared
+// date math, so they stay as a thin wrapper around the survivor.
 function daysBetween(from: string | null, to: Date = new Date()): number {
   if (!from) return 9999
-  const diff = (to.getTime() - new Date(from).getTime()) / 86_400_000
-  return Math.round(diff)
+  return dateDaysBetween(from, to, { round: "round" })
 }
 
+// TOMBSTONE (§1.1, 2026-09-08): the clamp arithmetic lived here; survivor
+// lib/format/math.ts:clamp. The 0–100 defaults are this queue's own score
+// range, not shared math, so they stay as a thin wrapper around the survivor.
 function clamp(n: number, lo = 0, hi = 100): number {
-  return Math.max(lo, Math.min(hi, n))
+  return mathClamp(n, lo, hi)
 }
 
 function dollarsToImpact(n: number): number {
@@ -149,12 +158,13 @@ function computePriority(item: Pick<AgentActionItem,
 // ─── Source fetchers ──────────────────────────────────────────────────────
 
 interface FetchInput {
-  /** users.id — used by Sprint 5+ tables (portal_event_stream.agent_user_id,
-   *  listing_health_interventions.agent_id, lifetime_customer_npv_scores.agent_id) */
+  /** users.id — for the columns that genuinely key off auth identity
+   *  (portal_event_stream.agent_user_id, negotiation strategies). */
   agentUserId: string
-  /** agents.id — required for the legacy tables whose agent_id FK targets
-   *  the agents table (transactions, listings, contacts). Resolved once
-   *  in the composer and passed in. Can be null when user has no agents row. */
+  /** agents.id — every `agent_id` column this composer reads now FKs
+   *  agents(id). Resolved once by the caller from the users id and passed in.
+   *  null = the user has no agents row, so every agents-keyed source is an
+   *  empty set (never a users-id fallback, which matched nothing anyway). */
   agentsId:    string | null
   brokerageId: string
   limit?:      number
@@ -296,11 +306,12 @@ async function fetchListingHealthActions(
   supabase: SupabaseClient,
   input: FetchInput,
 ): Promise<AgentActionItem[]> {
+  if (!input.agentsId) return []
   const { data } = await supabase
     .from("listing_health_interventions")
     .select("id, listing_id, agent_id, issue_detected, severity, ai_recommendation, category, created_at")
     .eq("resolved", false)
-    .eq("agent_id", input.agentUserId)
+    .eq("agent_id", input.agentsId)
     .eq("brokerage_id", input.brokerageId)
     .order("created_at", { ascending: false })
     .limit(input.limit ?? 15)
@@ -362,13 +373,14 @@ async function fetchNpvDueActions(
   supabase: SupabaseClient,
   input: FetchInput,
 ): Promise<AgentActionItem[]> {
+  if (!input.agentsId) return []
   // NPV scores aren't deduped per contact in the source table — pull the
   // newest row per contact filtered to "due within 7 days" for this agent.
   const sevenDays = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10)
   const { data } = await supabase
     .from("lifetime_customer_npv_scores")
     .select("id, contact_id, agent_id, npv_score, npv_dollars, tier, recommended_action, recommended_cadence, next_touchpoint_due, computed_at")
-    .eq("agent_id", input.agentUserId)
+    .eq("agent_id", input.agentsId)
     .eq("brokerage_id", input.brokerageId)
     .not("next_touchpoint_due", "is", null)
     .lte("next_touchpoint_due", sevenDays)
@@ -382,12 +394,12 @@ async function fetchNpvDueActions(
   }>
   if (rows.length === 0) return []
 
-  // Dedupe to latest snapshot per contact
-  const latestByContact = new Map<string, typeof rows[number]>()
-  for (const r of rows) {
-    if (!latestByContact.has(r.contact_id)) latestByContact.set(r.contact_id, r)
-  }
-  const deduped = Array.from(latestByContact.values()).slice(0, input.limit ?? 15)
+  // Dedupe to the latest ledger row per contact. lifetime_customer_npv_scores is
+  // append-only, so "newest per contact" is the current value and everything
+  // older is history — one shared implementation (lib/lifetime-customer-npv/
+  // current) rather than a copy here, because the income engine had this same
+  // rule inlined and got it wrong.
+  const deduped = latestByContact(rows).slice(0, input.limit ?? 15)
 
   const contactNames = await hydrateContactNames(supabase, deduped.map((r) => r.contact_id))
 
@@ -635,9 +647,10 @@ async function fetchIncomeGapActions(
 export interface ComposeInput {
   /** users.id of the calling agent. */
   agentUserId: string
-  /** agents.id (resolved by caller from users.id → agents.user_id).
-   *  Required to query transactions/listings (FKs target agents.id, not
-   *  users.id). null = no agents row, deal-health source disabled. */
+  /** agents.id — resolve it through lib/kernel/agent-identity, never hand it
+   *  the users id. null = no agents row, which disables every agents-keyed
+   *  source (deal health, listing health, NPV, client decisions) rather than
+   *  querying with an id from the wrong table. */
   agentsId:    string | null
   brokerageId: string
   /** Hard cap on the returned queue. Default 12. */
@@ -706,9 +719,9 @@ export async function composeAgentActionQueue(
 ): Promise<ComposedQueue> {
   const limit = input.limit ?? 12
 
-  // Pull all 4 sources in parallel. agentsId only needed by deal-health
-  // (transactions.agent_id → agents.id FK); other sources use users.id
-  // directly because they're Sprint 5+ tables with users.id FK targets.
+  // Pull all 4 sources in parallel. Every agent_id these sources filter on is
+  // an agents.id, so a null agentsId yields an empty queue from those sources
+  // rather than a query that quietly matches nothing.
   const baseInput = {
     agentUserId: input.agentUserId,
     agentsId:    input.agentsId,

@@ -1,11 +1,16 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
 import { ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach, cadenceProfileFor } from '@/lib/ai-isa/reengagement-policy'
+import { loadFollowupPolicy } from '@/lib/ai-isa/followup-policy'
+import { resolvePolicyRef } from '@/lib/kernel/tenant-policy'
+import { arbitrateCadence, countArbiterWaits, recordArbitration } from '@/lib/ai-isa/followup-arbiter'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
-import { adaptiveReengagementHook, cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
+import { adaptiveReengagementHook, cohortFromEnrichment, reengagementAngleForAttempt, REENGAGEMENT_ANGLES, asReengagementAngle } from '@/lib/ai-isa/adaptive-reengagement'
+import { conversionVerdictForRow, excludeConvertedLeads } from '@/lib/contact-promotion/conversion-finality'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
 
@@ -19,14 +24,22 @@ export async function detectGhostLeads(
     Date.now() - thresholdDays * 24 * 60 * 60 * 1000,
   ).toISOString()
 
-  const { data, error } = await supabase
-    .from('leads')
-    .select('id')
-    .eq('brokerage_id', brokerageId)
-    .eq('lifecycle_state', 'isa_qualifying')
-    .eq('is_active', true)
-    .not('reengagement_status', 'in', '("completed","opted_out","handed_to_sphere")')
-    .or(`last_activity_at.lt.${cutoff},and(last_activity_at.is.null,created_at.lt.${cutoff})`)
+  // CONVERSION FINALITY: a converted lead is never a ghost. `is_active` was
+  // carrying this by accident and carrying it wrong — lib/kernel/crm.ts's
+  // converter left it TRUE — and the stale-lead processor was actively writing
+  // `lifecycle_state='isa_qualifying'` back onto converted leads, which is the
+  // exact predicate below. Both halves of that loop are closed; this is the end
+  // that makes the sweep itself correct regardless.
+  const { data, error } = await excludeConvertedLeads(
+    supabase
+      .from('leads')
+      .select('id')
+      .eq('brokerage_id', brokerageId)
+      .eq('lifecycle_state', 'isa_qualifying')
+      .eq('is_active', true)
+      .not('reengagement_status', 'in', '("completed","opted_out","handed_to_sphere")')
+      .or(`last_activity_at.lt.${cutoff},and(last_activity_at.is.null,created_at.lt.${cutoff})`),
+  )
 
   if (error) throw new Error(`detectGhostLeads query failed: ${error.message}`)
 
@@ -50,6 +63,12 @@ export async function runGhostReengagement(
 
   const ghostIds = await detectGhostLeads(brokerageId, thresholdDays)
 
+  // WAVE 143 (143E): the TENANT's follow-up policy (cadence envelope + arbiter settings), read once per sweep, and the
+  // sweep's decision budget (policy.arbiter.maxDecisionsPerRun model verdicts; the rest keep the deterministic cadence).
+  const followup = await loadFollowupPolicy(supabase, brokerageId)
+  const followupPolicyRef = await resolvePolicyRef(supabase, brokerageId, 'followup_policy')
+  const arbiterBudget = { remaining: followup.policy.arbiter.maxDecisionsPerRun }
+
   let sent = 0
   let paused = 0
   let stopped = 0
@@ -69,18 +88,53 @@ export async function runGhostReengagement(
         continue
       }
 
+      // SECOND GATE, on the row this loop already read (`select('*')` carries
+      // contact_id). The batch predicate above and this row check answer the
+      // same question from two directions, so a lead that converted between the
+      // sweep and this iteration is still refused. Reported, not silently
+      // skipped.
+      const finality = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!finality.allowed) {
+        console.log(`[ghost-reengagement] skipped lead ${leadId}: ${finality.reason}`)
+        skipped++
+        continue
+      }
+
       // ── STOP CHECKS — pure policy (reply count resolved first so the single
       //    decision sees the real replyReceived + the attempt count) ──────────
       const contactRow = Array.isArray(lead.contacts)
         ? lead.contacts[0]
         : lead.contacts
 
-      const { count: replyCount } = await supabase
+      const { count: replyCount, error: replyCountErr } = await supabase
         .from('lifecycle_events')
         .select('id', { count: 'exact', head: true })
         .eq('entity_id', leadId)
         .eq('entity_type', 'lead')
         .eq('event_type', KernelEvent.ISA_REPLY_RECEIVED)
+
+      // THE ISA OUTCOME 'no_response' (wave 91 lane 91A) — a lead the detector swept (idle past
+      // the threshold, unconverted) with no reply on record is exactly the radar's "stalled".
+      // Stamped through the ONE writer; a REFUSED reply count stamps nothing (unknown ≠ silent).
+      // The same refused count used to read as "no reply" and let the ladder send to someone who
+      // may have answered — fail closed: skip this lead this run, reported.
+      if (replyCountErr) {
+        console.error(`[ghost-reengagement] reply count refused for lead ${leadId} — skipped this run, no_response NOT stamped: ${replyCountErr.message}`)
+        skipped++
+        continue
+      }
+      if ((replyCount ?? 0) === 0) {
+        const { stampQualificationOutcome } = await import('@/lib/ai-isa/qualification-outcome-stamp')
+        const stamped = await stampQualificationOutcome(supabase, { brokerageId, leadId, result: 'no_response' })
+        if (!stamped.ok) {
+          console.error(`[ghost-reengagement] no_response NOT stamped for lead ${leadId}: ${stamped.error}`)
+          // Lane 92A: surfaced where refusals are shown (self_heal_events → the repair digest /
+          // Exception Center), not only logged — the radar's "stalled" tile counts this stamp.
+          const { recordBestEffortLoss } = await import('@/lib/kernel/write-sentinel')
+          await recordBestEffortLoss(supabase, { table: 'ai_isa_qualifications', flow: 'isa_outcome_stamp', brokerageId,
+            reason: "the ghost sweep continues; the ISA radar's stalled count misses this lead until the qualification row is re-stamped" }, stamped.error)
+        }
+      }
 
       const stopReason = ghostReengagementStopReason({
         lifecycle_state: lead.lifecycle_state,
@@ -97,7 +151,8 @@ export async function runGhostReengagement(
       // The lead stays alive as a sphere relationship — managers working together, no
       // dead-end. Marked terminal for the ISA so the detector stops re-picking it.
       if (stopReason === 'handed_to_sphere') {
-        await supabase.from('leads').update({ reengagement_status: 'handed_to_sphere' }).eq('id', leadId)
+        const { error: sphereStampErr } = await supabase.from('leads').update({ reengagement_status: 'handed_to_sphere' }).eq('id', leadId)
+        if (sphereStampErr) console.error(`[ghost-reengagement] lead NOT marked handed_to_sphere (the detector may re-pick it): ${sphereStampErr.message}`)
         const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
         await publishManagerSignal({
           brokerageId,
@@ -115,10 +170,26 @@ export async function runGhostReengagement(
       }
 
       if (stopReason) {
-        await supabase
+        const { error: completedStampErr } = await supabase
           .from('leads')
           .update({ reengagement_status: 'completed' })
           .eq('id', leadId)
+        if (completedStampErr) console.error(`[ghost-reengagement] lead NOT marked completed (the detector may re-pick it): ${completedStampErr.message}`)
+        // REENGAGEMENT_COMPLETED — a live notification_rules trigger_event with
+        // no emitter: REENGAGEMENT_STARTED below fires when the loop begins, but
+        // nothing told the reactor when it stopped. Real moment: right here,
+        // tenant/contact from the row already loaded this iteration. void/catch
+        // so a fan-out hiccup never blocks the sweep.
+        const { emitKernelEvent } = await import('@/lib/kernel/emit')
+        void emitKernelEvent({
+          event:       KernelEvent.REENGAGEMENT_COMPLETED,
+          brokerageId,
+          entityType:  'lead',
+          entityId:    leadId,
+          contactId:   lead.contact_id ?? undefined,
+          source:      'cron',
+          metadata:    { reason: stopReason, attempts: lead.reengagement_attempt_count ?? 0 },
+        }).catch((err) => console.error(`[ghost-reengagement] REENGAGEMENT_COMPLETED emit failed for ${leadId}:`, err))
         stopped++
         continue
       }
@@ -131,14 +202,25 @@ export async function runGhostReengagement(
       const attempts = lead.reengagement_attempt_count ?? 0
       const phaseInfo = ghostReengagementPhase(attempts)
       if (phaseInfo.escalateOnEntry && lead.reengagement_status !== 'long_horizon') {
-        await supabase.from('leads').update({ reengagement_status: 'long_horizon' }).eq('id', leadId)
-        const { escalateExhaustedGhostLead } = await import('@/lib/ai-isa/ghost-escalation')
-        await escalateExhaustedGhostLead(supabase, {
-          leadId,
-          brokerageId,
-          attempts,
-          firstName: lead.first_name ?? null,
+        const { error: longHorizonErr } = await supabase.from('leads').update({ reengagement_status: 'long_horizon' }).eq('id', leadId)
+        if (longHorizonErr) console.error(`[ghost-reengagement] lead NOT moved to long_horizon: ${longHorizonErr.message}`)
+        // WAVE 149 (C29): the FYI is the ARBITER's call (decideGhostEscalation — the planner proposes it, the FYI is the fallback).
+        const { decideGhostEscalation, escalateExhaustedGhostLead } = await import('@/lib/ai-isa/ghost-escalation')
+        const lastActivityIso = lead.last_activity_at as string | null
+        const esc = await decideGhostEscalation(supabase, {
+          leadId, brokerageId, attempts, now: today,
+          leadTemperature: (lead.lead_temperature as string | null) ?? null,
+          leadScore: typeof lead.lead_score === 'number' ? lead.lead_score : null,
+          hoursSinceLastActivity: lastActivityIso ? Math.max(0, Math.round((today.getTime() - new Date(lastActivityIso).getTime()) / 3_600_000)) : null,
         })
+        if (esc.escalate) {
+          await escalateExhaustedGhostLead(supabase, {
+            leadId,
+            brokerageId,
+            attempts,
+            firstName: lead.first_name ?? null,
+          })
+        }
       }
 
       // ── PAUSE CHECK: under_contract ───────────────────────────────────────
@@ -150,14 +232,14 @@ export async function runGhostReengagement(
           .eq('status', 'under_contract')
 
         if ((ucCount ?? 0) > 0) {
-          await supabase.from('lifecycle_events').insert({
+          await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
             brokerage_id: brokerageId,
             entity_type: 'lead',
             entity_id: leadId,
             event_type: KernelEvent.ISA_OUTREACH_PAUSED,
             metadata: { reason: 'under_contract' },
             created_at: new Date().toISOString(),
-          })
+          }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
           await processKernelEvent({
             event: KernelEvent.ISA_OUTREACH_PAUSED,
             brokerageId,
@@ -203,13 +285,66 @@ export async function runGhostReengagement(
         now: today,
         attempts, // ≥ ceiling → Phase 3 quarterly seasonal nurture (long-horizon)
         profile: cadenceProfile,
+        policy: followup.policy.reengagement, // the TENANT's envelope (wave 143) — the platform defaults when never set
       })
       const inPhase1 = cadence.phase === 1
       const daysSinceStart = cadence.daysSinceStart
 
-      if (!cadence.shouldSend) {
-        skipped++
-        continue
+      // ── THE ARBITER (wave 143, lane 143E; WAVE 149 lane 149C, owner ruling 7 / C29) — the spacing above is the PLANNER'S
+      //    GUIDANCE, not a gate: arbitrateCadence decides from the evidence whether now is right (a due touch may wait; a lead
+      //    who was active since our last touch may be answered before the guidance's day), HOW to open (the adaptive angles,
+      //    adaptive-reengagement.ts) and whether the touch is the newsletter downshift (next-best-touch.ts). It never goes
+      //    inside the fatigue floor, never widens a lead's channels (email + mail only) and stops deferring after
+      //    policy.arbiter.maxDeferDays. Its rationale is a ledger row; a model outage / refusal / spent budget leaves the
+      //    guidance's verdict exactly as it was (send when due, hold when not). ──
+      let chosenAngle: ReturnType<typeof asReengagementAngle> = null
+      let newsletterChosen = false
+      let arbiterRationale: string | null = null
+      {
+        // next-best-touch's PROPOSAL for the seasonal phase (never ordered by age group — owner ruling 18, wave 145): the one
+        // neutral default order, rotated off email. It is offered to the arbiter as an option; its verdict is the fallback.
+        let newsletterProposal: { suggested: boolean; reason: string } | null = null
+        if (cadence.phase === 3 && lead.email && lead.email_verified === true && lead.email_opt_out !== true) {
+          const { permittedLeadChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
+          const nba = decideNextChannel({ permitted: permittedLeadChannels({ emailUsable: true, mailingVerified: false }), lastChannel: 'email' })
+          newsletterProposal = { suggested: nba.channel === 'newsletter', reason: nba.reason }
+        }
+        const nowMs = today.getTime()
+        const hoursSince = (iso: string | null | undefined) => (iso ? Math.max(0, Math.round((nowMs - new Date(iso).getTime()) / 3_600_000)) : null)
+        const deferred = await countArbiterWaits(supabase, { brokerageId, subject: { type: 'lead', id: leadId }, now: today, policy: followup.policy })
+        const arb = await arbitrateCadence({
+          brokerageId,
+          policy: followup.policy,
+          cadence: { shouldSend: cadence.shouldSend, phase: cadence.phase, daysSinceStart: cadence.daysSinceStart, reason: cadence.reason },
+          facts: {
+            leadTemperature: (lead.lead_temperature as string | null) ?? null,
+            leadScore: typeof lead.lead_score === 'number' ? lead.lead_score : null,
+            timeline: (lead.timeline as string | null) ?? null,
+            attempts,
+            hoursSinceLastOutreach: hoursSince(lastLog?.sent_at),
+            hoursSinceLastActivity: hoursSince(lead.last_activity_at as string | null),
+            // An unreadable ledger offers no wait at all (the deterministic send stands).
+            daysDeferred: deferred ?? followup.policy.arbiter.maxDeferDays,
+            source: (lead.source as string | null) ?? null,
+            preferences: [],
+          },
+          budget: arbiterBudget,
+          proposals: {
+            angles: { suggested: reengagementAngleForAttempt(attempts + 1), offered: REENGAGEMENT_ANGLES },
+            newsletter: newsletterProposal,
+          },
+        })
+        if (arb.decision) {
+          const rec = await recordArbitration(supabase, { brokerageId, subject: { type: 'lead', id: leadId }, decision: arb.decision, now: today, policyRef: followupPolicyRef, systemSource: 'ghost_reengagement' })
+          if (!rec.recorded && rec.error) console.warn(`[ghost-reengagement] arbitration not ledgered for lead ${leadId}: ${rec.error}`)
+        }
+        if (!arb.sendNow) {
+          skipped++
+          continue
+        }
+        chosenAngle = asReengagementAngle(arb.angle)
+        newsletterChosen = arb.newsletter === true
+        arbiterRationale = arb.decision?.rationale ?? null
       }
 
       // ── SEND ──────────────────────────────────────────────────────────────
@@ -218,7 +353,8 @@ export async function runGhostReengagement(
       // route re-engagement to the contact-level engine instead of the lead engine.
       // This ensures consent-aware, contact-scoped nurture on converted records.
       if (lead.contact_id && lead.agent_id) {
-        const contactResult = await initiateAIISAContactEngagement(lead.contact_id)
+        // Lane 86E: this runs inside a cron (no session) — it PRESENTS the internal secret.
+        const contactResult = await initiateAIISAContactEngagement(lead.contact_id, undefined, { internalSecret: process.env.CRON_SECRET })
         if (contactResult.success) {
           sent++
         } else {
@@ -232,12 +368,9 @@ export async function runGhostReengagement(
       //    SEASONAL phase (a year+ cold), the manager STOPS pestering with 1:1 emails and HANDS
       //    the relationship to the passive newsletter (Campaign Orchestrator owns it) so value
       //    keeps flowing for whenever they're ready. Phase 1/2 stay on 1:1 email (still warming).
+      //    WAVE 149 (C29): the downshift is the ARBITER's choice (newsletterChosen) — next-best-touch proposed it above.
       if (cadence.phase === 3 && lead.email && lead.email_verified === true && lead.email_opt_out !== true) {
-        const { permittedLeadChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
-        const leadCohort = cohortFromEnrichment(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null)
-        const permitted = permittedLeadChannels({ emailUsable: true, mailingVerified: false })
-        const nba = decideNextChannel({ permitted, cohort: leadCohort, lastChannel: 'email' })
-        if (nba.channel === 'newsletter') {
+        if (newsletterChosen) {
           const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
           await publishManagerSignal({
             brokerageId,
@@ -248,13 +381,14 @@ export async function runGhostReengagement(
             entityType: 'lead',
             entityId: leadId,
             contactId: lead.contact_id ?? null,
-            payload: { audience: 'lead', lead_id: leadId, channel_reason: nba.reason },
+            payload: { audience: 'lead', lead_id: leadId, channel_reason: arbiterRationale ?? 'the arbiter chose the newsletter downshift' },
           }, supabase)
-          await supabase.from('leads').update({
+          const { error: attemptCountErr } = await supabase.from('leads').update({
             reengagement_attempt_count: (lead.reengagement_attempt_count ?? 0) + 1,
             last_activity_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }).eq('id', leadId)
+          if (attemptCountErr) console.error(`[ghost-reengagement] attempt counter NOT advanced (cadence may repeat): ${attemptCountErr.message}`)
           sent++
           continue
         }
@@ -263,19 +397,20 @@ export async function runGhostReengagement(
       // Mark reengagement active on first send — but NEVER downgrade a long_horizon
       // (seasonal) lead back to 'active' (it has graduated past the aggressive cadence).
       if (lead.reengagement_status !== 'active' && lead.reengagement_status !== 'long_horizon') {
-        await supabase
+        const { error: activeStampErr } = await supabase
           .from('leads')
           .update({ reengagement_status: 'active' })
           .eq('id', leadId)
+        if (activeStampErr) console.error(`[ghost-reengagement] lead NOT marked active: ${activeStampErr.message}`)
 
-        await supabase.from('lifecycle_events').insert({
+        await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
           brokerage_id: brokerageId,
           entity_type: 'lead',
           entity_id: leadId,
           event_type: KernelEvent.REENGAGEMENT_STARTED,
           metadata: { phase: cadence.phase },
           created_at: new Date().toISOString(),
-        })
+        }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
         await processKernelEvent({
           event: KernelEvent.REENGAGEMENT_STARTED,
           brokerageId,
@@ -286,7 +421,7 @@ export async function runGhostReengagement(
 
       // Increment attempt counter
       const newCount = (lead.reengagement_attempt_count ?? 0) + 1
-      await supabase
+      const { error: attemptCountErr } = await supabase
         .from('leads')
         .update({
           reengagement_attempt_count: newCount,
@@ -294,6 +429,7 @@ export async function runGhostReengagement(
           updated_at: new Date().toISOString(),
         })
         .eq('id', leadId)
+      if (attemptCountErr) console.error(`[ghost-reengagement] attempt counter NOT advanced (cadence may repeat): ${attemptCountErr.message}`)
 
       // Micro-personalized subject + body from enrichment_profile (never hardcoded)
       const reengageFacts = buildPersonalizationFacts({
@@ -320,6 +456,8 @@ export async function runGhostReengagement(
       const adaptive = adaptiveReengagementHook({
         attempt: newCount,
         enrichment: lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null,
+        // WAVE 149 (C29): the arbiter's chosen opening (the attempt's angle was only its suggestion).
+        angle: chosenAngle,
       })
       const reengageBody = `${adaptive.hook}\n\n${reengageCopy.body}`
 
@@ -334,7 +472,7 @@ export async function runGhostReengagement(
       })
 
       // Emit lifecycle event
-      await supabase.from('lifecycle_events').insert({
+      await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
         brokerage_id: brokerageId,
         entity_type: 'lead',
         entity_id: leadId,
@@ -349,7 +487,7 @@ export async function runGhostReengagement(
           cadence_reason: cadenceProfile.reason,
         },
         created_at: new Date().toISOString(),
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
       await processKernelEvent({
         event: KernelEvent.GHOST_LEAD_DETECTED,
         brokerageId,
@@ -363,7 +501,7 @@ export async function runGhostReengagement(
       const supabaseErr = createServiceClient()
       // automation_errors canonical shape: workflow_name (NOT NULL) + error_message
       // + lead_id; no entity_id/entity_type/error_type/message columns.
-      await supabaseErr
+      await sentinelWrite(supabaseErr, supabaseErr
         .from('automation_errors')
         .insert({
           brokerage_id: brokerageId,
@@ -373,8 +511,7 @@ export async function runGhostReengagement(
           severity: 'medium',
           status: 'open',
           created_at: new Date().toISOString(),
-        })
-        .then(() => void 0)
+        }), { table: 'automation_errors', flow: 'ghost_reengagement_error_log', brokerageId, reason: 'error log must never abort the loop' })
     }
   }
 

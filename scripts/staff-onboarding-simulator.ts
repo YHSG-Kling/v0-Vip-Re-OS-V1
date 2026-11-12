@@ -22,9 +22,24 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 function sourceLayer() {
   console.log("\n[wiring — action, panel, mount, ownership]")
   const act = src("app/actions/superadmin/tenant-setup.ts")
-  check("the action is platform-staff-gated (superadmin/support)", /requireSuperadmin/.test(act) && /"superadmin",\s*"support"/.test(act))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to demand the literal
+  // array `"superadmin", "support"` in the action — and that array was the
+  // defect. Its user_type half read
+  //     ["superadmin","support"].includes(users.user_type)
+  // and 'support' is a legal TENANT user_type, so any tenant user stored that
+  // way could read ANY brokerage's setup readiness cross-tenant. Pinning the
+  // spelling made the hole a requirement. What matters is that the action gates
+  // through the ONE roster-sourced platform gate on the 'support' capability —
+  // which resolves staff from platform_role, where the roster actually lives.
+  check("the action is platform-staff-gated (superadmin/support)",
+    /requirePlatformCapability\(\s*"support"\s*\)/.test(act) &&
+    /@\/lib\/platform\/require-capability/.test(act))
   check("it runs loadSetupReadiness against the TENANT's owner identity (not the staffer)", /loadSetupReadiness\(\{\s*userId:\s*ownerUserId/.test(act) && /brokerageId,/.test(act))
-  check("it resolves the tenant owner (broker/admin, else an active agent)", /in\("user_type",\s*\["broker"/.test(act) && /from\("agents"\)/.test(act))
+  // THE RULE, NOT THE SPELLING (CLAUDE.md §2 / §4): the owner is resolved from the ONE roster
+  // (TENANT_ADMIN_USER_TYPES spread into the filter), never a retyped `["broker", …]` literal —
+  // lane 140O re-anchored this from the literal it used to pin.
+  check("it resolves the tenant owner from the roster (TENANT_ADMIN_USER_TYPES, else an active agent)", /in\("user_type",\s*\[\.\.\.TENANT_ADMIN_USER_TYPES\]/.test(act) && /from\("agents"\)/.test(act))
+  check("  control: the retyped owner roster is gone from the action", !/in\("user_type",\s*\["broker"/.test(act))
   check("honest when the tenant has no owner yet", /has no owner user yet/.test(act))
   const panel = src("app/dashboard/superadmin/brokerages/[id]/tenant-setup-panel.tsx")
   check("the panel renders the tenant's % + required-first checklist", /getTenantSetupReadinessAction/.test(panel) && /required/.test(panel) && /r\.pct/.test(panel))

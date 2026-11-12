@@ -7,12 +7,19 @@
  * canonical commission_distributions rail (distribution_type 'referral'). Directory feeds the map.
  *
  * PURE:   computeReferralFee (deal commission × fee %, clamped, honest $0).
- * SOURCE: createAgentReferral writes an agent→agent referral; the referral-closer books the fee on close;
+ * SOURCE: createAgentReferral writes an agent→agent referral; the WATERFALL (stage 03b, wave 143 lane 143C) books the fee
+ *         as a conserved deduction on the canonical rail; the referral-closer no longer books anything;
  *         the directory lists same-brokerage agents by location; the UI is wired.
- * LIVE (creds-gated): create a referral → close the deal → the referring agent is credited on the
- *         commission_distributions rail → idempotent → clean up == 0.
+ * LIVE (creds-gated): create a referral → close the deal → the closer closes the referral and books NO distribution
+ *         (the fee is the waterfall's: proved end to end, in memory, by test:agreement-waterfall section D) → clean up == 0.
+ *
+ * WAVE 143 (lane 143C) - THIS PROOF PINNED A WAYPOINT. It asserted the referral-closer inserts the 'referral' distribution
+ * after the close. That row was deducted from nobody and sat outside the conservation identity, so the rule is re-asserted
+ * on the survivor: ONE writer of distribution_type 'referral' (waterfall stage 03b), fee base = the adjusted gross, one
+ * referral pays one deal (referrals.transaction_id compare-and-swap in stage 11).
  */
 import { readFileSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { computeReferralFee } from "../lib/referrals/agent-referral"
@@ -38,8 +45,11 @@ function sourceLayer() {
   check("can't refer to yourself", /referringAgentId === input\.receivingAgentId/.test(lib))
   check("directory lists same-brokerage agents with location (for the map)", /listReferralAgents[\s\S]*?location_id[\s\S]*?locations:location_id/.test(lib))
   const closer = src("lib/agents/referral-closer.ts")
-  check("the referral-closer books the fee to the referring agent on close (canonical rail)", /if \(r\.referring_agent_id\)/.test(closer) && /commission_distributions"\)\.insert\(/.test(closer) && /distribution_type: "referral"/.test(closer) && /agent_id: r\.referring_agent_id/.test(closer))
-  check("idempotent per (referral, transaction)", /transaction_id", transactionId\)\.eq\("agent_id", r\.referring_agent_id\)\.eq\("distribution_type", "referral"\)/.test(closer))
+  const stage = src("lib/commission/waterfall/03b-referral-deduction.ts")
+  const BOOKS = /from\(\s*["']commission_distributions["']\s*\)\s*\.insert\(/
+  check("the WATERFALL books the fee to the referring agent on the canonical rail (distribution_type 'referral', agent = referring_agent_id)", /distribution_type:\s*'referral'/.test(stage) && /agent_id:\s*pick\.referral\.referring_agent_id/.test(stage))
+  check("the referral-closer no longer inserts a distribution (ONE writer of the 'referral' type)", !BOOKS.test(stripComments(closer)) && BOOKS.test(`await supabase.from("commission_distributions").insert({})`))
+  check("one referral pays one deal: the stage reads the link and stage 11 claims it compare-and-swap (WHERE transaction_id IS NULL)", /transaction_id/.test(stage) && /\.is\('transaction_id', null\)/.test(src("lib/commission/waterfall/11-validate-persist.ts")))
   const client = src("app/dashboard/agent/referral-network/referral-network-client.tsx")
   check("the UI shows the directory + earnings + a working refer form", /Referral network/.test(client) && /createAgentReferralAction/.test(client) && /Referral income earned/.test(client))
 }
@@ -75,15 +85,10 @@ async function liveLayer() {
     const { closeReferralOnDealClose } = await import("../lib/agents/referral-closer")
     await closeReferralOnDealClose(svc as any, { transactionId: txnId, brokerageId })
 
-    const { data: dist } = await svc.from("commission_distributions").select("id, calculated_amount, distribution_type")
-      .eq("transaction_id", txnId).eq("agent_id", referring).eq("distribution_type", "referral").maybeSingle()
-    if (dist) cleanup.push({ table: "commission_distributions", id: (dist as any).id })
-    check("live: the referring agent was credited 25% of the $8,000 commission = $2,000", !!dist && Number((dist as any).calculated_amount) === 2000)
-
-    // Idempotent — re-running the closer doesn't double-credit.
-    await closeReferralOnDealClose(svc as any, { transactionId: txnId, brokerageId })
-    const { count } = await svc.from("commission_distributions").select("id", { count: "exact", head: true }).eq("transaction_id", txnId).eq("agent_id", referring).eq("distribution_type", "referral")
-    check("live: idempotent — the referral fee is booked once", count === 1)
+    // WAVE 143: closing the referral books NO distribution - the fee is the waterfall's (conserved, off the top).
+    const { count: closerRows } = await svc.from("commission_distributions").select("id", { count: "exact", head: true })
+      .eq("transaction_id", txnId).eq("agent_id", referring).eq("distribution_type", "referral").is("commission_id", null)
+    check("live: the referral-closer booked NO free-standing 'referral' distribution", (closerRows ?? 0) === 0)
   } finally {
     // Restore the transaction, then delete seeded rows.
     if (origTxn) await svc.from("transactions").update({ status: (origTxn as any).status, commission_amount: (origTxn as any).commission_amount, contact_id: (origTxn as any).contact_id }).eq("id", txnId)
@@ -102,6 +107,6 @@ async function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ AGENT_REFERRAL_FAIL"); process.exit(1) }
-  console.log(" ✅ AGENT_REFERRAL_PASS — agent-to-agent referrals tracked; the fee is booked to the referrer on close")
+  console.log(" ✅ AGENT_REFERRAL_PASS — agent-to-agent referrals tracked; the fee is the waterfall's conserved deduction to the referrer")
 }
 main()

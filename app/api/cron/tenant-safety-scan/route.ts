@@ -74,7 +74,8 @@ export async function GET(request: NextRequest) {
     } else if (Array.isArray(schemaRows)) {
       for (const row of schemaRows as Array<{ table_name: string; missing_col: string | null; missing_policy: string | null }>) {
         if (row.missing_col) {
-          await supabase.from("tenant_safety_findings").insert({
+          // `findings_inserted` counted rows whether or not they landed (§3).
+          const { error: colFindingErr } = await supabase.from("tenant_safety_findings").insert({
             scan_run_id:  scanRunId,
             finding_type: "table_missing_brokerage_id",
             table_name:   row.table_name,
@@ -82,10 +83,11 @@ export async function GET(request: NextRequest) {
             details:      { detected_at: new Date().toISOString() },
           })
           summary.tables_missing_brokerage_id++
-          summary.findings_inserted++
+          if (colFindingErr) console.error(`[tenant-safety-scan] finding for ${row.table_name} (missing brokerage_id) NOT recorded: ${colFindingErr.message}`)
+          else summary.findings_inserted++
         }
         if (row.missing_policy) {
-          await supabase.from("tenant_safety_findings").insert({
+          const { error: policyFindingErr } = await supabase.from("tenant_safety_findings").insert({
             scan_run_id:  scanRunId,
             finding_type: "table_missing_rls_policy",
             table_name:   row.table_name,
@@ -93,7 +95,8 @@ export async function GET(request: NextRequest) {
             details:      { detected_at: new Date().toISOString() },
           })
           summary.tables_missing_rls_policy++
-          summary.findings_inserted++
+          if (policyFindingErr) console.error(`[tenant-safety-scan] finding for ${row.table_name} (missing RLS policy) NOT recorded: ${policyFindingErr.message}`)
+          else summary.findings_inserted++
         }
       }
     }
@@ -110,7 +113,7 @@ export async function GET(request: NextRequest) {
         continue
       }
       if ((count ?? 0) > 0) {
-        await supabase.from("tenant_safety_findings").insert({
+        const { error: rowFindingErr } = await supabase.from("tenant_safety_findings").insert({
           scan_run_id:    scanRunId,
           finding_type:   "rows_missing_brokerage_id",
           table_name:     tableName,
@@ -119,7 +122,8 @@ export async function GET(request: NextRequest) {
           affected_rows:  count,
         })
         summary.rows_missing_brokerage_id += count ?? 0
-        summary.findings_inserted++
+        if (rowFindingErr) console.error(`[tenant-safety-scan] finding for ${tableName} (${count} untenanted rows) NOT recorded: ${rowFindingErr.message}`)
+        else summary.findings_inserted++
       }
     }
 

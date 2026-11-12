@@ -2,18 +2,14 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { getAgentOnboardingDashboard, completeAISessionStep } from "@/lib/kernel"
+import { completeAISessionStep } from "@/lib/kernel"
 
-export async function fetchMyOnboardingDashboard() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) throw new Error("Unauthorized")
-
-  const { agentId } = await getAgentContext()
-  if (!agentId) throw new Error("Missing agent context")
-
-  return await getAgentOnboardingDashboard({ userId: user.id, agentId })
-}
+// TOMBSTONE (orphan tranche 3): fetchMyOnboardingDashboard deleted — a wrapper
+// no surface called. The live survivor is app/dashboard/onboarding/page.tsx,
+// which calls lib/kernel/agent-onboarding.ts:getAgentOnboardingDashboard
+// directly with the m353-correct agent resolution (agents.id looked up
+// explicitly, never `?? user.id` — the class mix-up this wrapper's
+// getAgentContext() shortcut papered over).
 
 export async function completeMyOnboardingStep(stepId: string, data?: {
   timeSpentMinutes?: number

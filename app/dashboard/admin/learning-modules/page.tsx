@@ -1,8 +1,10 @@
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { listLearningModulesForBrokerageAction } from "@/app/actions/learning-modules"
+import { listLearningModulesForBrokerageAction, getModulePublicationsAction } from "@/app/actions/learning-modules"
 import { LearningModulesClient } from "./learning-modules-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -12,7 +14,12 @@ export const metadata = {
 }
 
 async function LearningModulesData() {
-  const result = await listLearningModulesForBrokerageAction({ limit: 100 })
+  // The publication ledger loads BESIDE the module list — a refused ledger read
+  // is handed to the client as its own error, never as "no publications".
+  const [result, pubResult] = await Promise.all([
+    listLearningModulesForBrokerageAction({ limit: 100 }),
+    getModulePublicationsAction(),
+  ])
   if (!result.ok) {
     return (
       <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
@@ -20,7 +27,13 @@ async function LearningModulesData() {
       </div>
     )
   }
-  return <LearningModulesClient initialModules={result.rows} />
+  return (
+    <LearningModulesClient
+      initialModules={result.rows}
+      initialPublications={pubResult.ok ? pubResult.publications : []}
+      initialPublicationsError={pubResult.ok ? null : pubResult.error}
+    />
+  )
 }
 
 export default async function LearningModulesPage() {
@@ -34,8 +47,8 @@ export default async function LearningModulesPage() {
     .eq("id", user.id)
     .maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(t)) {
-    redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: t })) {
+    return <RoleGateNotice surface="Learning modules" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   return (

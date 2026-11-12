@@ -1,4 +1,5 @@
 // lib/documents/auto-filer.ts
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { triggerMilestoneFromDocument } from "@/lib/transactions/milestone-auto-trigger"
 
@@ -47,13 +48,14 @@ export async function autoFileDocument(
   }
 
   if (bestMatch && bestScore > 0) {
-    await supabase
+    const { error: routeErr } = await supabase
       .from("transaction_documents")
       .update({
         doc_type: bestMatch.doc_type,
         status: bestMatch.requires_review ? "under_review" : "approved",
       })
       .eq("id", transactionDocId)
+    if (routeErr) console.error(`[auto-filer] document routing (doc_type/status) refused: ${routeErr.message}`)
 
     if (!bestMatch.requires_review && doc.uploaded_by) {
       await triggerMilestoneFromDocument({
@@ -83,10 +85,11 @@ export async function autoFileDocument(
     return { success: true, routed: true, docType: bestMatch.doc_type }
   }
 
-  await supabase
+  const { error: reviewErr } = await supabase
     .from("transaction_documents")
     .update({ status: "under_review" })
     .eq("id", transactionDocId)
+  if (reviewErr) console.error(`[auto-filer] document could not be sent to under_review: ${reviewErr.message}`)
 
   if (doc.transaction_id) await recomputeDocumentChecklist(supabase, doc.transaction_id, brokerageId)
   return { success: true, routed: false }
@@ -106,19 +109,36 @@ export async function recomputeDocumentChecklist(
   brokerageId: string | null,
 ): Promise<void> {
   try {
-    const { data: docs } = await supabase
+    // Wave 140H (wave-139 blocker auto-filer.ts:106): the rollup runs on the SERVICE client from the
+    // filer and from the self-healing RECONCILE_COUNTS rail, so the tenant predicate is pinned here —
+    // a transaction id alone would aggregate another tenant's documents under this tenant's row.
+    // No tenant → no recompute (fail closed); a refused read is reported, never read as "0 documents".
+    if (!brokerageId) {
+      console.error(`[auto-filer] document_checklist NOT recomputed for transaction ${transactionId}: no brokerage_id (tenant predicate required)`)
+      return
+    }
+    const { data: docs, error: docsError } = await supabase
       .from("transaction_documents")
       .select("id, doc_type, status")
       .eq("transaction_id", transactionId)
+      .eq("brokerage_id", brokerageId)
       .limit(500)
+    if (docsError) {
+      console.error(`[auto-filer] document_checklist NOT recomputed for transaction ${transactionId}: transaction_documents read refused: ${docsError.message}`)
+      return
+    }
     const all = (docs ?? []) as Array<{ doc_type: string | null; status: string | null }>
     const total = all.length
     const verified = all.filter((d) => d.status === "approved").length
     const required = Array.from(new Set(all.map((d) => d.doc_type).filter(Boolean)))
     const status = total === 0 ? "pending" : verified === total ? "complete" : "in_progress"
 
-    const { data: existing } = await supabase
-      .from("document_checklist").select("id").eq("transaction_id", transactionId).maybeSingle()
+    const { data: existing, error: existingError } = await supabase
+      .from("document_checklist").select("id").eq("transaction_id", transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (existingError) {
+      console.error(`[auto-filer] document_checklist NOT recomputed for transaction ${transactionId}: checklist read refused: ${existingError.message}`)
+      return
+    }
     const row = {
       transaction_id: transactionId,
       brokerage_id: brokerageId,
@@ -128,8 +148,10 @@ export async function recomputeDocumentChecklist(
       status,
       updated_at: new Date().toISOString(),
     }
-    if (existing) await supabase.from("document_checklist").update(row).eq("id", (existing as any).id)
-    else await supabase.from("document_checklist").insert(row)
+    // The checklist is an aggregate recomputed on every filing — declared allowed
+    // to fail (filing already succeeded), but never silently.
+    if (existing) await sentinelWrite(supabase, supabase.from("document_checklist").update(row).eq("id", (existing as any).id).eq("brokerage_id", brokerageId), { table: "document_checklist", flow: "document_checklist_write", reason: "checklist aggregate; recomputed on the next filing" })
+    else await sentinelWrite(supabase, supabase.from("document_checklist").insert(row), { table: "document_checklist", flow: "document_checklist_write", reason: "checklist aggregate; recomputed on the next filing" })
   } catch { /* the checklist is an aggregate — filing already succeeded */ }
 }
 
@@ -172,13 +194,13 @@ export async function checkMissingDocuments(params: {
   const missing = needed.filter((docType) => !present.has(docType))
 
   if (missing.length) {
-    await supabase.from("proactive_interventions").insert({
+    await sentinelWrite(supabase, supabase.from("proactive_interventions").insert({
       transaction_id: params.transactionId,
       brokerage_id: params.brokerageId,
       issue_detected: `Missing required documents for ${params.stage}: ${missing.join(", ")}`,
       severity: params.stage === "CLOSING_PREP" ? "high" : "medium",
       client_impacted: false,
-    })
+    }), { table: "proactive_interventions", flow: "proactive_interventions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   return { missing }

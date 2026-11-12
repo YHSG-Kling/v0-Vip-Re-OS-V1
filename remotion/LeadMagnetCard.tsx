@@ -34,7 +34,8 @@
  * renderStill() outputs the PNG.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface LeadMagnetCardProps {
   /** Top hook — short eyebrow label (e.g. "FREE GUIDE"). 2-4 words. */
@@ -83,7 +84,7 @@ export const LeadMagnetCard: React.FC<LeadMagnetCardProps> = ({
         }}>
           <div>
             {brand.logoUrl ? (
-              <Img src={brand.logoUrl} style={{ height: 44, objectFit: "contain", marginBottom: 24 }} />
+              <SafeImg src={brand.logoUrl} style={{ height: 44, objectFit: "contain", marginBottom: 24 }} />
             ) : (
               <div style={{
                 fontSize: 16, letterSpacing: 4, textTransform: "uppercase",
@@ -150,7 +151,7 @@ export const LeadMagnetCard: React.FC<LeadMagnetCardProps> = ({
             width: "42%", height: "100%", position: "relative",
             backgroundColor: brand.accentColor,
           }}>
-            <Img
+            <SafeImg
               src={heroImageUrl as string}
               style={{ width: "100%", height: "100%", objectFit: "cover" }}
             />

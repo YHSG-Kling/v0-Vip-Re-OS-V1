@@ -15,8 +15,6 @@ import { batchPassComplianceChecks, getTransactionComplianceChecks } from "@/app
 import { exportAuditTrail } from "@/app/actions/compliance-monitoring"
 import {
   Zap,
-  FileText,
-  CheckSquare,
   ShieldCheck,
   Download,
   Loader2,
@@ -25,7 +23,13 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 interface TcFastActionPanelProps {
-  transactions: Array<{ id: string; property_address: string; stage?: string; deal_type?: string }>
+  transactions: Array<{
+    id: string
+    property_address: string
+    stage?: string
+    deal_type?: string
+    contact_id?: string | null
+  }>
   agentId: string
   brokerageId: string
   userRole: string
@@ -66,7 +70,9 @@ export function TcFastActionPanel({
       })
 
     if (result.success) {
-      toast.success(`Passed ${openChecks.length} compliance check${openChecks.length !== 1 ? "s" : ""}`)
+      // wave 152 (lane 152E): the count is what the server actually passed; blocking and computed checks are named back, never swept
+      const refused = result.refused?.length ?? 0
+      toast.success(`Passed ${result.updated} compliance check${result.updated !== 1 ? "s" : ""}${refused ? ` — ${refused} left for one-at-a-time review (blocking, or computed by the closing comparison)` : ""}`)
       router.refresh()
     } else {
       toast.error(result.error ?? "Batch pass failed")
@@ -127,6 +133,7 @@ export function TcFastActionPanel({
             {/* Log Activity — TaskNoteCreator manages its own sheet */}
             <TaskNoteCreator
               agentId={agentId}
+              contactId={selectedTxn?.contact_id ?? undefined}
               transactionId={selectedTxnId}
               defaultType="note"
               onCreated={() => router.refresh()}
@@ -135,6 +142,7 @@ export function TcFastActionPanel({
             {/* Create Task — separate TaskNoteCreator instance */}
             <TaskNoteCreator
               agentId={agentId}
+              contactId={selectedTxn?.contact_id ?? undefined}
               transactionId={selectedTxnId}
               defaultType="task"
               onCreated={() => router.refresh()}

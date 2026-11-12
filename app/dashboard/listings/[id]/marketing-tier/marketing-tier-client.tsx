@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { toast } from "sonner"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -204,18 +205,24 @@ export function MarketingTierClient({
     }
   }
 
+  // These three report failure BY RETURN. The create handler a few lines above
+  // already checks result.success — these siblings did not, so a refused delete
+  // or toggle just re-rendered the unchanged row.
   const handleDeleteBudget = async (budgetId: string) => {
-    await deleteTierBudget(budgetId, userId)
+    const r = await deleteTierBudget(budgetId, userId)
+    if (!r?.success) { toast.error((r as any)?.error ?? "The budget was not deleted."); return }
     router.refresh()
   }
 
   const handleDeleteDistribution = async (distributionId: string) => {
-    await deleteTierDistribution(distributionId, userId)
+    const r = await deleteTierDistribution(distributionId, userId)
+    if (!r?.success) { toast.error((r as any)?.error ?? "The distribution was not deleted."); return }
     router.refresh()
   }
 
   const handleToggleTierActive = async (tierId: string, isActive: boolean) => {
-    await updateTier({ tierId, actorUserId: userId, isActive })
+    const r = await updateTier({ tierId, actorUserId: userId, isActive })
+    if (!r?.success) { toast.error((r as any)?.error ?? "The tier was not updated."); return }
     router.refresh()
   }
 
@@ -264,7 +271,7 @@ export function MarketingTierClient({
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-amber-600">
+                    <div className="flex items-center gap-2 text-amber-700">
                       <AlertCircle className="h-5 w-5 shrink-0" />
                       <span className="font-medium">No Matching Tier</span>
                     </div>
@@ -462,7 +469,7 @@ export function MarketingTierClient({
                                 Complete
                               </Badge>
                             ) : (
-                              <Badge variant="outline" className="text-amber-600 border-amber-300">
+                              <Badge variant="outline" className="text-amber-700 border-amber-300">
                                 <XCircle className="mr-1 h-3 w-3" />
                                 Missing
                               </Badge>
@@ -537,7 +544,15 @@ export function MarketingTierClient({
                         <TableCell className="text-right">{formatCurrency(campaign.budget_total)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(campaign.budget_spent)}</TableCell>
                         <TableCell>
-                          <Link href={`/content-studio/campaigns/${campaign.id}`}>
+                          {/* REPOINTED (dangling-link sweep, template class, 2026-09-02):
+                              was `/content-studio/campaigns/${id}` — app/content-studio has
+                              no campaigns child, so every arrow 404'd. These rows are
+                              marketing_campaigns; the surface that lists them per brokerage
+                              and opens one (getCampaignById, brokerage-scoped) is the
+                              Campaigns tab of app/dashboard/marketing/studio/page.tsx. No
+                              page takes a per-campaign id — the tab is the closest honest
+                              landing. */}
+                          <Link href="/dashboard/marketing/studio?tab=campaigns">
                             <Button variant="ghost" size="sm">
                               <ArrowRight className="h-4 w-4" />
                             </Button>

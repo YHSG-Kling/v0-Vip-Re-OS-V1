@@ -26,8 +26,12 @@ export interface PlaybookStep {
   label: string
   /** The STRATEGY BRIEF the AI author writes the actual copy from. */
   brief: string
-  /** Minutes after the previous bundle step (bundle channels only). */
-  sendAfterMinutes?: number
+  // TOMBSTONE (wave 150, lane 150SZ — owner: "no fixed timetables anywhere"; wave-149 §4 carried C-3): the per-step
+  // `sendAfterMinutes` offsets (3 / 6 / 2 / 4 / 1 days after the previous step) are gone. The playbook proposes ORDER and
+  // INTENT only (each brief says what the touch is for); WHEN a follow-on goes is the ONE arbiter's decision at dispatch
+  // (lib/ai-isa/followup-arbiter.ts). Measured at 74cbf43e: lib/direct-mail/orchestrate-bundle-send.ts selected
+  // send_after_minutes and fired every item at once anyway — the offsets were never honoured. The dispatch-time arbiter door
+  // is recorded in lane 150SZ notes (Outside-lane) for the bundle dispatcher's owner.
 }
 
 export interface CreativePlaybook {
@@ -75,19 +79,65 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "email",
-        sendAfterMinutes: 4320,
         label: "Zestimate Challenge — follow-up email",
         brief:
-          "A 3-day follow-up email to homeowners who received the postcard. Subject should reference 'that number Zillow gave you' with curiosity, not clickbait. Body: validate that most homeowners quietly wonder if the online estimate is right; explain in one honest sentence why it's a ZIP-code average; invite them to watch the agent's short breakdown video and get the real number via the link placeholder {{magnet_url}}. Short, personal, no pressure.",
+          "A follow-up email to homeowners who received the postcard. Subject should reference 'that number Zillow gave you' with curiosity, not clickbait. Body: validate that most homeowners quietly wonder if the online estimate is right; explain in one honest sentence why it's a ZIP-code average; invite them to watch the agent's short breakdown video and get the real number via the link placeholder {{magnet_url}}. Short, personal, no pressure.",
       },
       {
         kind: "sms",
-        sendAfterMinutes: 8640,
         label: "Zestimate Challenge — nudge SMS",
         brief:
-          "A day-6 one-line SMS nudge: casually ask if the online number for their place looked right, and offer the 90-second reality check + their real number at {{magnet_url}}. Friendly, under 160 characters.",
+          "A one-line SMS nudge: casually ask if the online number for their place looked right, and offer the 90-second reality check + their real number at {{magnet_url}}. Friendly, under 160 characters.",
       },
       { kind: "bundle", label: "The Zestimate Challenge", brief: "" },
+    ],
+  },
+  {
+    // WAVE 82D (owner verbatim: "finding out what your home is worth in todays
+    // market can make you feel overwhelmed when comparing all of these
+    // sites...we can help"). The creative itself (cards + spread + hook + CTA)
+    // is composed by lib/marketing/estimate-comparison.ts from APPROVED
+    // captures with human-confirmed figures; the channel copy below stays
+    // AI-authored from briefs (the catalog's owner rule).
+    key: "estimate_comparison",
+    title: "The Estimate Comparison",
+    strategy: "Show the homeowner that the big home-value websites disagree about the same house — then offer the local, human read.",
+    whyItWorks:
+      "Homeowners already check two or three sites and feel overwhelmed when the numbers don't match. Putting every site's figure side by side, with the spread, names that confusion out loud — you're not arguing with an estimate, you're resolving a contradiction they already felt. The QR lands on your home-value review page.",
+    ridesOn: "The home-value websites every homeowner has already checked (Zillow, Realtor.com, Redfin, Homes.com)",
+    steps: [
+      {
+        kind: "lead_magnet",
+        label: "Estimate Comparison — home-value review page",
+        brief:
+          "A home-value REVIEW request page for homeowners who saw that the big websites disagree about their home. Angle: every site runs its own model on its own data and none has been inside the home; a local review looks at condition, updates and what buyers are actually paying nearby. Promise a no-obligation review conversation; no specific or instant figure is promised on the page. Tone: calm, respectful, zero hype.",
+      },
+      { kind: "qr", label: "Estimate Comparison QR", brief: "lead_capture" },
+      {
+        kind: "direct_mail_postcard",
+        label: "Estimate Comparison — postcard",
+        brief:
+          "A postcard whose art is the estimate comparison (each website's figure on its own card, the spread between highest and lowest). Headline options to pick from or sharpen: 'Four websites. Four different prices. Which one is right?' / 'Your home has four online prices. It only sells for one.' / 'The internet can't agree on what your home is worth.' Body: it's normal to feel overwhelmed comparing these sites — each uses different data and none has walked through the home. CTA: scan for a free, no-obligation home-value review. Never promise a number; the figures are the websites', not the agent's.",
+      },
+      {
+        kind: "social_post",
+        label: "Estimate Comparison — social carousel",
+        brief:
+          "A carousel caption for the comparison graphic: open with a pattern-interrupt hook about the websites disagreeing on the same home; one honest sentence on why (different data, none has seen inside); invite a DM with the word VALUE for a no-obligation home-value review. No address, no promise of a number, no people or neighborhood descriptions (fair housing).",
+      },
+      {
+        kind: "email",
+        label: "Estimate Comparison — follow-up email",
+        brief:
+          "A follow-up email. Subject along the lines of 'Why four websites can't agree on your home's value' — curiosity, not clickbait. Body: validate that the mismatch is confusing; explain in one sentence why the sites disagree; invite a no-obligation home-value review via {{magnet_url}}. Short, personal, no pressure, no number promised.",
+      },
+      {
+        kind: "video",
+        label: "Why the websites disagree",
+        brief:
+          "A 45-60 second spoken presentation over the comparison graphic (screenshot treatment): open with the hook that the big home-value websites show different prices for the same home; walk the figures one at a time and land the spread; explain that each site uses its own data and none has been inside the home; close by inviting a free, no-obligation home-value review through the page. Warm, first person, no jargon, never state a value.",
+      },
+      { kind: "bundle", label: "The Estimate Comparison", brief: "" },
     ],
   },
   {
@@ -113,7 +163,6 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "social_post",
-        sendAfterMinutes: 0,
         label: "Neighbor Brag — social",
         brief:
           "A social caption celebrating another neighborhood closing (no address, no price — compliance): if you own nearby your comps just changed; invite DMs with a one-word trigger to get an updated value, no strings.",
@@ -137,13 +186,11 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "sms",
-        sendAfterMinutes: 2880,
         label: "Rate-Drop — SMS",
-        brief: "A two-day follow-up SMS: rates moved, the monthly-payment math on homes they liked changed; reply with one word for the updated numbers. Under 160 characters.",
+        brief: "A follow-up SMS: rates moved, the monthly-payment math on homes they liked changed; reply with one word for the updated numbers. Under 160 characters.",
       },
       {
         kind: "voicedrop",
-        sendAfterMinutes: 5760,
         label: "Rate-Drop — voicedrop",
         brief:
           "A 20-30 second warm ringless voicemail from the agent: with the recent rate move the monthly payment on the homes they looked at genuinely changed; the agent ran the new numbers and a couple were surprising; invite a call or text back for a two-minute walkthrough. Conversational, spoken, no script-reading feel.",
@@ -167,7 +214,6 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "voicedrop",
-        sendAfterMinutes: 1440,
         label: "Anniversary Equity — voicedrop",
         brief:
           "A 20-second warm ringless voicemail on the home anniversary: the agent remembers closing day, pulled together what the home has done since (the honest version, not the website number), and will text the one-page equity snapshot if they reply. Personal and brief.",
@@ -198,9 +244,8 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "sms",
-        sendAfterMinutes: 4320,
         label: "Neighbor VIP — reminder SMS",
-        brief: "A reminder SMS the day before: neighbor preview hour comes first; come see the home setting the street's comps and bring questions about their own number. Under 160 characters.",
+        brief: "A reminder SMS before the open house: neighbor preview hour comes first; come see the home setting the street's comps and bring questions about their own number. Under 160 characters.",
       },
       { kind: "bundle", label: "The Neighbor-First Open House", brief: "" },
     ],
@@ -221,15 +266,73 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
       },
       {
         kind: "voicedrop",
-        sendAfterMinutes: 2880,
         label: "Expired Rescue — voicedrop",
         brief:
-          "A 25-second ringless voicemail two days after the letter: acknowledge they've heard from a dozen agents this week, so this is different — no ask for the listing; the 14-day relaunch plan is in the mail, keep it, use it with whoever they choose; a text away if they want a walkthrough. Calm and generous.",
+          "A 25-second ringless voicemail after the letter has arrived: acknowledge they've heard from a dozen agents this week, so this is different — no ask for the listing; the 14-day relaunch plan is in the mail, keep it, use it with whoever they choose; a text away if they want a walkthrough. Calm and generous.",
       },
       { kind: "bundle", label: "The Expired-Listing Second Opinion", brief: "" },
     ],
   },
 ]
+
+/**
+ * THE ESTIMATE-TYPE PLAYS (wave 83, lane 83C — owner verbatim: "you removed
+ * the zestimate playbook which you shouldn't have done because there can be
+ * more than one 'estimate' type play. zestimate is marketing campaigns
+ * strictly.").
+ *
+ * FINDING (git log -S zestimate_challenge -- lib/marketing/creative-playbooks.ts,
+ * 2026-09-26): the ONLY commit touching the key is 5a9313bf (Round 36, which
+ * added it); no commit on this branch removed or renamed it, and at d35fe4a4
+ * it sits first in CREATIVE_PLAYBOOKS with its install path
+ * (app/actions/creative-playbooks.ts `playbook.key === "zestimate_challenge"` →
+ * ensureZestimateChallengeStill), its card (estimate-stills-card.tsx) and its
+ * autonomous still capture intact. What 82D did was ADD `estimate_comparison`
+ * beside it — so nothing needed restoring; what was missing was a rule that
+ * the two plays coexist. This list IS that rule: both keys must resolve, and
+ * scripts/estimate-comparison-guard.ts fails if either play is dropped or one
+ * is folded into the other. A new estimate-type play is ADDED here, never
+ * substituted for an existing one.
+ * @proofSeam kept exported for scripts/estimate-comparison-guard.ts, which fails if either estimate play is dropped or folded into the other (owner ruling recorded above) (lane 93A).
+ */
+export const ESTIMATE_PLAY_KEYS = ["zestimate_challenge", "estimate_comparison"] as const
+
+/**
+ * THE PLAYS WHOSE COPY MAY QUOTE THE REAL ZESTIMATE (wave 84, lane 84B — owner
+ * verbatim: "for the zestimate challenge it is oky to have a real number as we
+ * aren't using it as our true value.").
+ *
+ * The Zestimate Challenge ALONE: its whole premise is "Zillow says $X — is
+ * that right?" (the industry's own shape: "sold $243,000 over the Zestimate",
+ * nowbam.com 2025-05-21; "screenshot the Zestimate… 'what's your take on this
+ * valuation?'", CrossCountry Mortgage 2023-10-09). The figure is ZILLOW's,
+ * quoted AS Zillow's — attributed, dated, "not an appraisal" (Zillow's own
+ * terms) and never the agent's opinion of value, a price the home will sell
+ * for, or an appraisal. It reaches the copy only when a human has CONFIRMED
+ * it off the APPROVED still (estimate-comparison.ts confirmComparisonFigure →
+ * metadata.confirmed_figure_usd); no figure → the brief is unchanged.
+ * NOT relaxed: the Estimate Comparison keeps "never promise a number" for its
+ * own voice, and the AI ISA's home-value review CALLBACK still speaks no
+ * number (lib/ai-isa/qualification-playbook.ts schedule_home_value_review) —
+ * nothing in lib/ai-isa or lib/voice reads this (the zestimate-only proof).
+ */
+export const ZESTIMATE_FIGURE_PLAY_KEYS = ["zestimate_challenge"] as const
+
+export function playMayQuoteZestimate(key: string): boolean {
+  return (ZESTIMATE_FIGURE_PLAY_KEYS as readonly string[]).includes(key)
+}
+
+/** PURE: the brief addendum that hands the author Zillow's figure, attributed.
+ *  `figureText` is already formatted (estimate-comparison.ts formatUsd);
+ *  `asOf` is the still's capture date (YYYY-MM-DD) or null. */
+export function zestimateFigureBrief(figureText: string, asOf: string | null): string {
+  const when = asOf ? ` as shown on Zillow on ${asOf}` : " as shown on Zillow"
+  return [
+    `ZILLOW'S OWN FIGURE: Zillow's Zestimate for this home${when} is ${figureText}.`,
+    `You MAY quote ${figureText} — always attributed to Zillow as its Zestimate (for example "Zillow's Zestimate says ${figureText}"), an automated estimate that is not an appraisal.`,
+    `Never present it as the agent's value, the brokerage's opinion of value, an appraisal, or the price the home will sell for, and state no other dollar value for the home.`,
+  ].join(" ")
+}
 
 export function getPlaybook(key: string): CreativePlaybook | null {
   return CREATIVE_PLAYBOOKS.find((p) => p.key === key) ?? null

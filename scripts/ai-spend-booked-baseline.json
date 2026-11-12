@@ -1,0 +1,8 @@
+{
+  "unbooked": {
+    "services/aiMappingService.ts": [
+      "raw:generateText"
+    ]
+  },
+  "routedWithoutTenant": {}
+}

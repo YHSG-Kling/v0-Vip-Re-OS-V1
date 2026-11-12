@@ -9,7 +9,9 @@
  *
  * Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchRssFeed } from "@/lib/content-intel/rss-scraper"
 
@@ -19,17 +21,15 @@ export const runtime = "nodejs"
 
 interface SourceRow {
   id:            string
-  source_config: { feed_url?: string; source_trust?: number }
+  // local_intel: a local-intelligence feed (wave 144G) — owned by lib/content-intel/local-intel.ts, skipped here
+  source_config: { feed_url?: string; source_trust?: number; local_intel?: unknown }
   brokerage_id:  string | null
   label:         string | null
 }
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs   = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
   const { data: sources, error } = await svc.from("content_topic_sources")
@@ -41,6 +41,9 @@ export async function GET(req: NextRequest) {
   const results: Array<{ source_id: string; feed: string; fetched: number; inserted: number; updated: number }> = []
 
   for (const s of (sources ?? []) as SourceRow[]) {
+    // A local-intelligence feed is NOT also a generic topic (wave 144 — lane 144G Outside-lane 6): ingesting it here too would
+    // ping-pong categories / raw_data with the local pass on an RSS-format feed.
+    if (s.source_config?.local_intel) continue // lib/content-intel/local-intel.ts owns it
     const feedUrl = s.source_config?.feed_url
     if (!feedUrl) continue
     let fetched = 0, inserted = 0, updated = 0
@@ -73,7 +76,7 @@ export async function GET(req: NextRequest) {
           expires_at:       new Date(Date.now() + 21 * 86_400_000).toISOString(),
         }
         if (existing.data) {
-          await svc.from("content_topic_bank")
+          await sentinelWrite(svc, svc.from("content_topic_bank")
             .update({
               engagement_score: row.engagement_score,
               raw_data:         row.raw_data,
@@ -81,7 +84,7 @@ export async function GET(req: NextRequest) {
               categories:       row.categories,
               value_angle:      row.value_angle,
             })
-            .eq("id", (existing.data as { id: string }).id)
+            .eq("id", (existing.data as { id: string }).id), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           updated++
         } else {
           const ins = await svc.from("content_topic_bank").insert(row)

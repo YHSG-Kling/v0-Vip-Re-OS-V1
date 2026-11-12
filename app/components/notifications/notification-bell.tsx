@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   Bell,
@@ -36,21 +36,21 @@ function NotificationIcon({ type }: { type: string }) {
     case "qualified_lead_unassigned":
       return <AlertCircle className={`${cls} text-red-500`} />
     case "ghost_lead_exhausted":
-      return <AlertCircle className={`${cls} text-amber-500`} />
+      return <AlertCircle className={`${cls} text-amber-600`} />
     case "deal_update":
-      return <TrendingUp className={`${cls} text-green-500`} />
+      return <TrendingUp className={`${cls} text-green-600`} />
     case "task_due":
-      return <CheckSquare className={`${cls} text-orange-500`} />
+      return <CheckSquare className={`${cls} text-orange-600`} />
     case "message_received":
       return <MessageSquare className={`${cls} text-purple-500`} />
     case "system_alert":
       return <Info className={`${cls} text-red-500`} />
     case "market_update":
-      return <BarChart2 className={`${cls} text-cyan-500`} />
+      return <BarChart2 className={`${cls} text-cyan-600`} />
     case "ai_insight":
-      return <Sparkles className={`${cls} text-yellow-500`} />
+      return <Sparkles className={`${cls} text-yellow-700`} />
     default:
-      return <Bell className={`${cls} text-gray-400`} />
+      return <Bell className={`${cls} text-gray-500`} />
   }
 }
 
@@ -163,7 +163,7 @@ export function NotificationBell() {
         >
           <Bell className="w-5 h-5 text-gray-700" />
           {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 h-5 min-w-[1.25rem] px-1 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-semibold leading-none">
+            <span className="absolute -top-1 -right-1 h-5 min-w-[1.25rem] px-1 rounded-full bg-red-600 text-white text-xs flex items-center justify-center font-semibold leading-none">
               {displayCount}
             </span>
           )}
@@ -203,7 +203,7 @@ export function NotificationBell() {
           {notifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-[320px] text-center px-6">
               <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
-                <Bell className="w-5 h-5 text-gray-400" />
+                <Bell className="w-5 h-5 text-gray-500" />
               </div>
               <p className="text-sm font-medium text-gray-900 mb-1">
                 All caught up!
@@ -242,7 +242,7 @@ export function NotificationBell() {
                         >
                           {notification.title}
                         </p>
-                        <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">
+                        <span className="text-xs text-gray-500 whitespace-nowrap shrink-0">
                           {timeAgo(notification.created_at)}
                         </span>
                       </div>

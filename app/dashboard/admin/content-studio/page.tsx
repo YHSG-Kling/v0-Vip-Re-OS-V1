@@ -4,6 +4,8 @@ import { loadContentStudio } from "@/lib/kernel/content-studio"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ApproveReelButton } from "./approve-button"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title: "Content Studio | Kernel OS",
@@ -31,11 +33,12 @@ const ASPECT_LABEL: Record<string, string> = {
 export default async function ContentStudioPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = u?.user_type ?? "agent"
   const brokerageId = u?.brokerage_id ?? undefined
-  if (!["admin", "broker", "broker_admin", "superadmin", "team_lead"].includes(userType) || !brokerageId) redirect("/dashboard")
+  if (!brokerageId) redirect("/dashboard/onboarding")
+  if (!isAdminOrBroker({ user_type: userType })) return <RoleGateNotice surface="The Content Studio" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   const data = await loadContentStudio(brokerageId)
   const winnerByExperiment = new Map(data.experiments.map((e) => [e.experimentId, e]))

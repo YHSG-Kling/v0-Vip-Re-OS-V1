@@ -1,0 +1,55 @@
+-- m306 — one tier per tenant. brokerages.subscription_tier is dropped.
+-- ─────────────────────────────────────────────────────────────────────────────
+-- A TENANT WAS TWO TIERS AT ONCE.
+--
+-- `brokerages` carried two tier columns and different modules preferred
+-- different ones:
+--
+--   plan_tier          WRITTEN. lib/billing/sync-plan-tier.ts resolves it from
+--                      the tenant's Stripe subscription → subscription_tiers
+--                      .tier_name, and that module's own header calls it "the
+--                      runtime cache". Signup, staff-create, onboarding
+--                      provisioning, checkout.session.completed and the
+--                      superadmin tier-change all write it.
+--   subscription_tier  NOT WRITTEN BY ANY APPLICATION CODE. Verified
+--                      exhaustively across .ts/.tsx/.sql: every other
+--                      `subscription_tier` reference belongs to a DIFFERENT
+--                      table (subscription_tiers, ai_subscription_tier,
+--                      vendor_marketplace_profiles.subscription_tier). The only
+--                      writer in the repository was a test fixture in
+--                      scripts/studio-session-simulator.ts, which set it INSTEAD
+--                      of plan_tier — so that fixture's brokerage was invisible
+--                      to the tier logic it was exercising.
+--
+-- SIX production readers preferred the unwritten column: brokerage-context (as
+-- `subscription_tier ?? plan_tier`), asset-manager, composition-library, billing
+-- and superadmin/coupons (twice). They read a value nothing maintains.
+--
+-- This was not theoretical. Live, before this migration:
+--
+--   Your Brokerage       plan_tier=solo_agent  subscription_tier=NULL
+--   VIP Premier Realty   plan_tier=solo_agent  subscription_tier=brokerage
+--
+-- VIP Premier Realty was therefore a SOLO tenant to the lead router and the
+-- contact resolver, and a BROKERAGE tenant to the asset manager, the Remotion
+-- composition catalog, its own billing save-offer and the coupon eligibility
+-- check — simultaneously. A solo agent could have been offered brokerage-tier
+-- compositions and priced against a brokerage save-offer while every lead
+-- correctly funnelled to them alone.
+--
+-- ── THE VERDICT ─────────────────────────────────────────────────────────────
+-- Keep plan_tier: it is the one with writers, the one billing syncs, and the one
+-- the assignment spine already trusted. All six readers are repointed onto
+-- lib/billing/plan-tier.ts (resolvePlanTier / toPlanTier), which reads plan_tier
+-- and falls to the TIGHTEST tier when it is missing or unrecognised, so a
+-- mis-tagged tenant is never handed a free upgrade.
+--
+-- Dropping rather than leaving it: a nullable column with a plausible name and no
+-- writer is how this drift happened, and leaving it invites re-adoption. No data
+-- is lost that anything relies on — the values in it are stale by construction,
+-- and the one non-null value actively contradicted billing.
+
+ALTER TABLE brokerages DROP COLUMN IF EXISTS subscription_tier;
+
+COMMENT ON COLUMN brokerages.plan_tier IS
+  'THE tenant''s subscription tier — solo_agent | team | brokerage | multi_location. Synced from the Stripe subscription by lib/billing/sync-plan-tier.ts. Read only through lib/billing/plan-tier.ts. m306 dropped the unwritten subscription_tier twin, which six readers preferred and which had a live tenant reading solo_agent here and brokerage there at the same time.';

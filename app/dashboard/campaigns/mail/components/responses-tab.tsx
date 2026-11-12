@@ -28,7 +28,38 @@ import {
   TrendingUp,
 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { useState, useTransition } from "react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Loader2 } from "lucide-react"
+import { trackCampaignResponse } from "@/app/actions/ai-direct-mail"
 import type { Campaign, Response } from "../mail-dashboard"
+
+/**
+ * Render the response metadata cell, or null when there is nothing to show.
+ *
+ * EMPTINESS, NOT TRUTHINESS. `mail_response_tracking.response_metadata` is a
+ * nullable jsonb with column DEFAULT '{}' (verified live). Both writers pass
+ * `?? null`, so today's rows are NULL — but any INSERT that omits the column
+ * takes the default and lands `{}`, which is TRUTHY in JS. The previous
+ * `metadata ? … : "-"` therefore printed a bare "{}" for those rows and "-" for
+ * the others: one fact, two cells. An empty object and an absent one both mean
+ * "the responder told us nothing", so this collapses them (§6) rather than
+ * teaching the reader a second spelling.
+ */
+function metadataSummary(metadata: unknown) {
+  if (metadata === null || metadata === undefined) return null
+  const json = JSON.stringify(metadata)
+  // "{}" / "[]" / '""' — serialised nothing, in every shape jsonb can hold it.
+  if (!json || json === "{}" || json === "[]" || json === '""') return null
+  return (
+    <code className="text-xs bg-muted px-1 py-0.5 rounded">
+      {json.slice(0, 50)}
+      {json.length > 50 && "..."}
+    </code>
+  )
+}
 
 interface ResponsesTabProps {
   responses: Response[]
@@ -36,6 +67,8 @@ interface ResponsesTabProps {
   selectedCampaignId: string | null
   onSelectCampaign: (id: string) => void
   loading: boolean
+  /** Reload campaign detail after a response is logged. */
+  onResponseLogged?: () => void
 }
 
 const RESPONSE_CONFIG: Record<
@@ -56,8 +89,45 @@ export function ResponsesTab({
   selectedCampaignId,
   onSelectCampaign,
   loading,
+  onResponseLogged,
 }: ResponsesTabProps) {
   const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId)
+
+  // Operator-side response logging. QR scans attribute themselves anonymously via
+  // /api/qr/scan, but the responses that arrive by PHONE or by someone typing the
+  // landing URL off the postcard have no automatic signal at all — the agent is the
+  // only witness, and until now there was nowhere to record them, so response rate
+  // and cost-per-response undercounted every non-QR response.
+  //
+  // Keyed on the tracking code PRINTED ON THE PIECE (direct_mail_campaigns.tracking_id),
+  // which is what a caller reads out. The action resolves the campaign from that code
+  // and refuses one outside the caller's brokerage — the code is low-entropy and
+  // printed, so it is an addressing key, never an authorization.
+  const [logCode, setLogCode] = useState("")
+  const [logType, setLogType] = useState<"call" | "website_visit" | "form_submission" | "qr_scan">("call")
+  const [logMsg, setLogMsg] = useState<string | null>(null)
+  const [logErr, setLogErr] = useState<string | null>(null)
+  const [logging, startLogging] = useTransition()
+
+  function handleLogResponse() {
+    setLogMsg(null)
+    setLogErr(null)
+    const code = logCode.trim()
+    if (!code) {
+      setLogErr("Enter the tracking code printed on the mail piece.")
+      return
+    }
+    startLogging(async () => {
+      const res = await trackCampaignResponse({ trackingId: code, responseType: logType })
+      if (!res.success) {
+        setLogErr(res.error ?? "The response could not be recorded")
+        return
+      }
+      setLogMsg("Response recorded.")
+      setLogCode("")
+      onResponseLogged?.()
+    })
+  }
 
   // Calculate summary stats
   const stats = responses.reduce(
@@ -111,6 +181,58 @@ export function ResponsesTab({
           </div>
         )}
       </div>
+
+      {/* Log a response that arrived off-platform (a call, a typed-in landing URL). */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Log a response</CardTitle>
+          <CardDescription>
+            Someone called or came in off a mail piece? Enter the tracking code printed
+            on it so this campaign gets credit in the response rate.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {logMsg && (
+            <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              {logMsg}
+            </p>
+          )}
+          {logErr && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {logErr}
+            </p>
+          )}
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Tracking code</Label>
+              <Input
+                className="h-9 w-56"
+                value={logCode}
+                onChange={(e) => setLogCode(e.target.value)}
+                placeholder="dm-…"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Response type</Label>
+              <Select value={logType} onValueChange={(v) => setLogType(v as typeof logType)}>
+                <SelectTrigger className="h-9 w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="call">Phone call</SelectItem>
+                  <SelectItem value="website_visit">Landing visit</SelectItem>
+                  <SelectItem value="form_submission">Form submit</SelectItem>
+                  <SelectItem value="qr_scan">QR scan</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button size="sm" onClick={handleLogResponse} disabled={logging}>
+              {logging ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Log response
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {!selectedCampaignId ? (
         <Card className="flex flex-col items-center justify-center p-12 text-center">
@@ -198,14 +320,16 @@ export function ResponsesTab({
                           )}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
-                          {response.response_metadata ? (
-                            <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                              {JSON.stringify(response.response_metadata).slice(0, 50)}
-                              {JSON.stringify(response.response_metadata).length > 50 && "..."}
-                            </code>
-                          ) : (
-                            "-"
-                          )}
+                          {/* "No metadata" arrives in TWO spellings and only one of them was
+                              handled (§6). mail_response_tracking.response_metadata is a
+                              NULLABLE jsonb whose column DEFAULT is '{}' (verified live),
+                              while both writers pass `?? null` explicitly — so a row written
+                              by the current writers is NULL and a row from any INSERT that
+                              omits the column is `{}`. `{}` is TRUTHY, so the truthiness test
+                              alone rendered a literal "{}" for the second kind and "-" for the
+                              first: the same fact, two different cells. Emptiness is what the
+                              reader actually cares about, so it asks that instead. */}
+                          {metadataSummary(response.response_metadata) ?? "-"}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {formatDistanceToNow(new Date(response.created_at))} ago

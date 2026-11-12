@@ -16,6 +16,7 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -252,19 +253,19 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
   async function handleDraftAction(draftId: string, action: "approve" | "dismiss") {
     const supabase = createClient()
 
-    if (action === "approve") {
-      await supabase
-        .from("ai_message_drafts")
-        .update({ status: "accepted", acted_at: new Date().toISOString() })
-        .eq("id", draftId)
-    } else {
-      await supabase
-        .from("ai_message_drafts")
-        .update({ status: "dismissed", acted_at: new Date().toISOString() })
-        .eq("id", draftId)
+    // Read + count, same as handleResumeAI below: an RLS-filtered update matches
+    // nothing with error null, and the card used to clear the draft regardless.
+    const { data: actedRows, error: actErr } = await supabase
+      .from("ai_message_drafts")
+      .update({ status: action === "approve" ? "accepted" : "dismissed", acted_at: new Date().toISOString() })
+      .eq("id", draftId)
+      .select("id")
+    if (actErr || (actedRows ?? []).length === 0) {
+      toast.error(actErr ? `The draft was not ${action === "approve" ? "approved" : "dismissed"}: ${actErr.message}` : "The draft was not updated — it is not editable from your account.")
+      return
     }
 
-    // Optimistically remove the pending draft from the card
+    // Remove the (now actually acted-on) pending draft from the card
     setContacts((prev) =>
       prev.map((c) =>
         c.pendingDraft?.id === draftId
@@ -277,13 +278,21 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
   async function handleResumeAI(contactId: string) {
     const supabase = createClient()
 
-    // Update contact to mark AI as re-engaged
-    await supabase
+    // Update contact to mark AI as re-engaged. The refusal is READ and the row
+    // COUNTED (an RLS-filtered update matches nothing with error null, CLAUDE.md
+    // §3): the card used to flip to "AI handling" whether or not the flag landed,
+    // so the ISA stayed parked while the cockpit said it had resumed (lane 87E).
+    const { data: resumed, error: resumeError } = await supabase
       .from("contacts")
       .update({ isa_reengage_allowed: true, isa_reengage_set_at: new Date().toISOString() })
       .eq("id", contactId)
+      .select("id")
+    if (resumeError || (resumed ?? []).length === 0) {
+      toast.error(resumeError ? `AI was not resumed: ${resumeError.message}` : "AI was not resumed — this contact is not editable from your account.")
+      return
+    }
 
-    // Optimistically update state
+    // Update state only once the write is confirmed
     setContacts((prev) =>
       prev.map((c) =>
         c.id === contactId ? { ...c, handoffState: "ai_handling" } : c
@@ -294,10 +303,17 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
   async function handleRemoveCallStop(contactId: string) {
     const supabase = createClient()
 
-    await supabase
+    // Same shape as handleResumeAI: a call-stop that did not clear must not read
+    // as cleared (lane 87E).
+    const { data: cleared, error: clearError } = await supabase
       .from("contacts")
       .update({ call_stop_flag: false })
       .eq("id", contactId)
+      .select("id")
+    if (clearError || (cleared ?? []).length === 0) {
+      toast.error(clearError ? `The call stop was not removed: ${clearError.message}` : "The call stop was not removed — this contact is not editable from your account.")
+      return
+    }
 
     setContacts((prev) =>
       prev.map((c) =>
@@ -325,7 +341,7 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
           <TabsTrigger value="ai_waiting_approval" className="gap-1.5">
             <span>AI Waiting Approval</span>
             {counts.ai_waiting_approval > 0 && (
-              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-white">
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-700 text-[10px] font-bold text-white">
                 {counts.ai_waiting_approval}
               </span>
             )}
@@ -342,7 +358,7 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
       {/* Cards or empty state */}
       {filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
-          <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
+          <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-3" />
           <p className="font-semibold text-foreground">All conversations flowing smoothly</p>
           <p className="text-sm text-muted-foreground mt-1">
             No human intervention needed right now

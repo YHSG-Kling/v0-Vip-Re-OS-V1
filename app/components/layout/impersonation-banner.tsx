@@ -6,6 +6,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Eye, LogOut } from 'lucide-react'
+import { toast } from 'sonner'
 import { getActiveImpersonationAction, exitTenantAction, type ActiveImpersonation } from '@/app/actions/superadmin/impersonation'
 
 export function ImpersonationBanner() {
@@ -24,8 +25,16 @@ export function ImpersonationBanner() {
 
   if (!state.active) return null
 
+  // exitTenantAction RESOLVES a refusal ({ ok:false, error:"…it is still active." }). The result
+  // was dropped, so a session that could not be ended gave the staff member no word that the
+  // impersonation was still live (the banner re-read below was the only, silent, signal).
   const exit = () =>
-    startTransition(async () => { await exitTenantAction(); await refresh(); router.refresh() })
+    startTransition(async () => {
+      const ended = await exitTenantAction()
+      if (!ended.ok) toast.error(ended.error ?? 'Could not end the impersonation session — it is still active.')
+      await refresh()
+      router.refresh()
+    })
 
   const expires = state.expiresAt ? new Date(state.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null
 

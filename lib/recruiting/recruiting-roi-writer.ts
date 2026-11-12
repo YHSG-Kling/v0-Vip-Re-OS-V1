@@ -39,9 +39,11 @@ export async function upsertRecruitingRoi(
     .eq("brokerage_id", params.brokerageId).eq("recruited_agent_id", params.recruitedAgentId)
     .maybeSingle()
   if (existing) {
-    await svc.from("recruiting_roi").update(row).eq("id", (existing as any).id)
+    const { error: roiUpdErr } = await svc.from("recruiting_roi").update(row).eq("id", (existing as any).id)
+    if (roiUpdErr) console.error(`[recruiting-roi] ROI row NOT updated: ${roiUpdErr.message}`)
   } else {
-    await svc.from("recruiting_roi").insert(row)
+    const { error: roiInsErr } = await svc.from("recruiting_roi").insert(row)
+    if (roiInsErr) console.error(`[recruiting-roi] ROI row NOT created: ${roiInsErr.message}`)
   }
   return { ok: true, roiPct: roi.roi_pct }
 }

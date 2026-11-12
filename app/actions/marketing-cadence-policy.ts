@@ -122,9 +122,21 @@ export async function upsertMarketingCadencePolicy(input: {
   }
   if (input.channel === "social") row.preferred_post_types = input.preferredPostTypes ?? null
 
+  // 102D — a cadence row is tenant operating policy: the row it replaces is the version's `previous`.
+  const { data: before, error: beforeErr } = await svc.from(table)
+    .select("cadence, fire_day, preferred_categories, preferred_persona" + (input.channel === "social" ? ", preferred_post_types" : ""))
+    .eq("scope_type", scopeType).eq("scope_id", scopeId).maybeSingle()
+  if (beforeErr) return { success: false, error: `Current cadence could not be read: ${beforeErr.message}` }
   // (scope_type, scope_id) unique indexes live-verified on BOTH tables — pass-10 safe.
   const { error } = await svc.from(table).upsert(row, { onConflict: "scope_type,scope_id" })
   if (error) return { success: false, error: error.message }
+  const { appendTenantPolicyVersion, cadencePolicyKey, cadencePolicyValue } = await import("@/lib/kernel/tenant-policy")
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId: ctx.brokerageId, policyKey: cadencePolicyKey(table as "newsletter_cadence_policy" | "social_cadence_policy", scopeType, scopeId),
+    value: cadencePolicyValue(row), previous: cadencePolicyValue(before as Record<string, unknown> | null),
+    actor: { type: "user", userId: ctx.userId, reason: `${input.channel} cadence saved` },
+  })
+  if (!v.ok) console.error(`[marketing-cadence-policy] policy version not recorded: ${v.error}`)
   revalidatePath("/settings/blog-cadence")
   return { success: true }
 }

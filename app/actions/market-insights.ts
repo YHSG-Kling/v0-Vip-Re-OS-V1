@@ -72,7 +72,7 @@ export async function generateMarketInsights(): Promise<{
           .from("listings")
           .select("id, list_price, sold_price, status")
           .eq("agent_id", agentId)
-          .in("status", ["sold", "closed"])
+          .in("status", ["sold"])
           .gte("updated_at", thirtyDaysAgoStr)
           .limit(200),
 
@@ -81,7 +81,9 @@ export async function generateMarketInsights(): Promise<{
           .from("transactions")
           .select("id, purchase_price, close_date, stage")
           .eq("agent_id", agentId)
-          .in("stage", ["closed", "funded"])
+          // transactions.stage is UPPER_SNAKE — ["closed","funded"] matched nothing,
+          // so market insights were computed over zero closed deals.
+          .in("stage", ["CLOSED"])
           .gte("close_date", thirtyDaysAgo.toISOString().split("T")[0])
           .limit(200),
 
@@ -90,7 +92,7 @@ export async function generateMarketInsights(): Promise<{
           .from("contacts")
           .select("id, contact_type, buyer_stage, status")
           .eq("agent_id", agentId)
-          .in("contact_type", ["buyer", "Buyer"]),
+          .in("contact_type", ["buyer"]),
       ])
 
     // ── 2. Process results ────────────────────────────────────────────────────
@@ -227,13 +229,28 @@ Price-to-sale ratio: ${snapshot.avgListPrice && snapshot.avgSalePrice ? ((snapsh
 
 Generate insights that help this agent take action today.`
 
-    const { text } = await generateTextRouted({
-      feature: "market_insight_generation",
-      system: systemPrompt,
-      prompt: userPrompt,
-      maxTokens: 600,
-      temperature: 0.3,
-    })
+    let text: string
+    try {
+      const result = await generateTextRouted({
+        brokerageId: context.brokerageId,
+        userId: context.userId,
+        agentId: context.agentId,
+        feature: "market_insight_generation",
+        system: systemPrompt,
+        prompt: userPrompt,
+        maxTokens: 600,
+        temperature: 0.3,
+      })
+      text = result.text
+    } catch (aiErr) {
+      // Convert non-serializable Error to plain message
+      const errorMessage = aiErr instanceof Error ? aiErr.message : String(aiErr)
+      console.error("[MarketInsights] AI generation failed:", errorMessage)
+      return {
+        insights: null,
+        error: "Market insights temporarily unavailable. Please try again later.",
+      }
+    }
 
     // ── 4. Parse AI response ──────────────────────────────────────────────────
 
@@ -311,7 +328,9 @@ Generate insights that help this agent take action today.`
 
     return { insights: result }
   } catch (err) {
-    console.error("[MarketInsights] generateMarketInsights failed:", err)
+    // Log safe message only — avoid serializing Error objects
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    console.error("[MarketInsights] generateMarketInsights failed:", errorMessage)
     return {
       insights: null,
       error: "Unable to generate market insights. Please try again.",

@@ -1,5 +1,23 @@
-import { generateObject } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+// ROUTED, was raw. This file used to pull generateObject straight from the "ai"
+// SDK and pass resolveModel('anthropic/claude-sonnet-4-20250514') — the raw
+// lane, which books NO ai_tool_usage row.
+//
+// THE PREVIOUS LINE IS DELIBERATELY NOT SPELLED AS AN IMPORT STATEMENT, and that
+// is not fussiness. scripts/data-guard-guard.ts:51 tests its raw-SDK regex
+// against UNSTRIPPED source, so a tombstone containing the literal import syntax
+// reads to it as a live import — the exact "A TOMBSTONE IS NOT A CALL SITE"
+// failure CLAUDE.md §2 records five guards hitting in one wave. Written the
+// obvious way, this comment pinned the file in that guard's baseline as an
+// unmigrated raw-SDK importer forever, while the migration it describes had
+// already happened. (scripts/ai-spend-booked-guard.ts strips comments and was
+// never fooled; that difference is the whole argument for stripping.)
+//
+// The routing key below is pinned to that same
+// model (MODEL_CONFIG["claude-sonnet"] IS anthropic/claude-sonnet-4-20250514),
+// so the model, the prompt and the output are unchanged; what is added is the
+// cost ledger, the fair-use pre-flight and the Data Guard redaction.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { generateObjectRouted } from '@/lib/ai/models'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -58,10 +76,11 @@ export async function classifyIntent(
   const supabase = createServiceClient()
 
   // Step 1: Call Claude to classify intent
-  const { object: result } = await generateObject({
-    model: resolveModel('anthropic/claude-sonnet-4-20250514'),
+  const { object: result } = await generateObjectRouted({
+    feature: 'inbound_intent_classification',
+    brokerageId,
     schema: classificationSchema,
-    maxOutputTokens: 200,
+    maxTokens: 200,
     system: `You are a real estate message intent classifier. Classify the incoming message into exactly one primary intent and optionally one secondary intent.
 
 Valid intents:
@@ -99,14 +118,14 @@ Return the classification with a confidence score (0-100) and a brief suggested_
       intent_secondary: result.intent_primary as IntentCategory,
     } as ClassificationResult
 
-    await supabase.from('smart_assistant_suggestions').insert({
+    await sentinelWrite(supabase, supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
       title: 'Low-confidence message classification',
       description: `Message: "${message.slice(0, 200)}..." - Original classification: ${result.intent_primary} (${result.confidence}% confidence)`,
       priority: 'low',
       suggestion_type: 'review_needed',
       metadata: { contact_id: contactId }, // no contact_id column on smart_assistant_suggestions
-    })
+    }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Cancel transaction signal - high priority intervention
@@ -123,51 +142,51 @@ Return the classification with a confidence score (0-100) and a brief suggested_
       .maybeSingle()
 
     if (txn?.id) {
-      await supabase.from('proactive_interventions').insert({
+      await sentinelWrite(supabase, supabase.from('proactive_interventions').insert({
         transaction_id: txn.id,
         brokerage_id: brokerageId,
         issue_detected: 'Customer cancellation signal detected',
         severity: 'high',
         ai_recommendation: result.suggested_action,
-      })
+      }), { table: "proactive_interventions", flow: "proactive_interventions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
-    await supabase.from('smart_assistant_suggestions').insert({
+    await sentinelWrite(supabase, supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
       title: 'Urgent: Cancel transaction signal detected',
       description: `Customer message indicates potential cancellation. Confidence: ${result.confidence}%. Recommended action: ${result.suggested_action}`,
       priority: 'high',
       suggestion_type: 'intervention_needed',
       metadata: { contact_id: contactId },
-    })
+    }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Unsubscribe / DNC request
   if (result.intent_primary === 'unsubscribe' && result.confidence >= 60) {
-    await supabase.from('smart_assistant_suggestions').insert({
+    await sentinelWrite(supabase, supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
       title: 'DNC request detected',
       description: `Contact may want to unsubscribe from communications. Review and update contact preferences.`,
       priority: 'high',
       suggestion_type: 'compliance',
       metadata: { contact_id: contactId },
-    })
+    }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Ready to offer signal
   if (result.intent_primary === 'ready_to_offer' && result.confidence >= 75) {
-    await supabase.from('smart_assistant_suggestions').insert({
+    await sentinelWrite(supabase, supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
       title: 'Offer signal detected',
       description: result.suggested_action,
       priority: 'high',
       suggestion_type: 'opportunity',
       metadata: { contact_id: contactId },
-    })
+    }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Step 3: Update conversation with classification
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from('conversations')
     .update({
       intent_primary: finalResult.intent_primary,
@@ -175,15 +194,18 @@ Return the classification with a confidence score (0-100) and a brief suggested_
       intent_confidence: finalResult.confidence,
       intent_classified_at: new Date().toISOString(),
     })
-    .eq('id', conversationId)
+    .eq('id', conversationId), { table: "conversations", flow: "conversations_write", reason: "intent classification cache; recomputed on the next message" })
 
-  // Step 4: Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.INTENT_CLASSIFIED,
-    brokerage_id: brokerageId,
-    entity_type: 'conversation',
-    entity_id: conversationId,
-    payload: {
+  // Step 4: Kernel event — audit row + reactor (`payload` → `metadata`, the column
+  // every reader uses).
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.INTENT_CLASSIFIED,
+    brokerageId,
+    entityType: 'conversation',
+    entityId: conversationId,
+    contactId: contactId ?? undefined,
+    metadata: {
       intent: finalResult.intent_primary,
       intent_secondary: finalResult.intent_secondary,
       confidence: finalResult.confidence,

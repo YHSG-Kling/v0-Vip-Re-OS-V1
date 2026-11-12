@@ -11,6 +11,7 @@ import {
   deleteOnboardingStepForBrokerage,
 } from "@/lib/kernel"
 import type { OnboardingStepRow } from "@/lib/kernel"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // Onboarding steps are brokerage-wide templates — only admins/brokers
 // should be able to create / update / delete them. Previously the gate
@@ -22,8 +23,7 @@ async function getAuthenticatedAdminUserId(): Promise<string> {
   if (!user?.id) throw new Error("Unauthorized")
   const { data: profile } = await supabase
     .from("users").select("user_type").eq("id", user.id).maybeSingle()
-  const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-    .includes(profile?.user_type ?? "")
+  const isAdmin = isAdminOrBroker({ user_type: profile?.user_type ?? "" })
   if (!isAdmin) throw new Error("Forbidden: brokerage admin only")
   return user.id
 }

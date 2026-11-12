@@ -1,6 +1,14 @@
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// published six MODEL-CALLING exports as Server Actions with no auth of any kind:
+// AI is platform-covered with per-tier overage (§5), so an unauthenticated
+// action id hitting `generateTextContent` was a wrong invoice, not just a leak.
+// The one caller is app/actions/content-generation-engine.ts, whose every action
+// resolves the session through resolveAuthorizedAgentId → getAgentContext before
+// reaching these builders. `server-only` fails a future client import at build.
+import "server-only"
 
 import { runPipelineSimple } from "@/lib/ai"
+import { contentFeatureForType } from "@/lib/ai/content-features"
 
 // ============================================
 // SYSTEM 4.1 – CONTENT GENERATION ENGINE
@@ -61,7 +69,16 @@ export async function generateTextContent(params: ContentGenerationParams): Prom
   const prompt = buildTextPrompt(params)
 
   const text = await runPipelineSimple(prompt, {
-    feature: `content_generation_${params.content_type}`,
+    // WAS: feature: `content_generation_${params.content_type}` — a SYNTHESIZED
+    // string that is not a key in AI_TASK_ROUTING (lib/ai/models.ts). Every one
+    // of the 8 text content_types missed the table, so selectModelForTask fell
+    // through to AI_TASK_ROUTING["unspecified"] and this lane was never routed
+    // by designation — only by whatever "unspecified" happened to hold. It also
+    // stamped ai_tool_usage.feature with a vocabulary no cost query knows, so
+    // Lane A's spend could not be counted alongside Lane B's.
+    // Do not "simplify" this back to a template literal. New content_types must
+    // be added to CONTENT_TYPE_FEATURE in lib/ai/content-features.ts.
+    feature: contentFeatureForType(params.content_type),
   })
 
   const parsed = parseGeneratedText(text, params)
@@ -97,7 +114,21 @@ export async function generateTextContent(params: ContentGenerationParams): Prom
 export async function generateAudioScript(params: ContentGenerationParams & { duration_minutes?: number }): Promise<ContentGenerationOutput> {
   const prompt = buildAudioPrompt(params)
 
-  const text = await runPipelineSimple(prompt, { feature: "content_generation_audio" })
+  // WAS: feature: "content_generation_audio" — not an AI_TASK_ROUTING key, so
+  // this missed the table and fell through to AI_TASK_ROUTING["unspecified"].
+  //
+  // buildAudioPrompt ALWAYS builds a spoken podcast script, whatever
+  // content_type the caller declares, so the feature must describe a spoken
+  // script — otherwise ai_tool_usage would record (say) "email_generation" for
+  // a call that produced a podcast. Both audio content_types resolve to
+  // `video_script_generation`, the registry's spoken/AV-script route.
+  const audioContentType =
+    params.content_type === "podcast_script" || params.content_type === "audio_script"
+      ? params.content_type
+      : "audio_script"
+  const text = await runPipelineSimple(prompt, {
+    feature: contentFeatureForType(audioContentType),
+  })
 
   return {
     content_type: params.content_type,
@@ -124,7 +155,24 @@ export async function generateAudioScript(params: ContentGenerationParams & { du
 export async function generateVideoScript(params: ContentGenerationParams & { video_length_seconds?: number }): Promise<ContentGenerationOutput> {
   const prompt = buildVideoPrompt(params)
 
-  const text = await runPipelineSimple(prompt, { feature: "content_generation_video" })
+  // WAS: feature: "content_generation_video" — not an AI_TASK_ROUTING key.
+  //
+  // This is the FIFTH guarded Fair Housing script path: it is one of the five
+  // `generateVideoScript` files hard-coded in
+  // scripts/video-script-compliance-guard.ts. It must be stamped with the
+  // registry's designated video route, `video_script_generation`
+  // ("claude-sonnet — brand voice, persona-aware, Them-First scored"), not left
+  // to the catch-all. (Measured: "unspecified" currently resolves to the same
+  // model, so this changes routing from ACCIDENTAL to DESIGNATED and fixes the
+  // ledger key — see docs/lane-a-feature-routing-notes.md for the full table.)
+  //
+  // buildVideoPrompt always builds a video script, so pin the feature to the
+  // video family rather than trusting a caller-declared content_type.
+  const videoContentType =
+    params.content_type === "video_script" ? params.content_type : "video_script"
+  const text = await runPipelineSimple(prompt, {
+    feature: contentFeatureForType(videoContentType),
+  })
 
   const parsed = parseVideoScript(text)
 
@@ -153,7 +201,18 @@ export async function generateVideoScript(params: ContentGenerationParams & { vi
 export async function generateImagePrompt(params: ContentGenerationParams): Promise<ContentGenerationOutput> {
   const prompt = buildImagePromptGenerator(params)
 
-  const text = await runPipelineSimple(prompt, { feature: "content_generation_image_prompt" })
+  // WAS: feature: "content_generation_image_prompt" — not an AI_TASK_ROUTING
+  // key, so it missed the table and took AI_TASK_ROUTING["unspecified"].
+  //
+  // Keyed off the LITERAL "image_prompt" because this function hardcodes
+  // `content_type: "image_prompt"` in its own output regardless of what the
+  // caller passed — the feature must describe the work actually done.
+  // CONTENT_TYPE_FEATURE maps it to `generate_text` on purpose: this path
+  // returns a PROMPT STRING for an external image tool, it does not generate an
+  // image, so routing it to an image feature would describe work it never does.
+  const text = await runPipelineSimple(prompt, {
+    feature: contentFeatureForType("image_prompt"),
+  })
 
   const parsed = parseImagePrompt(text)
 
@@ -176,6 +235,12 @@ export async function generateImagePrompt(params: ContentGenerationParams): Prom
 
 /**
  * Generate OMNIPRESENT content (one idea → many formats)
+ *
+ * ROUTING: this function passes NO feature of its own. Every branch delegates to
+ * generateAudioScript / generateVideoScript / generateTextContent above, which
+ * now resolve their feature through contentFeatureForType(). Checked explicitly
+ * — there is no fifth synthesized feature string hiding in here. Keep it that
+ * way: route by delegating, never by re-synthesizing a string.
  */
 export async function generateOmnipresentContent(params: {
   core_idea: string
@@ -259,6 +324,12 @@ export async function generateOmnipresentContent(params: {
 
 /**
  * Generate content VARIATIONS (for A/B testing, optimization)
+ *
+ * ROUTING: no feature of its own — each variation goes through
+ * generateTextContent, so all N variations are stamped with the same registry
+ * key as a single generation of that content_type. That is intended: N
+ * variations are N billable calls of the same task and must aggregate together
+ * in the ai_tool_usage ledger.
  */
 export async function generateContentVariations(
   baseParams: ContentGenerationParams,

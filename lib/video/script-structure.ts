@@ -110,3 +110,665 @@ export function targetWordCount(durationSeconds: number): number {
 export function estimateDurationSeconds(wordCount: number): number {
   return Math.round((wordCount / WORDS_PER_MINUTE) * 60)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CAPPING A SCRIPT TO THE COMPOSITION THAT WILL SPEAK IT
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// THE DEFECT THIS CLOSES. There are TWO narration keys in a render's
+// input_props and only one of them is protected:
+//
+//   · `voiceover_url` (snake) is muxed by ffmpeg AFTER the render, and m313's
+//     tpad HOLDS THE FINAL FRAME for any overrun — the sentence finishes.
+//     (lib/remotion/voiceover-mixer.ts paddingSecondsFor.)
+//   · `voiceoverUrl` (camel) is an <Audio> INSIDE the composition, baked into a
+//     FIXED durationInFrames. Nothing pads it. THE OVERRUN IS CUT — the agent
+//     is silenced mid-word in a video already sent to a client.
+//
+// The distinction is deliberate (lib/remotion/composition-cache.ts:55 separates
+// them), so the fix cannot be "pad the camel key too". It is to size the SCRIPT
+// to the composition BEFORE it is written and to refuse to let an overrun pass
+// unseen — which is what these three functions do.
+//
+// They live HERE, beside WORDS_PER_MINUTE / targetWordCount, rather than in a
+// new module: a second words-per-minute constant or a second duration
+// computation is the §6 defect. The composition half of the arithmetic is
+// lib/remotion/composition-geometry.ts compositionSeconds().
+
+/**
+ * Fraction of a composition's runtime left UNCLAIMED by the script.
+ *
+ * WHY THERE IS ANY. WORDS_PER_MINUTE is an AVERAGE, not a bound. A script sized
+ * to exactly 150 wpm overruns whenever the read is faster than average, which
+ * for an energetic listing promo is most of the time; ElevenLabs also brackets
+ * a clip with a little lead-in and tail silence, and both land inside the same
+ * fixed frame count. At 0.20 the script may claim 80% of the runtime, so the
+ * narration still fits at up to 150 / 0.8 = 187.5 wpm — a read 25% faster than
+ * average. Slower reads simply end early against the composition's outro, which
+ * is the harmless direction.
+ */
+export const NARRATION_HEADROOM = 0.20
+
+/** What one composition's geometry permits a narration script to be. */
+export interface NarrationBudget {
+  compositionId: string
+  /** duration_frames / fps — the composition's real runtime. */
+  compositionSeconds: number
+  /** Seconds the script may claim, after headroom. */
+  budgetSeconds: number
+  /** Word ceiling at WORDS_PER_MINUTE over budgetSeconds. */
+  maxWords: number
+  /** The headroom fraction this budget was derived with. */
+  headroom: number
+  /**
+   * PURPOSE FLOOR (wave 78, lib/video/duration-model.ts purposeBudgetFor).
+   * Present only on a purpose-derived budget: the fewest words the video's
+   * purpose needs to be worth watching, and the count the writer should aim
+   * for. narrationLengthDirective speaks them when present; a whole-runtime
+   * budget from narrationBudget() carries neither and reads exactly as before.
+   */
+  minWords?: number
+  idealWords?: number
+  purpose?: string
+}
+
+/**
+ * The word budget a composition's geometry allows.
+ *
+ * DERIVED, never a literal: pass the composition's real seconds
+ * (compositionSeconds of its geometry) and the ceiling moves when the geometry
+ * moves. A composition with no runtime (a still card, or an unregistered id
+ * resolving to 0) yields maxWords 0 — the caller must treat that as "this
+ * composition cannot carry narration", not as "no limit".
+ */
+export function narrationBudget(
+  compositionId: string,
+  compositionSeconds: number,
+  headroom: number = NARRATION_HEADROOM,
+): NarrationBudget {
+  const secs = Number.isFinite(compositionSeconds) && compositionSeconds > 0 ? compositionSeconds : 0
+  const h = Number.isFinite(headroom) && headroom >= 0 && headroom < 1 ? headroom : NARRATION_HEADROOM
+  const budgetSeconds = Number((secs * (1 - h)).toFixed(3))
+  return {
+    compositionId,
+    compositionSeconds: secs,
+    budgetSeconds,
+    maxWords: targetWordCount(budgetSeconds),
+    headroom: h,
+  }
+}
+
+/**
+ * Split spoken text into words. One spelling for the whole video lane (§6) —
+ * lib/video/caption-plan.ts's private splitWords now calls this.
+ */
+export function spokenWords(text: string | null | undefined): string[] {
+  return (text ?? "").trim().split(/\s+/).filter(Boolean)
+}
+
+/** What happened when a generated script met its composition's budget. */
+export interface NarrationFit {
+  /** The script as it should actually be spoken. */
+  script: string
+  wordCount: number
+  /** Spoken seconds of `script` at WORDS_PER_MINUTE. */
+  estimatedSeconds: number
+  /** The model's draft exceeded maxWords. True whenever anything was dropped. */
+  overran: boolean
+  /** Words dropped from the draft. 0 when it fit as written. */
+  droppedWords: number
+  /**
+   * The trim could not get under budget — the FIRST sentence alone is longer
+   * than the composition. The clean cut is kept anyway (an empty narration is
+   * worse than a long one, and the mux is the same either way), but the caller
+   * must surface this rather than treat it as a pass.
+   */
+  stillOverBudget: boolean
+  /** Quotable one-liner for the log. Empty string when the draft fit. */
+  note: string
+}
+
+/**
+ * Split a script into sentences, keeping terminal punctuation with its sentence.
+ *
+ * EXPORTED, and the export is load-bearing rather than convenience (§6). This is
+ * the boundary `fitNarrationToBudget` cuts on, so anything that reasons about
+ * what SURVIVES a trim must agree with it exactly — a second splitter would
+ * inspect different sentences than the trim actually produced and could clear a
+ * script whose qualifier the trim then dropped. `lib/video/anniversary-script.ts`
+ * (`unqualifiedFinancialSentences`) is the caller that needs that agreement: it
+ * checks that every spoken dollar figure carries its "estimate, not an
+ * appraisal" qualifier IN THE SAME SENTENCE, which is only a meaningful
+ * statement if "sentence" means the same thing to both functions.
+ */
+export function spokenSentences(script: string | null | undefined): string[] {
+  const flat = (script ?? "").trim().replace(/\s+/g, " ")
+  if (!flat) return []
+  return flat.split(/(?<=[.!?]["'”’)\]]?)\s+/).filter((s) => s.trim().length > 0)
+}
+
+/**
+ * Hold a generated script to its composition's budget.
+ *
+ * THE OVERRUN POLICY IS **TRIM TO A SENTENCE BOUNDARY**, and the reasoning is
+ * that the two alternatives are both worse here:
+ *
+ *   · REGENERATE ONCE costs a second paid model call and guarantees nothing —
+ *     the model already ignored an explicit word ceiling, and the two producers
+ *     that draft through runWithComplianceRedraft would then owe the compliance
+ *     gate a second pass on the re-draft. An unbounded retry loop to enforce a
+ *     bound is the wrong shape.
+ *   · REFUSE throws away a compliance-cleared script over a length the code can
+ *     fix deterministically, and turns "slightly long" into no narration at all
+ *     — against the standing "voice on every video" rule.
+ *
+ * Trimming at a SENTENCE boundary (never mid-word, never mid-clause) is the one
+ * option that is free, deterministic, and keeps the result compliance-safe: a
+ * prefix of cleared sentences carries no claim the gate did not already clear.
+ * What it costs is the closing CTA when the draft runs long, which is a real
+ * content loss — so it is REPORTED, never silent. That is the whole point: the
+ * defect being fixed is not that scripts are long, it is that nothing ever
+ * looked.
+ */
+export function fitNarrationToBudget(
+  script: string | null | undefined,
+  budget: NarrationBudget,
+): NarrationFit {
+  const draftWords = spokenWords(script)
+  const draftCount = draftWords.length
+
+  const fitted = (text: string, dropped: number, stillOver: boolean, note: string): NarrationFit => {
+    const words = spokenWords(text)
+    return {
+      script: text,
+      wordCount: words.length,
+      estimatedSeconds: estimateDurationSeconds(words.length),
+      overran: dropped > 0 || stillOver,
+      droppedWords: dropped,
+      stillOverBudget: stillOver,
+      note,
+    }
+  }
+
+  if (draftCount === 0) return fitted("", 0, false, "")
+
+  // A composition with no runtime cannot carry narration at all. Say so; do not
+  // silently treat "no budget" as "no limit".
+  if (budget.maxWords <= 0) {
+    return fitted("", draftCount, true,
+      `${budget.compositionId} has no runtime to narrate (${budget.compositionSeconds}s): `
+      + `dropped all ${draftCount} words rather than baking a track nothing can play.`)
+  }
+
+  if (draftCount <= budget.maxWords) return fitted((script ?? "").trim(), 0, false, "")
+
+  const sentences = spokenSentences(script ?? "")
+  const kept: string[] = []
+  let keptWords = 0
+  for (const s of sentences) {
+    const n = spokenWords(s).length
+    if (keptWords + n > budget.maxWords) break
+    kept.push(s)
+    keptWords += n
+  }
+
+  if (kept.length === 0) {
+    // Not one whole sentence fits. Keep the first — a clean sentence that runs
+    // long is still better than an empty track — and flag it hard.
+    const first = sentences[0] ?? (script ?? "").trim()
+    const firstWords = spokenWords(first).length
+    return fitted(first, draftCount - firstWords, true,
+      `${budget.compositionId}: the first sentence alone is ${firstWords} words `
+      + `(~${estimateDurationSeconds(firstWords)}s) against a ${budget.maxWords}-word / `
+      + `${budget.budgetSeconds}s budget on a ${budget.compositionSeconds}s composition — `
+      + `it WILL be cut off. The composition is too short for this narration.`)
+  }
+
+  const text = kept.join(" ")
+  return fitted(text, draftCount - keptWords, false,
+    `${budget.compositionId}: script came back ${draftCount} words `
+    + `(~${estimateDurationSeconds(draftCount)}s) against a ${budget.maxWords}-word / `
+    + `${budget.budgetSeconds}s budget on a ${budget.compositionSeconds}s composition; `
+    + `trimmed to ${keptWords} words at a sentence boundary (${draftCount - keptWords} dropped).`)
+}
+
+/**
+ * How many seconds a MEASURED avatar-track duration ran past the
+ * pre-synthesis narration budget — the reader for
+ * `ai_video_projects.video_metadata.narration_budget_seconds`
+ * (lib/video/intro-video-reactor.ts).
+ *
+ * WHY THIS EXISTS. `fitNarrationToBudget` trims the SCRIPT to a word-count
+ * ceiling at WORDS_PER_MINUTE=150 — one English speaking-rate ESTIMATE,
+ * applied identically to a script this reactor may have just written in
+ * Spanish, French, or any other language (draftScript's languageLine, wave
+ * 52). AgentTalkingHeadReel's BODY window is a hard
+ * `<Video trimBefore={0} trimAfter={BODY}>` crop with no TPAD — unlike the
+ * separate voiceover_url (snake) lane, nothing extends this composition when
+ * the avatar track runs long, so an estimate that undershoots for a
+ * particular language's cadence is a SILENT mid-sentence crop. This turns the
+ * silence into a measurement once D-ID reports the render's own actual
+ * duration (poll-did-videos `data.duration`), so it moves — §2, "a count
+ * that moves is the finding" — instead of vanishing.
+ *
+ * PURE. `toleranceSeconds` absorbs D-ID's own lead-in/tail silence and
+ * rounding — the same reasoning NARRATION_HEADROOM already gives the
+ * pre-synthesis budget, applied here to the post-render comparison.
+ * Null/non-finite inputs (no budget recorded, or a project this reactor never
+ * touched) return 0 — "not measurable" is not "overran".
+ */
+export function avatarDurationOverrunSeconds(
+  actualSeconds: number | null | undefined,
+  budgetSeconds: number | null | undefined,
+  toleranceSeconds = 1,
+): number {
+  if (typeof actualSeconds !== "number" || !Number.isFinite(actualSeconds)) return 0
+  if (typeof budgetSeconds !== "number" || !Number.isFinite(budgetSeconds)) return 0
+  const over = actualSeconds - budgetSeconds - toleranceSeconds
+  return over > 0 ? Number(over.toFixed(1)) : 0
+}
+
+/**
+ * The UNDERRUN twin of `avatarDurationOverrunSeconds` (wave 55 — owner ruling:
+ * "the video product needs to look and appear real... the person viewing the
+ * video must not think it was made with ai"). `avatarDurationOverrunSeconds`
+ * measures D-ID rendering LONGER than the narration budget assumed; nothing
+ * measured the opposite case, which NARRATION_HEADROOM (20% by design, see
+ * above) makes the COMMON one — a script that fits comfortably under budget
+ * leaves the composition's avatar window unclaimed. AgentTalkingHeadReel's
+ * `<Video trimBefore={0} trimAfter={BODY}>` has no tpad on that lane (only
+ * the separate voiceover_url/snake mux does): a `<Video>` played past its own
+ * source duration holds the LAST rendered frame — a visibly frozen face —
+ * for every remaining frame in the window, which is exactly the "looks like
+ * a fake AI creation" tell the ruling names.
+ *
+ * PURE. Returns the frame at which the avatar visual should start fading OUT
+ * so playback never sits on a frozen last frame; null when no fade is needed
+ * (the source fills or exceeds the window, or the actual duration is not
+ * known — a caller with no measurement renders EXACTLY as before, additive/
+ * opt-in). See lib/video/realism-profile.ts (re-exported there as the one
+ * realism front door) for the Remotion-side wiring.
+ */
+export function avatarFadeOutFrame(
+  actualDurationSeconds: number | null | undefined,
+  windowFrames: number,
+  fps: number,
+  fadeFrames = 12,
+): number | null {
+  if (typeof actualDurationSeconds !== "number" || !Number.isFinite(actualDurationSeconds) || actualDurationSeconds <= 0) return null
+  if (!Number.isFinite(windowFrames) || windowFrames <= 0 || !Number.isFinite(fps) || fps <= 0) return null
+  const actualFrames = Math.round(actualDurationSeconds * fps)
+  if (actualFrames >= windowFrames) return null
+  return Math.max(0, actualFrames - Math.max(0, fadeFrames))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE READER FOR `stillOverBudget` (§1 — build the missing half)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `fitNarrationToBudget` has reported `stillOverBudget` since it was written and
+// scripts/remotion-setup-guard.ts asserts the flag is set — but NO producer in
+// lib/** or app/** ever read it. Three of them (`draftAndClearScript` in
+// render-just-listed, `draft()` in render-newsletter-video, and
+// `generateSectionNarration`) logged `fit.note` with console.warn and shipped
+// the script anyway. A warn is not a reader: for the camel-key producers the
+// narration is an <Audio> INSIDE a fixed durationInFrames, so that sentence IS
+// cut mid-word in a video already sent to a client.
+//
+// WHY ONE HELPER AND NOT THREE COPIES (§6). The policy — re-draft ONCE, then
+// fall back to authored copy, then refuse — is one rule about one failure, and
+// three inline copies is the drift this repo keeps paying for. It is shaped
+// deliberately like lib/kernel/compliance-redraft.ts runWithComplianceRedraft:
+// caller-supplied callbacks, ONE retry, the caller keeps its own prompt. That
+// is also why this is not a second retry LOOP — the compliance loop retries on
+// what a script SAYS, this retries on how LONG it is, and each producer nests
+// this inside its compliance draft so a re-drafted script is still gated.
+//
+// PURE in the sense this module means it: it performs no I/O of its own, makes
+// no model call, and touches no database. It sequences what the caller hands it.
+
+/** One drafting attempt. `attempt` is 0 for the first draft, 1 for the redraft. */
+export type NarrationDraftFn = (args: {
+  attempt: number
+  /** The previous attempt's fit — null on the first. Feed its note back to the model. */
+  previous: NarrationFit | null
+}) => Promise<NarrationFit>
+
+/** How a narration finally came to be, and everything worth recording about it. */
+export interface NarrationBudgetOutcome {
+  /** The script to speak. EMPTY when `outcome` is "refused" — nothing may be baked. */
+  script: string
+  /** The fit that produced `script`. */
+  fit: NarrationFit
+  /**
+   * · fit           — the first draft fitted as written.
+   * · trimmed       — the first draft overran and was cut at a sentence boundary.
+   * · redrafted     — the first draft's own first sentence overran; the redraft fits.
+   * · deterministic — both drafts overran; authored copy is being spoken instead.
+   * · refused       — nothing fits this composition. The caller MUST refuse.
+   */
+  outcome: "fit" | "trimmed" | "redrafted" | "deterministic" | "refused"
+  /** Model drafts actually paid for (1 or 2). */
+  attempts: number
+  /**
+   * Every note, in order, INCLUDING the ones fitNarrationToBudget produced.
+   * Quote these into whatever the lane records — the defect being closed is that
+   * this event was only ever warned to a log nobody reads.
+   */
+  notes: string[]
+}
+
+/**
+ * Draft → fit → (re-draft once) → fall back to authored copy → refuse.
+ *
+ * WHY REDRAFT ONCE AND NOT NEVER. fitNarrationToBudget's own header argues
+ * against regenerating, and it is right about the case it is arguing about: a
+ * draft that runs LONG is trimmed at a sentence boundary for free, and paying
+ * for a second model call to fix that would be waste. `stillOverBudget` is the
+ * other case entirely — the trim could not get under budget because the FIRST
+ * SENTENCE alone is longer than the composition, so there is no clean cut to
+ * make and the trim's own output is the thing that gets truncated. One retry,
+ * fed the measurement, is the cheapest thing that can actually change the answer.
+ *
+ * WHY THE FALLBACK IS DETERMINISTIC COPY AND NOT A SECOND RETRY. An unbounded
+ * loop to enforce a bound is the wrong shape (same reasoning as the trim
+ * policy). Authored copy is short by construction, carries no claim a gate has
+ * not seen, and is available with no network — so it is the honest last thing to
+ * speak before refusing outright.
+ *
+ * WHY REFUSING IS A REAL OUTCOME. `budget.maxWords <= 0` means the composition
+ * has no runtime at all (a still, or an id that is not registered). NOTHING fits
+ * that, authored copy included, and baking a track nothing can play is worse
+ * than a failed render that says why.
+ */
+export async function fitNarrationWithOneRedraft(args: {
+  budget: NarrationBudget
+  /** Prefix for the notes, e.g. "[render-just-listed] just_sold". */
+  label: string
+  draft: NarrationDraftFn
+  /** The authored, model-free script for this subject. Optional — absent means refuse instead. */
+  deterministic?: () => string | null | undefined
+}): Promise<NarrationBudgetOutcome> {
+  const notes: string[] = []
+  const record = (f: NarrationFit) => { if (f.note) notes.push(`${args.label} — ${f.note}`) }
+
+  const first = await args.draft({ attempt: 0, previous: null })
+  record(first)
+  if (!first.stillOverBudget) {
+    return { script: first.script, fit: first, outcome: first.overran ? "trimmed" : "fit", attempts: 1, notes }
+  }
+
+  notes.push(
+    `${args.label} — the draft's FIRST SENTENCE alone overruns ${args.budget.compositionId}, so there is no `
+    + `sentence boundary to trim at and the track would be cut mid-word. Re-drafting ONCE against the same budget.`,
+  )
+  const second = await args.draft({ attempt: 1, previous: first })
+  record(second)
+  if (!second.stillOverBudget) {
+    return { script: second.script, fit: second, outcome: "redrafted", attempts: 2, notes }
+  }
+
+  const authored = (args.deterministic?.() ?? "").trim()
+  if (authored) {
+    const fitted = fitNarrationToBudget(authored, args.budget)
+    record(fitted)
+    if (!fitted.stillOverBudget && fitted.script) {
+      notes.push(
+        `${args.label} — the re-draft ALSO overran; speaking the DETERMINISTIC script `
+        + `(${fitted.wordCount}w / ~${fitted.estimatedSeconds}s) instead of baking a sentence the composition cuts.`,
+      )
+      return { script: fitted.script, fit: fitted, outcome: "deterministic", attempts: 2, notes }
+    }
+  }
+
+  notes.push(
+    `${args.label} — REFUSED: neither draft nor the deterministic script fits `
+    + `${args.budget.compositionId} (${args.budget.maxWords}-word / ${args.budget.budgetSeconds}s budget on a `
+    + `${args.budget.compositionSeconds}s composition). Nothing was baked; only a geometry change fixes this.`,
+  )
+  return { script: "", fit: second, outcome: "refused", attempts: 2, notes }
+}
+
+/**
+ * The line a re-draft prompt adds so the model knows WHY it is being asked
+ * again. ONE spelling (§6) — all three producers say it the same way, and the
+ * measurement in it is the one fitNarrationToBudget actually made.
+ */
+export function narrationOverrunRedraftDirective(previous: NarrationFit | null, budget: NarrationBudget): string {
+  if (!previous) return ""
+  return `\nYOUR PREVIOUS DRAFT DID NOT FIT. Its first sentence alone ran `
+    + `${spokenWords(spokenSentences(previous.script)[0] ?? previous.script).length} words `
+    + `against a ${budget.maxWords}-word budget, so it cannot be trimmed — it would be cut off mid-word. `
+    + `Write SHORT sentences. No sentence may exceed ${Math.max(4, Math.floor(budget.maxWords / 2))} words.\n`
+}
+
+/**
+ * The sentence a prompt uses to ask for a script that fits. ONE spelling, so
+ * every producer asks in the same words and a reader can tell at a glance that
+ * the number came from the geometry rather than from someone's guess.
+ */
+/**
+ * A model token budget sized to the word budget.
+ *
+ * Not a second cap — the WORD budget is the cap, and fitNarrationToBudget
+ * enforces it. This just stops a producer paying for (and waiting on) three
+ * times the text it is going to throw away. Deliberately LOOSE: ~3 tokens per
+ * word plus a fixed 32, because a token cut lands mid-sentence and the trim then
+ * discards that whole partial sentence — a tight token budget would silently
+ * shorten the script below its real budget.
+ */
+export function narrationMaxTokens(budget: NarrationBudget): number {
+  return Math.max(64, Math.ceil(budget.maxWords * 3) + 32)
+}
+
+export function narrationLengthDirective(budget: NarrationBudget): string {
+  const ceiling = `Hard length limit: AT MOST ${budget.maxWords} words total `
+    + `(this is spoken over a ${budget.compositionSeconds}-second video — anything longer is cut off). `
+    + `Finish your final sentence within that budget.`
+  // THE FLOOR (wave 78 — owner: "the video needs to be long enough to achieve
+  // the reason for making the video"). A purpose-derived budget carries the
+  // fewest words its purpose needs; a script under it is extended by the
+  // WRITER, here, never by silence in the composition (lib/video/
+  // duration-model.ts planCompositionDuration never pads a body past its
+  // narration). A budget with no floor reads byte-for-byte as before.
+  if (typeof budget.minWords === "number" && budget.minWords > 0) {
+    const purpose = budget.purpose ? `This is a ${budget.purpose.replace(/_/g, " ")} video and it` : "This video"
+    return `${ceiling} ${purpose} needs AT LEAST ${budget.minWords} words to do its job — aim for about `
+      + `${budget.idealWords ?? budget.minWords} words. Do not pad with filler; add the specific fact or next step the viewer came for.`
+  }
+  return ceiling
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHORT-FORM STRUCTURE — HOOK ≤ 2 s, ONE VALUE, ONE ASK (wave 87, lane 87D)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// OWNER (2026-09-28): "all scripts/avatar use/video creation at an advanced
+// level." The writers already carry the compliance blocks, the quality charter
+// (lib/ai/script-standards.ts) and the spoken-realism directive
+// (lib/video/realism-profile.ts); none of them carried the SHAPE a short-form
+// video is judged on in its first two seconds. Research (Exa, 2026):
+//   · dunphy.typito.com 2026-07 — "Hook (0-2s). The first frame is doing 80%
+//     of the work"; one clear CTA in the last 3-5 s, text on screen for all 5;
+//   · reel-e.ai 2026-03 — "the majority of skip decisions happen before the
+//     2-second mark";
+//   · velisto.ai 2026-09 — hook 0-3 s, a one-line promise, 3-5 beats, one CTA;
+//     ~35 spoken words per 15 s (150 wpm); write the screen text separately;
+//   · procontentai.com 2026-04 — value: ONE idea, three items max; the CTA is
+//     one specific next step (never "link in bio").
+// One number, derived from the ONE words-per-minute constant above — never a
+// second pace table.
+
+/** The spoken hook must land inside this many seconds (owner: "hook ≤2s"). */
+export const SHORT_FORM_HOOK_MAX_SECONDS = 2
+
+/** Words a speaker says inside the hook window at WORDS_PER_MINUTE (5 at 150 wpm). */
+export function hookWordBudget(seconds: number = SHORT_FORM_HOOK_MAX_SECONDS): number {
+  return Math.max(1, Math.floor((seconds / 60) * WORDS_PER_MINUTE))
+}
+
+/** Words an ON-SCREEN hook may carry and still be read inside the hook window. */
+export const ON_SCREEN_HOOK_MAX_WORDS = 6
+
+/** Words per on-screen beat (the bullet the screen shows while the voice explains). */
+export const ON_SCREEN_BEAT_MAX_WORDS = 6
+
+/**
+ * The CTA cue set — a closing line that asks for ONE next step. Lower-case
+ * stems matched on word boundaries; a question also counts (a soft ask:
+ * "want the checklist?").
+ */
+const CTA_CUES = [
+  "call", "text", "message", "reach out", "book", "schedule", "comment", "dm", "send",
+  "ask", "reply", "tap", "visit", "save this", "let's talk", "let me know", "grab",
+  "download", "join", "rsvp", "stop by", "email",
+]
+
+function firstClause(sentence: string): string {
+  // The HOOK is the first beat a listener hears, which ends at the first strong
+  // pause — a sentence end, or a dash / colon / semicolon inside it.
+  const cut = sentence.split(/\s[—–-]\s|[:;]/)[0] ?? sentence
+  return cut.trim()
+}
+
+export interface ScriptStructureAssessment {
+  /** The first spoken beat (first clause of the first sentence). */
+  hook: string
+  hookWords: number
+  hookSeconds: number
+  hookWithinBudget: boolean
+  /** Sentences between the hook sentence and the closing ask. */
+  valueBeats: number
+  /** The closing sentence asks for one next step. */
+  ctaPresent: boolean
+  cta: string | null
+  /** ADVISORY lines — a human-approved script is never rewritten by this. */
+  warnings: string[]
+}
+
+/**
+ * PURE. Read a script's short-form shape — hook ≤ SHORT_FORM_HOOK_MAX_SECONDS,
+ * one to five value beats, one closing ask. Advisory by construction (§5:
+ * warnings pass through); the writers put the same rule in the PROMPT
+ * (shortFormStructureDirective) so this is the backstop, not the gate.
+ */
+export function assessScriptStructure(script: string | null | undefined): ScriptStructureAssessment {
+  const sentences = spokenSentences(script)
+  const hook = sentences.length > 0 ? firstClause(sentences[0]) : ""
+  const hookWords = spokenWords(hook).length
+  const hookSeconds = Number(((hookWords / WORDS_PER_MINUTE) * 60).toFixed(2))
+  const hookWithinBudget = hookWords > 0 && hookWords <= hookWordBudget()
+  const last = sentences.length > 1 ? sentences[sentences.length - 1] : null
+  const lastLower = (last ?? "").toLowerCase()
+  const ctaPresent = !!last && (lastLower.trim().endsWith("?")
+    || CTA_CUES.some((c) => new RegExp(`(^|[^a-z'])${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`).test(lastLower)))
+  const valueBeats = Math.max(0, sentences.length - 1 - (ctaPresent ? 1 : 0))
+  const warnings: string[] = []
+  if (hookWords === 0) warnings.push("structure: the script is empty — no hook")
+  else if (!hookWithinBudget) warnings.push(`structure: the spoken hook is ${hookWords} words (~${hookSeconds}s) — lead with a line of ${hookWordBudget()} words or fewer so it lands inside ${SHORT_FORM_HOOK_MAX_SECONDS}s`)
+  if (valueBeats === 0 && sentences.length > 0) warnings.push("structure: no value beat between the hook and the close")
+  if (valueBeats > 5) warnings.push(`structure: ${valueBeats} value beats — short-form holds one idea in three to five beats`)
+  if (!ctaPresent && sentences.length > 1) warnings.push("structure: the close asks for nothing — end on ONE specific next step")
+  return { hook, hookWords, hookSeconds, hookWithinBudget, valueBeats, ctaPresent, cta: ctaPresent ? last : null, warnings }
+}
+
+/**
+ * The structure directive every short-form WRITER carries in its prompt
+ * (compliance-first's twin: the shape is asked for, then checked). The
+ * persona names who the ask is for, never who the viewer "is" (Fair Housing:
+ * speak to the situation, not a group).
+ */
+export function shortFormStructureDirective(args: { durationSeconds: number; persona?: "buyer" | "seller" | null }): string {
+  const hookWords = hookWordBudget()
+  const ask = args.persona === "seller"
+    ? "a no-pressure next step for a homeowner (a quick call about their plans, a no-obligation walkthrough)"
+    : args.persona === "buyer"
+      ? "a no-pressure next step for someone shopping for a home (a question they can send, a list of matching homes)"
+      : "one specific, no-pressure next step"
+  return [
+    `SHORT-FORM STRUCTURE (${args.durationSeconds}-second video):`,
+    `1. HOOK — the first spoken line is ${hookWords} words or fewer so it lands inside ${SHORT_FORM_HOOK_MAX_SECONDS} seconds: the viewer's situation, a specific fact, or a question. Never a greeting or self-introduction.`,
+    "2. VALUE — one idea in three short beats, one sentence each; specifics over adjectives; no numbers you were not given.",
+    `3. CLOSE — the last sentence asks for ${ask}. One ask only; never "link in bio", never urgency or guarantees.`,
+  ].join("\n")
+}
+
+/** What the screen shows for a script: a short on-screen hook, a title, three beats. */
+export interface OnScreenCopy { script: string; title: string; hook: string; bullets: string[] }
+
+function clipWords(text: string, max: number): string {
+  const words = spokenWords(text.replace(/[.!?]+$/, ""))
+  return words.length <= max ? words.join(" ") : `${words.slice(0, max).join(" ")}…`
+}
+
+/**
+ * PURE. The on-screen copy for a script a HUMAN already approved — cut VERBATIM
+ * from its own sentences (a model-authored overlay would put words on screen
+ * nobody approved). Hook = the first clause clipped to ON_SCREEN_HOOK_MAX_WORDS;
+ * beats = the value sentences, each clipped to ON_SCREEN_BEAT_MAX_WORDS (at most
+ * three); title = the library title, else the hook.
+ */
+export function onScreenCopyFromScript(script: string, title: string | null | undefined): OnScreenCopy {
+  const flat = (script ?? "").trim()
+  const shape = assessScriptStructure(flat)
+  const sentences = spokenSentences(flat)
+  const hook = clipWords(shape.hook || sentences[0] || "", ON_SCREEN_HOOK_MAX_WORDS)
+  const valueSentences = sentences.slice(1, shape.ctaPresent ? -1 : undefined)
+  const beats = (valueSentences.length > 0 ? valueSentences : sentences.slice(1)).slice(0, 3)
+    .map((s) => clipWords(s, ON_SCREEN_BEAT_MAX_WORDS)).filter(Boolean)
+  const t = (title ?? "").trim()
+  return { script: flat, title: t ? clipWords(t, 8) : hook, hook, bullets: beats.length > 0 ? beats : [hook] }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE HOOK STING — how long the brand + hook headline ride OVER the first
+// spoken words of a hook-first film (wave 87, lane 87D2 — owner: "hook first").
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A hook-first composition (lib/video/duration-model.ts COMPOSITION_DURATION_RULES
+// `hookFirst`, read by compositionKeepsBrandIntro)
+// has no cover card: the presenter speaks from frame 0 and the brand sting sits
+// over the hook. The sting must last exactly as long as the HOOK is being said
+// — too short and the headline flashes, too long and it covers the value beat
+// — so its length is DERIVED FROM THE REAL MEDIA (86B/86E rule), in order:
+//   1. word-timed caption cues (the TTS alignment) — the frame the hook's last
+//      word ends;
+//   2. the measured avatar clip — the hook's share of the words × the clip's
+//      measured seconds;
+//   3. only then the avatar pace estimate.
+// Clamped to [HOOK_STING_MIN_SECONDS, HOOK_STING_MAX_SECONDS] and never past
+// the body. PURE.
+
+export const HOOK_STING_MIN_SECONDS = 1.2
+export const HOOK_STING_MAX_SECONDS = 3
+
+export function hookStingFrames(args: {
+  script: string | null | undefined
+  cues?: ReadonlyArray<{ fromFrame: number; durationFrames: number; words?: ReadonlyArray<{ fromFrame: number }> ; text: string }> | null
+  avatarDurationSeconds?: number | null
+  bodyFrames: number
+  fps: number
+  /** The host's pace, from lib/video/duration-model.ts hostWordsPerMinute (the estimate rung only). */
+  wordsPerMinute: number
+}): { frames: number; source: "cues" | "measured_clip" | "estimate" } {
+  const fps = args.fps > 0 ? args.fps : 30
+  const clamp = (f: number) => Math.max(1, Math.min(Math.max(1, args.bodyFrames), Math.round(Math.min(HOOK_STING_MAX_SECONDS * fps, Math.max(HOOK_STING_MIN_SECONDS * fps, f)))))
+  const shape = assessScriptStructure(args.script)
+  const hookWords = Math.max(1, shape.hookWords)
+  const cues = (args.cues ?? []).filter((c) => Number.isFinite(c.fromFrame) && Number.isFinite(c.durationFrames))
+  if (cues.length > 0) {
+    let seen = 0
+    for (const c of cues) {
+      const n = spokenWords(c.text).length
+      if (seen + n >= hookWords) return { frames: clamp(c.fromFrame + c.durationFrames), source: "cues" }
+      seen += n
+    }
+  }
+  const total = spokenWords(args.script).length
+  const measured = Number(args.avatarDurationSeconds)
+  if (total > 0 && Number.isFinite(measured) && measured > 0) {
+    return { frames: clamp((hookWords / total) * measured * fps), source: "measured_clip" }
+  }
+  // The host pace is the caller's (duration-model hostWordsPerMinute — one number, §6).
+  return { frames: clamp((hookWords / Math.max(1, args.wordsPerMinute)) * 60 * fps), source: "estimate" }
+}

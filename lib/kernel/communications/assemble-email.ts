@@ -15,6 +15,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { resolveUserTeam } from '@/lib/kernel/resolve-user-team'
 
 export interface AssembleEmailParams {
   bodyHtml: string
@@ -35,6 +36,13 @@ export interface AssembledEmail {
   unsubscribeIncluded: boolean
   /** Whether legal disclosures were appended */
   disclosuresIncluded: boolean
+  /**
+   * Wave 148 (lane 148B — C16 + CAN-SPAM / RFC 8058): the MIME headers a marketing email carries so a mailbox provider can
+   * offer its own one-click "Unsubscribe": `List-Unsubscribe: <https://…/api/unsubscribe?t=…>` and, when the link carries the
+   * verified token, `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. Empty for transactional mail. The provider adapter
+   * (lib/providers/messaging sendEmail → SendGrid `headers`) puts them on the wire.
+   */
+  headers: Record<string, string>
 }
 
 /** Strip HTML tags for plain-text fallback */
@@ -54,21 +62,41 @@ export async function assembleEmail(params: AssembleEmailParams): Promise<Assemb
   let signatureText = ''
 
   // 1. Try per-user signature
-  const { data: userRow } = await supabase
+  const { data: userRow, error: userSigError } = await supabase
     .from('users')
-    .select('email_signature, team_id')
+    .select('email_signature')
     .eq('id', params.userId)
     .maybeSingle()
+
+  // supabase-js RESOLVES a refused read, so an unchecked error here would look
+  // exactly like "this user has no signature" and silently fall through the
+  // whole waterfall to the brokerage default.
+  if (userSigError) {
+    console.error(`[assemble-email] user signature read REFUSED for ${params.userId}: ${userSigError.message}`)
+  }
+
+  // TIER 2 COULD NEVER FIRE. This used to read `users.team_id` and branch on it,
+  // but team membership is NOT recorded there for anyone: MEASURED, all 18 users
+  // in the live brokerage have `users.team_id = NULL`, including the team lead
+  // himself. So the team-tier signature was unreachable for every user in the
+  // product — a waterfall rung with no water.
+  //
+  // `lib/kernel/resolve-user-team.ts:resolveUserTeam` is the canonical answer to
+  // "which team is this user on", with a four-source precedence: the team they
+  // LEAD (teams.team_lead_id — a FACT, and the only source that is populated
+  // today), then users.team_id, then team_members, then agents.team_id. Using it
+  // here is the difference between a tier that exists and a tier that runs.
+  const teamOfUser = await resolveUserTeam(supabase, params.userId)
 
   if (userRow?.email_signature) {
     signatureHtml = userRow.email_signature
     signatureText = stripHtml(userRow.email_signature)
-  } else if (userRow?.team_id) {
+  } else if (teamOfUser.teamId) {
     // 2. Team-level signature lives inside teams.branding_override JSONB
     const { data: team } = await supabase
       .from('teams')
       .select('branding_override')
-      .eq('id', userRow.team_id)
+      .eq('id', teamOfUser.teamId)
       .maybeSingle()
 
     const teamSig = (team?.branding_override as any)?.email_signature_html
@@ -100,17 +128,38 @@ export async function assembleEmail(params: AssembleEmailParams): Promise<Assemb
   const needsUnsubscribe =
     !params.channelPurpose || params.channelPurpose !== 'transactional'
 
+  const headers: Record<string, string> = {}
   if (needsUnsubscribe && params.contactId) {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://app.vipagentos.com'
-    const unsubUrl = `${baseUrl}/unsubscribe?contactId=${params.contactId}&channel=email`
+    const baseUrl = (process.env.NEXT_PUBLIC_APP_URL ?? 'https://app.vipagentos.com').replace(/\/+$/, '')
+    // THE VERIFIED LINK (wave 148, C16): the contact's own unsubscribe token (m910 contacts.unsubscribe_token) — a credential
+    // that is not an entity id. Read with `*` so a database without m910 yields "no token" (the legacy contactId link, which
+    // app/api/unsubscribe still honours), never a refused read. A refused read is logged and falls back the same way.
+    let token: string | null = null
+    const { data: tokRow, error: tokErr } = await supabase.from('contacts').select('*').eq('id', params.contactId).maybeSingle()
+    if (tokErr) console.error(`[assemble-email] unsubscribe token read refused for ${params.contactId} (legacy link used): ${tokErr.message}`)
+    else token = ((tokRow as { unsubscribe_token?: string | null } | null)?.unsubscribe_token ?? null)
+    // The pair (contact id = WHICH row, token = the SECRET) — the route reads the row by its primary key and compares the
+    // token in constant time; the id alone proves nothing.
+    const unsubUrl = token
+      ? `${baseUrl}/unsubscribe?c=${params.contactId}&t=${encodeURIComponent(token)}&channel=email`
+      : `${baseUrl}/unsubscribe?contactId=${params.contactId}&channel=email`
+    const oneClickUrl = token
+      ? `${baseUrl}/api/unsubscribe?c=${params.contactId}&t=${encodeURIComponent(token)}&channel=email`
+      : `${baseUrl}/api/unsubscribe?contactId=${params.contactId}&channel=email`
+    headers['List-Unsubscribe'] = `<${oneClickUrl}>`
+    // RFC 8058: one-click is advertised only with the verified token (the legacy id-shaped URL is not a credential a mailbox
+    // provider should be able to fire on the person's behalf without the confirmation page).
+    if (token) headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
 
+    // CONSENT IS NEVER FABRICATED (ruling 3): the footer used to assert "you opted in" to every recipient — including people
+    // who never did (a staff-entered contact, an imported list). It now says only what is true.
     unsubscribeHtml = `
 <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e7eb;text-align:center;font-size:12px;color:#6b7280;">
-  <p>You are receiving this email because you opted in to communications from our brokerage.</p>
-  <p><a href="${unsubUrl}" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a> from marketing emails</p>
+  <p>You are receiving this email because you are in touch with us about real estate.</p>
+  <p><a href="${unsubUrl}" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a> from marketing emails — it takes effect immediately.</p>
 </div>`
 
-    unsubscribeText = `\n\n---\nYou are receiving this email because you opted in. To unsubscribe: ${unsubUrl}`
+    unsubscribeText = `\n\n---\nYou are receiving this email because you are in touch with us about real estate. To unsubscribe (immediately): ${unsubUrl}`
   }
 
   // ── Load legal disclosures ────────────────────────────────────────────────
@@ -143,5 +192,6 @@ export async function assembleEmail(params: AssembleEmailParams): Promise<Assemb
     signatureIncluded: !!signatureHtml,
     unsubscribeIncluded: needsUnsubscribe && !!params.contactId,
     disclosuresIncluded: true,
+    headers,
   }
 }

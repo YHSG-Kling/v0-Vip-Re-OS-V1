@@ -279,3 +279,161 @@ export function stripeCouponPayload(coupon: PlatformCoupon): Record<string, unkn
 export function isMockStripeCouponId(id: string | null | undefined): boolean {
   return !!id && id.startsWith("mock_")
 }
+
+// ── Stripe-side eligibility (wave 141H) ──────────────────────────────────────
+//
+// Owner (wave 141, COUPONS): "code → Stripe validation → eligibility → application
+// → invoice/checkout → internal reconciliation. No independent discount math.
+// Immediate errors for invalid/expired/ineligible codes. Never fabricate prices."
+//
+// The platform_coupons row above decides WHICH tier a code is for; Stripe decides
+// whether the coupon / promotion code is still redeemable and what it applies to.
+// This block is the PURE half of that second decision: the Stripe objects are
+// NORMALIZED to one shape (normalizeStripeDiscount) and judged against Stripe's
+// OWN restrictions (evaluateStripeDiscount) — coupon.valid, redeem_by,
+// max_redemptions / times_redeemed, applies_to.products, and for a promotion
+// code: active, expires_at, its own redemption cap, first_time_transaction,
+// minimum_amount (+ currency) and a customer pin. Nothing here computes a price:
+// the discount is APPLIED (checkoutDiscountParams → Stripe `discounts`) and the
+// invoice Stripe issues is the amount (app/api/billing/webhook/route.ts
+// invoice.paid records amount_paid and total_discount_amounts, m777).
+
+/** One normalized shape for a Stripe coupon with (optionally) the promotion code
+ *  that named it. Unix seconds for the clocks, as Stripe sends them. */
+export interface StripeDiscountShape {
+  couponId: string
+  couponValid: boolean
+  redeemBy: number | null
+  couponMaxRedemptions: number | null
+  couponTimesRedeemed: number
+  /** Stripe product ids the coupon is restricted to; null = any product. */
+  appliesToProducts: string[] | null
+  promotionCode: {
+    id: string
+    code: string
+    active: boolean
+    expiresAt: number | null
+    maxRedemptions: number | null
+    timesRedeemed: number
+    firstTimeTransaction: boolean
+    minimumAmount: number | null
+    minimumAmountCurrency: string | null
+    /** A promotion code pinned to one Stripe customer. */
+    customerId: string | null
+  } | null
+}
+
+/** PURE: fold the raw SDK objects (stripe.coupons.retrieve with applies_to
+ *  expanded; stripe.promotionCodes.list row) into StripeDiscountShape. Tolerant
+ *  of the id-only forms the SDK returns when nothing is expanded. */
+export function normalizeStripeDiscount(coupon: any, promotionCode: any | null = null): StripeDiscountShape {
+  const products = coupon?.applies_to?.products
+  const promoCustomer = promotionCode?.customer
+  return {
+    couponId: String(coupon?.id ?? ""),
+    couponValid: coupon?.valid === true,
+    redeemBy: typeof coupon?.redeem_by === "number" ? coupon.redeem_by : null,
+    couponMaxRedemptions: typeof coupon?.max_redemptions === "number" ? coupon.max_redemptions : null,
+    couponTimesRedeemed: typeof coupon?.times_redeemed === "number" ? coupon.times_redeemed : 0,
+    appliesToProducts: Array.isArray(products) ? products.map(String) : null,
+    promotionCode: promotionCode
+      ? {
+          id: String(promotionCode.id ?? ""),
+          code: String(promotionCode.code ?? ""),
+          active: promotionCode.active === true,
+          expiresAt: typeof promotionCode.expires_at === "number" ? promotionCode.expires_at : null,
+          maxRedemptions: typeof promotionCode.max_redemptions === "number" ? promotionCode.max_redemptions : null,
+          timesRedeemed: typeof promotionCode.times_redeemed === "number" ? promotionCode.times_redeemed : 0,
+          firstTimeTransaction: promotionCode.restrictions?.first_time_transaction === true,
+          minimumAmount: typeof promotionCode.restrictions?.minimum_amount === "number" ? promotionCode.restrictions.minimum_amount : null,
+          minimumAmountCurrency: promotionCode.restrictions?.minimum_amount_currency ? String(promotionCode.restrictions.minimum_amount_currency).toLowerCase() : null,
+          customerId: promoCustomer ? (typeof promoCustomer === "string" ? promoCustomer : String(promoCustomer.id ?? "")) || null : null,
+        }
+      : null,
+  }
+}
+
+export type StripeDiscountFailReason =
+  | "stripe_invalid"
+  | "stripe_expired"
+  | "stripe_exhausted"
+  | "product_restricted"
+  | "promo_inactive"
+  | "promo_expired"
+  | "promo_exhausted"
+  | "promo_first_purchase_only"
+  | "promo_minimum_amount"
+  | "promo_customer_pinned"
+
+type StripeDiscountCheck = { ok: true } | { ok: false; reason: StripeDiscountFailReason; message: string }
+
+/** What the discount is being applied to — the Stripe facts of the checkout /
+ *  subscription, never a price this code computed. `productIds` are the Stripe
+ *  product ids on the line items (ad-hoc price_data lines have none → a
+ *  product-restricted coupon cannot match them and is refused, honestly). */
+export interface StripeDiscountContext {
+  now: Date
+  productIds?: string[] | null
+  /** The pre-discount amount Stripe will charge, when the caller knows it (cents). */
+  amountCents?: number | null
+  currency?: string | null
+  customerId?: string | null
+  /** Is this the customer's FIRST transaction on Stripe? Unknown → undefined. */
+  isFirstTransaction?: boolean | null
+}
+
+/** PURE: may this Stripe discount be applied right now, by Stripe's own rules?
+ *  Checks run worst-first so the sentence names the most fundamental problem.
+ *  The sentences are TENANT-FACING (wave 140: never "platform-covered"; never a
+ *  Stripe id in a tenant's face). */
+export function evaluateStripeDiscount(shape: StripeDiscountShape, ctx: StripeDiscountContext, label?: string): StripeDiscountCheck {
+  const code = label ?? shape.promotionCode?.code ?? "This code"
+  const nowUnix = Math.floor(ctx.now.getTime() / 1000)
+  if (!shape.couponValid) {
+    return { ok: false, reason: "stripe_invalid", message: `${code} is no longer valid` }
+  }
+  if (shape.redeemBy != null && shape.redeemBy <= nowUnix) {
+    return { ok: false, reason: "stripe_expired", message: `${code} expired on ${new Date(shape.redeemBy * 1000).toLocaleDateString("en-US")}` }
+  }
+  if (shape.couponMaxRedemptions != null && shape.couponTimesRedeemed >= shape.couponMaxRedemptions) {
+    return { ok: false, reason: "stripe_exhausted", message: `${code} has been fully redeemed` }
+  }
+  const p = shape.promotionCode
+  if (p) {
+    if (!p.active) return { ok: false, reason: "promo_inactive", message: `${code} is no longer active` }
+    if (p.expiresAt != null && p.expiresAt <= nowUnix) {
+      return { ok: false, reason: "promo_expired", message: `${code} expired on ${new Date(p.expiresAt * 1000).toLocaleDateString("en-US")}` }
+    }
+    if (p.maxRedemptions != null && p.timesRedeemed >= p.maxRedemptions) {
+      return { ok: false, reason: "promo_exhausted", message: `${code} has been fully redeemed` }
+    }
+    if (p.customerId && ctx.customerId && p.customerId !== ctx.customerId) {
+      return { ok: false, reason: "promo_customer_pinned", message: `${code} was issued to a different account` }
+    }
+    if (p.firstTimeTransaction && ctx.isFirstTransaction === false) {
+      return { ok: false, reason: "promo_first_purchase_only", message: `${code} is for a first purchase only` }
+    }
+    if (p.minimumAmount != null && ctx.amountCents != null) {
+      const sameCurrency = !p.minimumAmountCurrency || !ctx.currency || p.minimumAmountCurrency === ctx.currency.toLowerCase()
+      if (sameCurrency && ctx.amountCents < p.minimumAmount) {
+        return { ok: false, reason: "promo_minimum_amount", message: `${code} needs an order of at least $${(p.minimumAmount / 100).toFixed(2)}` }
+      }
+    }
+  }
+  if (shape.appliesToProducts && shape.appliesToProducts.length > 0) {
+    const ids = ctx.productIds ?? []
+    if (!ids.some((id) => shape.appliesToProducts!.includes(id))) {
+      return { ok: false, reason: "product_restricted", message: `${code} applies to specific products, not this plan` }
+    }
+  }
+  return { ok: true }
+}
+
+/** PURE: the Stripe `discounts` parameter for a Checkout Session / Subscription
+ *  create / Subscription update. A promotion code is preferred when one named the
+ *  coupon (Stripe then counts ITS redemption); else the coupon itself. */
+export function checkoutDiscountParams(d: { stripeCouponId: string | null; promotionCodeId: string | null }): { discounts: Array<{ promotion_code: string } | { coupon: string }> } | null {
+  if (d.promotionCodeId) return { discounts: [{ promotion_code: d.promotionCodeId }] }
+  if (d.stripeCouponId && !isMockStripeCouponId(d.stripeCouponId)) return { discounts: [{ coupon: d.stripeCouponId }] }
+  return null
+}

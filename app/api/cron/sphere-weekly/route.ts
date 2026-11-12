@@ -11,23 +11,17 @@
  * Auth: CRON_SECRET — same pattern as other cron endpoints in this codebase.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  // Vercel cron sends the secret as a header; manual runs from local dev use the
-  // ?secret= query param. Match the established pattern from other cron routes.
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  // The ONE cron gate (lib/cron-auth.ts): Bearer CRON_SECRET, fail closed when
+  // unset. The old ?secret= query credential is retired (lane 88E).
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 

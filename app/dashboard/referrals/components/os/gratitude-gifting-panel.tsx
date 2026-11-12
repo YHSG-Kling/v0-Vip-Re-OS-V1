@@ -24,6 +24,9 @@ interface GratitudeGiftingPanelProps {
   agentId: string
   contactId: string
   contactName: string
+  /** optional by design: the panel's own Select lets the agent change this after mount —
+   *  this is only the initial value, and "closing" (the default) is right for every current
+   *  caller (all three render this from a closing/referral flow). */
   occasion?: Occasion
   onComplete?: () => void
 }

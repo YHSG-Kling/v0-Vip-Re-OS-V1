@@ -44,6 +44,8 @@ interface PacketDocument {
 interface PacketJob {
   id: string
   status: string
+  /** Hosted printable binder PDF (rendered from config.content at completion); null when the render failed. */
+  output_url?: string | null
   config: {
     content?: PacketDocument[]
     quality_check?: {
@@ -308,6 +310,14 @@ export function ListingPacketPanel({ listingId, agentId, brokerageId, listing }:
             {new Date(latestPacket.completed_at).toLocaleTimeString()}
           </p>
         )}
+        {latestPacket.output_url && (
+          <Button variant="outline" size="sm" className="mt-2 w-full sm:w-auto" asChild>
+            <a href={latestPacket.output_url} target="_blank" rel="noopener noreferrer">
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Download printable packet (PDF)
+            </a>
+          </Button>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Document list */}
@@ -449,7 +459,7 @@ export function ListingPacketPanel({ listingId, agentId, brokerageId, listing }:
                 <ul className="space-y-1">
                   {qcResult.issues.map((issue, i) => (
                     <li key={i} className="flex items-start gap-1.5 text-xs text-foreground">
-                      <AlertCircle className="h-3 w-3 text-amber-500 mt-0.5 shrink-0" />
+                      <AlertCircle className="h-3 w-3 text-amber-600 mt-0.5 shrink-0" />
                       {issue}
                     </li>
                   ))}

@@ -59,7 +59,30 @@ export async function GET(request: NextRequest) {
       } catch { summary.errors += 1 }
     }
 
-    await recordCronSuccessAction({ context_id: contextId, records_processed: summary.processed, metadata: summary as any })
+    // WAVE 149 (149F — C29, owner ruling 7; lane 148H Still open 1): REGISTRANT REMINDERS ARE THE ARBITER'S. No T-7d / T-1d /
+    // T-1h table: each tick asks the arbiter, per registration of every published, upcoming registration event, "remind now or
+    // wait" (lib/open-house/event-touches.ts — the tenant's fatigue floor and the arbiter's budget bound it). This hourly sweep is
+    // only the recovery net that gives the arbiter the chance to decide; it schedules nothing itself.
+    const upcomingSummary = { events: 0, asked: 0, reminded: 0 }
+    try {
+      const { data: upcoming, error: upErr } = await svc.from("open_house_events")
+        .select("id, brokerage_id")
+        .not("brokerage_id", "is", null)
+        .eq("registration_required", true).eq("is_published", true).eq("status", "scheduled")
+        .gte("event_date", now.toISOString().slice(0, 10))
+        .order("event_date", { ascending: true }).limit(100)
+      if (upErr) console.error(`[open-house-followup] upcoming events unreadable — no reminders this tick: ${upErr.message}`)
+      const { arbitrateEventTouches } = await import("@/lib/open-house/event-touches")
+      const budget = { remaining: 200 }
+      for (const e of (upcoming ?? []) as Array<{ id: string }>) {
+        const t = await arbitrateEventTouches(svc, e.id, { budget })
+        upcomingSummary.events += 1; upcomingSummary.asked += t.asked; upcomingSummary.reminded += t.reminded
+      }
+    } catch (err) {
+      console.error("[open-house-followup] reminder arbitration failed (follow-ups stand):", err instanceof Error ? err.message : err)
+    }
+
+    await recordCronSuccessAction({ context_id: contextId, records_processed: summary.processed, metadata: { ...summary, upcoming: upcomingSummary } as any })
     return NextResponse.json({ message: "Open-house follow-up sweep complete", summary })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Sweep failed"

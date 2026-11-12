@@ -9,6 +9,11 @@ import { buildFullActionManifest } from "@/lib/agentic-os/app-capability-registr
 import { AGIS_VERBS } from "@/lib/agentic-os/vendor-capability-registry"
 import { authorizedActions } from "@/lib/agentic-os/agent-scopes"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
+import {
+  resolveAllAppCapabilities,
+  blockExplanation,
+  attentionExplanation,
+} from "@/lib/agentic-os/resolve-app-capability"
 
 export async function GET(req: Request) {
   const caller = await resolveAgenticCaller(req)
@@ -17,11 +22,62 @@ export async function GET(req: Request) {
   }
 
   const manifest = buildFullActionManifest()
+
+  // AUTHORIZED is not the same question as OPERABLE. Scope says the caller may
+  // invoke it; the capability contract says whether it can actually run for this
+  // tenant. Without the second answer an agent learned its own limits by calling
+  // a tool and watching it fail — so a discovering agent now gets both, and the
+  // REASON a dark capability is dark.
+  let operable: string[] | undefined
+  let dark: Array<{
+    action: string; capability: string; reason: string; missing: string[]
+    explanation: string | null
+    /** The self-healer already has an open repair for this provider. */
+    healing: boolean
+  }> | undefined
+  // Operable TODAY but on a credential that is lapsing. A planner that only sees
+  // operable/dark cannot act before the outage — this is the window in which
+  // acting is cheap, and it comes from the connectivity agent, not a new rule.
+  let expiring: Array<{ action: string; capability: string; provider: string; status: string; warning: string | null }> | undefined
+
+  if (caller.brokerageId) {
+    // Brokerage scope only — the caller is a brokerage-scoped agent token or a
+    // session; connection-manager still applies its agent → platform → integration
+    // precedence internally.
+    const resolutions = await resolveAllAppCapabilities({ brokerageId: caller.brokerageId })
+    const byCapability = new Map(resolutions.map((r) => [r.capability as string, r]))
+    operable = manifest
+      .filter((a) => a.kind !== "app" || byCapability.get(a.capability)?.operable !== false)
+      .map((a) => a.action)
+    dark = resolutions
+      .filter((r) => !r.operable)
+      .map((r) => ({
+        action: `${r.def.verb} ${r.capability}`,
+        capability: r.capability,
+        reason: r.reason ?? "unknown",
+        missing: r.missing,
+        explanation: blockExplanation(r),
+        healing: r.healingInFlight,
+      }))
+    expiring = resolutions
+      .filter((r) => r.operable && r.attention)
+      .map((r) => ({
+        action: `${r.def.verb} ${r.capability}`,
+        capability: r.capability,
+        provider: r.satisfiedBy ?? "",
+        status: r.connectivity ?? "connected",
+        warning: attentionExplanation(r),
+      }))
+  }
+
   return NextResponse.json({
     protocol: "agentic-api",
     verbs: AGIS_VERBS,
     actions: manifest,
     authorized: authorizedActions(manifest, caller.scopes).map((a) => a.action),
+    // Absent when the caller has no brokerage context (platform-wide token):
+    // omitted rather than guessed, because an empty list would read as "nothing works".
+    ...(operable ? { operable, dark, expiring } : {}),
     authenticatedVia: caller.via,
   })
 }

@@ -27,12 +27,16 @@ import {
   parseChangesFromSearchResult,
   changeSignature,
   extractEffectiveDate,
-  isoWeek,
   runRegulatoryWatcher,
   COMPLIANCE_SURFACES,
   type RegSearchFetcher,
   type RegSearchResult,
 } from "../lib/kernel/regulatory-watcher"
+// isoWeek was a duplicate of isoWeekTag (lib/kernel/commission-forecaster.ts:634,
+// re-exported by lib/kernel/objection-library.ts:312) — merged onto the survivor
+// and deleted (orphan doctrine §1.1, lane R, 2026-09-07). The watcher's own period
+// computation now calls isoWeekTag directly; this proof does the same.
+import { isoWeekTag } from "../lib/kernel/commission-forecaster"
 
 let passed = 0, failed = 0; const fails: string[] = []
 const check = (n: string, c: boolean, d?: string) => {
@@ -127,7 +131,7 @@ async function main() {
   check("signature: deterministic + stable", changeSignature(c) === changeSignature(c) && /^[0-9a-f]{8}$/.test(changeSignature(c)))
 
   check("catalog: 6 real OS surfaces present", COMPLIANCE_SURFACES.length === 6 && COMPLIANCE_SURFACES.every((s) => s.file.length > 0))
-  check("week: isoWeek labelled", /^\d{4}-W\d{2}$/.test(isoWeek(new Date("2026-06-13T00:00:00Z"))))
+  check("week: isoWeek labelled", /^\d{4}-W\d{2}$/.test(isoWeekTag(new Date("2026-06-13T00:00:00Z"))))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) { console.log("\n[Layer 2] ⏭ no Supabase creds — pure layer only"); report(); return }
@@ -175,7 +179,7 @@ async function main() {
     check("run: new change escalated", flag?.state === "new" && flag?.escalated === true && r1.escalated >= 1)
 
     const sig = changeSignature({ title: changeTitle, url: changeUrl })
-    const period = isoWeek(now)
+    const period = isoWeekTag(now)
 
     // Observation recorded (idempotent key present).
     const { count: obsCount } = await svc.from("reg_change_observations")

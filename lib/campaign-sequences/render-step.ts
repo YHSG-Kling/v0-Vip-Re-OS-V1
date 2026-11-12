@@ -20,6 +20,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { assembleEmail, type AssembledEmail } from "@/lib/kernel/communications/assemble-email"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
+import { escapeHtmlMinimal as escapeHtml } from "@/lib/format/html"
 
 export interface RenderStepInput {
   brokerageId:  string
@@ -117,8 +118,24 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   let subjectTemplate = input.step.subject ?? ""
   let bodyTemplate    = input.step.body ?? ""
   if (input.personaIntent && input.personaIntent.trim()) {
-    const { buildPersonaContext } = await import("./persona-render")
+    const { buildPersonaContext, loadAudienceBrief } = await import("./persona-render")
     const personaCtx = buildPersonaContext((contact ?? {}) as any, entity)
+    // WAVE 151 (lane 151I): the person's own stated needs (them first) — a contact's brief; a lead has no spine (honest null).
+    const audience = entity === "contact"
+      ? await loadAudienceBrief(supabase as never, { brokerageId: input.brokerageId, contactId: input.contactId }).catch(() => null)
+      : null
+    // THE ONE RESOLVER (§6). "contact" only — resolveContactLanguageFromDb reads
+    // the `contacts` table by id, and a lead's id is not a contacts.id (entity
+    // "lead" keeps the prior English-implicit behavior byte-for-byte). Best-
+    // effort: a resolution failure falls through to generatePersonaCopy's
+    // omitted-language default (DEFAULT_LANGUAGE "en"), never blocks the send.
+    let language: string | undefined
+    if (entity === "contact") {
+      try {
+        const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+        language = await resolveContactLanguageFromDb(supabase, input.contactId)
+      } catch { /* falls through to English */ }
+    }
     const draft = await generatePersonaCopy(
       {
         goal: input.personaIntent,
@@ -126,6 +143,11 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
         channel: input.step.channel,
         persona: personaCtx.persona,
         words: input.step.channel === "sms" ? 40 : 80,
+        language,
+        // WAVE 151 (lane 151I): WHO IS WRITING and WHO IT IS FOR condition the FIRST draft — the sender's versioned
+        // voice brief (words, tagline, tone, signature, examples) and the person's stated needs. Not a rewrite pass.
+        sender: { brokerageId: input.brokerageId, teamId: (agentInfo as any)?.team_id ?? null, agentUserId: input.agentUserId ?? null },
+        audience,
       },
       { subject: input.step.subject ?? undefined, body: input.step.body ?? "" },
       { generator: input.generator },
@@ -150,7 +172,9 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
     persona:      (contact as any)?.contact_persona ?? "other",
     messageType:  input.step.channel === "sms" ? "sms" : "email",
     content:      body,
-  })
+    // The sequence runner is a CRON: through the anon cookie client this read no voice at all
+    // (86C). input.brokerageId is the enrollment row's tenant; read on the service client.
+  }, { client: supabase })
 
   // ── For email: assemble signature + unsubscribe + legal ──────────────────
   if (input.step.channel === "email") {
@@ -230,9 +254,6 @@ function plainToHtml(text: string): string {
     .join("<br>")}</div>`
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts
+// escapeHtmlMinimal (imported above as `escapeHtml`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.

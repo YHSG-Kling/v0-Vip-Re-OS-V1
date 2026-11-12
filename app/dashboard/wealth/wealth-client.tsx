@@ -120,6 +120,18 @@ export function WealthClient({ data }: Props) {
                     <p className="text-[10px] text-muted-foreground">
                       {OPP_META[row.opportunityType]?.label ?? row.opportunityType} · {row.status}
                     </p>
+                    {/* WHO DECIDED, AND WHY. reviewed_at / reviewed_by_user_id /
+                        dismissed_reason are stamped on every acted, dismissed and
+                        pushed row and were read by nothing — so this strip could
+                        show that an opportunity had been closed out without ever
+                        saying who closed it or on what grounds. */}
+                    {(row.reviewedByName || row.reviewedAt || row.dismissedReason) && (
+                      <p className="text-[10px] text-muted-foreground">
+                        {row.reviewedByName ? `by ${row.reviewedByName}` : "reviewer not on file"}
+                        {row.reviewedAt ? ` · ${new Date(row.reviewedAt).toLocaleDateString()}` : ""}
+                        {row.dismissedReason ? ` — ${row.dismissedReason}` : ""}
+                      </p>
+                    )}
                   </div>
                   <Badge variant="outline" className="text-[9px] shrink-0">{row.status}</Badge>
                 </div>

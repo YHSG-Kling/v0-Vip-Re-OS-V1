@@ -60,13 +60,126 @@ export async function GET(request: Request) {
     succeeded: number
     failed: number
     totalCost: number
+    /** Rows the FREE OSINT lane (keyless OSM + US Census) contributed to, at $0.
+     *  Reported alongside — never folded into — the paid counters, so the run
+     *  summary can never read free coverage as paid coverage. */
+    freeLaneRuns?: number
+    /** Rows where the paid person lane was REQUIRED but withheld (vendor budget).
+     *  Not successes: the person question went unanswered. */
+    paidWithheld?: number
+    leadsTopUp?: number
+    /** Wave 145 (145F): new intent facts the watcher routed for this tenant this tick. */
+    factsRouted?: number
+    /** Wave 146 (146D): first-party starts / resumptions the first-party watcher routed for this tenant this tick. */
+    firstPartyRouted?: number
+    movementRaised?: number
     error?: string
   }> = []
 
   for (const brokerage of brokerages) {
     try {
+      // ── LEAD-TRACK NET (wave 5) ───────────────────────────────────────────
+      // "enrichment also needs to still happen with raw leads" (owner).
+      //
+      // The create doors are hooked (event-reactor D-septies for the live one,
+      // direct hooks for the two that emit nothing), but hooks alone leave three
+      // populations un-enriched forever: every lead created before this shipped,
+      // every lead refused by the per-tenant backlog cap while a scrape surge
+      // drained, and every platform-origin lead that was PARKED (brokerage_id
+      // NULL) at promotion time and only gained a tenant later. This is the net
+      // under them — the same reason wave 3 revived the contact cron instead of
+      // retiring it.
+      //
+      // UNATTENDED DOOR, NOT A SESSION ONE. The tenant comes from the brokerages
+      // list read out of the database above; nothing here reads a tenant from the
+      // request, and CRON_SECRET is verified at the top. This is the pattern the
+      // contact lane's cron was rebuilt on after a session gate silently starved
+      // it of rows.
+      //
+      // BOUNDED: LEAD_NET_PER_BROKERAGE (25) candidates per tenant per run, and
+      // each candidate still crosses queueLeadEnrichment's full gate —
+      // identifier, freshness-by-evidence, pending-row idempotency, live-deal
+      // suppression, the backlog cap and the vendor-budget pre-flight. It only
+      // ENQUEUES; the drain below is what spends, and its per-tenant
+      // BATCH_SIZE is unchanged, so this pass cannot raise the spend ceiling.
+      let leadsTopUp = 0
+      try {
+        const { listLeadsNeedingEnrichment, queueLeadEnrichment, LEAD_NET_PER_BROKERAGE } =
+          await import('@/lib/enrichment/lead-enrichment-core')
+        const net = await listLeadsNeedingEnrichment({
+          brokerageId: brokerage.id,
+          limit: LEAD_NET_PER_BROKERAGE,
+        })
+        if (net.error) {
+          console.error(`[EnrichmentProcessor] ${brokerage.id} lead-net read failed:`, net.error)
+        }
+        for (const lead of net.leads) {
+          const q = await queueLeadEnrichment({
+            leadId: lead.id,
+            brokerageId: brokerage.id,
+            triggerType: 'lead_net',
+          })
+          if (q.queued) leadsTopUp++
+          // A refusal is not an error: 'backlog' means this tenant already has
+          // all the committed spend it is allowed, so stop asking this run.
+          else if (q.reason === 'backlog' || q.reason === 'budget') break
+        }
+      } catch (err) {
+        // The net is additive. A failure here must never stop the drain below,
+        // which is what actually completes work already paid for.
+        console.error(`[EnrichmentProcessor] ${brokerage.id} lead-net top-up failed:`, err)
+      }
+
       const summary = await processEnrichmentQueue(brokerage.id)
-      results.push({ brokerageId: brokerage.id, ...summary })
+
+      // ── THE ENRICHMENT-FACT WATCHER (wave 145, lane 145F — owner ruling 11: "how intent signals are going to read them when it
+      // happens. need a watcher or something") ─────────────────────────────────────────────────────────────────────────────
+      // Right after the drain wrote this tenant's leads / contacts, every NEW behaviour / life-event fact stored since the cursor
+      // becomes one durable, consumed-once event routed to its canonical party (a lead with a contact is answered as the contact)
+      // → the ONE life-change responder → the existing managers / arbiter (lib/enrichment/intent-signal-sources.ts
+      // watchEnrichmentFactChanges). No provider is called: Versium / PeopleData do not push, so the cadence IS this drain's —
+      // a fact exists only once our budget-gated enrichment stored it. Additive: a failure never undoes the drain above.
+      let factsRouted = 0
+      try {
+        const { watchEnrichmentFactChanges } = await import('@/lib/enrichment/intent-signal-sources')
+        const watch = await watchEnrichmentFactChanges(supabase, brokerage.id)
+        factsRouted = watch.published
+        for (const e of watch.errors.slice(0, 3)) console.error(`[EnrichmentProcessor] ${brokerage.id} fact watcher: ${e}`)
+      } catch (err) {
+        console.error(`[EnrichmentProcessor] ${brokerage.id} fact watcher failed:`, err)
+      }
+      // ── THE FIRST-PARTY HALF OF THE WATCHER (wave 146, lane 146D — owner ruling 11: "Enrichment should be customer360 which drives
+      // the outreach") ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+      // The person's own actions (saved homes, property views, site sessions, portal visits) are written in real time; this tick
+      // reads them with an overlapping cursor and routes a START or a RESUMPTION after the tenant's dormancy window — never every
+      // click — as one durable, consumed-once event that reads the party's Customer 360 (contract C6) and hands the change to the
+      // ONE life-change responder (lib/enrichment/first-party-intent-watcher.ts watchFirstPartyIntent). No provider is called; no
+      // new cron. Additive: a failure never undoes the drain or the provider watcher above.
+      let firstPartyRouted = 0
+      try {
+        const { watchFirstPartyIntent } = await import('@/lib/enrichment/first-party-intent-watcher')
+        const fp = await watchFirstPartyIntent(supabase, brokerage.id)
+        firstPartyRouted = fp.routed
+        for (const e of fp.errors.slice(0, 3)) console.error(`[EnrichmentProcessor] ${brokerage.id} first-party watcher: ${e}`)
+      } catch (err) {
+        console.error(`[EnrichmentProcessor] ${brokerage.id} first-party watcher failed:`, err)
+      }
+      // ── THE MOVEMENT WATCHER'S TICK (wave 147, lane 147B — owner ruling 3: life changes are real-estate events and a provider
+      // with no push signal still has to reach the manager) ────────────────────────────────────────────────────────────────────
+      // Poll-and-diff over what the permit / BatchData sweeps, the portal calculators and the public "recommend a realtor?"
+      // captures already store (lib/intent/movement-source-watcher.ts runMovementTick): one C9 signal per material change, no
+      // double raise after lost state, fails closed, and publishes the freshness it can promise. Cron here is RECONCILIATION
+      // (C14) — the event-driven paths raise first; this tick catches what they missed. No vendor is called; no new cron.
+      let movementRaised = 0
+      try {
+        const { runMovementTick } = await import('@/lib/intent/movement-source-watcher')
+        const mvt = await runMovementTick(supabase, brokerage.id)
+        movementRaised = mvt.watch.raised
+        for (const e of mvt.watch.errors.slice(0, 3)) console.error(`[EnrichmentProcessor] ${brokerage.id} movement watcher: ${e}`)
+      } catch (err) {
+        console.error(`[EnrichmentProcessor] ${brokerage.id} movement watcher failed:`, err)
+      }
+      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp, factsRouted, firstPartyRouted, movementRaised })
     } catch (err) {
       results.push({
         brokerageId: brokerage.id,
@@ -81,12 +194,22 @@ export async function GET(request: Request) {
 
   const totalProcessed = results.reduce((s, r) => s + r.processed, 0)
   const totalSucceeded = results.reduce((s, r) => s + r.succeeded, 0)
+  const totalFreeLane = results.reduce((s, r) => s + (r.freeLaneRuns ?? 0), 0)
+  const totalPaidWithheld = results.reduce((s, r) => s + (r.paidWithheld ?? 0), 0)
+  const totalFactsRouted = results.reduce((s, r) => s + (r.factsRouted ?? 0), 0)
+  const totalFirstPartyRouted = results.reduce((s, r) => s + (r.firstPartyRouted ?? 0), 0)
 
   await recordCronSuccessAction({
     context_id: contextId,
     records_processed: totalProcessed,
     output_count: totalSucceeded,
-    metadata: { brokerages: results.length, totalProcessed, totalSucceeded, duration_ms: Date.now() - startedAt },
+    metadata: {
+      brokerages: results.length, totalProcessed, totalSucceeded,
+      // Lane split, so a run that leaned on the free lane (or that withheld paid
+      // spend against an exhausted budget) is legible from the cron ledger alone.
+      totalFreeLane, totalPaidWithheld, totalFactsRouted, totalFirstPartyRouted,
+      duration_ms: Date.now() - startedAt,
+    },
   })
 
   return NextResponse.json({

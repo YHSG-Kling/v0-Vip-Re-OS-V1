@@ -17,6 +17,8 @@
  * does the I/O. NOT server-only (simulator-driven).
  */
 
+import { usd } from "@/lib/format/money"
+
 export type StrategyMoment = "offer_decision" | "price_change" | "listing_launch" | "buyer_kickoff"
 
 export interface StrategyStateFacts {
@@ -69,7 +71,7 @@ export interface StrategySession {
   inviteLine: string
 }
 
-const usd = (n: number): string => `$${Math.round(n).toLocaleString("en-US")}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /** PURE: the auto-prepared session — agenda, prep, and invite from real facts. */
 export function composeStrategySession(f: StrategySessionFacts): StrategySession {

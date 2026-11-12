@@ -4,6 +4,7 @@ import { ChevronLeft } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { getRecentTenantSafetyFindings } from "@/app/actions/tenant-safety-actions"
 import { TenantSafetyClient } from "./tenant-safety-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 /**
  * /dashboard/admin/tenant-safety
@@ -31,7 +32,7 @@ export default async function TenantSafetyPage() {
     "superadmin", "broker", "broker_admin", "admin", "compliance_officer", "compliance_manager",
   ])
   if (!allowed.has(profile?.user_type ?? "")) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Tenant safety" audience="your broker, brokerage admins and the compliance officer" />
   }
 
   const [unresolvedRes, resolvedRes] = await Promise.all([

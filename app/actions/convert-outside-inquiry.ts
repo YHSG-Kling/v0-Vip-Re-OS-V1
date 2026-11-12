@@ -201,10 +201,11 @@ export async function convertOutsideInquiryToRepresentedBuyer(
   // Only writes when the row's contact_id is still null — prevents stomping on an
   // already-linked showing request from a different conversion call.
   if (input.showingRequestId) {
-    await svc.from("showing_requests")
+    const { error: requestLinkErr } = await svc.from("showing_requests")
       .update({ contact_id: input.contactId })
       .eq("id", input.showingRequestId)
       .is("contact_id", null)
+    if (requestLinkErr) console.error(`[convert-outside-inquiry] showing request NOT linked to the new contact: ${requestLinkErr.message}`)
   }
 
   // ── 6. BBA — idempotent ──────────────────────────────────────────────────

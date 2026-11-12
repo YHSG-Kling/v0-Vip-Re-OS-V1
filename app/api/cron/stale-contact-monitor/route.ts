@@ -2,6 +2,7 @@ import {
 NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
+import { detectAllEligibleContacts, DEFAULT_MAX_BATCH } from '@/lib/ai-isa/stale-contact-detector'
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -9,6 +10,10 @@ import {
   recordCronFailureAction,
 } from '@/app/actions/cron-kernel'
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { ISA_SERVICE_IDENTITY, isaTenantWorkQueue } from "@/lib/ai-isa/isa-acting-scope"
+import { scopeBrokerageId } from "@/lib/kernel/tenant-scope"
+import { resolveStaleThreshold } from "@/lib/ai-isa/reengagement-policy"
+import { throttleTouchBatch, type CapacityBand } from "@/lib/kernel/capacity-guardian"
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -37,82 +42,208 @@ export async function GET(request: NextRequest) {
   const results: Array<{
     brokerageId: string
     staleCount: number
+    /** How many of staleCount were GHOSTED (messaged, no reply) rather than merely quiet. */
+    ghostedCount: number
     reengaged: number
     skipped: number
+    /** Touches withheld because the owning agent is at/over capacity (wave 103, lane 103B). */
+    throttledForCapacity: number
     errors: string[]
   }> = []
 
   // brokerages table has no is_active column — fetch all and rely on contacts filter
-  const { data: brokerages } = await supabase
+  const { data: brokerages, error: brokeragesErr } = await supabase
     .from('brokerages')
     .select('id')
 
+  // supabase-js RESOLVES a failed query, so an unchecked read here would loop over
+  // zero brokerages and then report `ok: true, totalReengaged: 0` — a refused read
+  // and a genuinely quiet night are indistinguishable to every consumer of this
+  // response. They must not be.
+  if (brokeragesErr) {
+    await recordCronFailureAction({ context_id: contextId, error: brokeragesErr.message, stage: 'load-brokerages' })
+    return NextResponse.json({ ok: false, error: brokeragesErr.message, context_id: contextId }, { status: 500 })
+  }
+
   // Thresholds live in global_settings.additional_settings (per brokerage).
-  const { data: settingsRows } = await supabase
+  const { data: settingsRows, error: settingsErr } = await supabase
     .from('global_settings')
     .select('brokerage_id, additional_settings')
+  if (settingsErr) {
+    // Not fatal — every brokerage falls back to the module default — but it must
+    // not pass as "nobody configured a threshold".
+    console.error('[cron/stale-contact-monitor] global_settings read refused:', settingsErr.message)
+  }
   const settingsByBrokerage = new Map<string, Record<string, unknown>>()
   for (const r of settingsRows ?? []) {
     if (r.brokerage_id) settingsByBrokerage.set(r.brokerage_id as string, (r.additional_settings as Record<string, unknown>) ?? {})
   }
 
-  for (const brokerage of brokerages ?? []) {
-    const brokerageId = brokerage.id
+  // ── THE ISA WORKS FOR ONE TENANT AT A TIME (owner ruling, 2026-08-24) ──────
+  //
+  // This cron IS the AI ISA acting for the PLATFORM: it sweeps every brokerage.
+  // That is legitimate — the ruling says the ISA "works for 1 tenant at a time
+  // and works for the platform as well" — but the platform-wide half must execute
+  // as a SEQUENCE of single-tenant scopes, never as one wide one. The loop used
+  // to carry a raw `brokerage.id` string, which is the shape that lets a tenant
+  // predicate be forgotten on any one of the ~15 reads below and silently return
+  // every brokerage's rows through the service client.
+  //
+  // `isaTenantWorkQueue` turns the brokerage list into exactly that sequence:
+  // each element is a TenantScope of kind "tenant" carrying ONE id, and it
+  // REFUSES rather than widening if a tenant is unset. A brokerage row with a
+  // blank id no longer becomes an unfiltered pass over the platform; it is simply
+  // not in the queue.
+  const isaWork = isaTenantWorkQueue({
+    ...ISA_SERVICE_IDENTITY,
+    brokerageIds: (brokerages ?? []).map((b) => b.id as string | null),
+    where: 'cron/stale-contact-monitor',
+  })
+
+  for (const isaScope of isaWork) {
+    // Singular by construction — scopeBrokerageId returns null only for a
+    // platform scope, and the queue never contains one.
+    const brokerageId = scopeBrokerageId(isaScope)
+    if (!brokerageId) continue
     const settings = settingsByBrokerage.get(brokerageId) ?? null
 
-    // Use brokerage-configured threshold or default 14 days
-    const staleDays =
-      typeof settings?.isa_ghost_threshold_days === 'number'
-        ? settings.isa_ghost_threshold_days
-        : 14
-
-    const cutoff = new Date(
-      Date.now() - staleDays * 24 * 60 * 60 * 1000,
-    ).toISOString()
+    // Brokerage-configured threshold or the policy default (DEFAULT_STALE_DAYS).
+    // ONE reading of isa_ghost_threshold_days (§6): this and
+    // app/dashboard/stale/actions.ts used to carry their own `typeof === 'number'
+    // ? x : 14` — neither rejected 0 / a negative / NaN, which would have made
+    // every contact stale at once. resolveStaleThreshold does.
+    const staleDays = resolveStaleThreshold(settings?.isa_ghost_threshold_days)
 
     let reengaged = 0
     let skipped = 0
+    /** Touches withheld this run because the owning agent is at/over capacity (wave 103). */
+    let throttledForCapacity = 0
     const errors: string[] = []
 
     try {
-      // Find assigned contacts with no recent activity.
-      // These are converted leads (have agent_id) that have gone quiet.
-      // contacts.last_contacted_at is not in schema — filter on created_at as fallback
-      const { data: staleContacts } = await supabase
-        .from('contacts')
-        .select('id, first_name, last_name, email, agent_id, status, dnc_status, isa_reengage_allowed')
-        .eq('brokerage_id', brokerageId)
-        .not('agent_id', 'is', null)      // must be assigned to an agent
-        .eq('dnc_status', false)           // not on DNC
-        .neq('status', 'archived')
-        .neq('status', 'inactive')
-        .not('isa_reengage_allowed', 'eq', false)  // ISA re-engage must be allowed
-        .lt('created_at', cutoff)          // no activity threshold — use created_at as proxy
-        .limit(20)                         // max 20 per brokerage per run
+      // THE CANONICAL DETECTOR, not a fourth copy of the query.
+      //
+      // This block used to hand-roll the stale read, and its filter was
+      // `.lt('created_at', cutoff)` under a comment asserting that
+      // contacts.last_contacted_at "is not in schema". It is (verified against
+      // scripts/schema-snapshot.ts), and the consequence of the wrong column was
+      // not cosmetic: created_at never moves, so every contact older than the
+      // threshold stayed permanently inside the stale net and was auto-messaged
+      // no matter how recently their agent had spoken to them. The inline query
+      // also had no exclusion for an OPEN TRANSACTION — a client under contract
+      // was a re-engagement candidate.
+      //
+      // detectAllEligibleContacts applies last_contacted_at, the open-transaction
+      // exclusion, ai_outreach_paused, deleted_at, the lifetime long-horizon
+      // threshold, AND the two exclusions this cron used to own (status
+      // archived/inactive, assigned-agent-required) — which were merged into the
+      // shared policy before this query was removed, so nothing was lost.
+      //
+      // It also returns the GHOSTED half (messaged, no reply) that no caller had
+      // ever asked for, labelled per contact so the engine can tell the two apart.
+      //
+      // ORDERED BY THE CONTACT NBA (wave 101C). The batch used to be the detector's first 20
+      // (ghosted, then oldest) — so a contact with rising intent sat behind 20 the NBA would only
+      // have told to wait. Now a 2× pool is read, each person is planned by the SAME NBA
+      // engageContact runs (lib/ai-isa/lead-action-plan.ts loadContactNbaContext +
+      // planNextContactTouch, autonomous run), and rankContactsForTouch orders it: actionable
+      // first, then NBA priority (intent momentum), then the detector's order; unreadable inputs
+      // last. engageContact still re-plans each one and ledgers every wait / do_nothing — this
+      // only decides WHO gets the batch's slots. The old inline query took 20 per brokerage per
+      // run; that ceiling is kept for the batch itself.
+      const BATCH = Math.min(20, DEFAULT_MAX_BATCH)
+      const pool = await detectAllEligibleContacts(brokerageId, {
+        staleDays,
+        ghostedDays: staleDays,
+        maxBatch: Math.min(BATCH * 2, DEFAULT_MAX_BATCH),
+        requireAssignedAgent: true,
+      })
+      const { loadContactNbaContext, planNextContactTouch, rankContactsForTouch } = await import('@/lib/ai-isa/lead-action-plan')
+      const nbaNow = new Date()
+      const planned = await Promise.all(pool.map(async (contact) => {
+        try {
+          const nba = await loadContactNbaContext(supabase, { brokerageId, contact, humanInitiated: false, now: nbaNow })
+          return { item: contact, plan: nba.ok ? planNextContactTouch({ now: nbaNow, context: nba.context }) : null }
+        } catch {
+          return { item: contact, plan: null }
+        }
+      }))
+      const rankedForTouch = rankContactsForTouch(planned).slice(0, BATCH)
+      // CAPACITY THROTTLE (wave 103, lane 103B). Every automated touch lands its reply on the
+      // OWNING AGENT; a book whose agent is over capacity gets FEWER touches this run (the one
+      // kernel answer, capacityFor → band → touchAllowanceFor), never more work for a drowning
+      // agent. A refused capacity read throttles nothing (null band = kept).
+      const { capacityFor, resolveBrokerageMaxLoad } = await import('@/lib/lead-assignment/capacity-pick')
+      const bandByAgent = new Map<string, CapacityBand | null>()
+      try {
+        const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
+        for (const agentId of new Set(rankedForTouch.map((c) => c.agent_id).filter((v): v is string => !!v))) {
+          try { bandByAgent.set(agentId, (await capacityFor(supabase, brokerageId, agentId, { now: nbaNow, maxLoad })).band) }
+          catch (e) { console.error(`[StaleContactMonitor] capacity read failed for agent ${agentId}: ${e instanceof Error ? e.message : String(e)}`); bandByAgent.set(agentId, null) }
+        }
+      } catch (e) { console.error(`[StaleContactMonitor] capacity ceiling read failed: ${e instanceof Error ? e.message : String(e)}`) }
+      const throttle = throttleTouchBatch(rankedForTouch, (c) => c.agent_id, (id) => bandByAgent.get(id) ?? null, BATCH)
+      throttledForCapacity = throttle.throttled
+      const staleContacts = throttle.kept
 
-      for (const contact of staleContacts ?? []) {
+      for (const contact of staleContacts) {
         try {
           // COLD-CONTACT CHECKPOINT — before another auto-touch, if this contact has gone
           // cold (≥ COLD_CONTACT_TOUCHES unanswered ISA follow-ups), loop in the OWNING AGENT
           // once for a personal call (the automation still nurtures). The contact-side mirror
           // of the ghost-lead escalation — no cold relationship auto-loops without a human.
-          const { count: noReplyTouches } = await supabase
+          const { count: noReplyTouches, error: touchErr } = await supabase
             .from('isa_outreach_log')
             .select('id', { count: 'exact', head: true })
             .eq('contact_id', contact.id)
             .is('replied_at', null)
-          const { coldContactReengagementCheck } = await import('@/lib/ai-isa/reengagement-policy')
-          if (coldContactReengagementCheck(noReplyTouches ?? 0).isCold) {
-            const { escalateColdContact } = await import('@/lib/ai-isa/cold-contact-escalation')
-            await escalateColdContact(supabase, {
-              contactId: contact.id, brokerageId, agentId: contact.agent_id,
-              touches: noReplyTouches ?? 0, firstName: contact.first_name ?? null,
-            })
+          if (touchErr) {
+            // A refused count reads as 0, i.e. "not cold" — which silently
+            // withholds the one human checkpoint on an endlessly-nurtured
+            // relationship. Surface it instead of escalating on a guess.
+            errors.push(`${contact.id}: cold-check read refused: ${touchErr.message}`)
+          } else {
+            const { coldContactReengagementCheck } = await import('@/lib/ai-isa/reengagement-policy')
+            if (coldContactReengagementCheck(noReplyTouches ?? 0).isCold) {
+              const { escalateColdContact } = await import('@/lib/ai-isa/cold-contact-escalation')
+              await escalateColdContact(supabase, {
+                contactId: contact.id, brokerageId, agentId: contact.agent_id,
+                touches: noReplyTouches ?? 0, firstName: contact.first_name ?? null,
+              })
+            }
           }
 
-          const result = await initiateAIISAContactEngagement(contact.id)
+          // THE DETECTED SITUATION, not a fixed label. detection_type is 'stale'
+          // or 'ghosted', and engageContact treats them differently — 'ghosted'
+          // routes the AI call to the ghost_recovery purpose and arms the
+          // situational voicemail's fresh hook. Passing the real one is what
+          // makes the ghosted half of the detector mean anything downstream.
+          // Lane 86E: a cron has no session — it PRESENTS the secret (env presence is no longer a credential).
+          const result = await initiateAIISAContactEngagement(contact.id, contact.detection_type, { internalSecret: process.env.CRON_SECRET })
           if (result.success) {
             reengaged++
+            // THE REEL HANDOFF THIS RE-ENGAGEMENT ALWAYS PROMISED (2026-09-07). The
+            // signal registry declared `contact_reel_handoff` ("the AI ISA re-engages
+            // a CONTACT and DELEGATES a truly situational reel to the Asset Manager")
+            // and lib/kernel/manager-signals.ts has commissioned the persona reel on
+            // it since wave 41 — but nothing ever PUBLISHED it. This is the moment it
+            // describes. Idempotent per open (contact) signal; best-effort.
+            try {
+              const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
+              await publishManagerSignal({
+                brokerageId,
+                fromManager: 'ai_isa',
+                toManager: 'asset_manager',
+                signalType: 'contact_reel_handoff',
+                message: `Re-engaged a ${contact.detection_type} contact — front a situational reel with the assigned agent so the next touch is a face, not a text.`,
+                entityType: 'contact',
+                entityId: contact.id,
+                contactId: contact.id,
+                payload: { detection_type: contact.detection_type },
+              }, supabase)
+            } catch (e) {
+              console.error('[stale-contact-monitor] contact_reel_handoff publish failed:', (e as Error).message)
+            }
           } else {
             skipped++
             // Only surface unexpected failures, not expected business stop reasons
@@ -191,14 +322,16 @@ export async function GET(request: NextRequest) {
 
       results.push({
         brokerageId,
-        staleCount: staleContacts?.length ?? 0,
+        staleCount: staleContacts.length,
+        ghostedCount: staleContacts.filter((c) => c.detection_type === 'ghosted').length,
         reengaged,
         skipped,
+        throttledForCapacity,
         errors,
       })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      results.push({ brokerageId, staleCount: 0, reengaged: 0, skipped: 0, errors: [msg] })
+      results.push({ brokerageId, staleCount: 0, ghostedCount: 0, reengaged: 0, skipped: 0, throttledForCapacity, errors: [msg] })
     }
   }
 

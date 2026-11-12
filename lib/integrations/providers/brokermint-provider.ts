@@ -2,11 +2,18 @@
  * Brokermint Provider Implementation
  *
  * Wraps Brokermint's transaction-management API.
- * https://api.brokermint.com/v1 (api_key auth as a query param, REST + JSON).
+ * WAVE 140 (lane 140I) — CONTRACT VERIFIED (VENDOR_CONTRACTS.brokermint, 2026-10-11): the ONE host is
+ * https://my.brokermint.com/api with the api_key QUERY parameter (the vendor's API Reference as restated
+ * by brokermint-go, pypi brokermint and the Sheets integration guide); transactions live under /v2,
+ * contacts / commissions / checklists under /v1 — so the version is a PATH prefix here, not part of the
+ * base. Was https://api.brokermint.com/v1 (this file) AND https://brokermint.com + a bearer header (the
+ * superadmin connection test): two hosts, both unpublished. The document sub-resources below ride the
+ * transactions version (/v2) — the operation list for documents is not in the restated reference
+ * (published as inferred in the lane notes).
  *
  * Credentials shape (platform_credentials row):
  *   api_key         — Brokermint API key.
- *   config.base_uri — Optional. Defaults to https://api.brokermint.com/v1.
+ *   config.base_uri — Optional. Defaults to VENDOR_CONTRACTS.brokermint.baseUrl.
  *
  * Brokermint is a transaction / back-office platform — it manages transactions,
  * documents, checklists and accounting, but does NOT provide e-signature itself
@@ -34,6 +41,7 @@ import type {
   ListFormsResponse,
 } from "./transaction-provider.interface"
 import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
+import { VENDOR_CONTRACTS } from "@/lib/agentic-os/connector-registry"
 
 const ESIGN_UNSUPPORTED =
   "Brokermint does not provide e-signature directly. Connect an eSign provider (DocuSign or Authentisign) for signing."
@@ -47,7 +55,7 @@ export class BrokermintProvider implements ITransactionProvider {
   constructor(credentials: { apiKey: string; profileId?: string; baseUri?: string }) {
     if (!credentials?.apiKey) throw new Error("Brokermint: api_key required")
     this.apiKey  = credentials.apiKey
-    this.baseUri = (credentials.baseUri ?? "https://api.brokermint.com/v1").replace(/\/$/, "")
+    this.baseUri = (credentials.baseUri ?? VENDOR_CONTRACTS.brokermint.baseUrl).replace(/\/$/, "")
   }
 
   /** Single egress choke point — every Brokermint API call leaves through the connector-gateway.
@@ -69,7 +77,7 @@ export class BrokermintProvider implements ITransactionProvider {
 
   async createTransaction(request: CreateTransactionRequest): Promise<CreateTransactionResponse> {
     try {
-      const res = await this.request<{ id?: string; transaction?: { id?: string } }>("/transactions", {
+      const res = await this.request<{ id?: string; transaction?: { id?: string } }>("/v2/transactions", {
         method: "POST",
         body: {
           address:        request.propertyAddress,
@@ -93,7 +101,7 @@ export class BrokermintProvider implements ITransactionProvider {
       let attached = 0
       for (const form of request.forms) {
         if (!form.formUrl) continue
-        const res = await this.request(`/transactions/${request.externalTransactionId}/documents`, {
+        const res = await this.request(`/v2/transactions/${request.externalTransactionId}/documents`, {
           method: "POST",
           body: { name: form.formName, url: form.formUrl },
         })
@@ -115,7 +123,7 @@ export class BrokermintProvider implements ITransactionProvider {
 
   async voidTransaction(request: VoidTransactionRequest): Promise<VoidTransactionResponse> {
     try {
-      const res = await this.request(`/transactions/${request.externalTransactionId}`, {
+      const res = await this.request(`/v2/transactions/${request.externalTransactionId}`, {
         method: "PUT",
         body: { status: "cancelled", cancellation_reason: request.reason ?? "Cancelled by agent" },
       })
@@ -128,7 +136,7 @@ export class BrokermintProvider implements ITransactionProvider {
 
   async uploadDocument(request: UploadDocumentRequest): Promise<UploadDocumentResponse> {
     try {
-      const res = await this.request<{ id?: string }>(`/transactions/${request.externalTransactionId}/documents`, {
+      const res = await this.request<{ id?: string }>(`/v2/transactions/${request.externalTransactionId}/documents`, {
         method: "POST",
         body: { name: request.documentName, url: request.documentUrl, folder: request.folderName },
       })
@@ -141,7 +149,7 @@ export class BrokermintProvider implements ITransactionProvider {
 
   async syncDocuments(request: SyncDocumentsRequest): Promise<SyncDocumentsResponse> {
     try {
-      const res = await this.request<any>(`/transactions/${request.externalTransactionId}/documents`)
+      const res = await this.request<any>(`/v2/transactions/${request.externalTransactionId}/documents`)
       if (!res.ok) return { success: false, syncedCount: 0, documents: [], error: `Brokermint list ${res.status}` }
       const data = res.data
       const documents: ProviderDocument[] = (Array.isArray(data) ? data : data?.documents ?? []).map((d: any) => ({

@@ -17,24 +17,37 @@
  *           lifetime_customer_touchpoints
  *   sms   — isa_outreach_log, marketing_campaign_touchpoints,
  *           lifetime_customer_touchpoints
- *   phone — isa_outreach_log
- *   mail  — direct_mail_recipients, marketing_campaign_touchpoints,
- *           lifetime_customer_touchpoints
- *   video — marketing_campaign_touchpoints, lifetime_customer_touchpoints
+ *   phone — isa_outreach_log ('voice'), marketing_campaign_touchpoints ('phone'),
+ *           lifetime_customer_touchpoints ('call')
+ *   mail  — direct_mail_recipients, marketing_campaign_touchpoints ('direct_mail'),
+ *           lifetime_customer_touchpoints ('direct_mail')
+ *
+ * Each ledger spells its channels differently under its own CHECK; ./lead-channel
+ * owns the per-table translation. Filtering with the ENGINE's word returned zero
+ * rows on phone and mail, which an over-touch cap reads as a permission.
  *
  * Default policy (per channel, per contact, rolling window):
  *   email — 3 sends / 14 days
  *   sms   — 1 send  / 7  days
  *   phone — 1 call  / 7  days
  *   mail  — 1 piece / 30 days
- *   video — 1 send  / 21 days
  *
  * Auditable: every decision (allowed OR suppressed) writes one row to
  * deconflict_suppression_log (m113), which the broker cockpit reads.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { leadLogChannel, type DeconflictChannel } from "./lead-channel"
+import {
+  DEFAULT_DECONFLICT_POLICY,
+  fatigueTemperedPolicy,
+  leadLogChannel,
+  sourceChannel,
+  touchTimestampColumn,
+  TOUCH_SOURCE_TABLES,
+  type DeconflictChannel,
+  type TouchSourceTable,
+} from "./lead-channel"
 import { computeLearnedCadence, getEngagementSignals } from "./cadence-policy"
 
 // Re-exported so existing importers of "@/lib/kernel/deconflict" keep working.
@@ -46,13 +59,9 @@ interface ChannelPolicy {
   windowDays: number
 }
 
-const DEFAULT_POLICY: Record<DeconflictChannel, ChannelPolicy> = {
-  email: { maxTouches: 3, windowDays: 14 },
-  sms:   { maxTouches: 1, windowDays: 7 },
-  phone: { maxTouches: 1, windowDays: 7 },
-  mail:  { maxTouches: 1, windowDays: 30 },
-  video: { maxTouches: 1, windowDays: 21 },
-}
+// The per-channel defaults live in ./lead-channel (DEFAULT_DECONFLICT_POLICY — same values) since
+// wave 88 (lane 88A), so contact fatigue reads the SAME cap this engine enforces (one vocabulary, §6).
+const DEFAULT_POLICY: Record<DeconflictChannel, ChannelPolicy> = DEFAULT_DECONFLICT_POLICY
 
 export interface DeconflictInput {
   brokerageId:   string
@@ -83,6 +92,10 @@ export interface DeconflictDecision {
   touchesInWindow: number
   policyMax:       number
   windowDays:      number
+  /** Wave 89 (lane 89C): the contact's fatigue risk level the cap was tempered by (null = none / not read). */
+  fatigueRisk?:    string | null
+  /** How many tightening steps fatigue applied to the policy (0 = base). */
+  fatigueSteps?:   number
 }
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -100,54 +113,71 @@ async function safeCount(p: PromiseLike<{ count: number | null }>): Promise<numb
  * Per-channel touch counts. Each helper queries one source table; the engine
  * sums them. Best-effort — a missing/empty source returns 0 rather than throwing.
  */
-async function countEmailTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
+/**
+ * Count one ledger's touches on one engine channel, translating the engine's
+ * channel name into THAT TABLE's vocabulary (see ./lead-channel). Returns 0
+ * without querying when the table has no lane for the channel — an honest zero
+ * rather than a filter that cannot match.
+ *
+ * Every per-channel counter below routes through this. Previously each wrote its
+ * own `.eq("channel", <engine word>)`, and for `phone` and `mail` that word is
+ * not one the column admits: the count came back 0 and the cap read it as
+ * "nothing sent yet", which on an over-touch gate is a permission, not an error.
+ */
+async function countLedger(
+  svc: Svc,
+  table: TouchSourceTable,
+  channel: DeconflictChannel,
+  brokerageId: string,
+  contactId: string,
+  since: string,
+): Promise<number> {
+  const value = sourceChannel(table, channel)
+  if (value === null) return 0
+  const tsCol = touchTimestampColumn(table)
+  return safeCount(svc.from(table).select("id", { count: "exact", head: true })
+    .eq("brokerage_id", brokerageId).eq("contact_id", contactId)
+    .eq("channel", value).gte(tsCol, since))
+}
+
+async function countLedgerTouches(
+  svc: Svc, channel: DeconflictChannel, brokerageId: string, contactId: string, since: string,
+): Promise<number> {
   let n = 0
-  n += await safeCount(svc.from("email_sends").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("sent_at", since))
-  n += await safeCount(svc.from("isa_outreach_log").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "email").gte("sent_at", since))
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "email").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "email").gte("created_at", since))
+  for (const table of TOUCH_SOURCE_TABLES) {
+    n += await countLedger(svc, table, channel, brokerageId, contactId, since)
+  }
   return n
+}
+
+async function countEmailTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
+  // email_sends is channel-implicit (the whole table is email), so it is counted
+  // directly rather than through the channel mapper.
+  const direct = await safeCount(svc.from("email_sends").select("id", { count: "exact", head: true })
+    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("sent_at", since))
+  return direct + await countLedgerTouches(svc, "email", brokerageId, contactId, since)
 }
 
 async function countSmsTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  let n = 0
-  n += await safeCount(svc.from("isa_outreach_log").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "sms").gte("sent_at", since))
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "sms").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "sms").gte("created_at", since))
-  return n
+  return countLedgerTouches(svc, "sms", brokerageId, contactId, since)
 }
 
 async function countPhoneTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  return safeCount(svc.from("isa_outreach_log").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "phone").gte("sent_at", since))
+  // Was isa_outreach_log ONLY, filtered on 'phone' — a value that column does not
+  // admit (it says 'voice'). So this returned 0 for every contact, forever, and
+  // the "1 call / 7 days" policy could never fire. It also never looked at
+  // lifetime_customer_touchpoints, whose word is 'call'. Both fixed by routing
+  // through the per-table mapper.
+  return countLedgerTouches(svc, "phone", brokerageId, contactId, since)
 }
 
 async function countMailTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  let n = 0
-  n += await safeCount(svc.from("direct_mail_recipients").select("id", { count: "exact", head: true })
+  // direct_mail_recipients is channel-implicit (the whole table is mail).
+  const direct = await safeCount(svc.from("direct_mail_recipients").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("mailed_at", since))
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "mail").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "mail").gte("created_at", since))
-  return n
+  return direct + await countLedgerTouches(svc, "mail", brokerageId, contactId, since)
 }
 
-async function countVideoTouches(svc: Svc, brokerageId: string, contactId: string, since: string): Promise<number> {
-  let n = 0
-  n += await safeCount(svc.from("marketing_campaign_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "video").gte("sent_at", since))
-  n += await safeCount(svc.from("lifetime_customer_touchpoints").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("channel", "video").gte("created_at", since))
-  return n
-}
 
 // ─── Broadcast (1:many) frequency cap ───────────────────────────────────────
 // Counts brokerage-wide broadcast sends per channel + optional segment in the
@@ -248,7 +278,7 @@ export async function evaluateBroadcastDeconflict(
 
   if (!input.skipLog) {
     try {
-      await svc.from("deconflict_suppression_log").insert({
+      await sentinelWrite(svc, svc.from("deconflict_suppression_log").insert({
         brokerage_id:      input.brokerageId,
         contact_id:        null,
         channel:           input.channel, // m116 widened the check constraint
@@ -259,7 +289,7 @@ export async function evaluateBroadcastDeconflict(
         window_days:       policy.windowDays,
         policy_max:        policy.maxSends,
         metadata:          { broadcast_channel: input.channel, segment: input.segment ?? null },
-      })
+      }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because audit hiccuped */ }
   }
 
@@ -275,7 +305,6 @@ async function countTouchesByChannel(
     case "sms":   return countSmsTouches  (svc, args.brokerageId, args.contactId, args.since)
     case "phone": return countPhoneTouches(svc, args.brokerageId, args.contactId, args.since)
     case "mail":  return countMailTouches (svc, args.brokerageId, args.contactId, args.since)
-    case "video": return countVideoTouches(svc, args.brokerageId, args.contactId, args.since)
   }
 }
 
@@ -312,6 +341,26 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
     } catch { /* fail open to the base policy */ }
   }
 
+  // WAVE 89 (lane 89C) — HIGH CONTACT FATIGUE TIGHTENS THE CAP FOR THAT CONTACT (owner ruling; lane
+  // 88A's open question). The one fatigue calculator's score row (buyer_fatigue_scores, tenant-pinned)
+  // is read with its error: a refused read leaves the BASE policy (logged — this is a guardrail, not a
+  // consent gate, so it cannot be the thing that blocks a legal send) and no fatigue row means no step.
+  // This is how the lifetime touch cadence is tempered too — the lifetime cron calls this engine.
+  let fatigueRisk: string | null = null
+  let fatigueSteps = 0
+  if (input.contactId) {
+    const { data: fatigueRow, error: fatigueErr } = await svc
+      .from("buyer_fatigue_scores").select("risk_level")
+      .eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId).maybeSingle()
+    if (fatigueErr) console.error(`[deconflict] fatigue read refused for contact ${input.contactId} — base cap applied: ${fatigueErr.message}`)
+    else {
+      fatigueRisk = (fatigueRow as { risk_level?: string | null } | null)?.risk_level ?? null
+      const tempered = fatigueTemperedPolicy(policy, fatigueRisk)
+      policy = tempered.policy
+      fatigueSteps = tempered.steps
+    }
+  }
+
   const since  = new Date(Date.now() - policy.windowDays * 86_400_000).toISOString()
 
   // Count touches by contact when promoted, else by lead — an unconverted lead gets the SAME
@@ -327,15 +376,18 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
     allowed,
     reason: allowed
       ? undefined
-      : `Over-touch: ${touches} ${input.channel} touches in last ${policy.windowDays}d ≥ policy max ${policy.maxTouches}`,
+      : `Over-touch: ${touches} ${input.channel} touches in last ${policy.windowDays}d ≥ policy max ${policy.maxTouches}` +
+        (fatigueSteps > 0 ? ` (cap tightened for ${fatigueRisk} contact fatigue)` : ""),
     touchesInWindow: touches,
     policyMax:       policy.maxTouches,
     windowDays:      policy.windowDays,
+    fatigueRisk,
+    fatigueSteps,
   }
 
   if (!input.skipLog) {
     try {
-      await svc.from("deconflict_suppression_log").insert({
+      await sentinelWrite(svc, svc.from("deconflict_suppression_log").insert({
         brokerage_id:      input.brokerageId,
         contact_id:        input.contactId ?? null,
         recipient_email:   input.recipientEmail ?? null,
@@ -347,7 +399,12 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
         touches_in_window: touches,
         window_days:       policy.windowDays,
         policy_max:        policy.maxTouches,
-      })
+        // The cockpit can tell "held by the base cap" from "held because this contact is fatigued".
+        // `{}`, never null (lane 93D live walk): metadata is NOT NULL DEFAULT '{}' and an explicit
+        // null overrides the default — every non-fatigued decision (nearly all of them) was refused
+        // 23502, so the cockpit's de-conflict log held 0 rows live.
+        metadata:          fatigueSteps > 0 ? { fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps } : {},
+      }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because the audit write hiccuped */ }
   }
 

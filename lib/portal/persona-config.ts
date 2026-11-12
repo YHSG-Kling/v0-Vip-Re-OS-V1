@@ -19,6 +19,22 @@ export interface PersonaWidget {
   format?: "currency" | "percent" | "number" | "text" | "date" | "boolean"
   emptyMessage?: string
   action?: { label: string; href: string }
+  /**
+   * THE RESOLVED VALUE — filled in by getPersonaWidgets from the contact's
+   * metadata, undefined when that key is absent.
+   *
+   * §1.2 — THIS FIELD WAS THE MISSING HALF. getPersonaWidgets has always
+   * produced it (`value: customFields?.[widget.dataKey]`) and the interface has
+   * never declared it, so a renderer could not read the one thing the reader
+   * exists to compute without casting the type away. That is why every
+   * `dataKey` in this file read as writerless: the mechanism was complete
+   * except for the two ends — a declared value and a render site — and the
+   * render site is now app/components/portal/PersonaPropertiesDashboard.tsx
+   * ("At a glance"). Absent stays UNDEFINED rather than defaulting to 0 or "":
+   * the strip must be able to tell "not set" from "set to nothing", because it
+   * shows `emptyMessage` for the first and the value for the second.
+   */
+  value?: unknown
 }
 
 export interface JourneyStage {
@@ -67,6 +83,45 @@ export interface PersonaConfig {
   aiContext: string // Context for AI assistant
   quickActions: { label: string; href: string; icon: LucideIcon }[]
   tabs?: PersonaTabConfig // Persona-specific tab labels and icons
+}
+
+// ============================================================================
+// INVESTOR CRITERIA — ONE SPELLING OF THE metadata ACCESS (§6 / §1.1)
+// ============================================================================
+//
+// The investor persona's criteria live on contacts.metadata under three keys
+// that used to be spelled TWICE: once here as widget dataKeys (display, via
+// getPersonaWidgets) and once hand-picked inside
+// app/components/portal/PersonaPropertiesDashboard.tsx feeding the cap-rate
+// ARITHMETIC (meetsTarget, the deal analyzer's target line). Two spellings of
+// one access meant a renamed key would split display from arithmetic silently.
+// Both features are real and both stay — what merged is the ACCESS: the keys
+// are declared once below, the widget defs reference them, and
+// getInvestorCriteria() is the one accessor the dashboard's arithmetic reads.
+// Defaults (7% cap target, "Buy and Hold", 0 properties) moved here with it —
+// they are criteria semantics, not render semantics.
+
+export const INVESTOR_CRITERIA_KEYS = {
+  portfolioSize:      "portfolio_size",
+  targetCapRate:      "target_cap_rate",
+  investmentStrategy: "investment_strategy",
+} as const
+
+export interface InvestorCriteria {
+  /** % — the cap-rate bar a deal must clear (meetsTarget). */
+  targetCapRate: number
+  investmentStrategy: string
+  /** Properties currently owned. */
+  portfolioSize: number
+}
+
+/** The ONE reader of the investor criteria off contacts.metadata (customFields). */
+export function getInvestorCriteria(customFields?: Record<string, any> | null): InvestorCriteria {
+  return {
+    targetCapRate: Number(customFields?.[INVESTOR_CRITERIA_KEYS.targetCapRate]) || 7,
+    investmentStrategy: (customFields?.[INVESTOR_CRITERIA_KEYS.investmentStrategy] as string) || "Buy and Hold",
+    portfolioSize: Number(customFields?.[INVESTOR_CRITERIA_KEYS.portfolioSize]) || 0,
+  }
 }
 
 // ============================================================================
@@ -638,7 +693,7 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
         title: "Portfolio Size",
         description: "Properties owned",
         icon: Building,
-        dataKey: "portfolio_size",
+        dataKey: INVESTOR_CRITERIA_KEYS.portfolioSize,
         format: "number",
       },
       {
@@ -646,7 +701,7 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
         title: "Target Cap Rate",
         description: "Your investment criteria",
         icon: Percent,
-        dataKey: "target_cap_rate",
+        dataKey: INVESTOR_CRITERIA_KEYS.targetCapRate,
         format: "percent",
       },
       {
@@ -654,7 +709,7 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
         title: "Strategy",
         description: "Investment approach",
         icon: Target,
-        dataKey: "investment_strategy",
+        dataKey: INVESTOR_CRITERIA_KEYS.investmentStrategy,
         format: "text",
       },
       {
@@ -2177,8 +2232,69 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
 // HELPER FUNCTIONS
 // ============================================================================
 
-export function getPersonaConfig(persona: string): PersonaConfig {
-  return PERSONA_CONFIGS[persona] || PERSONA_CONFIGS.first_time_buyer
+/**
+ * WAVE 149 (lane 149B — owner ruling 2: "the kernel portal view determines the contact's layout by persona … the
+ * portals are geared toward the persona's situation"). THE STORED PERSONA → ITS LAYOUT.
+ *
+ * DEFECT FIXED (CLAUDE.md §6, one vocabulary): `contacts.contact_persona` is CHECK-constrained to the STORED
+ * vocabulary (scripts/check-vocabularies.ts: divorce, downsize, expired, first_time, foreclosure, fsbo, investor,
+ * luxury, military, other, probate, relocated, senior, upsize), but the layouts above are keyed first_time_buyer,
+ * military_buyer, luxury_buyer, relocating, upsizers, empty_nester … . getPersonaConfig looked the stored value up
+ * directly, so FIVE stored personas (military, luxury, relocated, upsize, downsize) silently rendered the first-time
+ * buyer's layout, and offersFamilySearch("first_time") — the commonest buyer persona — read false. Every stored
+ * persona now resolves to its own layout; a layout key passed directly still resolves to itself; an unknown or empty
+ * value takes the side's default. Every persona keeps its layout — none is removed, none is refused.
+ */
+const STORED_PERSONA_LAYOUT: Readonly<Record<string, { buyer: string; seller: string }>> = {
+  first_time: { buyer: "first_time_buyer", seller: "first_time_seller" },
+  military: { buyer: "military_buyer", seller: "military_buyer" },
+  luxury: { buyer: "luxury_buyer", seller: "luxury_seller" },
+  relocated: { buyer: "relocating", seller: "relocating" },
+  upsize: { buyer: "upsizers", seller: "upsizers" },
+  downsize: { buyer: "empty_nester", seller: "empty_nester" },
+  // A homeowner facing foreclosure has no layout of their own yet; the motivated-seller layout (time-sensitive sale,
+  // options, plain next steps) is the closest situation the portal already speaks to.
+  foreclosure: { buyer: "motivated_seller", seller: "motivated_seller" },
+  other: { buyer: "first_time_buyer", seller: "first_time_seller" },
+}
+
+/** PURE. The layout key for a contact's persona (stored vocabulary or a layout key), on the buyer or seller side. */
+function resolvePortalPersonaKey(persona: string | null | undefined, side: "buyer" | "seller" = "buyer"): string {
+  const raw = String(persona ?? "").trim()
+  if (raw && PERSONA_CONFIGS[raw]) return raw
+  const mapped = raw ? STORED_PERSONA_LAYOUT[raw]?.[side] : undefined
+  if (mapped && PERSONA_CONFIGS[mapped]) return mapped
+  return side === "seller" ? "first_time_seller" : "first_time_buyer"
+}
+
+export function getPersonaConfig(persona: string, side: "buyer" | "seller" = "buyer"): PersonaConfig {
+  return PERSONA_CONFIGS[resolvePortalPersonaKey(persona, side)] || PERSONA_CONFIGS.first_time_buyer
+}
+
+/**
+ * The portal's default persona when a contact has none — the same fallback getPersonaConfig applies.
+ * WAVE 148 (lane 148K, closing lane 147H Outside-lane 5 — one persona vocabulary, CLAUDE.md §6): the family /
+ * collaborative-search persona list lived twice, a const in app/portal/[contactId]/search/page.tsx and an inline
+ * array in app/components/portal/PortalSettingsPage.tsx, and the two read a missing persona differently (the search
+ * page defaulted it and OFFERED shared search; settings did not and hid its visibility control). Both now ask this.
+ */
+export const DEFAULT_PORTAL_PERSONA = "first_time_buyer"
+
+/** Personas the portal offers a family / collaborative search to (search page) and whose visibility control the
+ *  portal settings page shows — one list, one reading of a missing persona. */
+// Wave 149 (149B): "upsizing" / "repeat_buyer" were not layout keys (the upsizers layout is `upsizers`), so an
+// upsizing buyer never saw the board; the stored persona is resolved first (resolvePortalPersonaKey).
+// NOTE — this list chooses the LAYOUT (the fuller family-consensus board on the search page and its settings control).
+// It is NOT a gate on sharing: C28's "ask family what they think" card is on every buyer's search page.
+const FAMILY_SEARCH_PERSONAS: readonly string[] = [
+  "first_time_buyer",
+  "military_buyer",
+  "upsizers",
+  "relocating",
+]
+
+export function offersFamilySearch(persona: string | null | undefined): boolean {
+  return FAMILY_SEARCH_PERSONAS.includes(resolvePortalPersonaKey(persona || DEFAULT_PORTAL_PERSONA, "buyer"))
 }
 
 export function getPersonaWidgets(persona: string, customFields?: Record<string, any>): PersonaWidget[] {
@@ -2222,4 +2338,43 @@ export function formatWidgetValue(value: any, format?: string): string {
       }
       return String(value)
   }
+}
+
+// ─── Persona labels as an AUDIENCE vocabulary (owner ruling 1, wave 149) ─────────────────────────────────────────────────────
+import { LIFE_EVENT_TYPES, LIFE_EVENT_VOCAB } from "@/lib/enrichment/life-event-vocabulary"
+import { personaLabelSet } from "@/lib/compliance-rules/audience-compliance"
+// CONVERGENCE ROW 66 (wave 152, lane 152K): R7's three persona sources folded in HERE (both modules were already in the CRM
+// page's module graph — measured with $S/reach-set.ts — so the fold adds no module to the proxy-graph budget).
+import { CAMPAIGN_PERSONAS, rawSpellingsForPersona } from "@/lib/campaigns/contact-sources"
+import { MARKETING_NEEDS } from "@/lib/contacts/persona-layers"
+
+/**
+ * Every persona label the OS speaks to — the kernel-portal personas above (ruling 2: "the kernel portal layout has the personas
+ * we use") and the C20 life-event situations with every spelling the map reads — normalised for `audienceProxyHits`. A typed ad
+ * audience that names one of these ("empty nesters", "retirement", "newlyweds", "probate") is a lawful audience BASIS and is never
+ * refused as a protected-class proxy; what still drops an audience is the ad platform's own housing rule (age / gender / ZIP /
+ * lookalike narrowing) and words that are only a protected class ("women", "church goers"). Memoised: the sources are frozen.
+ */
+let personaAudienceLabelsMemo: ReadonlySet<string> | null = null
+/**
+ * THE persona label set — every persona source the OS speaks from (owner R7, wave 150: "extend the label set to every persona
+ * source"). Since convergence row 66 (wave 152, lane 152K) it carries all five sources in ONE place:
+ *   · the kernel-portal personas (PERSONA_CONFIGS) and the C20 life-event situations with every alias (wave 149);
+ *   · the canonical Persona union (lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS — what contacts.contact_persona and every
+ *     persona audience are segmented on) and its drifted stored spellings (rawSpellingsForPersona);
+ *   · the marketing-persona NEEDS the persona study writes (lib/contacts/persona-layers.ts MARKETING_NEEDS — key and label).
+ * `other` is excluded: it names no situation. The last three lived in a second composition
+ * (lib/voice-admin/intent-interface.ts everyPersonaAudienceLabel — tombstoned there).
+ */
+export function personaAudienceLabels(): ReadonlySet<string> {
+  if (personaAudienceLabelsMemo) return personaAudienceLabelsMemo
+  const raw: string[] = [...Object.keys(PERSONA_CONFIGS), ...LIFE_EVENT_TYPES]
+  for (const t of LIFE_EVENT_TYPES) raw.push(...LIFE_EVENT_VOCAB[t].aliases)
+  for (const p of CAMPAIGN_PERSONAS) {
+    if (p === "other") continue
+    raw.push(p, ...rawSpellingsForPersona(p))
+  }
+  for (const [key, spec] of Object.entries(MARKETING_NEEDS)) raw.push(key, spec.label)
+  personaAudienceLabelsMemo = personaLabelSet(raw)
+  return personaAudienceLabelsMemo
 }

@@ -13,31 +13,32 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import {
   validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES,
-  PLATFORM_CAPABILITIES, OVERRIDABLE_PLATFORM_ROLES, type CapabilityOverride,
+  PLATFORM_CAPABILITIES, OVERRIDABLE_PLATFORM_ROLES, isOverridablePlatformRole,
+  type CapabilityOverride, type OverridablePlatformRole, type PlatformCapability,
 } from "@/lib/platform/platform-staff-roster"
 import { resolvePlatformRole } from "@/lib/platform/require-capability"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 
 // Map a platform role → the (user_type, platform_role) columns coherently. platform_role
 // carries the platform role for all staff; user_type is the CHECK-valid base type
 // ('marketing' isn't a user_type, so marketing staff are user_type 'system').
+// ROLE SAFETY (wave 141B, CLAUDE.md §4): PLATFORM STAFF LIVE IN platform_role — the superadmin seat
+// is (user_type='admin', platform_role='superadmin'), the shape the platform's one live superadmin
+// carries. This map used to MINT user_type='superadmin' (a value no live row has and every gate
+// reads as dead), so a promoted staffer's base type disagreed with the roster the gates resolve.
+// The superadmin SEAT is a tenant-admin user_type (never a 'superadmin' user_type — m782 removed it from the CHECK).
 function roleColumns(role: string): { user_type: string; platform_role: string } {
   switch (role) {
-    case "superadmin": return { user_type: "superadmin", platform_role: "superadmin" }
+    case "superadmin": return { user_type: "admin", platform_role: "superadmin" }
     case "admin":      return { user_type: "admin", platform_role: "admin" }
     case "support":    return { user_type: "support", platform_role: "support" }
     default:           return { user_type: "system", platform_role: "marketing" } // marketing
   }
 }
 
-async function requireSuperadmin(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
-  if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
+// TOMBSTONE: local requireSuperadmin merged onto lib/auth/platform-guard.ts:91
+// requireSuperadmin (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
   try {
@@ -57,7 +58,13 @@ export async function listPlatformStaffAction(): Promise<{ ok: true; staff: any[
   const { data, error } = await svc
     .from("users")
     .select("id, email, first_name, last_name, user_type, platform_role, status, created_at")
-    .or(`user_type.in.(superadmin,support),platform_role.in.(${PLATFORM_STAFF_ROLES.join(",")})`)
+    // platform_role is the roster column (CLAUDE.md §4). This used to read
+    // `user_type.in.(superadmin,support)`, which listed every TENANT user carrying
+    // user_type='support' — a legal tenant role with no platform employment — as a
+    // member of platform staff. The legacy `user_type.eq.superadmin` marker arm was
+    // dropped in wave 142 (m782 removed 'superadmin' from users_user_type_check, so
+    // the arm could only ever match nothing).
+    .in("platform_role", [...PLATFORM_STAFF_ROLES])
     .order("created_at", { ascending: false })
   if (error) return { ok: false, error: error.message }
   return { ok: true, staff: data ?? [] }
@@ -78,10 +85,15 @@ export async function createPlatformStaffAction(input: { email: string; firstNam
   // created and the person can be sent a magic link later).
   let userId: string | null = null
   try {
-    const { data: inv } = await svc.auth.admin.inviteUserByEmail(v.value.email, {
+    // READ the error (CLAUDE.md §3): supabase-js RESOLVES a refused invite, and
+    // the `{ data }` destructuring that stood here turned every refusal — SMTP
+    // down, email already registered, a malformed address — into the same
+    // silent fall-through to "promote an existing account".
+    const { data: inv, error: invErr } = await svc.auth.admin.inviteUserByEmail(v.value.email, {
       data: { first_name: v.value.firstName, last_name: v.value.lastName, ...cols },
       redirectTo: `${appUrl}/auth/callback`,
     })
+    if (invErr) console.warn("[createPlatformStaff] invite refused (continuing to the promote-existing path):", invErr.message)
     userId = (inv as any)?.user?.id ?? null
   } catch (err) {
     console.warn("[createPlatformStaff] invite failed (continuing):", (err as any)?.message)
@@ -89,16 +101,33 @@ export async function createPlatformStaffAction(input: { email: string; firstNam
 
   // Upsert the users row — platform employee, NO brokerage.
   if (userId) {
-    await svc.from("users").upsert({
+    // The users row IS the staff grant (platform_role lives on it) — a refused
+    // write used to report the staff member created with no role at all.
+    const { error: staffUpsertErr } = await svc.from("users").upsert({
       id: userId, email: v.value.email, first_name: v.value.firstName, last_name: v.value.lastName,
       ...cols, brokerage_id: null, is_contact: false, status: "active", updated_at: new Date().toISOString(),
     }, { onConflict: "id" })
+    if (staffUpsertErr) return { ok: false, error: `Invite sent, but the staff role was not recorded: ${staffUpsertErr.message}` }
   } else {
     // No auth user (invite unavailable) — promote an existing account by email.
-    const { data: existing } = await svc.from("users").select("id").eq("email", v.value.email).maybeSingle()
+    //
+    // WRONG-TENANT CAPTURE GUARD (wave 140F). This promotion writes
+    // `brokerage_id: null` onto whatever row holds the email. For a TENANT
+    // member (a broker, an agent, a TC at a subscriber) that is not a
+    // promotion: it rips them out of their workspace — their agents row, grants
+    // and team keep the old tenant while users says none — and makes them
+    // platform staff above every tenant, on nothing but an email typed into the
+    // staff console. Platform staff sit above tenants; a tenant member must leave
+    // their workspace first. A refused read refuses the promotion (fail closed).
+    const { data: existing, error: existingErr } = await svc.from("users").select("id, brokerage_id").eq("email", v.value.email).maybeSingle()
+    if (existingErr) return { ok: false, error: `Could not check the existing account for ${v.value.email} (${existingErr.message}); nothing was changed.` }
+    if (existing?.brokerage_id) {
+      return { ok: false, error: "That email belongs to a member of a subscriber workspace. Platform staff sit above tenants — remove them from that workspace first, or use a staff address." }
+    }
     if (existing?.id) {
       userId = existing.id
-      await svc.from("users").update({ ...cols, brokerage_id: null, status: "active", updated_at: new Date().toISOString() }).eq("id", userId)
+      const { error: promoteErr } = await svc.from("users").update({ ...cols, brokerage_id: null, status: "active", updated_at: new Date().toISOString() }).eq("id", userId)
+      if (promoteErr) return { ok: false, error: `Could not promote the existing account to platform staff: ${promoteErr.message}` }
     } else {
       return { ok: false, error: "Could not invite the staff member (email delivery not configured) and no existing account to promote." }
     }
@@ -130,9 +159,9 @@ export async function revokePlatformStaffAction(userId: string): Promise<{ ok: b
   if (userId === auth.userId) return { ok: false, error: "You cannot revoke your own access" }
 
   const svc = createServiceClient()
-  // Revoke ALL platform access: the requireStaff gates accept user_type∈{superadmin,
-  // support} OR platform_role='superadmin', so revoke must break every one. Downgrade
-  // to a non-staff user_type + clear platform_role + deactivate. Row kept for audit.
+  // Revoke ALL platform access: platform_role is the only staff discriminator (m782 retired
+  // the user_type='superadmin' seat), but downgrade user_type too so no tenant gate admits
+  // the row either. Clear platform_role + deactivate. Row kept for audit.
   const { error } = await svc.from("users").update({ user_type: "contact", platform_role: null, status: "inactive", updated_at: new Date().toISOString() }).eq("id", userId)
   if (error) return { ok: false, error: error.message }
   await audit(auth.userId, auth.email, "platform_staff.revoked", userId, {})
@@ -275,19 +304,26 @@ export async function listCapabilityOverridesAction(): Promise<{ ok: true; overr
 }
 
 export async function setCapabilityOverrideAction(input: {
-  role: string
-  capability: string
+  /** Tightened string → the roster's own types (2026-08-31). This is a public endpoint, so the
+   *  runtime payload is untrusted regardless of the annotation — the checks below stay the gate;
+   *  the types are their compile-time echo for the matrix editor. */
+  role: OverridablePlatformRole
+  capability: PlatformCapability
   /** null = clear back to the code-map default (DELETES the row). */
   override: { allowed: boolean; access: "read" | "write" } | null
 }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
-  if (input.role === "superadmin") return { ok: false, error: "superadmin is never overridable" }
-  if (!(OVERRIDABLE_PLATFORM_ROLES as readonly string[]).includes(input.role)) {
+  // Widened back to plain strings for the runtime validation — the annotation cannot vouch for
+  // a hand-crafted request body, and 'superadmin' must keep its named refusal.
+  const role: string = input.role
+  const capability: string = input.capability
+  if (role === "superadmin") return { ok: false, error: "superadmin is never overridable" }
+  if (!isOverridablePlatformRole(role)) {
     return { ok: false, error: `Role must be one of: ${OVERRIDABLE_PLATFORM_ROLES.join(", ")}` }
   }
-  if (!(PLATFORM_CAPABILITIES as readonly string[]).includes(input.capability)) {
-    return { ok: false, error: `Unknown capability '${input.capability}'` }
+  if (!(PLATFORM_CAPABILITIES as readonly string[]).includes(capability)) {
+    return { ok: false, error: `Unknown capability '${capability}'` }
   }
 
   const svc = createServiceClient()

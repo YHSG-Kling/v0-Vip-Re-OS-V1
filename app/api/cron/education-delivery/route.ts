@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { produceEducationDelivery } from "@/lib/agents/education-delivery-producer"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 /**
  * Weekly EDUCATION DELIVERY sweep — push the next stage-matched lesson to active
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
     const { data: txns, error } = await supabase
       .from("transactions")
       .select("brokerage_id, contact_id, buyer_contact_id, seller_contact_id")
-      .in("status", ["active", "under_contract", "closing"])
+      .in("status", [...TRANSACTION_STATUSES_OPEN])
       .limit(3000)
     if (error) throw error
 
@@ -75,12 +76,33 @@ export async function GET(req: NextRequest) {
       clientModulesAuthored = ce.authored
     } catch (e: any) { errors.push(`client-education-author: ${e?.message ?? String(e)}`) }
 
+    // CURRICULUM AUTHOR (wave 142G — moved here from the recruit-outreach cron, the talent-pipeline host; this
+    // cron is the education owner's): detect recurring knowledge gaps from real signal (objection drills,
+    // compliance flags, assistant questions, SUPPORT TICKETS) and author gated draft micro-courses / help
+    // articles for the new ones, each proposal carrying the recurrence count it was authored from.
+    let curriculaAuthored = 0
+    try {
+      const { runCurriculumAuthorAll } = await import("@/lib/education/curriculum-author")
+      const authored = await runCurriculumAuthorAll(supabase)
+      curriculaAuthored = authored.authored
+    } catch (e: any) { errors.push(`curriculum-author: ${e?.message ?? String(e)}`) }
+
+    // REPEAT MEASURE (wave 142G) — for every AI-authored asset published a full window ago: did the repeats it
+    // was authored for decrease? Evidence row per asset; a non-decrease is a finding on the education owner's feed.
+    let repeatsMeasured = 0, repeatFindings = 0
+    try {
+      const { runEducationRepeatMeasureAll } = await import("@/lib/education/repeat-measure")
+      const rm = await runEducationRepeatMeasureAll(supabase)
+      repeatsMeasured = rm.measured; repeatFindings = rm.findings
+      if (rm.errors > 0) errors.push(`repeat-measure: ${rm.errors} refused/failed row(s)`)
+    } catch (e: any) { errors.push(`repeat-measure: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, clientModulesAuthored, errors: errors.slice(0, 20) },
+      metadata: { proposed, scanned, clientModulesAuthored, curriculaAuthored, repeatsMeasured, repeatFindings, errors: errors.slice(0, 20) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, clientModulesAuthored, errors: errors.length })
+    return NextResponse.json({ ok: true, proposed, scanned, clientModulesAuthored, curriculaAuthored, repeatsMeasured, repeatFindings, errors: errors.length })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

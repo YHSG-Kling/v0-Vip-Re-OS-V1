@@ -16,6 +16,8 @@ import {
   Wallet,
 } from "lucide-react"
 import Link from "next/link"
+import { useState } from "react"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 export interface FinancialAction {
   id: string
@@ -32,7 +34,17 @@ export interface FinancialAction {
 
 interface FinancialActionStackProps {
   actions: FinancialAction[]
+  /** optional by design: 5 is a sane default cap for a summary stack; every
+   *  caller today accepts it. */
   maxVisible?: number
+  /** optional by design: every one of this stack's 6 callers (agent/brokerage/
+   *  commissions/expenses/payouts/team financials pages) is a server
+   *  component, so none can hand this client component a live callback — the
+   *  "View All (N actions)" button rendered with no effect when the list
+   *  exceeded maxVisible (hidden-wire census category c, 2026-09-10 wave 50).
+   *  BUILT: the component now expands its own list in place when no
+   *  onViewAll is supplied; the prop stays available for a future client
+   *  caller that wants to navigate elsewhere instead. */
   onViewAll?: () => void
 }
 
@@ -41,6 +53,7 @@ export function FinancialActionStack({
   maxVisible = 5,
   onViewAll,
 }: FinancialActionStackProps) {
+  const [expanded, setExpanded] = useState(false)
   const formatCurrency = (val?: number) =>
     val != null
       ? new Intl.NumberFormat("en-US", {
@@ -74,24 +87,26 @@ export function FinancialActionStack({
   }
 
   const typeColors = {
-    commission: "text-green-600 bg-green-100",
-    expense: "text-orange-600 bg-orange-100",
+    commission: "text-green-700 bg-green-100",
+    expense: "text-orange-700 bg-orange-100",
     payout: "text-purple-600 bg-purple-100",
-    report: "text-blue-600 bg-blue-100",
-    budget: "text-teal-600 bg-teal-100",
+    report: "text-blue-700 bg-blue-100",
+    budget: "text-teal-700 bg-teal-100",
     review: "text-violet-600 bg-violet-100",
   }
 
-  // Sort by priority and overdue status
+  // Sort by overdue status, then priority. TOMBSTONE (§1.1, 2026-09-03): the
+  // local `priorityOrder {urgent:0 … low:3}` that stood here was one of five
+  // hand copies of the same map — survivor lib/kernel/priority-rank.ts:45,
+  // comparator `byPriorityDesc` imported above.
   const sortedActions = [...actions].sort((a, b) => {
-    const priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 }
     if (a.isOverdue && !b.isOverdue) return -1
     if (!a.isOverdue && b.isOverdue) return 1
-    return priorityOrder[a.priority] - priorityOrder[b.priority]
+    return byPriorityDesc(a, b)
   })
 
-  const visibleActions = sortedActions.slice(0, maxVisible)
-  const hasMore = sortedActions.length > maxVisible
+  const visibleActions = expanded ? sortedActions : sortedActions.slice(0, maxVisible)
+  const hasMore = !expanded && sortedActions.length > maxVisible
 
   return (
     <Card className="border-violet-200">
@@ -150,7 +165,7 @@ export function FinancialActionStack({
                       {(action.value || action.dueDate) && (
                         <div className="flex items-center gap-3 mt-1">
                           {action.value && (
-                            <span className="text-sm font-semibold text-green-600">
+                            <span className="text-sm font-semibold text-green-700">
                               {formatCurrency(action.value)}
                             </span>
                           )}
@@ -188,7 +203,7 @@ export function FinancialActionStack({
               <Button
                 variant="outline"
                 className="w-full mt-2"
-                onClick={onViewAll}
+                onClick={onViewAll ?? (() => setExpanded(true))}
               >
                 View All ({sortedActions.length} actions)
               </Button>
@@ -196,7 +211,7 @@ export function FinancialActionStack({
           </>
         ) : (
           <div className="text-center py-6 text-muted-foreground">
-            <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-500" />
+            <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-600" />
             <p className="text-sm">All caught up! No pending financial actions.</p>
           </div>
         )}

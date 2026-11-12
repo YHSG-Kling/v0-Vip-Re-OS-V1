@@ -17,7 +17,8 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { decryptSecret } from "@/lib/security/secret-crypto"
+import { decryptSecret, encryptSecret } from "@/lib/security/secret-crypto"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 export type PersonalProvider = "gmail" | "outlook"
 
@@ -33,6 +34,23 @@ export interface SendPersonalEmailInput {
   /** When set, send from this OWNER's connected mailbox (vendor/contact/team/brokerage) instead of
    *  resolving the agent's personal account by agentUserId. */
   owner?: EmailOwner
+  /** Wave 149 (lane 149J — wave-148 §2 lane B "Tier-1 personal-mailbox adapter sends no List-Unsubscribe header"): the
+   *  List-Unsubscribe / List-Unsubscribe-Post pair assembleEmail builds for a NON-transactional send (C16, RFC 8058).
+   *  Gmail carries them in the RFC 5322 message; only these two names are admitted (a header-injection guard — no CR/LF).
+   *  Microsoft Graph sendMail admits only `x-` custom headers (internetMessageHeaders), so an Outlook send carries the
+   *  footer link alone — said in `unsubscribeHeaders` on the result, never assumed. */
+  headers?: Record<string, string>
+}
+
+/** The only extra headers the personal mailbox carries (RFC 2369 / RFC 8058), CR/LF-free. PURE. */
+function personalMailUnsubscribeHeaders(h: Record<string, string> | undefined): string[] {
+  if (!h) return []
+  const out: string[] = []
+  for (const name of ["List-Unsubscribe", "List-Unsubscribe-Post"]) {
+    const v = h[name]
+    if (typeof v === "string" && v.trim() && !/[\r\n]/.test(v)) out.push(`${name}: ${v.trim()}`)
+  }
+  return out
 }
 
 export interface SendPersonalEmailResult {
@@ -41,6 +59,9 @@ export interface SendPersonalEmailResult {
   messageId?: string
   threadId?: string
   fromAddress?: string
+  /** Wave 149 (149J): whether the one-click unsubscribe headers rode the message ("carried"), could not on this provider
+   *  ("provider_cannot" — Outlook Graph), or none were asked ("none"). */
+  unsubscribeHeaders?: "carried" | "provider_cannot" | "none"
   /** When success=false and reason='no_personal_account', caller should fall back to SendGrid */
   reason?:
     | "no_personal_account"
@@ -106,6 +127,22 @@ export async function getFreshPersonalToken(
   return { provider: cred.service_name, accessToken, email: cred.email }
 }
 
+/**
+ * Which personal account is connected, and what it was GRANTED — without minting a token.
+ * The Google-eSignature hand-off (lib/esign/google-esign-handoff.ts) asks this so it can
+ * say "reconnect Google to grant Drive access" BEFORE a send fails, and the FormWizard's
+ * provider lookup can show Google as the e-sign method only when it can actually run.
+ * `scope` is the space-separated grant the OAuth callback recorded on config.scope
+ * (null when the row predates that write — callers then attempt and read the refusal).
+ */
+export async function getPersonalConnectionInfo(
+  agentUserId: string,
+): Promise<{ provider: PersonalProvider; email: string | null; scope: string | null } | null> {
+  const cred = await loadActivePersonalCred(agentUserId)
+  if (!cred) return null
+  return { provider: cred.service_name, email: cred.email, scope: cred.scope }
+}
+
 interface PersonalCred {
   id: string
   service_name: "gmail" | "outlook"
@@ -113,6 +150,8 @@ interface PersonalCred {
   refresh_token: string | null
   token_expires_at: string | null
   email: string | null
+  /** The OAuth grant recorded at connect time (config.scope), when known. */
+  scope: string | null
   /** Which table the cred came from — token refresh writes back to the same place. */
   source: "agent_api_credentials" | "platform_credentials"
 }
@@ -138,7 +177,7 @@ async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred
       // decryptSecret is backward-compatible: a plaintext token passes through unchanged, an
       // at-rest-encrypted token is transparently decrypted — so this read is safe before/after
       // the credential-encryption rollout (lib/security/secret-crypto.ts).
-      return { id: c.id, service_name: c.service_name, access_token: decryptSecret(c.access_token), refresh_token: decryptSecret(c.refresh_token), token_expires_at: c.token_expires_at, email: c.config?.email ?? null, source: "agent_api_credentials" }
+      return { id: c.id, service_name: c.service_name, access_token: decryptSecret(c.access_token), refresh_token: decryptSecret(c.refresh_token), token_expires_at: c.token_expires_at, email: c.config?.email ?? null, scope: (c.config?.scope as string | undefined) ?? null, source: "agent_api_credentials" }
     }
   }
 
@@ -151,7 +190,8 @@ async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred
  * (owner_type, owner_id). This is what lets a VENDOR or CONTACT (no agents row) use their OWN
  * connected mailbox; agent/team/brokerage owner scopes resolve here too.
  */
-export async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
   const svc = createServiceClient()
   const { data: rows } = await svc
     .from("platform_credentials")
@@ -166,10 +206,12 @@ export async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCre
   return {
     id: c.id,
     service_name: c.platform,
-    access_token: c.access_token,
-    refresh_token: c.refresh_token,
+    // decryptSecret is backward-compatible (plaintext passes through) — same as the agent stage above.
+    access_token: decryptSecret(c.access_token),
+    refresh_token: decryptSecret(c.refresh_token),
     token_expires_at: c.token_expires_at,
     email: (c.config?.email as string) ?? null,
+    scope: (c.config?.scope as string | undefined) ?? null,
     source: "platform_credentials",
   }
 }
@@ -200,7 +242,8 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
   await svc
     .from(cred.source)
     .update({
-      access_token: refreshed.accessToken,
+      // ENCRYPT-ON-WRITE (wave 140H) — the readers above decrypt (backward-compatible).
+      access_token: encryptSecret(refreshed.accessToken),
       token_expires_at: new Date(Date.now() + refreshed.expiresInSec * 1000).toISOString(),
     })
     .eq("id", cred.id)
@@ -209,8 +252,8 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
 }
 
 async function refreshGoogle(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.GOOGLE_CLIENT_ID
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+  // ONE SPELLING (§6): GOOGLE_CLIENT_ID/SECRET via lib/env/aliases.ts.
+  const { clientId, clientSecret } = googleOAuthClient()
   if (!clientId || !clientSecret) return null
 
   const res = await callConnector<{ access_token?: string; expires_in?: number }>({
@@ -227,25 +270,54 @@ async function refreshGoogle(refreshToken: string): Promise<{ accessToken: strin
   return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
 }
 
+// ── THE MICROSOFT REFRESH SCOPE, AND WHY IT IS TWO STRINGS AND NOT ONE ────────────────────
+// Microsoft NARROWS a refreshed access token to the scopes REQUESTED at the token endpoint —
+// unlike Google, whose refresh (refreshGoogle above) sends no `scope` at all and therefore
+// returns the full consented set. This function requested Mail.Send + Mail.ReadWrite only, so
+// every refreshed Microsoft token silently LOST Calendars.ReadWrite even though the consent
+// granted it (app/api/integrations/oauth/[provider]/route.ts:62-68 requests offline_access,
+// User.Read, Calendars.ReadWrite, Mail.Send, Mail.ReadWrite).
+//
+// The consequence was invisible because the FIRST token — the one minted by the OAuth callback
+// — does carry calendar scope: an Outlook calendar write worked for about an hour after
+// connecting and returned 403 from then on, for the whole life of the connection. Two live
+// callers were affected: lib/providers/calendar/personal-calendar.ts (Graph /me/events for
+// per-agent bookings) and, as of w27, lib/providers/calendar/outlook-calendar-sync-adapter.ts.
+//
+// FIXED BY WIDENING, WITH A FALLBACK RATHER THAN A BET. Asking for a scope that was never
+// consented makes Microsoft refuse the ENTIRE token request (AADSTS65001), which would turn a
+// degraded calendar into a dead MAILBOX for any connection made before Calendars.ReadWrite
+// joined the consent list. So the wide request is tried first and the historical mail-only
+// request is the fallback: a modern connection gains calendar scope, a legacy one behaves
+// exactly as it did before, and neither can be broken by this change.
+const MS_REFRESH_SCOPES_WITH_CALENDAR =
+  "offline_access https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Calendars.ReadWrite"
+const MS_REFRESH_SCOPES_MAIL_ONLY =
+  "offline_access https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite"
+
 async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.MICROSOFT_CLIENT_ID
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
+  const { clientId, clientSecret } = microsoftOAuthClient()
   if (!clientId || !clientSecret) return null
 
-  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
-    connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
-    path: "/common/oauth2/v2.0/token", method: "POST",
-    auth: { style: "none" }, bodyType: "form",
-    body: {
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-      scope: "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite offline_access",
-    },
-  })
-  if (!res.ok || !res.data?.access_token) return null
-  return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
+  const attempt = async (scope: string) => {
+    const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+      connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
+      path: "/common/oauth2/v2.0/token", method: "POST",
+      auth: { style: "none" }, bodyType: "form",
+      body: {
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        scope,
+      },
+    })
+    // callConnector resolves refusals rather than throwing, so the result is read, not assumed.
+    if (!res.ok || !res.data?.access_token) return null
+    return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
+  }
+
+  return (await attempt(MS_REFRESH_SCOPES_WITH_CALENDAR)) ?? (await attempt(MS_REFRESH_SCOPES_MAIL_ONLY))
 }
 
 // ─── Gmail send (RFC 5322 + base64url) ───────────────────────────────────────
@@ -260,7 +332,9 @@ async function sendViaGmail(args: {
   cc?: string[]
   bcc?: string[]
   replyToMessageId?: string
+  headers?: Record<string, string>
 }): Promise<SendPersonalEmailResult> {
+  const extraHeaders = personalMailUnsubscribeHeaders(args.headers)
   const raw = buildRfc5322({
     from: args.fromAddress ?? "me",
     to: args.to,
@@ -270,6 +344,7 @@ async function sendViaGmail(args: {
     cc: args.cc,
     bcc: args.bcc,
     inReplyTo: args.replyToMessageId,
+    extraHeaders,
   })
   // base64url encode for Gmail API
   const encoded = Buffer.from(raw).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
@@ -296,6 +371,7 @@ async function sendViaGmail(args: {
     messageId: res.data?.id,
     threadId: res.data?.threadId,
     fromAddress: args.fromAddress ?? undefined,
+    unsubscribeHeaders: extraHeaders.length > 0 ? "carried" : "none",
   }
 }
 
@@ -311,7 +387,10 @@ async function sendViaOutlook(args: {
   cc?: string[]
   bcc?: string[]
   replyToMessageId?: string
+  headers?: Record<string, string>
 }): Promise<SendPersonalEmailResult> {
+  // Graph admits only x- custom headers, so List-Unsubscribe cannot ride an Outlook send: the footer link is the path.
+  const unsubscribeHeaders = personalMailUnsubscribeHeaders(args.headers).length > 0 ? "provider_cannot" as const : "none" as const
   const message = {
     subject: args.subject,
     body: { contentType: "HTML", content: args.htmlBody },
@@ -336,7 +415,7 @@ async function sendViaOutlook(args: {
         error: `Outlook reply (${res.status}): ${res.error ?? ""}`,
       }
     }
-    return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
+    return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined, unsubscribeHeaders }
   }
 
   // Regular send
@@ -353,7 +432,7 @@ async function sendViaOutlook(args: {
       error: `Outlook (${res.status}): ${res.error ?? ""}`,
     }
   }
-  return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined }
+  return { success: true, provider: "outlook", fromAddress: args.fromAddress ?? undefined, unsubscribeHeaders }
 }
 
 // ─── RFC 5322 message builder (used by Gmail) ────────────────────────────────
@@ -367,6 +446,7 @@ function buildRfc5322(args: {
   cc?: string[]
   bcc?: string[]
   inReplyTo?: string
+  extraHeaders?: string[]
 }): string {
   const boundary = `--vip${Date.now().toString(36)}`
   const headers: string[] = [
@@ -379,6 +459,7 @@ function buildRfc5322(args: {
   if (args.cc?.length) headers.push(`Cc: ${args.cc.join(", ")}`)
   if (args.bcc?.length) headers.push(`Bcc: ${args.bcc.join(", ")}`)
   if (args.inReplyTo) headers.push(`In-Reply-To: <${args.inReplyTo}>`)
+  for (const h of args.extraHeaders ?? []) headers.push(h)
 
   const text = args.textBody ?? stripHtml(args.htmlBody)
   const body = [

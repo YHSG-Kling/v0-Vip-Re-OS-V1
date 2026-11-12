@@ -36,6 +36,8 @@ import {
   recommendHookWinner,
   MIN_FORMAT_SAMPLE,
   FORMAT_MARGIN,
+  pickPluralityAngle,
+  MIN_CROWNED_HOOK_WINS,
   type HookOutcomeRow,
 } from "../lib/video/format-learning"
 
@@ -157,6 +159,37 @@ async function main() {
   check("recommend: winner WHY names the variant + the gate + scans/engagement",
     recWin.why.includes("variant 1") && recWin.why.toLowerCase().includes("hook winner") &&
     recWin.why.includes(`${MIN_FORMAT_SAMPLE}`), recWin.why)
+
+  // ── pickPluralityAngle (wave 58) — the loop's missing middle, closed ────────
+  // recommendHookWinner crowns ONE experiment; pickPluralityAngle tallies crowns
+  // ACROSS experiments of the same SituationKind so a NEW listing's A/B can start
+  // from what this brokerage has already learned instead of always
+  // curiosity-first. PURE — same reason recommendHookWinner is asserted directly.
+  console.log("\n[Layer 1 · pickPluralityAngle — the hook-learning loop's missing middle]")
+
+  const noWins = pickPluralityAngle("photo_walkthrough", {})
+  check("plurality: zero crowned experiments → testing, angle null", noWins.status === "testing" && noWins.angle === null)
+  check("plurality: zero crowned experiments → WHY says nothing to learn from", noWins.why.toLowerCase().includes("no hook experiments"))
+
+  const oneWin = pickPluralityAngle("photo_walkthrough", { curiosity: 1 })
+  check(`plurality: only 1 crowned win (< MIN_CROWNED_HOOK_WINS=${MIN_CROWNED_HOOK_WINS}) → still testing`,
+    oneWin.status === "testing" && oneWin.totalCrownedExperiments === 1)
+
+  const angleTied = pickPluralityAngle("photo_walkthrough", { curiosity: 2, value: 2 })
+  check("plurality: a TIE between angles → still testing (never a coin-flip pick)", angleTied.status === "testing")
+  check("plurality: tie WHY names both the top angle and the runner-up count", angleTied.why.includes("curiosity") || angleTied.why.includes("value"))
+
+  const clear = pickPluralityAngle("photo_walkthrough", { curiosity: 3, value: 1, urgency: 1 })
+  check("plurality: a clear leader past MIN_CROWNED_HOOK_WINS with no tie → LEARNED", clear.status === "learned" && clear.angle === "curiosity")
+  check("plurality: learned result reports the supporting win count", clear.supportingWins === 3 && clear.totalCrownedExperiments === 5)
+  check("plurality: learned WHY names the angle + tally + brokerage scope",
+    clear.why.includes("curiosity") && clear.why.includes("3 of 5") && clear.why.toLowerCase().includes("this brokerage"))
+
+  // CONTROL: re-tagging every occurrence of the winning angle in the tally must
+  // move the decision — proves the function reads the counts, not a hardcoded pick.
+  const flipped = pickPluralityAngle("photo_walkthrough", { curiosity: 1, value: 3, urgency: 1 })
+  check("CONTROL: swapping which angle holds the plurality flips the emitted winner (reads the tally, not a fixed literal)",
+    flipped.status === "learned" && flipped.angle === "value")
 
   console.log("\n[Layer 1 · backward-compat: single-hook path / selectVideoFormat UNCHANGED]")
 

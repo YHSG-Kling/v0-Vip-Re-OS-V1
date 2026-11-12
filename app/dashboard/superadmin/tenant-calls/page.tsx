@@ -20,6 +20,20 @@ export const dynamic = "force-dynamic"
 // writes a superadmin_audit_log row ('oversight.tenant_calls_viewed', target
 // brokerage) BEFORE any of that tenant's calls render — and if the audit write
 // fails, the calls do NOT render. Access is audited, honestly.
+//
+// TENANT ZOOM TRANSCRIPTS (lane Z2, 2026-09-02) — the second section below.
+// PLATFORM-hosted Zoom meetings (tenant success calls, demos) attach their
+// transcript to the TENANT, not to a contact: a communications row with
+// channel 'zoom_transcript', brokerage_id = the tenant, contact_id NULL by
+// design, the transcript + insights in metadata (lib/connections/
+// zoom-transcripts.ts). Until this section its ONLY reader was the GDPR export
+// (lib/platform/tenant-export.ts) — no person could open one. Same gate, same
+// audit row (the audit details name both sections), same tenant filter; the
+// read is BOUNDED (limit + lookback window, printed beside the list so a
+// truncated view cannot read as complete) and its error is READ.
+
+const ZOOM_TRANSCRIPT_LIMIT = 50
+const ZOOM_TRANSCRIPT_LOOKBACK_DAYS = 90
 
 function maskNumber(num: string | null | undefined): string {
   if (!num) return "unknown"
@@ -68,7 +82,11 @@ export default async function TenantCallsOversightPage(
       action: "oversight.tenant_calls_viewed",
       target_type: "brokerage",
       target_id: selected.id,
-      details: { brokerage_name: selected.name, surface: "superadmin/tenant-calls" },
+      details: {
+        brokerage_name: selected.name,
+        surface: "superadmin/tenant-calls",
+        sections: ["voice_calls", "communications.zoom_transcript"],
+      },
       ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
       user_agent: hdrs.get("user-agent"),
     })
@@ -90,6 +108,20 @@ export default async function TenantCallsOversightPage(
   const { data: callRows, error: callsError } = await callsQuery
   if (callsError) return <div className="p-6 text-red-600">Failed to load calls: {callsError.message}</div>
   const calls = (callRows ?? []) as any[]
+
+  // Tenant-attached Zoom transcripts — bounded by limit AND window, and the
+  // read error is read: a refused read renders as a refusal, never as "none".
+  const zoomSince = new Date(Date.now() - ZOOM_TRANSCRIPT_LOOKBACK_DAYS * 86_400_000).toISOString()
+  let zoomQuery = svc
+    .from("communications")
+    .select("id, brokerage_id, subject, content_preview, sent_at, created_at, metadata")
+    .eq("channel", "zoom_transcript")
+    .gte("sent_at", zoomSince)
+    .order("sent_at", { ascending: false })
+    .limit(ZOOM_TRANSCRIPT_LIMIT)
+  if (selected) zoomQuery = zoomQuery.eq("brokerage_id", selected.id)
+  const { data: zoomRows, error: zoomError } = await zoomQuery
+  const zoomTranscripts = (zoomRows ?? []) as any[]
 
   const tenantName = new Map(brokerages.map((b) => [b.id, b.name ?? "(unnamed)"]))
 
@@ -203,6 +235,89 @@ export default async function TenantCallsOversightPage(
                     )}
                     {transcription && !summary && (
                       <p className="text-[11px] text-muted-foreground">No AI summary for this call yet (analysis sweep hasn't filled it).</p>
+                    )}
+                  </div>
+                </details>
+              )
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* ── Tenant Zoom transcripts (platform-hosted meetings → communications) ── */}
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">
+          {selected ? `Zoom transcripts on the tenant record — ${selected.name ?? "(unnamed)"}` : "Zoom transcripts on tenant records — all tenants"}
+          <span className="ml-2 text-sm font-normal text-muted-foreground">
+            ({zoomTranscripts.length}{zoomTranscripts.length >= ZOOM_TRANSCRIPT_LIMIT ? `, capped at ${ZOOM_TRANSCRIPT_LIMIT}` : ""})
+          </span>
+        </h2>
+        <p className="text-xs text-muted-foreground">
+          Platform-hosted meetings (tenant success calls, demos) attach their transcript to the tenant, not to a contact —
+          communications rows with channel <code>zoom_transcript</code>. Showing the newest {ZOOM_TRANSCRIPT_LIMIT} from the last{" "}
+          {ZOOM_TRANSCRIPT_LOOKBACK_DAYS} days; older or further rows exist only in the tenant data export.
+        </p>
+        {zoomError ? (
+          <div className="rounded-lg border border-red-300 p-4 text-sm text-red-700">
+            Could not load tenant Zoom transcripts: {zoomError.message}
+          </div>
+        ) : zoomTranscripts.length === 0 ? (
+          <div className="rounded-lg border p-6 text-center text-sm text-muted-foreground">
+            {selected
+              ? `No platform-hosted Zoom transcript has attached to this tenant in the last ${ZOOM_TRANSCRIPT_LOOKBACK_DAYS} days.`
+              : `No platform-hosted Zoom transcript has attached to any tenant in the last ${ZOOM_TRANSCRIPT_LOOKBACK_DAYS} days.`}
+          </div>
+        ) : (
+          <div className="rounded-lg border divide-y">
+            {zoomTranscripts.map((t) => {
+              const meta = (t.metadata ?? {}) as Record<string, any>
+              const transcript = typeof meta.transcript === "string" ? meta.transcript.trim() : ""
+              const insights = (meta.insights ?? null) as Record<string, any> | null
+              const summary = typeof insights?.summary === "string" ? insights.summary.trim() : ""
+              const duration = typeof meta.duration_seconds === "number" ? meta.duration_seconds : null
+              return (
+                <details key={t.id} className="group">
+                  <summary className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3 cursor-pointer text-sm hover:bg-muted/40">
+                    {!selected && (
+                      <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-indigo-100 text-indigo-800">
+                        {tenantName.get(t.brokerage_id) ?? "(unknown tenant)"}
+                      </span>
+                    )}
+                    <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-700">zoom · tenant</span>
+                    <span className="font-medium">{t.subject ?? "Zoom meeting transcript"}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">{fmtDuration(duration)}</span>
+                    {typeof insights?.sentiment === "string" && (
+                      <span className={"rounded px-1.5 py-0.5 text-[11px] font-medium " + (SENTIMENT_CLS[insights.sentiment] ?? "bg-slate-100 text-slate-600")}>
+                        {insights.sentiment}
+                      </span>
+                    )}
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {new Date(t.sent_at ?? t.created_at).toLocaleString()}
+                    </span>
+                  </summary>
+                  <div className="px-3 pb-3 space-y-2">
+                    <div className="text-[11px] text-muted-foreground">
+                      Zoom meeting {meta.zoom_meeting_id ?? "—"} · calendar event {meta.calendar_event_id ?? "—"} · provenance {meta.provenance ?? "—"}
+                    </div>
+                    {summary ? (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase text-muted-foreground">AI summary</div>
+                        <p className="text-xs whitespace-pre-wrap">{summary}</p>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase text-muted-foreground">Preview</div>
+                        <p className="text-xs whitespace-pre-wrap">{t.content_preview ?? "—"}</p>
+                        <p className="text-[11px] text-muted-foreground">No insight extraction stored for this transcript (enrichment is best-effort at attach time).</p>
+                      </div>
+                    )}
+                    {transcript ? (
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase text-muted-foreground">Transcript</div>
+                        <pre className="whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-xs font-sans leading-relaxed">{transcript}</pre>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">The row carries no transcript text in metadata.transcript.</p>
                     )}
                   </div>
                 </details>

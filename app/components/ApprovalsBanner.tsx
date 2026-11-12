@@ -12,9 +12,11 @@ export function ApprovalsBanner() {
   const fetchPendingCount = async () => {
     try {
       const response = await fetch("/api/approvals/pending")
+      const data = await response.json().catch(() => ({}))
       if (response.ok) {
-        const data = await response.json()
         setCount(data.total || 0)
+      } else {
+        console.error("[v0] Failed to fetch approval count:", data.error)
       }
     } catch (error) {
       console.error("[v0] Failed to fetch approval count:", error)
@@ -73,7 +75,7 @@ export function ApprovalsBanner() {
         </div>
       </div>
       <Link href="/approvals">
-        <Button size="lg" className="bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-md">
+        <Button size="lg" className="bg-amber-700 hover:bg-amber-800 text-white font-semibold shadow-md">
           Review them
           <ArrowRight className="ml-2 h-5 w-5" />
         </Button>

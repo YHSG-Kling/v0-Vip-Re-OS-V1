@@ -22,9 +22,16 @@
  * The competitor's actual creative is NEVER copied verbatim into the
  * AI prompt — the value_angle is a paraphrase. The Fair Housing gate
  * applies on the output regardless.
+ *
+ * WAVE 145 (lane 145G, owner ruling 22 — "extract themes, never copy creative"): the header above said
+ * paraphrase, but the code filed the rival's headline as topic_title and their ad copy as value_angle,
+ * VERBATIM. The row now carries the THEME only — competitorAdTheme (lib/content-intel/topic-themes.ts),
+ * the same theme vocabulary every other intelligence source files under — and an ad whose theme is an
+ * excluded topic (crime, school rank, demographics) or matches no theme is skipped, said, never guessed.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { competitorAdTheme } from "@/lib/content-intel/topic-themes"
 
 export interface PromoteResult {
   brokerage_id: string
@@ -98,6 +105,17 @@ export async function promoteCompetitorAdsToTopicBank(args: {
     return { brokerage_id: args.brokerageId, considered: 0, promoted: 0, topic_ids: [], skipped: [] }
   }
 
+  // content_topic_bank.source_id is NOT NULL live (m128). This insert carried none, so every
+  // promotion was refused by the database and reported as `insert_failed`. It now files under the
+  // tenant's own system source row (lib/content-intel/system-topic-source.ts) — provenance kept,
+  // and a tenant that switched that row off is not fed.
+  const { resolveSystemTopicSource } = await import("@/lib/content-intel/system-topic-source")
+  const topicSource = await resolveSystemTopicSource(svc, args.brokerageId, "competitor_promotion")
+  if (!topicSource.ok || !topicSource.active) {
+    const reason = !topicSource.ok ? `topic_source_unavailable: ${topicSource.error}` : "topic_source_disabled_by_tenant"
+    return { brokerage_id: args.brokerageId, considered: ads.length, promoted: 0, topic_ids: [], skipped: ads.map((a) => ({ competitor_ad_id: a.id, reason })) }
+  }
+
   // 2. Idempotency check — find which of these have already been
   //    promoted (sentinel in raw_data).
   const adIds = ads.map((a) => a.id)
@@ -122,24 +140,20 @@ export async function promoteCompetitorAdsToTopicBank(args: {
       continue
     }
 
-    // Title precedence: ad_headline > first chars of body. The Exa/Meta adapter
-    // writes its creative title into ad_headline and body into ad_copy (the live
-    // competitor_ads columns), so a single canonical read is source-agnostic.
-    const title =
-      (ad.ad_headline ?? ad.ad_copy ?? "")
-        .toString()
-        .trim()
-        .slice(0, 120)
-    if (!title) {
+    // THE THEME, NEVER THE CREATIVE (wave 145): the Exa/Meta adapter writes the creative title into
+    // ad_headline and the body into ad_copy (the live competitor_ads columns); both are READ to find the
+    // theme and neither is written. No theme (or an excluded one) → skipped with the reason.
+    if (!(ad.ad_headline ?? ad.ad_copy ?? "").toString().trim()) {
       skipped.push({ competitor_ad_id: ad.id, reason: "no_usable_title" })
       continue
     }
-
-    const valueAngle =
-      (ad.ad_copy ?? "")
-        .toString()
-        .trim()
-        .slice(0, 400) || null
+    const theme = competitorAdTheme(ad.ad_headline, ad.ad_copy)
+    if (!theme) {
+      skipped.push({ competitor_ad_id: ad.id, reason: "no_theme_or_excluded_topic" })
+      continue
+    }
+    const title = theme.title
+    const valueAngle = theme.valueAngle
 
     const categories = Array.from(
       new Set([...(ad.categories ?? []), "competitor_intel"]),
@@ -150,6 +164,7 @@ export async function promoteCompetitorAdsToTopicBank(args: {
     const { data: newTopic, error } = await svc
       .from("content_topic_bank")
       .insert({
+        source_id:         topicSource.id,
         brokerage_id:      args.brokerageId,
         topic_title:       title,
         value_angle:       valueAngle,
@@ -164,6 +179,8 @@ export async function promoteCompetitorAdsToTopicBank(args: {
         raw_data:          {
           promoted_from_competitor_ad_id: ad.id,
           promoted_at:                    new Date().toISOString(),
+          theme_keys:                     theme.themeKeys,
+          theme_only:                     true,
           competitor_page:                (ad.raw_payload?.page_name as string | undefined) ?? null,
         },
       })

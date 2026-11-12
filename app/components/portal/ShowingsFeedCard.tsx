@@ -27,7 +27,7 @@ import {
   SENTIMENT_CONFIG,
   deriveOverallSentiment,
   type ShowingFeedback,
-} from "@/lib/portal/resolve-seller-context"
+} from "@/lib/portal/seller-context-presentation"
 
 interface ShowingActivityStripProps {
   thisWeek: number
@@ -97,6 +97,10 @@ function StatCard({
 interface ShowingFeedbackCardProps {
   feedback: ShowingFeedback[]
   contactId: string
+  /** optional by design: the skeleton branch below is for a future
+   *  client-driven refresh — the only caller, seller-home.tsx, is a Server
+   *  Component that awaits its data before rendering, so it is never mid-load
+   *  when this card renders. */
   isLoading?: boolean
 }
 
@@ -217,7 +221,7 @@ function FeedbackItem({ feedback }: { feedback: ShowingFeedback }) {
           {avgRating && (
             <>
               <span className="text-muted-foreground/50">|</span>
-              <Star className="h-3.5 w-3.5 text-amber-500" />
+              <Star className="h-3.5 w-3.5 text-amber-600" />
               <span>{avgRating}/5</span>
             </>
           )}

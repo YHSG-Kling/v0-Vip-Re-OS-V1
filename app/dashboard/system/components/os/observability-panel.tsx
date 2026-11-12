@@ -79,7 +79,7 @@ export function ObservabilityPanel({ brokerageId }: ObservabilityPanelProps) {
             <p className="text-xs text-orange-700 dark:text-orange-400">Critical</p>
           </div>
           <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/20 p-3 text-center">
-            <p className="text-2xl font-bold text-yellow-600">{failedCrons.length}</p>
+            <p className="text-2xl font-bold text-yellow-700">{failedCrons.length}</p>
             <p className="text-xs text-yellow-700 dark:text-yellow-400">Failed Jobs</p>
           </div>
         </div>
@@ -112,7 +112,7 @@ export function ObservabilityPanel({ brokerageId }: ObservabilityPanelProps) {
         <div className="space-y-2">
           <p className="text-sm font-medium text-muted-foreground">Recent Failures</p>
           {recentErrors.length === 0 ? (
-            <div className="flex items-center gap-2 text-green-600 rounded-lg bg-green-50 dark:bg-green-950/20 p-3">
+            <div className="flex items-center gap-2 text-green-700 rounded-lg bg-green-50 dark:bg-green-950/20 p-3">
               <CheckCircle className="h-4 w-4" />
               <span className="text-sm">No recent errors in the last 7 days</span>
             </div>
@@ -126,8 +126,8 @@ export function ObservabilityPanel({ brokerageId }: ObservabilityPanelProps) {
                   <div className="flex items-center gap-2 min-w-0">
                     <AlertTriangle className={`h-3 w-3 flex-shrink-0 ${
                       error.severity === 'critical' ? 'text-red-500' :
-                      error.severity === 'high' ? 'text-orange-500' :
-                      'text-yellow-500'
+                      error.severity === 'high' ? 'text-orange-600' :
+                      'text-yellow-700'
                     }`} />
                     <span className="text-xs truncate">{error.workflow_name}</span>
                   </div>

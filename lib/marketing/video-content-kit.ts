@@ -191,9 +191,14 @@ export async function buildVideoContentKit(
         }
       }
     }
+    // ai_video_projects.agent_id is agents-class since m366, while the display
+    // name lives on users and the compliance actor is a users id — one resolve
+    // for both. Null ⇒ no name and no actor id, never the agents id standing in.
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const kitAgentUserId = p.agent_id ? await resolveUserIdForAgentRecord(svc, p.agent_id) : null
     let agentName: string | null = null
-    if (p.agent_id) {
-      const { data: u } = await svc.from("users").select("first_name, last_name").eq("id", p.agent_id).maybeSingle()
+    if (kitAgentUserId) {
+      const { data: u } = await svc.from("users").select("first_name, last_name").eq("id", kitAgentUserId).maybeSingle()
       agentName = u ? [u.first_name, u.last_name].filter(Boolean).join(" ") || null : null
     }
     const { data: b } = await svc.from("brokerages").select("name").eq("id", p.brokerage_id).maybeSingle()
@@ -202,9 +207,9 @@ export async function buildVideoContentKit(
       try {
         const { evaluateOutbound } = await import("@/lib/kernel/compliance")
         const r = await evaluateOutbound({
-          actorContext: { brokerageId: p.brokerage_id, userId: p.agent_id ?? "", role: "system" },
+          actorContext: { brokerageId: p.brokerage_id, userId: kitAgentUserId ?? "", role: "system" },
           journeyType: "buyer", persona: "other", messageType: "social", content,
-        })
+        }, { client: svc })
         return { allowed: r.allowed }
       } catch { return { allowed: true } } // the fact-built fallback is FH-safe by construction
     }
@@ -218,9 +223,10 @@ export async function buildVideoContentKit(
       brokerageName: (b as any)?.name ?? null,
     }, { gate })
 
-    await svc.from("ai_video_projects").update({
+    const { error: kitSaveErr } = await svc.from("ai_video_projects").update({
       video_metadata: { ...((p.video_metadata as object) ?? {}), content_kit: kit },
     }).eq("id", projectId)
+    if (kitSaveErr) return { ok: false, kit, reason: `content kit composed but not saved: ${kitSaveErr.message}` }
 
     return { ok: true, kit }
   } catch (e) {

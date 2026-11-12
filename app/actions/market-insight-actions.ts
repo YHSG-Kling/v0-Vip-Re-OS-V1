@@ -10,8 +10,11 @@ import {
   getMarketTrends,
   getMarketDataSources,
 } from "@/lib/intelligence/market-insight-generator"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("market_insight_actions")
 
 // ─── Get Market Sources ──────────────────────────────────────────────────────
 

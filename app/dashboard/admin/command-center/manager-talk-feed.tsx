@@ -18,7 +18,6 @@ import { useState, useTransition } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Loader2 } from "lucide-react"
-import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import type { ManagerTalkLine } from "@/lib/kernel/manager-signals"
 import {
   resolveDeadlineConflictAction,
@@ -26,6 +25,7 @@ import {
   dismissStageCandidateAction,
   resolveAutonomyRatchetAction,
 } from "@/app/actions/document-kernel-review"
+import { ManagerChip, relTime } from "@/app/components/shared/ManagerChip"
 
 // Coordination-kind visual vocabulary so the feed reads as a negotiation, not a log.
 const KIND_STYLE: Record<
@@ -39,41 +39,9 @@ const KIND_STYLE: Record<
   update:     { border: "border-l-indigo-400", chip: "bg-indigo-50 text-indigo-700", icon: "•",  label: "Update" },
 }
 
-function accentFor(key: string): string {
-  return key in MANAGERS ? MANAGERS[key as ManagerKey].accent : "bg-slate-100 text-slate-700"
-}
-function domainFor(key: string): string {
-  return key in MANAGERS ? MANAGERS[key as ManagerKey].domain : ""
-}
-function initials(label: string): string {
-  return label.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase()
-}
-function relTime(iso: string): string {
-  const t = new Date(iso).getTime()
-  if (!Number.isFinite(t)) return ""
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
-  if (s < 60) return "just now"
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.floor(h / 24)
-  return `${d}d ago`
-}
-
-function ManagerChip({ mkey, label }: { mkey: string; label: string }) {
-  return (
-    <span
-      title={domainFor(mkey)}
-      className={`inline-flex items-center gap-1 rounded-full py-0.5 pl-0.5 pr-2 text-[11px] font-medium ${accentFor(mkey)}`}
-    >
-      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-white/70 text-[9px] font-bold">
-        {initials(label)}
-      </span>
-      {label}
-    </span>
-  )
-}
+// `accentFor`/`domainFor`/`initials`/`relTime`/`ManagerChip` — same-body
+// census, round 4 (2026-09-09, lane FC): DELETED, byte-identical to
+// app/components/shared/ManagerChip.tsx (imported above).
 
 /** The one-click human decisions on the kernel's amber proposals — the
  *  approve/decline happens ON the feed line, lands in policy_decisions +
@@ -174,10 +142,18 @@ const ACTIONABLE_TYPES = new Set(["deadline_conflict_finding", "stage_advance_ca
 
 export function ManagerTalkFeed({ talk: initialTalk }: { talk: ManagerTalkLine[] }) {
   const [talk, setTalk] = useState<ManagerTalkLine[]>(initialTalk ?? [])
-  if (!talk || talk.length === 0) return null
-  const open = talk.filter((t) => t.status === "open").length
   const markResolved = (id: string, actionText: string) =>
     setTalk((prev) => prev.map((t) => (t.id === id ? { ...t, status: "consumed", consumedAction: actionText } : t)))
+  // Wave 150 (lane 150DAC): an empty feed SAYS so — a section that vanished read as "not built".
+  if (!talk || talk.length === 0) {
+    return (
+      <section aria-label="Managers talking" className="space-y-1">
+        <h2 className="text-lg font-semibold">Managers talking</h2>
+        <p className="text-sm text-muted-foreground">No manager-to-manager messages yet in this view.</p>
+      </section>
+    )
+  }
+  const open = talk.filter((t) => t.status === "open").length
 
   return (
     <section className="space-y-3">

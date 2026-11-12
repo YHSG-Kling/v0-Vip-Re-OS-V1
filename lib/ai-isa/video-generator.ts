@@ -1,4 +1,20 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published embedVideoInEmail(emailBody, videoUrl, posterUrl) —
+// a PURE string helper, no client, no tenant — as a public HTTP door: nothing to
+// steal, but an anonymous RPC that will splice any URL into any HTML for anyone
+// who asks is not a capability this app offers. Every caller is in-process
+// server code (re-verified 2026-09-03):
+//   · lib/kernel/client-welcome.ts:857 (dynamic import, server lib)
+//   · lib/ai-isa/index.ts (the barrel), whose only value importers are the
+//     "use server" actions app/actions/ai-isa/engage-contact.ts:30,
+//     handle-inbound-email.ts:19 and initiate-engagement.ts:31 (the `./ai-isa`
+//     in lib/kernel/index.ts and lib/application/index.ts is each package's
+//     OWN ai-isa module, not this barrel)
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time — the same rule as its siblings, kept
+// uniform so the barrel stays one kind of thing.
+import "server-only"
 
 // AI-ISA email video embed helper.
 //

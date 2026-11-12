@@ -10,6 +10,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
 export const dynamic = "force-dynamic"
 
@@ -28,7 +29,21 @@ export const dynamic = "force-dynamic"
  * POST = admin-triggered one-brokerage or one-agent rerun.
  */
 
-const LIFETIME_CONTACT_TYPES = ["past_client", "lifetime_customer", "sphere"]
+// TOMBSTONE (CLAUDE.md §1, §6). This was a FOURTH, private copy of the post-close
+// contact_type roster and the only one with a DIFFERENT membership — so "the lifetime
+// book" meant one population to the NPV forecast and another to the ads, sphere and
+// win-back lanes. It also named `past_client`, which m539 retired: that member matched
+// zero rows from the moment the migration landed. Survivor:
+// lib/contact-types.ts:LIFETIME_CONTACT_TYPES (lifetime_customer / sphere).
+// COUNT MOVES, twice, and the second one REVERSES part of the first:
+//   · at consolidation, this forecast's population lost `past_client` (0 live rows)
+//     and gained `client`, bringing it into line with the other three lanes;
+//   · at m563 the owner ruled "client isn't a type" and it was removed from the
+//     column and from the roster, so the population loses `client` again. Live
+//     effect today: NONE — the contact_type census is buyer 2, lifetime_customer 1,
+//     seller 1, with zero rows on `client` and zero on `sphere`, so this cron
+//     forecasts over the same single row it did before. The narrowing is real in
+//     code and will bite only once a tenant has volume.
 
 export async function GET(request: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
