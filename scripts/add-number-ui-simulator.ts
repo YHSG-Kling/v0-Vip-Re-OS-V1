@@ -51,8 +51,11 @@ console.log("\n── the AI-call settings UI exposes Add-a-Number ──")
     ui.includes("included in use") && ui.includes("Next number"))
   check("blocks the search UI at the hard cap with the plan reason",
     ui.includes("!allowance.canAddNumber") && ui.includes("capReason"))
+  // Wave 152 (lane 152A, owner: tenant-friendly copy, "brokerage" only when the tenant IS one): the wording moved from
+  // "Telephony isn't connected for your brokerage" to "Phone service isn't connected for your account" — assert the RULE (an
+  // honest not-connected message on the page, never the brokerage-payer phrasing), not the old sentence.
   check("surfaces the honest not-connected carrier message",
-    ui.includes("Telephony isn't connected"))
+    /\bisn't connected\b/.test(ui) && !/isn't connected for your brokerage/.test(ui))
 
   const page = src("app/dashboard/admin/phone-settings/page.tsx")
   check("the page loads allowance status and passes it to the client",

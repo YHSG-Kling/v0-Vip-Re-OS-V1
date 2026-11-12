@@ -294,6 +294,11 @@ const SCRAPER_LANE = new Set([
   // pooled phase, after its active-territory gate (lead acquisition).
   "lib/lead-pipeline/pooled-pull.ts",
   "app/actions/admin/run-scrape-test.ts", "app/api/admin/scrape-test/route.ts", // admin dry-run of a scrape source
+  // Wave 152 (lane 152I, classified by the integrator): the PARKED TENANT PUSH REPLAY — the self-heal ingress reconciler re-runs a
+  // tenant Smart Search delivery that app/api/webhooks/batchdata-smart-search/route.ts (above) parked, through the SAME four seams
+  // (pre-pull dedup before the paid hydrate, the tenant's OWN token — no platform fallback, THE producer, the one spend meter).
+  // Same lane as the door, cron-driven. Its hydrate body mirrors the door's; one shared seam builder is 152I's recorded OL3.
+  "lib/kernel/ingress-reconciliation.ts",
 ])
 // (d) published blind spots — direct reaches not yet migrated. SHRINK-ONLY. Lane 81B struck all
 // eight wave-80 entries: six are GATED above; app/actions/calculators.ts was repointed to the rail

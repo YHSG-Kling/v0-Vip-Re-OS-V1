@@ -19,6 +19,13 @@
  * (closing compliance clean). The closing-compliance gate (canProceedToClosingPrep) is SESSION-bound, so the closing agent is
  * signed in through the harness's opt-in session actor (setSessionUser) and the REAL gate runs — no stub. At HEAD (ungated
  * command) the seed changes nothing; against the integrated tree the close passes the gate the way a real deal must.
+ *
+ * WAVE 152 (integrator — GREEN-AFTER-SEED again, the gate is never weakened): the owner's 2026-11-11 ruling made the no-CDA close
+ * BLOCKING — a close now needs the final settlement record on file and reconciled against the executed terms, and the closing
+ * question ("is any executed change unrecorded?") answered (lib/offers/closing-cost-accuracy.ts closingSettlementGate, run by
+ * canAdvanceStage). `settlementReady` seeds exactly that through the REAL writers: a closing-disclosure document whose figures agree
+ * with the deal, and the deal's own agent answering the closing question through recordClosingAttestation. A deal WITHOUT the record
+ * is refused CLOSED by name (the positive control below) — so green here means the real gate passed, not that it was skipped.
  */
 import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSessionUser, setSvc, uuid } from "./_harness"
 import { hooksFor, readRepo, strippedRepo } from "./_registry"
@@ -31,7 +38,9 @@ export async function run() {
   // THE GATE-PASSING SEED (wave 144, lane 144J — see the header): the executed contract's date + the compliance stamp on every
   // deal this canary closes; no CDA required by these brokerages.
   const contractDate = new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10)
-  const gatePassing = { contract_date: contractDate, compliance_passed_at: nowIso(), offer_id: null }
+  // WAVE 152: + financing_type "cash" (the header's "no trid_timeline row (cash)", now stated on the row) — the executed price is put on
+  // the LIVE column transactions.purchase_price per deal below (sales_price is not a live column; closing compliance reads purchase_price).
+  const gatePassing = { contract_date: contractDate, compliance_passed_at: nowIso(), offer_id: null, financing_type: "cash" }
   const svc = canaryClient({
     brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-life`, offers_cda: false, non_cda_payout_default: "direct_deposit" }, { id: B2, name: `${CANARY_TAG} Other`, plan_tier: "team", slug: `${CANARY_TAG}-life2`, offers_cda: false }],
     users: [{ id: AG_U, email: `agent@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B, platform_role: null, first_name: "Canary", last_name: "Agent" }],
@@ -39,8 +48,8 @@ export async function run() {
     contacts: [contact(BUYER, "buyer", "Blake"), contact(SELLER, "seller", "Sam"), contact(BUYER2, "buyer", "Bea")],
     listings: [{ id: L, brokerage_id: B, agent_id: AG, status: "pending", address: `1 ${CANARY_TAG} Way`, contact_id: SELLER, created_at: nowIso(), updated_at: nowIso() }],
     transactions: [
-      { id: TX, brokerage_id: B, agent_id: AG, listing_id: L, buyer_contact_id: BUYER, seller_contact_id: SELLER, contact_id: BUYER, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `1 ${CANARY_TAG} Way`, sales_price: 400_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() },
-      { id: TX2, brokerage_id: B, agent_id: AG, listing_id: null, buyer_contact_id: BUYER2, seller_contact_id: null, contact_id: BUYER2, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `2 ${CANARY_TAG} Way`, sales_price: 300_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() },
+      { id: TX, brokerage_id: B, agent_id: AG, listing_id: L, buyer_contact_id: BUYER, seller_contact_id: SELLER, contact_id: BUYER, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `1 ${CANARY_TAG} Way`, sales_price: 400_000, purchase_price: 400_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() },
+      { id: TX2, brokerage_id: B, agent_id: AG, listing_id: null, buyer_contact_id: BUYER2, seller_contact_id: null, contact_id: BUYER2, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `2 ${CANARY_TAG} Way`, sales_price: 300_000, purchase_price: 300_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() },
     ],
   })
   setSvc(svc)
@@ -50,6 +59,22 @@ export async function run() {
   const touchpoints = () => (svc.tables.lifetime_customer_touchpoints ?? []).filter((t) => t.related_transaction_id === TX)
 
   const { closeTransactionCommand } = await import("../../lib/kernel/transactions")
+  // WAVE 152 seed (see header): the settlement record + the answered closing question, through the real writers.
+  const cv = await import("../../lib/commission/closing-verification")
+  const settlementReady = async (brokerageId: string, transactionId: string, agentUserId: string, agentId: string) => {
+    const t = (svc.tables.transactions ?? []).find((x) => x.id === transactionId)
+    const price = Number(t?.sales_price ?? t?.purchase_price ?? 0)
+    ;(svc.tables.documents ??= []).push({ id: uuid(), brokerage_id: brokerageId, transaction_id: transactionId, classification: "closing_disclosure", classification_confidence: "high", signature_completeness: null, created_at: nowIso(), updated_at: nowIso(), metadata: null, extracted_fields: { sales_price: String(price), cash_to_close: (price + 1000).toFixed(2) } })
+    const asked = await cv.ensureClosingAttestationAsked(svc as never, { brokerageId, transactionId })
+    const answered = await cv.recordClosingAttestation(svc as never, { userId: agentUserId, agentId, brokerageId, userType: "agent" } as never, { transactionId, answer: "no_unrecorded_change" } as never)
+    return asked.ok && answered.ok
+  }
+  // POSITIVE CONTROL first: the same gate-passing deal WITHOUT the settlement record is refused CLOSED by the settlement gate.
+  let unrecorded: { success: boolean; error?: string } = { success: false, error: "not run" }
+  try { unrecorded = await closeTransactionCommand({ transactionId: TX, brokerageId: B, agentId: AG_U, reason: "canary close before the settlement record" }) } catch (e) { unrecorded = { success: false, error: `THREW: ${(e as Error).message}` } }
+  c.step("POSITIVE CONTROL (owner ruling 2026-11-11): a deal with no final settlement record on file and the closing question unanswered is REFUSED CLOSED by the settlement gate, by name — nothing converts", !unrecorded.success && /settlement/i.test(unrecorded.error ?? "") && (svc.tables.transactions ?? []).find((t) => t.id === TX)?.status !== "closed", unrecorded.error ?? "closed (the gate did not hold)")
+  const seededTx = await settlementReady(B, TX, AG_U, AG)
+  c.step("SEED (real writers): the closing-disclosure record is on file and the deal's agent answered the closing question 'no unrecorded change'", seededTx, "")
   let first: { success: boolean; error?: string } = { success: false, error: "not run" }
   try { first = await closeTransactionCommand({ transactionId: TX, brokerageId: B, agentId: AG_U, reason: "canary close" }) } catch (e) { first = { success: false, error: `THREW: ${(e as Error).message}` } }
   const tx = (svc.tables.transactions ?? []).find((t) => t.id === TX)
@@ -127,7 +152,7 @@ export async function run() {
     ;(svc.tables.users ??= []).push({ id: AG3_U, email: `agent3@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B3, platform_role: null, first_name: "Canary", last_name: "Three" })
     ;(svc.tables.agents ??= []).push({ id: AG3, user_id: AG3_U, brokerage_id: B3, first_name: "Canary", last_name: "Three", is_active: true })
     ;(svc.tables.contacts ??= []).push(c3row(BUYER3, "buyer", "Bobbi"), c3row(SELLER3, "seller", "Sal"))
-    ;(svc.tables.transactions ??= []).push({ id: TX3, brokerage_id: B3, agent_id: AG3, listing_id: null, buyer_contact_id: BUYER3, seller_contact_id: SELLER3, contact_id: BUYER3, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `3 ${CANARY_TAG} Way`, sales_price: 350_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() })
+    ;(svc.tables.transactions ??= []).push({ id: TX3, brokerage_id: B3, agent_id: AG3, listing_id: null, buyer_contact_id: BUYER3, seller_contact_id: SELLER3, contact_id: BUYER3, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `3 ${CANARY_TAG} Way`, sales_price: 350_000, purchase_price: 350_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() })
     ;(svc.tables.brokerage_settings ??= []).push({ id: uuid(), brokerage_id: B3, settings: { [L.LIFETIME_CONVERSION_POLICY_KEY]: { require_payout_verified: true } }, created_at: nowIso() })
     const verdicts = [
       L.lifetimeConversionVerdict({ closed: false, requiredRecordsComplete: true, payoutVerified: true, requirePayoutVerified: true }),
@@ -142,6 +167,7 @@ export async function run() {
     const tp3 = () => (svc.tables.lifetime_customer_touchpoints ?? []).filter((t) => t.related_transaction_id === TX3)
     let closeHeld: { success: boolean; error?: string } = { success: false, error: "not run" }
     setSessionUser(svc, AG3_U) // the holding tenant's own closing agent presses its button
+    await settlementReady(B3, TX3, AG3_U, AG3) // the wave-152 settlement seed (header), through the real writers
     try { closeHeld = await closeTransactionCommand({ transactionId: TX3, brokerageId: B3, agentId: AG3_U, reason: "canary close (payout pending)" }) } catch (e) { closeHeld = { success: false, error: `THREW: ${(e as Error).message}` } }
     c.step(`${h.lane} landed (${at}) — CLOSED / PAYOUT PENDING: on a tenant whose policy (brokerage_settings.settings.lifetime_conversion.require_payout_verified) holds conversion until the agent is paid, the VERIFIED closing closes the transaction but converts NOBODY yet — ONE open hold activity (${L.LIFETIME_HOLD_ACTIVITY_TYPE}, the "${L.LIFETIME_HOLD_LABEL}" label on the deal), the buyer + seller still buyer / seller, 0 touchpoints; the pure verdict ladder reads not_closed → hold_records → hold_payout_pending → convert (and convert-at-close when the policy does not require it)`, closeHeld.success && policy.requirePayoutVerified && /brokerage_settings/.test(policy.source) && verdicts.join() === "not_closed,hold_records,hold_payout_pending,convert,convert" && (svc.tables.transactions ?? []).find((t) => t.id === TX3)?.status === "closed" && held().length === 1 && held()[0].status === "pending" && c3(BUYER3)?.contact_type === "buyer" && c3(SELLER3)?.contact_type === "seller" && tp3().length === 0, closeHeld.error ?? `hold ${held().length}; touchpoints ${tp3().length}`)
     const release = await L.releaseLifetimeConversionOnPayout(svc as never, { brokerageId: B3, transactionId: TX3, actorUserId: AG3_U })
@@ -158,7 +184,7 @@ export async function run() {
     const cl3 = await cleanupCanary(svc, B3)
     c.step("cleanup (the holding tenant): every tagged row deleted with .select() counts; residual 0", cl3.mismatches.length === 0 && cl3.residual === 0, cl3.cleanup.map((x) => `${x.table}:${x.deleted}`).join(" "))
   }
-  c.blind("The close ran the real kernel command in memory: commission recalculation, the closing-gift task and the kernel events ran best-effort against the fake (refusals are theirs to log). The 'verified' in 'verified closing' is the close date + the executed contract the caller had — no settlement statement is checked here (the preliminary-cd canary).")
+  c.blind("The close ran the real kernel command in memory: commission recalculation, the closing-gift task and the kernel events ran best-effort against the fake (refusals are theirs to log). The 'verified' in 'verified closing' is the executed contract + a settlement record the REAL gate reconciled (wave 152) — the record is a seeded document row with two figures (the scanner and its reading run in the settlement-reconciliation proof and wave-152 canary 11), and the closing question is answered by the deal's own agent through the real writer.")
   const cl = await cleanupCanary(svc, B), cl2 = await cleanupCanary(svc, B2)
   c.step("cleanup: every tagged row deleted with .select() counts; residual 0", cl.mismatches.length + cl2.mismatches.length === 0 && cl.residual + cl2.residual === 0, [...cl.cleanup, ...cl2.cleanup].map((x) => `${x.table}:${x.deleted}`).join(" "))
   return c.report([...cl.cleanup, ...cl2.cleanup], cl.residual + cl2.residual)

@@ -18,20 +18,22 @@
 import { CANARY_TAG, canaryClient, cleanupCanary, setSvc, stubModule, uuid, type CanaryCleanup } from "./_harness"
 import { fnBody, strippedRepo } from "./_registry"
 
-type Ctl = { closingGate: { allowed: boolean; blockers: string[] }; gateCalls: Array<{ t: string }>; calc: Array<Record<string, unknown>>; audience: string[]; newsletter: string[] }
+type Ctl = { closingGate: { allowed: boolean; blockers: string[] }; gateCalls: Array<{ t: string }>; calc: Array<Record<string, unknown>>; audience: string[]; newsletter: string[]; settlementGate: { blockers: string[]; reconciliation: null; cdaMode: string }; settlementCalls: Array<{ transactionId: string }> }
 const G = globalThis as unknown as { __W144J: Ctl }
-G.__W144J = { closingGate: { allowed: true, blockers: [] }, gateCalls: [], calc: [], audience: [], newsletter: [] }
+G.__W144J = { closingGate: { allowed: true, blockers: [] }, gateCalls: [], calc: [], audience: [], newsletter: [], settlementGate: { blockers: [], reconciliation: null, cdaMode: "unknown" }, settlementCalls: [] }
 stubModule("@/app/actions/transaction-compliance", "export async function canProceedToClosingPrep(t, b) { const g = globalThis.__W144J; g.gateCalls.push({ t, b }); return g.closingGate } export async function seedTransactionComplianceChecks() { return { success: true } }")
 stubModule("@/lib/commission/engine", "export async function calculateCommission(p) { globalThis.__W144J.calc.push(p); return { success: true } }")
 stubModule("@/lib/commission/reconcile-tracking", "export async function finalizeCommissionAtClose() { return { ok: true } }")
-stubModule("@/lib/offers/closing-cost-accuracy", "export async function recordClosingCostAccuracy() { return { recorded: false } }")
+// WAVE 152 (integrator): the same recorder lane 152G added to lane 144B's list in scripts/journey-promotion-gates-guard.ts — the close now
+// asks closingSettlementGate (owner ruling: the no-CDA close is blocking); its own behavior is proven by test:settlement-reconciliation.
+stubModule("@/lib/offers/closing-cost-accuracy", "export async function recordClosingCostAccuracy() { return { recorded: false } } export async function closingSettlementGate(svc, i) { const g = globalThis.__W144J; g.settlementCalls.push(i); return g.settlementGate }")
 stubModule("@/lib/net-sheet/net-sheet-guard-runner", "export async function runNetSheetSurpriseGuard() { return { ran: false } }")
 stubModule("@/lib/analytics/ai-prediction-outcomes", "export async function gradeTransactionPredictionOutcomes() { return 0 } export async function markLeadConversionOutcomes() { return 0 }")
 stubModule("@/lib/audiences/audience-sync", "export async function onContactBecameLifetimeForAudience(p) { globalThis.__W144J.audience.push(p.contactId); return { ok: true } }")
 stubModule("@/lib/content/newsletter-enrollment", "export async function enrollContactInNewsletter(p) { globalThis.__W144J.newsletter.push(p.contactId); return { ok: true } }")
 stubModule("@/lib/managers/accuracy-gate", "export function __clearAccuracyGateCache() {}")
 
-type Rule = (owner: "144B" | "144I" | "defect", step: string, ok: boolean, evidence?: string) => boolean
+type Rule = (owner: "144B" | "144I" | "152G" | "defect", step: string, ok: boolean, evidence?: string) => boolean
 
 // fnBody moved to scripts/canaries/_registry.ts (pure, so the graph canary can read a body without loading these stubs);
 // re-exported here for buyer-journey's existing import.
@@ -67,7 +69,15 @@ export async function driveVerifiedClosing(rule: Rule): Promise<{ cleanup: Canar
   const cc = await canAdvanceStage(T_NOCDA, "CLOSING_PREP", "CLOSED", B_NOCDA)
   G.__W144J.closingGate = { allowed: true, blockers: [] }
   rule("144B", "CLOSING COMPLIANCE IS ASKED AT THE CLOSE (lane 144B req SELLER 10c): a blocking closing-compliance finding written during closing prep refuses CLOSED by name, and it is the SAME gate (canProceedToClosingPrep, stubbed recorder — asserted HIT) that was asked for this transaction", !cc.allowed && cc.blockers.some((b) => /closing_terms\.purchase_price/.test(b)) && G.__W144J.gateCalls.some((x) => x.t === T_NOCDA), `HEAD: ${cc.allowed ? "allowed" : cc.blockers.join("; ").slice(0, 160)}; closing-compliance gate calls ${G.__W144J.gateCalls.length}`)
+  // WAVE 152 (owner: "that is not informational"): the close also holds on the settlement record, in the NO-CDA brokerage too —
+  // the recorder is asserted HIT for this transaction, and an ordinary advance does not run it.
+  G.__W144J.settlementGate = { blockers: ["Settlement (Awaiting a revised closing document): Seller credit to buyer: contract says $10,000.00; latest document says not shown."], reconciliation: null, cdaMode: "no_cda" }
+  const settleBlocked = await canAdvanceStage(T_NOCDA, "CLOSING_PREP", "CLOSED", B_NOCDA)
+  G.__W144J.settlementGate = { blockers: [], reconciliation: null, cdaMode: "unknown" }
+  const settleCalls = G.__W144J.settlementCalls.length
+  rule("152G", "SETTLEMENT AT THE CLOSE (owner ruling 2026-11-11): an unreconciled settlement record refuses CLOSED by name in the NO-CDA brokerage, through the SAME gate (closingSettlementGate, stubbed recorder — asserted HIT for this transaction)", !settleBlocked.allowed && settleBlocked.blockers.some((b) => /Seller credit/.test(b)) && G.__W144J.settlementCalls.some((x) => x.transactionId === T_NOCDA), `HEAD: ${settleBlocked.allowed ? "allowed" : settleBlocked.blockers.join("; ").slice(0, 160)}; settlement gate calls ${G.__W144J.settlementCalls.length}`)
   const cont = await canAdvanceStage(T_CONT, "UNDER_CONTRACT", "INSPECTION", B_NOCDA)
+  rule("152G", "CONTROL: an ordinary advance (UNDER_CONTRACT → INSPECTION) does not run the settlement hold", G.__W144J.settlementCalls.length === settleCalls, `settlement gate calls ${G.__W144J.settlementCalls.length} (was ${settleCalls})`)
   const skip = await canAdvanceStage(T_UC, "UNDER_CONTRACT", "CLOSED", B_NOCDA)
   rule("144B", "STAGE ORDER HOLDS AND CONTINGENCY TYPES NEVER FREEZE A DEAL (lane 144B req SELLER 10d/f): UNDER_CONTRACT → CLOSED is refused (a verified closing comes from CLOSING_PREP), while an offer carrying the contingency TYPES [financing, inspection, appraisal] (createOffer's shape) advances to INSPECTION", !skip.allowed && cont.allowed, `skip ${skip.allowed ? "ALLOWED" : "refused"}; contingency deal ${cont.allowed ? "advances" : cont.blockers.join("; ").slice(0, 160)}`)
 

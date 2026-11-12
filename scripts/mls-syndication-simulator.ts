@@ -203,9 +203,9 @@ console.log("\n[source — the feeds carry the MLS number at all]")
   check("RentCast's mlsNumber/mlsName reach the mapper (both were dropped)",
     /mlsNumber: r\?\.mlsNumber/.test(rc) && /mlsName: r\?\.mlsName/.test(rc))
   check("IDX's mlsID is mapped (it was only ever a 4th fallback for externalId)",
-    /mlsNumber:\s+str\(r\.mlsID/.test(idx))
+    /mlsNumber:\s+str\(r\??\.mlsID/.test(idx)) // wave 152 (152J): the mapper is shared and null-safe (r?.) — same mapping
   check("…and kept SEPARATE from externalId — feed-local id vs industry identity",
-    /externalId: String\(r\.listingID/.test(idx))
+    /externalId: String\(r\??\.listingID/.test(idx))
   // THE RULE (not where it lives): a FAILED feed call is not-consulted, never 'not found'. Wave 143 lane 143A moved the
   // consult out of the action into ONE survivor — lib/listings/mls-live-verification.ts consultMlsFeeds — which the
   // action, the sweep and the checklist all call; the assertion follows the rule to the survivor and also proves the

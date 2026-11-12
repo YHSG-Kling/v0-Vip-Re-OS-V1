@@ -214,7 +214,8 @@ export interface CanaryStep {
 }
 /** WAVE 144 (lane 144J): the owner of a ruling step — a wave-144 lane, or "defect" (no lane's brief owns the fix). */
 export type Wave144Lane = "144A" | "144B" | "144C" | "144D" | "144E" | "144F" | "144G" | "144H" | "144I"
-export type RulingOwner = Wave144Lane | "defect"
+// "152G" (wave 152): the settlement hold at the close is lane 152G's ruling, reported as red-awaiting-lane-152G when it fails.
+export type RulingOwner = Wave144Lane | "152G" | "defect"
 export interface CanaryCleanup { table: string; deleted: number }
 export interface CanaryReport {
   chain: string

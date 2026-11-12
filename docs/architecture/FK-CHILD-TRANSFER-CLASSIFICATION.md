@@ -199,13 +199,13 @@ The closure report names each table and its count. For each one, the Data Stewar
 ## Generated classification (do not edit by hand — `tsx --conditions=react-server scripts/transfer-classification-guard.ts --write`)
 
 <!-- BEGIN GENERATED: fk-child-classification (scripts/transfer-classification-guard.ts --write) -->
-Census: 437 FKs from 309 child tables into the 41 moved families (288 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
+Census: 438 FKs from 309 child tables into the 41 moved families (288 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
 
 | Class | Tables | FKs |
 |---|---|---|
 | `follows_parent` | 72 | 108 |
 | `shared_remains` | 13 | 19 |
-| `historical_immutable` | 101 | 153 |
+| `historical_immutable` | 101 | 154 |
 | `explicit_transfer` | 12 | 19 |
 | `not_transferable` | 28 | 37 |
 | `derived_readonly` | 83 | 101 |
@@ -419,7 +419,7 @@ Census: 437 FKs from 309 child tables into the 41 moved families (288 tables car
 - `privacy_acceptances` — contact_id → contacts · no tenant column · no TABLE_MANAGER
 - `document_field_audit` — document_id → documents · no tenant column · deal_coordinator
 - `document_extraction_log` — transaction_id → transactions · deal_coordinator
-- `signature_requests` — contact_id → contacts, document_id → client_documents, transaction_id → transactions · deal_coordinator
+- `signature_requests` — contact_id → contacts, contract_term_version_id → contract_term_versions, document_id → client_documents, transaction_id → transactions · deal_coordinator
 - `deconflict_suppression_log` — contact_id → contacts · data_steward
 - `assignment_log` — lead_id → leads · ai_isa
 - `lead_deduplication_log` — lead_id → leads · ai_isa

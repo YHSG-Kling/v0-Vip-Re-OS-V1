@@ -16,8 +16,13 @@ import { hooksFor, listFiles, strippedRepo } from "./_registry"
 
 /** PURE: import specifiers naming a second OCR package in a stripped source. Word-bounded on both sides —
  *  the first reading matched "s·ocr·ata" (lib/external/*, the Socrata permit feeds), a false accusation. */
+// WAVE 152 (integrator): the rule is "no second OCR PACKAGE". A repo-internal specifier (./x, ../x, @/x) is not a package — lane 152D's
+// receipt intake imports THE one OCR module (lib/documents/ocr-pdf.ts) as "./ocr-pdf", which this finder read as a second system.
+// Scoped npm packages ("@scope/ocr-lib") are still packages and still caught (positive control below).
 export function secondOcrImports(stripped: string): string[] {
-  return [...stripped.matchAll(/(?:from|import|require\()\s*["']([^"']+)["']/g)].map((m) => m[1]).filter((s) => /(^|[^a-z])(tesseract|ocr)(?![a-z])/i.test(s))
+  return [...stripped.matchAll(/(?:from|import|require\()\s*["']([^"']+)["']/g)].map((m) => m[1])
+    .filter((s) => !/^(\.{1,2}\/|@\/)/.test(s))
+    .filter((s) => /(^|[^a-z])(tesseract|ocr)(?![a-z])/i.test(s))
 }
 
 export async function run() {
@@ -60,6 +65,7 @@ export async function run() {
   const second = [...listFiles("lib", (f) => /\.tsx?$/.test(f)), ...listFiles("app", (f) => /\.tsx?$/.test(f))].filter((f) => secondOcrImports(strippedRepo(f) ?? "").length > 0)
   c.step("no second OCR system: no runtime module imports a tesseract/ocr package", second.length === 0, second.join(", ") || "0 files")
   c.step("POSITIVE CONTROL: the finder catches `tesseract.js` and `node-ocr`, ignores the gateway import and the Socrata feed (s·ocr·ata)", secondOcrImports(`import Tesseract from "tesseract.js"\nimport ocr from "node-ocr"\nimport { gatewayChat } from "@/lib/ai/gateway-chat"\nimport { socrata } from "@/lib/external/socrata-client"`).length === 2)
+  c.step("POSITIVE CONTROL (wave 152): the one OCR module imported from inside the repo (./ocr-pdf, @/lib/documents/ocr-pdf) is not a second system, while a scoped OCR package (@scope/ocr-lib) still is", JSON.stringify(secondOcrImports(`import { ocrDocumentFromBuffer } from "./ocr-pdf"\nimport { x } from "@/lib/documents/ocr-pdf"\nimport y from "../documents/ocr-pdf"\nimport z from "@scope/ocr-lib"`)) === JSON.stringify(["@scope/ocr-lib"]))
   // WAVE141 HOOK (integrator): 141F — per-field confidence + the field-level merge rule (lib/contacts/card-classifier.ts),
   // applied by the session door; wired 141K.
   for (const h of hooksFor("business-card")) {
