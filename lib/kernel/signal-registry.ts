@@ -314,6 +314,13 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   // Wave 48 (lane GD): the provider-agnostic e-sign core REFUSES an envelope id that resolves
   // to rows in two different brokerages instead of guessing a tenant (§4 fail closed).
   esign_envelope_id_ambiguous:  { consumers: [], disposition: "feed_only", kind: "update", what: "a provider envelope id matched rows in more than one brokerage — the e-sign execution loop refused to act on it; Compliance Officer must see which tenant's packet it really belongs to (lib/forms/esign-execution-loop.ts resolveEnvelopeBrokerageId)" },
+  // ── Wave 152 (lane 152F) — the proposed-addendum signature door (lib/esign/addendum-signature-request.ts). Every one of these
+  //    leaves the CONTRACT UNCHANGED and asks a person to decide; none has an automated consumer by design (an executed
+  //    addendum is never inferred by a manager). Catalogued by the integrator after test:signal-integrity found them orphaned. ──
+  addendum_signature_request_stopped: { consumers: [], disposition: "feed_only", kind: "update", what: "a proposed-addendum signature request was declined, voided, failed to deliver or expired before every party signed — Compliance Officer → Deal Coordinator; the contract is unchanged and the agent decides whether to send a new request" },
+  addendum_signed_copy_mismatch:      { consumers: [], disposition: "feed_only", kind: "update", what: "a signed addendum copy arrived whose hash does not match the copy first retrieved from the e-sign provider — it was NOT recorded (the first pinned copy stands); Deal Coordinator → Compliance Officer for review before anything else is filed" },
+  addendum_execution_held:            { consumers: [], disposition: "feed_only", kind: "update", what: "a fully signed addendum was not recorded as executed (unpinned copy, refused read, or a failed executed-version write) — Deal Coordinator → Compliance Officer; the contract is unchanged until a person resolves it" },
+  addendum_signature_stalled:         { consumers: [], disposition: "feed_only", kind: "update", what: "a proposed addendum has waited days for signatures (the sweep's age threshold) — Compliance Officer → Deal Coordinator, who usually settles it with a call to the party; the contract is unchanged until it is signed" },
 
   // Wave 49 (2026-09-10, lane HC): readers built for TWENTY MORE emitted-only kernel events
   // in the video/podcast/social/onboarding/intelligence lanes (lib/kernel/event-reactor.ts
